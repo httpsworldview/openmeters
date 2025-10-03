@@ -38,14 +38,10 @@ impl GraphNode {
         }
     }
 
-    #[allow(dead_code)]
-    #[inline]
     pub fn name(&self) -> Option<&str> {
         self.name.as_deref()
     }
 
-    #[allow(dead_code)]
-    #[inline]
     pub fn description(&self) -> Option<&str> {
         self.description.as_deref()
     }

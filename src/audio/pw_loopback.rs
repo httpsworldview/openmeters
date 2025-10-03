@@ -2,12 +2,11 @@
 
 use crate::util::pipewire::{
     DEFAULT_AUDIO_SINK_KEY, DefaultTarget, GraphNode, GraphPort, PortDirection,
-    pair_ports_by_channel, parse_metadata_name,
+    create_passive_audio_link, format_port_debug, pair_ports_by_channel, parse_metadata_name,
 };
 use anyhow::{Context, Result};
 use pipewire as pw;
 use pw::metadata::{Metadata, MetadataListener};
-use pw::properties::properties;
 use pw::registry::{GlobalObject, RegistryRc};
 use pw::spa::utils::dict::DictRef;
 use pw::types::ObjectType;
@@ -18,7 +17,6 @@ use std::sync::OnceLock;
 use std::thread;
 
 const LOOPBACK_THREAD_NAME: &str = "openmeters-pw-loopback";
-const LINK_FACTORY_NAME: &str = "link-factory";
 const OPENMETERS_SINK_NAME: &str = "openmeters.sink";
 
 static LOOPBACK_THREAD: OnceLock<thread::JoinHandle<()>> = OnceLock::new();
@@ -229,15 +227,10 @@ impl LoopbackState {
             .or_insert_with(TrackedNode::default);
         entry.set_info(node);
 
-        let is_openmeters = entry.has_name(OPENMETERS_SINK_NAME);
-        if is_openmeters {
-            if self.openmeters_node_id != Some(node_id) {
-                println!("[loopback] detected OpenMeters sink node #{node_id}");
-            }
-            self.openmeters_node_id = Some(node_id);
+        if entry.has_name(OPENMETERS_SINK_NAME) {
+            self.set_openmeters_node(Some(node_id));
         } else if self.openmeters_node_id == Some(node_id) {
-            println!("[loopback] OpenMeters sink node removed");
-            self.openmeters_node_id = None;
+            self.set_openmeters_node(None);
         }
 
         self.resolve_default_sink_node();
@@ -253,8 +246,7 @@ impl LoopbackState {
         self.port_index.retain(|_, (owner, _)| *owner != node_id);
 
         if self.openmeters_node_id == Some(node_id) {
-            println!("[loopback] OpenMeters sink node removed");
-            self.openmeters_node_id = None;
+            self.set_openmeters_node(None);
         }
 
         if self.default_sink.node_id == Some(node_id) {
@@ -362,6 +354,20 @@ impl LoopbackState {
         }
     }
 
+    fn set_openmeters_node(&mut self, node_id: Option<u32>) {
+        if self.openmeters_node_id == node_id {
+            return;
+        }
+
+        match (self.openmeters_node_id, node_id) {
+            (_, Some(id)) => println!("[loopback] detected OpenMeters sink node #{id}"),
+            (Some(_), None) => println!("[loopback] OpenMeters sink node removed"),
+            (None, None) => {}
+        }
+
+        self.openmeters_node_id = node_id;
+    }
+
     fn is_tracked_node(&self, node_id: u32) -> bool {
         self.openmeters_node_id == Some(node_id) || self.default_sink.node_id == Some(node_id)
     }
@@ -377,31 +383,15 @@ impl LoopbackState {
             return;
         };
 
-        let Some(source_ports) = self.select_ports(
-            source_id,
-            "source",
-            |node| node.output_ports_for_loopback(),
-            |id| {
-                println!(
-                    "[loopback] no output ports available on node {} for loopback",
-                    id
-                )
-            },
-        ) else {
+        let Some(source_ports) = self.select_ports(source_id, "source", "output", |node| {
+            node.output_ports_for_loopback()
+        }) else {
             return;
         };
 
-        let Some(target_ports) = self.select_ports(
-            target_id,
-            "target",
-            |node| node.input_ports_for_loopback(),
-            |id| {
-                println!(
-                    "[loopback] no input ports available on node {} for loopback",
-                    id
-                )
-            },
-        ) else {
+        let Some(target_ports) = self.select_ports(target_id, "target", "input", |node| {
+            node.input_ports_for_loopback()
+        }) else {
             return;
         };
 
@@ -416,18 +406,7 @@ impl LoopbackState {
             })
             .collect();
 
-        let existing_keys: Vec<LinkKey> = self.active_links.keys().copied().collect();
-        for key in existing_keys {
-            if !desired_keys.contains(&key) {
-                if let Some(link) = self.active_links.remove(&key) {
-                    drop(link);
-                }
-                println!(
-                    "[loopback] removed link {}:{} -> {}:{}",
-                    key.output_node, key.output_port, key.input_node, key.input_port
-                );
-            }
-        }
+        self.prune_stale_links(&desired_keys);
 
         for (output_port, input_port) in plans {
             let key = LinkKey {
@@ -440,18 +419,19 @@ impl LoopbackState {
                 continue;
             }
 
-            match self.create_link(source_id, target_id, &output_port, &input_port) {
+            match create_passive_audio_link(
+                &self.core,
+                source_id,
+                output_port.port_id,
+                target_id,
+                input_port.port_id,
+            ) {
                 Ok(link) => {
+                    let source_desc = format_port_debug(&output_port);
+                    let target_desc = format_port_debug(&input_port);
                     println!(
-                        "[loopback] linking {}:{}({}/{}) -> {}:{}({}/{})",
-                        source_id,
-                        output_port.port_id,
-                        output_port.name.as_deref().unwrap_or("unnamed"),
-                        output_port.channel.as_deref().unwrap_or("unknown"),
-                        target_id,
-                        input_port.port_id,
-                        input_port.name.as_deref().unwrap_or("unnamed"),
-                        input_port.channel.as_deref().unwrap_or("unknown")
+                        "[loopback] linking node {} {} -> node {} {}",
+                        source_id, source_desc, target_id, target_desc
                     );
                     self.active_links.insert(key, link);
                 }
@@ -465,21 +445,43 @@ impl LoopbackState {
         }
     }
 
-    fn select_ports<F, L>(
+    fn prune_stale_links(&mut self, desired_keys: &HashSet<LinkKey>) {
+        let obsolete: Vec<LinkKey> = self
+            .active_links
+            .keys()
+            .filter(|key| !desired_keys.contains(key))
+            .copied()
+            .collect();
+
+        for key in obsolete {
+            if let Some(link) = self.active_links.remove(&key) {
+                drop(link);
+            }
+            println!(
+                "[loopback] removed link {}:{} -> {}:{}",
+                key.output_node, key.output_port, key.input_node, key.input_port
+            );
+        }
+    }
+
+    fn select_ports<F>(
         &mut self,
         node_id: u32,
         label: &str,
+        port_role: &str,
         selector: F,
-        on_empty: L,
     ) -> Option<Vec<GraphPort>>
     where
         F: Fn(&TrackedNode) -> Vec<GraphPort>,
-        L: Fn(u32),
     {
         let node = match self.nodes.get(&node_id) {
             Some(node) => node,
             None => {
                 self.clear_links();
+                println!(
+                    "[loopback] {label} node {} missing; cleared active links",
+                    node_id
+                );
                 return None;
             }
         };
@@ -488,8 +490,11 @@ impl LoopbackState {
         if ports.is_empty() {
             let snapshot = node.clone_ports();
             self.clear_links();
-            Self::dump_ports_snapshot(label, node_id, &snapshot);
-            on_empty(node_id);
+            Self::log_ports_snapshot(label, node_id, &snapshot);
+            println!(
+                "[loopback] no {port_role} ports available on node {} for loopback",
+                node_id
+            );
             return None;
         }
 
@@ -505,7 +510,7 @@ impl LoopbackState {
         println!("[loopback] cleared all active links");
     }
 
-    fn dump_ports_snapshot(label: &str, node_id: u32, ports: &[GraphPort]) {
+    fn log_ports_snapshot(label: &str, node_id: u32, ports: &[GraphPort]) {
         if ports.is_empty() {
             println!("[loopback] {label} node {} has no known ports", node_id);
             return;
@@ -517,37 +522,8 @@ impl LoopbackState {
             ports.len()
         );
         for port in ports {
-            println!(
-                "[loopback]   port={} dir={:?} monitor={} channel={} name={}",
-                port.port_id,
-                port.direction,
-                port.is_monitor,
-                port.channel.as_deref().unwrap_or("unknown"),
-                port.name.as_deref().unwrap_or("unnamed")
-            );
+            println!("[loopback]   {}", format_port_debug(port));
         }
-    }
-
-    fn create_link(
-        &self,
-        output_node: u32,
-        input_node: u32,
-        output_port: &GraphPort,
-        input_port: &GraphPort,
-    ) -> Result<pw::link::Link, pw::Error> {
-        let props = properties! {
-            *pw::keys::LINK_OUTPUT_NODE => output_node.to_string(),
-            *pw::keys::LINK_OUTPUT_PORT => output_port.port_id.to_string(),
-            *pw::keys::LINK_INPUT_NODE => input_node.to_string(),
-            *pw::keys::LINK_INPUT_PORT => input_port.port_id.to_string(),
-            *pw::keys::LINK_PASSIVE => "true",
-            *pw::keys::MEDIA_TYPE => "Audio",
-            *pw::keys::MEDIA_CATEGORY => "Playback",
-            *pw::keys::MEDIA_ROLE => "Playback",
-        };
-
-        self.core
-            .create_object::<pw::link::Link>(LINK_FACTORY_NAME, &props)
     }
 }
 

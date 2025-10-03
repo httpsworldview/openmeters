@@ -83,3 +83,61 @@ pub fn parse_metadata_name(type_hint: Option<&str>, value: Option<&str>) -> Opti
         Some(trimmed.to_string())
     }
 }
+
+/// Encoded values used to route a node towards a specific target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TargetMetadataPayload {
+    pub type_hint: &'static str,
+    pub target_object: String,
+    pub target_node: String,
+    pub target_name: String,
+}
+
+impl TargetMetadataPayload {
+    fn new(type_hint: &'static str, object: String, node: String, name: String) -> Self {
+        Self {
+            type_hint,
+            target_object: object,
+            target_node: node,
+            target_name: name,
+        }
+    }
+}
+
+/// Encode metadata payload describing a PipeWire target node.
+pub fn format_target_metadata(
+    object_serial: Option<&str>,
+    node_id: u32,
+    node_name: &str,
+) -> TargetMetadataPayload {
+    let sanitized_name = node_name.trim().to_string();
+    let object_value = object_serial
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| node_id.to_string());
+
+    TargetMetadataPayload::new("Spa:Id", object_value, node_id.to_string(), sanitized_name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn metadata_payload_prefers_object_serial_when_available() {
+        let payload = format_target_metadata(Some("102"), 7, "speakers");
+        assert_eq!(payload.type_hint, "Spa:Id");
+        assert_eq!(payload.target_object, "102");
+        assert_eq!(payload.target_node, "7");
+        assert_eq!(payload.target_name, "speakers");
+    }
+
+    #[test]
+    fn metadata_payload_falls_back_to_node_id() {
+        let payload = format_target_metadata(None, 9, "  sink  ");
+        assert_eq!(payload.target_object, "9");
+        assert_eq!(payload.target_node, "9");
+        assert_eq!(payload.target_name, "sink");
+    }
+}
