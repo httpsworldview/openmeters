@@ -196,9 +196,7 @@ fn handle_metadata_property(
 }
 
 struct MetadataBinding {
-    #[allow(dead_code)]
     _proxy: Metadata,
-    #[allow(dead_code)]
     _listener: MetadataListener,
 }
 

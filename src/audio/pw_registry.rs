@@ -650,9 +650,7 @@ fn derive_direction(media_class: Option<&str>, props: &HashMap<String, String>) 
 }
 
 struct MetadataBinding {
-    #[allow(dead_code)]
     _proxy: Metadata,
-    #[allow(dead_code)]
     _listener: MetadataListener,
     #[allow(dead_code)]
     name: Option<String>,

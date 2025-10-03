@@ -297,6 +297,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "cxx-qt-lib"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "527b46c28be6bf3dd02f1567706641fe247a8798defab8268c84602955741217"
+dependencies = [
+ "cxx",
+ "cxx-qt",
+ "cxx-qt-build",
+ "qt-build-utils",
+]
+
+[[package]]
+name = "cxx-qt-lib-extras"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "636cc84f85e71f8b689143f672216773701bc0b687c9e88f79a87135dd3ac508"
+dependencies = [
+ "cxx",
+ "cxx-qt",
+ "cxx-qt-build",
+ "cxx-qt-lib",
+]
+
+[[package]]
 name = "cxx-qt-macro"
 version = "0.7.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -561,7 +585,10 @@ name = "openmeters"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "cxx",
  "cxx-qt",
+ "cxx-qt-lib",
+ "cxx-qt-lib-extras",
  "parking_lot",
  "pipewire",
  "serde_json",

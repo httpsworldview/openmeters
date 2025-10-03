@@ -1,7 +1,8 @@
 mod audio;
+mod ui;
 mod util;
 use audio::{pw_loopback, pw_registry, pw_virtual_sink};
-use std::time::Duration;
+// use std::time::Duration;
 
 fn describe_default_target(
     snapshot: &pw_registry::RegistrySnapshot,
@@ -94,40 +95,38 @@ fn main() {
     pw_virtual_sink::run();
     pw_loopback::run();
 
-    // monitor audio buffer
-    let capture_buffer = pw_virtual_sink::capture_buffer_handle();
-    std::thread::Builder::new()
-        .name("openmeters-buffer-monitor".into())
-        .spawn(move || {
-            loop {
-                std::thread::sleep(Duration::from_millis(500));
-                if let Ok(buffer) = capture_buffer.lock() {
-                    let segments = buffer.len();
-                    let samples: usize = buffer.iter().map(|chunk| chunk.len()).sum();
-                    // already holding the mutex: compute and print status
-                    // XOR checksum of all samples in the buffer to detect changes
-                    let checksum: u32 = buffer
-                        .iter()
-                        .flat_map(|chunk| chunk.iter())
-                        .map(|sample| sample.to_bits())
-                        .fold(0, |acc, x| acc ^ x);
-                    println!(
-                        "[monitor] captured segments={}, total_samples={} ({} bytes), checksum={:x}",
-                        segments,
-                        samples,
-                        samples * std::mem::size_of::<f32>(),
-                        checksum
-                    );
-                }
-            }
-        })
-        .expect("failed to spawn buffer monitor thread");
+    // // monitor audio buffer
+    // let capture_buffer = pw_virtual_sink::capture_buffer_handle();
+    // std::thread::Builder::new()
+    //     .name("openmeters-buffer-monitor".into())
+    //     .spawn(move || {
+    //         loop {
+    //             std::thread::sleep(Duration::from_millis(500));
+    //             if let Ok(buffer) = capture_buffer.lock() {
+    //                 let segments = buffer.len();
+    //                 let samples: usize = buffer.iter().map(|chunk| chunk.len()).sum();
+    //                 // XOR checksum of all samples in the buffer to detect changes
+    //                 let checksum: u32 = buffer
+    //                     .iter()
+    //                     .flat_map(|chunk| chunk.iter())
+    //                     .map(|sample| sample.to_bits())
+    //                     .fold(0, |acc, x| acc ^ x);
+    //                 println!(
+    //                     "[monitor] captured segments={}, total_samples={} ({} bytes), checksum={:x}",
+    //                     segments,
+    //                     samples,
+    //                     samples * std::mem::size_of::<f32>(),
+    //                     checksum
+    //                 );
+    //             }
+    //         }
+    //     })
+    //     .expect("failed to spawn buffer monitor thread");
 
     // Keep the registry handle alive for the lifetime of the process.
     let _registry_handle = registry_handle;
 
-    // Keep the main thread alive to let the virtual sink run.
-    loop {
-        std::thread::park();
+    if let Err(err) = ui::run() {
+        eprintln!("[ui] failed to start Qt application: {err:?}");
     }
 }
