@@ -16,7 +16,7 @@ fn main() {
 
     let _registry_handle = registry_handle;
 
-    if let Err(err) = ui::run() {
+    if let Err(err) = ui::bootstrap::run() {
         eprintln!("[ui] failed to start Qt application: {err:?}");
     }
 }
