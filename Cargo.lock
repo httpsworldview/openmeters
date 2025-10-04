@@ -2306,11 +2306,15 @@ name = "openmeters"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-channel",
+ "bytemuck",
  "iced",
+ "iced_wgpu",
  "parking_lot 0.12.4",
  "pipewire",
  "serde_json",
  "spa",
+ "wgpu",
 ]
 
 [[package]]
