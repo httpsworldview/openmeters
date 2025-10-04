@@ -1,5 +1,6 @@
 //! PipeWire audio implementations.
 
+pub mod meter_tap;
 pub mod pw_loopback;
 pub mod pw_registry;
 pub mod pw_router;
