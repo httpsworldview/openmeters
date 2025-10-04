@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock, mpsc};
 use std::thread;
+use std::time::Duration;
 
 const REGISTRY_THREAD_NAME: &str = "openmeters-pw-registry";
 
@@ -102,6 +103,25 @@ impl RegistryUpdates {
             return Some(snapshot);
         }
         self.receiver.recv().ok()
+    }
+
+    /// Attempt to receive a snapshot within the provided timeout.
+    ///
+    /// Returns `Ok(Some(snapshot))` when an update arrives, `Ok(None)` on timeout,
+    /// and propagates `RecvTimeoutError::Disconnected` when the channel is closed.
+    pub fn recv_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<Option<RegistrySnapshot>, mpsc::RecvTimeoutError> {
+        if let Some(snapshot) = self.initial.take() {
+            return Ok(Some(snapshot));
+        }
+
+        match self.receiver.recv_timeout(timeout) {
+            Ok(snapshot) => Ok(Some(snapshot)),
+            Err(mpsc::RecvTimeoutError::Timeout) => Ok(None),
+            Err(err) => Err(err),
+        }
     }
 }
 
