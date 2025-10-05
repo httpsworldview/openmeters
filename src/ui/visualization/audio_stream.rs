@@ -4,7 +4,7 @@ use iced::futures::{self, StreamExt};
 use std::hash::Hasher as _;
 use std::sync::Arc;
 
-/// Subscription recipe that forwards captured audio frames to the UI thread.
+/// Generic subscription recipe that forwards captured audio frames to the UI thread.
 #[derive(Clone, Debug)]
 pub struct AudioStreamSubscription {
     receiver: Arc<AsyncReceiver<Vec<f32>>>,

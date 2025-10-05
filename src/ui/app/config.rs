@@ -2,10 +2,12 @@ use crate::audio::VIRTUAL_SINK_NAME;
 use crate::audio::pw_registry::RegistrySnapshot;
 use crate::ui::application_row::ApplicationRow;
 use crate::ui::hardware_sink::HardwareSinkCache;
+use crate::ui::theme;
 use async_channel::Receiver as AsyncReceiver;
 use iced::advanced::subscription::{EventStream, Hasher, Recipe, from_recipe};
+use iced::alignment;
 use iced::futures::{self, StreamExt};
-use iced::widget::{Column, checkbox, container, scrollable, text};
+use iced::widget::{Column, Row, Space, button, container, scrollable, text};
 use iced::{Element, Length, Subscription, Task};
 use std::collections::{HashMap, HashSet};
 use std::hash::Hasher as _;
@@ -20,6 +22,7 @@ pub enum RoutingCommand {
 pub enum ConfigMessage {
     RegistryUpdated(RegistrySnapshot),
     ToggleChanged { node_id: u32, enabled: bool },
+    ToggleApplicationsVisibility,
 }
 
 #[derive(Debug)]
@@ -30,6 +33,7 @@ pub struct ConfigPage {
     applications: Vec<ApplicationRow>,
     hardware_sink: HardwareSinkCache,
     registry_ready: bool,
+    applications_expanded: bool,
 }
 
 impl ConfigPage {
@@ -44,6 +48,7 @@ impl ConfigPage {
             applications: Vec::new(),
             hardware_sink: HardwareSinkCache::new(),
             registry_ready: false,
+            applications_expanded: false,
         }
     }
 
@@ -87,6 +92,9 @@ impl ConfigPage {
                     eprintln!("[ui] failed to send routing command: {err}");
                 }
             }
+            ConfigMessage::ToggleApplicationsVisibility => {
+                self.applications_expanded = !self.applications_expanded;
+            }
         }
 
         Task::none()
@@ -95,7 +103,7 @@ impl ConfigPage {
     pub fn view(&self) -> Element<'_, ConfigMessage> {
         let sink_label = format!("Hardware sink: {}", self.hardware_sink.label());
 
-        let mut list = Column::new().spacing(8);
+        let mut list = Column::new().spacing(12);
 
         if self.applications.is_empty() {
             let message = if self.registry_updates.is_some() {
@@ -110,20 +118,124 @@ impl ConfigPage {
 
             list = list.push(text(message));
         } else {
-            for entry in &self.applications {
-                let node_id = entry.node_id;
-                let label = entry.display_label();
-                list =
-                    list.push(checkbox(label, entry.enabled).on_toggle(move |enabled| {
-                        ConfigMessage::ToggleChanged { node_id, enabled }
-                    }));
+            const GRID_COLUMNS: usize = 2;
+
+            for chunk in self.applications.chunks(GRID_COLUMNS) {
+                let mut row = Row::new().spacing(12);
+
+                for entry in chunk {
+                    let node_id = entry.node_id;
+                    let toggled = !entry.enabled;
+                    let label = entry.display_label();
+                    let label = if entry.enabled {
+                        format!("{label} (enabled)")
+                    } else {
+                        format!("{label} (disabled)")
+                    };
+                    let button = button(text(label).width(Length::Fill))
+                        .padding(12)
+                        .width(Length::FillPortion(1))
+                        .style(move |_theme, status| {
+                            let mut style = iced::widget::button::Style::default();
+                            style.background = Some(iced::Background::Color(if entry.enabled {
+                                theme::surface_color()
+                            } else {
+                                theme::elevated_color()
+                            }));
+                            style.text_color = if entry.enabled {
+                                theme::text_color()
+                            } else {
+                                theme::text_secondary()
+                            };
+                            style.border = theme::sharp_border();
+
+                            match status {
+                                iced::widget::button::Status::Hovered => {
+                                    style.background =
+                                        Some(iced::Background::Color(theme::hover_color()));
+                                }
+                                iced::widget::button::Status::Pressed => {
+                                    style.border = theme::focus_border();
+                                }
+                                _ => {}
+                            }
+
+                            style
+                        })
+                        .on_press(ConfigMessage::ToggleChanged {
+                            node_id,
+                            enabled: toggled,
+                        });
+                    row = row.push(button);
+                }
+
+                for _ in chunk.len()..GRID_COLUMNS {
+                    row = row.push(Space::new(Length::FillPortion(1), Length::Shrink));
+                }
+
+                list = list.push(row);
             }
+        }
+
+        let summary_status = if self.applications.is_empty() {
+            if self.registry_updates.is_some() {
+                if self.registry_ready {
+                    " - none detected".to_string()
+                } else {
+                    " - waiting...".to_string()
+                }
+            } else {
+                " - unavailable".to_string()
+            }
+        } else {
+            format!(" - {} total", self.applications.len())
+        };
+
+        let indicator = if self.applications_expanded {
+            "▾"
+        } else {
+            "▸"
+        };
+        let summary_label = format!("{indicator} Applications{summary_status}");
+
+        let summary_button = button(
+            text(summary_label)
+                .width(Length::Fill)
+                .align_x(alignment::Horizontal::Left),
+        )
+        .padding(8)
+        .width(Length::Fill)
+        .style(|_theme, status| {
+            let mut style = iced::widget::button::Style::default();
+            style.background = Some(iced::Background::Color(theme::surface_color()));
+            style.text_color = theme::text_color();
+            style.border = theme::sharp_border();
+
+            match status {
+                iced::widget::button::Status::Hovered => {
+                    style.background = Some(iced::Background::Color(theme::hover_color()));
+                }
+                iced::widget::button::Status::Pressed => {
+                    style.border = theme::focus_border();
+                }
+                _ => {}
+            }
+
+            style
+        })
+        .on_press(ConfigMessage::ToggleApplicationsVisibility);
+
+        let mut applications_section = Column::new().spacing(8).push(summary_button);
+
+        if self.applications_expanded {
+            applications_section =
+                applications_section.push(scrollable(list).height(Length::Shrink));
         }
 
         let content = Column::new()
             .spacing(16)
             .push(text(sink_label).size(14))
-            .push(scrollable(list).height(Length::Fill));
+            .push(applications_section);
 
         container(content)
             .width(Length::Fill)
@@ -151,7 +263,6 @@ impl ConfigPage {
         self.applications = entries;
     }
 }
-
 struct RegistrySubscription {
     receiver: Arc<AsyncReceiver<RegistrySnapshot>>,
 }

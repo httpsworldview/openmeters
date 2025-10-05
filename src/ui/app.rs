@@ -2,12 +2,13 @@ pub mod config;
 pub mod visuals;
 
 use crate::audio::pw_registry::RegistrySnapshot;
+use crate::ui::theme;
 use async_channel::Receiver as AsyncReceiver;
 use config::{ConfigMessage, ConfigPage};
 use visuals::{VisualsMessage, VisualsPage};
 
 use iced::widget::{button, column, container, row, text};
-use iced::{Element, Length, Result, Settings, Size, Subscription, Task, Theme, application};
+use iced::{Element, Length, Result, Settings, Size, Subscription, Task, application};
 use std::sync::{Arc, mpsc};
 
 pub use config::RoutingCommand;
@@ -41,7 +42,7 @@ pub fn run(config: UiConfig) -> Result {
         .settings(settings)
         .window_size(Size::new(420.0, 520.0))
         .resizable(true)
-        .theme(|_| Theme::Dark)
+        .theme(|_| theme::theme())
         .subscription(|state: &UiApp| state.subscription())
         .run_with(move || UiApp::new(config))
 }
@@ -107,19 +108,65 @@ fn update(app: &mut UiApp, message: Message) -> Task<Message> {
 
 fn view(app: &UiApp) -> Element<'_, Message> {
     let config_button = {
-        let mut btn = button(text("config"));
+        let mut btn = button(text("config")).style(move |_theme, status| {
+            let mut style = iced::widget::button::Style::default();
+            style.background = Some(iced::Background::Color(
+                if app.current_page == Page::Config {
+                    theme::elevated_color()
+                } else {
+                    theme::surface_color()
+                },
+            ));
+            style.text_color = theme::text_color();
+            style.border = theme::sharp_border();
+
+            match status {
+                iced::widget::button::Status::Hovered => {
+                    style.background = Some(iced::Background::Color(theme::hover_color()));
+                }
+                iced::widget::button::Status::Pressed => {
+                    style.border = theme::focus_border();
+                }
+                _ => {}
+            }
+
+            style
+        });
         if app.current_page != Page::Config {
             btn = btn.on_press(Message::PageSelected(Page::Config));
         }
-        btn.width(Length::Fill)
+        btn.width(Length::Fill).padding(8)
     };
 
     let visuals_button = {
-        let mut btn = button(text("visuals"));
+        let mut btn = button(text("visuals")).style(move |_theme, status| {
+            let mut style = iced::widget::button::Style::default();
+            style.background = Some(iced::Background::Color(
+                if app.current_page == Page::Visuals {
+                    theme::elevated_color()
+                } else {
+                    theme::surface_color()
+                },
+            ));
+            style.text_color = theme::text_color();
+            style.border = theme::sharp_border();
+
+            match status {
+                iced::widget::button::Status::Hovered => {
+                    style.background = Some(iced::Background::Color(theme::hover_color()));
+                }
+                iced::widget::button::Status::Pressed => {
+                    style.border = theme::focus_border();
+                }
+                _ => {}
+            }
+
+            style
+        });
         if app.current_page != Page::Visuals {
             btn = btn.on_press(Message::PageSelected(Page::Visuals));
         }
-        btn.width(Length::Fill)
+        btn.width(Length::Fill).padding(8)
     };
 
     let tabs = row![config_button, visuals_button]
