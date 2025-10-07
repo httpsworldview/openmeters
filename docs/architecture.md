@@ -16,7 +16,7 @@
 - **Ring buffer** (`audio::ring_buffer`) - Generic fixed-capacity FIFO used by the virtual sink and meter tap to move `Vec<f32>` frames between threads.
 - **Utilities** (`util::audio`, `util::pipewire`) - Helper APIs for sample-width conversion, metadata parsing, and PipeWire graph shaping that are shared across services.
 - **Executable entrypoint** (`main.rs`) - Boots the registry observer, virtual sink, loopback, and meter tap; drives a `RoutingManager` that reacts to snapshots and launches the UI with routing and audio streams wired in.
-- **UI layers** (`ui::*`) - An Iced application that lists routable clients, toggles overrides, and renders a modular LUFS meter (`ui::visualization::lufs_meter`) via a custom wgpu pipeline (`ui::render::lufs_meter`).
+- **UI layers** (`ui::*`) - An Iced application that lists routable clients, toggles overrides, and renders modular visuals such as the LUFS meter (`ui::visualization::lufs_meter`) and oscilloscope (`ui::visualization::oscilloscope`) via dedicated wgpu pipelines under `ui::render`.
 
 ## Data flow snapshot
 
@@ -28,10 +28,12 @@ system audio ─┘                                          │
                                                          └─ meter_tap → async channel → UI LufsProcessor → wgpu LUFS meter
 ```
 
-The backend keeps playback audible while surfacing captured PCM to the UI, where a rolling RMS/peak processor feeds the wgpu LUFS widget.
+- Visual modules share a `VisualManager` that batches audio samples, runs DSP processors (LUFS, oscilloscope, and future modules), and hands stateful snapshots to the UI pane grid.
+
+The backend keeps playback audible while surfacing captured PCM to the UI, where DSP processors feed the wgpu-powered widgets (currently LUFS + oscilloscope).
 
 ## Operational notes
 
 - Long-lived subsystems (`pw_registry`, `pw_virtual_sink`, `pw_loopback`, `meter_tap`) are protected by `OnceLock` singletons; shutdown remains best-effort.
 - UI subscriptions batch registry snapshots and audio frames, keeping the rendering thread decoupled from PipeWire timing.
-- The LUFS meter is intentionally modular: `ui::visualization` owns DSP/state, while `ui::render` houses the reusable wgpu primitive and shader.
+- Visual modules are intentionally modular: `ui::visualization` owns DSP/state while `ui::render` houses the reusable wgpu primitives and shaders.
