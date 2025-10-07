@@ -9,6 +9,8 @@ const DB_FACTOR: f32 = 20.0;
 const LUFS_OFFSET: f64 = -0.691;
 const NOMINAL_SAMPLE_RATE: f32 = 48_000.0;
 const SAMPLE_RATE_TOLERANCE: f32 = 0.1;
+
+// https://www.itu.int/dms_pubrec/itu-r/rec/bs/R-REC-BS.1770-5-202311-I!!PDF-E.pdf
 const PRE_B_COEFFS_48K: [f64; 3] = [
     1.535_124_859_586_97,
     -2.691_696_189_406_38,
