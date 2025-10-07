@@ -95,7 +95,7 @@ struct SampleBatcher {
     recycle: Vec<Vec<f32>>,
 }
 
-/// batches incoming audio chunks into larger buffers to reduce channel overhead and 
+/// batches incoming audio chunks into larger buffers to reduce channel overhead and
 /// CPU usage.
 impl SampleBatcher {
     fn new(target_samples: usize) -> Self {
