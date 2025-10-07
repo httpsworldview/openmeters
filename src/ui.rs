@@ -1,6 +1,7 @@
 pub mod app;
 pub mod application_row;
 pub mod hardware_sink;
+pub mod pane_grid;
 pub mod render;
 pub mod theme;
 pub mod visualization;

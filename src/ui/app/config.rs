@@ -3,6 +3,7 @@ use crate::audio::pw_registry::RegistrySnapshot;
 use crate::ui::application_row::ApplicationRow;
 use crate::ui::hardware_sink::HardwareSinkCache;
 use crate::ui::theme;
+use crate::ui::visualization::visual_manager::{VisualKind, VisualManagerHandle};
 use async_channel::Receiver as AsyncReceiver;
 use iced::advanced::subscription::{EventStream, Hasher, Recipe, from_recipe};
 use iced::alignment;
@@ -23,12 +24,14 @@ pub enum ConfigMessage {
     RegistryUpdated(RegistrySnapshot),
     ToggleChanged { node_id: u32, enabled: bool },
     ToggleApplicationsVisibility,
+    VisualToggled { kind: VisualKind, enabled: bool },
 }
 
 #[derive(Debug)]
 pub struct ConfigPage {
     routing_sender: mpsc::Sender<RoutingCommand>,
     registry_updates: Option<Arc<AsyncReceiver<RegistrySnapshot>>>,
+    visual_manager: VisualManagerHandle,
     preferences: HashMap<u32, bool>,
     applications: Vec<ApplicationRow>,
     hardware_sink: HardwareSinkCache,
@@ -40,10 +43,12 @@ impl ConfigPage {
     pub fn new(
         routing_sender: mpsc::Sender<RoutingCommand>,
         registry_updates: Option<Arc<AsyncReceiver<RegistrySnapshot>>>,
+        visual_manager: VisualManagerHandle,
     ) -> Self {
         Self {
             routing_sender,
             registry_updates,
+            visual_manager,
             preferences: HashMap::new(),
             applications: Vec::new(),
             hardware_sink: HardwareSinkCache::new(),
@@ -95,12 +100,18 @@ impl ConfigPage {
             ConfigMessage::ToggleApplicationsVisibility => {
                 self.applications_expanded = !self.applications_expanded;
             }
+            ConfigMessage::VisualToggled { kind, enabled } => {
+                self.visual_manager
+                    .borrow_mut()
+                    .set_enabled_by_kind(kind, enabled);
+            }
         }
 
         Task::none()
     }
 
     pub fn view(&self) -> Element<'_, ConfigMessage> {
+        let visuals_snapshot = self.visual_manager.snapshot();
         let sink_label = format!("Hardware sink: {}", self.hardware_sink.label());
 
         let mut list = Column::new().spacing(12);
@@ -232,15 +243,101 @@ impl ConfigPage {
                 applications_section.push(scrollable(list).height(Length::Shrink));
         }
 
+        let visuals_section = self.render_visuals_section(&visuals_snapshot);
+
         let content = Column::new()
             .spacing(16)
             .push(text(sink_label).size(14))
-            .push(applications_section);
+            .push(applications_section)
+            .push(visuals_section);
 
         container(content)
             .width(Length::Fill)
             .height(Length::Fill)
             .into()
+    }
+
+    fn render_visuals_section(
+        &self,
+        snapshot: &crate::ui::visualization::visual_manager::VisualSnapshot,
+    ) -> Column<'_, ConfigMessage> {
+        let mut section = Column::new().spacing(8);
+        let total = snapshot.slots.len();
+        let enabled = snapshot.slots.iter().filter(|slot| slot.enabled).count();
+
+        section =
+            section.push(text(format!("Visual modules – {enabled}/{total} enabled")).size(14));
+
+        if snapshot.slots.is_empty() {
+            return section
+                .push(text("No visual modules available."))
+                .spacing(8);
+        }
+
+        let mut grid = Column::new().spacing(12);
+        const GRID_COLUMNS: usize = 2;
+
+        for chunk in snapshot.slots.chunks(GRID_COLUMNS) {
+            let mut row = Row::new().spacing(12);
+
+            for slot in chunk {
+                let kind = slot.kind;
+                let enabled = slot.enabled;
+                let toggled = !enabled;
+                let display_name = slot.metadata.display_name;
+
+                let label = if enabled {
+                    format!("{display_name} (enabled)")
+                } else {
+                    format!("{display_name} (disabled)")
+                };
+
+                let button = button(text(label).width(Length::Fill))
+                    .padding(12)
+                    .width(Length::FillPortion(1))
+                    .style(move |_theme, status| {
+                        let mut style = iced::widget::button::Style::default();
+                        style.background = Some(iced::Background::Color(if enabled {
+                            theme::surface_color()
+                        } else {
+                            theme::elevated_color()
+                        }));
+                        style.text_color = if enabled {
+                            theme::text_color()
+                        } else {
+                            theme::text_secondary()
+                        };
+                        style.border = theme::sharp_border();
+
+                        match status {
+                            iced::widget::button::Status::Hovered => {
+                                style.background =
+                                    Some(iced::Background::Color(theme::hover_color()));
+                            }
+                            iced::widget::button::Status::Pressed => {
+                                style.border = theme::focus_border();
+                            }
+                            _ => {}
+                        }
+
+                        style
+                    })
+                    .on_press(ConfigMessage::VisualToggled {
+                        kind,
+                        enabled: toggled,
+                    });
+
+                row = row.push(button);
+            }
+
+            for _ in chunk.len()..GRID_COLUMNS {
+                row = row.push(Space::new(Length::FillPortion(1), Length::Shrink));
+            }
+
+            grid = grid.push(row);
+        }
+
+        section.push(grid)
     }
 
     fn apply_snapshot(&mut self, snapshot: RegistrySnapshot) {

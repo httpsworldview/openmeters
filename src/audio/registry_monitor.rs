@@ -2,9 +2,9 @@ use crate::audio::{VIRTUAL_SINK_NAME, pw_registry, pw_router};
 use crate::ui::RoutingCommand;
 use crate::util::log;
 use async_channel::Sender;
-use std::collections::{HashMap, HashSet};
-use std::sync::mpsc;
-use std::time::Duration;
+use rustc_hash::{FxHashMap, FxHashSet};
+use std::sync::{Arc, mpsc};
+use std::time::{Duration, Instant};
 
 pub fn init_registry_monitor(
     command_rx: mpsc::Receiver<RoutingCommand>,
@@ -108,13 +108,14 @@ impl RegistryMonitor {
 struct RoutingManager {
     router: Option<pw_router::Router>,
     commands: mpsc::Receiver<RoutingCommand>,
-    preferences: HashMap<u32, bool>,
-    routed_nodes: HashMap<u32, RouteTarget>,
+    preferences: FxHashMap<u32, bool>,
+    routed_nodes: FxHashMap<u32, RouteState>,
     last_sink_id: Option<u32>,
     sink_warning_logged: bool,
-    last_snapshot: Option<pw_registry::RegistrySnapshot>,
+    last_snapshot: Option<Arc<pw_registry::RegistrySnapshot>>,
     last_hardware_sink_id: Option<u32>,
     last_hardware_sink_label: Option<String>,
+    router_retry_after: Option<Instant>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -123,28 +124,88 @@ enum RouteTarget {
     Hardware(u32),
 }
 
+#[derive(Debug, Clone)]
+struct RouteState {
+    target: RouteTarget,
+    last_success: Option<Instant>,
+    last_attempt: Option<Instant>,
+    consecutive_failures: u32,
+}
+
+impl RouteState {
+    const REFRESH_INTERVAL: Duration = Duration::from_secs(2);
+    const RETRY_INTERVAL: Duration = Duration::from_millis(350);
+
+    fn new(target: RouteTarget) -> Self {
+        Self {
+            target,
+            last_success: None,
+            last_attempt: None,
+            consecutive_failures: 0,
+        }
+    }
+
+    fn mark_success(&mut self, target: RouteTarget, now: Instant) {
+        self.target = target;
+        self.last_attempt = Some(now);
+        self.last_success = Some(now);
+        self.consecutive_failures = 0;
+    }
+
+    fn mark_failure(&mut self, target: RouteTarget, now: Instant) {
+        self.target = target;
+        self.last_attempt = Some(now);
+        self.consecutive_failures = self.consecutive_failures.saturating_add(1);
+    }
+
+    fn should_retry(&self, target: RouteTarget, now: Instant) -> bool {
+        if self.target != target {
+            return true;
+        }
+
+        if let Some(last_success) = self.last_success {
+            if now.duration_since(last_success) >= Self::REFRESH_INTERVAL {
+                return true;
+            }
+        } else {
+            // No successful routing recorded yet; allow retry as soon as permitted.
+            return true;
+        }
+
+        if self.consecutive_failures == 0 {
+            return false;
+        }
+
+        match self.last_attempt {
+            Some(last_attempt) => now.duration_since(last_attempt) >= Self::RETRY_INTERVAL,
+            None => true,
+        }
+    }
+}
+
 impl RoutingManager {
     fn new(router: Option<pw_router::Router>, commands: mpsc::Receiver<RoutingCommand>) -> Self {
         Self {
             router,
             commands,
-            preferences: HashMap::new(),
-            routed_nodes: HashMap::new(),
+            preferences: FxHashMap::default(),
+            routed_nodes: FxHashMap::default(),
             last_sink_id: None,
             sink_warning_logged: false,
             last_snapshot: None,
             last_hardware_sink_id: None,
             last_hardware_sink_label: None,
+            router_retry_after: None,
         }
     }
 
     fn handle_snapshot(&mut self, snapshot: &pw_registry::RegistrySnapshot) {
-        self.last_snapshot = Some(snapshot.clone());
+        self.last_snapshot = Some(Arc::new(snapshot.clone()));
         self.consume_commands();
         self.apply_snapshot(snapshot, true);
     }
 
-    fn cleanup_removed_nodes(&mut self, observed: &HashSet<u32>) {
+    fn cleanup_removed_nodes(&mut self, observed: &FxHashSet<u32>) {
         self.preferences
             .retain(|node_id, _| observed.contains(node_id));
         self.routed_nodes
@@ -171,20 +232,19 @@ impl RoutingManager {
     }
 
     fn apply_pending_commands(&mut self) -> bool {
-        let changed = self.consume_commands();
-        if !changed {
+        if !self.consume_commands() {
             return false;
         }
 
-        if let Some(snapshot) = self.last_snapshot.clone() {
-            self.apply_snapshot(&snapshot, false);
+        if let Some(snapshot) = self.last_snapshot.as_ref().cloned() {
+            self.apply_snapshot(snapshot.as_ref(), false);
         }
 
         true
     }
 
     fn apply_snapshot(&mut self, snapshot: &pw_registry::RegistrySnapshot, log_sink_missing: bool) {
-        let observed: HashSet<u32> = snapshot.nodes.iter().map(|node| node.id).collect();
+        let observed: FxHashSet<u32> = snapshot.nodes.iter().map(|node| node.id).collect();
         self.cleanup_removed_nodes(&observed);
 
         let Some(sink) = snapshot.find_node_by_label(VIRTUAL_SINK_NAME) else {
@@ -205,40 +265,10 @@ impl RoutingManager {
 
         self.sink_warning_logged = false;
 
-        let mut hardware_sink = snapshot
-            .defaults
-            .audio_sink
-            .as_ref()
-            .and_then(|target| snapshot.resolve_default_target(target));
-
-        if let Some(node) = hardware_sink {
-            self.last_hardware_sink_id = Some(node.id);
-            self.last_hardware_sink_label = Some(node.display_name());
-        } else {
-            if let Some(id) = self.last_hardware_sink_id {
-                hardware_sink = snapshot.nodes.iter().find(|node| node.id == id);
-            }
-            if hardware_sink.is_none() {
-                if let Some(label) = self.last_hardware_sink_label.clone() {
-                    hardware_sink = snapshot
-                        .nodes
-                        .iter()
-                        .find(|node| node.matches_label(&label));
-                }
-            }
-
-            if let Some(node) = hardware_sink {
-                self.last_hardware_sink_id = Some(node.id);
-                self.last_hardware_sink_label = Some(node.display_name());
-            } else {
-                self.last_hardware_sink_id = None;
-            }
-        }
+        let hardware_sink = self.resolve_hardware_sink(snapshot);
 
         for node in snapshot.route_candidates(sink) {
-            let enabled = self.preferences.get(&node.id).copied().unwrap_or(true);
-
-            if enabled {
+            if self.is_node_enabled(node.id) {
                 self.route_to_target(node, sink, RouteTarget::Virtual(sink.id));
             } else if let Some(hardware) = hardware_sink {
                 self.route_to_target(node, hardware, RouteTarget::Hardware(hardware.id));
@@ -258,36 +288,119 @@ impl RoutingManager {
         target: &pw_registry::NodeInfo,
         desired: RouteTarget,
     ) {
-        let Some(router) = self.router.as_ref() else {
+        let now = Instant::now();
+        if !self
+            .routed_nodes
+            .get(&node.id)
+            .map_or(true, |state| state.should_retry(desired, now))
+        {
             return;
+        }
+
+        let router = match self.ensure_router() {
+            Some(router) => router,
+            None => return,
         };
 
-        if self.routed_nodes.get(&node.id).copied() == Some(desired) {
+        let route_result = router.route_application_to_sink(node, target);
+
+        if route_result.is_ok() {
+            let state = self
+                .routed_nodes
+                .entry(node.id)
+                .or_insert_with(|| RouteState::new(desired));
+            state.mark_success(desired, now);
+
+            let action = match desired {
+                RouteTarget::Virtual(_) => "routed",
+                RouteTarget::Hardware(_) => "restored",
+            };
+            println!(
+                "[router] {action} '{}' (id={}) -> '{}' (id={})",
+                node.display_name(),
+                node.id,
+                target.display_name(),
+                target.id
+            );
             return;
         }
 
-        match router.route_application_to_sink(node, target) {
-            Ok(()) => {
-                self.routed_nodes.insert(node.id, desired);
-                let action = match desired {
-                    RouteTarget::Virtual(_) => "routed",
-                    RouteTarget::Hardware(_) => "restored",
-                };
-                println!(
-                    "[router] {action} '{}' (id={}) -> '{}' (id={})",
-                    node.display_name(),
-                    node.id,
-                    target.display_name(),
-                    target.id
-                );
-            }
-            Err(err) => {
-                eprintln!(
-                    "[router] failed to route node '{}' (id={}): {err:?}",
-                    node.display_name(),
-                    node.id
-                );
+        let err = route_result.err().unwrap();
+        eprintln!(
+            "[router] failed to route node '{}' (id={}): {err:?}",
+            node.display_name(),
+            node.id
+        );
+        let state = self
+            .routed_nodes
+            .entry(node.id)
+            .or_insert_with(|| RouteState::new(desired));
+        state.mark_failure(desired, now);
+    }
+
+    fn ensure_router(&mut self) -> Option<&pw_router::Router> {
+        if self.router.is_some() {
+            return self.router.as_ref();
+        }
+
+        let now = Instant::now();
+        if let Some(retry_after) = self.router_retry_after {
+            if now < retry_after {
+                return None;
             }
         }
+
+        match pw_router::Router::new() {
+            Ok(router) => {
+                println!("[router] reinitialised PipeWire router connection");
+                self.router = Some(router);
+                self.router_retry_after = None;
+            }
+            Err(err) => {
+                eprintln!("[router] failed to reinitialise router: {err:?}");
+                const ROUTER_RETRY_DELAY: Duration = Duration::from_secs(5);
+                self.router_retry_after = Some(now + ROUTER_RETRY_DELAY);
+            }
+        }
+
+        self.router.as_ref()
+    }
+
+    fn resolve_hardware_sink<'a>(
+        &mut self,
+        snapshot: &'a pw_registry::RegistrySnapshot,
+    ) -> Option<&'a pw_registry::NodeInfo> {
+        if let Some(target) = snapshot.defaults.audio_sink.as_ref() {
+            if let Some(node) = snapshot.resolve_default_target(target) {
+                self.cache_hardware_sink(node);
+                return Some(node);
+            }
+        }
+
+        if let Some(id) = self.last_hardware_sink_id {
+            if let Some(node) = snapshot.nodes.iter().find(|node| node.id == id) {
+                self.cache_hardware_sink(node);
+                return Some(node);
+            }
+        }
+
+        if let Some(label) = self.last_hardware_sink_label.as_deref() {
+            if let Some(node) = snapshot.nodes.iter().find(|node| node.matches_label(label)) {
+                self.cache_hardware_sink(node);
+                return Some(node);
+            }
+        }
+
+        self.last_hardware_sink_id = None;
+        None
+    }
+
+    fn cache_hardware_sink(&mut self, node: &pw_registry::NodeInfo) {
+        self.last_hardware_sink_id = Some(node.id);
+        self.last_hardware_sink_label = Some(node.display_name());
+    }
+
+    fn is_node_enabled(&self, node_id: u32) -> bool {
+        self.preferences.get(&node_id).copied().unwrap_or(true)
     }
 }

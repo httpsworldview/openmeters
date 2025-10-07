@@ -17,7 +17,10 @@ fn main() {
     pw_virtual_sink::run();
     pw_loopback::run();
 
-    let ui_config = UiConfig::new(routing_tx, Some(Arc::new(snapshot_rx)));
+    let audio_stream = audio::meter_tap::audio_sample_stream();
+
+    let ui_config =
+        UiConfig::new(routing_tx, Some(Arc::new(snapshot_rx))).with_audio_stream(audio_stream);
 
     drop(snapshot_tx);
 
