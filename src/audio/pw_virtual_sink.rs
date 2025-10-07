@@ -7,8 +7,9 @@ use pw::{properties::properties, spa};
 use spa::pod::Pod;
 use std::error::Error;
 use std::io::Cursor;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
+use std::time::Duration;
 
 /// Default sample rate advertised to PipeWire peers.
 const VIRTUAL_SINK_SAMPLE_RATE: u32 = 48_000;
@@ -16,9 +17,90 @@ const VIRTUAL_SINK_SAMPLE_RATE: u32 = 48_000;
 const VIRTUAL_SINK_CHANNELS: u32 = 2;
 /// Number of audio frames we keep in memory for downstream consumers.
 const CAPTURE_BUFFER_CAPACITY: usize = 256;
+/// Target PipeWire quantum in frames to maintain a stable UI refresh cadence when OpenMeters is
+/// the sole graph client.
+const DESIRED_LATENCY_FRAMES: u32 = 256;
 
 static SINK_THREAD: OnceLock<thread::JoinHandle<()>> = OnceLock::new();
-static CAPTURE_BUFFER: OnceLock<Arc<Mutex<RingBuffer<Vec<f32>>>>> = OnceLock::new();
+static CAPTURE_BUFFER: OnceLock<Arc<CaptureBuffer>> = OnceLock::new();
+
+/// Shared audio capture buffer guarded by a mutex and wired to a condition variable so
+/// consumers can efficiently await new audio frames.
+/// fixes an issue where significant amounts of audio data would be dropped when the consumer
+/// thread was not keeping up with the real-time PipeWire callback.
+pub struct CaptureBuffer {
+    inner: Mutex<RingBuffer<Vec<f32>>>,
+    available: Condvar,
+}
+
+impl CaptureBuffer {
+    fn new(capacity: usize) -> Self {
+        Self {
+            inner: Mutex::new(RingBuffer::with_capacity(capacity)),
+            available: Condvar::new(),
+        }
+    }
+
+    /// Attempt to enqueue a frame without blocking the caller. Frames are silently dropped when
+    /// the buffer is currently locked (e.g. if the consumer thread holds the mutex).
+    pub fn try_push(&self, samples: Vec<f32>) {
+        match self.inner.try_lock() {
+            Ok(mut guard) => {
+                let _ = guard.push(samples);
+                self.available.notify_one();
+            }
+            Err(_) => {
+                // The consumer temporarily holds the lock; drop the frame to avoid stalling the
+                // real-time PipeWire callback.
+            }
+        }
+    }
+
+    /// Wait for the next frame to become available, backing off after `timeout` elapses so the
+    /// caller can perform periodic housekeeping (e.g. shutdown checks).
+    pub fn pop_wait_timeout(&self, timeout: Duration) -> Result<Option<Vec<f32>>, ()> {
+        let mut guard = match self.inner.lock() {
+            Ok(guard) => guard,
+            Err(err) => {
+                eprintln!("[virtual-sink] capture buffer lock poisoned: {err}");
+                return Err(());
+            }
+        };
+
+        if let Some(frame) = guard.pop() {
+            return Ok(Some(frame));
+        }
+
+        if timeout.is_zero() {
+            return Ok(None);
+        }
+
+        loop {
+            let (new_guard, wait_result) = match self.available.wait_timeout(guard, timeout) {
+                Ok(outcome) => outcome,
+                Err(err) => {
+                    eprintln!("[virtual-sink] capture buffer wait failed: {err}");
+                    return Err(());
+                }
+            };
+            guard = new_guard;
+
+            if let Some(frame) = guard.pop() {
+                return Ok(Some(frame));
+            }
+
+            if wait_result.timed_out() {
+                return Ok(None);
+            }
+            // Spurious wake-up: loop and wait again using the same timeout window.
+        }
+    }
+
+    #[cfg(test)]
+    fn capacity(&self) -> usize {
+        self.inner.lock().map(|guard| guard.capacity()).unwrap_or(0)
+    }
+}
 
 /// Spawn the Virtual sink in a background thread.
 /// Persists for the lifetime of the application.
@@ -46,7 +128,7 @@ pub fn run() {
 }
 
 /// Accessor for the shared ring buffer that stores captured audio frames.
-pub fn capture_buffer_handle() -> Arc<Mutex<RingBuffer<Vec<f32>>>> {
+pub fn capture_buffer_handle() -> Arc<CaptureBuffer> {
     ensure_capture_buffer().clone()
 }
 
@@ -114,6 +196,7 @@ fn run_virtual_sink() -> Result<(), Box<dyn Error + Send + Sync>> {
             *pw::keys::NODE_NAME => "openmeters.sink",
             *pw::keys::APP_NAME => "OpenMeters",
             *pw::keys::AUDIO_CHANNELS => VIRTUAL_SINK_CHANNELS.to_string(),
+            *pw::keys::NODE_LATENCY => format!("{}/{}", DESIRED_LATENCY_FRAMES, VIRTUAL_SINK_SAMPLE_RATE),
         },
     )?;
 
@@ -160,9 +243,7 @@ fn run_virtual_sink() -> Result<(), Box<dyn Error + Send + Sync>> {
                 }
 
                 if let Some(samples) = captured {
-                    if let Ok(mut ring_buffer) = capture_buffer.try_lock() {
-                        let _ = ring_buffer.push(samples);
-                    }
+                    capture_buffer.try_push(samples);
                 }
 
                 let chunk_mut = data.chunk_mut();
@@ -217,12 +298,8 @@ fn build_format_pod(channels: u32, rate: u32) -> Result<Vec<u8>, Box<dyn Error +
     Ok(cursor.into_inner())
 }
 
-fn ensure_capture_buffer() -> &'static Arc<Mutex<RingBuffer<Vec<f32>>>> {
-    CAPTURE_BUFFER.get_or_init(|| {
-        Arc::new(Mutex::new(RingBuffer::with_capacity(
-            CAPTURE_BUFFER_CAPACITY,
-        )))
-    })
+fn ensure_capture_buffer() -> &'static Arc<CaptureBuffer> {
+    CAPTURE_BUFFER.get_or_init(|| Arc::new(CaptureBuffer::new(CAPTURE_BUFFER_CAPACITY)))
 }
 
 #[cfg(test)]
@@ -235,8 +312,7 @@ mod tests {
         let second = ensure_capture_buffer();
         assert!(Arc::ptr_eq(first, second));
 
-        let guard = first.lock().expect("capture buffer lock poisoned");
-        assert_eq!(guard.capacity(), CAPTURE_BUFFER_CAPACITY);
+        assert_eq!(first.capacity(), CAPTURE_BUFFER_CAPACITY);
     }
 
     #[test]
