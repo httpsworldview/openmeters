@@ -165,12 +165,128 @@ where
 
         let total_spacing = self.spacing * (count.saturating_sub(1) as f32);
         let available_width = (size.width - total_spacing).max(0.0);
-        let pane_width = available_width / count as f32;
+
+        let mut widths: Vec<f32> = Vec::with_capacity(count);
+        let mut min_widths: Vec<f32> = Vec::with_capacity(count);
+        let mut max_widths: Vec<f32> = Vec::with_capacity(count);
+
+        for (_, content) in &self.entries {
+            let (min, preferred, max) = content.width_hint();
+            min_widths.push(min.max(0.0));
+            widths.push(preferred.max(min));
+            max_widths.push(max.max(min));
+        }
+
+        let mut total_width: f32 = widths.iter().sum();
+
+        if total_width > available_width {
+            let mut shrinkable: Vec<(usize, f32)> = widths
+                .iter()
+                .enumerate()
+                .map(|(index, width)| {
+                    let min = min_widths[index];
+                    (index, (width - min).max(0.0))
+                })
+                .collect();
+
+            let mut deficit = total_width - available_width;
+
+            while deficit > f32::EPSILON {
+                let remaining_capacity: f32 = shrinkable.iter().map(|(_, c)| *c).sum();
+                if remaining_capacity <= f32::EPSILON {
+                    break;
+                }
+
+                for (index, capacity) in shrinkable.iter_mut() {
+                    if *capacity <= f32::EPSILON {
+                        continue;
+                    }
+
+                    let weight = *capacity / remaining_capacity;
+                    let portion = (deficit * weight).min(*capacity);
+                    widths[*index] -= portion;
+                    *capacity -= portion;
+                }
+
+                total_width = widths.iter().sum();
+                deficit = total_width - available_width;
+            }
+        } else if total_width < available_width {
+            let growable: Vec<(usize, f32)> = widths
+                .iter()
+                .enumerate()
+                .map(|(index, width)| {
+                    let max = max_widths[index];
+                    let capacity = if max.is_infinite() {
+                        f32::INFINITY
+                    } else {
+                        (max - width).max(0.0)
+                    };
+                    (index, capacity)
+                })
+                .collect();
+
+            let mut surplus = available_width - total_width;
+
+            // Distribute surplus among infinite-capacity entries first.
+            let infinite_indices: Vec<usize> = growable
+                .iter()
+                .filter_map(|(index, capacity)| {
+                    if capacity.is_infinite() {
+                        Some(*index)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            if !infinite_indices.is_empty() {
+                let share = surplus / infinite_indices.len() as f32;
+                for index in infinite_indices {
+                    widths[index] += share;
+                }
+                surplus = 0.0;
+            }
+
+            if surplus > f32::EPSILON {
+                let mut finite: Vec<(usize, f32)> = growable
+                    .into_iter()
+                    .filter(|(_, capacity)| !capacity.is_infinite() && *capacity > 0.0)
+                    .collect();
+
+                while surplus > f32::EPSILON {
+                    let remaining_capacity: f32 = finite.iter().map(|(_, c)| *c).sum();
+                    if remaining_capacity <= f32::EPSILON {
+                        break;
+                    }
+
+                    for (index, capacity) in finite.iter_mut() {
+                        if *capacity <= f32::EPSILON {
+                            continue;
+                        }
+
+                        let weight = *capacity / remaining_capacity;
+                        let portion = (surplus * weight).min(*capacity);
+                        widths[*index] += portion;
+                        *capacity -= portion;
+                    }
+
+                    total_width = widths.iter().sum();
+                    surplus = available_width - total_width;
+                }
+            }
+        }
 
         let mut position = 0.0;
         let mut children = Vec::with_capacity(count);
 
-        for ((_, content), child) in self.entries.iter().zip(tree.children.iter_mut()) {
+        for (((_, content), child), width) in self
+            .entries
+            .iter()
+            .zip(tree.children.iter_mut())
+            .zip(widths.into_iter())
+        {
+            let pane_width = width.max(0.0);
             let limits = layout::Limits::new(
                 Size::new(pane_width, size.height),
                 Size::new(pane_width, size.height),

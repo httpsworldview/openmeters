@@ -12,6 +12,9 @@ where
     Renderer: core::Renderer,
 {
     body: Element<'a, Message, Theme, Renderer>,
+    min_width: f32,
+    preferred_width: f32,
+    max_width: f32,
 }
 
 impl<'a, Message, Theme, Renderer> Content<'a, Message, Theme, Renderer>
@@ -20,7 +23,23 @@ where
 {
     /// Creates new [`Content`] from any `Element`.
     pub fn new(body: impl Into<Element<'a, Message, Theme, Renderer>>) -> Self {
-        Self { body: body.into() }
+        Self {
+            body: body.into(),
+            min_width: 0.0,
+            preferred_width: 0.0,
+            max_width: f32::INFINITY,
+        }
+    }
+
+    pub fn with_width_hint(mut self, min: f32, preferred: f32, max: f32) -> Self {
+        self.min_width = min;
+        self.preferred_width = preferred;
+        self.max_width = max;
+        self
+    }
+
+    pub(super) fn width_hint(&self) -> (f32, f32, f32) {
+        (self.min_width, self.preferred_width, self.max_width)
     }
 
     pub(super) fn state(&self) -> Tree {

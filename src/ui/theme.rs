@@ -148,6 +148,11 @@ pub fn surface_color() -> Color {
     BG_SURFACE
 }
 
+/// Returns the base background color.
+pub fn base_color() -> Color {
+    BG_BASE
+}
+
 /// Returns the elevated background color for layering.
 pub fn elevated_color() -> Color {
     BG_ELEVATED
@@ -166,4 +171,40 @@ pub fn text_color() -> Color {
 /// Returns the secondary/muted text color.
 pub fn text_secondary() -> Color {
     TEXT_SECONDARY
+}
+
+/// Returns the primary accent color.
+pub fn accent_primary() -> Color {
+    ACCENT_PRIMARY
+}
+
+/// Returns the success accent color.
+pub fn accent_success() -> Color {
+    ACCENT_SUCCESS
+}
+
+/// Returns the danger accent color.
+pub fn accent_danger() -> Color {
+    ACCENT_DANGER
+}
+
+/// Linearly interpolates between two colors.
+pub fn mix_colors(a: Color, b: Color, factor: f32) -> Color {
+    let t = factor.clamp(0.0, 1.0);
+    Color::new(
+        a.r + (b.r - a.r) * t,
+        a.g + (b.g - a.g) * t,
+        a.b + (b.b - a.b) * t,
+        a.a + (b.a - a.a) * t,
+    )
+}
+
+/// Applies a new alpha value to a color, clamped to [0, 1].
+pub fn with_alpha(color: Color, alpha: f32) -> Color {
+    Color::new(color.r, color.g, color.b, alpha.clamp(0.0, 1.0))
+}
+
+/// Converts a color into an `[f32; 4]` RGBA array for GPU pipelines.
+pub fn color_to_rgba(color: Color) -> [f32; 4] {
+    [color.r, color.g, color.b, color.a]
 }

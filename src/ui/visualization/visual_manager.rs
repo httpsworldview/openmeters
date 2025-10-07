@@ -1,4 +1,5 @@
 use crate::ui::visualization::lufs_meter::{LufsMeterState, LufsProcessor};
+use crate::ui::visualization::oscilloscope::{OscilloscopeProcessor, OscilloscopeState};
 use std::borrow::Cow;
 use std::cell::{RefCell, RefMut};
 use std::collections::HashMap;
@@ -43,15 +44,23 @@ impl VisualKind {
                 display_name: "LUFS meter",
                 available: true,
                 default_enabled: true,
-                preferred_width: 300.0,
+                preferred_width: 200.0,
                 preferred_height: 300.0,
+                fill_horizontal: true,
+                fill_vertical: true,
+                min_width: 200.0,
+                max_width: 300.0,
             },
             VisualKind::Oscilloscope => VisualMetadata {
                 display_name: "Oscilloscope",
-                available: false,
+                available: true,
                 default_enabled: false,
                 preferred_width: 220.0,
                 preferred_height: 160.0,
+                fill_horizontal: true,
+                fill_vertical: true,
+                min_width: 160.0,
+                max_width: f32::INFINITY,
             },
             VisualKind::Spectrogram => VisualMetadata {
                 display_name: "Spectrogram",
@@ -59,6 +68,10 @@ impl VisualKind {
                 default_enabled: false,
                 preferred_width: 320.0,
                 preferred_height: 220.0,
+                fill_horizontal: true,
+                fill_vertical: true,
+                min_width: 200.0,
+                max_width: f32::INFINITY,
             },
             VisualKind::Spectrum => VisualMetadata {
                 display_name: "Spectrum analyzer",
@@ -66,6 +79,10 @@ impl VisualKind {
                 default_enabled: false,
                 preferred_width: 320.0,
                 preferred_height: 180.0,
+                fill_horizontal: true,
+                fill_vertical: true,
+                min_width: 200.0,
+                max_width: f32::INFINITY,
             },
             VisualKind::Stereometer => VisualMetadata {
                 display_name: "Stereometer",
@@ -73,6 +90,10 @@ impl VisualKind {
                 default_enabled: false,
                 preferred_width: 240.0,
                 preferred_height: 240.0,
+                fill_horizontal: false,
+                fill_vertical: true,
+                min_width: 240.0,
+                max_width: 240.0,
             },
             VisualKind::Waveform => VisualMetadata {
                 display_name: "Waveform",
@@ -80,6 +101,10 @@ impl VisualKind {
                 default_enabled: false,
                 preferred_width: 320.0,
                 preferred_height: 160.0,
+                fill_horizontal: true,
+                fill_vertical: true,
+                min_width: 200.0,
+                max_width: f32::INFINITY,
             },
         }
     }
@@ -93,6 +118,10 @@ pub struct VisualMetadata {
     pub default_enabled: bool,
     pub preferred_width: f32,
     pub preferred_height: f32,
+    pub fill_horizontal: bool,
+    pub fill_vertical: bool,
+    pub min_width: f32,
+    pub max_width: f32,
 }
 
 /// Lightweight layout hint for planning pane sizes.
@@ -100,6 +129,10 @@ pub struct VisualMetadata {
 pub struct VisualLayoutHint {
     pub preferred_width: f32,
     pub preferred_height: f32,
+    pub fill_horizontal: bool,
+    pub fill_vertical: bool,
+    pub min_width: f32,
+    pub max_width: f32,
 }
 
 /// Snapshot returned to interested consumers summarising the current slots.
@@ -123,6 +156,7 @@ pub struct VisualSlotSnapshot {
 #[derive(Debug, Clone)]
 pub enum VisualContent {
     LufsMeter { state: LufsMeterState },
+    Oscilloscope { state: OscilloscopeState },
     Placeholder { message: Cow<'static, str> },
 }
 
@@ -154,6 +188,10 @@ impl VisualSlot {
         VisualLayoutHint {
             preferred_width: self.metadata.preferred_width,
             preferred_height: self.metadata.preferred_height,
+            fill_horizontal: self.metadata.fill_horizontal,
+            fill_vertical: self.metadata.fill_vertical,
+            min_width: self.metadata.min_width,
+            max_width: self.metadata.max_width,
         }
     }
 }
@@ -163,6 +201,10 @@ enum VisualRuntime {
     LufsMeter {
         processor: LufsProcessor,
         state: LufsMeterState,
+    },
+    Oscilloscope {
+        processor: OscilloscopeProcessor,
+        state: OscilloscopeState,
     },
     Placeholder,
 }
@@ -176,6 +218,10 @@ impl VisualRuntime {
                 processor: LufsProcessor::new(48_000.0),
                 state: LufsMeterState::new(),
             },
+            VisualKind::Oscilloscope => VisualRuntime::Oscilloscope {
+                processor: OscilloscopeProcessor::new(48_000.0),
+                state: OscilloscopeState::new(),
+            },
             _ => VisualRuntime::Placeholder,
         }
     }
@@ -186,6 +232,10 @@ impl VisualRuntime {
                 let snapshot = processor.ingest(samples);
                 state.apply_snapshot(&snapshot);
             }
+            VisualRuntime::Oscilloscope { processor, state } => {
+                let snapshot = processor.ingest(samples);
+                state.apply_snapshot(&snapshot);
+            }
             VisualRuntime::Placeholder => {}
         }
     }
@@ -193,6 +243,9 @@ impl VisualRuntime {
     fn content(&self) -> VisualContent {
         match self {
             VisualRuntime::LufsMeter { state, .. } => VisualContent::LufsMeter {
+                state: state.clone(),
+            },
+            VisualRuntime::Oscilloscope { state, .. } => VisualContent::Oscilloscope {
                 state: state.clone(),
             },
             VisualRuntime::Placeholder => VisualContent::Placeholder {
@@ -355,9 +408,19 @@ mod tests {
         let manager = VisualManager::new();
         let snapshot = manager.snapshot();
 
-        let kinds: Vec<_> = snapshot.slots.iter().map(|slot| slot.kind).collect();
-        assert_eq!(kinds, vec![VisualKind::LufsMeter]);
-        assert!(snapshot.slots.iter().all(|slot| slot.enabled));
+        let mut lufs_enabled = false;
+        let mut oscilloscope_enabled = false;
+
+        for slot in &snapshot.slots {
+            match slot.kind {
+                VisualKind::LufsMeter => lufs_enabled = slot.enabled,
+                VisualKind::Oscilloscope => oscilloscope_enabled = slot.enabled,
+                _ => {}
+            }
+        }
+
+        assert!(lufs_enabled, "LUFS meter should be enabled by default");
+        assert!(!oscilloscope_enabled, "Oscilloscope should start disabled");
     }
 
     #[test]

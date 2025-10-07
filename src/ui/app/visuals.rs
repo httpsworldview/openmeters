@@ -1,9 +1,9 @@
-use crate::ui::pane_grid;
-use crate::ui::visualization::lufs_meter;
+use crate::ui::pane_grid::{self, Content as PaneContent};
 use crate::ui::visualization::visual_manager::{
     VisualContent, VisualId, VisualLayoutHint, VisualManagerHandle, VisualSlotSnapshot,
     VisualSnapshot,
 };
+use crate::ui::visualization::{lufs_meter, oscilloscope};
 use iced::alignment::{Horizontal, Vertical};
 use iced::widget::{container, text};
 use iced::{Element, Length, Subscription, Task};
@@ -30,11 +30,30 @@ impl VisualPane {
         }
     }
 
-    fn view(&self) -> Element<'_, VisualsMessage> {
+    fn view(&self) -> PaneContent<'_, VisualsMessage> {
         let content: Element<'_, VisualsMessage> = match &self.content {
             VisualContent::LufsMeter { state } => {
-                let meter = lufs_meter::widget(state);
-                Element::from(container(meter).width(Length::Fill).center_x(Length::Fill))
+                let meter = lufs_meter::widget_with_layout(
+                    state,
+                    self.layout_hint.preferred_width,
+                    self.layout_hint.preferred_height,
+                );
+                Element::from(
+                    container(meter)
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .align_x(Horizontal::Center)
+                        .align_y(Vertical::Bottom),
+                )
+            }
+            VisualContent::Oscilloscope { state } => {
+                let scope = oscilloscope::widget(state);
+                Element::from(
+                    container(scope)
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .center_x(Length::Fill),
+                )
             }
             VisualContent::Placeholder { message } => {
                 let placeholder = text(message.as_ref())
@@ -48,20 +67,35 @@ impl VisualPane {
         let target_width = self.layout_hint.preferred_width;
         let target_height = self.layout_hint.preferred_height;
 
+        let width = if self.layout_hint.fill_horizontal {
+            Length::Fill
+        } else {
+            Length::Fixed(target_width)
+        };
+
+        let height = if self.layout_hint.fill_vertical {
+            Length::Fill
+        } else {
+            Length::Fixed(target_height)
+        };
+
         let framed = container(content)
-            .padding(12)
-            .width(Length::Fixed(target_width))
-            .height(Length::Fixed(target_height))
+            .width(width)
+            .height(height)
             .align_x(Horizontal::Center)
             .align_y(Vertical::Center);
 
-        container(framed)
-            .padding(16)
+        let element = container(framed)
             .width(Length::Fill)
             .height(Length::Fill)
             .align_x(Horizontal::Center)
-            .align_y(Vertical::Center)
-            .into()
+            .align_y(Vertical::Center);
+
+        PaneContent::new(element).with_width_hint(
+            self.layout_hint.min_width,
+            self.layout_hint.preferred_width,
+            self.layout_hint.max_width,
+        )
     }
 }
 
@@ -111,12 +145,11 @@ impl VisualsPage {
 
     pub fn view(&self) -> Element<'_, VisualsMessage> {
         if let Some(panes) = &self.panes {
-            let grid = pane_grid::PaneGrid::new(panes, |_, pane_state| {
-                pane_grid::Content::new(pane_state.view())
-            })
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .on_drag(VisualsMessage::PaneDragged);
+            let grid = pane_grid::PaneGrid::new(panes, |_, pane_state| pane_state.view())
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .spacing(16.0)
+                .on_drag(VisualsMessage::PaneDragged);
 
             container(grid)
                 .width(Length::Fill)

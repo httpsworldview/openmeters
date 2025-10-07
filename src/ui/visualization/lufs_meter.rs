@@ -5,6 +5,7 @@ use crate::dsp::{AudioBlock, AudioProcessor, ProcessorUpdate};
 use crate::ui::render::lufs_meter::{
     ChannelVisual, FillVisual, GuideLine, LufsMeterPrimitive, VisualParams,
 };
+use crate::ui::theme;
 use iced::advanced::Renderer as _;
 use iced::advanced::graphics::text::Paragraph as RenderParagraph;
 use iced::advanced::renderer::{self, Quad};
@@ -37,7 +38,6 @@ const GUIDE_LABEL_GAP: f32 = 7.0;
 const GUIDE_LABEL_MARGIN: f32 = 8.0;
 const GUIDE_LABEL_BAR_MARGIN: f32 = 3.0;
 const GUIDE_LEVELS: [f32; 5] = [-6.0, -12.0, -18.0, -24.0, -36.0];
-const GUIDE_LINE_COLOR: [f32; 4] = [0.52, 0.54, 0.58, 0.85];
 const GUIDE_LINE_LENGTH: f32 = 4.0;
 const GUIDE_LINE_THICKNESS: f32 = 1.2;
 const GUIDE_LINE_PADDING: f32 = 3.0;
@@ -72,6 +72,27 @@ const LIVE_VALUE_LABEL_TEMPLATE_WIDTH: f32 = clamp_width(
 
 const LIVE_VALUE_LABEL_RESERVE: f32 =
     LIVE_VALUE_LABEL_GAP + LIVE_VALUE_LABEL_MARGIN + LIVE_VALUE_LABEL_TEMPLATE_WIDTH;
+
+fn guide_line_color() -> Color {
+    let secondary = theme::text_secondary();
+    let surface = theme::surface_color();
+    theme::with_alpha(theme::mix_colors(secondary, surface, 0.35), 0.88)
+}
+
+fn guide_label_color() -> Color {
+    theme::mix_colors(theme::text_color(), theme::surface_color(), 0.2)
+}
+
+fn live_label_background_color() -> Color {
+    theme::with_alpha(
+        theme::mix_colors(theme::surface_color(), theme::accent_primary(), 0.25),
+        0.92,
+    )
+}
+
+fn live_label_text_color() -> Color {
+    theme::text_color()
+}
 
 /// UI wrapper around the shared loudness processor.
 #[derive(Debug, Clone)]
@@ -191,11 +212,10 @@ impl LufsMeterState {
 
     fn peak_channel(&self, style: VisualStyle) -> ChannelVisual {
         let mut fills = Vec::with_capacity(CHANNELS);
-        for (value, color) in self
-            .true_peak_db
-            .iter()
-            .zip([style.raw_peak_left_fill, style.raw_peak_right_fill])
-        {
+        for (value, color) in self.true_peak_db.iter().zip([
+            theme::color_to_rgba(style.raw_peak_left_fill),
+            theme::color_to_rgba(style.raw_peak_right_fill),
+        ]) {
             fills.push(FillVisual {
                 value_lufs: *value,
                 color,
@@ -203,17 +223,17 @@ impl LufsMeterState {
         }
 
         ChannelVisual {
-            background_color: style.background,
+            background_color: theme::color_to_rgba(style.background),
             fills,
         }
     }
 
     fn short_term_channel(style: VisualStyle, short_term: f32) -> ChannelVisual {
         ChannelVisual {
-            background_color: style.background,
+            background_color: theme::color_to_rgba(style.background),
             fills: vec![FillVisual {
                 value_lufs: short_term,
-                color: style.short_term_fill,
+                color: theme::color_to_rgba(style.short_term_fill),
             }],
         }
     }
@@ -222,6 +242,7 @@ impl LufsMeterState {
         let (min, max) = range;
         let mut guides = Vec::with_capacity(GUIDE_LEVELS.len());
         let mut max_label_width = 0.0f32;
+        let guide_color = theme::color_to_rgba(guide_line_color());
 
         for level in GUIDE_LEVELS.iter().copied() {
             if level > max || level < min {
@@ -233,7 +254,7 @@ impl LufsMeterState {
             max_label_width = max_label_width.max(label_width);
             guides.push(GuideLine {
                 value_lufs: level,
-                color: GUIDE_LINE_COLOR,
+                color: guide_color,
                 length: GUIDE_LINE_LENGTH,
                 thickness: GUIDE_LINE_THICKNESS,
                 label: Some(label),
@@ -248,19 +269,26 @@ impl LufsMeterState {
 /// Palette for the LUFS meter.
 #[derive(Debug, Clone, Copy)]
 pub struct VisualStyle {
-    pub background: [f32; 4],
-    pub raw_peak_left_fill: [f32; 4],
-    pub raw_peak_right_fill: [f32; 4],
-    pub short_term_fill: [f32; 4],
+    pub background: Color,
+    pub raw_peak_left_fill: Color,
+    pub raw_peak_right_fill: Color,
+    pub short_term_fill: Color,
 }
 
 impl Default for VisualStyle {
     fn default() -> Self {
+        let surface = theme::surface_color();
+        let elevated = theme::elevated_color();
+        let hover = theme::hover_color();
+        let text = theme::text_color();
+        let accent = theme::accent_primary();
+        let success = theme::accent_success();
+
         Self {
-            background: [0.08, 0.08, 0.10, 1.0],
-            raw_peak_left_fill: [0.32, 0.34, 0.38, 1.0],
-            raw_peak_right_fill: [0.40, 0.42, 0.46, 1.0],
-            short_term_fill: [0.62, 0.65, 0.70, 1.0],
+            background: surface,
+            raw_peak_left_fill: theme::mix_colors(elevated, text, 0.18),
+            raw_peak_right_fill: theme::mix_colors(hover, text, 0.12),
+            short_term_fill: theme::mix_colors(accent, success, 0.35),
         }
     }
 }
@@ -272,6 +300,7 @@ pub struct LufsMeter<'a> {
     explicit_range: Option<(f32, f32)>,
     height: f32,
     width: f32,
+    fill_height: bool,
 }
 
 impl<'a> LufsMeter<'a> {
@@ -281,6 +310,7 @@ impl<'a> LufsMeter<'a> {
             explicit_range: None,
             height: DEFAULT_HEIGHT,
             width: DEFAULT_WIDTH,
+            fill_height: false,
         }
     }
 
@@ -291,6 +321,11 @@ impl<'a> LufsMeter<'a> {
 
     pub fn with_height(mut self, height: f32) -> Self {
         self.height = height.max(32.0);
+        self
+    }
+
+    pub fn fill_height(mut self) -> Self {
+        self.fill_height = true;
         self
     }
 
@@ -319,7 +354,13 @@ impl<'a, Message> Widget<Message, Theme, iced::Renderer> for LufsMeter<'a> {
 
     fn size(&self) -> Size<Length> {
         let width = self.total_width();
-        Size::new(Length::Fixed(width), Length::Fixed(self.height))
+        let height = if self.fill_height {
+            Length::Fill
+        } else {
+            Length::Fixed(self.height)
+        };
+
+        Size::new(Length::Fixed(width), height)
     }
 
     fn layout(
@@ -329,10 +370,22 @@ impl<'a, Message> Widget<Message, Theme, iced::Renderer> for LufsMeter<'a> {
         limits: &layout::Limits,
     ) -> layout::Node {
         let width = self.total_width();
+        let height = if self.fill_height {
+            Length::Fill
+        } else {
+            Length::Fixed(self.height)
+        };
+
+        let fallback_height = if self.fill_height {
+            self.height
+        } else {
+            self.height
+        };
+
         let size = limits.resolve(
             Length::Fixed(width),
-            Length::Fixed(self.height),
-            Size::new(0.0, 0.0),
+            height,
+            Size::new(width, fallback_height),
         );
 
         layout::Node::new(size)
@@ -364,7 +417,11 @@ impl<'a, Message> Widget<Message, Theme, iced::Renderer> for LufsMeter<'a> {
 }
 
 /// Convenience conversion into an [`iced::Element`].
-pub fn widget<'a, Message>(state: &'a LufsMeterState) -> Element<'a, Message>
+pub fn widget_with_layout<'a, Message>(
+    state: &'a LufsMeterState,
+    preferred_width: f32,
+    preferred_height: f32,
+) -> Element<'a, Message>
 where
     Message: 'a,
 {
@@ -372,8 +429,9 @@ where
     Element::new(
         LufsMeter::new(state)
             .with_range(min, max)
-            .with_height(DEFAULT_HEIGHT)
-            .with_width(DEFAULT_WIDTH),
+            .fill_height()
+            .with_height(preferred_height)
+            .with_width(preferred_width),
     )
 }
 
@@ -491,7 +549,7 @@ fn draw_guide_labels(
         return;
     };
     let label_height = GUIDE_LABEL_HEIGHT;
-    let label_color = Color::from_rgba(0.82, 0.85, 0.90, 1.0);
+    let label_color = guide_label_color();
     let mut active_labels = Vec::with_capacity(params.guides.len());
 
     for guide in &params.guides {
@@ -567,7 +625,7 @@ fn draw_live_value_label(
 
     let (clip_bounds, position) = context.clip(label_height, label_width);
 
-    let label_background = Color::from_rgba(0.90, 0.94, 1.0, 1.0);
+    let label_background = live_label_background_color();
     renderer.fill_quad(
         Quad {
             bounds: clip_bounds,
@@ -577,8 +635,12 @@ fn draw_live_value_label(
         Background::Color(label_background),
     );
 
-    let label_color = Color::from_rgba(0.0, 0.0, 0.0, 1.0);
-    renderer.fill_paragraph(&entry.paragraph, position, label_color, clip_bounds);
+    renderer.fill_paragraph(
+        &entry.paragraph,
+        position,
+        live_label_text_color(),
+        clip_bounds,
+    );
 }
 
 struct GuideRenderContext {
