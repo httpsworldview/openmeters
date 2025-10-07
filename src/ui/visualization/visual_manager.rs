@@ -248,8 +248,8 @@ impl VisualRuntime {
                 state.apply_snapshot(&snapshot);
             }
             VisualRuntime::Spectrogram { processor, state } => {
-                if let ProcessorUpdate::Snapshot(snapshot) = processor.ingest(samples) {
-                    state.apply_snapshot(&snapshot);
+                if let ProcessorUpdate::Snapshot(update) = processor.ingest(samples) {
+                    state.apply_update(&update);
                 }
             }
             VisualRuntime::Placeholder => {}

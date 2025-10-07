@@ -9,30 +9,24 @@ struct VertexOutput {
 };
 
 struct SpectrogramUniforms {
-    dimensions: vec2<f32>,
-    latest_column: u32,
-    column_count: u32,
+    dims_wrap_flags: vec4<f32>,
+    latest_and_count: vec4<u32>,
+    style: vec4<f32>,
     background: vec4<f32>,
-    palette: array<vec4<f32>, 5>,
 };
 
-struct MagnitudeBuffer {
-    values: array<f32>,
-};
+const FLAG_CAPACITY_POW2: u32 = 0x1u;
 
 @group(0) @binding(0) var<uniform> uniforms: SpectrogramUniforms;
-@group(0) @binding(1) var<storage, read> magnitudes: MagnitudeBuffer;
+@group(0) @binding(1) var magnitudes: texture_2d<f32>;
+@group(0) @binding(2) var palette_tex: texture_1d<f32>;
+@group(0) @binding(3) var palette_sampler: sampler;
 
 fn sample_palette(value: f32) -> vec4<f32> {
     let clamped = clamp(value, 0.0, 1.0);
-    let segments = 5u - 1u;
-    let scaled = clamped * f32(segments);
-    let index = min(u32(scaled), segments);
-    let next = min(index + 1u, segments);
-    let frac = scaled - f32(index);
-    let start = uniforms.palette[index];
-    let stop = uniforms.palette[next];
-    return start + (stop - start) * frac;
+    let contrast = max(uniforms.style.x, 0.01);
+    let adjusted = pow(clamped, contrast);
+    return textureSampleLevel(palette_tex, palette_sampler, adjusted, 0.0);
 }
 
 @vertex
@@ -45,17 +39,23 @@ fn vs_main(input: VertexInput) -> VertexOutput {
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    let capacity = u32(uniforms.dimensions.x);
-    let height = u32(uniforms.dimensions.y);
-    let count = uniforms.column_count;
+    let dims = uniforms.dims_wrap_flags;
+    let capacity = u32(dims.x);
+    let height = u32(dims.y);
+    let wrap_mask = bitcast<u32>(dims.z);
+    let flags = bitcast<u32>(dims.w);
+
+    let state = uniforms.latest_and_count;
+    let count = state.y;
 
     if capacity == 0u || height == 0u || count == 0u {
         return uniforms.background;
     }
 
+    let latest = min(state.x, capacity - 1u);
+
     let clamped_uv = clamp(input.tex_coords, vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 1.0));
     let logical_width = count;
-    let latest = min(uniforms.latest_column, capacity - 1u);
 
     var x_index: u32 = 0u;
     if logical_width > 1u {
@@ -67,12 +67,20 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
     var oldest: u32 = 0u;
     if count == capacity {
-        oldest = (latest + 1u) % capacity;
+        if (flags & FLAG_CAPACITY_POW2) != 0u {
+            oldest = (latest + 1u) & wrap_mask;
+        } else {
+            oldest = (latest + 1u) % capacity;
+        }
     }
 
     var physical: u32 = x_index;
     if count == capacity {
-        physical = (oldest + x_index) % capacity;
+        if (flags & FLAG_CAPACITY_POW2) != 0u {
+            physical = (oldest + x_index) & wrap_mask;
+        } else {
+            physical = (oldest + x_index) % capacity;
+        }
     }
 
     var row: u32 = 0u;
@@ -80,12 +88,15 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         row = min(u32(clamped_uv.y * f32(height - 1u) + 0.5), height - 1u);
     }
 
-    let index = physical * height + row;
-    let value = magnitudes.values[index];
+    let sample = textureLoad(
+        magnitudes,
+        vec2<i32>(i32(row), i32(physical)),
+        0,
+    );
 
-    if value <= 0.0 {
+    if sample.x <= 0.0 {
         return uniforms.background;
     }
 
-    return sample_palette(value);
+    return sample_palette(sample.x);
 }
