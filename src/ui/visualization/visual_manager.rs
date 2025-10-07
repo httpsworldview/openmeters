@@ -1,5 +1,7 @@
+use crate::dsp::ProcessorUpdate;
 use crate::ui::visualization::lufs_meter::{LufsMeterState, LufsProcessor};
 use crate::ui::visualization::oscilloscope::{OscilloscopeProcessor, OscilloscopeState};
+use crate::ui::visualization::spectrogram::{SpectrogramProcessor, SpectrogramState};
 use std::borrow::Cow;
 use std::cell::{RefCell, RefMut};
 use std::collections::HashMap;
@@ -64,7 +66,7 @@ impl VisualKind {
             },
             VisualKind::Spectrogram => VisualMetadata {
                 display_name: "Spectrogram",
-                available: false,
+                available: true,
                 default_enabled: false,
                 preferred_width: 320.0,
                 preferred_height: 220.0,
@@ -157,6 +159,7 @@ pub struct VisualSlotSnapshot {
 pub enum VisualContent {
     LufsMeter { state: LufsMeterState },
     Oscilloscope { state: OscilloscopeState },
+    Spectrogram { state: SpectrogramState },
     Placeholder { message: Cow<'static, str> },
 }
 
@@ -206,6 +209,10 @@ enum VisualRuntime {
         processor: OscilloscopeProcessor,
         state: OscilloscopeState,
     },
+    Spectrogram {
+        processor: SpectrogramProcessor,
+        state: SpectrogramState,
+    },
     Placeholder,
 }
 
@@ -222,6 +229,10 @@ impl VisualRuntime {
                 processor: OscilloscopeProcessor::new(48_000.0),
                 state: OscilloscopeState::new(),
             },
+            VisualKind::Spectrogram => VisualRuntime::Spectrogram {
+                processor: SpectrogramProcessor::new(48_000.0),
+                state: SpectrogramState::new(),
+            },
             _ => VisualRuntime::Placeholder,
         }
     }
@@ -236,6 +247,11 @@ impl VisualRuntime {
                 let snapshot = processor.ingest(samples);
                 state.apply_snapshot(&snapshot);
             }
+            VisualRuntime::Spectrogram { processor, state } => {
+                if let ProcessorUpdate::Snapshot(snapshot) = processor.ingest(samples) {
+                    state.apply_snapshot(&snapshot);
+                }
+            }
             VisualRuntime::Placeholder => {}
         }
     }
@@ -246,6 +262,9 @@ impl VisualRuntime {
                 state: state.clone(),
             },
             VisualRuntime::Oscilloscope { state, .. } => VisualContent::Oscilloscope {
+                state: state.clone(),
+            },
+            VisualRuntime::Spectrogram { state, .. } => VisualContent::Spectrogram {
                 state: state.clone(),
             },
             VisualRuntime::Placeholder => VisualContent::Placeholder {

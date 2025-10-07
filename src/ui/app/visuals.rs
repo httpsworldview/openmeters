@@ -3,7 +3,7 @@ use crate::ui::visualization::visual_manager::{
     VisualContent, VisualId, VisualLayoutHint, VisualManagerHandle, VisualSlotSnapshot,
     VisualSnapshot,
 };
-use crate::ui::visualization::{lufs_meter, oscilloscope};
+use crate::ui::visualization::{lufs_meter, oscilloscope, spectrogram};
 use iced::alignment::{Horizontal, Vertical};
 use iced::widget::{container, text};
 use iced::{Element, Length, Subscription, Task};
@@ -50,6 +50,15 @@ impl VisualPane {
                 let scope = oscilloscope::widget(state);
                 Element::from(
                     container(scope)
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .center_x(Length::Fill),
+                )
+            }
+            VisualContent::Spectrogram { state } => {
+                let spec = spectrogram::widget(state);
+                Element::from(
+                    container(spec)
                         .width(Length::Fill)
                         .height(Length::Fill)
                         .center_x(Length::Fill),

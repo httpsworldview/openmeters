@@ -16,7 +16,7 @@
 - **Ring buffer** (`audio::ring_buffer`) - Generic fixed-capacity FIFO used by the virtual sink and meter tap to move `Vec<f32>` frames between threads.
 - **Utilities** (`util::audio`, `util::pipewire`) - Helper APIs for sample-width conversion, metadata parsing, and PipeWire graph shaping that are shared across services.
 - **Executable entrypoint** (`main.rs`) - Boots the registry observer, virtual sink, loopback, and meter tap; drives a `RoutingManager` that reacts to snapshots and launches the UI with routing and audio streams wired in.
-- **UI layers** (`ui::*`) - An Iced application that lists routable clients, toggles overrides, and renders modular visuals such as the LUFS meter (`ui::visualization::lufs_meter`) and oscilloscope (`ui::visualization::oscilloscope`) via dedicated wgpu pipelines under `ui::render`.
+- **UI layers** (`ui::*`) - An Iced application that lists routable clients, toggles overrides, and renders modular visuals such as the LUFS meter (`ui::visualization::lufs_meter`), oscilloscope (`ui::visualization::oscilloscope`), and spectrogram (`ui::visualization::spectrogram`) via dedicated wgpu pipelines under `ui::render`. The spectrogram projects FFT magnitudes onto a logarithmic frequency axis before uploading columns, so low-frequency detail remains visible without losing high-end context.
 
 ## Data flow snapshot
 
@@ -28,9 +28,9 @@ system audio ─┘                                          │
                                                          └─ meter_tap → async channel → UI LufsProcessor → wgpu LUFS meter
 ```
 
-- Visual modules share a `VisualManager` that batches audio samples, runs DSP processors (LUFS, oscilloscope, and future modules), and hands stateful snapshots to the UI pane grid.
+- Visual modules share a `VisualManager` that batches audio samples, runs DSP processors (LUFS, oscilloscope, spectrogram, and future modules), and hands stateful snapshots to the UI pane grid.
 
-The backend keeps playback audible while surfacing captured PCM to the UI, where DSP processors feed the wgpu-powered widgets (currently LUFS + oscilloscope).
+The backend keeps playback audible while surfacing captured PCM to the UI, where DSP processors feed the wgpu-powered widgets (currently LUFS, oscilloscope, and spectrogram).
 
 ## Operational notes
 

@@ -16,6 +16,7 @@ async-channel = "2.2"
 bytemuck = { version = "1.15", features = ["derive"] }
 iced_wgpu = "0.13.5"
 rustc-hash = "1.1"
+rustfft = "6.1"
 
 [dev-dependencies]
 ebur128 = "0.1"
