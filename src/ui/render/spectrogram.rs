@@ -83,12 +83,8 @@ impl ColumnBuffer {
         self.data.as_deref().unwrap_or(&[])
     }
 
-    pub fn len(&self) -> usize {
-        self.data.as_ref().map(|d| d.len()).unwrap_or(0)
-    }
-
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        self.data.as_ref().map_or(true, |d| d.is_empty())
     }
 }
 
@@ -242,6 +238,8 @@ struct Vertex {
     tex_coords: [f32; 2],
 }
 
+const VERTEX_SIZE: wgpu::BufferAddress = std::mem::size_of::<Vertex>() as wgpu::BufferAddress;
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq)]
 struct SpectrogramUniforms {
@@ -255,8 +253,11 @@ impl SpectrogramUniforms {
     fn new(params: &SpectrogramParams) -> Self {
         let capacity = params.texture_width;
         let is_pow2 = capacity > 0 && capacity.is_power_of_two();
-        let wrap_mask = if is_pow2 { capacity - 1 } else { 0 };
-        let flags = if is_pow2 { FLAG_CAPACITY_POW2 } else { 0 };
+        let (wrap_mask, flags) = if is_pow2 {
+            (capacity - 1, FLAG_CAPACITY_POW2)
+        } else {
+            (0, 0)
+        };
 
         Self {
             dims_wrap_flags: [
@@ -423,7 +424,7 @@ impl Pipeline {
 impl Vertex {
     fn layout() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+            array_stride: VERTEX_SIZE,
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &[
                 wgpu::VertexAttribute {
@@ -473,23 +474,18 @@ impl Instance {
             return;
         };
 
-        if self
-            .cached_vertices
-            .as_ref()
-            .map(|cached| cached == vertices)
-            .unwrap_or(false)
-        {
+        if self.cached_vertices == Some(*vertices) {
             return;
         }
 
-        let required = (vertices.len() * std::mem::size_of::<Vertex>()) as wgpu::BufferAddress;
+        let required = VERTEX_SIZE * vertices.len() as wgpu::BufferAddress;
         if required > self.capacity {
             let new_capacity = required.next_power_of_two().max(1);
             self.vertex_buffer = create_vertex_buffer(device, new_capacity);
             self.capacity = new_capacity;
         }
 
-        queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&vertices[..]));
+        queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(vertices));
         self.vertex_count = vertices.len() as u32;
         self.cached_vertices = Some(*vertices);
     }
@@ -528,12 +524,8 @@ impl Instance {
     }
 
     fn vertex_buffer_slice(&self) -> wgpu::BufferSlice<'_> {
-        self.vertex_buffer.slice(0..self.used_bytes())
-    }
-
-    fn used_bytes(&self) -> wgpu::BufferAddress {
-        self.vertex_count as wgpu::BufferAddress
-            * std::mem::size_of::<Vertex>() as wgpu::BufferAddress
+        let used = VERTEX_SIZE * self.vertex_count as wgpu::BufferAddress;
+        self.vertex_buffer.slice(0..used)
     }
 
     fn vertex_count(&self) -> u32 {
@@ -593,32 +585,14 @@ impl GpuResources {
             ..Default::default()
         });
 
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Spectrogram bind group"),
+        let bind_group = create_bind_group(
+            device,
             layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &uniform_buffer,
-                        offset: 0,
-                        size: None,
-                    }),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&magnitude_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&palette_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::Sampler(&palette_sampler),
-                },
-            ],
-        });
+            &uniform_buffer,
+            &magnitude_view,
+            &palette_view,
+            &palette_sampler,
+        );
 
         Self {
             uniform_buffer,
@@ -652,15 +626,13 @@ impl GpuResources {
         width: u32,
         height: u32,
     ) {
-        let target_width = width.max(1);
-        let target_height = height.max(1);
-        if target_width <= self.capacity.0 && target_height <= self.capacity.1 {
+        let target = (width.max(1), height.max(1));
+        if target.0 <= self.capacity.0 && target.1 <= self.capacity.1 {
             return;
         }
 
-        let new_width = target_width.max(self.capacity.0);
-        let new_height = target_height.max(self.capacity.1);
-        let new_texture = create_magnitude_texture(device, new_width, new_height);
+        let new_capacity = (target.0.max(self.capacity.0), target.1.max(self.capacity.1));
+        let new_texture = create_magnitude_texture(device, new_capacity.0, new_capacity.1);
         let new_view = new_texture.create_view(&wgpu::TextureViewDescriptor {
             label: Some("Spectrogram magnitude view"),
             format: Some(wgpu::TextureFormat::R32Float),
@@ -668,67 +640,43 @@ impl GpuResources {
             ..Default::default()
         });
 
+        let old_capacity = self.capacity;
         let old_texture = std::mem::replace(&mut self.magnitude_texture, new_texture);
         self.magnitude_view = new_view;
 
-        self.bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Spectrogram bind group"),
+        self.bind_group = create_bind_group(
+            device,
             layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &self.uniform_buffer,
-                        offset: 0,
-                        size: None,
-                    }),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&self.magnitude_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&self.palette_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::Sampler(&self.palette_sampler),
-                },
-            ],
+            &self.uniform_buffer,
+            &self.magnitude_view,
+            &self.palette_view,
+            &self.palette_sampler,
+        );
+
+        let old_extent = magnitude_extent(old_capacity.0, old_capacity.1);
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Spectrogram magnitude grow copy"),
         });
 
-        let old_extent = wgpu::Extent3d {
-            width: self.capacity.1.max(1),
-            height: self.capacity.0.max(1),
-            depth_or_array_layers: 1,
-        };
+        encoder.copy_texture_to_texture(
+            wgpu::ImageCopyTexture {
+                texture: &old_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::ImageCopyTexture {
+                texture: &self.magnitude_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            old_extent,
+        );
 
-        if old_extent.width > 0 && old_extent.height > 0 {
-            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("Spectrogram magnitude grow copy"),
-            });
+        queue.submit(Some(encoder.finish()));
 
-            encoder.copy_texture_to_texture(
-                wgpu::ImageCopyTexture {
-                    texture: &old_texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                wgpu::ImageCopyTexture {
-                    texture: &self.magnitude_texture,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d::ZERO,
-                    aspect: wgpu::TextureAspect::All,
-                },
-                old_extent,
-            );
-
-            queue.submit(Some(encoder.finish()));
-        }
-
-        self.capacity = (new_width, new_height);
+        self.capacity = new_capacity;
     }
 
     fn write(&mut self, queue: &wgpu::Queue, params: &SpectrogramParams) {
@@ -744,10 +692,14 @@ impl GpuResources {
                 base.len(),
                 (params.texture_width * params.texture_height) as usize
             );
-            for column in 0..width {
-                let offset = (column * height) as usize;
-                let values = &base[offset..offset + column_stride];
-                write_column(queue, &self.magnitude_texture, column, height, values);
+            for (column, values) in base.chunks(column_stride).enumerate().take(width as usize) {
+                write_column(
+                    queue,
+                    &self.magnitude_texture,
+                    column as u32,
+                    height,
+                    values,
+                );
             }
         }
 
@@ -811,14 +763,46 @@ fn create_vertex_buffer(device: &wgpu::Device, size: wgpu::BufferAddress) -> wgp
     })
 }
 
+fn create_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    uniform_buffer: &wgpu::Buffer,
+    magnitude_view: &wgpu::TextureView,
+    palette_view: &wgpu::TextureView,
+    palette_sampler: &wgpu::Sampler,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("Spectrogram bind group"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: uniform_buffer,
+                    offset: 0,
+                    size: None,
+                }),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(magnitude_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(palette_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::Sampler(palette_sampler),
+            },
+        ],
+    })
+}
+
 fn create_magnitude_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
         label: Some("Spectrogram magnitude texture"),
-        size: wgpu::Extent3d {
-            width: height.max(1),
-            height: width.max(1),
-            depth_or_array_layers: 1,
-        },
+        size: magnitude_extent(width, height),
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -875,11 +859,7 @@ fn write_column(
             bytes_per_row: Some(height * std::mem::size_of::<f32>() as u32),
             rows_per_image: None,
         },
-        wgpu::Extent3d {
-            width: height,
-            height: 1,
-            depth_or_array_layers: 1,
-        },
+        column_extent(height),
     );
 }
 
@@ -889,10 +869,10 @@ fn populate_palette_lut(palette: &[[f32; 4]; SPECTROGRAM_PALETTE_SIZE]) -> Vec<u
         return data;
     }
 
-    let max_index = (PALETTE_LUT_SIZE - 1) as f32;
+    let max_index = (PALETTE_LUT_SIZE.saturating_sub(1)) as f32;
     let segments = (SPECTROGRAM_PALETTE_SIZE - 1) as f32;
 
-    for i in 0..PALETTE_LUT_SIZE {
+    for (i, chunk) in data.chunks_exact_mut(4).enumerate() {
         let t = if PALETTE_LUT_SIZE == 1 {
             0.0
         } else {
@@ -904,20 +884,29 @@ fn populate_palette_lut(palette: &[[f32; 4]; SPECTROGRAM_PALETTE_SIZE]) -> Vec<u
         let next = (index + 1).min(SPECTROGRAM_PALETTE_SIZE - 1);
         let frac = scaled - index as f32;
 
-        let start = palette[index];
-        let stop = palette[next];
-
-        let mut rgba = [0.0f32; 4];
-        for c in 0..4 {
-            rgba[c] = start[c] + (stop[c] - start[c]) * frac;
-        }
-
-        let offset = (i as usize) * 4;
-        for c in 0..4 {
-            let clamped = rgba[c].clamp(0.0, 1.0);
-            data[offset + c] = (clamped * 255.0).round() as u8;
+        for (channel, byte) in chunk.iter_mut().enumerate() {
+            let start = palette[index][channel];
+            let stop = palette[next][channel];
+            let value = start + (stop - start) * frac;
+            *byte = (value.clamp(0.0, 1.0) * 255.0).round() as u8;
         }
     }
 
     data
+}
+
+fn magnitude_extent(width: u32, height: u32) -> wgpu::Extent3d {
+    wgpu::Extent3d {
+        width: height.max(1),
+        height: width.max(1),
+        depth_or_array_layers: 1,
+    }
+}
+
+fn column_extent(height: u32) -> wgpu::Extent3d {
+    wgpu::Extent3d {
+        width: height.max(1),
+        height: 1,
+        depth_or_array_layers: 1,
+    }
 }

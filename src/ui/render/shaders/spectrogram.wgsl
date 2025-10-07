@@ -93,10 +93,5 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         vec2<i32>(i32(row), i32(physical)),
         0,
     );
-
-    if sample.x <= 0.0 {
-        return uniforms.background;
-    }
-
     return sample_palette(sample.x);
 }

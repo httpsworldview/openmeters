@@ -736,7 +736,7 @@ mod tests {
 
 fn default_palette() -> [Color; PALETTE_STOPS] {
     [
-        Color::from_rgba(0.05, 0.08, 0.18, 1.0),
+        Color::from_rgba(0.05, 0.08, 0.18, 0.0),
         Color::from_rgba(0.13, 0.20, 0.46, 1.0),
         Color::from_rgba(0.11, 0.48, 0.63, 1.0),
         Color::from_rgba(0.94, 0.75, 0.29, 1.0),

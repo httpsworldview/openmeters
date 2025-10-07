@@ -1,10 +1,15 @@
 //! Spectrogram DSP implementation built on a short-time Fourier transform.
 
 use super::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
-use rustfft::{Fft, FftPlanner, num_complex::Complex32};
-use std::collections::VecDeque;
-use std::sync::Arc;
+use realfft::{RealFftPlanner, RealToComplex};
+use rustc_hash::FxHashMap;
+use rustfft::num_complex::Complex32;
+use std::sync::{Arc, OnceLock, RwLock};
 use std::time::{Duration, Instant};
+
+const LOG_FACTOR: f32 = 10.0 * core::f32::consts::LOG10_E;
+const POWER_EPSILON: f32 = 1.0e-18;
+const DB_FLOOR: f32 = -120.0;
 
 /// Configuration for spectrogram FFT analysis.
 #[derive(Debug, Clone, Copy)]
@@ -25,14 +30,15 @@ impl Default for SpectrogramConfig {
         Self {
             sample_rate: 48_000.0,
             fft_size: 8192,
-            hop_size: 256,
+            hop_size: 1024,
             window: WindowKind::Hann,
-            history_length: 960,
+            history_length: 240,
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WindowKind {
     Rectangular,
     Hann,
@@ -71,11 +77,48 @@ impl WindowKind {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct WindowKey {
+    kind: WindowKind,
+    len: usize,
+}
+
+struct WindowCache {
+    entries: RwLock<FxHashMap<WindowKey, Arc<[f32]>>>,
+}
+
+impl WindowCache {
+    fn global() -> &'static WindowCache {
+        static INSTANCE: OnceLock<WindowCache> = OnceLock::new();
+        INSTANCE.get_or_init(|| WindowCache {
+            entries: RwLock::new(rustc_hash::FxHashMap::default()),
+        })
+    }
+
+    fn get(&self, kind: WindowKind, len: usize) -> Arc<[f32]> {
+        if len == 0 {
+            return Arc::from([]);
+        }
+
+        let key = WindowKey { kind, len };
+        if let Some(existing) = self.entries.read().unwrap().get(&key) {
+            return Arc::clone(existing);
+        }
+
+        let mut write = self.entries.write().unwrap();
+        Arc::clone(
+            write
+                .entry(key)
+                .or_insert_with(|| Arc::from(kind.coefficients(len))),
+        )
+    }
+}
+
 /// One column of log-power magnitudes.
 #[derive(Debug, Clone)]
 pub struct SpectrogramColumn {
     pub timestamp: Instant,
-    pub magnitudes_db: Arc<Vec<f32>>,
+    pub magnitudes_db: Arc<[f32]>,
 }
 
 /// Incremental update emitted by the spectrogram processor.
@@ -89,38 +132,60 @@ pub struct SpectrogramUpdate {
     pub new_columns: Vec<SpectrogramColumn>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct SpectrogramHistory {
-    columns: VecDeque<SpectrogramColumn>,
+    slots: Vec<Option<SpectrogramColumn>>,
     capacity: usize,
+    head: usize,
+    len: usize,
 }
 
 impl SpectrogramHistory {
     fn new(capacity: usize) -> Self {
+        let mut slots = Vec::with_capacity(capacity);
+        if capacity > 0 {
+            slots.resize(capacity, None);
+        }
         Self {
-            columns: VecDeque::with_capacity(capacity.max(1)),
+            slots,
             capacity,
+            head: 0,
+            len: 0,
         }
     }
 
-    fn set_capacity(&mut self, capacity: usize) -> Vec<SpectrogramColumn> {
+    fn set_capacity(&mut self, capacity: usize, evicted: &mut Vec<SpectrogramColumn>) {
+        if capacity == self.capacity {
+            evicted.clear();
+            return;
+        }
+
+        self.clear_into(evicted);
         self.capacity = capacity;
-        let mut evicted = Vec::new();
+        self.head = 0;
+        self.len = 0;
+        self.ensure_slot_count();
+
         if capacity == 0 {
-            evicted.extend(self.columns.drain(..));
-            return evicted;
+            return;
         }
 
-        while self.columns.len() > capacity {
-            if let Some(column) = self.columns.pop_front() {
-                evicted.push(column);
-            }
+        let retain_start = evicted.len().saturating_sub(capacity);
+        if retain_start > 0 {
+            evicted.drain(..retain_start);
         }
-        evicted
+        for column in evicted.drain(..) {
+            debug_assert!(self.push(column).is_none());
+        }
     }
 
-    fn clear(&mut self) -> Vec<SpectrogramColumn> {
-        self.columns.drain(..).collect()
+    fn clear_into(&mut self, out: &mut Vec<SpectrogramColumn>) {
+        out.clear();
+        out.reserve(self.len);
+        while let Some(column) = self.pop_front_internal() {
+            out.push(column);
+        }
+        self.head = 0;
     }
 
     fn push(&mut self, column: SpectrogramColumn) -> Option<SpectrogramColumn> {
@@ -128,17 +193,52 @@ impl SpectrogramHistory {
             return Some(column);
         }
 
-        let evicted = if self.columns.len() == self.capacity {
-            self.columns.pop_front()
+        if self.slots.len() != self.capacity {
+            self.ensure_slot_count();
+        }
+
+        let insert_idx = (self.head + self.len) % self.capacity;
+        if self.len == self.capacity {
+            let evicted = self.slots[insert_idx]
+                .replace(column)
+                .expect("occupied slot");
+            self.head = (self.head + 1) % self.capacity;
+            Some(evicted)
         } else {
+            debug_assert!(self.slots[insert_idx].is_none());
+            self.slots[insert_idx] = Some(column);
+            self.len += 1;
             None
-        };
-        self.columns.push_back(column);
-        evicted
+        }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn len(&self) -> usize {
-        self.columns.len()
+        self.len
+    }
+
+    fn ensure_slot_count(&mut self) {
+        if self.capacity == 0 {
+            self.slots.clear();
+        } else {
+            self.slots.resize(self.capacity, None);
+        }
+    }
+
+    fn pop_front_internal(&mut self) -> Option<SpectrogramColumn> {
+        if self.len == 0 {
+            return None;
+        }
+
+        let idx = self.head;
+        let column = self.slots[idx].take().expect("occupied slot");
+        if self.len == 1 {
+            self.head = 0;
+        } else {
+            self.head = (self.head + 1) % self.capacity;
+        }
+        self.len -= 1;
+        Some(column)
     }
 }
 
@@ -174,20 +274,17 @@ impl SampleBuffer {
         self.len += 1;
     }
 
-    fn for_each_front<F>(&self, count: usize, mut f: F)
-    where
-        F: FnMut(usize, f32),
-    {
-        assert!(count <= self.len);
-        let mut idx = self.read;
-        let capacity = self.data.len();
-        for pos in 0..count {
-            f(pos, self.data[idx]);
-            idx += 1;
-            if idx == capacity {
-                idx = 0;
-            }
+    fn reserve_additional(&mut self, additional: usize) {
+        let required = self.len + additional;
+        if required <= self.data.len() {
+            return;
         }
+
+        let mut new_capacity = self.data.len().max(1);
+        while new_capacity < required {
+            new_capacity *= 2;
+        }
+        self.grow_to(new_capacity);
     }
 
     fn consume(&mut self, count: usize) {
@@ -197,6 +294,14 @@ impl SampleBuffer {
         }
         self.read = (self.read + count) % self.data.len();
         self.len -= count;
+    }
+
+    fn copy_front_into(&self, target: &mut [f32]) {
+        assert!(target.len() <= self.len);
+        let cap = self.data.len();
+        for (offset, slot) in target.iter_mut().enumerate() {
+            *slot = self.data[(self.read + offset) % cap];
+        }
     }
 
     fn clear(&mut self) {
@@ -224,14 +329,9 @@ impl SampleBuffer {
 
     fn grow_to(&mut self, new_capacity: usize) {
         let mut new_data = vec![0.0; new_capacity];
-        let mut idx = self.read;
-        let capacity = self.data.len().max(1);
-        for i in 0..self.len {
-            new_data[i] = self.data[idx];
-            idx += 1;
-            if idx == capacity {
-                idx = 0;
-            }
+        let cap = self.data.len().max(1);
+        for (i, slot) in new_data.iter_mut().enumerate().take(self.len) {
+            *slot = self.data[(self.read + i) % cap];
         }
         self.data = new_data;
         self.read = 0;
@@ -240,38 +340,56 @@ impl SampleBuffer {
 
 pub struct SpectrogramProcessor {
     config: SpectrogramConfig,
-    planner: FftPlanner<f32>,
-    fft: Arc<dyn Fft<f32>>,
-    window: Vec<f32>,
-    fft_buffer: Vec<Complex32>,
+    planner: RealFftPlanner<f32>,
+    fft: Arc<dyn RealToComplex<f32>>,
+    window: Arc<[f32]>,
+    real_buffer: Vec<f32>,
+    spectrum_buffer: Vec<Complex32>,
+    scratch_buffer: Vec<Complex32>,
     magnitude_buffer: Vec<f32>,
-    bin_gain_sq: Vec<f32>,
+    bin_normalization: Vec<f32>,
     pcm_buffer: SampleBuffer,
     buffer_start_index: u64,
     start_instant: Option<Instant>,
+    accumulated_offset: Duration,
     history: SpectrogramHistory,
-    magnitude_pool: Vec<Vec<f32>>,
+    magnitude_pool: Vec<Arc<[f32]>>,
+    evicted_columns: Vec<SpectrogramColumn>,
     pending_reset: bool,
 }
 
 impl SpectrogramProcessor {
     pub fn new(config: SpectrogramConfig) -> Self {
-        let mut planner = FftPlanner::<f32>::new();
-        let fft = planner.plan_fft_forward(config.fft_size);
-        let window = config.window.coefficients(config.fft_size);
+        let fft_size = config.fft_size;
+        let history_len = config.history_length;
+        let bins = fft_size / 2 + 1;
+        let mut planner = RealFftPlanner::<f32>::new();
+        let fft = planner.plan_fft_forward(fft_size);
+        let window = WindowCache::global().get(config.window, fft_size);
+        let real_buffer = vec![0.0; fft_size];
+        let spectrum_buffer = fft.make_output_vec();
+        let scratch_buffer = fft.make_scratch_vec();
+        let magnitude_buffer = vec![0.0; bins];
+        let bin_normalization = Self::compute_bin_normalization(fft_size);
+        let pcm_buffer = SampleBuffer::with_capacity(fft_size.saturating_mul(2));
+        let history = SpectrogramHistory::new(history_len);
         Self {
-            fft_buffer: vec![Complex32::default(); config.fft_size],
-            pcm_buffer: SampleBuffer::with_capacity(config.fft_size * 2),
-            buffer_start_index: 0,
-            start_instant: None,
             config,
             planner,
             fft,
             window,
-            magnitude_buffer: vec![0.0; config.fft_size / 2 + 1],
-            bin_gain_sq: Self::compute_bin_gain_sq(config.fft_size),
-            history: SpectrogramHistory::new(config.history_length),
+            real_buffer,
+            spectrum_buffer,
+            scratch_buffer,
+            magnitude_buffer,
+            bin_normalization,
+            pcm_buffer,
+            buffer_start_index: 0,
+            start_instant: None,
+            accumulated_offset: Duration::default(),
+            history,
             magnitude_pool: Vec::new(),
+            evicted_columns: Vec::new(),
             pending_reset: true,
         }
     }
@@ -281,27 +399,40 @@ impl SpectrogramProcessor {
     }
 
     fn rebuild_fft(&mut self) {
-        self.fft = self.planner.plan_fft_forward(self.config.fft_size);
-        self.window = self.config.window.coefficients(self.config.fft_size);
-        self.fft_buffer
-            .resize(self.config.fft_size, Complex32::default());
-        self.magnitude_buffer
-            .resize(self.config.fft_size / 2 + 1, 0.0);
-        self.bin_gain_sq = Self::compute_bin_gain_sq(self.config.fft_size);
-        let target_capacity = self.config.fft_size.saturating_mul(2).max(1);
-        self.pcm_buffer.resize_capacity(target_capacity);
-        let evicted = self.history.clear();
-        self.recycle_columns(evicted);
-        let evicted = self.history.set_capacity(self.config.history_length);
-        self.recycle_columns(evicted);
+        let fft_size = self.config.fft_size;
+        let bins = fft_size / 2 + 1;
+        self.fft = self.planner.plan_fft_forward(fft_size);
+        self.window = WindowCache::global().get(self.config.window, fft_size);
+        self.real_buffer.resize(fft_size, 0.0);
+        self.spectrum_buffer = self.fft.make_output_vec();
+        self.scratch_buffer = self.fft.make_scratch_vec();
+        self.magnitude_buffer.resize(bins, 0.0);
+        self.bin_normalization = Self::compute_bin_normalization(fft_size);
+        self.magnitude_pool.retain(|buffer| buffer.len() == bins);
+        self.pcm_buffer
+            .resize_capacity(fft_size.saturating_mul(2).max(1));
+        let mut evicted = std::mem::take(&mut self.evicted_columns);
+        self.history.clear_into(&mut evicted);
+        evicted
+            .drain(..)
+            .for_each(|column| self.recycle_column(column));
+        self.history
+            .set_capacity(self.config.history_length, &mut evicted);
+        evicted
+            .drain(..)
+            .for_each(|column| self.recycle_column(column));
+        self.evicted_columns = evicted;
         self.pcm_buffer.clear();
         self.buffer_start_index = 0;
         self.start_instant = None;
+        self.accumulated_offset = Duration::default();
         self.pending_reset = true;
     }
 
     fn ensure_fft_capacity(&mut self) {
-        if self.fft_buffer.len() != self.config.fft_size {
+        if self.real_buffer.len() != self.config.fft_size
+            || self.spectrum_buffer.len() != self.config.fft_size / 2 + 1
+        {
             self.rebuild_fft();
         }
     }
@@ -309,56 +440,68 @@ impl SpectrogramProcessor {
     fn process_ready_windows(&mut self) -> Vec<SpectrogramColumn> {
         let mut new_columns = Vec::new();
         let fft_size = self.config.fft_size;
-        if fft_size == 0 || self.config.hop_size == 0 {
+        let hop = self.config.hop_size;
+        if fft_size == 0 || hop == 0 {
             return new_columns;
         }
 
-        let hop = self.config.hop_size;
-        let bins = fft_size / 2 + 1;
-        let scale_sq = {
-            let scale = 1.0 / (fft_size as f32);
-            scale * scale
+        let hop_duration = if self.config.sample_rate > 0.0 {
+            duration_from_samples(hop as u64, self.config.sample_rate)
+        } else {
+            Duration::default()
         };
+        let bins = fft_size / 2 + 1;
 
         let Some(start_instant) = self.start_instant else {
             return new_columns;
         };
+        let center_offset = duration_from_samples((fft_size / 2) as u64, self.config.sample_rate);
 
         while self.pcm_buffer.len() >= fft_size {
-            self.pcm_buffer.for_each_front(fft_size, |idx, sample| {
-                let windowed = sample * self.window[idx];
-                self.fft_buffer[idx] = Complex32::new(windowed, 0.0);
-            });
+            self.pcm_buffer
+                .copy_front_into(&mut self.real_buffer[..fft_size]);
+            Self::apply_window(&mut self.real_buffer[..fft_size], self.window.as_ref());
 
-            self.fft.process(&mut self.fft_buffer);
+            self.fft
+                .process_with_scratch(
+                    &mut self.real_buffer,
+                    &mut self.spectrum_buffer,
+                    &mut self.scratch_buffer,
+                )
+                .expect("real FFT forward transform");
 
-            for (bin, value) in self.magnitude_buffer.iter_mut().enumerate().take(bins) {
-                let complex = self.fft_buffer[bin];
-                let gain = self.bin_gain_sq[bin];
-                let power = complex.norm_sqr() * scale_sq * gain;
-                let magnitude_db = 10.0f32 * power.max(1.0e-18).log10();
-                *value = magnitude_db.max(-120.0f32);
-            }
+            self.spectrum_buffer
+                .iter()
+                .zip(&self.bin_normalization)
+                .zip(&mut self.magnitude_buffer)
+                .for_each(|((complex, norm), target)| {
+                    let power = (complex.norm_sqr() * *norm).max(POWER_EPSILON);
+                    *target = (power.ln() * LOG_FACTOR).max(DB_FLOOR);
+                });
 
-            let column_start_index = self.buffer_start_index;
-            let center_index = column_start_index + (fft_size / 2) as u64;
-            let timestamp =
-                start_instant + duration_from_samples(center_index, self.config.sample_rate);
+            let timestamp = start_instant + self.accumulated_offset + center_offset;
 
-            let mut storage = self.acquire_magnitude_storage(bins);
-            storage.copy_from_slice(&self.magnitude_buffer[..bins]);
-            let magnitudes = Arc::new(storage);
-            let column = SpectrogramColumn {
+            let mut magnitudes = self.acquire_magnitude_storage(bins);
+            Arc::get_mut(&mut magnitudes)
+                .expect("pooled magnitude storage should be unique")
+                .copy_from_slice(&self.magnitude_buffer[..bins]);
+
+            let history_column = SpectrogramColumn {
                 timestamp,
-                magnitudes_db: magnitudes,
+                magnitudes_db: Arc::clone(&magnitudes),
             };
-            if let Some(evicted) = self.history.push(column.clone()) {
+            if let Some(evicted) = self.history.push(history_column) {
                 self.recycle_column(evicted);
             }
-            new_columns.push(column);
+
+            new_columns.push(SpectrogramColumn {
+                timestamp,
+                magnitudes_db: magnitudes,
+            });
 
             self.pcm_buffer.consume(hop);
             self.buffer_start_index += hop as u64;
+            self.accumulated_offset += hop_duration;
         }
 
         new_columns
@@ -376,8 +519,13 @@ impl AudioProcessor for SpectrogramProcessor {
         if self.config.sample_rate <= 0.0 {
             self.config.sample_rate = block.sample_rate;
         } else if (self.config.sample_rate - block.sample_rate).abs() > f32::EPSILON {
+            let duration_elapsed =
+                duration_from_samples(self.buffer_start_index, self.config.sample_rate);
+            let previous_start = self.start_instant;
             self.config.sample_rate = block.sample_rate;
             self.rebuild_fft();
+            self.start_instant = previous_start;
+            self.accumulated_offset = duration_elapsed;
         }
 
         if self.start_instant.is_none() {
@@ -386,47 +534,15 @@ impl AudioProcessor for SpectrogramProcessor {
 
         self.ensure_fft_capacity();
 
-        let channels = block.channels;
-        match channels {
-            1 => {
-                for sample in block.samples.iter().copied() {
-                    self.pcm_buffer.push(sample);
-                }
-            }
-            2 => {
-                let mut chunks = block.samples.chunks_exact(2);
-                for chunk in chunks.by_ref() {
-                    let mono = 0.5 * (chunk[0] + chunk[1]);
-                    self.pcm_buffer.push(mono);
-                }
-                if !chunks.remainder().is_empty() {
-                    let remainder = chunks.remainder();
-                    let sum = remainder.iter().copied().sum::<f32>();
-                    let mono = sum * 0.5;
-                    self.pcm_buffer.push(mono);
-                }
-            }
-            _ => {
-                let inv_channels = 1.0 / channels as f32;
-                let mut chunks = block.samples.chunks_exact(channels);
-                for frame in chunks.by_ref() {
-                    let sum = frame.iter().copied().sum::<f32>();
-                    self.pcm_buffer.push(sum * inv_channels);
-                }
-                let remainder = chunks.remainder();
-                if !remainder.is_empty() {
-                    let sum = remainder.iter().copied().sum::<f32>();
-                    self.pcm_buffer.push(sum * inv_channels);
-                }
-            }
-        }
+        self.pcm_buffer.reserve_additional(block.frame_count());
+
+        self.mixdown_interleaved(block.samples, block.channels);
 
         let new_columns = self.process_ready_windows();
-        if new_columns.is_empty() && !self.pending_reset {
+        if new_columns.is_empty() {
             ProcessorUpdate::None
         } else {
-            let reset = self.pending_reset;
-            self.pending_reset = false;
+            let reset = std::mem::take(&mut self.pending_reset);
             ProcessorUpdate::Snapshot(SpectrogramUpdate {
                 fft_size: self.config.fft_size,
                 hop_size: self.config.hop_size,
@@ -439,8 +555,12 @@ impl AudioProcessor for SpectrogramProcessor {
     }
 
     fn reset(&mut self) {
-        let evicted = self.history.clear();
-        self.recycle_columns(evicted);
+        let mut evicted = std::mem::take(&mut self.evicted_columns);
+        self.history.clear_into(&mut evicted);
+        for column in evicted.drain(..) {
+            self.recycle_column(column);
+        }
+        self.evicted_columns = evicted;
         let target_capacity = self.config.fft_size.saturating_mul(2).max(1);
         self.pcm_buffer.resize_capacity(target_capacity);
         self.pcm_buffer.clear();
@@ -451,41 +571,93 @@ impl AudioProcessor for SpectrogramProcessor {
 }
 
 impl SpectrogramProcessor {
-    fn acquire_magnitude_storage(&mut self, bins: usize) -> Vec<f32> {
-        if let Some(mut buffer) = self.magnitude_pool.pop() {
-            buffer.resize(bins, 0.0);
-            buffer
-        } else {
-            vec![0.0; bins]
+    #[inline]
+    fn mixdown_interleaved(&mut self, samples: &[f32], channels: usize) {
+        match channels {
+            1 => Self::push_all(&mut self.pcm_buffer, samples),
+            2 => self.mixdown_stereo(samples),
+            _ => self.mixdown_generic(samples, channels),
         }
     }
 
-    fn compute_bin_gain_sq(fft_size: usize) -> Vec<f32> {
+    #[inline(always)]
+    fn push_all(buffer: &mut SampleBuffer, samples: &[f32]) {
+        for &sample in samples {
+            buffer.push(sample);
+        }
+    }
+
+    #[inline]
+    fn mixdown_stereo(&mut self, samples: &[f32]) {
+        for chunk in samples.chunks(2) {
+            let value = if chunk.len() == 2 {
+                0.5 * (chunk[0] + chunk[1])
+            } else {
+                0.5 * chunk[0]
+            };
+            self.pcm_buffer.push(value);
+        }
+    }
+
+    #[inline]
+    fn mixdown_generic(&mut self, samples: &[f32], channels: usize) {
+        debug_assert!(channels > 2);
+        let inv = 1.0 / channels as f32;
+        for chunk in samples.chunks(channels) {
+            let sum: f32 = chunk.iter().sum();
+            self.pcm_buffer.push(sum * inv);
+        }
+    }
+
+    #[inline(always)]
+    fn apply_window(buffer: &mut [f32], window: &[f32]) {
+        debug_assert_eq!(buffer.len(), window.len());
+        for (sample, coeff) in buffer.iter_mut().zip(window.iter()) {
+            *sample *= *coeff;
+        }
+    }
+
+    fn compute_bin_normalization(fft_size: usize) -> Vec<f32> {
         let bins = fft_size / 2 + 1;
         if bins == 0 {
             return Vec::new();
         }
 
-        let mut gains = vec![4.0; bins];
-        gains[0] = 1.0;
+        let fft_scale = if fft_size == 0 {
+            0.0
+        } else {
+            1.0 / fft_size as f32
+        };
+        let scale_sq = fft_scale * fft_scale;
+        let mut norms = vec![scale_sq * 4.0; bins];
+        norms[0] = scale_sq;
         if bins > 1 {
-            gains[bins - 1] = 1.0;
+            norms[bins - 1] = scale_sq;
         }
-        gains
+        norms
+    }
+
+    fn acquire_magnitude_storage(&mut self, bins: usize) -> Arc<[f32]> {
+        if bins == 0 {
+            return Arc::from([]);
+        }
+
+        if let Some(index) = self
+            .magnitude_pool
+            .iter()
+            .rposition(|buffer| buffer.len() == bins)
+        {
+            self.magnitude_pool.swap_remove(index)
+        } else {
+            Arc::<[f32]>::from(vec![0.0f32; bins])
+        }
     }
 
     fn recycle_column(&mut self, column: SpectrogramColumn) {
-        if let Ok(buffer) = Arc::try_unwrap(column.magnitudes_db) {
-            self.magnitude_pool.push(buffer);
-        }
-    }
-
-    fn recycle_columns<I>(&mut self, columns: I)
-    where
-        I: IntoIterator<Item = SpectrogramColumn>,
-    {
-        for column in columns {
-            self.recycle_column(column);
+        if Arc::strong_count(&column.magnitudes_db) == 1
+            && Arc::weak_count(&column.magnitudes_db) == 0
+        {
+            self.magnitude_pool.push(column.magnitudes_db);
         }
     }
 }
