@@ -370,7 +370,7 @@ impl SpectrogramProcessor {
         let spectrum_buffer = fft.make_output_vec();
         let scratch_buffer = fft.make_scratch_vec();
         let magnitude_buffer = vec![0.0; bins];
-        let bin_normalization = Self::compute_bin_normalization(fft_size);
+        let bin_normalization = Self::compute_bin_normalization(window.as_ref());
         let pcm_buffer = SampleBuffer::with_capacity(fft_size.saturating_mul(2));
         let history = SpectrogramHistory::new(history_len);
         Self {
@@ -407,7 +407,7 @@ impl SpectrogramProcessor {
         self.spectrum_buffer = self.fft.make_output_vec();
         self.scratch_buffer = self.fft.make_scratch_vec();
         self.magnitude_buffer.resize(bins, 0.0);
-        self.bin_normalization = Self::compute_bin_normalization(fft_size);
+        self.bin_normalization = Self::compute_bin_normalization(self.window.as_ref());
         self.magnitude_pool.retain(|buffer| buffer.len() == bins);
         self.pcm_buffer
             .resize_capacity(fft_size.saturating_mul(2).max(1));
@@ -460,6 +460,7 @@ impl SpectrogramProcessor {
         while self.pcm_buffer.len() >= fft_size {
             self.pcm_buffer
                 .copy_front_into(&mut self.real_buffer[..fft_size]);
+            Self::remove_dc(&mut self.real_buffer[..fft_size]);
             Self::apply_window(&mut self.real_buffer[..fft_size], self.window.as_ref());
 
             self.fft
@@ -617,22 +618,44 @@ impl SpectrogramProcessor {
         }
     }
 
-    fn compute_bin_normalization(fft_size: usize) -> Vec<f32> {
+    #[inline]
+    fn remove_dc(buffer: &mut [f32]) {
+        if buffer.is_empty() {
+            return;
+        }
+
+        let mean = buffer.iter().sum::<f32>() / buffer.len() as f32;
+        if mean.abs() <= f32::EPSILON {
+            return;
+        }
+
+        for sample in buffer.iter_mut() {
+            *sample -= mean;
+        }
+    }
+
+    fn compute_bin_normalization(window: &[f32]) -> Vec<f32> {
+        let fft_size = window.len();
         let bins = fft_size / 2 + 1;
         if bins == 0 {
             return Vec::new();
         }
 
-        let fft_scale = if fft_size == 0 {
-            0.0
-        } else {
+        let window_sum: f32 = window.iter().sum();
+        let inv_sum = if window_sum.abs() > f32::EPSILON {
+            1.0 / window_sum
+        } else if fft_size > 0 {
             1.0 / fft_size as f32
+        } else {
+            0.0
         };
-        let scale_sq = fft_scale * fft_scale;
-        let mut norms = vec![scale_sq * 4.0; bins];
-        norms[0] = scale_sq;
+
+        let dc_scale = inv_sum * inv_sum;
+        let interior_scale = (2.0 * inv_sum) * (2.0 * inv_sum);
+        let mut norms = vec![interior_scale; bins];
+        norms[0] = dc_scale;
         if bins > 1 {
-            norms[bins - 1] = scale_sq;
+            norms[bins - 1] = dc_scale;
         }
         norms
     }
@@ -703,7 +726,9 @@ mod tests {
         };
         let mut processor = SpectrogramProcessor::new(config);
 
-        let freq = 1_000.0;
+        let bin_hz = config.sample_rate / config.fft_size as f32;
+        let target_bin = 200usize;
+        let freq = target_bin as f32 * bin_hz;
         let frames = config.fft_size * 2;
         let mut samples = Vec::with_capacity(frames);
         for n in 0..frames {
@@ -722,7 +747,6 @@ mod tests {
 
         assert!(!update.new_columns.is_empty());
         let last = update.new_columns.last().unwrap();
-        let bin_hz = config.sample_rate / config.fft_size as f32;
         let max_index = last
             .magnitudes_db
             .iter()
@@ -732,6 +756,14 @@ mod tests {
             .unwrap();
         let peak_freq = max_index as f32 * bin_hz;
         assert!((peak_freq - freq).abs() < bin_hz * 1.5);
+
+        assert_eq!(max_index, target_bin);
+
+        let peak_db = last.magnitudes_db[max_index];
+        assert!(
+            peak_db > -0.5 && peak_db < 0.5,
+            "expected ~0 dBFS peak, saw {peak_db}",
+        );
     }
 
     #[test]
