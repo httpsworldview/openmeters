@@ -345,15 +345,17 @@ pub(crate) enum WindowPreset {
     Hann,
     Hamming,
     Blackman,
+    BlackmanHarris,
     PlanckBessel,
 }
 
 impl WindowPreset {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::Rectangular,
         Self::Hann,
         Self::Hamming,
         Self::Blackman,
+        Self::BlackmanHarris,
         Self::PlanckBessel,
     ];
 
@@ -363,6 +365,7 @@ impl WindowPreset {
             WindowKind::Hann => Self::Hann,
             WindowKind::Hamming => Self::Hamming,
             WindowKind::Blackman => Self::Blackman,
+            WindowKind::BlackmanHarris => Self::BlackmanHarris,
             WindowKind::PlanckBessel { .. } => Self::PlanckBessel,
         }
     }
@@ -373,6 +376,7 @@ impl WindowPreset {
             Self::Hann => WindowKind::Hann,
             Self::Hamming => WindowKind::Hamming,
             Self::Blackman => WindowKind::Blackman,
+            Self::BlackmanHarris => WindowKind::BlackmanHarris,
             Self::PlanckBessel => WindowKind::PlanckBessel {
                 epsilon: PLANCK_BESSEL_DEFAULT_EPSILON,
                 beta: PLANCK_BESSEL_DEFAULT_BETA,
@@ -388,6 +392,7 @@ impl fmt::Display for WindowPreset {
             Self::Hann => "Hann",
             Self::Hamming => "Hamming",
             Self::Blackman => "Blackman",
+            Self::BlackmanHarris => "Blackman-Harris",
             Self::PlanckBessel => "Planck-Bessel",
         })
     }
