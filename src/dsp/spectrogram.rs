@@ -111,6 +111,7 @@ pub enum WindowKind {
     Hann,
     Hamming,
     Blackman,
+    BlackmanHarris,
     PlanckBessel { epsilon: f32, beta: f32 },
 }
 
@@ -125,6 +126,9 @@ impl WindowKind {
             WindowKind::Hann => Self::cosine_sum_window(len, &[0.5, -0.5]),
             WindowKind::Hamming => Self::cosine_sum_window(len, &[0.54, -0.46]),
             WindowKind::Blackman => Self::cosine_sum_window(len, &[0.42, -0.5, 0.08]),
+            WindowKind::BlackmanHarris => {
+                Self::cosine_sum_window(len, &[0.35875, -0.48829, 0.14128, -0.01168])
+            }
             WindowKind::PlanckBessel { epsilon, beta } => {
                 planck_bessel_coefficients(len, epsilon, beta)
             }
@@ -157,6 +161,21 @@ impl WindowKind {
                     *value = a2.mul_add(c2, a1.mul_add(c1, a0));
                 }
             }
+            [a0, a1, a2, a3] => {
+                let a0 = *a0;
+                let a1 = *a1;
+                let a2 = *a2;
+                let a3 = *a3;
+                for (n, value) in window.iter_mut().enumerate() {
+                    let phase = (n as f32) * scale;
+                    let c1 = phase.cos();
+                    // cos(2x) = 2*cos^2(x) - 1
+                    let c2 = (2.0 * c1).mul_add(c1, -1.0);
+                    // cos(3x) = 4*cos^3(x) - 3*cos(x)
+                    let c3 = (4.0 * c1 * c1 - 3.0) * c1;
+                    *value = a3.mul_add(c3, a2.mul_add(c2, a1.mul_add(c1, a0)));
+                }
+            }
             _ => {
                 for (n, value) in window.iter_mut().enumerate() {
                     let base_phase = (n as f32) * scale;
@@ -179,7 +198,8 @@ impl PartialEq for WindowKind {
             (WindowKind::Rectangular, WindowKind::Rectangular)
             | (WindowKind::Hann, WindowKind::Hann)
             | (WindowKind::Hamming, WindowKind::Hamming)
-            | (WindowKind::Blackman, WindowKind::Blackman) => true,
+            | (WindowKind::Blackman, WindowKind::Blackman)
+            | (WindowKind::BlackmanHarris, WindowKind::BlackmanHarris) => true,
             (
                 WindowKind::PlanckBessel {
                     epsilon: ea,
@@ -204,8 +224,9 @@ impl Hash for WindowKind {
             WindowKind::Hann => state.write_u8(1),
             WindowKind::Hamming => state.write_u8(2),
             WindowKind::Blackman => state.write_u8(3),
+            WindowKind::BlackmanHarris => state.write_u8(4),
             WindowKind::PlanckBessel { epsilon, beta } => {
-                state.write_u8(4);
+                state.write_u8(5);
                 state.write_u32(epsilon.to_bits());
                 state.write_u32(beta.to_bits());
             }
