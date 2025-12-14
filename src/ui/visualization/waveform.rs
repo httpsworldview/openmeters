@@ -302,11 +302,7 @@ impl WaveformState {
             .all(|v| v.len() >= ch);
 
         WaveformSnapshot {
-            channels: if mode == ChannelMode::Both {
-                ch
-            } else {
-                1
-            },
+            channels: if mode == ChannelMode::Both { ch } else { 1 },
             columns: cols,
             min_values: proj(&source.min_values, cols),
             max_values: proj(&source.max_values, cols),

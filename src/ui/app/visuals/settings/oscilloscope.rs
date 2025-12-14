@@ -1,16 +1,19 @@
 use super::palette::{PaletteEditor, PaletteEvent};
-use super::widgets::{
-    SliderRange, labeled_pick_list, labeled_slider, section_title, set_f32, set_if_changed,
-};
+use super::widgets::{SliderRange, labeled_pick_list, labeled_slider, set_f32, set_if_changed};
 use super::{ModuleSettingsPane, SettingsMessage};
 use crate::dsp::oscilloscope::TriggerMode;
-use crate::ui::settings::{
-    ChannelMode, HasPalette, ModuleSettings, OscilloscopeSettings, PaletteSettings, SettingsHandle,
-};
+use crate::ui::settings::{ChannelMode, OscilloscopeSettings, SettingsHandle};
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
 use iced::Element;
 use iced::widget::column;
+
+const CHANNEL_OPTIONS: [ChannelMode; 4] = [
+    ChannelMode::Both,
+    ChannelMode::Left,
+    ChannelMode::Right,
+    ChannelMode::Mono,
+];
 
 #[derive(Debug)]
 pub struct OscilloscopeSettingsPane {
@@ -29,27 +32,20 @@ pub enum Message {
     Palette(PaletteEvent),
 }
 
-#[inline]
-fn osc(message: Message) -> SettingsMessage {
-    SettingsMessage::Oscilloscope(message)
-}
-
 pub fn create(
     visual_id: VisualId,
     visual_manager: &VisualManagerHandle,
 ) -> OscilloscopeSettingsPane {
-    let settings = visual_manager
-        .borrow()
-        .module_settings(VisualKind::OSCILLOSCOPE)
-        .and_then(|s| s.config::<OscilloscopeSettings>())
-        .unwrap_or_default();
-    let palette = settings
-        .palette_array::<1>()
-        .unwrap_or(theme::DEFAULT_OSCILLOSCOPE_PALETTE);
+    let (settings, palette) = super::load_settings_and_palette(
+        visual_manager,
+        VisualKind::OSCILLOSCOPE,
+        &theme::DEFAULT_OSCILLOSCOPE_PALETTE,
+        &[],
+    );
     OscilloscopeSettingsPane {
         visual_id,
         settings,
-        palette: PaletteEditor::new(&palette, &theme::DEFAULT_OSCILLOSCOPE_PALETTE),
+        palette,
     }
 }
 
@@ -72,7 +68,7 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
                 "Mode",
                 &["Free-run", "Stable"],
                 Some(if is_stable { "Stable" } else { "Free-run" }),
-                |l| osc(Message::TriggerMode(if l == "Stable" {
+                |l| SettingsMessage::Oscilloscope(Message::TriggerMode(if l == "Stable" {
                     TriggerMode::Stable { num_cycles: 1 }
                 } else {
                     TriggerMode::FreeRun
@@ -80,14 +76,9 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
             ),
             labeled_pick_list(
                 "Channels",
-                &[
-                    ChannelMode::Both,
-                    ChannelMode::Left,
-                    ChannelMode::Right,
-                    ChannelMode::Mono
-                ],
+                &CHANNEL_OPTIONS,
                 Some(self.settings.channel_mode),
-                |m| osc(Message::ChannelMode(m))
+                |m| SettingsMessage::Oscilloscope(Message::ChannelMode(m))
             ),
         ]
         .spacing(16);
@@ -98,7 +89,7 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
                 num_cycles as f32,
                 num_cycles.to_string(),
                 SliderRange::new(1.0, 4.0, 1.0),
-                |v| osc(Message::NumCycles(v as usize)),
+                |v| SettingsMessage::Oscilloscope(Message::NumCycles(v as usize)),
             ));
         }
 
@@ -108,22 +99,20 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
                 self.settings.segment_duration,
                 format!("{:.1} ms", self.settings.segment_duration * 1000.0),
                 SliderRange::new(0.005, 0.1, 0.001),
-                |v| osc(Message::SegmentDuration(v)),
+                |v| SettingsMessage::Oscilloscope(Message::SegmentDuration(v)),
             ))
             .push(labeled_slider(
                 "Persistence",
                 self.settings.persistence,
                 format!("{:.2}", self.settings.persistence),
                 SliderRange::new(0.0, 1.0, 0.01),
-                |v| osc(Message::Persistence(v)),
+                |v| SettingsMessage::Oscilloscope(Message::Persistence(v)),
             ))
-            .push(
-                column![
-                    section_title("Color"),
-                    self.palette.view().map(|e| osc(Message::Palette(e)))
-                ]
-                .spacing(8),
-            )
+            .push(super::palette_section(
+                &self.palette,
+                Message::Palette,
+                SettingsMessage::Oscilloscope,
+            ))
             .into()
     }
 
@@ -155,23 +144,13 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
             Message::Palette(e) => self.palette.update(e),
         };
         if changed {
-            self.persist(vm, settings);
-        }
-    }
-}
-
-impl OscilloscopeSettingsPane {
-    fn persist(&self, vm: &VisualManagerHandle, settings: &SettingsHandle) {
-        let mut stored = self.settings.clone();
-        stored.palette = PaletteSettings::maybe_from_colors(
-            self.palette.colors(),
-            &theme::DEFAULT_OSCILLOSCOPE_PALETTE,
-        );
-        if vm.borrow_mut().apply_module_settings(
-            VisualKind::OSCILLOSCOPE,
-            &ModuleSettings::with_config(&stored),
-        ) {
-            settings.update(|m| m.set_module_config(VisualKind::OSCILLOSCOPE, &stored));
+            persist_palette!(
+                vm,
+                settings,
+                VisualKind::OSCILLOSCOPE,
+                self,
+                theme::DEFAULT_OSCILLOSCOPE_PALETTE
+            );
         }
     }
 }

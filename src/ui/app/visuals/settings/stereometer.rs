@@ -1,12 +1,7 @@
 use super::palette::{PaletteEditor, PaletteEvent};
-use super::widgets::{
-    SliderRange, labeled_pick_list, labeled_slider, section_title, set_f32, set_if_changed,
-};
+use super::widgets::{SliderRange, labeled_pick_list, labeled_slider, set_f32, set_if_changed};
 use super::{ModuleSettingsPane, SettingsMessage};
-use crate::ui::settings::{
-    HasPalette, ModuleSettings, PaletteSettings, SettingsHandle, StereometerMode, StereometerScale,
-    StereometerSettings,
-};
+use crate::ui::settings::{SettingsHandle, StereometerMode, StereometerScale, StereometerSettings};
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
 use iced::widget::{column, row, toggler};
@@ -15,11 +10,6 @@ use iced::{Element, Length};
 const MODE_OPTIONS: [StereometerMode; 2] = [StereometerMode::Lissajous, StereometerMode::DotCloud];
 const SCALE_OPTIONS: [StereometerScale; 2] =
     [StereometerScale::Linear, StereometerScale::Exponential];
-
-#[inline]
-fn st(m: Message) -> SettingsMessage {
-    SettingsMessage::Stereometer(m)
-}
 
 #[derive(Debug)]
 pub struct StereometerSettingsPane {
@@ -45,18 +35,16 @@ pub fn create(
     visual_id: VisualId,
     visual_manager: &VisualManagerHandle,
 ) -> StereometerSettingsPane {
-    let settings = visual_manager
-        .borrow()
-        .module_settings(VisualKind::STEREOMETER)
-        .and_then(|s| s.config::<StereometerSettings>())
-        .unwrap_or_default();
-    let palette = settings
-        .palette_array::<1>()
-        .unwrap_or(theme::DEFAULT_STEREOMETER_PALETTE);
+    let (settings, palette) = super::load_settings_and_palette(
+        visual_manager,
+        VisualKind::STEREOMETER,
+        &theme::DEFAULT_STEREOMETER_PALETTE,
+        &[],
+    );
     StereometerSettingsPane {
         visual_id,
         settings,
-        palette: PaletteEditor::new(&palette, &theme::DEFAULT_STEREOMETER_PALETTE),
+        palette,
     }
 }
 
@@ -68,19 +56,19 @@ impl ModuleSettingsPane for StereometerSettingsPane {
     fn view(&self) -> Element<'_, SettingsMessage> {
         let s = &self.settings;
         let left = column![
-            labeled_pick_list("Mode", &MODE_OPTIONS, Some(s.mode), |m| st(Message::Mode(
-                m
-            ))),
+            labeled_pick_list("Mode", &MODE_OPTIONS, Some(s.mode), |m| {
+                SettingsMessage::Stereometer(Message::Mode(m))
+            }),
             labeled_slider(
                 "Rotation",
                 s.rotation as f32,
                 s.rotation.to_string(),
                 SliderRange::new(-4.0, 4.0, 1.0),
-                |v| st(Message::Rotation(v))
+                |v| SettingsMessage::Stereometer(Message::Rotation(v))
             ),
             toggler(s.flip)
                 .label("Flip")
-                .on_toggle(|v| st(Message::Flip(v))),
+                .on_toggle(|v| { SettingsMessage::Stereometer(Message::Flip(v)) }),
         ]
         .spacing(16)
         .width(Length::Fill);
@@ -89,7 +77,7 @@ impl ModuleSettingsPane for StereometerSettingsPane {
             "Scale",
             &SCALE_OPTIONS,
             Some(s.scale),
-            |v| st(Message::Scale(v))
+            |v| SettingsMessage::Stereometer(Message::Scale(v))
         )]
         .spacing(16)
         .width(Length::Fill);
@@ -99,7 +87,7 @@ impl ModuleSettingsPane for StereometerSettingsPane {
                 s.scale_range,
                 format!("{:.1}", s.scale_range),
                 SliderRange::new(1.0, 30.0, 0.5),
-                |v| st(Message::ScaleRange(v)),
+                |v| SettingsMessage::Stereometer(Message::ScaleRange(v)),
             ));
         }
 
@@ -110,27 +98,27 @@ impl ModuleSettingsPane for StereometerSettingsPane {
                 s.segment_duration,
                 format!("{:.1} ms", s.segment_duration * 1000.0),
                 SliderRange::new(0.005, 0.2, 0.001),
-                |v| st(Message::SegmentDuration(v))
+                |v| SettingsMessage::Stereometer(Message::SegmentDuration(v))
             ),
             labeled_slider(
                 "Sample count",
                 s.target_sample_count as f32,
                 s.target_sample_count.to_string(),
                 SliderRange::new(100.0, 2000.0, 50.0),
-                |v| st(Message::TargetSampleCount(v))
+                |v| SettingsMessage::Stereometer(Message::TargetSampleCount(v))
             ),
             labeled_slider(
                 "Persistence",
                 s.persistence,
                 format!("{:.2}", s.persistence),
                 SliderRange::new(0.0, 1.0, 0.01),
-                |v| st(Message::Persistence(v))
+                |v| SettingsMessage::Stereometer(Message::Persistence(v))
             ),
-            column![
-                section_title("Colors"),
-                self.palette.view().map(|e| st(Message::Palette(e)))
-            ]
-            .spacing(8)
+            super::palette_section(
+                &self.palette,
+                Message::Palette,
+                SettingsMessage::Stereometer
+            )
         ]
         .spacing(16)
         .into()
@@ -161,23 +149,13 @@ impl ModuleSettingsPane for StereometerSettingsPane {
             Message::Palette(e) => self.palette.update(*e),
         };
         if changed {
-            self.persist(vm, settings);
-        }
-    }
-}
-
-impl StereometerSettingsPane {
-    fn persist(&self, vm: &VisualManagerHandle, settings: &SettingsHandle) {
-        let mut stored = self.settings.clone();
-        stored.palette = PaletteSettings::maybe_from_colors(
-            self.palette.colors(),
-            &theme::DEFAULT_STEREOMETER_PALETTE,
-        );
-        if vm.borrow_mut().apply_module_settings(
-            VisualKind::STEREOMETER,
-            &ModuleSettings::with_config(&stored),
-        ) {
-            settings.update(|m| m.set_module_config(VisualKind::STEREOMETER, &stored));
+            persist_palette!(
+                vm,
+                settings,
+                VisualKind::STEREOMETER,
+                self,
+                theme::DEFAULT_STEREOMETER_PALETTE
+            );
         }
     }
 }
