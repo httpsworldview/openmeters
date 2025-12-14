@@ -5,8 +5,7 @@ use super::widgets::{
 use super::{ModuleSettingsPane, SettingsMessage};
 use crate::dsp::waveform::{DownsampleStrategy, MAX_SCROLL_SPEED, MIN_SCROLL_SPEED};
 use crate::ui::settings::{
-    HasPalette, ModuleSettings, PaletteSettings, SettingsHandle, WaveformChannelMode,
-    WaveformSettings,
+    ChannelMode, HasPalette, ModuleSettings, PaletteSettings, SettingsHandle, WaveformSettings,
 };
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
@@ -29,7 +28,7 @@ pub struct WaveformSettingsPane {
 pub enum Message {
     ScrollSpeed(f32),
     Downsample(DownsampleStrategy),
-    ChannelMode(WaveformChannelMode),
+    ChannelMode(ChannelMode),
     Palette(PaletteEvent),
 }
 
@@ -68,10 +67,10 @@ impl ModuleSettingsPane for WaveformSettingsPane {
             labeled_pick_list(
                 "Channels",
                 &[
-                    WaveformChannelMode::Both,
-                    WaveformChannelMode::Left,
-                    WaveformChannelMode::Right,
-                    WaveformChannelMode::Mono,
+                    ChannelMode::Both,
+                    ChannelMode::Left,
+                    ChannelMode::Right,
+                    ChannelMode::Mono,
                 ],
                 Some(self.settings.channel_mode),
                 |m| wf(Message::ChannelMode(m)),
@@ -122,10 +121,10 @@ impl WaveformSettingsPane {
             self.palette.colors(),
             &theme::DEFAULT_WAVEFORM_PALETTE,
         );
-        if vm.borrow_mut().apply_module_settings(
-            VisualKind::WAVEFORM,
-            &ModuleSettings::with_config(&stored),
-        ) {
+        if vm
+            .borrow_mut()
+            .apply_module_settings(VisualKind::WAVEFORM, &ModuleSettings::with_config(&stored))
+        {
             settings.update(|m| m.set_module_config(VisualKind::WAVEFORM, &stored));
         }
     }

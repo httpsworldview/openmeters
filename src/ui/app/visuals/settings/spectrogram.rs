@@ -1,7 +1,7 @@
 use super::palette::{PaletteEditor, PaletteEvent};
 use super::widgets::{
-    SliderRange, labeled_pick_list, labeled_slider, set_if_changed, update_f32_range,
-    update_usize_from_f32,
+    SliderRange, labeled_pick_list, labeled_slider, section_title, set_if_changed,
+    update_f32_range, update_usize_from_f32,
 };
 use super::{ModuleSettingsPane, SettingsMessage};
 use crate::dsp::spectrogram::{
@@ -13,8 +13,7 @@ use crate::ui::settings::{
 };
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
-use iced::widget::text::Wrapping;
-use iced::widget::{column, container, row, rule, text, toggler};
+use iced::widget::{column, row, toggler};
 use iced::{Element, Length};
 
 #[inline]
@@ -103,29 +102,6 @@ pub fn create(
     }
 }
 
-fn divider<'a>() -> rule::Rule<'a, iced::Theme> {
-    rule::horizontal(1).style(|_| rule::Style {
-        color: theme::with_alpha(theme::accent_primary(), 0.35),
-        radius: 0.0.into(),
-        fill_mode: rule::FillMode::Percent(82.0),
-        snap: true,
-    })
-}
-
-fn section<'a>(
-    title: &'static str,
-    body: iced::widget::Column<'a, SettingsMessage>,
-) -> container::Container<'a, SettingsMessage> {
-    container(
-        column![
-            container(text(title).size(14).wrapping(Wrapping::None)).clip(true),
-            body
-        ]
-        .spacing(10),
-    )
-    .padding(12)
-}
-
 impl ModuleSettingsPane for SpectrogramSettingsPane {
     fn visual_id(&self) -> VisualId {
         self.visual_id
@@ -139,34 +115,29 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
         let left_col = column![
             labeled_pick_list("FFT size", &FFT_OPTIONS, Some(s.fft_size), |v| sg(
                 Message::FftSize(v)
-            ))
-            .spacing(10),
+            )),
             labeled_pick_list("Hop overlap", &HopRatio::ALL, Some(hop_ratio), |v| sg(
                 Message::HopRatio(v)
-            ))
-            .spacing(10),
+            )),
         ]
         .spacing(8);
 
         let right_col = column![
             labeled_pick_list("Window", &WindowPreset::ALL, Some(window), |v| sg(
                 Message::Window(v)
-            ))
-            .spacing(10),
+            )),
             labeled_pick_list(
                 "Freq scale",
                 &FREQ_SCALE_OPTIONS,
                 Some(s.frequency_scale),
                 |v| sg(Message::FrequencyScale(v))
-            )
-            .spacing(10),
+            ),
             labeled_pick_list(
                 "Zero pad",
                 &ZERO_PAD_OPTIONS,
                 Some(s.zero_padding_factor),
                 |v| sg(Message::ZeroPadding(v))
-            )
-            .spacing(10),
+            ),
         ]
         .spacing(8);
 
@@ -219,16 +190,20 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
             ));
         }
 
-        let colors = column![self.palette.view().map(|e| sg(Message::Palette(e)))].spacing(8);
+        let colors = column![
+            section_title("Colors"),
+            self.palette.view().map(|e| sg(Message::Palette(e)))
+        ]
+        .spacing(8);
 
         column![
-            section("Core controls", core),
-            divider(),
-            section("Advanced", adv),
-            divider(),
-            section("Colors", colors)
+            section_title("Core controls"),
+            core,
+            section_title("Advanced"),
+            adv,
+            colors
         ]
-        .spacing(14)
+        .spacing(16)
         .into()
     }
 

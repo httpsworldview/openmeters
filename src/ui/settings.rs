@@ -102,10 +102,9 @@ impl ModuleSettings {
     where
         T: DeserializeOwned,
     {
-        match &self.raw {
-            Some(value) => serde_json::from_value::<T>(value.clone()).is_ok(),
-            None => true,
-        }
+        self.raw
+            .as_ref()
+            .is_none_or(|v| serde_json::from_value::<T>(v.clone()).is_ok())
     }
 }
 
@@ -128,13 +127,13 @@ impl From<Color> for ColorSetting {
     }
 }
 
-impl ColorSetting {
-    pub fn to_color(self) -> Color {
-        Color {
-            r: self.r,
-            g: self.g,
-            b: self.b,
-            a: self.a,
+impl From<ColorSetting> for Color {
+    fn from(c: ColorSetting) -> Self {
+        Self {
+            r: c.r,
+            g: c.g,
+            b: c.b,
+            a: c.a,
         }
     }
 }
@@ -146,35 +145,55 @@ pub struct PaletteSettings {
 
 impl PaletteSettings {
     pub fn to_array<const N: usize>(&self) -> Option<[Color; N]> {
-        (self.stops.len() == N).then(|| std::array::from_fn(|i| self.stops[i].to_color()))
+        (self.stops.len() == N).then(|| std::array::from_fn(|i| self.stops[i].into()))
     }
 
     pub fn maybe_from_colors(colors: &[Color], defaults: &[Color]) -> Option<Self> {
-        if colors.len() != defaults.len() {
-            return None;
-        }
+        // Only persist if colors differ from defaults
+        let differs = colors.len() == defaults.len()
+            && colors
+                .iter()
+                .zip(defaults)
+                .any(|(c, d)| !theme::colors_equal(*c, *d));
 
-        if colors
-            .iter()
-            .zip(defaults)
-            .all(|(color, default)| theme::colors_equal(*color, *default))
-        {
-            return None;
-        }
-
-        Some(Self {
+        differs.then(|| Self {
             stops: colors.iter().copied().map(ColorSetting::from).collect(),
         })
     }
 }
 
-/// Common interface for settings types with an optional palette.
-pub trait HasPalette {
-    fn palette(&self) -> Option<&PaletteSettings>;
+/// Defines the `HasPalette` trait and implements it for types with a `palette` field.
+macro_rules! define_has_palette {
+    ($($ty:ty),+ $(,)?) => {
+        pub trait HasPalette {
+            fn palette(&self) -> Option<&PaletteSettings>;
 
-    fn palette_array<const N: usize>(&self) -> Option<[Color; N]> {
-        self.palette().and_then(PaletteSettings::to_array::<N>)
-    }
+            fn palette_array<const N: usize>(&self) -> Option<[Color; N]> {
+                self.palette().and_then(PaletteSettings::to_array::<N>)
+            }
+        }
+
+        $(
+            impl HasPalette for $ty {
+                fn palette(&self) -> Option<&PaletteSettings> {
+                    self.palette.as_ref()
+                }
+            }
+        )+
+    };
+}
+
+/// Implements `Display` for an enum by mapping variants to string labels.
+macro_rules! display_enum {
+    ($ty:ty { $($variant:ident => $label:expr),+ $(,)? }) => {
+        impl std::fmt::Display for $ty {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(match self {
+                    $(Self::$variant => $label,)+
+                })
+            }
+        }
+    };
 }
 
 impl Serialize for ModuleSettings {
@@ -250,7 +269,7 @@ fn merge_config(config: Value, mut remainder: Map<String, Value>) -> Value {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
-pub enum OscilloscopeChannelMode {
+pub enum ChannelMode {
     Both,
     Left,
     Right,
@@ -258,17 +277,12 @@ pub enum OscilloscopeChannelMode {
     Mono,
 }
 
-impl std::fmt::Display for OscilloscopeChannelMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let label = match self {
-            Self::Both => "Left + Right",
-            Self::Left => "Left only",
-            Self::Right => "Right only",
-            Self::Mono => "Mono blend",
-        };
-        f.write_str(label)
-    }
-}
+display_enum!(ChannelMode {
+    Both => "Left + Right",
+    Left => "Left only",
+    Right => "Right only",
+    Mono => "Mono blend",
+});
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OscilloscopeSettings {
@@ -277,7 +291,7 @@ pub struct OscilloscopeSettings {
     pub trigger_mode: TriggerMode,
     pub persistence: f32,
     #[serde(default)]
-    pub channel_mode: OscilloscopeChannelMode,
+    pub channel_mode: ChannelMode,
     #[serde(default)]
     pub palette: Option<PaletteSettings>,
 }
@@ -288,37 +302,9 @@ impl Default for OscilloscopeSettings {
             segment_duration: OscilloscopeConfig::default().segment_duration,
             trigger_mode: TriggerMode::default(),
             persistence: 0.0,
-            channel_mode: OscilloscopeChannelMode::default(),
+            channel_mode: ChannelMode::default(),
             palette: None,
         }
-    }
-}
-
-impl HasPalette for OscilloscopeSettings {
-    fn palette(&self) -> Option<&PaletteSettings> {
-        self.palette.as_ref()
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum WaveformChannelMode {
-    Both,
-    Left,
-    Right,
-    #[default]
-    Mono,
-}
-
-impl std::fmt::Display for WaveformChannelMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let label = match self {
-            Self::Both => "Left + Right",
-            Self::Left => "Left only",
-            Self::Right => "Right only",
-            Self::Mono => "Mono blend",
-        };
-        f.write_str(label)
     }
 }
 
@@ -328,7 +314,7 @@ pub struct WaveformSettings {
     pub scroll_speed: f32,
     pub downsample: DownsampleStrategy,
     #[serde(default)]
-    pub channel_mode: WaveformChannelMode,
+    pub channel_mode: ChannelMode,
     #[serde(default)]
     pub palette: Option<PaletteSettings>,
 }
@@ -344,7 +330,7 @@ impl WaveformSettings {
         Self {
             scroll_speed: config.scroll_speed,
             downsample: config.downsample,
-            channel_mode: WaveformChannelMode::default(),
+            channel_mode: ChannelMode::default(),
             palette: None,
         }
     }
@@ -352,12 +338,6 @@ impl WaveformSettings {
     pub fn apply_to(&self, config: &mut WaveformConfig) {
         config.scroll_speed = self.scroll_speed;
         config.downsample = self.downsample;
-    }
-}
-
-impl HasPalette for WaveformSettings {
-    fn palette(&self) -> Option<&PaletteSettings> {
-        self.palette.as_ref()
     }
 }
 
@@ -395,12 +375,6 @@ impl SpectrumSettings {
     }
 }
 
-impl HasPalette for SpectrumSettings {
-    fn palette(&self) -> Option<&PaletteSettings> {
-        self.palette.as_ref()
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct LoudnessSettings {
@@ -420,12 +394,6 @@ impl LoudnessSettings {
     }
 }
 
-impl HasPalette for LoudnessSettings {
-    fn palette(&self) -> Option<&PaletteSettings> {
-        self.palette.as_ref()
-    }
-}
-
 impl Default for LoudnessSettings {
     fn default() -> Self {
         Self::new(MeterMode::TruePeak, MeterMode::LufsShortTerm)
@@ -440,15 +408,10 @@ pub enum StereometerMode {
     DotCloud,
 }
 
-impl std::fmt::Display for StereometerMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let label = match self {
-            Self::Lissajous => "Lissajous",
-            Self::DotCloud => "Dot Cloud",
-        };
-        f.write_str(label)
-    }
-}
+display_enum!(StereometerMode {
+    Lissajous => "Lissajous",
+    DotCloud => "Dot Cloud",
+});
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -458,15 +421,10 @@ pub enum StereometerScale {
     Exponential,
 }
 
-impl std::fmt::Display for StereometerScale {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let label = match self {
-            Self::Linear => "Linear",
-            Self::Exponential => "Exponential",
-        };
-        f.write_str(label)
-    }
-}
+display_enum!(StereometerScale {
+    Linear => "Linear",
+    Exponential => "Exponential",
+});
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -516,12 +474,6 @@ impl StereometerSettings {
     pub fn apply_to(&self, config: &mut StereometerConfig) {
         config.segment_duration = self.segment_duration;
         config.target_sample_count = self.target_sample_count;
-    }
-}
-
-impl HasPalette for StereometerSettings {
-    fn palette(&self) -> Option<&PaletteSettings> {
-        self.palette.as_ref()
     }
 }
 
@@ -582,11 +534,14 @@ impl SpectrogramSettings {
     }
 }
 
-impl HasPalette for SpectrogramSettings {
-    fn palette(&self) -> Option<&PaletteSettings> {
-        self.palette.as_ref()
-    }
-}
+define_has_palette!(
+    OscilloscopeSettings,
+    WaveformSettings,
+    SpectrumSettings,
+    LoudnessSettings,
+    StereometerSettings,
+    SpectrogramSettings,
+);
 
 fn config_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("XDG_CONFIG_HOME") {

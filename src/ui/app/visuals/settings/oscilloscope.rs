@@ -5,8 +5,7 @@ use super::widgets::{
 use super::{ModuleSettingsPane, SettingsMessage};
 use crate::dsp::oscilloscope::TriggerMode;
 use crate::ui::settings::{
-    HasPalette, ModuleSettings, OscilloscopeChannelMode as ChannelMode, OscilloscopeSettings,
-    PaletteSettings, SettingsHandle,
+    ChannelMode, HasPalette, ModuleSettings, OscilloscopeSettings, PaletteSettings, SettingsHandle,
 };
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};

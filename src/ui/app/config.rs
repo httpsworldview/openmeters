@@ -94,7 +94,7 @@ impl ConfigPage {
         let current_bg = settings_ref
             .settings()
             .background_color
-            .map(|c| c.to_color())
+            .map(Into::into)
             .unwrap_or(theme::BG_BASE);
         let capture_mode = settings_ref.settings().capture_mode;
         drop(settings_ref);
