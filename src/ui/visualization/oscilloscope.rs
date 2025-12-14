@@ -76,11 +76,7 @@ impl OscilloscopeState {
         }
     }
 
-    pub fn update_view_settings(
-        &mut self,
-        persistence: f32,
-        channel_mode: ChannelMode,
-    ) {
+    pub fn update_view_settings(&mut self, persistence: f32, channel_mode: ChannelMode) {
         self.persistence = persistence.clamp(0.0, 1.0);
         let mode_changed = self.channel_mode != channel_mode;
         self.channel_mode = channel_mode;
@@ -127,10 +123,7 @@ impl OscilloscopeState {
         self.persistence
     }
 
-    fn project_channels(
-        source: &OscilloscopeSnapshot,
-        mode: ChannelMode,
-    ) -> OscilloscopeSnapshot {
+    fn project_channels(source: &OscilloscopeSnapshot, mode: ChannelMode) -> OscilloscopeSnapshot {
         let channels = source.channels.max(1);
         let spc = source.samples_per_channel;
 

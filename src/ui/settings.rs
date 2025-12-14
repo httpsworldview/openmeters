@@ -20,6 +20,9 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::OnceLock;
+use std::sync::mpsc;
+use std::time::Duration;
 use tracing::{error, warn};
 
 const SETTINGS_FILE_NAME: &str = "settings.json";
@@ -109,6 +112,7 @@ impl ModuleSettings {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct ColorSetting {
     pub r: f32,
     pub g: f32,
@@ -139,6 +143,7 @@ impl From<ColorSetting> for Color {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(deny_unknown_fields)]
 pub struct PaletteSettings {
     pub stops: Vec<ColorSetting>,
 }
@@ -168,6 +173,8 @@ macro_rules! define_has_palette {
         pub trait HasPalette {
             fn palette(&self) -> Option<&PaletteSettings>;
 
+            fn set_palette(&mut self, palette: Option<PaletteSettings>);
+
             fn palette_array<const N: usize>(&self) -> Option<[Color; N]> {
                 self.palette().and_then(PaletteSettings::to_array::<N>)
             }
@@ -177,6 +184,10 @@ macro_rules! define_has_palette {
             impl HasPalette for $ty {
                 fn palette(&self) -> Option<&PaletteSettings> {
                     self.palette.as_ref()
+                }
+
+                fn set_palette(&mut self, palette: Option<PaletteSettings>) {
+                    self.palette = palette;
                 }
             }
         )+
@@ -285,6 +296,7 @@ display_enum!(ChannelMode {
 });
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct OscilloscopeSettings {
     pub segment_duration: f32,
     #[serde(default)]
@@ -610,18 +622,113 @@ impl SettingsManager {
     pub fn set_capture_mode(&mut self, mode: CaptureMode) {
         self.data.capture_mode = mode;
     }
+}
 
-    pub fn save(&self) -> io::Result<()> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)?;
+#[derive(Debug, Clone)]
+struct SaveRequest {
+    path: PathBuf,
+    data: UiSettings,
+}
+
+fn enqueue_save(path: PathBuf, data: UiSettings) {
+    static SAVE_TX: OnceLock<Option<mpsc::Sender<SaveRequest>>> = OnceLock::new();
+
+    let tx = SAVE_TX.get_or_init(|| {
+        let (tx, rx) = mpsc::channel::<SaveRequest>();
+
+        match std::thread::Builder::new()
+            .name("openmeters-settings-saver".to_owned())
+            .spawn(move || {
+                // Debounce frequent settings changes (e.g., slider drags).
+                const DEBOUNCE: Duration = Duration::from_millis(500);
+
+                let mut last_written_json: Option<String> = None;
+
+                while let Ok(mut req) = rx.recv() {
+                    // Coalesce updates until we've been idle for DEBOUNCE.
+                    loop {
+                        match rx.recv_timeout(DEBOUNCE) {
+                            Ok(next) => req = next,
+                            Err(mpsc::RecvTimeoutError::Timeout) => break,
+                            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                        }
+                    }
+
+                    let mut data = req.data;
+                    data.visuals.sanitize();
+
+                    let json = match serde_json::to_string_pretty(&data) {
+                        Ok(json) => json,
+                        Err(err) => {
+                            error!("[settings] failed to serialize UI settings for save: {err}");
+                            continue;
+                        }
+                    };
+
+                    if last_written_json.as_deref() == Some(&json) {
+                        continue;
+                    }
+
+                    if let Err(err) = write_settings_atomic(&req.path, &json) {
+                        error!("[settings] failed to persist UI settings: {err}");
+                        continue;
+                    }
+
+                    last_written_json = Some(json);
+                }
+            }) {
+            Ok(_) => Some(tx),
+            Err(err) => {
+                // Fall back to synchronous writes in enqueue_save.
+                error!("[settings] failed to spawn background saver thread: {err}");
+                None
+            }
         }
-        let mut data = self.data.clone();
+    });
+
+    let Some(tx) = tx.as_ref() else {
+        // Extremely rare, but avoids losing settings if we cannot spawn threads.
+        let mut data = data;
         data.visuals.sanitize();
-        let json = serde_json::to_string_pretty(&data)?;
-        let tmp_path = self.path.with_extension("json.tmp");
-        fs::write(&tmp_path, &json)?;
-        fs::rename(&tmp_path, &self.path)
+        match serde_json::to_string_pretty(&data) {
+            Ok(json) => {
+                if let Err(err) = write_settings_atomic(&path, &json) {
+                    error!("[settings] failed to persist UI settings (sync fallback): {err}");
+                }
+            }
+            Err(err) => error!("[settings] failed to serialize UI settings (sync fallback): {err}"),
+        }
+        return;
+    };
+
+    if let Err(err) = tx.send(SaveRequest {
+        path: path.clone(),
+        data: data.clone(),
+    }) {
+        // If the receiver ever dies unexpectedly, fall back to a synchronous write.
+        error!("[settings] failed to enqueue settings save: {err}");
+
+        let mut data = data;
+        data.visuals.sanitize();
+        match serde_json::to_string_pretty(&data) {
+            Ok(json) => {
+                if let Err(err) = write_settings_atomic(&path, &json) {
+                    error!("[settings] failed to persist UI settings (sync fallback): {err}");
+                }
+            }
+            Err(err) => error!("[settings] failed to serialize UI settings (sync fallback): {err}"),
+        }
     }
+}
+
+fn write_settings_atomic(path: &Path, json: &str) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let tmp_path = path.with_extension("json.tmp");
+    fs::write(&tmp_path, json)?;
+    fs::rename(&tmp_path, path)
 }
 
 #[derive(Debug, Clone)]
@@ -646,10 +753,10 @@ impl SettingsHandle {
     {
         let mut manager = self.inner.borrow_mut();
         let result = mutator(&mut manager);
+
+        // Keep in-memory state immediately consistent, but debounce disk IO.
         manager.data.visuals.sanitize();
-        if let Err(err) = manager.save() {
-            error!("[settings] failed to persist UI settings: {err}");
-        }
+        enqueue_save(manager.path.clone(), manager.data.clone());
         result
     }
 }

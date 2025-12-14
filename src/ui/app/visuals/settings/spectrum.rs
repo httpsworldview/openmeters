@@ -1,23 +1,15 @@
 use super::palette::{PaletteEditor, PaletteEvent};
 use super::widgets::{
-    SliderRange, labeled_pick_list, labeled_slider, section_title, set_f32, set_if_changed,
-    update_usize_from_f32,
+    SliderRange, labeled_pick_list, labeled_slider, set_f32, set_if_changed, update_usize_from_f32,
 };
 use super::{ModuleSettingsPane, SettingsMessage};
 use crate::dsp::spectrogram::FrequencyScale;
 use crate::dsp::spectrum::AveragingMode;
-use crate::ui::settings::{
-    HasPalette, ModuleSettings, PaletteSettings, SettingsHandle, SpectrumSettings,
-};
+use crate::ui::settings::{SettingsHandle, SpectrumSettings};
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
 use iced::Element;
 use iced::widget::{column, toggler};
-
-#[inline]
-fn sp(m: Message) -> SettingsMessage {
-    SettingsMessage::Spectrum(m)
-}
 
 const FFT_OPTIONS: [usize; 4] = [1024, 2048, 4096, 8192];
 const SCALE_OPTIONS: [FrequencyScale; 3] = [
@@ -80,17 +72,14 @@ pub enum Message {
 }
 
 pub fn create(visual_id: VisualId, visual_manager: &VisualManagerHandle) -> SpectrumSettingsPane {
-    let settings = visual_manager
-        .borrow()
-        .module_settings(VisualKind::SPECTRUM)
-        .and_then(|s| s.config::<SpectrumSettings>())
-        .unwrap_or_default();
-
+    let (settings, palette): (SpectrumSettings, _) = super::load_settings_and_palette(
+        visual_manager,
+        VisualKind::SPECTRUM,
+        &theme::DEFAULT_SPECTRUM_PALETTE,
+        &[],
+    );
     let (averaging_mode, averaging_factor, peak_hold_decay) =
         split_averaging(settings.config.averaging);
-    let palette = settings
-        .palette_array::<5>()
-        .unwrap_or(theme::DEFAULT_SPECTRUM_PALETTE);
 
     SpectrumSettingsPane {
         visual_id,
@@ -98,7 +87,7 @@ pub fn create(visual_id: VisualId, visual_manager: &VisualManagerHandle) -> Spec
         averaging_mode,
         averaging_factor,
         peak_hold_decay,
-        palette: PaletteEditor::new(&palette, &theme::DEFAULT_SPECTRUM_PALETTE),
+        palette,
     }
 }
 
@@ -119,18 +108,18 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
                 .label(label)
                 .spacing(8)
                 .text_size(11)
-                .on_toggle(move |v| sp(f(v)))
+                .on_toggle(move |v| SettingsMessage::Spectrum(f(v)))
         };
 
         let mut content = column![
-            labeled_pick_list("FFT size", &FFT_OPTIONS, Some(cfg.fft_size), |s| sp(
-                Message::FftSize(s)
-            )),
+            labeled_pick_list("FFT size", &FFT_OPTIONS, Some(cfg.fft_size), |s| {
+                SettingsMessage::Spectrum(Message::FftSize(s))
+            }),
             labeled_pick_list(
                 "Frequency scale",
                 &SCALE_OPTIONS,
                 Some(cfg.frequency_scale),
-                |s| sp(Message::FrequencyScale(s))
+                |s| SettingsMessage::Spectrum(Message::FrequencyScale(s))
             ),
             toggle(cfg.reverse_frequency, dir_label, Message::ReverseFrequency),
             toggle(cfg.show_grid, "Show frequency grid", Message::ShowGrid),
@@ -143,7 +132,7 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
                 "Averaging mode",
                 &AVERAGING_OPTIONS,
                 Some(self.averaging_mode),
-                |m| sp(Message::AveragingMode(m))
+                |m| SettingsMessage::Spectrum(Message::AveragingMode(m))
             ),
         ]
         .spacing(16);
@@ -154,7 +143,7 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
                 self.averaging_factor,
                 format!("{:.2}", self.averaging_factor),
                 EXPONENTIAL_RANGE,
-                |v| sp(Message::AveragingFactor(v)),
+                |v| SettingsMessage::Spectrum(Message::AveragingFactor(v)),
             ));
         } else if let SpectrumAveragingMode::PeakHold = self.averaging_mode {
             content = content.push(labeled_slider(
@@ -162,7 +151,7 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
                 self.peak_hold_decay,
                 format!("{:.1} dB/s", self.peak_hold_decay),
                 PEAK_DECAY_RANGE,
-                |v| sp(Message::PeakHoldDecay(v)),
+                |v| SettingsMessage::Spectrum(Message::PeakHoldDecay(v)),
             ));
         }
 
@@ -172,22 +161,20 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
                 self.settings.smoothing_radius as f32,
                 format!("{} bins", self.settings.smoothing_radius),
                 SMOOTHING_RADIUS_RANGE,
-                |v| sp(Message::SmoothingRadius(v)),
+                |v| SettingsMessage::Spectrum(Message::SmoothingRadius(v)),
             ))
             .push(labeled_slider(
                 "Smoothing passes",
                 self.settings.smoothing_passes as f32,
                 self.settings.smoothing_passes.to_string(),
                 SMOOTHING_PASSES_RANGE,
-                |v| sp(Message::SmoothingPasses(v)),
+                |v| SettingsMessage::Spectrum(Message::SmoothingPasses(v)),
             ))
-            .push(
-                column![
-                    section_title("Colors"),
-                    self.palette.view().map(|e| sp(Message::Palette(e)))
-                ]
-                .spacing(8),
-            )
+            .push(super::palette_section(
+                &self.palette,
+                Message::Palette,
+                SettingsMessage::Spectrum,
+            ))
             .into()
     }
 
@@ -253,7 +240,13 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
         };
 
         if changed {
-            self.persist(visual_manager, settings);
+            persist_palette!(
+                visual_manager,
+                settings,
+                VisualKind::SPECTRUM,
+                self,
+                theme::DEFAULT_SPECTRUM_PALETTE
+            );
         }
     }
 }
@@ -270,21 +263,6 @@ impl SpectrumSettingsPane {
             },
         }
         .normalized();
-    }
-
-    fn persist(&self, visual_manager: &VisualManagerHandle, settings: &SettingsHandle) {
-        let mut stored = self.settings.clone();
-        stored.palette = PaletteSettings::maybe_from_colors(
-            self.palette.colors(),
-            &theme::DEFAULT_SPECTRUM_PALETTE,
-        );
-
-        if visual_manager
-            .borrow_mut()
-            .apply_module_settings(VisualKind::SPECTRUM, &ModuleSettings::with_config(&stored))
-        {
-            settings.update(|m| m.set_module_config(VisualKind::SPECTRUM, &stored));
-        }
     }
 }
 
