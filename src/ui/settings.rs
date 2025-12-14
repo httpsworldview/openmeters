@@ -168,6 +168,15 @@ impl PaletteSettings {
     }
 }
 
+/// Common interface for settings types with an optional palette.
+pub trait HasPalette {
+    fn palette(&self) -> Option<&PaletteSettings>;
+
+    fn palette_array<const N: usize>(&self) -> Option<[Color; N]> {
+        self.palette().and_then(PaletteSettings::to_array::<N>)
+    }
+}
+
 impl Serialize for ModuleSettings {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -285,6 +294,12 @@ impl Default for OscilloscopeSettings {
     }
 }
 
+impl HasPalette for OscilloscopeSettings {
+    fn palette(&self) -> Option<&PaletteSettings> {
+        self.palette.as_ref()
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum WaveformChannelMode {
@@ -338,11 +353,11 @@ impl WaveformSettings {
         config.scroll_speed = self.scroll_speed;
         config.downsample = self.downsample;
     }
+}
 
-    pub fn palette_array<const N: usize>(&self) -> Option<[Color; N]> {
-        self.palette
-            .as_ref()
-            .and_then(PaletteSettings::to_array::<N>)
+impl HasPalette for WaveformSettings {
+    fn palette(&self) -> Option<&PaletteSettings> {
+        self.palette.as_ref()
     }
 }
 
@@ -378,11 +393,11 @@ impl SpectrumSettings {
     pub fn apply_to(&self, config: &mut SpectrumConfig) {
         *config = self.config.normalized();
     }
+}
 
-    pub fn palette_array<const N: usize>(&self) -> Option<[Color; N]> {
-        self.palette
-            .as_ref()
-            .and_then(PaletteSettings::to_array::<N>)
+impl HasPalette for SpectrumSettings {
+    fn palette(&self) -> Option<&PaletteSettings> {
+        self.palette.as_ref()
     }
 }
 
@@ -403,11 +418,11 @@ impl LoudnessSettings {
             palette: None,
         }
     }
+}
 
-    pub fn palette_array<const N: usize>(&self) -> Option<[iced::Color; N]> {
-        self.palette
-            .as_ref()
-            .and_then(PaletteSettings::to_array::<N>)
+impl HasPalette for LoudnessSettings {
+    fn palette(&self) -> Option<&PaletteSettings> {
+        self.palette.as_ref()
     }
 }
 
@@ -504,6 +519,12 @@ impl StereometerSettings {
     }
 }
 
+impl HasPalette for StereometerSettings {
+    fn palette(&self) -> Option<&PaletteSettings> {
+        self.palette.as_ref()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, default)]
 pub struct SpectrogramSettings {
@@ -559,11 +580,11 @@ impl SpectrogramSettings {
         config.display_bin_count = self.display_bin_count.max(1);
         config.display_min_hz = self.display_min_hz.max(1.0);
     }
+}
 
-    pub fn palette_array<const N: usize>(&self) -> Option<[Color; N]> {
-        self.palette
-            .as_ref()
-            .and_then(PaletteSettings::to_array::<N>)
+impl HasPalette for SpectrogramSettings {
+    fn palette(&self) -> Option<&PaletteSettings> {
+        self.palette.as_ref()
     }
 }
 

@@ -20,6 +20,15 @@ pub enum DownsampleStrategy {
     Average,
 }
 
+impl std::fmt::Display for DownsampleStrategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::MinMax => "Min/Max",
+            Self::Average => "Average",
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct WaveformConfig {
     pub sample_rate: f32,

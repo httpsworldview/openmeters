@@ -5,28 +5,24 @@ use super::widgets::{
 use super::{ModuleSettingsPane, SettingsMessage};
 use crate::dsp::waveform::{DownsampleStrategy, MAX_SCROLL_SPEED, MIN_SCROLL_SPEED};
 use crate::ui::settings::{
-    ModuleSettings, PaletteSettings, SettingsHandle, WaveformChannelMode, WaveformSettings,
+    HasPalette, ModuleSettings, PaletteSettings, SettingsHandle, WaveformChannelMode,
+    WaveformSettings,
 };
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
 use iced::Element;
 use iced::widget::{column, pick_list};
-use std::fmt;
+
+#[inline]
+fn wf(m: Message) -> SettingsMessage {
+    SettingsMessage::Waveform(m)
+}
 
 #[derive(Debug)]
 pub struct WaveformSettingsPane {
     visual_id: VisualId,
     settings: WaveformSettings,
     palette: PaletteEditor,
-}
-
-impl fmt::Display for DownsampleStrategy {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            DownsampleStrategy::MinMax => "Min/Max",
-            DownsampleStrategy::Average => "Average",
-        })
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -67,7 +63,7 @@ impl ModuleSettingsPane for WaveformSettingsPane {
                 self.settings.scroll_speed,
                 format!("{:.0} px/s", self.settings.scroll_speed),
                 SliderRange::new(MIN_SCROLL_SPEED, MAX_SCROLL_SPEED, 1.0),
-                |v| SettingsMessage::Waveform(Message::ScrollSpeed(v)),
+                |v| wf(Message::ScrollSpeed(v)),
             ),
             labeled_pick_list(
                 "Channels",
@@ -78,23 +74,21 @@ impl ModuleSettingsPane for WaveformSettingsPane {
                     WaveformChannelMode::Mono,
                 ],
                 Some(self.settings.channel_mode),
-                |m| SettingsMessage::Waveform(Message::ChannelMode(m)),
+                |m| wf(Message::ChannelMode(m)),
             ),
             column![
                 section_title("Downsampling strategy"),
                 pick_list(
                     [DownsampleStrategy::MinMax, DownsampleStrategy::Average],
                     Some(self.settings.downsample),
-                    |v| SettingsMessage::Waveform(Message::Downsample(v))
+                    |v| wf(Message::Downsample(v))
                 )
                 .text_size(14)
             ]
             .spacing(8),
             column![
                 section_title("Colors"),
-                self.palette
-                    .view()
-                    .map(|e| SettingsMessage::Waveform(Message::Palette(e)))
+                self.palette.view().map(|e| wf(Message::Palette(e)))
             ]
             .spacing(8)
         ]
@@ -116,16 +110,23 @@ impl ModuleSettingsPane for WaveformSettingsPane {
             Message::Palette(e) => self.palette.update(e),
         };
         if changed {
-            self.settings.palette = PaletteSettings::maybe_from_colors(
-                self.palette.colors(),
-                &theme::DEFAULT_WAVEFORM_PALETTE,
-            );
-            if vm
-                .borrow_mut()
-                .apply_module_settings(VisualKind::WAVEFORM, &ModuleSettings::with_config(&self.settings))
-            {
-                s.update(|m| m.set_module_config(VisualKind::WAVEFORM, &self.settings));
-            }
+            self.persist(vm, s);
+        }
+    }
+}
+
+impl WaveformSettingsPane {
+    fn persist(&self, vm: &VisualManagerHandle, settings: &SettingsHandle) {
+        let mut stored = self.settings.clone();
+        stored.palette = PaletteSettings::maybe_from_colors(
+            self.palette.colors(),
+            &theme::DEFAULT_WAVEFORM_PALETTE,
+        );
+        if vm.borrow_mut().apply_module_settings(
+            VisualKind::WAVEFORM,
+            &ModuleSettings::with_config(&stored),
+        ) {
+            settings.update(|m| m.set_module_config(VisualKind::WAVEFORM, &stored));
         }
     }
 }

@@ -8,13 +8,19 @@ use crate::dsp::spectrogram::{
     FrequencyScale, PLANCK_BESSEL_DEFAULT_BETA, PLANCK_BESSEL_DEFAULT_EPSILON, WindowKind,
 };
 use crate::ui::render::spectrogram::SPECTROGRAM_PALETTE_SIZE;
-use crate::ui::settings::{ModuleSettings, PaletteSettings, SettingsHandle, SpectrogramSettings};
+use crate::ui::settings::{
+    HasPalette, ModuleSettings, PaletteSettings, SettingsHandle, SpectrogramSettings,
+};
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
 use iced::widget::text::Wrapping;
 use iced::widget::{column, container, row, rule, text, toggler};
 use iced::{Element, Length};
-use std::fmt;
+
+#[inline]
+fn sg(m: Message) -> SettingsMessage {
+    SettingsMessage::Spectrogram(m)
+}
 
 const FFT_OPTIONS: [usize; 5] = [1024, 2048, 4096, 8192, 16384];
 const ZERO_PAD_OPTIONS: [usize; 6] = [1, 2, 4, 8, 16, 32];
@@ -131,34 +137,34 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
         let hop_ratio = HopRatio::from_config(s.fft_size, s.hop_size);
 
         let left_col = column![
-            labeled_pick_list("FFT size", &FFT_OPTIONS, Some(s.fft_size), |v| {
-                SettingsMessage::Spectrogram(Message::FftSize(v))
-            })
+            labeled_pick_list("FFT size", &FFT_OPTIONS, Some(s.fft_size), |v| sg(
+                Message::FftSize(v)
+            ))
             .spacing(10),
-            labeled_pick_list("Hop overlap", &HopRatio::ALL, Some(hop_ratio), |v| {
-                SettingsMessage::Spectrogram(Message::HopRatio(v))
-            })
+            labeled_pick_list("Hop overlap", &HopRatio::ALL, Some(hop_ratio), |v| sg(
+                Message::HopRatio(v)
+            ))
             .spacing(10),
         ]
         .spacing(8);
 
         let right_col = column![
-            labeled_pick_list("Window", &WindowPreset::ALL, Some(window), |v| {
-                SettingsMessage::Spectrogram(Message::Window(v))
-            })
+            labeled_pick_list("Window", &WindowPreset::ALL, Some(window), |v| sg(
+                Message::Window(v)
+            ))
             .spacing(10),
             labeled_pick_list(
                 "Freq scale",
                 &FREQ_SCALE_OPTIONS,
                 Some(s.frequency_scale),
-                |v| SettingsMessage::Spectrogram(Message::FrequencyScale(v))
+                |v| sg(Message::FrequencyScale(v))
             )
             .spacing(10),
             labeled_pick_list(
                 "Zero pad",
                 &ZERO_PAD_OPTIONS,
                 Some(s.zero_padding_factor),
-                |v| SettingsMessage::Spectrogram(Message::ZeroPadding(v))
+                |v| sg(Message::ZeroPadding(v))
             )
             .spacing(10),
         ]
@@ -172,14 +178,14 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
                 epsilon,
                 format!("{epsilon:.3}"),
                 PB_EPSILON_RANGE,
-                |v| SettingsMessage::Spectrogram(Message::PlanckBesselEpsilon(v)),
+                |v| sg(Message::PlanckBesselEpsilon(v)),
             ));
             core = core.push(labeled_slider(
                 "PB beta",
                 beta,
                 format!("{beta:.2}"),
                 PB_BETA_RANGE,
-                |v| SettingsMessage::Spectrogram(Message::PlanckBesselBeta(v)),
+                |v| sg(Message::PlanckBesselBeta(v)),
             ));
         }
         core = core.push(labeled_slider(
@@ -187,14 +193,14 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
             s.history_length as f32,
             format!("{} cols", s.history_length),
             HISTORY_RANGE,
-            |v| SettingsMessage::Spectrogram(Message::HistoryLength(v)),
+            |v| sg(Message::HistoryLength(v)),
         ));
 
         let reassign_toggle = toggler(s.use_reassignment)
             .label("Time-frequency reassignment")
             .text_size(11)
             .spacing(4)
-            .on_toggle(|v| SettingsMessage::Spectrogram(Message::UseReassignment(v)));
+            .on_toggle(|v| sg(Message::UseReassignment(v)));
         let mut adv = column![reassign_toggle].spacing(8);
         if s.use_reassignment {
             adv = adv.push(labeled_slider(
@@ -202,23 +208,18 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
                 s.reassignment_power_floor_db,
                 format!("{:.0} dB", s.reassignment_power_floor_db),
                 REASSIGN_FLOOR_RANGE,
-                |v| SettingsMessage::Spectrogram(Message::ReassignmentFloor(v)),
+                |v| sg(Message::ReassignmentFloor(v)),
             ));
             adv = adv.push(labeled_slider(
                 "Display bins",
                 s.display_bin_count as f32,
                 format!("{} bins", s.display_bin_count),
                 DISPLAY_BINS_RANGE,
-                |v| SettingsMessage::Spectrogram(Message::DisplayBinCount(v)),
+                |v| sg(Message::DisplayBinCount(v)),
             ));
         }
 
-        let colors = column![
-            self.palette
-                .view()
-                .map(|e| SettingsMessage::Spectrogram(Message::Palette(e)))
-        ]
-        .spacing(8);
+        let colors = column![self.palette.view().map(|e| sg(Message::Palette(e)))].spacing(8);
 
         column![
             section("Core controls", core),
@@ -377,8 +378,8 @@ impl WindowPreset {
     }
 }
 
-impl fmt::Display for WindowPreset {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Display for WindowPreset {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::Rectangular => "Rectangular",
             Self::Hann => "Hann",
@@ -434,19 +435,13 @@ impl HopRatio {
     }
 }
 
-impl fmt::Display for HopRatio {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Display for HopRatio {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::Quarter => "75% overlap",
             Self::Sixth => "83% overlap",
             Self::Eighth => "87% overlap",
             Self::Sixteenth => "94% overlap",
         })
-    }
-}
-
-impl fmt::Display for FrequencyScale {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{self:?}")
     }
 }

@@ -1,7 +1,9 @@
 use super::palette::{PaletteEditor, PaletteEvent};
 use super::widgets::{CONTROL_SPACING, labeled_pick_list, section_title, set_if_changed};
 use super::{ModuleSettingsPane, SettingsMessage};
-use crate::ui::settings::{LoudnessSettings, ModuleSettings, PaletteSettings, SettingsHandle};
+use crate::ui::settings::{
+    HasPalette, LoudnessSettings, ModuleSettings, PaletteSettings, SettingsHandle,
+};
 use crate::ui::theme;
 use crate::ui::visualization::loudness::{LOUDNESS_PALETTE_SIZE, MeterMode};
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
@@ -112,24 +114,23 @@ impl ModuleSettingsPane for LoudnessSettingsPane {
         };
 
         if changed {
-            self.push_changes(visual_manager, settings);
+            self.persist(visual_manager, settings);
         }
     }
 }
 
 impl LoudnessSettingsPane {
-    fn push_changes(&self, visual_manager: &VisualManagerHandle, settings_handle: &SettingsHandle) {
-        let mut settings = self.settings.clone();
-        settings.palette = PaletteSettings::maybe_from_colors(
+    fn persist(&self, vm: &VisualManagerHandle, settings: &SettingsHandle) {
+        let mut stored = self.settings.clone();
+        stored.palette = PaletteSettings::maybe_from_colors(
             self.palette.colors(),
             &theme::DEFAULT_LOUDNESS_PALETTE,
         );
-
-        if visual_manager.borrow_mut().apply_module_settings(
+        if vm.borrow_mut().apply_module_settings(
             VisualKind::LOUDNESS,
-            &ModuleSettings::with_config(&settings),
+            &ModuleSettings::with_config(&stored),
         ) {
-            settings_handle.update(|mgr| mgr.set_module_config(VisualKind::LOUDNESS, &settings));
+            settings.update(|m| m.set_module_config(VisualKind::LOUDNESS, &stored));
         }
     }
 }
