@@ -285,11 +285,35 @@ impl Default for OscilloscopeSettings {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WaveformChannelMode {
+    Both,
+    Left,
+    Right,
+    #[default]
+    Mono,
+}
+
+impl std::fmt::Display for WaveformChannelMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self {
+            Self::Both => "Left + Right",
+            Self::Left => "Left only",
+            Self::Right => "Right only",
+            Self::Mono => "Mono blend",
+        };
+        f.write_str(label)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct WaveformSettings {
     pub scroll_speed: f32,
     pub downsample: DownsampleStrategy,
+    #[serde(default)]
+    pub channel_mode: WaveformChannelMode,
     #[serde(default)]
     pub palette: Option<PaletteSettings>,
 }
@@ -305,6 +329,7 @@ impl WaveformSettings {
         Self {
             scroll_speed: config.scroll_speed,
             downsample: config.downsample,
+            channel_mode: WaveformChannelMode::default(),
             palette: None,
         }
     }

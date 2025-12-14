@@ -483,19 +483,21 @@ impl VisualModule for WaveformVisual {
             stored.apply_to(&mut config);
             self.processor.update_config(config);
             self.ensure_capacity();
-            self.state.borrow_mut().set_palette(&resolve_palette(
+            let mut state = self.state.borrow_mut();
+            state.set_palette(&resolve_palette(
                 &stored.palette,
                 &theme::DEFAULT_WAVEFORM_PALETTE,
             ));
+            state.set_channel_mode(stored.channel_mode);
         }
     }
 
     fn export_settings(&self) -> Option<ModuleSettings> {
+        let state = self.state.borrow();
         let mut snapshot = WaveformSettings::from_config(&self.processor.config());
-        snapshot.palette = PaletteSettings::maybe_from_colors(
-            self.state.borrow().palette(),
-            &theme::DEFAULT_WAVEFORM_PALETTE,
-        );
+        snapshot.channel_mode = state.channel_mode();
+        snapshot.palette =
+            PaletteSettings::maybe_from_colors(state.palette(), &theme::DEFAULT_WAVEFORM_PALETTE);
         Some(ModuleSettings::with_config(&snapshot))
     }
 }

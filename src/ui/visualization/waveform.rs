@@ -2,11 +2,12 @@
 
 use crate::audio::meter_tap::MeterFormat;
 use crate::dsp::waveform::{
-    DEFAULT_COLUMN_CAPACITY, MAX_COLUMN_CAPACITY, WaveformConfig,
+    DEFAULT_COLUMN_CAPACITY, MAX_COLUMN_CAPACITY, WaveformConfig, WaveformPreview,
     WaveformProcessor as CoreWaveformProcessor, WaveformSnapshot,
 };
 use crate::dsp::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::ui::render::waveform::{PreviewSample, WaveformParams, WaveformPrimitive};
+use crate::ui::settings::WaveformChannelMode;
 use crate::ui::theme;
 use iced::advanced::Renderer as _;
 use iced::advanced::renderer::{self, Quad};
@@ -93,6 +94,7 @@ pub struct WaveformState {
     desired_columns: Rc<Cell<usize>>,
     render_key: u64,
     render_cache: RefCell<WaveformRenderCache>,
+    channel_mode: WaveformChannelMode,
 }
 
 impl WaveformState {
@@ -108,11 +110,23 @@ impl WaveformState {
             desired_columns: Rc::new(Cell::new(DEFAULT_COLUMN_CAPACITY)),
             render_key: Self::next_render_key(),
             render_cache: RefCell::new(WaveformRenderCache::default()),
+            channel_mode: WaveformChannelMode::default(),
         }
     }
 
     pub fn apply_snapshot(&mut self, snapshot: WaveformSnapshot) {
-        self.snapshot = snapshot;
+        self.snapshot = Self::project_channels(&snapshot, self.channel_mode);
+    }
+
+    pub fn set_channel_mode(&mut self, mode: WaveformChannelMode) {
+        if self.channel_mode != mode {
+            self.channel_mode = mode;
+            self.snapshot = Self::project_channels(&self.snapshot, mode);
+        }
+    }
+
+    pub fn channel_mode(&self) -> WaveformChannelMode {
+        self.channel_mode
     }
 
     pub fn set_palette(&mut self, palette: &[Color]) {
@@ -262,6 +276,72 @@ impl WaveformState {
 
     pub fn desired_columns(&self) -> usize {
         self.desired_columns.get()
+    }
+
+    fn project_channels(source: &WaveformSnapshot, mode: WaveformChannelMode) -> WaveformSnapshot {
+        let (ch, cols) = (source.channels.max(1), source.columns);
+        if cols == 0 {
+            return WaveformSnapshot::default();
+        }
+        let exp = ch * cols;
+        if [
+            &source.min_values,
+            &source.max_values,
+            &source.frequency_normalized,
+        ]
+        .iter()
+        .any(|v| v.len() < exp)
+        {
+            return WaveformSnapshot::default();
+        }
+
+        let proj = |d: &[f32], s: usize| project_data(d, s, ch, mode);
+        let p = &source.preview;
+        let pv = [&p.min_values, &p.max_values, &p.frequency_normalized]
+            .iter()
+            .all(|v| v.len() >= ch);
+
+        WaveformSnapshot {
+            channels: if mode == WaveformChannelMode::Both {
+                ch
+            } else {
+                1
+            },
+            columns: cols,
+            min_values: proj(&source.min_values, cols),
+            max_values: proj(&source.max_values, cols),
+            frequency_normalized: proj(&source.frequency_normalized, cols),
+            column_spacing_seconds: source.column_spacing_seconds,
+            scroll_position: source.scroll_position,
+            downsample: source.downsample,
+            preview: if pv {
+                WaveformPreview {
+                    progress: p.progress,
+                    min_values: proj(&p.min_values, 1),
+                    max_values: proj(&p.max_values, 1),
+                    frequency_normalized: proj(&p.frequency_normalized, 1),
+                }
+            } else {
+                WaveformPreview::default()
+            },
+        }
+    }
+}
+
+fn project_data(data: &[f32], stride: usize, ch: usize, mode: WaveformChannelMode) -> Vec<f32> {
+    match mode {
+        WaveformChannelMode::Both => data.to_vec(),
+        WaveformChannelMode::Left => data[..stride].to_vec(),
+        WaveformChannelMode::Right => {
+            let s = if ch > 1 { stride } else { 0 };
+            data[s..s + stride].to_vec()
+        }
+        WaveformChannelMode::Mono => {
+            let sc = 1.0 / ch as f32;
+            (0..stride)
+                .map(|i| data.iter().skip(i).step_by(stride).sum::<f32>() * sc)
+                .collect()
+        }
     }
 }
 

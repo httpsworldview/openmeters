@@ -1,10 +1,14 @@
 use super::palette::{PaletteEditor, PaletteEvent};
-use super::widgets::{SliderRange, labeled_slider, section_title, set_f32, set_if_changed};
+use super::widgets::{
+    SliderRange, labeled_pick_list, labeled_slider, section_title, set_f32, set_if_changed,
+};
 use super::{ModuleSettingsPane, SettingsMessage};
 use crate::dsp::waveform::{
     DownsampleStrategy, MAX_SCROLL_SPEED, MIN_SCROLL_SPEED, WaveformConfig,
 };
-use crate::ui::settings::{ModuleSettings, PaletteSettings, SettingsHandle, WaveformSettings};
+use crate::ui::settings::{
+    ModuleSettings, PaletteSettings, SettingsHandle, WaveformChannelMode, WaveformSettings,
+};
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
 use iced::Element;
@@ -15,6 +19,7 @@ use std::fmt;
 pub struct WaveformSettingsPane {
     visual_id: VisualId,
     config: WaveformConfig,
+    channel_mode: WaveformChannelMode,
     palette: PaletteEditor,
 }
 
@@ -31,6 +36,7 @@ impl fmt::Display for DownsampleStrategy {
 pub enum Message {
     ScrollSpeed(f32),
     Downsample(DownsampleStrategy),
+    ChannelMode(WaveformChannelMode),
     Palette(PaletteEvent),
 }
 
@@ -41,6 +47,7 @@ pub fn create(visual_id: VisualId, visual_manager: &VisualManagerHandle) -> Wave
         .and_then(|s| s.config::<WaveformSettings>());
 
     let config = stored.as_ref().map(|s| s.to_config()).unwrap_or_default();
+    let channel_mode = stored.as_ref().map(|s| s.channel_mode).unwrap_or_default();
     let palette = stored
         .as_ref()
         .and_then(|s| s.palette_array::<{ theme::DEFAULT_WAVEFORM_PALETTE.len() }>())
@@ -49,6 +56,7 @@ pub fn create(visual_id: VisualId, visual_manager: &VisualManagerHandle) -> Wave
     WaveformSettingsPane {
         visual_id,
         config,
+        channel_mode,
         palette: PaletteEditor::new(&palette, &theme::DEFAULT_WAVEFORM_PALETTE),
     }
 }
@@ -66,6 +74,17 @@ impl ModuleSettingsPane for WaveformSettingsPane {
                 format!("{:.0} px/s", self.config.scroll_speed),
                 SliderRange::new(MIN_SCROLL_SPEED, MAX_SCROLL_SPEED, 1.0),
                 |v| SettingsMessage::Waveform(Message::ScrollSpeed(v)),
+            ),
+            labeled_pick_list(
+                "Channels",
+                &[
+                    WaveformChannelMode::Both,
+                    WaveformChannelMode::Left,
+                    WaveformChannelMode::Right,
+                    WaveformChannelMode::Mono,
+                ],
+                Some(self.channel_mode),
+                |m| SettingsMessage::Waveform(Message::ChannelMode(m)),
             ),
             column![
                 section_title("Downsampling strategy"),
@@ -99,10 +118,12 @@ impl ModuleSettingsPane for WaveformSettingsPane {
                 v.clamp(MIN_SCROLL_SPEED, MAX_SCROLL_SPEED),
             ),
             Message::Downsample(d) => set_if_changed(&mut self.config.downsample, *d),
+            Message::ChannelMode(m) => set_if_changed(&mut self.channel_mode, *m),
             Message::Palette(e) => self.palette.update(*e),
         };
         if changed {
             let mut stored = WaveformSettings::from_config(&self.config);
+            stored.channel_mode = self.channel_mode;
             stored.palette = PaletteSettings::maybe_from_colors(
                 self.palette.colors(),
                 &theme::DEFAULT_WAVEFORM_PALETTE,
