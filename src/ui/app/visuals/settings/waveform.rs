@@ -3,9 +3,7 @@ use super::widgets::{
     SliderRange, labeled_pick_list, labeled_slider, section_title, set_f32, set_if_changed,
 };
 use super::{ModuleSettingsPane, SettingsMessage};
-use crate::dsp::waveform::{
-    DownsampleStrategy, MAX_SCROLL_SPEED, MIN_SCROLL_SPEED, WaveformConfig,
-};
+use crate::dsp::waveform::{DownsampleStrategy, MAX_SCROLL_SPEED, MIN_SCROLL_SPEED};
 use crate::ui::settings::{
     ModuleSettings, PaletteSettings, SettingsHandle, WaveformChannelMode, WaveformSettings,
 };
@@ -18,8 +16,7 @@ use std::fmt;
 #[derive(Debug)]
 pub struct WaveformSettingsPane {
     visual_id: VisualId,
-    config: WaveformConfig,
-    channel_mode: WaveformChannelMode,
+    settings: WaveformSettings,
     palette: PaletteEditor,
 }
 
@@ -32,7 +29,7 @@ impl fmt::Display for DownsampleStrategy {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum Message {
     ScrollSpeed(f32),
     Downsample(DownsampleStrategy),
@@ -41,22 +38,19 @@ pub enum Message {
 }
 
 pub fn create(visual_id: VisualId, visual_manager: &VisualManagerHandle) -> WaveformSettingsPane {
-    let stored = visual_manager
+    let settings = visual_manager
         .borrow()
         .module_settings(VisualKind::WAVEFORM)
-        .and_then(|s| s.config::<WaveformSettings>());
+        .and_then(|s| s.config::<WaveformSettings>())
+        .unwrap_or_default();
 
-    let config = stored.as_ref().map(|s| s.to_config()).unwrap_or_default();
-    let channel_mode = stored.as_ref().map(|s| s.channel_mode).unwrap_or_default();
-    let palette = stored
-        .as_ref()
-        .and_then(|s| s.palette_array::<{ theme::DEFAULT_WAVEFORM_PALETTE.len() }>())
+    let palette = settings
+        .palette_array::<{ theme::DEFAULT_WAVEFORM_PALETTE.len() }>()
         .unwrap_or(theme::DEFAULT_WAVEFORM_PALETTE);
 
     WaveformSettingsPane {
         visual_id,
-        config,
-        channel_mode,
+        settings,
         palette: PaletteEditor::new(&palette, &theme::DEFAULT_WAVEFORM_PALETTE),
     }
 }
@@ -70,8 +64,8 @@ impl ModuleSettingsPane for WaveformSettingsPane {
         column![
             labeled_slider(
                 "Scroll speed",
-                self.config.scroll_speed,
-                format!("{:.0} px/s", self.config.scroll_speed),
+                self.settings.scroll_speed,
+                format!("{:.0} px/s", self.settings.scroll_speed),
                 SliderRange::new(MIN_SCROLL_SPEED, MAX_SCROLL_SPEED, 1.0),
                 |v| SettingsMessage::Waveform(Message::ScrollSpeed(v)),
             ),
@@ -83,14 +77,14 @@ impl ModuleSettingsPane for WaveformSettingsPane {
                     WaveformChannelMode::Right,
                     WaveformChannelMode::Mono,
                 ],
-                Some(self.channel_mode),
+                Some(self.settings.channel_mode),
                 |m| SettingsMessage::Waveform(Message::ChannelMode(m)),
             ),
             column![
                 section_title("Downsampling strategy"),
                 pick_list(
                     [DownsampleStrategy::MinMax, DownsampleStrategy::Average],
-                    Some(self.config.downsample),
+                    Some(self.settings.downsample),
                     |v| SettingsMessage::Waveform(Message::Downsample(v))
                 )
                 .text_size(14)
@@ -112,27 +106,25 @@ impl ModuleSettingsPane for WaveformSettingsPane {
         let SettingsMessage::Waveform(msg) = message else {
             return;
         };
-        let changed = match msg {
+        let changed = match *msg {
             Message::ScrollSpeed(v) => set_f32(
-                &mut self.config.scroll_speed,
+                &mut self.settings.scroll_speed,
                 v.clamp(MIN_SCROLL_SPEED, MAX_SCROLL_SPEED),
             ),
-            Message::Downsample(d) => set_if_changed(&mut self.config.downsample, *d),
-            Message::ChannelMode(m) => set_if_changed(&mut self.channel_mode, *m),
-            Message::Palette(e) => self.palette.update(*e),
+            Message::Downsample(d) => set_if_changed(&mut self.settings.downsample, d),
+            Message::ChannelMode(m) => set_if_changed(&mut self.settings.channel_mode, m),
+            Message::Palette(e) => self.palette.update(e),
         };
         if changed {
-            let mut stored = WaveformSettings::from_config(&self.config);
-            stored.channel_mode = self.channel_mode;
-            stored.palette = PaletteSettings::maybe_from_colors(
+            self.settings.palette = PaletteSettings::maybe_from_colors(
                 self.palette.colors(),
                 &theme::DEFAULT_WAVEFORM_PALETTE,
             );
             if vm
                 .borrow_mut()
-                .apply_module_settings(VisualKind::WAVEFORM, &ModuleSettings::with_config(&stored))
+                .apply_module_settings(VisualKind::WAVEFORM, &ModuleSettings::with_config(&self.settings))
             {
-                s.update(|m| m.set_module_config(VisualKind::WAVEFORM, &stored));
+                s.update(|m| m.set_module_config(VisualKind::WAVEFORM, &self.settings));
             }
         }
     }
