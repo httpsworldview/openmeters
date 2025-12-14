@@ -165,13 +165,14 @@ impl StereometerState {
         self.snapshot.correlation = snapshot.correlation;
     }
 
-    pub fn view_settings(&self) -> (f32, StereometerMode, StereometerScale, f32, i8) {
+    pub fn view_settings(&self) -> (f32, StereometerMode, StereometerScale, f32, i8, bool) {
         (
             self.persistence,
             self.mode,
             self.scale,
             self.scale_range,
             self.rotation,
+            self.flip,
         )
     }
 
