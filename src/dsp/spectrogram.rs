@@ -104,6 +104,16 @@ pub enum FrequencyScale {
     Mel,
 }
 
+impl std::fmt::Display for FrequencyScale {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Linear => "Linear",
+            Self::Logarithmic => "Logarithmic",
+            Self::Mel => "Mel",
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WindowKind {

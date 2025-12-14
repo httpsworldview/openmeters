@@ -5,8 +5,8 @@ use super::widgets::{
 use super::{ModuleSettingsPane, SettingsMessage};
 use crate::dsp::oscilloscope::TriggerMode;
 use crate::ui::settings::{
-    ModuleSettings, OscilloscopeChannelMode as ChannelMode, OscilloscopeSettings, PaletteSettings,
-    SettingsHandle,
+    HasPalette, ModuleSettings, OscilloscopeChannelMode as ChannelMode, OscilloscopeSettings,
+    PaletteSettings, SettingsHandle,
 };
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
@@ -45,9 +45,7 @@ pub fn create(
         .and_then(|s| s.config::<OscilloscopeSettings>())
         .unwrap_or_default();
     let palette = settings
-        .palette
-        .as_ref()
-        .and_then(|p| p.to_array::<1>())
+        .palette_array::<1>()
         .unwrap_or(theme::DEFAULT_OSCILLOSCOPE_PALETTE);
     OscilloscopeSettingsPane {
         visual_id,
@@ -158,16 +156,23 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
             Message::Palette(e) => self.palette.update(e),
         };
         if changed {
-            self.settings.palette = PaletteSettings::maybe_from_colors(
-                self.palette.colors(),
-                &theme::DEFAULT_OSCILLOSCOPE_PALETTE,
-            );
-            if vm.borrow_mut().apply_module_settings(
-                VisualKind::OSCILLOSCOPE,
-                &ModuleSettings::with_config(&self.settings),
-            ) {
-                settings.update(|m| m.set_module_config(VisualKind::OSCILLOSCOPE, &self.settings));
-            }
+            self.persist(vm, settings);
+        }
+    }
+}
+
+impl OscilloscopeSettingsPane {
+    fn persist(&self, vm: &VisualManagerHandle, settings: &SettingsHandle) {
+        let mut stored = self.settings.clone();
+        stored.palette = PaletteSettings::maybe_from_colors(
+            self.palette.colors(),
+            &theme::DEFAULT_OSCILLOSCOPE_PALETTE,
+        );
+        if vm.borrow_mut().apply_module_settings(
+            VisualKind::OSCILLOSCOPE,
+            &ModuleSettings::with_config(&stored),
+        ) {
+            settings.update(|m| m.set_module_config(VisualKind::OSCILLOSCOPE, &stored));
         }
     }
 }

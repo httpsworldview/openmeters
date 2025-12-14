@@ -6,12 +6,18 @@ use super::widgets::{
 use super::{ModuleSettingsPane, SettingsMessage};
 use crate::dsp::spectrogram::FrequencyScale;
 use crate::dsp::spectrum::AveragingMode;
-use crate::ui::settings::{ModuleSettings, PaletteSettings, SettingsHandle, SpectrumSettings};
+use crate::ui::settings::{
+    HasPalette, ModuleSettings, PaletteSettings, SettingsHandle, SpectrumSettings,
+};
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
 use iced::Element;
 use iced::widget::{column, toggler};
-use std::fmt;
+
+#[inline]
+fn sp(m: Message) -> SettingsMessage {
+    SettingsMessage::Spectrum(m)
+}
 
 const FFT_OPTIONS: [usize; 4] = [1024, 2048, 4096, 8192];
 const SCALE_OPTIONS: [FrequencyScale; 3] = [
@@ -37,13 +43,13 @@ pub(crate) enum SpectrumAveragingMode {
     PeakHold,
 }
 
-impl fmt::Display for SpectrumAveragingMode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::None => f.write_str("None"),
-            Self::Exponential => f.write_str("Exponential"),
-            Self::PeakHold => f.write_str("Peak hold"),
-        }
+impl std::fmt::Display for SpectrumAveragingMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::None => "None",
+            Self::Exponential => "Exponential",
+            Self::PeakHold => "Peak hold",
+        })
     }
 }
 
@@ -113,19 +119,19 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
                 .label(label)
                 .spacing(8)
                 .text_size(11)
-                .on_toggle(move |v| SettingsMessage::Spectrum(f(v)))
+                .on_toggle(move |v| sp(f(v)))
         };
 
         let mut content = column![
-            labeled_pick_list("FFT size", &FFT_OPTIONS, Some(cfg.fft_size), |s| {
-                SettingsMessage::Spectrum(Message::FftSize(s))
-            })
+            labeled_pick_list("FFT size", &FFT_OPTIONS, Some(cfg.fft_size), |s| sp(
+                Message::FftSize(s)
+            ))
             .spacing(12),
             labeled_pick_list(
                 "Frequency scale",
                 &SCALE_OPTIONS,
                 Some(cfg.frequency_scale),
-                |s| SettingsMessage::Spectrum(Message::FrequencyScale(s))
+                |s| sp(Message::FrequencyScale(s))
             )
             .spacing(12),
             toggle(cfg.reverse_frequency, dir_label, Message::ReverseFrequency),
@@ -139,7 +145,7 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
                 "Averaging mode",
                 &AVERAGING_OPTIONS,
                 Some(self.averaging_mode),
-                |m| SettingsMessage::Spectrum(Message::AveragingMode(m))
+                |m| sp(Message::AveragingMode(m))
             )
             .spacing(12),
         ]
@@ -151,7 +157,7 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
                 self.averaging_factor,
                 format!("{:.2}", self.averaging_factor),
                 EXPONENTIAL_RANGE,
-                |v| SettingsMessage::Spectrum(Message::AveragingFactor(v)),
+                |v| sp(Message::AveragingFactor(v)),
             ));
         } else if let SpectrumAveragingMode::PeakHold = self.averaging_mode {
             content = content.push(labeled_slider(
@@ -159,7 +165,7 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
                 self.peak_hold_decay,
                 format!("{:.1} dB/s", self.peak_hold_decay),
                 PEAK_DECAY_RANGE,
-                |v| SettingsMessage::Spectrum(Message::PeakHoldDecay(v)),
+                |v| sp(Message::PeakHoldDecay(v)),
             ));
         }
 
@@ -169,21 +175,19 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
                 self.settings.smoothing_radius as f32,
                 format!("{} bins", self.settings.smoothing_radius),
                 SMOOTHING_RADIUS_RANGE,
-                |v| SettingsMessage::Spectrum(Message::SmoothingRadius(v)),
+                |v| sp(Message::SmoothingRadius(v)),
             ))
             .push(labeled_slider(
                 "Smoothing passes",
                 self.settings.smoothing_passes as f32,
                 self.settings.smoothing_passes.to_string(),
                 SMOOTHING_PASSES_RANGE,
-                |v| SettingsMessage::Spectrum(Message::SmoothingPasses(v)),
+                |v| sp(Message::SmoothingPasses(v)),
             ))
             .push(
                 column![
                     section_title("Colors"),
-                    self.palette
-                        .view()
-                        .map(|e| SettingsMessage::Spectrum(Message::Palette(e)))
+                    self.palette.view().map(|e| sp(Message::Palette(e)))
                 ]
                 .spacing(8),
             )
