@@ -339,12 +339,6 @@ impl WaveformSettings {
         config.downsample = self.downsample;
     }
 
-    pub fn to_config(&self) -> WaveformConfig {
-        let mut config = WaveformConfig::default();
-        self.apply_to(&mut config);
-        config
-    }
-
     pub fn palette_array<const N: usize>(&self) -> Option<[Color; N]> {
         self.palette
             .as_ref()
@@ -383,10 +377,6 @@ impl SpectrumSettings {
 
     pub fn apply_to(&self, config: &mut SpectrumConfig) {
         *config = self.config.normalized();
-    }
-
-    pub fn to_config(&self) -> SpectrumConfig {
-        self.config.normalized()
     }
 
     pub fn palette_array<const N: usize>(&self) -> Option<[Color; N]> {
@@ -568,12 +558,6 @@ impl SpectrogramSettings {
         config.zero_padding_factor = self.zero_padding_factor.max(1);
         config.display_bin_count = self.display_bin_count.max(1);
         config.display_min_hz = self.display_min_hz.max(1.0);
-    }
-
-    pub fn to_config(&self) -> SpectrogramConfig {
-        let mut config = SpectrogramConfig::default();
-        self.apply_to(&mut config);
-        config
     }
 
     pub fn palette_array<const N: usize>(&self) -> Option<[Color; N]> {
