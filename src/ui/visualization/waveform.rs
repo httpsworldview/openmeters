@@ -7,7 +7,7 @@ use crate::dsp::waveform::{
 };
 use crate::dsp::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::ui::render::waveform::{PreviewSample, WaveformParams, WaveformPrimitive};
-use crate::ui::settings::WaveformChannelMode;
+use crate::ui::settings::ChannelMode;
 use crate::ui::theme;
 use iced::advanced::Renderer as _;
 use iced::advanced::renderer::{self, Quad};
@@ -94,7 +94,7 @@ pub struct WaveformState {
     desired_columns: Rc<Cell<usize>>,
     render_key: u64,
     render_cache: RefCell<WaveformRenderCache>,
-    channel_mode: WaveformChannelMode,
+    channel_mode: ChannelMode,
 }
 
 impl WaveformState {
@@ -110,7 +110,7 @@ impl WaveformState {
             desired_columns: Rc::new(Cell::new(DEFAULT_COLUMN_CAPACITY)),
             render_key: Self::next_render_key(),
             render_cache: RefCell::new(WaveformRenderCache::default()),
-            channel_mode: WaveformChannelMode::default(),
+            channel_mode: ChannelMode::default(),
         }
     }
 
@@ -118,14 +118,14 @@ impl WaveformState {
         self.snapshot = Self::project_channels(&snapshot, self.channel_mode);
     }
 
-    pub fn set_channel_mode(&mut self, mode: WaveformChannelMode) {
+    pub fn set_channel_mode(&mut self, mode: ChannelMode) {
         if self.channel_mode != mode {
             self.channel_mode = mode;
             self.snapshot = Self::project_channels(&self.snapshot, mode);
         }
     }
 
-    pub fn channel_mode(&self) -> WaveformChannelMode {
+    pub fn channel_mode(&self) -> ChannelMode {
         self.channel_mode
     }
 
@@ -278,7 +278,7 @@ impl WaveformState {
         self.desired_columns.get()
     }
 
-    fn project_channels(source: &WaveformSnapshot, mode: WaveformChannelMode) -> WaveformSnapshot {
+    fn project_channels(source: &WaveformSnapshot, mode: ChannelMode) -> WaveformSnapshot {
         let (ch, cols) = (source.channels.max(1), source.columns);
         if cols == 0 {
             return WaveformSnapshot::default();
@@ -302,7 +302,7 @@ impl WaveformState {
             .all(|v| v.len() >= ch);
 
         WaveformSnapshot {
-            channels: if mode == WaveformChannelMode::Both {
+            channels: if mode == ChannelMode::Both {
                 ch
             } else {
                 1
@@ -328,15 +328,15 @@ impl WaveformState {
     }
 }
 
-fn project_data(data: &[f32], stride: usize, ch: usize, mode: WaveformChannelMode) -> Vec<f32> {
+fn project_data(data: &[f32], stride: usize, ch: usize, mode: ChannelMode) -> Vec<f32> {
     match mode {
-        WaveformChannelMode::Both => data.to_vec(),
-        WaveformChannelMode::Left => data[..stride].to_vec(),
-        WaveformChannelMode::Right => {
+        ChannelMode::Both => data.to_vec(),
+        ChannelMode::Left => data[..stride].to_vec(),
+        ChannelMode::Right => {
             let s = if ch > 1 { stride } else { 0 };
             data[s..s + stride].to_vec()
         }
-        WaveformChannelMode::Mono => {
+        ChannelMode::Mono => {
             let sc = 1.0 / ch as f32;
             (0..stride)
                 .map(|i| data.iter().skip(i).step_by(stride).sum::<f32>() * sc)

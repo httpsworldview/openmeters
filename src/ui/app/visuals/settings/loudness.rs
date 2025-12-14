@@ -1,5 +1,5 @@
 use super::palette::{PaletteEditor, PaletteEvent};
-use super::widgets::{CONTROL_SPACING, labeled_pick_list, section_title, set_if_changed};
+use super::widgets::{labeled_pick_list, section_title, set_if_changed};
 use super::{ModuleSettingsPane, SettingsMessage};
 use crate::ui::settings::{
     HasPalette, LoudnessSettings, ModuleSettings, PaletteSettings, SettingsHandle,
@@ -64,34 +64,24 @@ impl ModuleSettingsPane for LoudnessSettingsPane {
     }
 
     fn view(&self) -> Element<'_, SettingsMessage> {
-        let mode_pick_list =
-            |label: &'static str, current: MeterMode, ctor: fn(MeterMode) -> Message| {
-                labeled_pick_list(label, MeterMode::ALL, Some(current), move |mode| {
-                    loud(ctor(mode))
-                })
-                .spacing(CONTROL_SPACING)
-            };
-
-        let left_mode = mode_pick_list(
-            "Left meter mode",
-            self.settings.left_mode,
-            Message::LeftMode,
-        );
-        let right_mode = mode_pick_list(
-            "Right meter mode",
-            self.settings.right_mode,
-            Message::RightMode,
-        );
-
-        let palette_controls = self
-            .palette
-            .view()
-            .map(|event| loud(Message::Palette(event)));
-
         column![
-            left_mode,
-            right_mode,
-            column![section_title("Colors"), palette_controls].spacing(8)
+            labeled_pick_list(
+                "Left meter mode",
+                MeterMode::ALL,
+                Some(self.settings.left_mode),
+                |m| loud(Message::LeftMode(m))
+            ),
+            labeled_pick_list(
+                "Right meter mode",
+                MeterMode::ALL,
+                Some(self.settings.right_mode),
+                |m| loud(Message::RightMode(m))
+            ),
+            column![
+                section_title("Colors"),
+                self.palette.view().map(|e| loud(Message::Palette(e)))
+            ]
+            .spacing(8)
         ]
         .spacing(16)
         .into()
@@ -126,10 +116,10 @@ impl LoudnessSettingsPane {
             self.palette.colors(),
             &theme::DEFAULT_LOUDNESS_PALETTE,
         );
-        if vm.borrow_mut().apply_module_settings(
-            VisualKind::LOUDNESS,
-            &ModuleSettings::with_config(&stored),
-        ) {
+        if vm
+            .borrow_mut()
+            .apply_module_settings(VisualKind::LOUDNESS, &ModuleSettings::with_config(&stored))
+        {
             settings.update(|m| m.set_module_config(VisualKind::LOUDNESS, &stored));
         }
     }

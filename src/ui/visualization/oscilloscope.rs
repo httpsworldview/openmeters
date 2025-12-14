@@ -6,7 +6,7 @@ use crate::dsp::oscilloscope::{
 };
 use crate::dsp::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::ui::render::oscilloscope::{OscilloscopeParams, OscilloscopePrimitive};
-use crate::ui::settings::OscilloscopeChannelMode;
+use crate::ui::settings::ChannelMode;
 use crate::ui::theme;
 use iced::advanced::Renderer as _;
 use iced::advanced::renderer::{self, Quad};
@@ -63,7 +63,7 @@ pub struct OscilloscopeState {
     snapshot: OscilloscopeSnapshot,
     style: OscilloscopeStyle,
     persistence: f32,
-    channel_mode: OscilloscopeChannelMode,
+    channel_mode: ChannelMode,
 }
 
 impl OscilloscopeState {
@@ -72,14 +72,14 @@ impl OscilloscopeState {
             snapshot: OscilloscopeSnapshot::default(),
             style: OscilloscopeStyle::default(),
             persistence: 0.0,
-            channel_mode: OscilloscopeChannelMode::default(),
+            channel_mode: ChannelMode::default(),
         }
     }
 
     pub fn update_view_settings(
         &mut self,
         persistence: f32,
-        channel_mode: OscilloscopeChannelMode,
+        channel_mode: ChannelMode,
     ) {
         self.persistence = persistence.clamp(0.0, 1.0);
         let mode_changed = self.channel_mode != channel_mode;
@@ -119,7 +119,7 @@ impl OscilloscopeState {
         self.snapshot = projected;
     }
 
-    pub fn channel_mode(&self) -> OscilloscopeChannelMode {
+    pub fn channel_mode(&self) -> ChannelMode {
         self.channel_mode
     }
 
@@ -129,7 +129,7 @@ impl OscilloscopeState {
 
     fn project_channels(
         source: &OscilloscopeSnapshot,
-        mode: OscilloscopeChannelMode,
+        mode: ChannelMode,
     ) -> OscilloscopeSnapshot {
         let channels = source.channels.max(1);
         let spc = source.samples_per_channel;
@@ -139,8 +139,8 @@ impl OscilloscopeState {
         }
 
         let (out_channels, samples) = match mode {
-            OscilloscopeChannelMode::Both => (channels, source.samples.clone()),
-            OscilloscopeChannelMode::Left => {
+            ChannelMode::Both => (channels, source.samples.clone()),
+            ChannelMode::Left => {
                 let samples = source
                     .samples
                     .chunks(spc)
@@ -149,7 +149,7 @@ impl OscilloscopeState {
                     .unwrap_or_default();
                 (1, samples)
             }
-            OscilloscopeChannelMode::Right => {
+            ChannelMode::Right => {
                 let samples = source
                     .samples
                     .chunks(spc)
@@ -159,7 +159,7 @@ impl OscilloscopeState {
                     .unwrap_or_default();
                 (1, samples)
             }
-            OscilloscopeChannelMode::Mono => {
+            ChannelMode::Mono => {
                 let mut samples = vec![0.0; spc];
                 let scale = 1.0 / channels as f32;
                 for channel_samples in source.samples.chunks(spc).take(channels) {

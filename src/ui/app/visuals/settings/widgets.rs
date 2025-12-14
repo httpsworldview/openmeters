@@ -119,6 +119,7 @@ where
             .clip(true),
         pick_list(options.into(), selected, on_select),
     ]
+    .spacing(CONTROL_SPACING)
     .align_y(Vertical::Center)
 }
 

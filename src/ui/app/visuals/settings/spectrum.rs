@@ -125,15 +125,13 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
         let mut content = column![
             labeled_pick_list("FFT size", &FFT_OPTIONS, Some(cfg.fft_size), |s| sp(
                 Message::FftSize(s)
-            ))
-            .spacing(12),
+            )),
             labeled_pick_list(
                 "Frequency scale",
                 &SCALE_OPTIONS,
                 Some(cfg.frequency_scale),
                 |s| sp(Message::FrequencyScale(s))
-            )
-            .spacing(12),
+            ),
             toggle(cfg.reverse_frequency, dir_label, Message::ReverseFrequency),
             toggle(cfg.show_grid, "Show frequency grid", Message::ShowGrid),
             toggle(
@@ -146,8 +144,7 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
                 &AVERAGING_OPTIONS,
                 Some(self.averaging_mode),
                 |m| sp(Message::AveragingMode(m))
-            )
-            .spacing(12),
+            ),
         ]
         .spacing(16);
 
@@ -242,12 +239,16 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
             Message::ReverseFrequency(v) => set_if_changed(&mut cfg.reverse_frequency, v),
             Message::ShowGrid(v) => set_if_changed(&mut cfg.show_grid, v),
             Message::ShowPeakLabel(v) => set_if_changed(&mut cfg.show_peak_label, v),
-            Message::SmoothingRadius(v) => {
-                update_usize_from_f32(&mut self.settings.smoothing_radius, v, SMOOTHING_RADIUS_RANGE)
-            }
-            Message::SmoothingPasses(v) => {
-                update_usize_from_f32(&mut self.settings.smoothing_passes, v, SMOOTHING_PASSES_RANGE)
-            }
+            Message::SmoothingRadius(v) => update_usize_from_f32(
+                &mut self.settings.smoothing_radius,
+                v,
+                SMOOTHING_RADIUS_RANGE,
+            ),
+            Message::SmoothingPasses(v) => update_usize_from_f32(
+                &mut self.settings.smoothing_passes,
+                v,
+                SMOOTHING_PASSES_RANGE,
+            ),
             Message::Palette(e) => self.palette.update(e),
         };
 

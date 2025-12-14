@@ -434,7 +434,7 @@ impl UiApp {
                     .borrow()
                     .settings()
                     .background_color
-                    .map(|c| c.to_color())
+                    .map(Into::into)
             })
             .flatten();
         theme::theme(bg)
