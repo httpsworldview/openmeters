@@ -85,8 +85,8 @@ impl VisualsPage {
                     panes.swap(pane, target);
                     self.order = panes.iter().map(|(_, p)| p.id).collect();
                     self.visual_manager.borrow_mut().reorder(&self.order);
-                    let kinds: Vec<_> = panes.iter().map(|(_, p)| p.kind).collect();
-                    self.settings.update(|s| s.set_visual_order(&kinds));
+                    let snapshot = self.visual_manager.snapshot();
+                    self.settings.update(|s| s.set_visual_order(&snapshot));
                 }
             }
             VisualsMessage::PaneDragged(_) => {}

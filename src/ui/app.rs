@@ -611,8 +611,10 @@ fn update(app: &mut UiApp, message: Message) -> Task<Message> {
                 app.visual_manager
                     .borrow_mut()
                     .restore_position(popout.visual_id, popout.original_index);
+                let snapshot = app.visual_manager.snapshot();
+                app.settings_handle.update(|s| s.set_visual_order(&snapshot));
                 app.visuals_page
-                    .apply_snapshot_excluding(app.visual_manager.snapshot(), &app.popped_out_ids());
+                    .apply_snapshot_excluding(snapshot, &app.popped_out_ids());
                 return window::close(focused);
             }
             if let Some((id, kind)) = app.visuals_page.hovered_visual() {
