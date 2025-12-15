@@ -8,7 +8,7 @@ use crate::dsp::waveform::{DownsampleStrategy, WaveformConfig};
 use crate::ui::app::config::CaptureMode;
 use crate::ui::theme;
 use crate::ui::visualization::loudness::MeterMode;
-use crate::ui::visualization::visual_manager::VisualKind;
+use crate::ui::visualization::visual_manager::{VisualKind, VisualSnapshot};
 use iced::Color;
 use serde::de::{self, DeserializeOwned, Deserializer};
 use serde::ser::{SerializeMap, Serializer};
@@ -607,8 +607,8 @@ impl SettingsManager {
         entry.set_config(config);
     }
 
-    pub fn set_visual_order(&mut self, order: &[VisualKind]) {
-        self.data.visuals.order = order.to_vec();
+    pub fn set_visual_order(&mut self, snapshot: &VisualSnapshot) {
+        self.data.visuals.order = snapshot.slots.iter().map(|s| s.kind).collect();
     }
 
     pub fn set_background_color(&mut self, color: Option<Color>) {
