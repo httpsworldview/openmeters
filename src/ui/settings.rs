@@ -630,6 +630,18 @@ struct SaveRequest {
     data: UiSettings,
 }
 
+fn persist_settings_sync(path: &Path, mut data: UiSettings) {
+    data.visuals.sanitize();
+    match serde_json::to_string_pretty(&data) {
+        Ok(json) => {
+            if let Err(err) = write_settings_atomic(path, &json) {
+                error!("[settings] failed to persist UI settings (sync fallback): {err}");
+            }
+        }
+        Err(err) => error!("[settings] failed to serialize UI settings (sync fallback): {err}"),
+    }
+}
+
 fn enqueue_save(path: PathBuf, data: UiSettings) {
     static SAVE_TX: OnceLock<Option<mpsc::Sender<SaveRequest>>> = OnceLock::new();
 
@@ -688,16 +700,7 @@ fn enqueue_save(path: PathBuf, data: UiSettings) {
 
     let Some(tx) = tx.as_ref() else {
         // Extremely rare, but avoids losing settings if we cannot spawn threads.
-        let mut data = data;
-        data.visuals.sanitize();
-        match serde_json::to_string_pretty(&data) {
-            Ok(json) => {
-                if let Err(err) = write_settings_atomic(&path, &json) {
-                    error!("[settings] failed to persist UI settings (sync fallback): {err}");
-                }
-            }
-            Err(err) => error!("[settings] failed to serialize UI settings (sync fallback): {err}"),
-        }
+        persist_settings_sync(&path, data);
         return;
     };
 
@@ -707,17 +710,7 @@ fn enqueue_save(path: PathBuf, data: UiSettings) {
     }) {
         // If the receiver ever dies unexpectedly, fall back to a synchronous write.
         error!("[settings] failed to enqueue settings save: {err}");
-
-        let mut data = data;
-        data.visuals.sanitize();
-        match serde_json::to_string_pretty(&data) {
-            Ok(json) => {
-                if let Err(err) = write_settings_atomic(&path, &json) {
-                    error!("[settings] failed to persist UI settings (sync fallback): {err}");
-                }
-            }
-            Err(err) => error!("[settings] failed to serialize UI settings (sync fallback): {err}"),
-        }
+        persist_settings_sync(&path, data);
     }
 }
 
