@@ -1,19 +1,12 @@
 use super::palette::{PaletteEditor, PaletteEvent};
 use super::widgets::{SliderRange, labeled_pick_list, labeled_slider, set_f32, set_if_changed};
-use super::{ModuleSettingsPane, SettingsMessage};
+use super::{CHANNEL_OPTIONS, ModuleSettingsPane, SettingsMessage};
 use crate::dsp::oscilloscope::TriggerMode;
 use crate::ui::settings::{ChannelMode, OscilloscopeSettings, SettingsHandle};
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
 use iced::Element;
 use iced::widget::column;
-
-const CHANNEL_OPTIONS: [ChannelMode; 4] = [
-    ChannelMode::Both,
-    ChannelMode::Left,
-    ChannelMode::Right,
-    ChannelMode::Mono,
-];
 
 #[derive(Debug)]
 pub struct OscilloscopeSettingsPane {

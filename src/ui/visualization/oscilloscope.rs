@@ -29,6 +29,13 @@ impl OscilloscopeProcessor {
         }
     }
 
+    pub fn with_sample_rate(sample_rate: f32) -> Self {
+        Self::new(OscilloscopeConfig {
+            sample_rate,
+            ..Default::default()
+        })
+    }
+
     pub fn ingest(&mut self, samples: &[f32], format: MeterFormat) -> Option<OscilloscopeSnapshot> {
         if samples.is_empty() {
             return None;

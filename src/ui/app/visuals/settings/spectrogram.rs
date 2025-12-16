@@ -183,7 +183,7 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
     fn handle(
         &mut self,
         message: &SettingsMessage,
-        visual_manager: &VisualManagerHandle,
+        vm: &VisualManagerHandle,
         settings: &SettingsHandle,
     ) {
         let SettingsMessage::Spectrogram(msg) = message else {
@@ -275,7 +275,7 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
         }
         if changed {
             persist_palette!(
-                visual_manager,
+                vm,
                 settings,
                 VisualKind::Spectrogram,
                 self,

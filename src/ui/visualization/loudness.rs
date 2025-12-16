@@ -15,12 +15,12 @@ use iced::alignment::{Horizontal, Vertical};
 use iced::{Background, Border, Color, Element, Length, Point, Rectangle, Size, Theme};
 use iced_wgpu::primitive::Renderer as _;
 use serde::{Deserialize, Serialize};
+use std::cell::RefCell;
 use std::fmt;
 use std::time::Instant;
 
 const CHANNELS: usize = 2;
 const DEFAULT_RANGE: (f32, f32) = (-60.0, 4.0);
-const DEFAULT_WIDTH: f32 = 100.0;
 const GUIDE_LEVELS: [f32; 6] = [0.0, -6.0, -12.0, -18.0, -24.0, -36.0];
 const LEFT_PADDING: f32 = 28.0;
 const RIGHT_PADDING: f32 = 64.0;
@@ -268,27 +268,18 @@ impl LoudnessMeterState {
 /// The loudness meter widget.
 #[derive(Debug)]
 pub struct LoudnessMeter<'a> {
-    state: &'a LoudnessMeterState,
-    width: f32,
+    state: &'a RefCell<LoudnessMeterState>,
 }
 
 impl<'a> LoudnessMeter<'a> {
-    pub fn new(state: &'a LoudnessMeterState) -> Self {
-        Self {
-            state,
-            width: DEFAULT_WIDTH,
-        }
-    }
-
-    pub fn with_width(mut self, width: f32) -> Self {
-        self.width = width.max(0.0);
-        self
+    pub fn new(state: &'a RefCell<LoudnessMeterState>) -> Self {
+        Self { state }
     }
 }
 
 impl<'a, Message> Widget<Message, Theme, iced::Renderer> for LoudnessMeter<'a> {
     fn tag(&self) -> tree::Tag {
-        tree::Tag::of::<()>()
+        tree::Tag::stateless()
     }
 
     fn state(&self) -> tree::State {
@@ -296,7 +287,7 @@ impl<'a, Message> Widget<Message, Theme, iced::Renderer> for LoudnessMeter<'a> {
     }
 
     fn size(&self) -> Size<Length> {
-        Size::new(Length::Fixed(self.width), Length::Fill)
+        Size::new(Length::Fill, Length::Fill)
     }
 
     fn layout(
@@ -305,7 +296,7 @@ impl<'a, Message> Widget<Message, Theme, iced::Renderer> for LoudnessMeter<'a> {
         _renderer: &iced::Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
-        layout::Node::new(limits.resolve(Length::Fixed(self.width), Length::Fill, Size::ZERO))
+        layout::Node::new(limits.resolve(Length::Fill, Length::Fill, Size::ZERO))
     }
 
     fn draw(
@@ -319,12 +310,13 @@ impl<'a, Message> Widget<Message, Theme, iced::Renderer> for LoudnessMeter<'a> {
         _viewport: &Rectangle,
     ) {
         let bounds = layout.bounds();
-        let params = self.state.render_params();
+        let state = self.state.borrow();
+        let params = state.render_params();
 
         renderer.draw_primitive(bounds, LoudnessMeterPrimitive::new(params.clone()));
 
         let palette = theme.extended_palette();
-        let label_color = self.state.palette[4];
+        let label_color = state.palette[4];
 
         if params.meter_bounds(&bounds).is_some() {
             let height = bounds.height;
@@ -353,8 +345,8 @@ impl<'a, Message> Widget<Message, Theme, iced::Renderer> for LoudnessMeter<'a> {
                 );
             }
 
-            let value = self.state.get_value(self.state.right_mode, 0);
-            let unit = self.state.right_mode.unit_label();
+            let value = state.get_value(state.right_mode, 0);
+            let unit = state.right_mode.unit_label();
             let ratio = params.db_to_ratio(value);
             let y = bounds.y + height * (1.0 - ratio);
             let label = format!("{:.1} {}", value, unit);
@@ -380,7 +372,7 @@ impl<'a, Message> Widget<Message, Theme, iced::Renderer> for LoudnessMeter<'a> {
                 },
                 Background::Color(Color {
                     a: 1.0,
-                    ..self.state.palette[0]
+                    ..state.palette[0]
                 }),
             );
 
@@ -417,16 +409,11 @@ impl<'a, Message> Widget<Message, Theme, iced::Renderer> for LoudnessMeter<'a> {
     fn diff(&self, _tree: &mut Tree) {}
 }
 
-/// Convenience conversion into an [`iced::Element`].
-pub fn widget_with_layout<'a, Message>(
-    state: &'a LoudnessMeterState,
-    preferred_width: f32,
-    _preferred_height: f32,
-) -> Element<'a, Message>
+pub fn widget<'a, Message>(state: &'a RefCell<LoudnessMeterState>) -> Element<'a, Message>
 where
     Message: 'a,
 {
-    Element::new(LoudnessMeter::new(state).with_width(preferred_width))
+    Element::new(LoudnessMeter::new(state))
 }
 
 #[cfg(test)]
