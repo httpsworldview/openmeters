@@ -2,20 +2,13 @@ use super::palette::{PaletteEditor, PaletteEvent};
 use super::widgets::{
     SliderRange, labeled_pick_list, labeled_slider, section_title, set_f32, set_if_changed,
 };
-use super::{ModuleSettingsPane, SettingsMessage};
+use super::{CHANNEL_OPTIONS, ModuleSettingsPane, SettingsMessage};
 use crate::dsp::waveform::{DownsampleStrategy, MAX_SCROLL_SPEED, MIN_SCROLL_SPEED};
 use crate::ui::settings::{ChannelMode, SettingsHandle, WaveformSettings};
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
 use iced::Element;
 use iced::widget::{column, pick_list};
-
-const CHANNEL_OPTIONS: [ChannelMode; 4] = [
-    ChannelMode::Both,
-    ChannelMode::Left,
-    ChannelMode::Right,
-    ChannelMode::Mono,
-];
 
 #[derive(Debug)]
 pub struct WaveformSettingsPane {
@@ -83,7 +76,12 @@ impl ModuleSettingsPane for WaveformSettingsPane {
         .into()
     }
 
-    fn handle(&mut self, message: &SettingsMessage, vm: &VisualManagerHandle, s: &SettingsHandle) {
+    fn handle(
+        &mut self,
+        message: &SettingsMessage,
+        vm: &VisualManagerHandle,
+        settings: &SettingsHandle,
+    ) {
         let SettingsMessage::Waveform(msg) = message else {
             return;
         };
@@ -99,7 +97,7 @@ impl ModuleSettingsPane for WaveformSettingsPane {
         if changed {
             persist_palette!(
                 vm,
-                s,
+                settings,
                 VisualKind::Waveform,
                 self,
                 theme::DEFAULT_WAVEFORM_PALETTE

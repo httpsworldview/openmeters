@@ -23,12 +23,21 @@ mod waveform;
 mod widgets;
 
 use self::palette::{PaletteEditor, PaletteEvent};
-use crate::ui::settings::{HasPalette, ModuleSettings, PaletteSettings, SettingsHandle};
+use crate::ui::settings::{
+    ChannelMode, HasPalette, ModuleSettings, PaletteSettings, SettingsHandle,
+};
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
 use iced::widget::column;
 use iced::{Color, Element};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
+
+pub(super) const CHANNEL_OPTIONS: [ChannelMode; 4] = [
+    ChannelMode::Both,
+    ChannelMode::Left,
+    ChannelMode::Right,
+    ChannelMode::Mono,
+];
 
 #[derive(Debug, Clone)]
 pub enum SettingsMessage {
@@ -100,7 +109,7 @@ where
     visual_manager
         .borrow()
         .module_settings(kind)
-        .and_then(|stored| stored.config::<T>())
+        .and_then(|stored| stored.parse_config::<T>())
         .unwrap_or_default()
 }
 
@@ -134,7 +143,7 @@ where
     T: DeserializeOwned + Default + HasPalette,
 {
     let settings = load_config_or_default::<T>(visual_manager, kind);
-    let current = settings.palette_array::<N>().unwrap_or(*defaults);
+    let current = settings.palette_as_array::<N>().unwrap_or(*defaults);
     let palette = if labels.is_empty() {
         PaletteEditor::new(&current, defaults)
     } else {
@@ -170,9 +179,6 @@ where
     T: Clone + Serialize + HasPalette,
 {
     let mut stored = config.clone();
-    stored.set_palette(PaletteSettings::maybe_from_colors(
-        palette.colors(),
-        defaults,
-    ));
+    stored.set_palette(PaletteSettings::if_differs_from(palette.colors(), defaults));
     persist_module_config(visual_manager, settings, kind, &stored)
 }
