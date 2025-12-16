@@ -32,7 +32,7 @@ pub enum Message {
 pub fn create(visual_id: VisualId, visual_manager: &VisualManagerHandle) -> LoudnessSettingsPane {
     let (settings, palette) = super::load_settings_and_palette(
         visual_manager,
-        VisualKind::LOUDNESS,
+        VisualKind::Loudness,
         &theme::DEFAULT_LOUDNESS_PALETTE,
         &PALETTE_LABELS,
     );
@@ -89,7 +89,7 @@ impl ModuleSettingsPane for LoudnessSettingsPane {
             persist_palette!(
                 visual_manager,
                 settings,
-                VisualKind::LOUDNESS,
+                VisualKind::Loudness,
                 self,
                 theme::DEFAULT_LOUDNESS_PALETTE
             );

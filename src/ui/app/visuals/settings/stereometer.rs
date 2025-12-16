@@ -37,7 +37,7 @@ pub fn create(
 ) -> StereometerSettingsPane {
     let (settings, palette) = super::load_settings_and_palette(
         visual_manager,
-        VisualKind::STEREOMETER,
+        VisualKind::Stereometer,
         &theme::DEFAULT_STEREOMETER_PALETTE,
         &[],
     );
@@ -152,7 +152,7 @@ impl ModuleSettingsPane for StereometerSettingsPane {
             persist_palette!(
                 vm,
                 settings,
-                VisualKind::STEREOMETER,
+                VisualKind::Stereometer,
                 self,
                 theme::DEFAULT_STEREOMETER_PALETTE
             );

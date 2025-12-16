@@ -149,56 +149,15 @@ impl WindowKind {
         let denom = len.saturating_sub(1).max(1) as f32;
         let scale = core::f32::consts::TAU / denom;
 
-        let mut window = vec![0.0; len];
-
-        match coeffs {
-            [a0, a1] => {
-                let a0 = *a0;
-                let a1 = *a1;
-                for (n, value) in window.iter_mut().enumerate() {
-                    let phase = (n as f32) * scale;
-                    *value = a1.mul_add(phase.cos(), a0);
-                }
-            }
-            [a0, a1, a2] => {
-                let a0 = *a0;
-                let a1 = *a1;
-                let a2 = *a2;
-                for (n, value) in window.iter_mut().enumerate() {
-                    let phase = (n as f32) * scale;
-                    let c1 = phase.cos();
-                    let c2 = (2.0 * c1).mul_add(c1, -1.0);
-                    *value = a2.mul_add(c2, a1.mul_add(c1, a0));
-                }
-            }
-            [a0, a1, a2, a3] => {
-                let a0 = *a0;
-                let a1 = *a1;
-                let a2 = *a2;
-                let a3 = *a3;
-                for (n, value) in window.iter_mut().enumerate() {
-                    let phase = (n as f32) * scale;
-                    let c1 = phase.cos();
-                    // cos(2x) = 2*cos^2(x) - 1
-                    let c2 = (2.0 * c1).mul_add(c1, -1.0);
-                    // cos(3x) = 4*cos^3(x) - 3*cos(x)
-                    let c3 = (4.0 * c1 * c1 - 3.0) * c1;
-                    *value = a3.mul_add(c3, a2.mul_add(c2, a1.mul_add(c1, a0)));
-                }
-            }
-            _ => {
-                for (n, value) in window.iter_mut().enumerate() {
-                    let base_phase = (n as f32) * scale;
-                    let mut sum = 0.0f32;
-                    for (k, &a) in coeffs.iter().enumerate() {
-                        let k_phase = base_phase * (k as f32);
-                        sum = a.mul_add(k_phase.cos(), sum);
-                    }
-                    *value = sum;
-                }
-            }
-        }
-        window
+        (0..len)
+            .map(|n| {
+                let base_phase = (n as f32) * scale;
+                coeffs
+                    .iter()
+                    .enumerate()
+                    .fold(0.0, |acc, (k, &a)| acc + a * (base_phase * k as f32).cos())
+            })
+            .collect()
     }
 }
 
@@ -1676,19 +1635,14 @@ fn planck_taper_derivative(distance: f32, taper_span: f32) -> f32 {
     if distance <= 0.0 || taper_span <= 0.0 || distance >= taper_span {
         return 0.0;
     }
-
-    let s = taper_span as f64;
-    let d = distance as f64;
+    let (s, d) = (taper_span as f64, distance as f64);
     let denom = s - d;
     if denom <= f64::EPSILON {
         return 0.0;
     }
 
-    let exponent = s / d - s / denom;
-    let exp_e = exponent.exp();
-    let logistic = 1.0 / (exp_e + 1.0);
-    let gradient = s / (d * d) + s / (denom * denom);
-    (logistic * (1.0 - logistic) * gradient) as f32
+    let logistic = 1.0 / ((s / d - s / denom).exp() + 1.0);
+    (logistic * (1.0 - logistic) * (s / (d * d) + s / (denom * denom))) as f32
 }
 
 impl Reconfigurable<SpectrogramConfig> for SpectrogramProcessor {

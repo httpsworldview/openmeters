@@ -2,8 +2,8 @@
 
 use crate::audio::meter_tap::MeterFormat;
 use crate::dsp::waveform::{
-    DEFAULT_COLUMN_CAPACITY, MAX_COLUMN_CAPACITY, WaveformConfig, WaveformPreview,
-    WaveformProcessor as CoreWaveformProcessor, WaveformSnapshot,
+    DEFAULT_COLUMN_CAPACITY, MAX_COLUMN_CAPACITY, MIN_COLUMN_CAPACITY, WaveformConfig,
+    WaveformPreview, WaveformProcessor as CoreWaveformProcessor, WaveformSnapshot,
 };
 use crate::dsp::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::ui::render::waveform::{PreviewSample, WaveformParams, WaveformPrimitive};
@@ -45,6 +45,18 @@ impl WaveformProcessor {
         Self {
             inner: CoreWaveformProcessor::new(config),
             channels: 2,
+        }
+    }
+
+    pub fn sync_capacity(state: &RefCell<WaveformState>, processor: &mut Self) {
+        let target = state
+            .borrow()
+            .desired_columns()
+            .clamp(MIN_COLUMN_CAPACITY, MAX_COLUMN_CAPACITY);
+        let mut config = processor.config();
+        if config.max_columns != target {
+            config.max_columns = target;
+            processor.update_config(config);
         }
     }
 

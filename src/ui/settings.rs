@@ -92,12 +92,12 @@ impl ModuleSettings {
 
     fn matches_kind(&self, kind: VisualKind) -> bool {
         match kind {
-            VisualKind::SPECTROGRAM => self.validate::<SpectrogramSettings>(),
-            VisualKind::SPECTRUM => self.validate::<SpectrumSettings>(),
-            VisualKind::OSCILLOSCOPE => self.validate::<OscilloscopeSettings>(),
-            VisualKind::WAVEFORM => self.validate::<WaveformSettings>(),
-            VisualKind::LOUDNESS => self.validate::<LoudnessSettings>(),
-            VisualKind::STEREOMETER => self.validate::<StereometerSettings>(),
+            VisualKind::Spectrogram => self.validate::<SpectrogramSettings>(),
+            VisualKind::Spectrum => self.validate::<SpectrumSettings>(),
+            VisualKind::Oscilloscope => self.validate::<OscilloscopeSettings>(),
+            VisualKind::Waveform => self.validate::<WaveformSettings>(),
+            VisualKind::Loudness => self.validate::<LoudnessSettings>(),
+            VisualKind::Stereometer => self.validate::<StereometerSettings>(),
         }
     }
 

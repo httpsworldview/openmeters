@@ -57,7 +57,7 @@ pub fn create(
 ) -> SpectrogramSettingsPane {
     let (settings, palette): (SpectrogramSettings, _) = super::load_settings_and_palette(
         visual_manager,
-        VisualKind::SPECTROGRAM,
+        VisualKind::Spectrogram,
         &theme::DEFAULT_SPECTROGRAM_PALETTE,
         &[],
     );
@@ -277,7 +277,7 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
             persist_palette!(
                 visual_manager,
                 settings,
-                VisualKind::SPECTROGRAM,
+                VisualKind::Spectrogram,
                 self,
                 theme::DEFAULT_SPECTROGRAM_PALETTE
             );

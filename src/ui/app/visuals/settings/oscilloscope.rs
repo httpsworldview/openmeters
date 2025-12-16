@@ -38,7 +38,7 @@ pub fn create(
 ) -> OscilloscopeSettingsPane {
     let (settings, palette) = super::load_settings_and_palette(
         visual_manager,
-        VisualKind::OSCILLOSCOPE,
+        VisualKind::Oscilloscope,
         &theme::DEFAULT_OSCILLOSCOPE_PALETTE,
         &[],
     );
@@ -147,7 +147,7 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
             persist_palette!(
                 vm,
                 settings,
-                VisualKind::OSCILLOSCOPE,
+                VisualKind::Oscilloscope,
                 self,
                 theme::DEFAULT_OSCILLOSCOPE_PALETTE
             );

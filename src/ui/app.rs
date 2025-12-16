@@ -612,7 +612,8 @@ fn update(app: &mut UiApp, message: Message) -> Task<Message> {
                     .borrow_mut()
                     .restore_position(popout.visual_id, popout.original_index);
                 let snapshot = app.visual_manager.snapshot();
-                app.settings_handle.update(|s| s.set_visual_order(&snapshot));
+                app.settings_handle
+                    .update(|s| s.set_visual_order(&snapshot));
                 app.visuals_page
                     .apply_snapshot_excluding(snapshot, &app.popped_out_ids());
                 return window::close(focused);
