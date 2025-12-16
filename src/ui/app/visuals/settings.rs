@@ -82,12 +82,12 @@ pub fn create_panel(
     visual_manager: &VisualManagerHandle,
 ) -> ActiveSettings {
     let pane: Box<dyn ModuleSettingsPane> = match kind {
-        VisualKind::LOUDNESS => Box::new(loudness::create(visual_id, visual_manager)),
-        VisualKind::OSCILLOSCOPE => Box::new(oscilloscope::create(visual_id, visual_manager)),
-        VisualKind::SPECTROGRAM => Box::new(spectrogram::create(visual_id, visual_manager)),
-        VisualKind::SPECTRUM => Box::new(spectrum::create(visual_id, visual_manager)),
-        VisualKind::STEREOMETER => Box::new(stereometer::create(visual_id, visual_manager)),
-        VisualKind::WAVEFORM => Box::new(waveform::create(visual_id, visual_manager)),
+        VisualKind::Loudness => Box::new(loudness::create(visual_id, visual_manager)),
+        VisualKind::Oscilloscope => Box::new(oscilloscope::create(visual_id, visual_manager)),
+        VisualKind::Spectrogram => Box::new(spectrogram::create(visual_id, visual_manager)),
+        VisualKind::Spectrum => Box::new(spectrum::create(visual_id, visual_manager)),
+        VisualKind::Stereometer => Box::new(stereometer::create(visual_id, visual_manager)),
+        VisualKind::Waveform => Box::new(waveform::create(visual_id, visual_manager)),
     };
 
     ActiveSettings::new(pane)

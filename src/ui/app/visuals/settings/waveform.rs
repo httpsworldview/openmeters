@@ -35,7 +35,7 @@ pub enum Message {
 pub fn create(visual_id: VisualId, visual_manager: &VisualManagerHandle) -> WaveformSettingsPane {
     let (settings, palette) = super::load_settings_and_palette(
         visual_manager,
-        VisualKind::WAVEFORM,
+        VisualKind::Waveform,
         &theme::DEFAULT_WAVEFORM_PALETTE,
         &[],
     );
@@ -100,7 +100,7 @@ impl ModuleSettingsPane for WaveformSettingsPane {
             persist_palette!(
                 vm,
                 s,
-                VisualKind::WAVEFORM,
+                VisualKind::Waveform,
                 self,
                 theme::DEFAULT_WAVEFORM_PALETTE
             );

@@ -74,7 +74,7 @@ pub enum Message {
 pub fn create(visual_id: VisualId, visual_manager: &VisualManagerHandle) -> SpectrumSettingsPane {
     let (settings, palette): (SpectrumSettings, _) = super::load_settings_and_palette(
         visual_manager,
-        VisualKind::SPECTRUM,
+        VisualKind::Spectrum,
         &theme::DEFAULT_SPECTRUM_PALETTE,
         &[],
     );
@@ -243,7 +243,7 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
             persist_palette!(
                 visual_manager,
                 settings,
-                VisualKind::SPECTRUM,
+                VisualKind::Spectrum,
                 self,
                 theme::DEFAULT_SPECTRUM_PALETTE
             );

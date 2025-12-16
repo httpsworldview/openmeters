@@ -1,9 +1,7 @@
 //! Central owner of visual modules and their state.
-
 use crate::audio::meter_tap::{self, MeterFormat};
 use crate::dsp::ProcessorUpdate;
 use crate::dsp::oscilloscope::OscilloscopeConfig;
-use crate::dsp::waveform::{MAX_COLUMN_CAPACITY, MIN_COLUMN_CAPACITY};
 use crate::ui::settings::{
     LoudnessSettings, ModuleSettings, OscilloscopeSettings, PaletteSettings, SpectrogramSettings,
     SpectrumSettings, StereometerSettings, VisualSettings, WaveformSettings,
@@ -24,28 +22,307 @@ use iced::{Element, Length};
 use serde::{Deserialize, Serialize};
 use std::cell::{Ref, RefCell, RefMut};
 use std::rc::Rc;
-/// Identifiers for visual kinds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum VisualKind {
-    Loudness,
-    Oscilloscope,
-    Spectrogram,
-    Spectrum,
-    Stereometer,
-    Waveform,
+
+fn resolve_palette<const N: usize>(
+    stored: &Option<PaletteSettings>,
+    default: &[iced::Color; N],
+) -> [iced::Color; N] {
+    stored
+        .as_ref()
+        .and_then(|p| p.to_array::<N>())
+        .unwrap_or(*default)
 }
 
-impl VisualKind {
-    pub const LOUDNESS: Self = Self::Loudness;
-    pub const OSCILLOSCOPE: Self = Self::Oscilloscope;
-    pub const SPECTROGRAM: Self = Self::Spectrogram;
-    pub const SPECTRUM: Self = Self::Spectrum;
-    pub const STEREOMETER: Self = Self::Stereometer;
-    pub const WAVEFORM: Self = Self::Waveform;
+fn rc_cell<T>(value: T) -> Rc<RefCell<T>> {
+    Rc::new(RefCell::new(value))
 }
 
-/// Unique identifier for instantiated visual slots.
+fn centered<'a, M: 'static>(inner: Element<'a, M>) -> Element<'a, M> {
+    container(inner)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .center_x(Length::Fill)
+        .into()
+}
+
+struct Visual<P, S> {
+    processor: P,
+    state: S,
+}
+
+impl<P, S> Visual<P, S> {
+    fn new(processor: P, state: S) -> Self {
+        Self { processor, state }
+    }
+}
+
+/// visual registration macro. figured i could try something fancy.
+///
+/// syntax: `Variant(StateType, ProcessorType) { ... }`
+///
+/// required:
+/// - `name`: Display name
+/// - `metadata`: `{ preferred_width, preferred_height, min_width?, max_width? }`
+/// - `init`: Constructor returning `Visual<P, S>`
+/// - `view`: `|state| -> Element` (use `centered(widget(state))` for common pattern)
+/// - `ingest`: `|proc, state, samples, format| { ... }`
+///
+/// optional (require both if either present):
+/// - `settings`: Settings type for persistence
+/// - `apply`: `|proc, state, settings| { ... }`
+/// - `export`: `|proc, state| -> Settings`
+macro_rules! define_visuals {
+    ($(
+        $variant:ident($state_ty:ty, $processor_ty:ty) {
+            name: $name:expr,
+            metadata: { $($meta:tt)* },
+            init: $init:expr,
+            view: |$vs:ident| $view:expr,
+            ingest: |$ip:ident, $is:ident, $sa:ident, $fm:ident| $ingest:expr
+            $(, settings: $settings:ty, apply: |$ap:ident, $as:ident, $aset:ident| $apply:expr, export: |$ep:ident, $es:ident| $export:expr )?
+        }
+    ),* $(,)?) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        pub enum VisualKind { $($variant),* }
+
+        #[derive(Debug, Clone)]
+        pub enum VisualContent { $($variant { state: $state_ty }),* }
+
+        impl VisualContent {
+            pub fn render<M: 'static>(&self, metadata: VisualMetadata) -> Element<'_, M> {
+                let inner: Element<'_, M> = match self {
+                    $(Self::$variant { state: $vs } => $view),*
+                };
+                let (w, h) = (
+                    if metadata.fill_horizontal { Length::Fill } else { Length::Fixed(metadata.preferred_width) },
+                    if metadata.fill_vertical { Length::Fill } else { Length::Fixed(metadata.preferred_height) },
+                );
+                container(inner)
+                    .width(w)
+                    .height(h)
+                    .align_x(Horizontal::Center)
+                    .align_y(Vertical::Center)
+                    .into()
+            }
+        }
+
+        const VISUAL_DESCRIPTORS: &[VisualDescriptor] = &[$(
+            VisualDescriptor {
+                kind: VisualKind::$variant,
+                metadata: VisualMetadata { display_name: $name, $($meta)* ..VisualMetadata::DEFAULT },
+                build: || Box::new($init),
+            }
+        ),*];
+
+        $(
+            impl VisualModule for Visual<$processor_ty, $state_ty> {
+                fn ingest(&mut self, samples: &[f32], format: MeterFormat) {
+                    let ($ip, $is, $sa, $fm) = (&mut self.processor, &mut self.state, samples, format);
+                    $ingest
+                }
+
+                fn content(&self) -> VisualContent {
+                    VisualContent::$variant { state: self.state.clone() }
+                }
+
+                fn apply_settings(&mut self, settings: &ModuleSettings) {
+                    $(if let Some($aset) = settings.config::<$settings>() {
+                        let ($ap, $as) = (&mut self.processor, &mut self.state);
+                        $apply
+                    })?
+                }
+
+                fn export_settings(&self) -> Option<ModuleSettings> {
+                    $({
+                        let ($ep, $es) = (&self.processor, &self.state);
+                        let out: $settings = $export;
+                        return Some(ModuleSettings::with_config(&out));
+                    })?
+                    #[allow(unreachable_code)]
+                    None
+                }
+            }
+        )*
+    };
+}
+
+define_visuals! {
+    Loudness(LoudnessMeterState, LoudnessMeterProcessor) {
+        name: "Loudness Meter",
+        metadata: { preferred_width: 140.0, preferred_height: 300.0, min_width: 80.0, max_width: 140.0, },
+        init: Visual::new(LoudnessMeterProcessor::new(DEFAULT_SAMPLE_RATE), LoudnessMeterState::new()),
+        view: |state| {
+            container(loudness::widget_with_layout(state, 140.0, 300.0))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .align_x(Horizontal::Center)
+                .align_y(Vertical::Bottom)
+                .into()
+        },
+        ingest: |p, s, samples, format| { s.apply_snapshot(&p.ingest(samples, format)); },
+        settings: LoudnessSettings,
+        apply: |_p, s, set| {
+            s.set_modes(set.left_mode, set.right_mode);
+            s.set_palette(&resolve_palette(&set.palette, &theme::DEFAULT_LOUDNESS_PALETTE));
+        },
+        export: |_p, s| {
+            let mut out = LoudnessSettings::new(s.left_mode(), s.right_mode());
+            out.palette = PaletteSettings::maybe_from_colors(s.palette(), &theme::DEFAULT_LOUDNESS_PALETTE);
+            out
+        }
+    },
+
+    Oscilloscope(Rc<RefCell<OscilloscopeState>>, OscilloscopeProcessor) {
+        name: "Oscilloscope",
+        metadata: { preferred_width: 150.0, preferred_height: 160.0, min_width: 100.0, },
+        init: Visual::new(
+            OscilloscopeProcessor::new(OscilloscopeConfig { sample_rate: DEFAULT_SAMPLE_RATE, ..Default::default() }),
+            rc_cell(OscilloscopeState::new()),
+        ),
+        view: |s| centered(oscilloscope::widget(s)),
+        ingest: |p, s, samples, fmt| {
+            if let Some(snap) = p.ingest(samples, fmt) { s.borrow_mut().apply_snapshot(&snap); }
+        },
+        settings: OscilloscopeSettings,
+        apply: |p, s, set| {
+            let mut cfg = p.config();
+            cfg.segment_duration = set.segment_duration;
+            cfg.trigger_mode = set.trigger_mode;
+            p.update_config(cfg);
+            let mut st = s.borrow_mut();
+            st.update_view_settings(set.persistence, set.channel_mode);
+            st.set_palette(&resolve_palette(&set.palette, &theme::DEFAULT_OSCILLOSCOPE_PALETTE));
+        },
+        export: |p, s| {
+            let cfg = p.config();
+            let st = s.borrow();
+            OscilloscopeSettings {
+                segment_duration: cfg.segment_duration,
+                trigger_mode: cfg.trigger_mode,
+                persistence: st.persistence(),
+                channel_mode: st.channel_mode(),
+                palette: PaletteSettings::maybe_from_colors(st.palette(), &theme::DEFAULT_OSCILLOSCOPE_PALETTE),
+            }
+        }
+    },
+
+    Waveform(Rc<RefCell<WaveformState>>, WaveformUiProcessor) {
+        name: "Waveform",
+        metadata: { preferred_width: 220.0, preferred_height: 180.0, min_width: 220.0, },
+        init: Visual::new(WaveformUiProcessor::new(DEFAULT_SAMPLE_RATE), rc_cell(WaveformState::new())),
+        view: |s| centered(waveform::widget(s)),
+        ingest: |p, s, samples, fmt| {
+            WaveformUiProcessor::sync_capacity(s, p);
+            if let Some(snap) = p.ingest(samples, fmt) { s.borrow_mut().apply_snapshot(snap); }
+        },
+        settings: WaveformSettings,
+        apply: |p, s, set| {
+            let mut cfg = p.config();
+            set.apply_to(&mut cfg);
+            p.update_config(cfg);
+            WaveformUiProcessor::sync_capacity(s, p);
+            let mut st = s.borrow_mut();
+            st.set_palette(&resolve_palette(&set.palette, &theme::DEFAULT_WAVEFORM_PALETTE));
+            st.set_channel_mode(set.channel_mode);
+        },
+        export: |p, s| {
+            let st = s.borrow();
+            let mut out = WaveformSettings::from_config(&p.config());
+            out.channel_mode = st.channel_mode();
+            out.palette = PaletteSettings::maybe_from_colors(st.palette(), &theme::DEFAULT_WAVEFORM_PALETTE);
+            out
+        }
+    },
+
+    Spectrogram(Rc<RefCell<SpectrogramState>>, SpectrogramProcessor) {
+        name: "Spectrogram",
+        metadata: { preferred_width: 320.0, preferred_height: 220.0, min_width: 300.0, },
+        init: Visual::new(SpectrogramProcessor::new(DEFAULT_SAMPLE_RATE), rc_cell(SpectrogramState::new())),
+        view: |s| centered(spectrogram::widget(s)),
+        ingest: |p, s, samples, fmt| {
+            if let ProcessorUpdate::Snapshot(upd) = p.ingest(samples, fmt) { s.borrow_mut().apply_update(&upd); }
+        },
+        settings: SpectrogramSettings,
+        apply: |p, s, set| {
+            let mut cfg = p.config();
+            set.apply_to(&mut cfg);
+            p.update_config(cfg);
+            s.borrow_mut().set_palette(resolve_palette(&set.palette, &theme::DEFAULT_SPECTROGRAM_PALETTE));
+        },
+        export: |p, s| {
+            let mut out = SpectrogramSettings::from_config(&p.config());
+            out.palette = PaletteSettings::maybe_from_colors(&s.borrow().palette(), &theme::DEFAULT_SPECTROGRAM_PALETTE);
+            out
+        }
+    },
+
+    Spectrum(Rc<RefCell<SpectrumState>>, SpectrumProcessor) {
+        name: "Spectrum analyzer",
+        metadata: { preferred_width: 400.0, preferred_height: 180.0, min_width: 400.0, },
+        init: Visual::new(SpectrumProcessor::new(DEFAULT_SAMPLE_RATE), rc_cell(SpectrumState::new())),
+        view: |s| centered(spectrum::widget(s)),
+        ingest: |p, s, samples, fmt| {
+            if let Some(snap) = p.ingest(samples, fmt) { s.borrow_mut().apply_snapshot(&snap); }
+        },
+        settings: SpectrumSettings,
+        apply: |p, s, set| {
+            let mut cfg = p.config();
+            set.apply_to(&mut cfg);
+            p.update_config(cfg);
+            let mut st = s.borrow_mut();
+            st.set_palette(&resolve_palette(&set.palette, &theme::DEFAULT_SPECTRUM_PALETTE));
+            let upd = p.config();
+            let sty = st.style_mut();
+            sty.frequency_scale = upd.frequency_scale;
+            sty.reverse_frequency = upd.reverse_frequency;
+            sty.smoothing_radius = set.smoothing_radius;
+            sty.smoothing_passes = set.smoothing_passes;
+            st.update_show_grid(upd.show_grid);
+            st.update_show_peak_label(upd.show_peak_label);
+        },
+        export: |p, s| {
+            let mut out = SpectrumSettings::from_config(&p.config());
+            let st = s.borrow();
+            out.palette = PaletteSettings::maybe_from_colors(&st.palette(), &theme::DEFAULT_SPECTRUM_PALETTE);
+            let sty = st.style();
+            out.smoothing_radius = sty.smoothing_radius;
+            out.smoothing_passes = sty.smoothing_passes;
+            out
+        }
+    },
+
+    Stereometer(Rc<RefCell<StereometerState>>, StereometerProcessor) {
+        name: "Stereometer",
+        metadata: { preferred_width: 150.0, preferred_height: 220.0, min_width: 100.0, },
+        init: Visual::new(StereometerProcessor::new(DEFAULT_SAMPLE_RATE), rc_cell(StereometerState::new())),
+        view: |s| centered(stereometer::widget(s)),
+        ingest: |p, s, samples, fmt| { s.borrow_mut().apply_snapshot(&p.ingest(samples, fmt)); },
+        settings: StereometerSettings,
+        apply: |p, s, set| {
+            let mut cfg = p.config();
+            set.apply_to(&mut cfg);
+            p.update_config(cfg);
+            let mut st = s.borrow_mut();
+            st.update_view_settings(&set);
+            st.set_palette(&resolve_palette(&set.palette, &theme::DEFAULT_STEREOMETER_PALETTE));
+        },
+        export: |p, s| {
+            let st = s.borrow();
+            let (persistence, mode, scale, scale_range, rotation, flip) = st.view_settings();
+            let mut out = StereometerSettings::from_config(&p.config());
+            out.persistence = persistence;
+            out.mode = mode;
+            out.scale = scale;
+            out.scale_range = scale_range;
+            out.rotation = rotation;
+            out.flip = flip;
+            out.palette = PaletteSettings::maybe_from_colors(&st.palette(), &theme::DEFAULT_STEREOMETER_PALETTE);
+            out
+        }
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct VisualId(u32);
 
@@ -57,7 +334,6 @@ impl VisualId {
     }
 }
 
-/// Static metadata describing a visual module's preferred presentation.
 #[derive(Debug, Clone, Copy)]
 pub struct VisualMetadata {
     pub display_name: &'static str,
@@ -81,13 +357,11 @@ impl VisualMetadata {
     };
 }
 
-/// Aggregate snapshot of all visual slots.
 #[derive(Debug, Clone)]
 pub struct VisualSnapshot {
     pub slots: Vec<VisualSlotSnapshot>,
 }
 
-/// Snapshot representing a single visual slot.
 #[derive(Debug, Clone)]
 pub struct VisualSlotSnapshot {
     pub id: VisualId,
@@ -106,97 +380,6 @@ impl From<&VisualEntry> for VisualSlotSnapshot {
             metadata: entry.metadata,
             content: entry.cached_content.clone(),
         }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum VisualContent {
-    LoudnessMeter {
-        state: LoudnessMeterState,
-    },
-    Oscilloscope {
-        state: Rc<RefCell<OscilloscopeState>>,
-    },
-    Spectrogram {
-        state: Rc<RefCell<SpectrogramState>>,
-    },
-    Spectrum {
-        state: Rc<RefCell<SpectrumState>>,
-    },
-    Stereometer {
-        state: Rc<RefCell<StereometerState>>,
-    },
-    Waveform {
-        state: Rc<RefCell<WaveformState>>,
-    },
-}
-
-impl VisualContent {
-    /// Renders this visual content into an Element, framed according to metadata.
-    pub fn render<M: 'static>(&self, metadata: VisualMetadata) -> Element<'_, M> {
-        let inner: Element<'_, M> = match self {
-            Self::LoudnessMeter { state } => container(loudness::widget_with_layout(
-                state,
-                metadata.preferred_width,
-                metadata.preferred_height,
-            ))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .align_x(Horizontal::Center)
-            .align_y(Vertical::Bottom)
-            .into(),
-            Self::Oscilloscope { state } => container(oscilloscope::widget(state))
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .center_x(Length::Fill)
-                .into(),
-            Self::Spectrogram { state } => container(spectrogram::widget(state))
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .center_x(Length::Fill)
-                .into(),
-            Self::Spectrum { state } => container(spectrum::widget(state))
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .center_x(Length::Fill)
-                .into(),
-            Self::Stereometer { state } => container(stereometer::widget(state))
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .center_x(Length::Fill)
-                .into(),
-            Self::Waveform { state } => container(waveform::widget(state))
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .center_x(Length::Fill)
-                .into(),
-        };
-
-        let (w, h) = (
-            if metadata.fill_horizontal {
-                Length::Fill
-            } else {
-                Length::Fixed(metadata.preferred_width)
-            },
-            if metadata.fill_vertical {
-                Length::Fill
-            } else {
-                Length::Fixed(metadata.preferred_height)
-            },
-        );
-
-        container(
-            container(inner)
-                .width(w)
-                .height(h)
-                .align_x(Horizontal::Center)
-                .align_y(Vertical::Center),
-        )
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .align_x(Horizontal::Center)
-        .align_y(Vertical::Center)
-        .into()
     }
 }
 
@@ -244,446 +427,6 @@ impl VisualEntry {
         }
         self.module.apply_settings(settings);
         self.cached_content = self.module.content();
-    }
-}
-
-const VISUAL_DESCRIPTORS: &[VisualDescriptor] = &[
-    VisualDescriptor {
-        kind: VisualKind::Loudness,
-        metadata: VisualMetadata {
-            display_name: "Loudness Meter",
-            preferred_width: 140.0,
-            preferred_height: 300.0,
-            min_width: 80.0,
-            max_width: 140.0,
-            ..VisualMetadata::DEFAULT
-        },
-        build: build_module::<LoudnessVisual>,
-    },
-    VisualDescriptor {
-        kind: VisualKind::Oscilloscope,
-        metadata: VisualMetadata {
-            display_name: "Oscilloscope",
-            preferred_width: 150.0,
-            preferred_height: 160.0,
-            min_width: 100.0,
-            ..VisualMetadata::DEFAULT
-        },
-        build: build_module::<OscilloscopeVisual>,
-    },
-    VisualDescriptor {
-        kind: VisualKind::Waveform,
-        metadata: VisualMetadata {
-            display_name: "Waveform",
-            preferred_width: 220.0,
-            preferred_height: 180.0,
-            min_width: 220.0,
-            ..VisualMetadata::DEFAULT
-        },
-        build: build_module::<WaveformVisual>,
-    },
-    VisualDescriptor {
-        kind: VisualKind::Spectrogram,
-        metadata: VisualMetadata {
-            display_name: "Spectrogram",
-            preferred_width: 320.0,
-            preferred_height: 220.0,
-            min_width: 300.0,
-            ..VisualMetadata::DEFAULT
-        },
-        build: build_module::<SpectrogramVisual>,
-    },
-    VisualDescriptor {
-        kind: VisualKind::Spectrum,
-        metadata: VisualMetadata {
-            display_name: "Spectrum analyzer",
-            preferred_width: 400.0,
-            preferred_height: 180.0,
-            min_width: 400.0,
-            ..VisualMetadata::DEFAULT
-        },
-        build: build_module::<SpectrumVisual>,
-    },
-    VisualDescriptor {
-        kind: VisualKind::Stereometer,
-        metadata: VisualMetadata {
-            display_name: "Stereometer",
-            preferred_width: 150.0,
-            preferred_height: 220.0,
-            min_width: 100.0,
-            ..VisualMetadata::DEFAULT
-        },
-        build: build_module::<StereometerVisual>,
-    },
-];
-
-fn build_module<M>() -> Box<dyn VisualModule>
-where
-    M: VisualModule + Default + 'static,
-{
-    Box::new(M::default())
-}
-
-fn resolve_palette<const N: usize>(
-    palette: &Option<PaletteSettings>,
-    default: &[iced::Color; N],
-) -> [iced::Color; N] {
-    palette
-        .as_ref()
-        .and_then(|p| p.to_array::<N>())
-        .unwrap_or(*default)
-}
-
-fn rc_cell<T>(value: T) -> Rc<RefCell<T>> {
-    Rc::new(RefCell::new(value))
-}
-
-struct LoudnessVisual {
-    processor: LoudnessMeterProcessor,
-    state: LoudnessMeterState,
-}
-
-impl Default for LoudnessVisual {
-    fn default() -> Self {
-        Self {
-            processor: LoudnessMeterProcessor::new(DEFAULT_SAMPLE_RATE),
-            state: LoudnessMeterState::new(),
-        }
-    }
-}
-
-impl VisualModule for LoudnessVisual {
-    fn ingest(&mut self, samples: &[f32], format: MeterFormat) {
-        let snapshot = self.processor.ingest(samples, format);
-        self.state.apply_snapshot(&snapshot);
-    }
-
-    fn content(&self) -> VisualContent {
-        VisualContent::LoudnessMeter {
-            state: self.state.clone(),
-        }
-    }
-
-    fn apply_settings(&mut self, settings: &ModuleSettings) {
-        if let Some(stored) = settings.config::<LoudnessSettings>() {
-            self.state.set_modes(stored.left_mode, stored.right_mode);
-            self.state.set_palette(&resolve_palette(
-                &stored.palette,
-                &theme::DEFAULT_LOUDNESS_PALETTE,
-            ));
-        }
-    }
-
-    fn export_settings(&self) -> Option<ModuleSettings> {
-        let mut settings = LoudnessSettings::new(self.state.left_mode(), self.state.right_mode());
-        settings.palette = PaletteSettings::maybe_from_colors(
-            self.state.palette(),
-            &theme::DEFAULT_LOUDNESS_PALETTE,
-        );
-        Some(ModuleSettings::with_config(&settings))
-    }
-}
-
-struct OscilloscopeVisual {
-    processor: OscilloscopeProcessor,
-    state: Rc<RefCell<OscilloscopeState>>,
-}
-
-impl Default for OscilloscopeVisual {
-    fn default() -> Self {
-        Self {
-            processor: OscilloscopeProcessor::new(OscilloscopeConfig {
-                sample_rate: DEFAULT_SAMPLE_RATE,
-                ..Default::default()
-            }),
-            state: rc_cell(OscilloscopeState::new()),
-        }
-    }
-}
-
-impl VisualModule for OscilloscopeVisual {
-    fn ingest(&mut self, samples: &[f32], format: MeterFormat) {
-        if let Some(snapshot) = self.processor.ingest(samples, format) {
-            self.state.borrow_mut().apply_snapshot(&snapshot);
-        }
-    }
-
-    fn content(&self) -> VisualContent {
-        VisualContent::Oscilloscope {
-            state: self.state.clone(),
-        }
-    }
-
-    fn apply_settings(&mut self, settings: &ModuleSettings) {
-        if let Some(stored) = settings.config::<OscilloscopeSettings>() {
-            let mut config = self.processor.config();
-            config.segment_duration = stored.segment_duration;
-            config.trigger_mode = stored.trigger_mode;
-            self.processor.update_config(config);
-
-            let mut state = self.state.borrow_mut();
-            state.update_view_settings(stored.persistence, stored.channel_mode);
-            state.set_palette(&resolve_palette(
-                &stored.palette,
-                &theme::DEFAULT_OSCILLOSCOPE_PALETTE,
-            ));
-        }
-    }
-
-    fn export_settings(&self) -> Option<ModuleSettings> {
-        let config = self.processor.config();
-        let state = self.state.borrow();
-
-        let settings = OscilloscopeSettings {
-            segment_duration: config.segment_duration,
-            trigger_mode: config.trigger_mode,
-            persistence: state.persistence(),
-            channel_mode: state.channel_mode(),
-            palette: PaletteSettings::maybe_from_colors(
-                state.palette(),
-                &theme::DEFAULT_OSCILLOSCOPE_PALETTE,
-            ),
-        };
-
-        Some(ModuleSettings::with_config(&settings))
-    }
-}
-
-struct WaveformVisual {
-    processor: WaveformUiProcessor,
-    state: Rc<RefCell<WaveformState>>,
-}
-
-impl Default for WaveformVisual {
-    fn default() -> Self {
-        Self {
-            processor: WaveformUiProcessor::new(DEFAULT_SAMPLE_RATE),
-            state: rc_cell(WaveformState::new()),
-        }
-    }
-}
-
-impl VisualModule for WaveformVisual {
-    fn ingest(&mut self, samples: &[f32], format: MeterFormat) {
-        self.ensure_capacity();
-        if let Some(snapshot) = self.processor.ingest(samples, format) {
-            self.state.borrow_mut().apply_snapshot(snapshot);
-        }
-    }
-
-    fn content(&self) -> VisualContent {
-        VisualContent::Waveform {
-            state: self.state.clone(),
-        }
-    }
-
-    fn apply_settings(&mut self, settings: &ModuleSettings) {
-        if let Some(stored) = settings.config::<WaveformSettings>() {
-            let mut config = self.processor.config();
-            stored.apply_to(&mut config);
-            self.processor.update_config(config);
-            self.ensure_capacity();
-            let mut state = self.state.borrow_mut();
-            state.set_palette(&resolve_palette(
-                &stored.palette,
-                &theme::DEFAULT_WAVEFORM_PALETTE,
-            ));
-            state.set_channel_mode(stored.channel_mode);
-        }
-    }
-
-    fn export_settings(&self) -> Option<ModuleSettings> {
-        let state = self.state.borrow();
-        let mut snapshot = WaveformSettings::from_config(&self.processor.config());
-        snapshot.channel_mode = state.channel_mode();
-        snapshot.palette =
-            PaletteSettings::maybe_from_colors(state.palette(), &theme::DEFAULT_WAVEFORM_PALETTE);
-        Some(ModuleSettings::with_config(&snapshot))
-    }
-}
-
-impl WaveformVisual {
-    fn ensure_capacity(&mut self) {
-        let target = self
-            .state
-            .borrow()
-            .desired_columns()
-            .clamp(MIN_COLUMN_CAPACITY, MAX_COLUMN_CAPACITY);
-        let mut config = self.processor.config();
-        if config.max_columns != target {
-            config.max_columns = target;
-            self.processor.update_config(config);
-        }
-    }
-}
-
-struct SpectrogramVisual {
-    processor: SpectrogramProcessor,
-    state: Rc<RefCell<SpectrogramState>>,
-}
-
-impl Default for SpectrogramVisual {
-    fn default() -> Self {
-        Self {
-            processor: SpectrogramProcessor::new(DEFAULT_SAMPLE_RATE),
-            state: rc_cell(SpectrogramState::new()),
-        }
-    }
-}
-
-impl VisualModule for SpectrogramVisual {
-    fn ingest(&mut self, samples: &[f32], format: MeterFormat) {
-        if let ProcessorUpdate::Snapshot(update) = self.processor.ingest(samples, format) {
-            self.state.borrow_mut().apply_update(&update);
-        }
-    }
-
-    fn content(&self) -> VisualContent {
-        VisualContent::Spectrogram {
-            state: self.state.clone(),
-        }
-    }
-
-    fn apply_settings(&mut self, settings: &ModuleSettings) {
-        if let Some(stored) = settings.config::<SpectrogramSettings>() {
-            let mut config = self.processor.config();
-            stored.apply_to(&mut config);
-            self.processor.update_config(config);
-            self.state.borrow_mut().set_palette(resolve_palette(
-                &stored.palette,
-                &theme::DEFAULT_SPECTROGRAM_PALETTE,
-            ));
-        }
-    }
-
-    fn export_settings(&self) -> Option<ModuleSettings> {
-        let mut snapshot = SpectrogramSettings::from_config(&self.processor.config());
-        let palette = self.state.borrow().palette();
-        snapshot.palette =
-            PaletteSettings::maybe_from_colors(&palette, &theme::DEFAULT_SPECTROGRAM_PALETTE);
-        Some(ModuleSettings::with_config(&snapshot))
-    }
-}
-
-struct SpectrumVisual {
-    processor: SpectrumProcessor,
-    state: Rc<RefCell<SpectrumState>>,
-}
-
-impl Default for SpectrumVisual {
-    fn default() -> Self {
-        Self {
-            processor: SpectrumProcessor::new(DEFAULT_SAMPLE_RATE),
-            state: rc_cell(SpectrumState::new()),
-        }
-    }
-}
-
-impl VisualModule for SpectrumVisual {
-    fn ingest(&mut self, samples: &[f32], format: MeterFormat) {
-        if let Some(snapshot) = self.processor.ingest(samples, format) {
-            self.state.borrow_mut().apply_snapshot(&snapshot);
-        }
-    }
-
-    fn content(&self) -> VisualContent {
-        VisualContent::Spectrum {
-            state: self.state.clone(),
-        }
-    }
-
-    fn apply_settings(&mut self, settings: &ModuleSettings) {
-        if let Some(stored) = settings.config::<SpectrumSettings>() {
-            let mut config = self.processor.config();
-            stored.apply_to(&mut config);
-            self.processor.update_config(config);
-
-            let mut state = self.state.borrow_mut();
-            state.set_palette(&resolve_palette(
-                &stored.palette,
-                &theme::DEFAULT_SPECTRUM_PALETTE,
-            ));
-
-            let updated = self.processor.config();
-            let style = state.style_mut();
-            style.frequency_scale = updated.frequency_scale;
-            style.reverse_frequency = updated.reverse_frequency;
-            style.smoothing_radius = stored.smoothing_radius;
-            style.smoothing_passes = stored.smoothing_passes;
-            state.update_show_grid(updated.show_grid);
-            state.update_show_peak_label(updated.show_peak_label);
-        }
-    }
-
-    fn export_settings(&self) -> Option<ModuleSettings> {
-        let mut spectrum_settings = SpectrumSettings::from_config(&self.processor.config());
-        let state = self.state.borrow();
-        let palette = state.palette();
-        spectrum_settings.palette =
-            PaletteSettings::maybe_from_colors(&palette, &theme::DEFAULT_SPECTRUM_PALETTE);
-        let style = state.style();
-        spectrum_settings.smoothing_radius = style.smoothing_radius;
-        spectrum_settings.smoothing_passes = style.smoothing_passes;
-        Some(ModuleSettings::with_config(&spectrum_settings))
-    }
-}
-
-struct StereometerVisual {
-    processor: StereometerProcessor,
-    state: Rc<RefCell<StereometerState>>,
-}
-
-impl Default for StereometerVisual {
-    fn default() -> Self {
-        Self {
-            processor: StereometerProcessor::new(DEFAULT_SAMPLE_RATE),
-            state: rc_cell(StereometerState::new()),
-        }
-    }
-}
-
-impl VisualModule for StereometerVisual {
-    fn ingest(&mut self, samples: &[f32], format: MeterFormat) {
-        let snapshot = self.processor.ingest(samples, format);
-        self.state.borrow_mut().apply_snapshot(&snapshot);
-    }
-
-    fn content(&self) -> VisualContent {
-        VisualContent::Stereometer {
-            state: self.state.clone(),
-        }
-    }
-
-    fn apply_settings(&mut self, settings: &ModuleSettings) {
-        if let Some(stored) = settings.config::<StereometerSettings>() {
-            let mut config = self.processor.config();
-            stored.apply_to(&mut config);
-            self.processor.update_config(config);
-
-            let mut state = self.state.borrow_mut();
-            state.update_view_settings(&stored);
-            state.set_palette(&resolve_palette(
-                &stored.palette,
-                &theme::DEFAULT_STEREOMETER_PALETTE,
-            ));
-        }
-    }
-
-    fn export_settings(&self) -> Option<ModuleSettings> {
-        let state = self.state.borrow();
-        let (persistence, mode, scale, scale_range, rotation, flip) = state.view_settings();
-        let mut snapshot = StereometerSettings::from_config(&self.processor.config());
-        snapshot.persistence = persistence;
-        snapshot.mode = mode;
-        snapshot.scale = scale;
-        snapshot.scale_range = scale_range;
-        snapshot.rotation = rotation;
-        snapshot.flip = flip;
-        snapshot.palette = PaletteSettings::maybe_from_colors(
-            &state.palette(),
-            &theme::DEFAULT_STEREOMETER_PALETTE,
-        );
-        Some(ModuleSettings::with_config(&snapshot))
     }
 }
 
@@ -766,23 +509,27 @@ impl VisualManager {
     }
 
     pub fn reorder(&mut self, new_order: &[VisualId]) {
+        if let [a, b] = new_order {
+            let i = self.entries.iter().position(|e| e.id == *a);
+            let j = self.entries.iter().position(|e| e.id == *b);
+            if let (Some(i), Some(j)) = (i, j) {
+                self.entries.swap(i, j);
+            }
+            return;
+        }
         for (position, id) in new_order.iter().enumerate() {
             if position >= self.entries.len() {
                 break;
             }
-
             let Some(current_index) = self.entries.iter().position(|e| e.id == *id) else {
                 continue;
             };
-
             if current_index != position {
                 self.entries.swap(position, current_index);
             }
         }
     }
 
-    /// Moves a visual to a specific index in the order.
-    /// The index is clamped to valid bounds.
     pub fn restore_position(&mut self, visual_id: VisualId, target_index: usize) {
         let Some(current_index) = self.entries.iter().position(|e| e.id == visual_id) else {
             return;
