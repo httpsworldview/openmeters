@@ -23,7 +23,7 @@ fn main() {
     let (routing_tx, routing_rx) = mpsc::channel::<RoutingCommand>();
     let (snapshot_tx, snapshot_rx) = async_channel::bounded::<pw_registry::RegistrySnapshot>(64);
 
-    let _registry_handle = registry_monitor::init_registry_monitor(routing_rx, snapshot_tx.clone());
+    registry_monitor::init_registry_monitor(routing_rx, snapshot_tx.clone());
 
     pw_virtual_sink::run();
 
