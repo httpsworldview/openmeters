@@ -127,8 +127,8 @@ impl ModuleSettingsPane for StereometerSettingsPane {
     fn handle(
         &mut self,
         message: &SettingsMessage,
-        vm: &VisualManagerHandle,
-        settings: &SettingsHandle,
+        visual_manager: &VisualManagerHandle,
+        settings_handle: &SettingsHandle,
     ) {
         let SettingsMessage::Stereometer(msg) = message else {
             return;
@@ -150,8 +150,8 @@ impl ModuleSettingsPane for StereometerSettingsPane {
         };
         if changed {
             persist_palette!(
-                vm,
-                settings,
+                visual_manager,
+                settings_handle,
                 VisualKind::Stereometer,
                 self,
                 theme::DEFAULT_STEREOMETER_PALETTE

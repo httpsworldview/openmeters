@@ -79,8 +79,8 @@ impl ModuleSettingsPane for WaveformSettingsPane {
     fn handle(
         &mut self,
         message: &SettingsMessage,
-        vm: &VisualManagerHandle,
-        settings: &SettingsHandle,
+        visual_manager: &VisualManagerHandle,
+        settings_handle: &SettingsHandle,
     ) {
         let SettingsMessage::Waveform(msg) = message else {
             return;
@@ -96,8 +96,8 @@ impl ModuleSettingsPane for WaveformSettingsPane {
         };
         if changed {
             persist_palette!(
-                vm,
-                settings,
+                visual_manager,
+                settings_handle,
                 VisualKind::Waveform,
                 self,
                 theme::DEFAULT_WAVEFORM_PALETTE

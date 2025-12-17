@@ -112,8 +112,8 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
     fn handle(
         &mut self,
         message: &SettingsMessage,
-        vm: &VisualManagerHandle,
-        settings: &SettingsHandle,
+        visual_manager: &VisualManagerHandle,
+        settings_handle: &SettingsHandle,
     ) {
         let SettingsMessage::Oscilloscope(msg) = message else {
             return;
@@ -138,8 +138,8 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
         };
         if changed {
             persist_palette!(
-                vm,
-                settings,
+                visual_manager,
+                settings_handle,
                 VisualKind::Oscilloscope,
                 self,
                 theme::DEFAULT_OSCILLOSCOPE_PALETTE

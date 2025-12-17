@@ -72,8 +72,8 @@ impl ModuleSettingsPane for LoudnessSettingsPane {
     fn handle(
         &mut self,
         message: &SettingsMessage,
-        vm: &VisualManagerHandle,
-        settings: &SettingsHandle,
+        visual_manager: &VisualManagerHandle,
+        settings_handle: &SettingsHandle,
     ) {
         let SettingsMessage::Loudness(msg) = message else {
             return;
@@ -87,8 +87,8 @@ impl ModuleSettingsPane for LoudnessSettingsPane {
 
         if changed {
             persist_palette!(
-                vm,
-                settings,
+                visual_manager,
+                settings_handle,
                 VisualKind::Loudness,
                 self,
                 theme::DEFAULT_LOUDNESS_PALETTE
