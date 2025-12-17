@@ -12,7 +12,7 @@ use iced::Element;
 use iced::widget::{column, toggler};
 
 const FFT_OPTIONS: [usize; 4] = [1024, 2048, 4096, 8192];
-const SCALE_OPTIONS: [FrequencyScale; 3] = [
+const FREQUENCY_SCALE_OPTIONS: [FrequencyScale; 3] = [
     FrequencyScale::Linear,
     FrequencyScale::Logarithmic,
     FrequencyScale::Mel,
@@ -116,7 +116,7 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
             }),
             labeled_pick_list(
                 "Frequency scale",
-                &SCALE_OPTIONS,
+                &FREQUENCY_SCALE_OPTIONS,
                 Some(s.frequency_scale),
                 |sc| SettingsMessage::Spectrum(Message::FrequencyScale(sc))
             ),
@@ -180,8 +180,8 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
     fn handle(
         &mut self,
         message: &SettingsMessage,
-        vm: &VisualManagerHandle,
-        settings: &SettingsHandle,
+        visual_manager: &VisualManagerHandle,
+        settings_handle: &SettingsHandle,
     ) {
         let SettingsMessage::Spectrum(msg) = message else {
             return;
@@ -240,8 +240,8 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
 
         if changed {
             persist_palette!(
-                vm,
-                settings,
+                visual_manager,
+                settings_handle,
                 VisualKind::Spectrum,
                 self,
                 theme::DEFAULT_SPECTRUM_PALETTE

@@ -15,7 +15,7 @@ use iced::{Element, Length};
 
 const FFT_OPTIONS: [usize; 5] = [1024, 2048, 4096, 8192, 16384];
 const ZERO_PAD_OPTIONS: [usize; 6] = [1, 2, 4, 8, 16, 32];
-const FREQ_SCALE_OPTIONS: [FrequencyScale; 3] = [
+const FREQUENCY_SCALE_OPTIONS: [FrequencyScale; 3] = [
     FrequencyScale::Linear,
     FrequencyScale::Logarithmic,
     FrequencyScale::Mel,
@@ -23,8 +23,8 @@ const FREQ_SCALE_OPTIONS: [FrequencyScale; 3] = [
 const HISTORY_RANGE: SliderRange = SliderRange::new(120.0, 960.0, 30.0);
 const REASSIGN_FLOOR_RANGE: SliderRange = SliderRange::new(-120.0, -30.0, 1.0);
 const DISPLAY_BINS_RANGE: SliderRange = SliderRange::new(64.0, 4096.0, 64.0);
-const PB_EPSILON_RANGE: SliderRange = SliderRange::new(0.01, 0.5, 0.01);
-const PB_BETA_RANGE: SliderRange = SliderRange::new(0.0, 20.0, 0.25);
+const PLANCK_BESSEL_EPSILON_RANGE: SliderRange = SliderRange::new(0.01, 0.5, 0.01);
+const PLANCK_BESSEL_BETA_RANGE: SliderRange = SliderRange::new(0.0, 20.0, 0.25);
 
 #[derive(Debug)]
 pub struct SpectrogramSettingsPane {
@@ -101,7 +101,7 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
             }),
             labeled_pick_list(
                 "Freq scale",
-                &FREQ_SCALE_OPTIONS,
+                &FREQUENCY_SCALE_OPTIONS,
                 Some(s.frequency_scale),
                 |v| SettingsMessage::Spectrogram(Message::FrequencyScale(v))
             ),
@@ -121,14 +121,14 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
                 "PB epsilon",
                 epsilon,
                 format!("{epsilon:.3}"),
-                PB_EPSILON_RANGE,
+                PLANCK_BESSEL_EPSILON_RANGE,
                 |v| SettingsMessage::Spectrogram(Message::PlanckBesselEpsilon(v)),
             ));
             core = core.push(labeled_slider(
                 "PB beta",
                 beta,
                 format!("{beta:.2}"),
-                PB_BETA_RANGE,
+                PLANCK_BESSEL_BETA_RANGE,
                 |v| SettingsMessage::Spectrogram(Message::PlanckBesselBeta(v)),
             ));
         }
@@ -183,8 +183,8 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
     fn handle(
         &mut self,
         message: &SettingsMessage,
-        vm: &VisualManagerHandle,
-        settings: &SettingsHandle,
+        visual_manager: &VisualManagerHandle,
+        settings_handle: &SettingsHandle,
     ) {
         let SettingsMessage::Spectrogram(msg) = message else {
             return;
@@ -226,7 +226,7 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
             Message::PlanckBesselEpsilon(value) => {
                 if let WindowKind::PlanckBessel { epsilon, beta } = s.window {
                     let mut new_epsilon = epsilon;
-                    if update_f32_range(&mut new_epsilon, value, PB_EPSILON_RANGE) {
+                    if update_f32_range(&mut new_epsilon, value, PLANCK_BESSEL_EPSILON_RANGE) {
                         self.planck_bessel.0 = new_epsilon;
                         s.window = WindowKind::PlanckBessel {
                             epsilon: new_epsilon,
@@ -239,7 +239,7 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
             Message::PlanckBesselBeta(value) => {
                 if let WindowKind::PlanckBessel { epsilon, beta } = s.window {
                     let mut new_beta = beta;
-                    if update_f32_range(&mut new_beta, value, PB_BETA_RANGE) {
+                    if update_f32_range(&mut new_beta, value, PLANCK_BESSEL_BETA_RANGE) {
                         self.planck_bessel.1 = new_beta;
                         s.window = WindowKind::PlanckBessel {
                             epsilon,
@@ -275,8 +275,8 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
         }
         if changed {
             persist_palette!(
-                vm,
-                settings,
+                visual_manager,
+                settings_handle,
                 VisualKind::Spectrogram,
                 self,
                 theme::DEFAULT_SPECTROGRAM_PALETTE

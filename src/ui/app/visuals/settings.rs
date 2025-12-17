@@ -1,10 +1,10 @@
 //! Contains the settings panes for visual modules.
 
 macro_rules! persist_palette {
-    ($vm:expr, $settings:expr, $kind:expr, $this:expr, $defaults:expr) => {{
+    ($visual_manager:expr, $settings_handle:expr, $kind:expr, $this:expr, $defaults:expr) => {{
         super::persist_with_palette(
-            $vm,
-            $settings,
+            $visual_manager,
+            $settings_handle,
             $kind,
             &$this.settings,
             &$this.palette,
@@ -56,7 +56,7 @@ pub trait ModuleSettingsPane: std::fmt::Debug + 'static {
         &mut self,
         message: &SettingsMessage,
         visual_manager: &VisualManagerHandle,
-        settings: &SettingsHandle,
+        settings_handle: &SettingsHandle,
     );
 }
 
@@ -79,9 +79,9 @@ impl ActiveSettings {
         &mut self,
         message: &SettingsMessage,
         visual_manager: &VisualManagerHandle,
-        settings: &SettingsHandle,
+        settings_handle: &SettingsHandle,
     ) {
-        self.pane.handle(message, visual_manager, settings);
+        self.pane.handle(message, visual_manager, settings_handle);
     }
 }
 
@@ -115,7 +115,7 @@ where
 
 pub(super) fn persist_module_config<T>(
     visual_manager: &VisualManagerHandle,
-    settings: &SettingsHandle,
+    settings_handle: &SettingsHandle,
     kind: VisualKind,
     config: &T,
 ) -> bool
@@ -127,7 +127,7 @@ where
         .apply_module_settings(kind, &ModuleSettings::with_config(config));
 
     if applied {
-        settings.update(|s| s.set_module_config(kind, config));
+        settings_handle.update(|s| s.set_module_config(kind, config));
     }
 
     applied
@@ -169,7 +169,7 @@ where
 
 pub(super) fn persist_with_palette<T>(
     visual_manager: &VisualManagerHandle,
-    settings: &SettingsHandle,
+    settings_handle: &SettingsHandle,
     kind: VisualKind,
     config: &T,
     palette: &PaletteEditor,
@@ -180,5 +180,5 @@ where
 {
     let mut stored = config.clone();
     stored.set_palette(PaletteSettings::if_differs_from(palette.colors(), defaults));
-    persist_module_config(visual_manager, settings, kind, &stored)
+    persist_module_config(visual_manager, settings_handle, kind, &stored)
 }
