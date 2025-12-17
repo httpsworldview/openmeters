@@ -3,7 +3,7 @@ use crate::{
     audio::meter_tap::{self, MeterFormat},
     dsp::ProcessorUpdate,
     ui::{
-        settings::{self as cfg, ModuleSettings, PaletteSettings, VisualSettings},
+        settings::{self as settings_cfg, ModuleSettings, PaletteSettings, VisualSettings},
         theme,
         visualization::{loudness, oscilloscope, spectrogram, spectrum, stereometer, waveform},
     },
@@ -85,21 +85,21 @@ visuals! {
         loudness::LoudnessMeterProcessor, Shared<loudness::LoudnessMeterState>;
         init(sr) { loudness::LoudnessMeterProcessor::new(sr), loudness::LoudnessMeterState::new() }
         ingest(p, s, sa, fm) { s.borrow_mut().apply_snapshot(&p.ingest(sa, fm)); };
-        cfg::LoudnessSettings, &theme::DEFAULT_LOUDNESS_PALETTE;
+        settings_cfg::LoudnessSettings, &theme::DEFAULT_LOUDNESS_PALETTE;
         apply(_p, s, set) { let mut st = s.borrow_mut(); st.set_modes(set.left_mode, set.right_mode);
             visuals!(@apply_palette st, set, &theme::DEFAULT_LOUDNESS_PALETTE); };
-        export(_p, s) { let st = s.borrow(); cfg::LoudnessSettings { left_mode: st.left_mode(), right_mode: st.right_mode(),
+        export(_p, s) { let st = s.borrow(); settings_cfg::LoudnessSettings { left_mode: st.left_mode(), right_mode: st.right_mode(),
             palette: visuals!(@export_palette st.palette(), &theme::DEFAULT_LOUDNESS_PALETTE) } };
 
     Oscilloscope("Oscilloscope", 150.0, 160.0, 100.0) =>
         oscilloscope::OscilloscopeProcessor, Shared<oscilloscope::OscilloscopeState>;
         init(sr) { oscilloscope::OscilloscopeProcessor::with_sample_rate(sr), oscilloscope::OscilloscopeState::new() }
         ingest(p, s, samples, fmt) if let Some(snap) = p.ingest(samples, fmt) { s.borrow_mut().apply_snapshot(&snap); };
-        cfg::OscilloscopeSettings, &theme::DEFAULT_OSCILLOSCOPE_PALETTE;
+        settings_cfg::OscilloscopeSettings, &theme::DEFAULT_OSCILLOSCOPE_PALETTE;
         apply(p, s, set) { visuals!(@apply_config p, set); let mut st = s.borrow_mut();
             st.update_view_settings(set.persistence, set.channel_mode);
             visuals!(@apply_palette st, set, &theme::DEFAULT_OSCILLOSCOPE_PALETTE); };
-        export(p, s) { let st = s.borrow(); let mut out = cfg::OscilloscopeSettings::from_config(&p.config());
+        export(p, s) { let st = s.borrow(); let mut out = settings_cfg::OscilloscopeSettings::from_config(&p.config());
             out.persistence = st.persistence(); out.channel_mode = st.channel_mode();
             out.palette = visuals!(@export_palette st.palette(), &theme::DEFAULT_OSCILLOSCOPE_PALETTE); out };
 
@@ -108,11 +108,11 @@ visuals! {
         init(sr) { waveform::WaveformProcessor::new(sr), waveform::WaveformState::new() }
         ingest(p, s, samples, fmt) { waveform::WaveformProcessor::sync_capacity(s, p);
             if let Some(snap) = p.ingest(samples, fmt) { s.borrow_mut().apply_snapshot(snap); } };
-        cfg::WaveformSettings, &theme::DEFAULT_WAVEFORM_PALETTE;
+        settings_cfg::WaveformSettings, &theme::DEFAULT_WAVEFORM_PALETTE;
         apply(p, s, set) { visuals!(@apply_config p, set); waveform::WaveformProcessor::sync_capacity(s, p);
             let mut st = s.borrow_mut(); st.set_channel_mode(set.channel_mode);
             visuals!(@apply_palette st, set, &theme::DEFAULT_WAVEFORM_PALETTE); };
-        export(p, s) { let st = s.borrow(); let mut out = cfg::WaveformSettings::from_config(&p.config());
+        export(p, s) { let st = s.borrow(); let mut out = settings_cfg::WaveformSettings::from_config(&p.config());
             out.channel_mode = st.channel_mode();
             out.palette = visuals!(@export_palette st.palette(), &theme::DEFAULT_WAVEFORM_PALETTE); out };
 
@@ -121,24 +121,24 @@ visuals! {
         init(sr) { spectrogram::SpectrogramProcessor::new(sr), spectrogram::SpectrogramState::new() }
         ingest(p, s, samples, fmt) { if let ProcessorUpdate::Snapshot(update) = p.ingest(samples, fmt) {
             s.borrow_mut().apply_update(&update); }};
-        cfg::SpectrogramSettings, &theme::DEFAULT_SPECTROGRAM_PALETTE;
+        settings_cfg::SpectrogramSettings, &theme::DEFAULT_SPECTROGRAM_PALETTE;
         apply(p, s, set) { visuals!(@apply_config p, set);
             s.borrow_mut().set_palette(resolve_palette(&set.palette, &theme::DEFAULT_SPECTROGRAM_PALETTE)); };
-        export(p, s) { let mut out = cfg::SpectrogramSettings::from_config(&p.config());
+        export(p, s) { let mut out = settings_cfg::SpectrogramSettings::from_config(&p.config());
             out.palette = visuals!(@export_palette &s.borrow().palette(), &theme::DEFAULT_SPECTROGRAM_PALETTE); out };
 
     Spectrum("Spectrum analyzer", 400.0, 180.0, 400.0) =>
         spectrum::SpectrumProcessor, Shared<spectrum::SpectrumState>;
         init(sr) { spectrum::SpectrumProcessor::new(sr), spectrum::SpectrumState::new() }
         ingest(p, s, samples, fmt) if let Some(snap) = p.ingest(samples, fmt) { s.borrow_mut().apply_snapshot(&snap); };
-        cfg::SpectrumSettings, &theme::DEFAULT_SPECTRUM_PALETTE;
+        settings_cfg::SpectrumSettings, &theme::DEFAULT_SPECTRUM_PALETTE;
         apply(p, s, set) { visuals!(@apply_config p, set); let mut st = s.borrow_mut();
             visuals!(@apply_palette st, set, &theme::DEFAULT_SPECTRUM_PALETTE);
             let style = st.style_mut(); style.frequency_scale = set.frequency_scale;
             style.reverse_frequency = set.reverse_frequency; style.smoothing_radius = set.smoothing_radius;
             style.smoothing_passes = set.smoothing_passes;
             st.update_show_grid(set.show_grid); st.update_show_peak_label(set.show_peak_label); };
-        export(p, s) { let st = s.borrow(); let mut out = cfg::SpectrumSettings::from_config(&p.config());
+        export(p, s) { let st = s.borrow(); let mut out = settings_cfg::SpectrumSettings::from_config(&p.config());
             out.palette = visuals!(@export_palette &st.palette(), &theme::DEFAULT_SPECTRUM_PALETTE);
             out.smoothing_radius = st.style().smoothing_radius;
             out.smoothing_passes = st.style().smoothing_passes; out };
@@ -147,12 +147,12 @@ visuals! {
         stereometer::StereometerProcessor, Shared<stereometer::StereometerState>;
         init(sr) { stereometer::StereometerProcessor::new(sr), stereometer::StereometerState::new() }
         ingest(p, s, samples, fmt) { s.borrow_mut().apply_snapshot(&p.ingest(samples, fmt)); };
-        cfg::StereometerSettings, &theme::DEFAULT_STEREOMETER_PALETTE;
+        settings_cfg::StereometerSettings, &theme::DEFAULT_STEREOMETER_PALETTE;
         apply(p, s, set) { visuals!(@apply_config p, set); let mut st = s.borrow_mut();
             st.update_view_settings(&set); visuals!(@apply_palette st, set, &theme::DEFAULT_STEREOMETER_PALETTE); };
         export(p, s) { let st = s.borrow();
             let (persistence, mode, scale, scale_range, rotation, flip) = st.view_settings();
-            let mut out = cfg::StereometerSettings::from_config(&p.config());
+            let mut out = settings_cfg::StereometerSettings::from_config(&p.config());
             out.persistence = persistence; out.mode = mode; out.scale = scale; out.scale_range = scale_range;
             out.rotation = rotation; out.flip = flip;
             out.palette = visuals!(@export_palette &st.palette(), &theme::DEFAULT_STEREOMETER_PALETTE); out };

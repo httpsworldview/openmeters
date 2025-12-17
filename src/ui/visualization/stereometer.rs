@@ -18,10 +18,10 @@ use std::cell::RefCell;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
-static NEXT_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_INSTANCE_KEY: AtomicU64 = AtomicU64::new(1);
 
-fn next_instance_id() -> u64 {
-    NEXT_INSTANCE_ID.fetch_add(1, Ordering::Relaxed)
+fn next_instance_key() -> u64 {
+    NEXT_INSTANCE_KEY.fetch_add(1, Ordering::Relaxed)
 }
 
 #[derive(Debug, Clone)]
@@ -79,7 +79,7 @@ pub struct StereometerState {
     scale_range: f32,
     rotation: i8,
     flip: bool,
-    instance_id: u64,
+    instance_key: u64,
 }
 
 impl StereometerState {
@@ -94,7 +94,7 @@ impl StereometerState {
             scale_range: 15.0,
             rotation: 0,
             flip: false,
-            instance_id: next_instance_id(),
+            instance_key: next_instance_key(),
         }
     }
 
@@ -182,7 +182,7 @@ impl StereometerState {
         }
 
         Some(StereometerParams {
-            instance_id: self.instance_id,
+            instance_key: self.instance_key,
             bounds,
             points: self.snapshot.xy_points.clone(),
             trace_color: theme::color_to_rgba(self.trace_color),

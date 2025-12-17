@@ -8,7 +8,7 @@ use crate::ui::settings::StereometerMode;
 
 #[derive(Debug, Clone)]
 pub struct StereometerParams {
-    pub instance_id: u64,
+    pub instance_key: u64,
     pub bounds: Rectangle,
     pub points: Vec<(f32, f32)>,
     pub trace_color: [f32; 4],
@@ -213,7 +213,7 @@ impl Primitive for StereometerPrimitive {
         viewport: &Viewport,
     ) {
         let vertices = self.build_vertices(viewport);
-        pipeline.prepare(device, queue, self.params.instance_id, &vertices);
+        pipeline.prepare(device, queue, self.params.instance_key, &vertices);
     }
 
     fn render(
@@ -223,7 +223,7 @@ impl Primitive for StereometerPrimitive {
         target: &wgpu::TextureView,
         clip_bounds: &Rectangle<u32>,
     ) {
-        let Some(instance) = pipeline.instance(self.params.instance_id) else {
+        let Some(instance) = pipeline.instance(self.params.instance_key) else {
             return;
         };
         if instance.vertex_count == 0 {
