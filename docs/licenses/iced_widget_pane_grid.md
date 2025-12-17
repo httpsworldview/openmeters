@@ -1,13 +1,7 @@
 # Iced pane_grid licensing
 
 The files under `src/ui/pane_grid/` are adapted from the `pane_grid` widget in [`iced_widget` v0.13.4](https://github.com/iced-rs/iced).
-
-The live code is a lightweight adaptation that only supports horizontal ordering and simple pane swapping.
-
-The original source is licensed under the MIT License. In accordance with that license:
-
-- These files retain the original copyright header, with an added note indicating they are adapted from `iced_widget`.
-- The `iced_widget` MIT License text is reproduced below for convenience.
+The original code is licensed under the MIT License:
 
 ```text
 MIT License
