@@ -303,9 +303,7 @@ impl VisualManager {
     }
     pub fn apply_visual_settings(&mut self, s: &VisualSettings) {
         for e in &mut self.entries {
-            if let Some(m) = s.modules.get(&e.kind) {
-                e.apply(m);
-            }
+            e.apply(s.modules.get(&e.kind).unwrap_or(&ModuleSettings::default()));
         }
         if !s.order.is_empty() {
             let ids: Vec<_> = s
