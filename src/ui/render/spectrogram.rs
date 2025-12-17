@@ -12,11 +12,11 @@ use crate::ui::render::common::{
 
 pub const SPECTROGRAM_PALETTE_SIZE: usize = 5;
 pub const PALETTE_LUT_SIZE: u32 = 256;
-const FLAG_CAPACITY_POW2: u32 = 0b1;
+const FLAG_CAPACITY_IS_POW2: u32 = 1;
 
 #[derive(Debug, Clone)]
 pub struct SpectrogramParams {
-    pub instance_id: u64,
+    pub instance_key: u64,
     pub bounds: Rectangle,
     pub texture_width: u32,
     pub texture_height: u32,
@@ -127,7 +127,7 @@ impl SpectrogramPrimitive {
     }
 
     fn key(&self) -> u64 {
-        self.params.instance_id
+        self.params.instance_key
     }
 
     fn build_vertices(&self, viewport: &Viewport) -> [Vertex; 6] {
@@ -259,9 +259,9 @@ struct SpectrogramUniforms {
 impl SpectrogramUniforms {
     fn new(params: &SpectrogramParams) -> Self {
         let capacity = params.texture_width;
-        let is_pow2 = capacity > 0 && capacity.is_power_of_two();
-        let (wrap_mask, flags) = if is_pow2 {
-            (capacity - 1, FLAG_CAPACITY_POW2)
+        let is_capacity_pow2 = capacity > 0 && capacity.is_power_of_two();
+        let (wrap_mask, flags) = if is_capacity_pow2 {
+            (capacity - 1, FLAG_CAPACITY_IS_POW2)
         } else {
             (0, 0)
         };

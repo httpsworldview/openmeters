@@ -42,7 +42,7 @@ fn norm_to_freq(inv: f32, nyquist: f32, min_freq: f32, scale: FrequencyScale) ->
     }
 }
 
-static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_INSTANCE_KEY: AtomicU64 = AtomicU64::new(1);
 
 pub struct SpectrogramProcessor {
     inner: CoreSpectrogramProcessor,
@@ -321,7 +321,7 @@ pub struct SpectrogramState {
     style: SpectrogramStyle,
     palette: [Color; SPECTROGRAM_PALETTE_SIZE],
     history: VecDeque<SpectrogramColumn>,
-    instance_id: u64,
+    instance_key: u64,
 }
 
 impl SpectrogramState {
@@ -331,7 +331,7 @@ impl SpectrogramState {
             style: SpectrogramStyle::default(),
             palette: theme::DEFAULT_SPECTROGRAM_PALETTE,
             history: VecDeque::new(),
-            instance_id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            instance_key: NEXT_INSTANCE_KEY.fetch_add(1, Ordering::Relaxed),
         }
     }
 
@@ -380,7 +380,7 @@ impl SpectrogramState {
         let op = self.style.opacity.clamp(0.0, 1.0);
         let to_rgba = |c: Color| [c.r, c.g, c.b, c.a * op];
         Some(SpectrogramParams {
-            instance_id: self.instance_id,
+            instance_key: self.instance_key,
             bounds,
             texture_width: buf.capacity,
             texture_height: buf.height,
