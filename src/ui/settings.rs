@@ -256,7 +256,7 @@ visual_settings!(SpectrogramSettings from SpectrogramConfig {
 visual_settings!(StereometerSettings from StereometerConfig {
     segment_duration: f32, target_sample_count: usize,
 } extra {
-    persistence: f32 = 0.85, mode: StereometerMode = StereometerMode::default(),
+    persistence: f32 = 0.0, mode: StereometerMode = StereometerMode::default(),
     scale: StereometerScale = StereometerScale::default(), scale_range: f32 = 15.0, rotation: i8 = -1, flip: bool = true,
 });
 
