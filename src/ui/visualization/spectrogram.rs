@@ -17,7 +17,7 @@ use iced::advanced::renderer::{self, Quad};
 use iced::advanced::text::{self, Paragraph as _, Renderer as TextRenderer};
 use iced::advanced::widget::{Tree, tree};
 use iced::advanced::{Layout, Renderer as _, Widget, layout, mouse};
-use iced::{Background, Color, Element, Length, Point, Rectangle, Size};
+use iced::{Background, Color, Element, Length, Point, Rectangle, Size, keyboard};
 use iced_wgpu::primitive::Renderer as _;
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -403,19 +403,20 @@ impl SpectrogramState {
             palette: self.palette.map(to_rgba),
             background: to_rgba(self.style.background),
             contrast: self.style.contrast,
+            uv_y_range: [0.0, 1.0],
         })
     }
 
-    fn frequency_at_y(&self, y: f32, bounds: Rectangle) -> Option<f32> {
+    fn frequency_at_y_zoomed(&self, y: f32, bounds: Rectangle, uv_range: [f32; 2]) -> Option<f32> {
         if bounds.height <= 0.0 || y < bounds.y || y > bounds.y + bounds.height {
             return None;
         }
-        let norm = (y - bounds.y) / bounds.height;
+        let tex_uv = uv_range[0] + (y - bounds.y) / bounds.height * (uv_range[1] - uv_range[0]);
         let buf = self.buffer.borrow();
         if !buf.display_freqs.is_empty() {
             return buf
                 .display_freqs
-                .get((norm * buf.display_freqs.len() as f32).floor() as usize)
+                .get((tex_uv * buf.display_freqs.len() as f32) as usize)
                 .copied();
         }
         if buf.fft_size == 0 || buf.sample_rate <= 0.0 {
@@ -425,7 +426,7 @@ impl SpectrogramState {
             (buf.sample_rate / 2.0).max(1.0),
             (buf.sample_rate / buf.fft_size as f32).max(20.0),
         );
-        let freq = norm_to_freq(1.0 - norm, nyq, min_f, buf.scale);
+        let freq = norm_to_freq(1.0 - tex_uv, nyq, min_f, buf.scale);
         (freq.is_finite() && freq > 0.0).then_some(freq)
     }
 
@@ -435,9 +436,47 @@ impl SpectrogramState {
     }
 }
 
-#[derive(Default)]
-struct TooltipState {
+const MIN_ZOOM: f32 = 1.0;
+const MAX_ZOOM: f32 = 32.0;
+const ZOOM_STEP: f32 = 1.15;
+
+struct InteractionState {
     cursor: Option<Point>,
+    modifiers: keyboard::Modifiers,
+    zoom: f32,
+    pan: f32,
+    drag: Option<(f32, f32)>, // (origin_y, start_pan)
+}
+
+impl Default for InteractionState {
+    fn default() -> Self {
+        Self {
+            cursor: None,
+            modifiers: keyboard::Modifiers::default(),
+            zoom: 1.0,
+            pan: 0.5,
+            drag: None,
+        }
+    }
+}
+
+impl InteractionState {
+    fn uv_y_range(&self) -> [f32; 2] {
+        let h = 0.5 / self.zoom.max(MIN_ZOOM);
+        let min = (self.pan - h).clamp(0.0, 1.0 - 2.0 * h);
+        [min, (min + 2.0 * h).min(1.0)]
+    }
+
+    fn zoom_at(&mut self, y_norm: f32, factor: f32) {
+        let (old_h, old_min) = (
+            0.5 / self.zoom,
+            (self.pan - 0.5 / self.zoom).clamp(0.0, 1.0),
+        );
+        let cursor_uv = old_min + y_norm * 2.0 * old_h;
+        self.zoom = (self.zoom * factor).clamp(MIN_ZOOM, MAX_ZOOM);
+        let new_h = 0.5 / self.zoom;
+        self.pan = (cursor_uv - new_h * (2.0 * y_norm - 1.0)).clamp(new_h, 1.0 - new_h);
+    }
 }
 
 pub struct Spectrogram<'a> {
@@ -455,17 +494,18 @@ impl<'a> Spectrogram<'a> {
         theme: &iced::Theme,
         bounds: Rectangle,
         cursor: Point,
+        uv_range: [f32; 2],
     ) {
         let state = self.state.borrow();
-        let Some(freq) = state.frequency_at_y(cursor.y, bounds) else {
+        let Some(freq) = state.frequency_at_y_zoomed(cursor.y, bounds, uv_range) else {
             return;
         };
         let content = MusicalNote::from_frequency(freq)
             .map(|n| format!("{:.1} Hz | {}", freq, n.format()))
             .unwrap_or_else(|| format!("{:.1} Hz", freq));
-        let (font, line_h, align_x, align_y, shaping, wrap) = (
-            iced::Font::default(),
+        let (lh, font, ax, ay, sh, wr) = (
             text::LineHeight::default(),
+            iced::Font::default(),
             iced::alignment::Horizontal::Left.into(),
             iced::alignment::Vertical::Top,
             text::Shaping::Basic,
@@ -475,12 +515,12 @@ impl<'a> Spectrogram<'a> {
             content: content.as_str(),
             bounds: Size::INFINITE,
             size: iced::Pixels(TOOLTIP_SIZE),
-            line_height: line_h,
+            line_height: lh,
             font,
-            align_x,
-            align_y,
-            shaping,
-            wrapping: wrap,
+            align_x: ax,
+            align_y: ay,
+            shaping: sh,
+            wrapping: wr,
         })
         .min_bounds();
         let sz = Size::new(
@@ -500,8 +540,8 @@ impl<'a> Spectrogram<'a> {
             sz,
         );
         let pal = theme.extended_palette();
-        let mut q = |b, brd, bg| {
-            renderer.fill_quad(
+        let q = |r: &mut iced::Renderer, b, brd, bg| {
+            r.fill_quad(
                 Quad {
                     bounds: b,
                     border: brd,
@@ -512,23 +552,29 @@ impl<'a> Spectrogram<'a> {
             )
         };
         q(
+            renderer,
             Rectangle::new(Point::new(tb.x + 1.0, tb.y + 1.0), sz),
             Default::default(),
             theme::with_alpha(pal.background.base.color, 0.3),
         );
-        q(tb, theme::sharp_border(), pal.background.strong.color);
+        q(
+            renderer,
+            tb,
+            theme::sharp_border(),
+            pal.background.strong.color,
+        );
         let pos = Point::new(tb.x + TOOLTIP_PAD, tb.y + TOOLTIP_PAD);
         renderer.fill_text(
             text::Text {
                 content,
                 bounds: tsz,
                 size: iced::Pixels(TOOLTIP_SIZE),
-                line_height: line_h,
+                line_height: lh,
                 font,
-                align_x,
-                align_y,
-                shaping,
-                wrapping: wrap,
+                align_x: ax,
+                align_y: ay,
+                shaping: sh,
+                wrapping: wr,
             },
             pos,
             pal.background.base.text,
@@ -542,6 +588,7 @@ impl<'a> Spectrogram<'a> {
         theme: &iced::Theme,
         bounds: Rectangle,
         side: PianoRollSide,
+        uv_range: [f32; 2],
     ) {
         let state = self.state.borrow();
         let buf = state.buffer.borrow();
@@ -556,29 +603,35 @@ impl<'a> Spectrogram<'a> {
         drop(buf);
         drop(state);
 
-        let midi_lo = MusicalNote::from_frequency(min_f.max(16.0))
-            .map(|n| n.midi_number - 1)
+        let (freq_top, freq_bot) = (
+            norm_to_freq(1.0 - uv_range[0], nyq, min_f, scale),
+            norm_to_freq(1.0 - uv_range[1], nyq, min_f, scale),
+        );
+        let midi_lo = MusicalNote::from_frequency(freq_bot.max(16.0))
+            .map(|n| (n.midi_number - 1).max(0))
             .unwrap_or(11);
-        let midi_hi = MusicalNote::from_frequency(nyq)
+        let midi_hi = MusicalNote::from_frequency(freq_top)
             .map(|n| n.midi_number + 1)
             .unwrap_or(128);
 
         let pal = theme.extended_palette();
         let (white, black) = (pal.background.weak.color, Color::from_rgb(0.1, 0.1, 0.1));
-        let x = match side {
-            PianoRollSide::Left => bounds.x,
-            PianoRollSide::Right => bounds.x + bounds.width - PIANO_ROLL_WIDTH,
+        let x = if side == PianoRollSide::Left {
+            bounds.x
+        } else {
+            bounds.x + bounds.width - PIANO_ROLL_WIDTH
         };
 
         let freq_to_y = |f: f32| {
-            let norm = match scale {
+            let tex_norm = match scale {
                 FrequencyScale::Linear => f / nyq,
                 FrequencyScale::Logarithmic => (f / min_f).ln() / (nyq / min_f).ln(),
                 FrequencyScale::Mel => {
                     (hz_to_mel(f) - hz_to_mel(min_f)) / (hz_to_mel(nyq) - hz_to_mel(min_f))
                 }
             };
-            bounds.y + bounds.height * (1.0 - norm.clamp(0.0, 1.0))
+            let view_norm = ((1.0 - tex_norm) - uv_range[0]) / (uv_range[1] - uv_range[0]);
+            bounds.y + bounds.height * view_norm.clamp(0.0, 1.0)
         };
 
         let semi = 2.0f32.powf(0.5 / 12.0);
@@ -621,10 +674,10 @@ impl<'a> Spectrogram<'a> {
 
 impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'a> {
     fn tag(&self) -> tree::Tag {
-        tree::Tag::of::<TooltipState>()
+        tree::Tag::of::<InteractionState>()
     }
     fn state(&self) -> tree::State {
-        tree::State::new(TooltipState::default())
+        tree::State::new(InteractionState::default())
     }
     fn size(&self) -> Size<Length> {
         Size::new(Length::Fill, Length::Fill)
@@ -647,16 +700,43 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
         _: mouse::Cursor,
         _: &iced::Renderer,
         _: &mut dyn iced::advanced::Clipboard,
-        _: &mut iced::advanced::Shell<'_, Message>,
+        shell: &mut iced::advanced::Shell<'_, Message>,
         _: &Rectangle,
     ) {
-        let st = tree.state.downcast_mut::<TooltipState>();
+        let st = tree.state.downcast_mut::<InteractionState>();
         let b = layout.bounds();
         match event {
             iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
-                st.cursor = b.contains(*position).then_some(*position)
+                st.cursor = b.contains(*position).then_some(*position);
+                if let Some((origin_y, start_pan)) = st.drag {
+                    let h = 0.5 / st.zoom;
+                    st.pan = (start_pan - (position.y - origin_y) / b.height / st.zoom)
+                        .clamp(h, 1.0 - h);
+                    shell.request_redraw();
+                }
             }
             iced::Event::Mouse(mouse::Event::CursorLeft) => st.cursor = None,
+            iced::Event::Keyboard(keyboard::Event::ModifiersChanged(m)) => st.modifiers = *m,
+            iced::Event::Mouse(mouse::Event::WheelScrolled { delta }) if st.modifiers.control() => {
+                if let Some(pos) = st.cursor.filter(|p| b.contains(*p) && b.height > 0.0) {
+                    let scroll_y = match *delta {
+                        mouse::ScrollDelta::Lines { y, .. } => y,
+                        mouse::ScrollDelta::Pixels { y, .. } => y / 50.0,
+                    };
+                    st.zoom_at((pos.y - b.y) / b.height, ZOOM_STEP.powf(scroll_y));
+                    shell.request_redraw();
+                    shell.capture_event();
+                }
+            }
+            iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Middle)) => {
+                if let Some(pos) = st.cursor.filter(|p| b.contains(*p) && st.zoom > MIN_ZOOM) {
+                    st.drag = Some((pos.y, st.pan));
+                    shell.capture_event();
+                }
+            }
+            iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Middle)) => {
+                st.drag = None
+            }
             _ => {}
         }
     }
@@ -672,6 +752,8 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
         _: &Rectangle,
     ) {
         let bounds = layout.bounds();
+        let interaction = tree.state.downcast_ref::<InteractionState>();
+        let uv_y_range = interaction.uv_y_range();
         let state = self.state.borrow();
         renderer.fill_quad(
             Quad {
@@ -682,31 +764,39 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
             },
             Background::Color(state.style.background),
         );
-        if let Some(p) = state.visual_params(bounds) {
+        if let Some(mut p) = state.visual_params(bounds) {
+            p.uv_y_range = uv_y_range;
             renderer.draw_primitive(bounds, SpectrogramPrimitive::new(p));
         }
         let piano_roll = state.piano_roll;
         state.clear_pending();
         drop(state);
         if let Some(side) = piano_roll {
-            renderer.with_layer(bounds, |r| self.draw_piano_roll(r, theme, bounds, side));
+            renderer.with_layer(bounds, |r| {
+                self.draw_piano_roll(r, theme, bounds, side, uv_y_range)
+            });
         }
-        if let Some(c) = tree.state.downcast_ref::<TooltipState>().cursor
+        if let Some(c) = interaction.cursor
             && bounds.contains(c)
         {
-            renderer.with_layer(bounds, |r| self.draw_tooltip(r, theme, bounds, c));
+            renderer.with_layer(bounds, |r| {
+                self.draw_tooltip(r, theme, bounds, c, uv_y_range)
+            });
         }
     }
 
     fn mouse_interaction(
         &self,
-        _: &Tree,
+        tree: &Tree,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
         _: &Rectangle,
         _: &iced::Renderer,
     ) -> mouse::Interaction {
-        if cursor.is_over(layout.bounds()) {
+        let st = tree.state.downcast_ref::<InteractionState>();
+        if st.drag.is_some() {
+            mouse::Interaction::Grabbing
+        } else if cursor.is_over(layout.bounds()) {
             mouse::Interaction::Crosshair
         } else {
             mouse::Interaction::default()

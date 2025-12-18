@@ -27,6 +27,7 @@ pub struct SpectrogramParams {
     pub palette: [[f32; 4]; SPECTROGRAM_PALETTE_SIZE],
     pub background: [f32; 4],
     pub contrast: f32,
+    pub uv_y_range: [f32; 2],
 }
 
 #[derive(Debug, Clone)]
@@ -274,7 +275,12 @@ impl SpectrogramUniforms {
                 f32::from_bits(flags),
             ],
             latest_and_count: [params.latest_column, params.column_count, 0, 0],
-            style: [params.contrast.max(0.01), 0.0, 0.0, 0.0],
+            style: [
+                params.contrast.max(0.01),
+                params.uv_y_range[0],
+                params.uv_y_range[1],
+                0.0,
+            ],
             background: params.background,
         }
     }
