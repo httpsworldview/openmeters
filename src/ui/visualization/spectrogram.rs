@@ -404,6 +404,7 @@ impl SpectrogramState {
             background: to_rgba(self.style.background),
             contrast: self.style.contrast,
             uv_y_range: [0.0, 1.0],
+            screen_height: bounds.height,
         })
     }
 

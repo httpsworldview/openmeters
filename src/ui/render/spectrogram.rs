@@ -28,6 +28,7 @@ pub struct SpectrogramParams {
     pub background: [f32; 4],
     pub contrast: f32,
     pub uv_y_range: [f32; 2],
+    pub screen_height: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -279,7 +280,7 @@ impl SpectrogramUniforms {
                 params.contrast.max(0.01),
                 params.uv_y_range[0],
                 params.uv_y_range[1],
-                0.0,
+                params.screen_height.max(1.0),
             ],
             background: params.background,
         }
