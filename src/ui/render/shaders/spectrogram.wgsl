@@ -143,9 +143,13 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
+    let uv_y_min = uniforms.style.y;
+    let uv_y_max = uniforms.style.z;
+    let zoomed_y = uv_y_min + clamped_uv.y * (uv_y_max - uv_y_min);
+
     var row: u32 = 0u;
     if height > 1u {
-        row = min(u32(clamped_uv.y * f32(height - 1u) + 0.5), height - 1u);
+        row = min(u32(zoomed_y * f32(height - 1u) + 0.5), height - 1u);
     }
 
     let params = MagnitudeParams(capacity, wrap_mask, oldest, is_pow2, is_full);
