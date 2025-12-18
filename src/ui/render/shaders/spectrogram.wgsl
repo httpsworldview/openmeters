@@ -145,16 +145,23 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
     let uv_y_min = uniforms.style.y;
     let uv_y_max = uniforms.style.z;
+    let screen_height = max(uniforms.style.w, 1.0);
     let zoomed_y = uv_y_min + clamped_uv.y * (uv_y_max - uv_y_min);
-
-    var row: u32 = 0u;
-    if height > 1u {
-        row = min(u32(zoomed_y * f32(height - 1u) + 0.5), height - 1u);
-    }
 
     let params = MagnitudeParams(capacity, wrap_mask, oldest, is_pow2, is_full);
 
-    let center = sample_magnitude(x_index, row, params);
+    // Max-pool across bins that map to this pixel to preserve peaks when downsampling
+    let bins_per_pixel = f32(height) * (uv_y_max - uv_y_min) / screen_height;
+    let half_span = bins_per_pixel * 0.5;
+    let center_bin = zoomed_y * f32(height - 1u);
+    let row_lo = u32(max(center_bin - half_span, 0.0));
+    let row_hi = min(u32(center_bin + half_span) + 1u, height);
+
+    var center = sample_magnitude(x_index, row_lo, params);
+    for (var r = row_lo + 1u; r < min(row_hi, row_lo + 64u); r = r + 1u) {
+        center = max(center, sample_magnitude(x_index, r, params));
+    }
+    let row = u32(clamp(center_bin + 0.5, 0.0, f32(height - 1u)));
 
     let has_left = x_index > 0u;
     let left_logical = select(x_index, x_index - 1u, has_left);
