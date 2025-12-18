@@ -122,10 +122,13 @@ visuals! {
         ingest(p, s, samples, fmt) { if let ProcessorUpdate::Snapshot(update) = p.ingest(samples, fmt) {
             s.borrow_mut().apply_update(&update); }};
         settings_cfg::SpectrogramSettings, &theme::DEFAULT_SPECTROGRAM_PALETTE;
-        apply(p, s, set) { visuals!(@apply_config p, set);
-            s.borrow_mut().set_palette(resolve_palette(&set.palette, &theme::DEFAULT_SPECTROGRAM_PALETTE)); };
-        export(p, s) { let mut out = settings_cfg::SpectrogramSettings::from_config(&p.config());
-            out.palette = visuals!(@export_palette &s.borrow().palette(), &theme::DEFAULT_SPECTROGRAM_PALETTE); out };
+        apply(p, s, set) { visuals!(@apply_config p, set); let mut st = s.borrow_mut();
+            st.set_palette(resolve_palette(&set.palette, &theme::DEFAULT_SPECTROGRAM_PALETTE));
+            st.set_piano_roll(set.show_piano_roll, set.piano_roll_side); };
+        export(p, s) { let st = s.borrow(); let mut out = settings_cfg::SpectrogramSettings::from_config(&p.config());
+            out.palette = visuals!(@export_palette &st.palette(), &theme::DEFAULT_SPECTROGRAM_PALETTE);
+            out.show_piano_roll = st.piano_roll().is_some();
+            out.piano_roll_side = st.piano_roll().unwrap_or_default(); out };
 
     Spectrum("Spectrum analyzer", 400.0, 180.0, 400.0) =>
         spectrum::SpectrumProcessor, Shared<spectrum::SpectrumState>;

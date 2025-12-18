@@ -233,6 +233,7 @@ settings_enum!(pub enum ChannelMode {
 });
 settings_enum!(pub enum StereometerMode  { Lissajous => "Lissajous", #[default] DotCloud => "Dot Cloud" });
 settings_enum!(pub enum StereometerScale { Linear => "Linear", #[default] Exponential => "Exponential" });
+settings_enum!(pub enum PianoRollSide { #[default] Left => "Left", Right => "Right" });
 
 visual_settings!(OscilloscopeSettings from OscilloscopeConfig {
     segment_duration: f32, trigger_mode: TriggerMode,
@@ -251,7 +252,7 @@ visual_settings!(SpectrogramSettings from SpectrogramConfig {
     fft_size: usize, hop_size: usize, history_length: usize, window: WindowKind, frequency_scale: FrequencyScale,
     use_reassignment: bool, reassignment_power_floor_db: f32, reassignment_low_bin_limit: usize,
     zero_padding_factor: usize, display_bin_count: usize, display_min_hz: f32,
-});
+} extra { show_piano_roll: bool = false, piano_roll_side: PianoRollSide = PianoRollSide::default() });
 
 visual_settings!(StereometerSettings from StereometerConfig {
     segment_duration: f32, target_sample_count: usize,
