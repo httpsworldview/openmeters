@@ -978,7 +978,9 @@ impl Reconfigurable<SpectrogramConfig> for SpectrogramProcessor {
     }
 }
 
-// Unified finite difference for first and second derivatives
+// finite difference for first/second derivative
+// uses a 5 point stencil in the center and a 3 point stencil
+// at the edges.
 fn finite_diff(d: &[f32], second: bool) -> Vec<f32> {
     let len = d.len();
     if len == 0 {
