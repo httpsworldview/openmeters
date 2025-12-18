@@ -8,6 +8,7 @@ use crate::ui::render::spectrogram::{
     ColumnBuffer, ColumnBufferPool, SPECTROGRAM_PALETTE_SIZE, SpectrogramColumnUpdate,
     SpectrogramParams, SpectrogramPrimitive,
 };
+use crate::ui::settings::PianoRollSide;
 use crate::ui::theme;
 use crate::util::audio::musical::MusicalNote;
 use crate::util::audio::{DEFAULT_SAMPLE_RATE, hz_to_mel, mel_to_hz};
@@ -31,6 +32,7 @@ const DB_CEILING: f32 = 0.0;
 const MAX_TEXTURE_BINS: usize = 8_192;
 const TOOLTIP_SIZE: f32 = 14.0;
 const TOOLTIP_PAD: f32 = 8.0;
+const PIANO_ROLL_WIDTH: f32 = 18.0;
 
 fn norm_to_freq(inv: f32, nyquist: f32, min_freq: f32, scale: FrequencyScale) -> f32 {
     match scale {
@@ -322,6 +324,7 @@ pub struct SpectrogramState {
     palette: [Color; SPECTROGRAM_PALETTE_SIZE],
     history: VecDeque<SpectrogramColumn>,
     instance_key: u64,
+    piano_roll: Option<PianoRollSide>,
 }
 
 impl SpectrogramState {
@@ -332,7 +335,16 @@ impl SpectrogramState {
             palette: theme::DEFAULT_SPECTROGRAM_PALETTE,
             history: VecDeque::new(),
             instance_key: NEXT_INSTANCE_KEY.fetch_add(1, Ordering::Relaxed),
+            piano_roll: None,
         }
+    }
+
+    pub fn set_piano_roll(&mut self, enabled: bool, side: PianoRollSide) {
+        self.piano_roll = enabled.then_some(side);
+    }
+
+    pub fn piano_roll(&self) -> Option<PianoRollSide> {
+        self.piano_roll
     }
 
     pub fn set_palette(&mut self, palette: [Color; SPECTROGRAM_PALETTE_SIZE]) {
@@ -523,6 +535,88 @@ impl<'a> Spectrogram<'a> {
             Rectangle::new(pos, tsz),
         );
     }
+
+    fn draw_piano_roll(
+        &self,
+        renderer: &mut iced::Renderer,
+        theme: &iced::Theme,
+        bounds: Rectangle,
+        side: PianoRollSide,
+    ) {
+        let state = self.state.borrow();
+        let buf = state.buffer.borrow();
+        if buf.fft_size == 0 || buf.sample_rate <= 0.0 {
+            return;
+        }
+        let (nyq, min_f, scale) = (
+            (buf.sample_rate / 2.0).max(1.0),
+            (buf.sample_rate / buf.fft_size as f32).max(20.0),
+            buf.scale,
+        );
+        drop(buf);
+        drop(state);
+
+        let midi_lo = MusicalNote::from_frequency(min_f.max(16.0))
+            .map(|n| n.midi_number - 1)
+            .unwrap_or(11);
+        let midi_hi = MusicalNote::from_frequency(nyq)
+            .map(|n| n.midi_number + 1)
+            .unwrap_or(128);
+
+        let pal = theme.extended_palette();
+        let (white, black) = (pal.background.weak.color, Color::from_rgb(0.1, 0.1, 0.1));
+        let x = match side {
+            PianoRollSide::Left => bounds.x,
+            PianoRollSide::Right => bounds.x + bounds.width - PIANO_ROLL_WIDTH,
+        };
+
+        let freq_to_y = |f: f32| {
+            let norm = match scale {
+                FrequencyScale::Linear => f / nyq,
+                FrequencyScale::Logarithmic => (f / min_f).ln() / (nyq / min_f).ln(),
+                FrequencyScale::Mel => {
+                    (hz_to_mel(f) - hz_to_mel(min_f)) / (hz_to_mel(nyq) - hz_to_mel(min_f))
+                }
+            };
+            bounds.y + bounds.height * (1.0 - norm.clamp(0.0, 1.0))
+        };
+
+        let semi = 2.0f32.powf(0.5 / 12.0);
+        for midi in midi_lo..=midi_hi {
+            let Some(note) = MusicalNote::from_midi(midi) else {
+                continue;
+            };
+            let freq = note.to_frequency();
+            let (yt, yb) = (freq_to_y(freq * semi), freq_to_y(freq / semi));
+            if yb < bounds.y || yt > bounds.y + bounds.height {
+                continue;
+            }
+            let (fill, brd) = if note.is_black() {
+                (black, Default::default())
+            } else {
+                (
+                    white,
+                    iced::Border {
+                        color: theme::with_alpha(black, 0.4),
+                        width: 0.5,
+                        radius: 0.0.into(),
+                    },
+                )
+            };
+            renderer.fill_quad(
+                Quad {
+                    bounds: Rectangle::new(
+                        Point::new(x, yt),
+                        Size::new(PIANO_ROLL_WIDTH, (yb - yt).max(1.0)),
+                    ),
+                    border: brd,
+                    shadow: Default::default(),
+                    snap: true,
+                },
+                Background::Color(fill),
+            );
+        }
+    }
 }
 
 impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'a> {
@@ -591,8 +685,12 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
         if let Some(p) = state.visual_params(bounds) {
             renderer.draw_primitive(bounds, SpectrogramPrimitive::new(p));
         }
+        let piano_roll = state.piano_roll;
         state.clear_pending();
         drop(state);
+        if let Some(side) = piano_roll {
+            renderer.with_layer(bounds, |r| self.draw_piano_roll(r, theme, bounds, side));
+        }
         if let Some(c) = tree.state.downcast_ref::<TooltipState>().cursor
             && bounds.contains(c)
         {

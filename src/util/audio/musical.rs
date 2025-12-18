@@ -24,7 +24,10 @@ impl MusicalNote {
         let midi_float =
             A440_MIDI as f32 + SEMITONES_PER_OCTAVE as f32 * (freq_hz / A440_HZ).log2();
         let midi_number = midi_float.round() as i32;
+        Self::from_midi(midi_number)
+    }
 
+    pub fn from_midi(midi_number: i32) -> Option<Self> {
         // Calculate note index (0-11) with proper negative wrap-around
         let note_index = ((midi_number % SEMITONES_PER_OCTAVE + SEMITONES_PER_OCTAVE)
             % SEMITONES_PER_OCTAVE) as usize;
@@ -35,6 +38,14 @@ impl MusicalNote {
             name: NOTE_NAMES[note_index],
             octave,
         })
+    }
+
+    pub fn to_frequency(self) -> f32 {
+        A440_HZ * 2.0f32.powf((self.midi_number - A440_MIDI) as f32 / SEMITONES_PER_OCTAVE as f32)
+    }
+
+    pub fn is_black(self) -> bool {
+        matches!(self.name, "C#" | "D#" | "F#" | "G#" | "A#")
     }
 
     pub fn format(&self) -> String {

@@ -7,7 +7,7 @@ use super::{ModuleSettingsPane, SettingsMessage};
 use crate::dsp::spectrogram::{
     FrequencyScale, PLANCK_BESSEL_DEFAULT_BETA, PLANCK_BESSEL_DEFAULT_EPSILON, WindowKind,
 };
-use crate::ui::settings::{SettingsHandle, SpectrogramSettings};
+use crate::ui::settings::{PianoRollSide, SettingsHandle, SpectrogramSettings};
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
 use iced::widget::{column, row, toggler};
@@ -48,6 +48,8 @@ pub enum Message {
     ReassignmentFloor(f32),
     ZeroPadding(usize),
     DisplayBinCount(f32),
+    ShowPianoRoll(bool),
+    PianoRollSide(PianoRollSide),
     Palette(PaletteEvent),
 }
 
@@ -162,6 +164,20 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
                 |v| SettingsMessage::Spectrogram(Message::DisplayBinCount(v)),
             ));
         }
+        let piano_toggle = toggler(s.show_piano_roll)
+            .label("Piano roll overlay")
+            .text_size(11)
+            .spacing(4)
+            .on_toggle(|v| SettingsMessage::Spectrogram(Message::ShowPianoRoll(v)));
+        adv = adv.push(piano_toggle);
+        if s.show_piano_roll {
+            adv = adv.push(labeled_pick_list(
+                "Side",
+                &[PianoRollSide::Left, PianoRollSide::Right],
+                Some(s.piano_roll_side),
+                |v| SettingsMessage::Spectrogram(Message::PianoRollSide(v)),
+            ));
+        }
 
         let colors = super::palette_section(
             &self.palette,
@@ -268,6 +284,12 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
             Message::DisplayBinCount(value) => {
                 changed |= s.use_reassignment
                     && update_usize_from_f32(&mut s.display_bin_count, value, DISPLAY_BINS_RANGE);
+            }
+            Message::ShowPianoRoll(value) => {
+                changed |= set_if_changed(&mut s.show_piano_roll, value);
+            }
+            Message::PianoRollSide(side) => {
+                changed |= set_if_changed(&mut s.piano_roll_side, side);
             }
             Message::Palette(event) => {
                 changed |= self.palette.update(event);
