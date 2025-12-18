@@ -31,11 +31,14 @@ Checked features are implemented, unchecked features are planned. If you have id
     - [x] Slow
   - [x] True Peak
 - [x] **oscilloscope**
+  - [x] Channel selection (L, R, L+R)
   - [x] Stable mode - Follows X cycles of the fundamental.
   - [x] Free-run mode - Scrolls continuously through time, not triggered.
 - [x] **spectrogram**
   - [x] Reassignment and synchrosqueezing (sharper frequency resolution)
   - [x] Note & frequency tooltips
+  - [x] Piano roll overlay
+  - [x] Ability to zoom & pan vertically
   - [x] mel, log, and linear scales
   - [x] Adjustable colormap
 - [x] **spectrum analyzer**
@@ -55,6 +58,7 @@ Checked features are implemented, unchecked features are planned. If you have id
   - [x] Adjustable scale (linear/exponential)
   - [x] Adjustable rotation
 - [x] **waveform**
+  - [x] Channel selection (L, R, L+R)
   - [x] adjustable scroll speed
   - [x] Adjustable colormap
 
@@ -81,16 +85,19 @@ Checked features are implemented, unchecked features are planned. If you have id
    cargo run
    ```
 
-## usage
+## usage/keybinds
 
-Upon launch you'll see a configuration page. Here you can select which applications or devices to monitor, the modules you want to display, and some global settings (window decorations, global background color, etc.). By default, we monitor applications.
-  
-### keybinds
+### global
 
 - `ctrl+shift+h`: Show/hide top bar
 - `p`: Pause/resume audio capture
 - `q` twice: Quit application
 - `ctrl+space`: Pop-out/in hovered visual.
+
+### spectrogram
+
+- `ctrl+zoom in/out`: Zoom vertically
+- `middle click+drag`: Pan vertically
 
 ### configuration
 
