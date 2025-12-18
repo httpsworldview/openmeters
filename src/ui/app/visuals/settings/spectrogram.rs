@@ -15,12 +15,31 @@ use iced::{Element, Length};
 
 const FFT_OPTIONS: [usize; 5] = [1024, 2048, 4096, 8192, 16384];
 const ZERO_PAD_OPTIONS: [usize; 6] = [1, 2, 4, 8, 16, 32];
+const HOP_DIVISORS: [usize; 7] = [4, 6, 8, 16, 32, 64, 128];
+
+fn get_closest_hop_divisor(fft_size: usize, hop_size: usize) -> usize {
+    if fft_size == 0 || hop_size == 0 {
+        return 8;
+    }
+    let ratio = fft_size as f32 / hop_size as f32;
+    let mut best = 8;
+    let mut best_err = f32::MAX;
+    for &candidate in &HOP_DIVISORS {
+        let err = (ratio - candidate as f32).abs();
+        if err < best_err {
+            best = candidate;
+            best_err = err;
+        }
+    }
+    best
+}
+
 const FREQUENCY_SCALE_OPTIONS: [FrequencyScale; 3] = [
     FrequencyScale::Linear,
     FrequencyScale::Logarithmic,
     FrequencyScale::Mel,
 ];
-const HISTORY_RANGE: SliderRange = SliderRange::new(120.0, 960.0, 30.0);
+const HISTORY_RANGE: SliderRange = SliderRange::new(120.0, 3840.0, 30.0);
 const REASSIGN_FLOOR_RANGE: SliderRange = SliderRange::new(-120.0, -30.0, 1.0);
 const DISPLAY_BINS_RANGE: SliderRange = SliderRange::new(64.0, 4096.0, 64.0);
 const PLANCK_BESSEL_EPSILON_RANGE: SliderRange = SliderRange::new(0.01, 0.5, 0.01);
@@ -38,7 +57,7 @@ pub struct SpectrogramSettingsPane {
 #[derive(Debug, Clone, Copy)]
 pub enum Message {
     FftSize(usize),
-    HopRatio(HopRatio),
+    HopDivisor(usize),
     HistoryLength(f32),
     Window(WindowPreset),
     PlanckBesselEpsilon(f32),
@@ -85,14 +104,14 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
     fn view(&self) -> Element<'_, SettingsMessage> {
         let s = &self.settings;
         let window = WindowPreset::from_kind(s.window);
-        let hop_ratio = HopRatio::from_config(s.fft_size, s.hop_size);
+        let hop_divisor = get_closest_hop_divisor(s.fft_size, s.hop_size);
 
         let left_col = column![
             labeled_pick_list("FFT size", &FFT_OPTIONS, Some(s.fft_size), |v| {
                 SettingsMessage::Spectrogram(Message::FftSize(v))
             }),
-            labeled_pick_list("Hop overlap", &HopRatio::ALL, Some(hop_ratio), |v| {
-                SettingsMessage::Spectrogram(Message::HopRatio(v))
+            labeled_pick_list("Hop divisor", &HOP_DIVISORS, Some(hop_divisor), |v| {
+                SettingsMessage::Spectrogram(Message::HopDivisor(v))
             }),
         ]
         .spacing(8);
@@ -210,14 +229,14 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
         let mut changed = false;
         match *msg {
             Message::FftSize(size) => {
-                let hop_ratio = HopRatio::from_config(s.fft_size, s.hop_size);
+                let hop_divisor = get_closest_hop_divisor(s.fft_size, s.hop_size);
                 if set_if_changed(&mut s.fft_size, size) {
-                    s.hop_size = hop_ratio.to_hop_size(size);
+                    s.hop_size = (size / hop_divisor).max(1);
                     changed = true;
                 }
             }
-            Message::HopRatio(ratio) => {
-                let new_hop = ratio.to_hop_size(s.fft_size);
+            Message::HopDivisor(div) => {
+                let new_hop = (s.fft_size / div).max(1);
                 changed |= set_if_changed(&mut s.hop_size, new_hop);
             }
             Message::HistoryLength(value) => {
@@ -362,61 +381,6 @@ impl std::fmt::Display for WindowPreset {
             Self::Blackman => "Blackman",
             Self::BlackmanHarris => "Blackman-Harris",
             Self::PlanckBessel => "Planck-Bessel",
-        })
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum HopRatio {
-    Quarter,
-    Sixth,
-    Eighth,
-    Sixteenth,
-}
-
-impl HopRatio {
-    const ALL: [Self; 4] = [Self::Quarter, Self::Sixth, Self::Eighth, Self::Sixteenth];
-
-    fn from_config(fft_size: usize, hop_size: usize) -> Self {
-        if fft_size == 0 || hop_size == 0 {
-            return HopRatio::Eighth;
-        }
-
-        let ratio = fft_size as f32 / hop_size as f32;
-        let mut best = HopRatio::Eighth;
-        let mut best_err = f32::MAX;
-        for candidate in Self::ALL {
-            let target = candidate.divisor() as f32;
-            let err = (ratio - target).abs();
-            if err < best_err {
-                best = candidate;
-                best_err = err;
-            }
-        }
-        best
-    }
-
-    fn divisor(self) -> usize {
-        match self {
-            Self::Quarter => 4,
-            Self::Sixth => 6,
-            Self::Eighth => 8,
-            Self::Sixteenth => 16,
-        }
-    }
-
-    fn to_hop_size(self, fft_size: usize) -> usize {
-        (fft_size / self.divisor()).max(1)
-    }
-}
-
-impl std::fmt::Display for HopRatio {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Quarter => "75% overlap",
-            Self::Sixth => "83% overlap",
-            Self::Eighth => "87% overlap",
-            Self::Sixteenth => "94% overlap",
         })
     }
 }
