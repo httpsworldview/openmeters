@@ -6,7 +6,7 @@ use crate::{
         spectrogram::{FrequencyScale, SpectrogramConfig, WindowKind},
         spectrum::{AveragingMode, SpectrumConfig},
         stereometer::StereometerConfig,
-        waveform::{DownsampleStrategy, WaveformConfig},
+        waveform::WaveformConfig,
     },
     ui::{
         app::config::CaptureMode,
@@ -240,7 +240,7 @@ visual_settings!(OscilloscopeSettings from OscilloscopeConfig {
 } extra { persistence: f32 = 0.0, channel_mode: ChannelMode = ChannelMode::default() });
 
 visual_settings!(WaveformSettings from WaveformConfig {
-    scroll_speed: f32, downsample: DownsampleStrategy,
+    scroll_speed: f32,
 } extra { channel_mode: ChannelMode = ChannelMode::default() });
 
 visual_settings!(SpectrumSettings from SpectrumConfig {
