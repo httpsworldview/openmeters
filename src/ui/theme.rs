@@ -41,12 +41,10 @@ pub const DEFAULT_SPECTRUM_PALETTE: [Color; 5] = [
     Color::from_rgba(1.000, 1.000, 0.000, 1.0),
 ];
 
-pub const DEFAULT_WAVEFORM_PALETTE: [Color; 5] = [
-    Color::from_rgba(0.665, 0.000, 0.000, 1.0),
-    Color::from_rgba(1.000, 0.000, 0.000, 1.0),
-    Color::from_rgba(1.000, 0.665, 0.000, 1.0),
-    Color::from_rgba(0.798, 0.485, 0.906, 1.0),
-    Color::from_rgba(0.665, 0.000, 0.906, 1.0),
+pub const DEFAULT_WAVEFORM_PALETTE: [Color; 3] = [
+    Color::from_rgba(0.800, 0.200, 0.100, 1.0),
+    Color::from_rgba(1.000, 0.600, 0.100, 1.0),
+    Color::from_rgba(0.400, 0.300, 0.900, 1.0),
 ];
 
 pub const DEFAULT_OSCILLOSCOPE_PALETTE: [Color; 1] = [Color::from_rgba(1.000, 1.000, 1.000, 1.0)];

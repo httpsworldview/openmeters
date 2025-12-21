@@ -1,14 +1,12 @@
 use super::palette::{PaletteEditor, PaletteEvent};
-use super::widgets::{
-    SliderRange, labeled_pick_list, labeled_slider, section_title, set_f32, set_if_changed,
-};
+use super::widgets::{SliderRange, labeled_pick_list, labeled_slider, set_f32, set_if_changed};
 use super::{CHANNEL_OPTIONS, ModuleSettingsPane, SettingsMessage};
-use crate::dsp::waveform::{DownsampleStrategy, MAX_SCROLL_SPEED, MIN_SCROLL_SPEED};
+use crate::dsp::waveform::{MAX_SCROLL_SPEED, MIN_SCROLL_SPEED};
 use crate::ui::settings::{ChannelMode, SettingsHandle, WaveformSettings};
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
 use iced::Element;
-use iced::widget::{column, pick_list};
+use iced::widget::column;
 
 #[derive(Debug)]
 pub struct WaveformSettingsPane {
@@ -20,7 +18,6 @@ pub struct WaveformSettingsPane {
 #[derive(Debug, Clone, Copy)]
 pub enum Message {
     ScrollSpeed(f32),
-    Downsample(DownsampleStrategy),
     ChannelMode(ChannelMode),
     Palette(PaletteEvent),
 }
@@ -60,16 +57,6 @@ impl ModuleSettingsPane for WaveformSettingsPane {
                 Some(self.settings.channel_mode),
                 |m| SettingsMessage::Waveform(Message::ChannelMode(m)),
             ),
-            column![
-                section_title("Downsampling strategy"),
-                pick_list(
-                    [DownsampleStrategy::MinMax, DownsampleStrategy::Average],
-                    Some(self.settings.downsample),
-                    |v| SettingsMessage::Waveform(Message::Downsample(v))
-                )
-                .text_size(14)
-            ]
-            .spacing(8),
             super::palette_section(&self.palette, Message::Palette, SettingsMessage::Waveform)
         ]
         .spacing(16)
@@ -90,7 +77,6 @@ impl ModuleSettingsPane for WaveformSettingsPane {
                 &mut self.settings.scroll_speed,
                 v.clamp(MIN_SCROLL_SPEED, MAX_SCROLL_SPEED),
             ),
-            Message::Downsample(d) => set_if_changed(&mut self.settings.downsample, d),
             Message::ChannelMode(m) => set_if_changed(&mut self.settings.channel_mode, m),
             Message::Palette(e) => self.palette.update(e),
         };

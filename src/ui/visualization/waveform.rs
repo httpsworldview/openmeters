@@ -1,5 +1,3 @@
-//! UI wrapper around the scrolling waveform DSP processor and renderer.
-
 use crate::audio::meter_tap::MeterFormat;
 use crate::dsp::waveform::{
     DEFAULT_COLUMN_CAPACITY, MAX_COLUMN_CAPACITY, MIN_COLUMN_CAPACITY, WaveformConfig,
@@ -9,10 +7,9 @@ use crate::dsp::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::ui::render::waveform::{PreviewSample, WaveformParams, WaveformPrimitive};
 use crate::ui::settings::ChannelMode;
 use crate::ui::theme;
-use iced::advanced::Renderer as _;
 use iced::advanced::renderer::{self, Quad};
 use iced::advanced::widget::{Tree, tree};
-use iced::advanced::{Layout, Widget, layout, mouse};
+use iced::advanced::{Layout, Renderer as _, Widget, layout, mouse};
 use iced::{Background, Color, Element, Length, Rectangle, Size};
 use iced_wgpu::primitive::Renderer as _;
 use std::cell::{Cell, RefCell};
@@ -23,13 +20,8 @@ use std::sync::{
 };
 use std::time::Instant;
 
-const COLUMN_PIXEL_WIDTH: f32 = 2.0;
-const DEFAULT_FILL_ALPHA: f32 = 1.0;
-const DEFAULT_LINE_ALPHA: f32 = 1.0;
-const DEFAULT_VERTICAL_PADDING: f32 = 8.0;
-const DEFAULT_CHANNEL_GAP: f32 = 12.0;
-const DEFAULT_AMPLITUDE_SCALE: f32 = 1.0;
-const DEFAULT_STROKE_WIDTH: f32 = 1.0;
+const COLUMN_PX: f32 = 2.0;
+
 #[derive(Debug, Clone)]
 pub struct WaveformProcessor {
     inner: CoreWaveformProcessor,
@@ -38,12 +30,11 @@ pub struct WaveformProcessor {
 
 impl WaveformProcessor {
     pub fn new(sample_rate: f32) -> Self {
-        let config = WaveformConfig {
-            sample_rate,
-            ..WaveformConfig::default()
-        };
         Self {
-            inner: CoreWaveformProcessor::new(config),
+            inner: CoreWaveformProcessor::new(WaveformConfig {
+                sample_rate,
+                ..Default::default()
+            }),
             channels: 2,
         }
     }
@@ -53,10 +44,10 @@ impl WaveformProcessor {
             .borrow()
             .desired_columns()
             .clamp(MIN_COLUMN_CAPACITY, MAX_COLUMN_CAPACITY);
-        let mut config = processor.config();
-        if config.max_columns != target {
-            config.max_columns = target;
-            processor.update_config(config);
+        let mut cfg = processor.config();
+        if cfg.max_columns != target {
+            cfg.max_columns = target;
+            processor.update_config(cfg);
         }
     }
 
@@ -64,270 +55,208 @@ impl WaveformProcessor {
         if samples.is_empty() {
             return None;
         }
-
-        let channels = format.channels.max(1);
-        self.channels = channels;
-
-        let sample_rate = format.sample_rate.max(1.0);
-        let mut config = self.inner.config();
-        if (config.sample_rate - sample_rate).abs() > f32::EPSILON {
-            config.sample_rate = sample_rate;
-            self.inner.update_config(config);
+        self.channels = format.channels.max(1);
+        let sr = format.sample_rate.max(1.0);
+        let mut cfg = self.inner.config();
+        if (cfg.sample_rate - sr).abs() > f32::EPSILON {
+            cfg.sample_rate = sr;
+            self.inner.update_config(cfg);
         }
-
-        let block = AudioBlock::new(samples, channels, sample_rate, Instant::now());
-
-        match self.inner.process_block(&block) {
-            ProcessorUpdate::Snapshot(snapshot) => Some(snapshot),
+        match self
+            .inner
+            .process_block(&AudioBlock::new(samples, self.channels, sr, Instant::now()))
+        {
+            ProcessorUpdate::Snapshot(s) => Some(s),
             ProcessorUpdate::None => None,
         }
     }
-
     pub fn update_config(&mut self, config: WaveformConfig) {
         self.inner.update_config(config);
     }
-
     pub fn config(&self) -> WaveformConfig {
         self.inner.config()
     }
 }
 
 #[derive(Debug, Default, Clone)]
-struct WaveformRenderCache {
+struct RenderCache {
     samples: Arc<Vec<[f32; 2]>>,
     colors: Arc<Vec<[f32; 4]>>,
-    preview_samples: Arc<Vec<PreviewSample>>,
+    preview: Arc<Vec<PreviewSample>>,
 }
 
 #[derive(Debug, Clone)]
 pub struct WaveformState {
     snapshot: WaveformSnapshot,
     style: WaveformStyle,
-    desired_columns: Rc<Cell<usize>>,
-    render_key: u64,
-    render_cache: RefCell<WaveformRenderCache>,
-    channel_mode: ChannelMode,
+    desired_cols: Rc<Cell<usize>>,
+    key: u64,
+    cache: RefCell<RenderCache>,
+    ch_mode: ChannelMode,
 }
 
 impl WaveformState {
-    fn next_render_key() -> u64 {
-        static NEXT_RENDER_KEY: AtomicU64 = AtomicU64::new(1);
-        NEXT_RENDER_KEY.fetch_add(1, Ordering::Relaxed)
+    fn next_key() -> u64 {
+        static K: AtomicU64 = AtomicU64::new(1);
+        K.fetch_add(1, Ordering::Relaxed)
     }
 
     pub fn new() -> Self {
         Self {
             snapshot: WaveformSnapshot::default(),
             style: WaveformStyle::default(),
-            desired_columns: Rc::new(Cell::new(DEFAULT_COLUMN_CAPACITY)),
-            render_key: Self::next_render_key(),
-            render_cache: RefCell::new(WaveformRenderCache::default()),
-            channel_mode: ChannelMode::default(),
+            desired_cols: Rc::new(Cell::new(DEFAULT_COLUMN_CAPACITY)),
+            key: Self::next_key(),
+            cache: RefCell::new(RenderCache::default()),
+            ch_mode: ChannelMode::default(),
         }
     }
 
-    pub fn apply_snapshot(&mut self, snapshot: WaveformSnapshot) {
-        self.snapshot = Self::project_channels(&snapshot, self.channel_mode);
+    pub fn apply_snapshot(&mut self, s: WaveformSnapshot) {
+        self.snapshot = Self::project(&s, self.ch_mode);
     }
-
-    pub fn set_channel_mode(&mut self, mode: ChannelMode) {
-        if self.channel_mode != mode {
-            self.channel_mode = mode;
-            self.snapshot = Self::project_channels(&self.snapshot, mode);
+    pub fn set_channel_mode(&mut self, m: ChannelMode) {
+        if self.ch_mode != m {
+            self.ch_mode = m;
+            self.snapshot = Self::project(&self.snapshot, m);
         }
     }
-
     pub fn channel_mode(&self) -> ChannelMode {
-        self.channel_mode
+        self.ch_mode
     }
-
-    pub fn set_palette(&mut self, palette: &[Color]) {
-        self.style.set_palette(palette);
-        self.render_key = Self::next_render_key();
+    pub fn set_palette(&mut self, p: &[Color]) {
+        self.style.set_palette(p);
+        self.key = Self::next_key();
     }
-
     pub fn palette(&self) -> &[Color] {
         self.style.palette()
     }
-
-    pub fn visual(&self, bounds: Rectangle) -> Option<WaveformParams> {
-        self.prepare_render_params(bounds)
+    pub fn desired_columns(&self) -> usize {
+        self.desired_cols.get()
     }
 
-    fn prepare_render_params(&self, bounds: Rectangle) -> Option<WaveformParams> {
-        let channels = self.snapshot.channels.max(1);
-        let width = bounds.width;
-        if width <= 0.0 {
+    pub fn visual(&self, bounds: Rectangle) -> Option<WaveformParams> {
+        let (ch, cols) = (self.snapshot.channels.max(1), self.snapshot.columns);
+        if bounds.width <= 0.0 {
             return None;
         }
-
-        let mut required = (width / COLUMN_PIXEL_WIDTH).ceil() as usize;
-        if required == 0 {
-            required = 1;
-        }
-        let required = required.clamp(1, MAX_COLUMN_CAPACITY);
-        self.desired_columns.set(required);
-
-        let columns = self.snapshot.columns;
-        if columns == 0 {
-            return None;
-        }
-
-        if self.snapshot.min_values.len() != columns * channels
-            || self.snapshot.max_values.len() != columns * channels
-            || self.snapshot.frequency_normalized.len() != columns * channels
+        let need = ((bounds.width / COLUMN_PX).ceil() as usize).clamp(1, MAX_COLUMN_CAPACITY);
+        self.desired_cols.set(need);
+        let exp = cols * ch;
+        if cols == 0
+            || [
+                &self.snapshot.min_values,
+                &self.snapshot.max_values,
+                &self.snapshot.frequency_normalized,
+            ]
+            .iter()
+            .any(|v| v.len() != exp)
         {
             return None;
         }
 
-        let visible = required.min(columns);
-        if visible == 0 {
-            return None;
+        let (vis, start) = (need.min(cols), cols - need.min(cols));
+        let mut c = self.cache.borrow_mut();
+        {
+            let s = Arc::make_mut(&mut c.samples);
+            s.clear();
+            s.reserve(vis * ch);
+            for ci in 0..ch {
+                let base = ci * cols;
+                for i in start..cols {
+                    let (v0, v1) = (
+                        self.snapshot.min_values[base + i],
+                        self.snapshot.max_values[base + i],
+                    );
+                    s.push([v0.min(v1), v0.max(v1)]);
+                }
+            }
         }
-
-        let start = columns - visible;
-        let column_width = COLUMN_PIXEL_WIDTH;
-
-        let mut cache = self.render_cache.borrow_mut();
-        let WaveformRenderCache {
-            samples, colors, ..
-        } = &mut *cache;
-
-        let (samples_arc, colors_arc) = {
-            let samples_buffer = Arc::make_mut(samples);
-            let colors_buffer = Arc::make_mut(colors);
-            samples_buffer.clear();
-            colors_buffer.clear();
-            samples_buffer.reserve(visible * channels);
-            colors_buffer.reserve(visible * channels);
-
-            for channel in 0..channels {
-                let base = channel * columns;
-                let min_slice = &self.snapshot.min_values[base..base + columns];
-                let max_slice = &self.snapshot.max_values[base..base + columns];
-                let freq_slice = &self.snapshot.frequency_normalized[base..base + columns];
-
-                for idx in start..columns {
-                    let mut min_value = min_slice[idx];
-                    let mut max_value = max_slice[idx];
-                    if min_value > max_value {
-                        std::mem::swap(&mut min_value, &mut max_value);
-                    }
-                    samples_buffer.push([min_value, max_value]);
-                    let frequency = freq_slice[idx];
-                    colors_buffer.push(theme::color_to_rgba(
-                        self.style.color_for_frequency(frequency),
+        {
+            let cl = Arc::make_mut(&mut c.colors);
+            cl.clear();
+            cl.reserve(vis * ch);
+            for ci in 0..ch {
+                let base = ci * cols;
+                for i in start..cols {
+                    cl.push(theme::color_to_rgba(
+                        self.style
+                            .freq_color(self.snapshot.frequency_normalized[base + i]),
                     ));
                 }
             }
-
-            (samples.clone(), colors.clone())
-        };
-
-        let preview = &self.snapshot.preview;
-        let preview_active = preview.progress > 0.0
-            && preview.min_values.len() >= channels
-            && preview.max_values.len() >= channels;
-        let preview_progress = if preview_active {
-            preview.progress.clamp(0.0, 1.0)
+        }
+        let (samples, colors) = (c.samples.clone(), c.colors.clone());
+        let pv = &self.snapshot.preview;
+        let pv_ok = pv.progress > 0.0 && pv.min_values.len() >= ch && pv.max_values.len() >= ch;
+        let pv_prog = if pv_ok {
+            pv.progress.clamp(0.0, 1.0)
         } else {
             0.0
         };
-
-        let preview_samples_arc = {
-            let buffer = Arc::make_mut(&mut cache.preview_samples);
-            buffer.clear();
-            if preview_active {
-                let frequency_hints: Vec<f32> = (0..channels)
-                    .map(|channel| channel_frequency_hint(&self.snapshot, channel))
-                    .collect();
-                buffer.reserve(channels);
-                for (channel, hint) in frequency_hints.iter().enumerate().take(channels) {
-                    let mut min_value = preview.min_values[channel];
-                    let mut max_value = preview.max_values[channel];
-                    if min_value > max_value {
-                        std::mem::swap(&mut min_value, &mut max_value);
-                    }
-                    min_value = min_value.clamp(-1.0, 1.0);
-                    max_value = max_value.clamp(-1.0, 1.0);
-                    let frequency = preview
-                        .frequency_normalized
-                        .get(channel)
-                        .copied()
-                        .filter(|f| f.is_finite() && *f > 0.0)
-                        .unwrap_or(*hint);
-                    let color = theme::color_to_rgba(self.style.color_for_frequency(frequency));
-                    buffer.push(PreviewSample {
-                        min: min_value,
-                        max: max_value,
-                        color,
+        let preview = {
+            let buf = Arc::make_mut(&mut c.preview);
+            buf.clear();
+            if pv_ok {
+                for ci in 0..ch {
+                    let (v0, v1) = (pv.min_values[ci], pv.max_values[ci]);
+                    buf.push(PreviewSample {
+                        min: v0.min(v1).clamp(-1.0, 1.0),
+                        max: v0.max(v1).clamp(-1.0, 1.0),
+                        color: theme::color_to_rgba(
+                            self.style.freq_color(freq_hint(&self.snapshot, ci)),
+                        ),
                     });
                 }
             }
-            cache.preview_samples.clone()
+            c.preview.clone()
         };
 
         Some(WaveformParams {
             bounds,
-            channels,
-            column_width,
-            columns: visible,
-            samples: samples_arc,
-            colors: colors_arc,
-            preview_samples: preview_samples_arc,
-            preview_progress,
+            channels: ch,
+            column_width: COLUMN_PX,
+            columns: vis,
+            samples,
+            colors,
+            preview_samples: preview,
+            preview_progress: pv_prog,
             fill_alpha: self.style.fill_alpha,
             line_alpha: self.style.line_alpha,
-            vertical_padding: self.style.vertical_padding,
-            channel_gap: self.style.channel_gap,
-            amplitude_scale: self.style.amplitude_scale,
-            stroke_width: self.style.stroke_width,
-            instance_key: self.render_key,
+            vertical_padding: self.style.vert_pad,
+            channel_gap: self.style.ch_gap,
+            amplitude_scale: self.style.amp_scale,
+            stroke_width: self.style.stroke,
+            instance_key: self.key,
         })
     }
 
-    pub fn desired_columns(&self) -> usize {
-        self.desired_columns.get()
-    }
-
-    fn project_channels(source: &WaveformSnapshot, mode: ChannelMode) -> WaveformSnapshot {
-        let (ch, cols) = (source.channels.max(1), source.columns);
-        if cols == 0 {
-            return WaveformSnapshot::default();
-        }
+    fn project(src: &WaveformSnapshot, mode: ChannelMode) -> WaveformSnapshot {
+        let (ch, cols) = (src.channels.max(1), src.columns);
         let exp = ch * cols;
-        if [
-            &source.min_values,
-            &source.max_values,
-            &source.frequency_normalized,
-        ]
-        .iter()
-        .any(|v| v.len() < exp)
+        if cols == 0
+            || [&src.min_values, &src.max_values, &src.frequency_normalized]
+                .iter()
+                .any(|v| v.len() < exp)
         {
             return WaveformSnapshot::default();
         }
-
-        let proj = |d: &[f32], s: usize| project_data(d, s, ch, mode);
-        let p = &source.preview;
-        let pv = [&p.min_values, &p.max_values, &p.frequency_normalized]
-            .iter()
-            .all(|v| v.len() >= ch);
-
+        let proj = |d: &[f32], s| proj_data(d, s, ch, mode);
+        let p = &src.preview;
+        let pv_ok = p.min_values.len() >= ch && p.max_values.len() >= ch;
         WaveformSnapshot {
             channels: if mode == ChannelMode::Both { ch } else { 1 },
             columns: cols,
-            min_values: proj(&source.min_values, cols),
-            max_values: proj(&source.max_values, cols),
-            frequency_normalized: proj(&source.frequency_normalized, cols),
-            column_spacing_seconds: source.column_spacing_seconds,
-            scroll_position: source.scroll_position,
-            downsample: source.downsample,
-            preview: if pv {
+            min_values: proj(&src.min_values, cols),
+            max_values: proj(&src.max_values, cols),
+            frequency_normalized: proj(&src.frequency_normalized, cols),
+            column_spacing_seconds: src.column_spacing_seconds,
+            scroll_position: src.scroll_position,
+            preview: if pv_ok {
                 WaveformPreview {
                     progress: p.progress,
                     min_values: proj(&p.min_values, 1),
                     max_values: proj(&p.max_values, 1),
-                    frequency_normalized: proj(&p.frequency_normalized, 1),
                 }
             } else {
                 WaveformPreview::default()
@@ -336,162 +265,85 @@ impl WaveformState {
     }
 }
 
-fn project_data(data: &[f32], stride: usize, ch: usize, mode: ChannelMode) -> Vec<f32> {
-    match mode {
-        ChannelMode::Both => data.to_vec(),
-        ChannelMode::Left => data[..stride].to_vec(),
+fn freq_hint(s: &WaveformSnapshot, ch: usize) -> f32 {
+    let c = s.columns;
+    if c == 0 {
+        return 0.0;
+    }
+    s.frequency_normalized
+        .get(ch * c..(ch + 1) * c)
+        .and_then(|r| r.iter().rev().copied().find(|v| v.is_finite() && *v > 0.0))
+        .unwrap_or(0.0)
+}
+fn proj_data(d: &[f32], stride: usize, ch: usize, m: ChannelMode) -> Vec<f32> {
+    match m {
+        ChannelMode::Both => d.to_vec(),
+        ChannelMode::Left => d[..stride].to_vec(),
         ChannelMode::Right => {
             let s = if ch > 1 { stride } else { 0 };
-            data[s..s + stride].to_vec()
+            d[s..s + stride].to_vec()
         }
         ChannelMode::Mono => {
             let sc = 1.0 / ch as f32;
             (0..stride)
-                .map(|i| data.iter().skip(i).step_by(stride).sum::<f32>() * sc)
+                .map(|i| d.iter().skip(i).step_by(stride).sum::<f32>() * sc)
                 .collect()
         }
     }
-}
-
-fn channel_frequency_hint(snapshot: &WaveformSnapshot, channel: usize) -> f32 {
-    // Prefer the most recent historical frequency for the channel, falling back to the
-    // current preview estimate when history is empty.
-    let columns = snapshot.columns;
-    if columns == 0 {
-        return snapshot
-            .preview
-            .frequency_normalized
-            .get(channel)
-            .copied()
-            .unwrap_or(0.0);
-    }
-
-    let base = channel * columns;
-    if let Some(freq) = snapshot
-        .frequency_normalized
-        .get(base..base + columns)
-        .and_then(|slice| {
-            slice
-                .iter()
-                .rev()
-                .copied()
-                .find(|value| value.is_finite() && *value > 0.0)
-        })
-    {
-        return freq;
-    }
-
-    snapshot
-        .preview
-        .frequency_normalized
-        .get(channel)
-        .copied()
-        .unwrap_or(0.0)
 }
 
 #[derive(Debug, Clone)]
 pub struct WaveformStyle {
     pub fill_alpha: f32,
     pub line_alpha: f32,
-    pub vertical_padding: f32,
-    pub channel_gap: f32,
-    pub amplitude_scale: f32,
-    pub stroke_width: f32,
+    pub vert_pad: f32,
+    pub ch_gap: f32,
+    pub amp_scale: f32,
+    pub stroke: f32,
     palette: Vec<Color>,
-    gradient: Vec<GradientStop>,
-}
-
-impl WaveformStyle {
-    fn color_for_frequency(&self, value: f32) -> Color {
-        if self.gradient.is_empty() {
-            return self
-                .palette
-                .first()
-                .copied()
-                .unwrap_or_else(theme::accent_primary);
-        }
-
-        let clamped = value.clamp(0.0, 1.0);
-        for window in self.gradient.windows(2) {
-            let [start, end] = window else {
-                continue;
-            };
-            if clamped <= end.position {
-                let span = (end.position - start.position).max(f32::EPSILON);
-                let alpha = (clamped - start.position).clamp(0.0, span) / span;
-                return theme::mix_colors(start.color, end.color, alpha);
-            }
-        }
-
-        self.palette
-            .last()
-            .copied()
-            .unwrap_or_else(theme::accent_primary)
-    }
-
-    fn set_palette(&mut self, palette: &[Color]) {
-        if self.palette.len() == palette.len()
-            && self
-                .palette
-                .iter()
-                .zip(palette)
-                .all(|(a, b)| theme::colors_equal(*a, *b))
-        {
-            return;
-        }
-
-        self.palette = palette.to_vec();
-        self.gradient = Self::build_gradient(&self.palette);
-    }
-
-    fn palette(&self) -> &[Color] {
-        &self.palette
-    }
-
-    fn build_gradient(palette: &[Color]) -> Vec<GradientStop> {
-        match palette.len() {
-            0 => Vec::new(),
-            1 => vec![GradientStop {
-                position: 0.0,
-                color: palette[0],
-            }],
-            len => {
-                let last_index = (len - 1) as f32;
-                palette
-                    .iter()
-                    .enumerate()
-                    .map(|(index, &color)| GradientStop {
-                        position: index as f32 / last_index,
-                        color,
-                    })
-                    .collect()
-            }
-        }
-    }
 }
 
 impl Default for WaveformStyle {
     fn default() -> Self {
-        let palette = theme::DEFAULT_WAVEFORM_PALETTE.to_vec();
-        let gradient = Self::build_gradient(&palette);
-
         Self {
-            fill_alpha: DEFAULT_FILL_ALPHA,
-            line_alpha: DEFAULT_LINE_ALPHA,
-            vertical_padding: DEFAULT_VERTICAL_PADDING,
-            channel_gap: DEFAULT_CHANNEL_GAP,
-            amplitude_scale: DEFAULT_AMPLITUDE_SCALE,
-            stroke_width: DEFAULT_STROKE_WIDTH,
-            palette,
-            gradient,
+            fill_alpha: 1.0,
+            line_alpha: 1.0,
+            vert_pad: 8.0,
+            ch_gap: 12.0,
+            amp_scale: 1.0,
+            stroke: 1.0,
+            palette: theme::DEFAULT_WAVEFORM_PALETTE.to_vec(),
         }
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct GradientStop {
-    position: f32,
-    color: Color,
+impl WaveformStyle {
+    fn freq_color(&self, v: f32) -> Color {
+        if self.palette.is_empty() {
+            return theme::accent_primary();
+        }
+        let n = self.palette.len();
+        if n == 1 {
+            return self.palette[0];
+        }
+        let t = v.clamp(0.0, 1.0) * (n - 1) as f32;
+        let lo = (t as usize).min(n - 2);
+        theme::mix_colors(self.palette[lo], self.palette[lo + 1], t - lo as f32)
+    }
+    fn set_palette(&mut self, p: &[Color]) {
+        if self.palette.len() != p.len()
+            || !self
+                .palette
+                .iter()
+                .zip(p)
+                .all(|(a, b)| theme::colors_equal(*a, *b))
+        {
+            self.palette = p.to_vec();
+        }
+    }
+    pub fn palette(&self) -> &[Color] {
+        &self.palette
+    }
 }
 
 #[derive(Debug)]
@@ -505,68 +357,49 @@ impl<'a> Waveform<'a> {
     }
 }
 
-impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Waveform<'a> {
+impl<'a, M> Widget<M, iced::Theme, iced::Renderer> for Waveform<'a> {
     fn tag(&self) -> tree::Tag {
         tree::Tag::stateless()
     }
-
     fn state(&self) -> tree::State {
         tree::State::new(())
     }
-
     fn size(&self) -> Size<Length> {
         Size::new(Length::Fill, Length::Fill)
     }
-
-    fn layout(
-        &mut self,
-        _tree: &mut Tree,
-        _renderer: &iced::Renderer,
-        limits: &layout::Limits,
-    ) -> layout::Node {
-        let size = limits.resolve(Length::Fill, Length::Fill, Size::new(0.0, 0.0));
-        layout::Node::new(size)
+    fn layout(&mut self, _: &mut Tree, _: &iced::Renderer, lim: &layout::Limits) -> layout::Node {
+        layout::Node::new(lim.resolve(Length::Fill, Length::Fill, Size::ZERO))
     }
-
     fn draw(
         &self,
-        _tree: &Tree,
-        renderer: &mut iced::Renderer,
-        theme: &iced::Theme,
-        _style: &renderer::Style,
-        layout: Layout<'_>,
-        _cursor: mouse::Cursor,
-        _viewport: &Rectangle,
+        _: &Tree,
+        r: &mut iced::Renderer,
+        th: &iced::Theme,
+        _: &renderer::Style,
+        lay: Layout<'_>,
+        _: mouse::Cursor,
+        _: &Rectangle,
     ) {
-        let bounds = layout.bounds();
-        let params = self.state.borrow().visual(bounds);
-
-        let Some(params) = params else {
-            renderer.fill_quad(
+        let b = lay.bounds();
+        match self.state.borrow().visual(b) {
+            Some(p) => r.draw_primitive(b, WaveformPrimitive::new(p)),
+            None => r.fill_quad(
                 Quad {
-                    bounds,
+                    bounds: b,
                     border: Default::default(),
                     shadow: Default::default(),
                     snap: true,
                 },
-                Background::Color(theme.extended_palette().background.base.color),
-            );
-            return;
-        };
-
-        renderer.draw_primitive(bounds, WaveformPrimitive::new(params));
+                Background::Color(th.extended_palette().background.base.color),
+            ),
+        }
     }
-
     fn children(&self) -> Vec<Tree> {
         Vec::new()
     }
-
-    fn diff(&self, _tree: &mut Tree) {}
+    fn diff(&self, _: &mut Tree) {}
 }
 
-pub fn widget<'a, Message>(state: &'a RefCell<WaveformState>) -> Element<'a, Message>
-where
-    Message: 'a,
-{
+pub fn widget<'a, M: 'a>(state: &'a RefCell<WaveformState>) -> Element<'a, M> {
     Element::new(Waveform::new(state))
 }
