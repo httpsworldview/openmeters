@@ -190,13 +190,11 @@ impl FftContext {
                 }
             },
         );
-        if low >= mid && low >= high {
-            0.0
-        } else if high > mid {
-            1.0
-        } else {
-            0.5
+        let total = low + mid + high;
+        if total <= f32::EPSILON {
+            return 0.5;
         }
+        (mid * 0.5 + high) / total
     }
 }
 
@@ -481,6 +479,8 @@ mod tests {
             ..Default::default()
         };
         let spc = cfg.samples_per_column();
+        // Pure tones should still produce values near the expected band positions
+        // (small tolerance for windowing/spectral leakage)
         for &(freq, expected) in &[(100.0, 0.0), (440.0, 0.5), (1000.0, 0.5), (5000.0, 1.0)] {
             let mut p = WaveformProcessor::new(cfg);
             let samples: Vec<f32> = (0..spc * 4)
@@ -492,8 +492,8 @@ mod tests {
                 .copied()
                 .unwrap_or(0.5);
             assert!(
-                (band - expected).abs() < f32::EPSILON,
-                "{freq:.0} Hz: expected {expected:.1}, got {band:.1}"
+                (band - expected).abs() < 0.05,
+                "{freq:.0} Hz: expected ~{expected:.1}, got {band:.3}"
             );
         }
     }
