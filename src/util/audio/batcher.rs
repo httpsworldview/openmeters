@@ -16,6 +16,10 @@ impl SampleBatcher {
         }
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.total_samples == 0
+    }
+
     pub fn push(&mut self, chunk: Vec<f32>) {
         self.total_samples = self.total_samples.saturating_add(chunk.len());
         self.chunks.push(chunk);

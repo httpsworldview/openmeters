@@ -425,16 +425,6 @@ impl RegistryState {
         changed
     }
 
-    fn clear_metadata_defaults(&mut self, metadata_id: u32) -> bool {
-        if self.metadata_defaults.clear_metadata(metadata_id) {
-            self.metadata_defaults.reconcile_with_nodes(&self.nodes);
-            self.bump_serial();
-            true
-        } else {
-            false
-        }
-    }
-
     fn bump_serial(&mut self) {
         self.serial = self.serial.wrapping_add(1);
     }
@@ -862,7 +852,7 @@ fn handle_global_removed(
     }
 
     if metadata_bindings.borrow_mut().remove(&id).is_some() {
-        runtime.mutate(|state| state.clear_metadata_defaults(id));
+        runtime.mutate(|state| state.apply_metadata_property(id, 0, None, None, None));
     }
 }
 

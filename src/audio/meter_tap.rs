@@ -61,7 +61,6 @@ fn forward_loop(sender: AsyncSender<Vec<f32>>, buffer: Arc<CaptureBuffer>) {
     let mut last_flush = Instant::now();
     let mut last_drop_check = Instant::now();
     let mut drop_baseline = buffer.dropped_frames();
-    let mut has_batch_data = false;
 
     loop {
         if last_drop_check.elapsed() >= DROP_CHECK_INTERVAL {
@@ -79,13 +78,7 @@ fn forward_loop(sender: AsyncSender<Vec<f32>>, buffer: Arc<CaptureBuffer>) {
 
         match buffer.pop_wait_timeout(POLL_BACKOFF) {
             Ok(Some(packet)) => {
-                if handle_packet(
-                    packet,
-                    &sender,
-                    &mut batcher,
-                    &mut last_flush,
-                    &mut has_batch_data,
-                ) {
+                if handle_packet(packet, &sender, &mut batcher, &mut last_flush) {
                     break;
                 }
             }
@@ -94,7 +87,6 @@ fn forward_loop(sender: AsyncSender<Vec<f32>>, buffer: Arc<CaptureBuffer>) {
                 if last_flush.elapsed() >= MAX_BATCH_LATENCY && try_flush(&sender, &mut batcher) {
                     break;
                 }
-                has_batch_data = false;
                 last_flush = Instant::now();
             }
             Err(_) => {
@@ -116,17 +108,15 @@ fn handle_packet(
     sender: &AsyncSender<Vec<f32>>,
     batcher: &mut SampleBatcher,
     last_flush: &mut Instant,
-    has_batch_data: &mut bool,
 ) -> bool {
     let channels = packet.channels.max(1) as usize;
     let sample_rate = packet.sample_rate.max(1) as f32;
 
     // Flush pending batch if format changed mid-batch
-    if *has_batch_data && FORMAT_STATE.read().differs_from(channels, sample_rate) {
+    if !batcher.is_empty() && FORMAT_STATE.read().differs_from(channels, sample_rate) {
         if try_flush(sender, batcher) {
             return true;
         }
-        *has_batch_data = false;
         *last_flush = Instant::now();
     }
 
@@ -137,14 +127,12 @@ fn handle_packet(
 
     if !packet.samples.is_empty() {
         batcher.push(packet.samples);
-        *has_batch_data = true;
     }
 
     if batcher.should_flush() || last_flush.elapsed() >= MAX_BATCH_LATENCY {
         if try_flush(sender, batcher) {
             return true;
         }
-        *has_batch_data = false;
         *last_flush = Instant::now();
     }
 
