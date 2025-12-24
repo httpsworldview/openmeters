@@ -34,7 +34,7 @@ impl Default for WaveformConfig {
 }
 
 impl WaveformConfig {
-    fn clamped(mut self) -> Self {
+    fn normalized(mut self) -> Self {
         self.sample_rate = self.sample_rate.max(1.0);
         self.scroll_speed = self.scroll_speed.clamp(MIN_SCROLL_SPEED, MAX_SCROLL_SPEED);
         self.max_columns = self
@@ -43,7 +43,12 @@ impl WaveformConfig {
         self
     }
     fn samples_per_column(&self) -> usize {
-        (self.sample_rate / self.scroll_speed.max(MIN_SCROLL_SPEED)).round() as usize
+        (self.sample_rate / self.scroll_speed).round() as usize
+    }
+    fn fft_size(&self) -> usize {
+        self.samples_per_column()
+            .next_power_of_two()
+            .clamp(*FFT_SIZE_RANGE.start(), *FFT_SIZE_RANGE.end())
     }
 }
 
@@ -66,72 +71,44 @@ pub struct WaveformSnapshot {
     pub preview: WaveformPreview,
 }
 
-#[derive(Debug, Clone)]
-struct Bucket {
-    min: f32,
-    max: f32,
-    samples: Vec<f32>,
-}
-
-impl Bucket {
-    fn new(cap: usize) -> Self {
-        Self {
-            min: f32::MAX,
-            max: f32::MIN,
-            samples: Vec::with_capacity(cap),
-        }
-    }
-    fn push(&mut self, s: f32) {
-        self.min = self.min.min(s);
-        self.max = self.max.max(s);
-        self.samples.push(s);
-    }
-    fn clear(&mut self) {
-        self.min = f32::MAX;
-        self.max = f32::MIN;
-        self.samples.clear();
-    }
-    fn extrema(&self) -> (f32, f32) {
-        if self.samples.is_empty() {
-            (0.0, 0.0)
-        } else {
-            (
-                if self.min == f32::MAX { 0.0 } else { self.min },
-                if self.max == f32::MIN { 0.0 } else { self.max },
-            )
-        }
-    }
+/// Converts sentinel extrema values to zero for display.
+#[inline]
+fn clamp_extrema(min: f32, max: f32) -> (f32, f32) {
+    (
+        if min == f32::MAX { 0.0 } else { min },
+        if max == f32::MIN { 0.0 } else { max },
+    )
 }
 
 #[derive(Clone)]
-struct FftContext {
+struct BandAnalyzer {
     fft: Arc<dyn RealToComplex<f32>>,
     size: usize,
+    buf: Vec<f32>,
+    out: Vec<Complex32>,
     scratch: Vec<Complex32>,
-    input: Vec<f32>,
-    output: Vec<Complex32>,
-    low_bin: usize,
-    high_bin: usize,
+    low: usize,
+    high: usize,
 }
 
-impl std::fmt::Debug for FftContext {
+impl std::fmt::Debug for BandAnalyzer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FftContext")
+        f.debug_struct("BandAnalyzer")
             .field("size", &self.size)
             .finish_non_exhaustive()
     }
 }
 
-impl FftContext {
+impl BandAnalyzer {
     fn new(size: usize, sr: f32) -> Self {
         let fft = RealFftPlanner::new().plan_fft_forward(size);
-        let (low, high) = Self::bins(size, sr);
+        let (low, high) = Self::crossover_bins(size, sr);
         Self {
             scratch: vec![Complex32::default(); fft.get_scratch_len()],
-            input: vec![0.0; size],
-            output: vec![Complex32::default(); size / 2 + 1],
-            low_bin: low,
-            high_bin: high,
+            buf: vec![0.0; size],
+            out: vec![Complex32::default(); size / 2 + 1],
+            low,
+            high,
             size,
             fft,
         }
@@ -143,13 +120,13 @@ impl FftContext {
             self.size = size;
             self.scratch
                 .resize(self.fft.get_scratch_len(), Complex32::default());
-            self.input.resize(size, 0.0);
-            self.output.resize(size / 2 + 1, Complex32::default());
+            self.buf.resize(size, 0.0);
+            self.out.resize(size / 2 + 1, Complex32::default());
         }
-        (self.low_bin, self.high_bin) = Self::bins(size, sr);
+        (self.low, self.high) = Self::crossover_bins(size, sr);
     }
 
-    fn bins(size: usize, sr: f32) -> (usize, usize) {
+    fn crossover_bins(size: usize, sr: f32) -> (usize, usize) {
         let bw = sr / size as f32;
         let max = size / 2;
         (
@@ -158,43 +135,44 @@ impl FftContext {
         )
     }
 
-    fn dominant_band(&mut self, samples: &[f32]) -> f32 {
-        let n = samples.len();
-        if n < 2 {
+    fn analyze(&mut self, samples: &[f32]) -> f32 {
+        if samples.len() < 2 {
             return 0.5;
         }
-        self.input.fill(0.0);
-        let len = n.min(self.size);
-        let scale = std::f32::consts::PI / len as f32;
+        self.buf.fill(0.0);
+        let len = samples.len().min(self.size);
+        let k = std::f32::consts::PI / len as f32;
         for (i, &s) in samples.iter().take(len).enumerate() {
-            self.input[i] = s * 0.5 * (1.0 - (2.0 * scale * i as f32).cos());
+            self.buf[i] = s * 0.5 * (1.0 - (2.0 * k * i as f32).cos());
         }
-        self.output.fill(Complex32::default());
+        self.out.fill(Complex32::default());
         if self
             .fft
-            .process_with_scratch(&mut self.input, &mut self.output, &mut self.scratch)
+            .process_with_scratch(&mut self.buf, &mut self.out, &mut self.scratch)
             .is_err()
         {
             return 0.5;
         }
-        let (low, mid, high) = self.output.iter().enumerate().fold(
-            (0.0_f32, 0.0_f32, 0.0_f32),
-            |(l, m, h), (i, c)| {
-                let e = c.norm_sqr();
-                if i <= self.low_bin {
-                    (l + e, m, h)
-                } else if i < self.high_bin {
-                    (l, m + e, h)
-                } else {
-                    (l, m, h + e)
-                }
-            },
-        );
-        let total = low + mid + high;
-        if total <= f32::EPSILON {
-            return 0.5;
+        let (l, m, h) =
+            self.out
+                .iter()
+                .enumerate()
+                .fold((0.0f32, 0.0f32, 0.0f32), |(l, m, h), (i, c)| {
+                    let e = c.norm_sqr();
+                    if i <= self.low {
+                        (l + e, m, h)
+                    } else if i < self.high {
+                        (l, m + e, h)
+                    } else {
+                        (l, m, h + e)
+                    }
+                });
+        let t = l + m + h;
+        if t <= f32::EPSILON {
+            0.5
+        } else {
+            (m * 0.5 + h) / t
         }
-        (mid * 0.5 + high) / total
     }
 }
 
@@ -206,38 +184,38 @@ pub struct WaveformProcessor {
     spc: usize,
     mins: Vec<f32>,
     maxs: Vec<f32>,
-    cents: Vec<f32>,
-    count: usize,
+    freqs: Vec<f32>,
     head: usize,
+    count: usize,
     written: u64,
-    buckets: Vec<Bucket>,
-    fft: FftContext,
+    acc: Vec<Vec<f32>>,
+    acc_min: Vec<f32>,
+    acc_max: Vec<f32>,
+    fft: BandAnalyzer,
     dirty: bool,
 }
 
 impl WaveformProcessor {
     pub fn new(config: WaveformConfig) -> Self {
-        let cfg = config.clamped();
-        let spc = cfg.samples_per_column();
-        let fft_size = spc
-            .next_power_of_two()
-            .clamp(*FFT_SIZE_RANGE.start(), *FFT_SIZE_RANGE.end());
+        let cfg = config.normalized();
         let mut p = Self {
+            spc: cfg.samples_per_column(),
+            fft: BandAnalyzer::new(cfg.fft_size(), cfg.sample_rate),
             cfg,
             snap: WaveformSnapshot::default(),
             ch: 2,
-            spc,
             mins: Vec::new(),
             maxs: Vec::new(),
-            cents: Vec::new(),
-            count: 0,
+            freqs: Vec::new(),
             head: 0,
+            count: 0,
             written: 0,
-            buckets: Vec::new(),
-            fft: FftContext::new(fft_size, cfg.sample_rate),
+            acc: Vec::new(),
+            acc_min: Vec::new(),
+            acc_max: Vec::new(),
             dirty: false,
         };
-        p.rebuild();
+        p.alloc_buffers();
         p
     }
 
@@ -245,194 +223,146 @@ impl WaveformProcessor {
         self.cfg
     }
 
+    fn alloc_buffers(&mut self) {
+        let cap = self.cfg.max_columns * self.ch;
+        self.mins.resize(cap, 0.0);
+        self.maxs.resize(cap, 0.0);
+        self.freqs.resize(cap, 0.0);
+        self.acc = (0..self.ch).map(|_| Vec::with_capacity(self.spc)).collect();
+        self.acc_min = vec![f32::MAX; self.ch];
+        self.acc_max = vec![f32::MIN; self.ch];
+    }
+
     fn rebuild(&mut self) {
         self.spc = self.cfg.samples_per_column();
-        self.fft.reconfigure(
-            self.spc
-                .next_power_of_two()
-                .clamp(*FFT_SIZE_RANGE.start(), *FFT_SIZE_RANGE.end()),
-            self.cfg.sample_rate,
-        );
-        let cap = self.cfg.max_columns.max(1) * self.ch.max(1);
-        self.mins = vec![0.0; cap];
-        self.maxs = vec![0.0; cap];
-        self.cents = vec![0.0; cap];
-        self.count = 0;
+        self.fft
+            .reconfigure(self.cfg.fft_size(), self.cfg.sample_rate);
         self.head = 0;
+        self.count = 0;
         self.written = 0;
-        self.buckets = (0..self.ch).map(|_| Bucket::new(self.spc)).collect();
+        self.dirty = false;
+        self.alloc_buffers();
     }
 
     fn flush(&mut self) {
-        let cap = self.cfg.max_columns.max(1);
-        for (c, b) in self.buckets.iter().enumerate() {
-            if b.samples.is_empty() {
+        let cap = self.cfg.max_columns;
+        for c in 0..self.ch {
+            if self.acc[c].is_empty() {
                 continue;
             }
-            let (mn, mx) = b.extrema();
-            let off = c * cap + self.head;
-            self.mins[off] = mn;
-            self.maxs[off] = mx;
-            self.cents[off] = self.fft.dominant_band(&b.samples);
+            let (mn, mx) = clamp_extrema(self.acc_min[c], self.acc_max[c]);
+            let idx = c * cap + self.head;
+            self.mins[idx] = mn;
+            self.maxs[idx] = mx;
+            self.freqs[idx] = self.fft.analyze(&self.acc[c]);
         }
         self.head = (self.head + 1) % cap;
-        self.count = self.count.saturating_add(1).min(cap);
+        self.count = (self.count + 1).min(cap);
         self.written = self.written.saturating_add(1);
         self.dirty = true;
-        self.buckets.iter_mut().for_each(Bucket::clear);
+        for c in 0..self.ch {
+            self.acc[c].clear();
+        }
+        self.acc_min.fill(f32::MAX);
+        self.acc_max.fill(f32::MIN);
     }
 
-    fn ingest(&mut self, samples: &[f32], ch: usize) {
-        if samples.is_empty() || ch == 0 {
-            return;
-        }
-        for frame in samples.chunks_exact(ch) {
-            for (c, &s) in frame.iter().enumerate().take(ch) {
-                self.buckets[c].push(s);
+    fn ingest(&mut self, samples: &[f32]) {
+        for frame in samples.chunks_exact(self.ch) {
+            for (c, &s) in frame.iter().enumerate() {
+                self.acc_min[c] = self.acc_min[c].min(s);
+                self.acc_max[c] = self.acc_max[c].max(s);
+                self.acc[c].push(s);
             }
-            if self.buckets[0].samples.len() >= self.spc {
+            if self.acc[0].len() >= self.spc {
                 self.flush();
             }
         }
     }
 
-    fn sync_snapshot(&mut self) {
-        let (ch, cap, cols) = (
-            self.ch.max(1),
-            self.cfg.max_columns.max(1),
-            self.count.min(self.cfg.max_columns.max(1)),
-        );
+    fn sync_ring_to_snapshot(&mut self) {
+        let (ch, cap, cols) = (self.ch, self.cfg.max_columns, self.count);
         let sz = cols * ch;
         self.snap.min_values.resize(sz, 0.0);
         self.snap.max_values.resize(sz, 0.0);
         self.snap.frequency_normalized.resize(sz, 0.0);
-        if cols == 0 {
-            self.snap.channels = ch;
-            self.snap.columns = 0;
-            self.snap.column_spacing_seconds = 1.0 / self.cfg.scroll_speed.max(MIN_SCROLL_SPEED);
-            return;
-        }
-        let start = if self.count < cap { 0 } else { self.head };
-        for c in 0..ch {
-            for i in 0..cols {
-                let src = c * cap + (start + i) % cap;
-                let dst = c * cols + i;
-                self.snap.min_values[dst] = self.mins[src];
-                self.snap.max_values[dst] = self.maxs[src];
-                self.snap.frequency_normalized[dst] = self.cents[src];
-            }
-        }
         self.snap.channels = ch;
         self.snap.columns = cols;
-        self.snap.column_spacing_seconds = 1.0 / self.cfg.scroll_speed.max(MIN_SCROLL_SPEED);
+        if cols > 0 {
+            let start = if self.count < cap { 0 } else { self.head };
+            for c in 0..ch {
+                for i in 0..cols {
+                    let (src, dst) = (c * cap + (start + i) % cap, c * cols + i);
+                    self.snap.min_values[dst] = self.mins[src];
+                    self.snap.max_values[dst] = self.maxs[src];
+                    self.snap.frequency_normalized[dst] = self.freqs[src];
+                }
+            }
+        }
+        self.snap.column_spacing_seconds = 1.0 / self.cfg.scroll_speed;
         self.dirty = false;
     }
 
     fn progress(&self) -> f32 {
-        self.buckets.first().map_or(0.0, |b| {
-            (b.samples.len() as f32 / self.spc.max(1) as f32).clamp(0.0, 1.0)
+        self.acc.first().map_or(0.0, |a| {
+            (a.len() as f32 / self.spc.max(1) as f32).clamp(0.0, 1.0)
         })
     }
 
     fn sync_preview(&mut self) {
-        let ch = self.ch.max(1);
         self.snap.preview.progress = self.progress();
-        if self.buckets.first().is_none_or(|b| b.samples.is_empty()) {
+        if self.acc.first().is_none_or(|a| a.is_empty()) {
             self.snap.preview.min_values.clear();
             self.snap.preview.max_values.clear();
             return;
         }
-        self.snap.preview.min_values.resize(ch, 0.0);
-        self.snap.preview.max_values.resize(ch, 0.0);
-        for (c, b) in self.buckets.iter().enumerate().take(ch) {
-            let (mn, mx) = b.extrema();
+        self.snap.preview.min_values.resize(self.ch, 0.0);
+        self.snap.preview.max_values.resize(self.ch, 0.0);
+        for c in 0..self.ch {
+            let (mn, mx) = clamp_extrema(self.acc_min[c], self.acc_max[c]);
             self.snap.preview.min_values[c] = mn;
             self.snap.preview.max_values[c] = mx;
         }
-    }
-
-    fn migrate(&mut self, old_cap: usize, new_cap: usize) {
-        if old_cap == new_cap {
-            return;
-        }
-        let (ch, keep) = (self.ch.max(1), self.count.min(old_cap).min(new_cap));
-        let mut nmins = vec![0.0; ch * new_cap];
-        let mut nmaxs = vec![0.0; ch * new_cap];
-        let mut ncents = vec![0.0; ch * new_cap];
-        if keep > 0 {
-            let wrap = self.count >= old_cap;
-            let st = if wrap {
-                (self.head + old_cap - keep) % old_cap
-            } else {
-                self.count.saturating_sub(keep)
-            };
-            for c in 0..ch {
-                for i in 0..keep {
-                    let src = if wrap { (st + i) % old_cap } else { st + i };
-                    nmins[c * new_cap + i] = self.mins[c * old_cap + src];
-                    nmaxs[c * new_cap + i] = self.maxs[c * old_cap + src];
-                    ncents[c * new_cap + i] = self.cents[c * old_cap + src];
-                }
-            }
-        }
-        self.mins = nmins;
-        self.maxs = nmaxs;
-        self.cents = ncents;
-        self.count = keep;
-        self.head = if keep >= new_cap { 0 } else { keep };
-        self.dirty = true;
     }
 }
 
 impl AudioProcessor for WaveformProcessor {
     type Output = WaveformSnapshot;
+
     fn process_block(&mut self, block: &AudioBlock<'_>) -> ProcessorUpdate<Self::Output> {
         if block.frame_count() == 0 {
             return ProcessorUpdate::None;
         }
-        let ch = block.channels.max(1);
-        if ch != self.ch {
+        let (ch, sr) = (block.channels.max(1), block.sample_rate.max(1.0));
+        if ch != self.ch || (self.cfg.sample_rate - sr).abs() > f32::EPSILON {
             self.ch = ch;
-            self.rebuild();
-        }
-        let sr = block.sample_rate.max(1.0);
-        if (self.cfg.sample_rate - sr).abs() > f32::EPSILON {
             self.cfg.sample_rate = sr;
             self.rebuild();
         }
-        self.ingest(block.samples, ch);
+        self.ingest(block.samples);
         if self.dirty {
-            self.sync_snapshot();
+            self.sync_ring_to_snapshot();
         }
         self.sync_preview();
         self.snap.scroll_position = self.written as f32 + self.progress();
         ProcessorUpdate::Snapshot(self.snap.clone())
     }
+
     fn reset(&mut self) {
         self.snap = WaveformSnapshot::default();
-        self.count = 0;
-        self.head = 0;
-        self.written = 0;
-        self.mins.clear();
-        self.maxs.clear();
-        self.cents.clear();
-        self.buckets.clear();
-        self.dirty = false;
         self.rebuild();
     }
 }
 
 impl Reconfigurable<WaveformConfig> for WaveformProcessor {
     fn update_config(&mut self, config: WaveformConfig) {
-        let c = config.clamped();
-        let old_cap = self.cfg.max_columns;
-        let rebuild = (self.cfg.sample_rate - c.sample_rate).abs() > f32::EPSILON
-            || (self.cfg.scroll_speed - c.scroll_speed).abs() > f32::EPSILON;
-        self.cfg = c;
-        if rebuild {
+        let c = config.normalized();
+        if self.cfg.sample_rate != c.sample_rate
+            || self.cfg.scroll_speed != c.scroll_speed
+            || self.cfg.max_columns != c.max_columns
+        {
+            self.cfg = c;
             self.rebuild();
-        } else if old_cap != c.max_columns {
-            self.migrate(old_cap, c.max_columns);
         }
     }
 }
@@ -461,8 +391,7 @@ mod tests {
             ..Default::default()
         };
         let mut p = WaveformProcessor::new(cfg);
-        let spc = p.cfg.samples_per_column();
-        let samples: Vec<f32> = (0..spc)
+        let samples: Vec<f32> = (0..p.spc)
             .map(|i| if i % 2 == 0 { 0.5 } else { -0.25 })
             .collect();
         let s = snap(p.process_block(&block(&samples, 1, 48_000.0)));
@@ -479,8 +408,6 @@ mod tests {
             ..Default::default()
         };
         let spc = cfg.samples_per_column();
-        // Pure tones should still produce values near the expected band positions
-        // (small tolerance for windowing/spectral leakage)
         for &(freq, expected) in &[(100.0, 0.0), (440.0, 0.5), (1000.0, 0.5), (5000.0, 1.0)] {
             let mut p = WaveformProcessor::new(cfg);
             let samples: Vec<f32> = (0..spc * 4)
@@ -506,10 +433,9 @@ mod tests {
             max_columns: MIN_COLUMN_CAPACITY,
         };
         let mut p = WaveformProcessor::new(cfg);
-        let spc = p.cfg.samples_per_column();
         for batch in 0..MIN_COLUMN_CAPACITY + 10 {
             p.process_block(&block(
-                &vec![((batch + 1) as f32 * 0.001).min(1.0); spc],
+                &vec![((batch + 1) as f32 * 0.001).min(1.0); p.spc],
                 1,
                 48_000.0,
             ));
