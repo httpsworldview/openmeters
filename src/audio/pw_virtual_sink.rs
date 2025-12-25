@@ -8,6 +8,7 @@ use pw::{properties::properties, spa};
 use spa::pod::Pod;
 use std::error::Error;
 use std::io::Cursor;
+use std::mem::size_of;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
@@ -60,38 +61,33 @@ impl CaptureBuffer {
     }
 
     pub fn pop_wait_timeout(&self, timeout: Duration) -> Result<Option<CapturedAudio>, ()> {
-        let mut guard = match self.inner.lock() {
-            Ok(guard) => guard,
-            Err(err) => {
-                error!("[virtual-sink] capture buffer lock poisoned: {err}");
-                err.into_inner()
-            }
-        };
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|e| {
+                error!("[virtual-sink] capture buffer lock poisoned");
+                e.into_inner()
+            })
+            .map_err(|_| ())?;
 
         if let Some(frame) = guard.pop() {
             return Ok(Some(frame));
         }
-
         if timeout.is_zero() {
             return Ok(None);
         }
 
         loop {
-            let (new_guard, wait_result) = match self.available.wait_timeout(guard, timeout) {
-                Ok(outcome) => outcome,
-                Err(err) => {
-                    error!("[virtual-sink] capture buffer wait failed: {err}");
-                    let _ = err.into_inner();
-                    return Err(());
-                }
-            };
+            let (new_guard, result) = self
+                .available
+                .wait_timeout(guard, timeout)
+                .map_err(|_| ())?;
             guard = new_guard;
 
             if let Some(frame) = guard.pop() {
                 return Ok(Some(frame));
             }
-
-            if wait_result.timed_out() {
+            if result.timed_out() {
                 return Ok(None);
             }
         }
@@ -139,19 +135,20 @@ struct VirtualSinkState {
     format: spa::param::audio::AudioFormat,
 }
 
-impl VirtualSinkState {
-    fn new(channels: u32, sample_rate: u32) -> Self {
-        let default_format = spa::param::audio::AudioFormat::F32LE;
-        let sample_bytes = bytes_per_sample(default_format).unwrap_or(std::mem::size_of::<f32>());
-        let frame_bytes = channels.max(1) as usize * sample_bytes;
+impl Default for VirtualSinkState {
+    fn default() -> Self {
+        let format = spa::param::audio::AudioFormat::F32LE;
         Self {
-            frame_bytes,
-            channels,
-            sample_rate,
-            format: default_format,
+            frame_bytes: VIRTUAL_SINK_CHANNELS as usize
+                * bytes_per_sample(format).unwrap_or(size_of::<f32>()),
+            channels: VIRTUAL_SINK_CHANNELS,
+            sample_rate: VIRTUAL_SINK_SAMPLE_RATE,
+            format,
         }
     }
+}
 
+impl VirtualSinkState {
     fn update_from_info(&mut self, info: &spa::param::audio::AudioInfoRaw) {
         self.channels = info.channels().max(1);
         self.sample_rate = info.rate();
@@ -197,7 +194,7 @@ fn run_virtual_sink() -> Result<(), Box<dyn Error + Send + Sync>> {
         },
     )?;
 
-    let audio_state = VirtualSinkState::new(VIRTUAL_SINK_CHANNELS, VIRTUAL_SINK_SAMPLE_RATE);
+    let audio_state = VirtualSinkState::default();
     let capture_buffer = capture_buffer_handle();
 
     let _listener = stream
@@ -308,13 +305,13 @@ mod tests {
 
     #[test]
     fn virtual_sink_state_defaults_match_requested_configuration() {
-        let state = VirtualSinkState::new(2, DEFAULT_SAMPLE_RATE as u32);
-        assert_eq!(state.channels, 2);
-        assert_eq!(state.sample_rate, DEFAULT_SAMPLE_RATE as u32);
+        let state = VirtualSinkState::default();
+        assert_eq!(state.channels, VIRTUAL_SINK_CHANNELS);
+        assert_eq!(state.sample_rate, VIRTUAL_SINK_SAMPLE_RATE);
         assert_eq!(state.format, spa::param::audio::AudioFormat::F32LE);
         assert_eq!(
             state.frame_bytes,
-            2 * bytes_per_sample(state.format).unwrap()
+            VIRTUAL_SINK_CHANNELS as usize * bytes_per_sample(state.format).unwrap()
         );
     }
 }

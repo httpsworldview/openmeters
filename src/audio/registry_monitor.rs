@@ -35,23 +35,25 @@ fn run_monitor_loop(
 ) {
     let mut updates = handle.subscribe();
     let mut routing = RoutingManager::new(handle, command_rx);
+    let mut last_snapshot: Option<pw_registry::RegistrySnapshot> = None;
 
     loop {
-        if routing.apply_pending_commands() {
-            continue;
+        if routing.process_commands()
+            && let Some(snapshot) = last_snapshot.as_ref()
+        {
+            routing.apply(snapshot);
         }
 
         match updates.recv_timeout(POLL_INTERVAL) {
             Ok(Some(snapshot)) => {
                 log::registry_snapshot("update", &snapshot);
-                routing.handle_snapshot(snapshot);
+                routing.apply(&snapshot);
 
-                if let Some(snapshot) = routing.snapshot.as_ref()
-                    && snapshot_tx.send_blocking(snapshot.clone()).is_err()
-                {
+                if snapshot_tx.send_blocking(snapshot.clone()).is_err() {
                     info!("[registry] UI channel closed; stopping");
                     break;
                 }
+                last_snapshot = Some(snapshot);
             }
             Ok(None) | Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -65,25 +67,14 @@ struct RoutingManager {
     handle: pw_registry::AudioRegistryHandle,
     commands: mpsc::Receiver<RoutingCommand>,
     disabled_nodes: FxHashSet<u32>,
-    routed_nodes: RoutedNodes,
+    routed_to: FxHashMap<u32, u32>,
     capture_mode: CaptureMode,
     device_target: DeviceSelection,
-    snapshot: Option<pw_registry::RegistrySnapshot>,
-    cached_target: Option<(u32, String)>,
+    hw_sink_cache: Option<(u32, String)>,
     current_links: Vec<pw_registry::LinkSpec>,
-    sink_missing_warned: bool,
-    device_missing_warned: bool,
+    warned_sink_missing: bool,
+    warned_device_missing: bool,
 }
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RouteTarget {
-    Virtual(u32),
-    Hardware(u32),
-}
-
-/// Tracks the last successfully routed target for a node.
-/// Re-routing only occurs when the desired target changes.
-type RoutedNodes = FxHashMap<u32, RouteTarget>;
 
 impl RoutingManager {
     fn new(
@@ -94,27 +85,20 @@ impl RoutingManager {
             handle,
             commands,
             disabled_nodes: FxHashSet::default(),
-            routed_nodes: FxHashMap::default(),
+            routed_to: FxHashMap::default(),
             capture_mode: CaptureMode::Applications,
             device_target: DeviceSelection::Default,
-            snapshot: None,
-            cached_target: None,
+            hw_sink_cache: None,
             current_links: Vec::new(),
-            sink_missing_warned: false,
-            device_missing_warned: false,
+            warned_sink_missing: false,
+            warned_device_missing: false,
         }
     }
 
-    fn handle_snapshot(&mut self, snapshot: pw_registry::RegistrySnapshot) {
-        self.consume_commands();
-        self.apply_snapshot(&snapshot, true);
-        self.snapshot = Some(snapshot);
-    }
-
-    fn consume_commands(&mut self) -> bool {
+    fn process_commands(&mut self) -> bool {
         let mut changed = false;
-        while let Ok(command) = self.commands.try_recv() {
-            changed |= match command {
+        while let Ok(cmd) = self.commands.try_recv() {
+            changed |= match cmd {
                 RoutingCommand::SetApplicationEnabled { node_id, enabled } => {
                     if enabled {
                         self.disabled_nodes.remove(&node_id)
@@ -122,73 +106,81 @@ impl RoutingManager {
                         self.disabled_nodes.insert(node_id)
                     }
                 }
-                RoutingCommand::SetCaptureMode(mode) => {
-                    if self.capture_mode != mode {
-                        self.capture_mode = mode;
-                        true
-                    } else {
-                        false
-                    }
+                RoutingCommand::SetCaptureMode(mode) if self.capture_mode != mode => {
+                    self.capture_mode = mode;
+                    true
                 }
-                RoutingCommand::SelectCaptureDevice(selection) => {
-                    if self.device_target != selection {
-                        self.device_target = selection;
-                        true
-                    } else {
-                        false
-                    }
+                RoutingCommand::SelectCaptureDevice(sel) if self.device_target != sel => {
+                    self.device_target = sel;
+                    true
                 }
+                _ => false,
             };
         }
         changed
     }
 
-    fn apply_pending_commands(&mut self) -> bool {
-        if !self.consume_commands() {
-            return false;
+    fn apply(&mut self, snapshot: &pw_registry::RegistrySnapshot) {
+        let node_exists = |id| snapshot.nodes.iter().any(|n| n.id == id);
+        self.disabled_nodes.retain(|&id| node_exists(id));
+        self.routed_to.retain(|&id, _| node_exists(id));
+        if self
+            .hw_sink_cache
+            .as_ref()
+            .is_some_and(|(id, _)| !node_exists(*id))
+        {
+            self.hw_sink_cache = None;
         }
 
-        if let Some(snapshot) = self.snapshot.take() {
-            self.apply_snapshot(&snapshot, false);
-            self.snapshot = Some(snapshot);
+        let links = self.compute_links(snapshot).unwrap_or_default();
+        if self.current_links != links && self.handle.set_links(links.clone()) {
+            self.current_links = links;
         }
 
-        true
+        self.update_routes(snapshot);
     }
 
-    fn apply_snapshot(&mut self, snapshot: &pw_registry::RegistrySnapshot, log_sink_missing: bool) {
-        self.cleanup_stale_nodes(snapshot);
-
-        let desired_links = self.compute_desired_links(snapshot);
-        self.ensure_links(desired_links);
-
+    fn update_routes(&mut self, snapshot: &pw_registry::RegistrySnapshot) {
         let Some(sink) = snapshot.find_node_by_label(VIRTUAL_SINK_NAME) else {
-            if log_sink_missing && !self.sink_missing_warned {
+            if !self.warned_sink_missing {
                 warn!("[router] virtual sink '{VIRTUAL_SINK_NAME}' not yet available");
-                self.sink_missing_warned = true;
+                self.warned_sink_missing = true;
             }
             return;
         };
+        self.warned_sink_missing = false;
+        let hw_sink = self.hw_sink(snapshot);
 
-        self.sink_missing_warned = false;
-        let hardware_sink = self.resolve_hardware_sink(snapshot);
-        self.route_nodes(snapshot.route_candidates(sink), sink, hardware_sink);
-    }
+        for node in snapshot.route_candidates(sink) {
+            let target = match self.capture_mode {
+                CaptureMode::Applications if !self.disabled_nodes.contains(&node.id) => Some(sink),
+                _ => hw_sink,
+            };
 
-    fn cleanup_stale_nodes(&mut self, snapshot: &pw_registry::RegistrySnapshot) {
-        let active_nodes: FxHashSet<_> = snapshot.nodes.iter().map(|n| n.id).collect();
+            let Some(target) = target else {
+                if self.routed_to.remove(&node.id).is_some() {
+                    warn!(
+                        "[router] unable to restore '{}'; no sink available",
+                        node.display_name()
+                    );
+                }
+                continue;
+            };
 
-        self.disabled_nodes.retain(|id| active_nodes.contains(id));
-        self.routed_nodes.retain(|id, _| active_nodes.contains(id));
-
-        if let Some((id, _)) = self.cached_target
-            && !active_nodes.contains(&id)
-        {
-            self.cached_target = None;
+            if self.routed_to.get(&node.id) != Some(&target.id)
+                && self.handle.route_node(node, target)
+            {
+                info!(
+                    "[router] routed '{}' -> '{}'",
+                    node.display_name(),
+                    target.display_name()
+                );
+                self.routed_to.insert(node.id, target.id);
+            }
         }
     }
 
-    fn resolve_hardware_sink<'a>(
+    fn hw_sink<'a>(
         &mut self,
         snapshot: &'a pw_registry::RegistrySnapshot,
     ) -> Option<&'a pw_registry::NodeInfo> {
@@ -198,127 +190,61 @@ impl RoutingManager {
             .as_ref()
             .and_then(|t| snapshot.resolve_default_target(t))
             .or_else(|| {
-                let (id, label) = self.cached_target.as_ref()?;
-                snapshot.nodes.iter().find(|n| n.id == *id || n.matches_label(label))
+                let (id, label) = self.hw_sink_cache.as_ref()?;
+                snapshot
+                    .nodes
+                    .iter()
+                    .find(|n| n.id == *id || n.matches_label(label))
             });
-
-        self.cached_target = node.map(|n| (n.id, n.display_name()));
+        self.hw_sink_cache = node.map(|n| (n.id, n.display_name()));
         node
     }
 
-    fn compute_desired_links(
+    fn compute_links(
         &mut self,
         snapshot: &pw_registry::RegistrySnapshot,
-    ) -> Vec<pw_registry::LinkSpec> {
-        let Some(openmeters_sink) = snapshot.find_node_by_label(VIRTUAL_SINK_NAME) else {
-            return Vec::new();
-        };
+    ) -> Option<Vec<pw_registry::LinkSpec>> {
+        let om_sink = snapshot.find_node_by_label(VIRTUAL_SINK_NAME)?;
 
-        let (source_node, target_node) = match (self.capture_mode, self.device_target) {
-            (CaptureMode::Applications, _) => {
-                self.device_missing_warned = false;
-                let Some(hw) = self.resolve_hardware_sink(snapshot) else {
-                    return Vec::new();
-                };
-                (openmeters_sink, hw)
-            }
-            (CaptureMode::Device, DeviceSelection::Default) => {
-                self.device_missing_warned = false;
-                let Some(hw) = self.resolve_hardware_sink(snapshot) else {
-                    return Vec::new();
-                };
-                (hw, openmeters_sink)
-            }
+        let (source, target) = match (self.capture_mode, self.device_target) {
+            (CaptureMode::Applications, _) => (om_sink, self.hw_sink(snapshot)?),
+            (CaptureMode::Device, DeviceSelection::Default) => (self.hw_sink(snapshot)?, om_sink),
             (CaptureMode::Device, DeviceSelection::Node(id)) => {
-                let source = match snapshot.nodes.iter().find(|n| n.id == id) {
-                    Some(node) => {
-                        self.device_missing_warned = false;
-                        node
+                let src = snapshot.nodes.iter().find(|n| n.id == id).or_else(|| {
+                    if !self.warned_device_missing {
+                        warn!("[router] capture device #{id} unavailable; using default");
+                        self.warned_device_missing = true;
                     }
-                    None => {
-                        if !self.device_missing_warned {
-                            warn!("[router] capture node #{id} unavailable; using default");
-                            self.device_missing_warned = true;
-                        }
-                        let Some(hw) = self.resolve_hardware_sink(snapshot) else {
-                            return Vec::new();
-                        };
-                        hw
-                    }
-                };
-                (source, openmeters_sink)
+                    self.hw_sink(snapshot)
+                })?;
+                self.warned_device_missing = false;
+                (src, om_sink)
             }
         };
 
-        let source_ports = source_node.output_ports_for_loopback();
-        let target_ports = target_node.input_ports_for_loopback();
-
-        if source_ports.is_empty() {
-            debug!(
-                "[loopback] no output ports on source node #{} ({})",
-                source_node.id,
-                source_node.display_name()
-            );
-            return Vec::new();
+        let (src_ports, tgt_ports) = (
+            source.output_ports_for_loopback(),
+            target.input_ports_for_loopback(),
+        );
+        if src_ports.is_empty() {
+            debug!("[loopback] no output ports on '{}'", source.display_name());
+            return None;
+        }
+        if tgt_ports.is_empty() {
+            debug!("[loopback] no input ports on '{}'", target.display_name());
+            return None;
         }
 
-        if target_ports.is_empty() {
-            debug!(
-                "[loopback] no input ports on target node #{} ({})",
-                target_node.id,
-                target_node.display_name()
-            );
-            return Vec::new();
-        }
-
-        let pairs = pair_ports_by_channel(source_ports, target_ports);
-        pairs
-            .into_iter()
-            .map(|(out_port, in_port)| pw_registry::LinkSpec {
-                output_node: source_node.id,
-                output_port: out_port.port_id,
-                input_node: target_node.id,
-                input_port: in_port.port_id,
-            })
-            .collect()
-    }
-
-    fn ensure_links(&mut self, desired: Vec<pw_registry::LinkSpec>) {
-        if self.current_links != desired && self.handle.set_links(desired.clone()) {
-            self.current_links = desired;
-        }
-    }
-
-    fn route_nodes<'a>(
-        &mut self,
-        nodes: impl IntoIterator<Item = &'a pw_registry::NodeInfo>,
-        sink: &pw_registry::NodeInfo,
-        hardware_sink: Option<&pw_registry::NodeInfo>,
-    ) {
-        let use_virtual = |mgr: &Self, node_id| {
-            mgr.capture_mode == CaptureMode::Applications && !mgr.disabled_nodes.contains(&node_id)
-        };
-
-        for node in nodes {
-            let target = if use_virtual(self, node.id) {
-                Some((sink, RouteTarget::Virtual(sink.id)))
-            } else {
-                hardware_sink.map(|hw| (hw, RouteTarget::Hardware(hw.id)))
-            };
-
-            match target {
-                Some((t, desired)) if self.routed_nodes.get(&node.id) != Some(&desired) => {
-                    if self.handle.route_node(node, t) {
-                        let action = if matches!(desired, RouteTarget::Virtual(_)) { "routed" } else { "restored" };
-                        info!("[router] {action} '{}' #{} -> '{}' #{}", node.display_name(), node.id, t.display_name(), t.id);
-                        self.routed_nodes.insert(node.id, desired);
-                    }
-                }
-                None if self.routed_nodes.remove(&node.id).is_some() => {
-                    warn!("[router] unable to restore '{}' (id={}); no sink", node.display_name(), node.id);
-                }
-                _ => {}
-            }
-        }
+        Some(
+            pair_ports_by_channel(src_ports, tgt_ports)
+                .into_iter()
+                .map(|(out, inp)| pw_registry::LinkSpec {
+                    output_node: source.id,
+                    output_port: out.port_id,
+                    input_node: target.id,
+                    input_port: inp.port_id,
+                })
+                .collect(),
+        )
     }
 }

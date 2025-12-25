@@ -1,4 +1,4 @@
-use super::pw_virtual_sink::{self, CaptureBuffer, CapturedAudio};
+use super::pw_virtual_sink::{self, CaptureBuffer};
 use crate::util::audio::{DEFAULT_SAMPLE_RATE, SampleBatcher};
 use async_channel::{Receiver as AsyncReceiver, Sender as AsyncSender};
 use parking_lot::RwLock;
@@ -62,6 +62,12 @@ fn forward_loop(sender: AsyncSender<Vec<f32>>, buffer: Arc<CaptureBuffer>) {
     let mut last_drop_check = Instant::now();
     let mut drop_baseline = buffer.dropped_frames();
 
+    let flush = |batcher: &mut SampleBatcher| {
+        batcher
+            .take()
+            .is_some_and(|b| sender.send_blocking(b).is_err())
+    };
+
     loop {
         if last_drop_check.elapsed() >= DROP_CHECK_INTERVAL {
             let dropped = buffer.dropped_frames();
@@ -76,19 +82,46 @@ fn forward_loop(sender: AsyncSender<Vec<f32>>, buffer: Arc<CaptureBuffer>) {
             last_drop_check = Instant::now();
         }
 
+        let should_time_flush = last_flush.elapsed() >= MAX_BATCH_LATENCY;
+
         match buffer.pop_wait_timeout(POLL_BACKOFF) {
             Ok(Some(packet)) => {
-                if handle_packet(packet, &sender, &mut batcher, &mut last_flush) {
-                    break;
+                let (channels, sample_rate) = (
+                    packet.channels.max(1) as usize,
+                    packet.sample_rate.max(1) as f32,
+                );
+
+                if !batcher.is_empty() && FORMAT_STATE.read().differs_from(channels, sample_rate) {
+                    if flush(&mut batcher) {
+                        break;
+                    }
+                    last_flush = Instant::now();
+                }
+
+                *FORMAT_STATE.write() = MeterFormat {
+                    channels,
+                    sample_rate,
+                };
+
+                if !packet.samples.is_empty() {
+                    batcher.push(packet.samples);
+                }
+
+                if batcher.should_flush() || should_time_flush {
+                    if flush(&mut batcher) {
+                        break;
+                    }
+                    last_flush = Instant::now();
                 }
             }
             Ok(None) if sender.is_closed() => break,
-            Ok(None) => {
-                if last_flush.elapsed() >= MAX_BATCH_LATENCY && try_flush(&sender, &mut batcher) {
+            Ok(None) if should_time_flush => {
+                if flush(&mut batcher) {
                     break;
                 }
                 last_flush = Instant::now();
             }
+            Ok(None) => {}
             Err(_) => {
                 error!("[meter-tap] capture buffer unavailable; stopping tap");
                 break;
@@ -101,46 +134,4 @@ fn forward_loop(sender: AsyncSender<Vec<f32>>, buffer: Arc<CaptureBuffer>) {
         "[meter-tap] audio channel closed; {} dropped capture frames",
         buffer.dropped_frames()
     );
-}
-
-fn handle_packet(
-    packet: CapturedAudio,
-    sender: &AsyncSender<Vec<f32>>,
-    batcher: &mut SampleBatcher,
-    last_flush: &mut Instant,
-) -> bool {
-    let channels = packet.channels.max(1) as usize;
-    let sample_rate = packet.sample_rate.max(1) as f32;
-
-    // Flush pending batch if format changed mid-batch
-    if !batcher.is_empty() && FORMAT_STATE.read().differs_from(channels, sample_rate) {
-        if try_flush(sender, batcher) {
-            return true;
-        }
-        *last_flush = Instant::now();
-    }
-
-    *FORMAT_STATE.write() = MeterFormat {
-        channels,
-        sample_rate,
-    };
-
-    if !packet.samples.is_empty() {
-        batcher.push(packet.samples);
-    }
-
-    if batcher.should_flush() || last_flush.elapsed() >= MAX_BATCH_LATENCY {
-        if try_flush(sender, batcher) {
-            return true;
-        }
-        *last_flush = Instant::now();
-    }
-
-    false
-}
-
-fn try_flush(sender: &AsyncSender<Vec<f32>>, batcher: &mut SampleBatcher) -> bool {
-    batcher
-        .take()
-        .is_some_and(|batch| sender.send_blocking(batch).is_err())
 }
