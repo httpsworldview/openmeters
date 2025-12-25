@@ -32,16 +32,22 @@ impl StereometerPrimitive {
         let clip = ClipTransform::from_viewport(viewport);
         let cx = bounds.x + bounds.width * 0.5;
         let cy = bounds.y + bounds.height * 0.5;
-        let radius = (bounds.width.min(bounds.height) * 0.5) - 2.0;
+
+        let theta = (self.params.rotation as f32) * std::f32::consts::FRAC_PI_4;
+        let (sin_theta, cos_theta) = theta.sin_cos();
+        // After rotation max extent is |cos(theta)| + |sin(theta)|; scale radius to compensate
+        let max_extent = sin_theta.abs() + cos_theta.abs();
+        let base_radius = (bounds.width.min(bounds.height) * 0.5) - 2.0;
+        let radius = base_radius / max_extent;
 
         let mut verts = Vec::new();
 
         match self.params.mode {
             StereometerMode::DotCloud => {
-                self.build_dots(&mut verts, cx, cy, radius, &clip);
+                self.build_dots(&mut verts, cx, cy, radius, sin_theta, cos_theta, &clip);
             }
             StereometerMode::Lissajous => {
-                self.build_trace(&mut verts, cx, cy, radius * 0.9, &clip);
+                self.build_trace(&mut verts, cx, cy, radius * 0.9, sin_theta, cos_theta, &clip);
             }
         }
 
@@ -61,6 +67,8 @@ impl StereometerPrimitive {
         cx: f32,
         cy: f32,
         radius: f32,
+        sin_theta: f32,
+        cos_theta: f32,
         clip: &ClipTransform,
     ) {
         let n = self.params.points.len();
@@ -68,8 +76,6 @@ impl StereometerPrimitive {
             return;
         }
 
-        let theta = (self.params.rotation as f32) * std::f32::consts::FRAC_PI_4;
-        let (sin_theta, cos_theta) = theta.sin_cos();
         let [cr, cg, cb, ca] = self.params.trace_color;
 
         for (i, &(l, r)) in self.params.points.iter().enumerate() {
@@ -87,6 +93,8 @@ impl StereometerPrimitive {
         cx: f32,
         cy: f32,
         radius: f32,
+        sin_theta: f32,
+        cos_theta: f32,
         clip: &ClipTransform,
     ) {
         let n = self.params.points.len();
@@ -94,8 +102,6 @@ impl StereometerPrimitive {
             return;
         }
 
-        let theta = (self.params.rotation as f32) * std::f32::consts::FRAC_PI_4;
-        let (sin_theta, cos_theta) = theta.sin_cos();
         let [cr, cg, cb, ca] = self.params.trace_color;
 
         for i in 0..n - 1 {
