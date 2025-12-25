@@ -13,11 +13,8 @@ impl<T> RingBuffer<T> {
             capacity > 0,
             "RingBuffer capacity must be greater than zero"
         );
-        let mut slots = Vec::with_capacity(capacity);
-        slots.resize_with(capacity, || None);
-
         Self {
-            slots,
+            slots: std::iter::repeat_with(|| None).take(capacity).collect(),
             head: 0,
             len: 0,
         }
@@ -44,26 +41,16 @@ impl<T> RingBuffer<T> {
     }
 
     pub fn push(&mut self, value: T) -> Option<T> {
-        let capacity = self.capacity();
-        debug_assert!(
-            capacity > 0,
-            "RingBuffer capacity must remain greater than zero"
-        );
-
+        let cap = self.capacity();
         let idx = if self.is_full() {
             let current = self.head;
-            self.head = (self.head + 1) % capacity;
+            self.head = (self.head + 1) % cap;
             current
         } else {
-            let idx = (self.head + self.len) % capacity;
-            debug_assert!(
-                self.slots[idx].is_none(),
-                "Slot should be vacant when buffer is not full"
-            );
+            let i = (self.head + self.len) % cap;
             self.len += 1;
-            idx
+            i
         };
-
         self.slots[idx].replace(value)
     }
 
@@ -79,37 +66,12 @@ impl<T> RingBuffer<T> {
         value
     }
 
-    pub fn peek(&self) -> Option<&T> {
-        if self.is_empty() {
-            None
-        } else {
-            self.slots[self.head].as_ref()
-        }
-    }
-
     pub fn clear(&mut self) {
-        if self.is_empty() {
-            return;
-        }
-
         for slot in &mut self.slots {
             *slot = None;
         }
         self.head = 0;
         self.len = 0;
-    }
-
-    pub fn push_iter<I>(&mut self, iter: I) -> usize
-    where
-        I: IntoIterator<Item = T>,
-    {
-        let mut overwritten = 0;
-        for value in iter {
-            if self.push(value).is_some() {
-                overwritten += 1;
-            }
-        }
-        overwritten
     }
 
     pub fn iter(&self) -> RingBufferIter<'_, T> {

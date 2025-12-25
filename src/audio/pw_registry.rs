@@ -288,14 +288,18 @@ impl NodeInfo {
         F: Fn(&GraphPort) -> bool,
         G: Fn(&GraphPort) -> bool,
     {
-        let try_filter = |pred: &dyn Fn(&GraphPort) -> bool| -> Option<Vec<GraphPort>> {
-            let ports: Vec<_> = self.ports.iter().filter(|p| pred(p)).cloned().collect();
-            (!ports.is_empty()).then_some(ports)
+        let collect = |pred: &dyn Fn(&GraphPort) -> bool| -> Vec<GraphPort> {
+            self.ports.iter().filter(|p| pred(p)).cloned().collect()
         };
-
-        try_filter(&primary)
-            .or_else(|| try_filter(&secondary))
-            .unwrap_or_else(|| self.ports.clone())
+        let result = collect(&primary);
+        if !result.is_empty() {
+            return result;
+        }
+        let result = collect(&secondary);
+        if !result.is_empty() {
+            return result;
+        }
+        self.ports.clone()
     }
 }
 
@@ -455,17 +459,11 @@ impl MetadataDefaults {
                 let updated = target.update(metadata_id, subject, type_hint, name_ref);
                 inserted || updated
             }
-            None => {
-                if slot
-                    .as_ref()
-                    .is_some_and(|target| target.metadata_id == Some(metadata_id))
-                {
-                    *slot = None;
-                    true
-                } else {
-                    false
-                }
-            }
+            None => slot
+                .as_ref()
+                .is_some_and(|t| t.metadata_id == Some(metadata_id))
+                .then(|| *slot = None)
+                .is_some(),
         }
     }
 
@@ -477,7 +475,6 @@ impl MetadataDefaults {
             if target.node_id.is_some_and(|id| !nodes.contains_key(&id)) {
                 target.node_id = None;
             }
-
             if target.node_id.is_none()
                 && let Some(name) = &target.name
                 && let Some((&id, _)) = nodes.iter().find(|(_, n)| n.name.as_deref() == Some(name))
@@ -492,7 +489,7 @@ impl MetadataDefaults {
         for slot in [&mut self.audio_sink, &mut self.audio_source] {
             if slot
                 .as_ref()
-                .is_some_and(|target| target.metadata_id == Some(metadata_id))
+                .is_some_and(|t| t.metadata_id == Some(metadata_id))
             {
                 *slot = None;
                 changed = true;
@@ -579,13 +576,10 @@ impl RegistryRuntime {
     }
 
     fn notify_watchers(&self) {
-        let snapshot = {
-            let state = self.state.read();
-            state.snapshot()
-        };
-
-        let mut watchers = self.watchers.write();
-        watchers.retain(|sender| sender.send(snapshot.clone()).is_ok());
+        let snapshot = self.state.read().snapshot();
+        self.watchers
+            .write()
+            .retain(|sender| sender.send(snapshot.clone()).is_ok());
     }
 }
 
@@ -609,31 +603,32 @@ fn registry_thread_main(runtime: RegistryRuntime) -> Result<()> {
     let mut link_state = LinkState::new(core.clone());
     let routing_metadata: Rc<RefCell<Option<Metadata>>> = Rc::new(RefCell::new(None));
 
-    let metadata_bindings: Rc<RefCell<HashMap<u32, MetadataBinding>>> =
-        Rc::new(RefCell::new(HashMap::new()));
+    let metadata_bindings: Rc<RefCell<HashMap<u32, MetadataBinding>>> = Default::default();
 
-    let registry_for_added = registry.clone();
-    let metadata_for_added = Rc::clone(&metadata_bindings);
-    let metadata_for_removed = Rc::clone(&metadata_bindings);
-    let runtime_for_added = runtime.clone();
-    let runtime_for_removed = runtime.clone();
-    let routing_metadata_for_added = Rc::clone(&routing_metadata);
+    let _registry_listener = {
+        let registry_added = registry.clone();
+        let metadata_added = Rc::clone(&metadata_bindings);
+        let metadata_removed = Rc::clone(&metadata_bindings);
+        let routing_metadata = Rc::clone(&routing_metadata);
+        let runtime_added = runtime.clone();
+        let runtime_removed = runtime.clone();
 
-    let _registry_listener = registry
-        .add_listener_local()
-        .global(move |global| {
-            handle_global_added(
-                &registry_for_added,
-                global,
-                &runtime_for_added,
-                &metadata_for_added,
-                &routing_metadata_for_added,
-            );
-        })
-        .global_remove(move |id| {
-            handle_global_removed(id, &runtime_for_removed, &metadata_for_removed);
-        })
-        .register();
+        registry
+            .add_listener_local()
+            .global(move |global| {
+                handle_global_added(
+                    &registry_added,
+                    global,
+                    &runtime_added,
+                    &metadata_added,
+                    &routing_metadata,
+                );
+            })
+            .global_remove(move |id| {
+                handle_global_removed(id, &runtime_removed, &metadata_removed);
+            })
+            .register()
+    };
 
     if let Err(err) = core.sync(0) {
         error!("[registry] failed to sync core: {err}");
@@ -844,10 +839,7 @@ fn handle_global_removed(
     runtime: &RegistryRuntime,
     metadata_bindings: &Rc<RefCell<HashMap<u32, MetadataBinding>>>,
 ) {
-    // Try removing as port, then node, then metadata binding
-    if runtime.mutate(|state| state.remove_port(id))
-        || runtime.mutate(|state| state.remove_node(id))
-    {
+    if runtime.mutate(|state| state.remove_port(id) || state.remove_node(id)) {
         return;
     }
 
@@ -907,14 +899,8 @@ fn process_metadata_added(
     let listener = metadata
         .add_listener_local()
         .property(move |subject, key, type_, value| {
-            handle_metadata_property(
-                &runtime_for_listener,
-                metadata_id,
-                subject,
-                key,
-                type_,
-                value,
-            );
+            runtime_for_listener
+                .mutate(|s| s.apply_metadata_property(metadata_id, subject, key, type_, value));
             0
         })
         .register();
@@ -926,18 +912,6 @@ fn process_metadata_added(
             _listener: listener,
         },
     );
-}
-
-fn handle_metadata_property(
-    runtime: &RegistryRuntime,
-    metadata_id: u32,
-    subject: u32,
-    key: Option<&str>,
-    type_hint: Option<&str>,
-    value: Option<&str>,
-) {
-    runtime
-        .mutate(|state| state.apply_metadata_property(metadata_id, subject, key, type_hint, value));
 }
 
 struct MetadataBinding {
