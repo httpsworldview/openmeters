@@ -5,27 +5,297 @@
 //! - Creates and manages audio links between ports
 //! - Sets routing metadata on application nodes
 
-use crate::util::dict_to_map;
-use crate::util::pipewire::{
-    DEFAULT_AUDIO_SINK_KEY, DEFAULT_AUDIO_SOURCE_KEY, GraphPort, PortDirection,
-    create_passive_audio_link, derive_node_direction, format_target_metadata, parse_metadata_name,
-};
-pub use crate::util::pipewire::{DefaultTarget, NodeDirection};
 use anyhow::{Context, Result};
 use parking_lot::RwLock;
 use pipewire as pw;
 use pw::metadata::{Metadata, MetadataListener};
+use pw::properties::properties;
 use pw::registry::{GlobalObject, RegistryRc};
 use pw::spa::utils::dict::DictRef;
 use pw::types::ObjectType;
 use rustc_hash::{FxHashMap, FxHashSet};
+use serde_json::Value;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock, mpsc};
 use std::thread;
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
+
+// helpers previously in utils. 
+// inlining becase they are only used here and in the registry monitor.
+
+fn dict_to_map(dict: Option<&DictRef>) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    if let Some(dict) = dict {
+        for (key, value) in dict.iter() {
+            map.insert(key.to_string(), value.to_string());
+        }
+    }
+    map
+}
+
+/// Direction of a PipeWire port.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum PortDirection {
+    Input,
+    Output,
+    #[default]
+    Unknown,
+}
+
+impl PortDirection {
+    fn from_str(value: &str) -> Self {
+        match value.to_ascii_lowercase().as_str() {
+            "in" => Self::Input,
+            "out" => Self::Output,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// Representation of a port exposed by a PipeWire node.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GraphPort {
+    pub global_id: u32,
+    pub port_id: u32,
+    pub node_id: u32,
+    pub channel: Option<String>,
+    pub direction: PortDirection,
+    pub is_monitor: bool,
+}
+
+impl GraphPort {
+    fn from_global(global: &GlobalObject<&DictRef>) -> Option<Self> {
+        let props = dict_to_map(global.props.as_ref().copied());
+
+        let port_id = props
+            .get(*pw::keys::PORT_ID)
+            .or_else(|| props.get("port.id"))
+            .and_then(|v| v.parse().ok())?;
+
+        let node_id = props
+            .get(*pw::keys::NODE_ID)
+            .or_else(|| props.get("node.id"))
+            .and_then(|v| v.parse().ok())?;
+
+        let direction = props
+            .get(*pw::keys::PORT_DIRECTION)
+            .or_else(|| props.get("port.direction"))
+            .map(|d| PortDirection::from_str(d))
+            .unwrap_or_default();
+
+        let channel = props
+            .get(*pw::keys::AUDIO_CHANNEL)
+            .or_else(|| props.get("audio.channel"))
+            .cloned();
+
+        let is_monitor = props
+            .get(*pw::keys::PORT_MONITOR)
+            .or_else(|| props.get("port.monitor"))
+            .map(|v| matches!(v.to_ascii_lowercase().as_str(), "true" | "1"))
+            .unwrap_or(false);
+
+        Some(Self {
+            global_id: global.id,
+            port_id,
+            node_id,
+            channel,
+            direction,
+            is_monitor,
+        })
+    }
+
+    #[inline]
+    fn channel_key(&self) -> Option<&str> {
+        self.channel.as_deref()
+    }
+}
+
+/// General direction of a node (input/output/unknown) inferred from metadata.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NodeDirection {
+    Input,
+    Output,
+    #[default]
+    Unknown,
+}
+
+fn derive_node_direction(
+    media_class: Option<&str>,
+    props: &HashMap<String, String>,
+) -> NodeDirection {
+    if let Some(class) = media_class {
+        let lowered = class.to_ascii_lowercase();
+        if lowered.contains("sink") || lowered.contains("output") {
+            return NodeDirection::Output;
+        }
+        if lowered.contains("source") || lowered.contains("input") {
+            return NodeDirection::Input;
+        }
+    }
+    if let Some(direction) = props.get(*pw::keys::PORT_DIRECTION) {
+        match direction.to_ascii_lowercase().as_str() {
+            "in" => return NodeDirection::Input,
+            "out" => return NodeDirection::Output,
+            _ => {}
+        }
+    }
+    NodeDirection::Unknown
+}
+
+const DEFAULT_AUDIO_SINK_KEY: &str = "default.audio.sink";
+const DEFAULT_AUDIO_SOURCE_KEY: &str = "default.audio.source";
+
+/// Shared representation of a default PipeWire target as reported via metadata.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DefaultTarget {
+    pub metadata_id: Option<u32>,
+    pub node_id: Option<u32>,
+    pub name: Option<String>,
+    pub type_hint: Option<String>,
+}
+
+impl DefaultTarget {
+    fn update(
+        &mut self,
+        metadata_id: u32,
+        subject: u32,
+        type_hint: Option<&str>,
+        name: Option<&str>,
+    ) -> bool {
+        let mut changed = false;
+        if self.metadata_id != Some(metadata_id) {
+            self.metadata_id = Some(metadata_id);
+            changed = true;
+        }
+        let new_node_id = if subject != 0 { Some(subject) } else { None };
+        if self.node_id != new_node_id {
+            self.node_id = new_node_id;
+            changed = true;
+        }
+        if self.type_hint.as_deref() != type_hint {
+            self.type_hint = type_hint.map(str::to_string);
+            changed = true;
+        }
+        if self.name.as_deref() != name {
+            self.name = name.map(str::to_string);
+            changed = true;
+        }
+        changed
+    }
+}
+
+fn parse_metadata_name(type_hint: Option<&str>, value: Option<&str>) -> Option<String> {
+    let trimmed = value?.trim();
+    let expects_json =
+        matches!(type_hint, Some(h) if h.eq_ignore_ascii_case("Spa:String:JSON"))
+            || trimmed.starts_with('{');
+
+    if expects_json {
+        match serde_json::from_str::<Value>(trimmed) {
+            Ok(Value::Object(map)) => map.get("name").and_then(|n| n.as_str().map(str::to_string)),
+            Ok(Value::String(s)) => Some(s),
+            _ => None,
+        }
+    } else if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+struct TargetMetadata {
+    target_object: String,
+    target_node: String,
+}
+
+fn format_target_metadata(object_serial: Option<&str>, node_id: u32, _node_name: &str) -> TargetMetadata {
+    let object_value = object_serial
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| node_id.to_string());
+
+    TargetMetadata {
+        target_object: object_value,
+        target_node: node_id.to_string(),
+    }
+}
+
+const LINK_FACTORY_NAME: &str = "link-factory";
+
+fn create_passive_audio_link(
+    core: &pw::core::CoreRc,
+    output_node: u32,
+    output_port: u32,
+    input_node: u32,
+    input_port: u32,
+) -> std::result::Result<pw::link::Link, pw::Error> {
+    let props = properties! {
+        *pw::keys::LINK_OUTPUT_NODE => output_node.to_string(),
+        *pw::keys::LINK_OUTPUT_PORT => output_port.to_string(),
+        *pw::keys::LINK_INPUT_NODE => input_node.to_string(),
+        *pw::keys::LINK_INPUT_PORT => input_port.to_string(),
+        *pw::keys::LINK_PASSIVE => "true",
+        *pw::keys::MEDIA_TYPE => "Audio",
+        *pw::keys::MEDIA_CATEGORY => "Playback",
+        *pw::keys::MEDIA_ROLE => "Playback",
+    };
+    core.create_object::<pw::link::Link>(LINK_FACTORY_NAME, &props)
+}
+
+/// Pair output and input ports by channel, falling back to positional matching.
+pub fn pair_ports_by_channel(
+    mut sources: Vec<GraphPort>,
+    targets: Vec<GraphPort>,
+) -> Vec<(GraphPort, GraphPort)> {
+    let normalize = |s: &str| s.trim().to_ascii_uppercase();
+
+    let mut targets_by_channel: HashMap<String, VecDeque<GraphPort>> = HashMap::new();
+    let mut fallback_targets: VecDeque<GraphPort> = VecDeque::new();
+
+    for target in targets {
+        if let Some(ch) = target.channel_key() {
+            targets_by_channel
+                .entry(normalize(ch))
+                .or_default()
+                .push_back(target);
+        } else {
+            fallback_targets.push_back(target);
+        }
+    }
+
+    sources.sort_by(|a, b| {
+        (a.channel.as_deref().unwrap_or(""), a.port_id)
+            .cmp(&(b.channel.as_deref().unwrap_or(""), b.port_id))
+    });
+
+    let mut plans = Vec::new();
+    for source in sources {
+        let mut candidate = source
+            .channel_key()
+            .and_then(|ch| targets_by_channel.get_mut(&normalize(ch)))
+            .and_then(VecDeque::pop_front);
+
+        if candidate.is_none() {
+            candidate = fallback_targets.pop_front();
+        }
+        if candidate.is_none() {
+            candidate = targets_by_channel
+                .values_mut()
+                .find(|q| !q.is_empty())
+                .and_then(VecDeque::pop_front);
+        }
+        if let Some(target) = candidate {
+            plans.push((source, target));
+        }
+    }
+    plans
+}
+
+// registry service
 
 const REGISTRY_THREAD_NAME: &str = "openmeters-pw-registry";
 const TARGET_OBJECT_KEY: &str = "target.object";

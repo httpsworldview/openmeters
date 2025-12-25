@@ -1,8 +1,6 @@
 use crate::audio::{VIRTUAL_SINK_NAME, pw_registry};
 use crate::ui::RoutingCommand;
 use crate::ui::app::config::{CaptureMode, DeviceSelection};
-use crate::util::log;
-use crate::util::pipewire::pair_ports_by_channel;
 use async_channel::Sender;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::mpsc;
@@ -46,7 +44,7 @@ fn run_monitor_loop(
 
         match updates.recv_timeout(POLL_INTERVAL) {
             Ok(Some(snapshot)) => {
-                log::registry_snapshot("update", &snapshot);
+                log_registry_snapshot(&snapshot);
                 routing.apply(&snapshot);
 
                 if snapshot_tx.send_blocking(snapshot.clone()).is_err() {
@@ -236,7 +234,7 @@ impl RoutingManager {
         }
 
         Some(
-            pair_ports_by_channel(src_ports, tgt_ports)
+            pw_registry::pair_ports_by_channel(src_ports, tgt_ports)
                 .into_iter()
                 .map(|(out, inp)| pw_registry::LinkSpec {
                     output_node: source.id,
@@ -247,4 +245,20 @@ impl RoutingManager {
                 .collect(),
         )
     }
+}
+
+fn log_registry_snapshot(snapshot: &pw_registry::RegistrySnapshot) {
+    let sink = snapshot.describe_default_target(snapshot.defaults.audio_sink.as_ref());
+    let source = snapshot.describe_default_target(snapshot.defaults.audio_source.as_ref());
+
+    info!(
+        "[registry] update: serial={}, nodes={}, devices={}, sink={} (raw={}), source={} (raw={})",
+        snapshot.serial,
+        snapshot.nodes.len(),
+        snapshot.device_count,
+        sink.display,
+        sink.raw,
+        source.display,
+        source.raw
+    );
 }
