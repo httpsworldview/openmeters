@@ -555,7 +555,7 @@ impl Reassignment2DGrid {
                 self.out[i] * bn / es
             } else {
                 0.0
-            });
+            }, DB_FLOOR);
         }
     }
 }
@@ -718,7 +718,7 @@ impl SpectrogramProcessor {
             } else {
                 for i in 0..self.mags.len() {
                     let c = self.spec[i];
-                    self.mags[i] = power_to_db((c.re * c.re + c.im * c.im) * self.bin_norm[i]);
+                    self.mags[i] = power_to_db((c.re * c.re + c.im * c.im) * self.bin_norm[i], DB_FLOOR);
                 }
                 (
                     Self::fill_arc(self.acquire_mags(self.mags.len()), &self.mags),
@@ -835,7 +835,7 @@ impl SpectrogramProcessor {
                         self.reassign.cache.push(ReassignedSample {
                             frequency_hz: fa[j],
                             group_delay_samples: ga[j],
-                            magnitude_db: power_to_db(pa[j]),
+                            magnitude_db: power_to_db(pa[j], DB_FLOOR),
                         });
                     }
                 }

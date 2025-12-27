@@ -3,7 +3,7 @@ use iced::advanced::graphics::Viewport;
 use iced_wgpu::primitive::{self, Primitive};
 use iced_wgpu::wgpu;
 
-use crate::ui::render::common::{ClipTransform, InstanceBuffer, SdfVertex, create_sdf_pipeline};
+use crate::ui::render::common::{ClipTransform, SdfPipeline, SdfVertex};
 use crate::ui::render::geometry::{self, DEFAULT_FEATHER, append_strip};
 
 #[derive(Debug, Clone)]
@@ -133,7 +133,11 @@ impl Primitive for OscilloscopePrimitive {
         target: &wgpu::TextureView,
         clip_bounds: &Rectangle<u32>,
     ) {
-        if pipeline.buffer.vertex_count == 0 {
+        let Some(instance) = pipeline.inner.instance(()) else {
+            return;
+        };
+
+        if instance.vertex_count == 0 {
             return;
         }
 
@@ -159,48 +163,38 @@ impl Primitive for OscilloscopePrimitive {
             clip_bounds.width.max(1),
             clip_bounds.height.max(1),
         );
-        pass.set_pipeline(&pipeline.pipeline);
+        pass.set_pipeline(&pipeline.inner.pipeline);
         pass.set_vertex_buffer(
             0,
-            pipeline
-                .buffer
+            instance
                 .vertex_buffer
-                .slice(0..pipeline.buffer.used_bytes()),
+                .slice(0..instance.used_bytes()),
         );
-        pass.draw(0..pipeline.buffer.vertex_count, 0..1);
+        pass.draw(0..instance.vertex_count, 0..1);
     }
 }
 
 #[derive(Debug)]
 pub struct Pipeline {
-    pipeline: wgpu::RenderPipeline,
-    buffer: InstanceBuffer<SdfVertex>,
+    inner: SdfPipeline<()>,
 }
 
 impl primitive::Pipeline for Pipeline {
     fn new(device: &wgpu::Device, _queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
         Self {
-            pipeline: create_sdf_pipeline(
+            inner: SdfPipeline::new(
                 device,
                 format,
                 "Oscilloscope",
                 wgpu::PrimitiveTopology::TriangleStrip,
             ),
-            buffer: InstanceBuffer::new(device, "Oscilloscope vertex buffer", 1024),
         }
     }
 }
 
 impl Pipeline {
     fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, vertices: &[SdfVertex]) {
-        if vertices.is_empty() {
-            self.buffer.vertex_count = 0;
-            return;
-        }
-
-        let required_size = std::mem::size_of_val(vertices) as wgpu::BufferAddress;
-        self.buffer
-            .ensure_capacity(device, "Oscilloscope vertex buffer", required_size);
-        self.buffer.write(queue, vertices);
+        self.inner
+            .prepare_instance(device, queue, "Oscilloscope", (), vertices);
     }
 }

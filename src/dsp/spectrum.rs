@@ -278,7 +278,7 @@ impl SpectrumProcessor {
                 .take(bins)
                 .enumerate()
             {
-                let raw_magnitude = power_to_db(complex.norm_sqr() * *norm);
+                let raw_magnitude = power_to_db(complex.norm_sqr() * *norm, DB_FLOOR);
                 self.scratch_unweighted[idx] = raw_magnitude;
                 let weight = self.a_weighting_db.get(idx).copied().unwrap_or_else(|| {
                     a_weight(*self.snapshot.frequency_bins.get(idx).unwrap_or(&0.0))
