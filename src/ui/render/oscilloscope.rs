@@ -164,12 +164,7 @@ impl Primitive for OscilloscopePrimitive {
             clip_bounds.height.max(1),
         );
         pass.set_pipeline(&pipeline.inner.pipeline);
-        pass.set_vertex_buffer(
-            0,
-            instance
-                .vertex_buffer
-                .slice(0..instance.used_bytes()),
-        );
+        pass.set_vertex_buffer(0, instance.vertex_buffer.slice(0..instance.used_bytes()));
         pass.draw(0..instance.vertex_count, 0..1);
     }
 }

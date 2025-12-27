@@ -17,6 +17,7 @@ use iced::advanced::{Layout, Renderer as _, Widget, layout, mouse};
 use iced::{Background, Color, Element, Length, Rectangle, Size};
 use iced_wgpu::primitive::Renderer as _;
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
@@ -44,9 +45,10 @@ impl StereometerProcessor {
         }
         let sr = format.sample_rate.max(1.0);
         if (self.0.config().sample_rate - sr).abs() > f32::EPSILON {
-            let mut c = self.0.config();
-            c.sample_rate = sr;
-            self.0.update_config(c);
+            self.0.update_config(StereometerConfig {
+                sample_rate: sr,
+                ..self.0.config()
+            });
         }
         let block = AudioBlock::new(samples, format.channels.max(1), sr, Instant::now());
         match self.0.process_block(&block) {
@@ -58,6 +60,7 @@ impl StereometerProcessor {
     pub fn config(&self) -> StereometerConfig {
         self.0.config()
     }
+
     pub fn update_config(&mut self, c: StereometerConfig) {
         self.0.update_config(c);
     }
@@ -66,8 +69,8 @@ impl StereometerProcessor {
 #[derive(Debug, Clone)]
 pub struct StereometerState {
     points: Vec<(f32, f32)>,
-    corr_trail: Vec<f32>,
-    band_trail: Vec<BandCorrelation>,
+    corr_trail: VecDeque<f32>,
+    band_trail: VecDeque<BandCorrelation>,
     palette: [Color; 8],
     persistence: f32,
     mode: StereometerMode,
@@ -84,8 +87,8 @@ impl StereometerState {
     pub fn new() -> Self {
         Self {
             points: Vec::new(),
-            corr_trail: Vec::with_capacity(TRAIL_LEN),
-            band_trail: Vec::with_capacity(TRAIL_LEN),
+            corr_trail: VecDeque::with_capacity(TRAIL_LEN),
+            band_trail: VecDeque::with_capacity(TRAIL_LEN),
             palette: theme::DEFAULT_STEREOMETER_PALETTE,
             persistence: 0.0,
             mode: StereometerMode::default(),
@@ -111,39 +114,27 @@ impl StereometerState {
     }
 
     pub fn set_palette(&mut self, p: &[Color]) {
-        let mut pal = theme::DEFAULT_STEREOMETER_PALETTE;
-        for (i, &c) in p.iter().take(pal.len()).enumerate() {
-            pal[i] = c;
+        for (dst, src) in self.palette.iter_mut().zip(p) {
+            *dst = *src;
         }
-        self.palette = pal;
     }
 
     pub fn palette(&self) -> [Color; 8] {
         self.palette
     }
 
-    pub fn export_settings(
-        &self,
-    ) -> (
-        f32,
-        StereometerMode,
-        StereometerScale,
-        f32,
-        i8,
-        bool,
-        CorrelationMeterMode,
-        CorrelationMeterSide,
-    ) {
-        (
-            self.persistence,
-            self.mode,
-            self.scale,
-            self.scale_range,
-            self.rotation,
-            self.flip,
-            self.correlation_meter,
-            self.correlation_meter_side,
-        )
+    pub fn export_settings(&self) -> StereometerSettings {
+        StereometerSettings {
+            persistence: self.persistence,
+            mode: self.mode,
+            scale: self.scale,
+            scale_range: self.scale_range,
+            rotation: self.rotation,
+            flip: self.flip,
+            correlation_meter: self.correlation_meter,
+            correlation_meter_side: self.correlation_meter_side,
+            ..Default::default()
+        }
     }
 
     pub fn apply_snapshot(&mut self, snap: &StereometerSnapshot) {
@@ -152,7 +143,6 @@ impl StereometerState {
             return;
         }
 
-        // Apply exponential scaling if configured
         let scale = |x: f32, y: f32| match self.scale {
             StereometerScale::Linear => (x, y),
             StereometerScale::Exponential => {
@@ -166,29 +156,29 @@ impl StereometerState {
             }
         };
 
-        // Apply persistence smoothing
         self.points.resize(snap.xy_points.len(), (0.0, 0.0));
         let fresh = 1.0 - self.persistence;
         for (dst, src) in self.points.iter_mut().zip(&snap.xy_points) {
             let s = scale(src.0, src.1);
-            if self.persistence <= f32::EPSILON {
-                *dst = s;
+            *dst = if self.persistence <= f32::EPSILON {
+                s
             } else {
-                dst.0 = dst.0 * self.persistence + s.0 * fresh;
-                dst.1 = dst.1 * self.persistence + s.1 * fresh;
-            }
+                (
+                    dst.0 * self.persistence + s.0 * fresh,
+                    dst.1 * self.persistence + s.1 * fresh,
+                )
+            };
         }
 
-        // Update correlation trails with smoothing
         let sm = |old: f32, new: f32| old * 0.85 + new * 0.15;
         let c = self
             .corr_trail
-            .first()
+            .front()
             .map(|&o| sm(o, snap.correlation))
             .unwrap_or(snap.correlation);
         let b = self
             .band_trail
-            .first()
+            .front()
             .map(|o| BandCorrelation {
                 low: sm(o.low, snap.band_correlation.low),
                 mid: sm(o.mid, snap.band_correlation.mid),
@@ -196,29 +186,25 @@ impl StereometerState {
             })
             .unwrap_or(snap.band_correlation);
 
-        self.corr_trail.insert(0, c);
-        self.band_trail.insert(0, b);
+        self.corr_trail.push_front(c);
+        self.band_trail.push_front(b);
         self.corr_trail.truncate(TRAIL_LEN);
         self.band_trail.truncate(TRAIL_LEN);
     }
 
     fn params(&self, bounds: Rectangle) -> Option<StereometerParams> {
-        if self.points.len() < 2 {
-            return None;
-        }
-        let pal = self.palette;
-        Some(StereometerParams {
+        (self.points.len() >= 2).then(|| StereometerParams {
             key: self.key,
             bounds,
             points: self.points.clone(),
-            palette: pal.map(theme::color_to_rgba),
+            palette: self.palette.map(theme::color_to_rgba),
             mode: self.mode,
             rotation: self.rotation,
             flip: self.flip,
             correlation_meter: self.correlation_meter,
             correlation_meter_side: self.correlation_meter_side,
-            corr_trail: self.corr_trail.clone(),
-            band_trail: self.band_trail.clone(),
+            corr_trail: self.corr_trail.iter().copied().collect(),
+            band_trail: self.band_trail.iter().copied().collect(),
         })
     }
 }
@@ -232,7 +218,7 @@ impl<'a> Stereometer<'a> {
     }
 }
 
-impl<'a, M> Widget<M, iced::Theme, iced::Renderer> for Stereometer<'a> {
+impl<M> Widget<M, iced::Theme, iced::Renderer> for Stereometer<'_> {
     fn tag(&self) -> tree::Tag {
         tree::Tag::stateless()
     }
@@ -242,6 +228,10 @@ impl<'a, M> Widget<M, iced::Theme, iced::Renderer> for Stereometer<'a> {
     fn size(&self) -> Size<Length> {
         Size::new(Length::Fill, Length::Fill)
     }
+    fn children(&self) -> Vec<Tree> {
+        Vec::new()
+    }
+    fn diff(&self, _: &mut Tree) {}
 
     fn layout(&mut self, _: &mut Tree, _: &iced::Renderer, lim: &layout::Limits) -> layout::Node {
         layout::Node::new(lim.resolve(Length::Fill, Length::Fill, Size::ZERO))
@@ -259,7 +249,7 @@ impl<'a, M> Widget<M, iced::Theme, iced::Renderer> for Stereometer<'a> {
     ) {
         let b = lay.bounds();
         match self.0.borrow().params(b) {
-            Some(p) => r.draw_primitive(b, StereometerPrimitive::new(p)),
+            Some(p) => r.draw_primitive(b, StereometerPrimitive::from(p)),
             None => r.fill_quad(
                 Quad {
                     bounds: b,
@@ -271,11 +261,6 @@ impl<'a, M> Widget<M, iced::Theme, iced::Renderer> for Stereometer<'a> {
             ),
         }
     }
-
-    fn children(&self) -> Vec<Tree> {
-        Vec::new()
-    }
-    fn diff(&self, _: &mut Tree) {}
 }
 
 pub fn widget<'a, M: 'a>(state: &'a RefCell<StereometerState>) -> Element<'a, M> {

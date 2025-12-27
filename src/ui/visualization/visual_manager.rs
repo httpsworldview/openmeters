@@ -153,11 +153,11 @@ visuals! {
         settings_cfg::StereometerSettings, &theme::DEFAULT_STEREOMETER_PALETTE;
         apply(p, s, set) { visuals!(@apply_config p, set); let mut st = s.borrow_mut();
             st.update_view_settings(&set); visuals!(@apply_palette st, set, &theme::DEFAULT_STEREOMETER_PALETTE); };
-        export(p, s) { let st = s.borrow();
-            let (persistence, mode, scale, scale_range, rotation, flip, correlation_meter, correlation_meter_side) = st.export_settings();
-            let mut out = settings_cfg::StereometerSettings::from_config(&p.config());
-            out.persistence = persistence; out.mode = mode; out.scale = scale; out.scale_range = scale_range;
-            out.rotation = rotation; out.flip = flip; out.correlation_meter = correlation_meter; out.correlation_meter_side = correlation_meter_side;
+        export(p, s) { let st = s.borrow(); let cfg = p.config();
+            let mut out = st.export_settings();
+            out.segment_duration = cfg.segment_duration;
+            out.target_sample_count = cfg.target_sample_count;
+            out.correlation_window = cfg.correlation_window;
             out.palette = visuals!(@export_palette &st.palette(), &theme::DEFAULT_STEREOMETER_PALETTE); out };
 }
 
