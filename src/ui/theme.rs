@@ -51,6 +51,16 @@ pub const DEFAULT_OSCILLOSCOPE_PALETTE: [Color; 1] = [Color::from_rgba(1.000, 1.
 
 pub const DEFAULT_STEREOMETER_PALETTE: [Color; 1] = [Color::from_rgba(1.000, 1.000, 1.000, 1.0)];
 
+/// Correlation meter palette: [background, positive, negative, low_band, mid_band, high_band].
+pub const CORRELATION_METER_PALETTE: [Color; 6] = [
+    Color::from_rgba(0.10, 0.10, 0.10, 1.0),
+    Color::from_rgba(0.45, 0.65, 0.50, 1.0),
+    Color::from_rgba(0.70, 0.35, 0.35, 1.0),
+    Color::from_rgba(0.55, 0.45, 0.70, 1.0),
+    Color::from_rgba(0.50, 0.60, 0.55, 1.0),
+    Color::from_rgba(0.65, 0.55, 0.45, 1.0),
+];
+
 pub const DEFAULT_LOUDNESS_PALETTE: [Color; 5] = [
     Color::from_rgba(0.161, 0.161, 0.161, 1.0),
     Color::from_rgba(0.626, 0.665, 0.680, 1.0),

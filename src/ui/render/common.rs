@@ -322,6 +322,95 @@ pub fn quad_vertices(
     ]
 }
 
+/// Quad with per-edge colors for smooth vertical gradients (top_color at y0, bottom_color at y1).
+#[inline]
+pub fn gradient_quad_vertices(
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+    clip: ClipTransform,
+    top_color: [f32; 4],
+    bottom_color: [f32; 4],
+) -> [SdfVertex; 6] {
+    let (tl, tr) = (clip.to_clip(x0, y0), clip.to_clip(x1, y0));
+    let (bl, br) = (clip.to_clip(x0, y1), clip.to_clip(x1, y1));
+    [
+        SdfVertex::solid(tl, top_color),
+        SdfVertex::solid(bl, bottom_color),
+        SdfVertex::solid(br, bottom_color),
+        SdfVertex::solid(tl, top_color),
+        SdfVertex::solid(br, bottom_color),
+        SdfVertex::solid(tr, top_color),
+    ]
+}
+
+/// Helper to generate six SDF vertices forming a line segment.
+#[inline]
+pub fn line_vertices(
+    p0: (f32, f32),
+    p1: (f32, f32),
+    c0: [f32; 4],
+    c1: [f32; 4],
+    width: f32,
+    feather: f32,
+    clip: ClipTransform,
+) -> [SdfVertex; 6] {
+    let dx = p1.0 - p0.0;
+    let dy = p1.1 - p0.1;
+    let len = (dx * dx + dy * dy).sqrt().max(1e-6);
+    let (nx, ny) = (-dy / len, dx / len);
+
+    let outer = width + feather;
+    let half = width * 0.5;
+    let (ox, oy) = (nx * outer, ny * outer);
+
+    let v = |px, py, c, p| SdfVertex {
+        position: clip.to_clip(px, py),
+        color: c,
+        params: p,
+    };
+
+    let p_neg = [-outer, 0.0, half, feather];
+    let p_pos = [outer, 0.0, half, feather];
+
+    [
+        v(p0.0 - ox, p0.1 - oy, c0, p_neg),
+        v(p0.0 + ox, p0.1 + oy, c0, p_pos),
+        v(p1.0 - ox, p1.1 - oy, c1, p_neg),
+        v(p0.0 + ox, p0.1 + oy, c0, p_pos),
+        v(p1.0 + ox, p1.1 + oy, c1, p_pos),
+        v(p1.0 - ox, p1.1 - oy, c1, p_neg),
+    ]
+}
+
+/// Helper to generate six SDF vertices forming a dot.
+#[inline]
+pub fn dot_vertices(
+    cx: f32,
+    cy: f32,
+    radius: f32,
+    feather: f32,
+    color: [f32; 4],
+    clip: ClipTransform,
+) -> [SdfVertex; 6] {
+    let o = radius + feather;
+    let v = |px, py, ox, oy| SdfVertex {
+        position: clip.to_clip(px, py),
+        color,
+        params: [ox, oy, radius, feather],
+    };
+
+    [
+        v(cx - o, cy - o, -o, -o),
+        v(cx - o, cy + o, -o, o),
+        v(cx + o, cy - o, o, -o),
+        v(cx + o, cy - o, o, -o),
+        v(cx - o, cy + o, -o, o),
+        v(cx + o, cy + o, o, o),
+    ]
+}
+
 #[derive(Debug)]
 pub struct CachedInstance {
     pub buffer: InstanceBuffer<SdfVertex>,

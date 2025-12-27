@@ -1,7 +1,9 @@
 use super::palette::{PaletteEditor, PaletteEvent};
 use super::widgets::{SliderRange, labeled_pick_list, labeled_slider, set_f32, set_if_changed};
 use super::{ModuleSettingsPane, SettingsMessage};
-use crate::ui::settings::{SettingsHandle, StereometerMode, StereometerScale, StereometerSettings};
+use crate::ui::settings::{
+    CorrelationMeterMode, SettingsHandle, StereometerMode, StereometerScale, StereometerSettings,
+};
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
 use iced::widget::{column, row, toggler};
@@ -10,6 +12,11 @@ use iced::{Element, Length};
 const MODE_OPTIONS: [StereometerMode; 2] = [StereometerMode::Lissajous, StereometerMode::DotCloud];
 const SCALE_OPTIONS: [StereometerScale; 2] =
     [StereometerScale::Linear, StereometerScale::Exponential];
+const CORRELATION_METER_OPTIONS: [CorrelationMeterMode; 3] = [
+    CorrelationMeterMode::Off,
+    CorrelationMeterMode::SingleBand,
+    CorrelationMeterMode::MultiBand,
+];
 
 #[derive(Debug)]
 pub struct StereometerSettingsPane {
@@ -22,12 +29,14 @@ pub struct StereometerSettingsPane {
 pub enum Message {
     SegmentDuration(f32),
     TargetSampleCount(f32),
+    CorrelationWindow(f32),
     Persistence(f32),
     Rotation(f32),
     Flip(bool),
     Mode(StereometerMode),
     Scale(StereometerScale),
     ScaleRange(f32),
+    CorrelationMeter(CorrelationMeterMode),
     Palette(PaletteEvent),
 }
 
@@ -73,12 +82,17 @@ impl ModuleSettingsPane for StereometerSettingsPane {
         .spacing(16)
         .width(Length::Fill);
 
-        let mut right = column![labeled_pick_list(
-            "Scale",
-            &SCALE_OPTIONS,
-            Some(s.scale),
-            |v| SettingsMessage::Stereometer(Message::Scale(v))
-        )]
+        let mut right = column![
+            labeled_pick_list("Scale", &SCALE_OPTIONS, Some(s.scale), |v| {
+                SettingsMessage::Stereometer(Message::Scale(v))
+            }),
+            labeled_pick_list(
+                "Correlation meter",
+                &CORRELATION_METER_OPTIONS,
+                Some(s.correlation_meter),
+                |v| SettingsMessage::Stereometer(Message::CorrelationMeter(v))
+            ),
+        ]
         .spacing(16)
         .width(Length::Fill);
         if s.scale == StereometerScale::Exponential {
@@ -106,6 +120,13 @@ impl ModuleSettingsPane for StereometerSettingsPane {
                 s.target_sample_count.to_string(),
                 SliderRange::new(100.0, 2000.0, 50.0),
                 |v| SettingsMessage::Stereometer(Message::TargetSampleCount(v))
+            ),
+            labeled_slider(
+                "Correlation window",
+                s.correlation_window,
+                format!("{:.0} ms", s.correlation_window * 1000.0),
+                SliderRange::new(0.05, 1.0, 0.01),
+                |v| SettingsMessage::Stereometer(Message::CorrelationWindow(v))
             ),
             labeled_slider(
                 "Persistence",
@@ -140,12 +161,14 @@ impl ModuleSettingsPane for StereometerSettingsPane {
                 &mut s.target_sample_count,
                 (v.round() as usize).clamp(100, 2000),
             ),
+            Message::CorrelationWindow(v) => set_f32(&mut s.correlation_window, v.clamp(0.05, 1.0)),
             Message::Persistence(v) => set_f32(&mut s.persistence, v.clamp(0.0, 1.0)),
             Message::Rotation(v) => set_if_changed(&mut s.rotation, (v.round() as i8).clamp(-4, 4)),
             Message::Flip(v) => set_if_changed(&mut s.flip, *v),
             Message::Mode(m) => set_if_changed(&mut s.mode, *m),
             Message::Scale(sc) => set_if_changed(&mut s.scale, *sc),
             Message::ScaleRange(v) => set_f32(&mut s.scale_range, v.clamp(1.0, 30.0)),
+            Message::CorrelationMeter(m) => set_if_changed(&mut s.correlation_meter, *m),
             Message::Palette(e) => self.palette.update(*e),
         };
         if changed {
