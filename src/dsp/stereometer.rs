@@ -33,6 +33,17 @@ pub struct BandCorrelation {
     pub high: f32,
 }
 
+impl std::ops::Index<usize> for BandCorrelation {
+    type Output = f32;
+    fn index(&self, i: usize) -> &f32 {
+        match i {
+            0 => &self.low,
+            1 => &self.mid,
+            _ => &self.high,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct StereometerSnapshot {
     pub xy_points: Vec<(f32, f32)>,

@@ -12,6 +12,7 @@ use crate::ui::settings::{CorrelationMeterMode, CorrelationMeterSide, Stereomete
 
 const CORR_W: f32 = 28.0;
 const CORR_PAD: f32 = 4.0;
+const CORR_VPAD: f32 = 16.0;
 const BAND_GAP: f32 = 2.0;
 
 #[derive(Debug, Clone)]
@@ -32,244 +33,87 @@ pub struct StereometerParams {
 #[derive(Debug)]
 pub struct StereometerPrimitive(StereometerParams);
 
+impl From<StereometerParams> for StereometerPrimitive {
+    fn from(p: StereometerParams) -> Self {
+        Self(p)
+    }
+}
+
 impl StereometerPrimitive {
-    pub fn new(params: StereometerParams) -> Self {
-        Self(params)
-    }
-
-    fn corr_margin(&self) -> f32 {
-        if self.0.correlation_meter == CorrelationMeterMode::Off {
-            0.0
-        } else {
-            CORR_W + CORR_PAD
-        }
-    }
-
-    fn vectorscope_bounds(&self) -> Rectangle {
-        let margin = self.corr_margin();
-        match self.0.correlation_meter_side {
-            CorrelationMeterSide::Left => Rectangle {
-                x: self.0.bounds.x + margin,
-                y: self.0.bounds.y,
-                width: (self.0.bounds.width - margin).max(0.0),
-                height: self.0.bounds.height,
-            },
-            CorrelationMeterSide::Right => Rectangle {
-                x: self.0.bounds.x,
-                y: self.0.bounds.y,
-                width: (self.0.bounds.width - margin).max(0.0),
-                height: self.0.bounds.height,
-            },
-        }
-    }
-
-    fn correlation_meter_bounds(&self) -> Rectangle {
-        let x = match self.0.correlation_meter_side {
-            CorrelationMeterSide::Left => self.0.bounds.x,
-            CorrelationMeterSide::Right => {
-                (self.0.bounds.x + self.0.bounds.width - CORR_W).max(self.0.bounds.x)
-            }
-        };
-        Rectangle {
-            x,
-            y: self.0.bounds.y + 16.0,
-            width: CORR_W,
-            height: (self.0.bounds.height - 32.0).max(0.0),
-        }
-    }
-
     fn build_vertices(&self, viewport: &Viewport) -> Vec<SdfVertex> {
         let clip = ClipTransform::from_viewport(viewport);
-        let mut v = Vec::new();
+        let p = &self.0;
 
-        self.build_correlation_meter(&mut v, clip);
-        self.build_vectorscope(&mut v, clip);
-        v
-    }
+        let is_single = p.correlation_meter == CorrelationMeterMode::SingleBand;
+        let has_corr = p.correlation_meter != CorrelationMeterMode::Off;
+        let margin = if has_corr { CORR_W + CORR_PAD } else { 0.0 };
 
-    fn build_correlation_meter(&self, v: &mut Vec<SdfVertex>, clip: ClipTransform) {
-        let mode = self.0.correlation_meter;
-        if mode == CorrelationMeterMode::Off {
-            return;
-        }
-
-        let pal = &self.0.palette;
-        let bg = pal[1];
-        let center = pal[2];
-
-        let single_band_color = |val: f32| if val < 0.0 { pal[4] } else { pal[3] };
-        let band_color = |band: usize| match band {
-            0 => pal[5],
-            1 => pal[6],
-            _ => pal[7],
-        };
-
-        let (bars, gap) = if mode == CorrelationMeterMode::SingleBand {
-            (1, 0.0)
-        } else {
-            (3, BAND_GAP)
-        };
-        let bar_w = (CORR_W - gap * (bars - 1) as f32) / bars as f32;
-        let bounds = self.correlation_meter_bounds();
-        let (cy, half_h) = (bounds.y + bounds.height * 0.5, bounds.height * 0.5);
-        let val_y = |val: f32| cy - val.clamp(-1.0, 1.0) * half_h;
-
-        for band in 0..bars {
-            let bx = bounds.x + band as f32 * (bar_w + gap);
-
-            // Background + center line
-            v.extend(quad_vertices(
-                bx,
-                bounds.y,
-                bx + bar_w,
-                bounds.y + bounds.height,
-                clip,
-                bg,
-            ));
-            v.extend(quad_vertices(
-                bx,
-                cy - 0.5,
-                bx + bar_w,
-                cy + 0.5,
-                clip,
-                center,
-            ));
-
-            // Trail data accessor
-            let trail_len = if mode == CorrelationMeterMode::SingleBand {
-                self.0.corr_trail.len()
+        let (vec_bounds, corr_bounds) = {
+            let left = p.correlation_meter_side == CorrelationMeterSide::Left;
+            let vb = Rectangle {
+                x: p.bounds.x + if left { margin } else { 0.0 },
+                width: (p.bounds.width - margin).max(0.0),
+                ..p.bounds
+            };
+            let cb = if has_corr {
+                let cx = if left {
+                    p.bounds.x
+                } else {
+                    (p.bounds.x + p.bounds.width - CORR_W).max(p.bounds.x)
+                };
+                Rectangle {
+                    x: cx,
+                    y: p.bounds.y + CORR_VPAD,
+                    width: CORR_W,
+                    height: (p.bounds.height - 2.0 * CORR_VPAD).max(0.0),
+                }
             } else {
-                self.0.band_trail.len()
+                Rectangle::default()
             };
-            let get = |i: usize| {
-                if mode == CorrelationMeterMode::SingleBand {
-                    self.0.corr_trail.get(i).copied().unwrap_or(0.0)
-                } else {
-                    self.0
-                        .band_trail
-                        .get(i)
-                        .map(|b| [b.low, b.mid, b.high][band])
-                        .unwrap_or(0.0)
-                }
-            };
+            (vb, cb)
+        };
 
-            // Render trail as gradient quads
-            if trail_len > 1 {
-                let (y_min, y_max) = (bounds.y as i32, (bounds.y + bounds.height) as i32);
-                let height = (y_max - y_min + 1).max(0) as usize;
-                let mut alpha = vec![0.0f32; height];
-
-                // Accumulate max alpha per scanline
-                for j in 0..trail_len - 1 {
-                    let a = (1.0 - (j + 1) as f32 / trail_len as f32).powf(2.4);
-                    if a <= 0.0 {
-                        continue;
-                    }
-                    let (y0, y1) = (val_y(get(j)), val_y(get(j + 1)));
-                    let (top, bot) = (y0.min(y1) as i32, (y0.max(y1) + 2.0) as i32);
-                    for sy in top.max(y_min)..=bot.min(y_max) {
-                        let idx = (sy - y_min) as usize;
-                        if idx < height {
-                            alpha[idx] = alpha[idx].max(a);
-                        }
-                    }
-                }
-
-                // Emit gradient quads for non-zero runs
-                let base = if mode == CorrelationMeterMode::SingleBand {
-                    single_band_color(get(0))
-                } else {
-                    band_color(band)
-                };
-                let mut i = 0;
-                while i < height {
-                    if alpha[i] <= 0.0 {
-                        i += 1;
-                        continue;
-                    }
-                    let start = i;
-                    while i < height && alpha[i] > 0.0 {
-                        i += 1;
-                    }
-                    for k in start..i.saturating_sub(1) {
-                        let (y0, y1) = ((y_min + k as i32) as f32, (y_min + k as i32 + 1) as f32);
-                        let (mut c0, mut c1) = (base, base);
-                        c0[3] *= alpha[k];
-                        c1[3] *= alpha[k + 1];
-                        v.extend(gradient_quad_vertices(
-                            bx + 1.0,
-                            y0,
-                            bx + bar_w - 1.0,
-                            y1,
-                            clip,
-                            c0,
-                            c1,
-                        ));
-                    }
-                }
-            }
-
-            // Current value indicator
-            if trail_len > 0 {
-                let val = get(0);
-                let y = val_y(val);
-                let c = if mode == CorrelationMeterMode::SingleBand {
-                    single_band_color(val)
-                } else {
-                    band_color(band)
-                };
-                v.extend(quad_vertices(
-                    bx + 1.0,
-                    y - 1.0,
-                    bx + bar_w - 1.0,
-                    y + 1.0,
-                    clip,
-                    c,
-                ));
-            }
-        }
-    }
-
-    fn build_vectorscope(&self, v: &mut Vec<SdfVertex>, clip: ClipTransform) {
-        let vs = self.vectorscope_bounds();
-        let (cx, cy) = (vs.x + vs.width * 0.5, vs.y + vs.height * 0.5);
-        let theta = (self.0.rotation as f32) * std::f32::consts::FRAC_PI_4;
+        let (cx, cy) = (
+            vec_bounds.x + vec_bounds.width * 0.5,
+            vec_bounds.y + vec_bounds.height * 0.5,
+        );
+        let theta = (p.rotation as f32) * std::f32::consts::FRAC_PI_4;
         let (sin_t, cos_t) = theta.sin_cos();
-        let radius = ((vs.width.min(vs.height) * 0.5) - 2.0) / (sin_t.abs() + cos_t.abs());
-        let [cr, cg, cb, ca] = self.0.palette[0];
-        let flip = self.0.flip;
+        let radius =
+            ((vec_bounds.width.min(vec_bounds.height) * 0.5) - 2.0) / (sin_t.abs() + cos_t.abs());
+        let [cr, cg, cb, ca] = p.palette[0];
 
         let xform = |l: f32, r: f32| {
-            let (l, r) = if flip { (r, l) } else { (l, r) };
+            let (l, r) = if p.flip { (r, l) } else { (l, r) };
             (
                 cx + (l * cos_t + r * sin_t).clamp(-1., 1.) * radius,
                 cy + (l * sin_t - r * cos_t).clamp(-1., 1.) * radius,
             )
         };
 
-        let n = self.0.points.len();
-        match self.0.mode {
+        let mut v = Vec::new();
+
+        match p.mode {
             StereometerMode::DotCloud => {
-                let nf = n as f32;
-                for (i, &(l, r)) in self.0.points.iter().enumerate() {
+                let nf = p.points.len() as f32;
+                v.extend(p.points.iter().enumerate().flat_map(|(i, &(l, r))| {
                     let (px, py) = xform(l, r);
-                    v.extend(dot_vertices(
+                    dot_vertices(
                         px,
                         py,
                         1.5,
                         0.75,
                         [cr, cg, cb, ca * (i + 1) as f32 / nf],
                         clip,
-                    ));
-                }
+                    )
+                }));
             }
-            StereometerMode::Lissajous if n >= 2 => {
-                let nm1 = (n - 1) as f32;
-                for i in 0..n - 1 {
-                    let p0 = xform(self.0.points[i].0, self.0.points[i].1);
-                    let p1 = xform(self.0.points[i + 1].0, self.0.points[i + 1].1);
+            StereometerMode::Lissajous if p.points.len() >= 2 => {
+                let nm1 = (p.points.len() - 1) as f32;
+                v.extend(p.points.windows(2).enumerate().flat_map(|(i, w)| {
+                    let (p0, p1) = (xform(w[0].0, w[0].1), xform(w[1].0, w[1].1));
                     let (t0, t1) = (i as f32 / nm1, (i + 1) as f32 / nm1);
-                    v.extend(line_vertices(
+                    line_vertices(
                         p0,
                         p1,
                         [cr, cg, cb, ca * t0],
@@ -277,11 +121,108 @@ impl StereometerPrimitive {
                         1.5,
                         1.0,
                         clip,
-                    ));
-                }
+                    )
+                }));
             }
             _ => {}
         }
+
+        if !has_corr {
+            return v;
+        }
+
+        let (bars, gap) = if is_single { (1, 0.0) } else { (3, BAND_GAP) };
+        let bar_w = (CORR_W - gap * (bars - 1) as f32) / bars as f32;
+        let corr_cy = corr_bounds.y + corr_bounds.height * 0.5;
+        let half_h = corr_bounds.height * 0.5;
+        let val_y = |val: f32| corr_cy - val.clamp(-1.0, 1.0) * half_h;
+
+        let y_min = corr_bounds.y as i32;
+        let height = (corr_bounds.height as i32 + 1).max(0) as usize;
+        let y_max = y_min + height as i32 - 1;
+        let mut alpha = vec![0.0f32; height];
+
+        let trail_len = if is_single {
+            p.corr_trail.len()
+        } else {
+            p.band_trail.len()
+        };
+        let val = |band: usize, i: usize| {
+            if is_single {
+                p.corr_trail.get(i).copied().unwrap_or(0.0)
+            } else {
+                p.band_trail.get(i).map(|b| b[band]).unwrap_or(0.0)
+            }
+        };
+        let color_for = |band: usize, value: f32| {
+            if is_single {
+                p.palette[if value < 0.0 { 4 } else { 3 }]
+            } else {
+                p.palette[5 + band]
+            }
+        };
+
+        for band in 0..bars {
+            let bx = corr_bounds.x + band as f32 * (bar_w + gap);
+            let (x0, x1) = (bx + 1.0, bx + bar_w - 1.0);
+
+            v.extend(quad_vertices(
+                bx,
+                corr_bounds.y,
+                bx + bar_w,
+                corr_bounds.y + corr_bounds.height,
+                clip,
+                p.palette[1],
+            ));
+            v.extend(quad_vertices(
+                bx,
+                corr_cy - 0.5,
+                bx + bar_w,
+                corr_cy + 0.5,
+                clip,
+                p.palette[2],
+            ));
+
+            if trail_len > 1 {
+                alpha.fill(0.0);
+                for j in 0..trail_len - 1 {
+                    let a = (1.0 - (j + 1) as f32 / trail_len as f32).powf(2.4);
+                    if a <= 0.0 {
+                        continue;
+                    }
+                    let (y0, y1) = (val_y(val(band, j)), val_y(val(band, j + 1)));
+                    let (top, bot) = (y0.min(y1) as i32, (y0.max(y1) + 2.0) as i32);
+                    for sy in top.max(y_min)..=bot.min(y_max) {
+                        let idx = (sy - y_min) as usize;
+                        alpha[idx] = alpha[idx].max(a);
+                    }
+                }
+                let base = color_for(band, val(band, 0));
+                for (k, w) in alpha.windows(2).enumerate() {
+                    if w[0] > 0.0 || w[1] > 0.0 {
+                        let (mut c0, mut c1) = (base, base);
+                        c0[3] *= w[0];
+                        c1[3] *= w[1];
+                        let y = (y_min + k as i32) as f32;
+                        v.extend(gradient_quad_vertices(x0, y, x1, y + 1.0, clip, c0, c1));
+                    }
+                }
+            }
+
+            if trail_len > 0 {
+                let current = val(band, 0);
+                let y = val_y(current);
+                v.extend(quad_vertices(
+                    x0,
+                    y - 1.0,
+                    x1,
+                    y + 1.0,
+                    clip,
+                    color_for(band, current),
+                ));
+            }
+        }
+        v
     }
 }
 

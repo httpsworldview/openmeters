@@ -1,7 +1,7 @@
 //! ITU-R BS.1770-5 compliant loudness and true peak metering.
 
 use super::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
-use crate::util::audio::{power_to_db, DEFAULT_SAMPLE_RATE};
+use crate::util::audio::{DEFAULT_SAMPLE_RATE, power_to_db};
 use std::f64::consts::PI;
 
 const MIN_MEAN_SQUARE: f64 = 1e-12;
@@ -66,7 +66,6 @@ fn mean_square_to_lufs(mean_square: f64, floor: f32) -> f32 {
             .max(f64::from(floor)) as f32
     }
 }
-
 
 #[inline]
 const fn window_length(sample_rate: f32, window_secs: f32) -> usize {

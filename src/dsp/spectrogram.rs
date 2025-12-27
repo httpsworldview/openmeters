@@ -551,11 +551,14 @@ impl Reassignment2DGrid {
         for i in 0..self.mags.len().min(self.out.len()) {
             let es = e_scale.get(i).or(e_scale.get(1)).copied().unwrap_or(1.0);
             let bn = b_norm.get(i).or(b_norm.get(1)).copied().unwrap_or(1.0);
-            self.mags[i] = power_to_db(if es > f32::EPSILON {
-                self.out[i] * bn / es
-            } else {
-                0.0
-            }, DB_FLOOR);
+            self.mags[i] = power_to_db(
+                if es > f32::EPSILON {
+                    self.out[i] * bn / es
+                } else {
+                    0.0
+                },
+                DB_FLOOR,
+            );
         }
     }
 }
@@ -718,7 +721,8 @@ impl SpectrogramProcessor {
             } else {
                 for i in 0..self.mags.len() {
                     let c = self.spec[i];
-                    self.mags[i] = power_to_db((c.re * c.re + c.im * c.im) * self.bin_norm[i], DB_FLOOR);
+                    self.mags[i] =
+                        power_to_db((c.re * c.re + c.im * c.im) * self.bin_norm[i], DB_FLOOR);
                 }
                 (
                     Self::fill_arc(self.acquire_mags(self.mags.len()), &self.mags),
