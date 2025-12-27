@@ -21,13 +21,13 @@ const POWER_EPSILON: f32 = 1.0e-20;
 /// Natural log to decibel conversion factor: 10 / ln(10) ~= 4.342944819.
 const LN_TO_DB: f32 = 4.342_944_8;
 
-/// Convert power (magnitude squared) to decibels.
+/// Convert power (magnitude squared) to decibels with a custom floor.
 #[inline(always)]
-pub fn power_to_db(power: f32) -> f32 {
+pub fn power_to_db(power: f32, floor: f32) -> f32 {
     if power > POWER_EPSILON {
-        (power.ln() * LN_TO_DB).max(DB_FLOOR)
+        (power.ln() * LN_TO_DB).max(floor)
     } else {
-        DB_FLOOR
+        floor
     }
 }
 

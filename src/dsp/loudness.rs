@@ -1,7 +1,7 @@
 //! ITU-R BS.1770-5 compliant loudness and true peak metering.
 
 use super::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
-use crate::util::audio::DEFAULT_SAMPLE_RATE;
+use crate::util::audio::{power_to_db, DEFAULT_SAMPLE_RATE};
 use std::f64::consts::PI;
 
 const MIN_MEAN_SQUARE: f64 = 1e-12;
@@ -67,14 +67,6 @@ fn mean_square_to_lufs(mean_square: f64, floor: f32) -> f32 {
     }
 }
 
-#[inline]
-fn linear_to_db_with_floor(linear: f32, floor: f32) -> f32 {
-    if linear <= f32::EPSILON {
-        floor
-    } else {
-        linear.log10().mul_add(20.0, 0.0).max(floor)
-    }
-}
 
 #[inline]
 const fn window_length(sample_rate: f32, window_secs: f32) -> usize {
@@ -375,8 +367,8 @@ impl AudioProcessor for LoudnessProcessor {
         }
 
         for (i, ch) in self.channels.iter_mut().enumerate() {
-            self.snapshot.true_peak_db[i] =
-                linear_to_db_with_floor(ch.true_peak.take_peak(), floor);
+            let peak = ch.true_peak.take_peak();
+            self.snapshot.true_peak_db[i] = power_to_db(peak * peak, floor);
         }
 
         let combined_short_term_loudness = mean_square_to_lufs(combined_short_term, floor);

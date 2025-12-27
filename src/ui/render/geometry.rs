@@ -85,14 +85,16 @@ pub fn compute_normals(positions: &[(f32, f32)]) -> Vec<(f32, f32)> {
     }
 }
 
-/// Builds an antialiased polyline for `TriangleStrip` topology.
-pub fn build_aa_line_strip(
+fn build_strip_impl<F>(
     positions: &[(f32, f32)],
     stroke_width: f32,
     feather: f32,
-    color: [f32; 4],
     clip: &ClipTransform,
-) -> Vec<SdfVertex> {
+    get_color: F,
+) -> Vec<SdfVertex>
+where
+    F: Fn(usize) -> [f32; 4],
+{
     if positions.len() < 2 {
         return Vec::new();
     }
@@ -103,9 +105,10 @@ pub fn build_aa_line_strip(
 
     let mut vertices = Vec::with_capacity(positions.len() * 2);
 
-    for ((x, y), (nx, ny)) in positions.iter().zip(normals.iter()) {
+    for (i, ((x, y), (nx, ny))) in positions.iter().zip(normals.iter()).enumerate() {
         let offset_x = nx * outer;
         let offset_y = ny * outer;
+        let color = get_color(i);
 
         vertices.push(SdfVertex::antialiased(
             clip.to_clip(x - offset_x, y - offset_y),
@@ -126,6 +129,17 @@ pub fn build_aa_line_strip(
     vertices
 }
 
+/// Builds an antialiased polyline for `TriangleStrip` topology.
+pub fn build_aa_line_strip(
+    positions: &[(f32, f32)],
+    stroke_width: f32,
+    feather: f32,
+    color: [f32; 4],
+    clip: &ClipTransform,
+) -> Vec<SdfVertex> {
+    build_strip_impl(positions, stroke_width, feather, clip, |_| color)
+}
+
 /// Like `build_aa_line_strip` but with per-vertex colors.
 pub fn build_aa_line_strip_colored(
     positions: &[(f32, f32)],
@@ -134,37 +148,10 @@ pub fn build_aa_line_strip_colored(
     feather: f32,
     clip: &ClipTransform,
 ) -> Vec<SdfVertex> {
-    if positions.len() < 2 || colors.len() < positions.len() {
+    if colors.len() < positions.len() {
         return Vec::new();
     }
-
-    let normals = compute_normals(positions);
-    let half = stroke_width.max(0.1) * 0.5;
-    let outer = half + feather;
-
-    let mut vertices = Vec::with_capacity(positions.len() * 2);
-
-    for (((x, y), (nx, ny)), color) in positions.iter().zip(normals.iter()).zip(colors.iter()) {
-        let offset_x = nx * outer;
-        let offset_y = ny * outer;
-
-        vertices.push(SdfVertex::antialiased(
-            clip.to_clip(x - offset_x, y - offset_y),
-            *color,
-            -outer,
-            half,
-            feather,
-        ));
-        vertices.push(SdfVertex::antialiased(
-            clip.to_clip(x + offset_x, y + offset_y),
-            *color,
-            outer,
-            half,
-            feather,
-        ));
-    }
-
-    vertices
+    build_strip_impl(positions, stroke_width, feather, clip, |i| colors[i])
 }
 
 /// Builds an antialiased polyline for `TriangleList` topology.
