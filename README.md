@@ -50,7 +50,9 @@ Checked features are implemented, unchecked features are planned. If you have id
   - [x] mel, log, and linear scales
   - [x] Adjustable colormap
 - [x] **stereometer** (X/Y vector scope, M/S goniometer)
-  - [ ] Correlation meter
+  - [x] Correlation meter
+    - [x] Single or multi-band
+    - [x] Adjustable time window
   - [x] Two visual modes:
     - [x] Lissajous (draws lines between samples)
     - [x] Dot cloud (plots samples as points)
