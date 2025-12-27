@@ -2,7 +2,8 @@ use super::palette::{PaletteEditor, PaletteEvent};
 use super::widgets::{SliderRange, labeled_pick_list, labeled_slider, set_f32, set_if_changed};
 use super::{ModuleSettingsPane, SettingsMessage};
 use crate::ui::settings::{
-    CorrelationMeterMode, SettingsHandle, StereometerMode, StereometerScale, StereometerSettings,
+    CorrelationMeterMode, CorrelationMeterSide, SettingsHandle, StereometerMode, StereometerScale,
+    StereometerSettings,
 };
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
@@ -16,6 +17,19 @@ const CORRELATION_METER_OPTIONS: [CorrelationMeterMode; 3] = [
     CorrelationMeterMode::Off,
     CorrelationMeterMode::SingleBand,
     CorrelationMeterMode::MultiBand,
+];
+const CORRELATION_METER_SIDE_OPTIONS: [CorrelationMeterSide; 2] =
+    [CorrelationMeterSide::Left, CorrelationMeterSide::Right];
+
+const PALETTE_LABELS: [&str; 8] = [
+    "Trace",
+    "Corr background",
+    "Corr center line",
+    "Corr positive",
+    "Corr negative",
+    "Low band",
+    "Mid band",
+    "High band",
 ];
 
 #[derive(Debug)]
@@ -37,6 +51,7 @@ pub enum Message {
     Scale(StereometerScale),
     ScaleRange(f32),
     CorrelationMeter(CorrelationMeterMode),
+    CorrelationMeterSide(CorrelationMeterSide),
     Palette(PaletteEvent),
 }
 
@@ -48,7 +63,7 @@ pub fn create(
         visual_manager,
         VisualKind::Stereometer,
         &theme::DEFAULT_STEREOMETER_PALETTE,
-        &[],
+        &PALETTE_LABELS,
     );
     StereometerSettingsPane {
         visual_id,
@@ -95,6 +110,15 @@ impl ModuleSettingsPane for StereometerSettingsPane {
         ]
         .spacing(16)
         .width(Length::Fill);
+
+        if s.correlation_meter != CorrelationMeterMode::Off {
+            right = right.push(labeled_pick_list(
+                "Correlation side",
+                &CORRELATION_METER_SIDE_OPTIONS,
+                Some(s.correlation_meter_side),
+                |v| SettingsMessage::Stereometer(Message::CorrelationMeterSide(v)),
+            ));
+        }
         if s.scale == StereometerScale::Exponential {
             right = right.push(labeled_slider(
                 "Scale range",
@@ -169,6 +193,9 @@ impl ModuleSettingsPane for StereometerSettingsPane {
             Message::Scale(sc) => set_if_changed(&mut s.scale, *sc),
             Message::ScaleRange(v) => set_f32(&mut s.scale_range, v.clamp(1.0, 30.0)),
             Message::CorrelationMeter(m) => set_if_changed(&mut s.correlation_meter, *m),
+            Message::CorrelationMeterSide(side) => {
+                set_if_changed(&mut s.correlation_meter_side, *side)
+            }
             Message::Palette(e) => self.palette.update(*e),
         };
         if changed {

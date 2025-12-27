@@ -23,8 +23,9 @@ const ACCENT_PRIMARY: Color = Color::from_rgba(0.157, 0.157, 0.157, 1.0);
 const ACCENT_SUCCESS: Color = Color::from_rgba(0.478, 0.557, 0.502, 1.0);
 const ACCENT_DANGER: Color = Color::from_rgba(0.557, 0.478, 0.478, 1.0);
 
-// GPU palettes
+// GPU palettes.
 
+// quiet -> loud
 pub const DEFAULT_SPECTROGRAM_PALETTE: [Color; 5] = [
     Color::from_rgba(0.000, 0.000, 0.000, 0.0),
     Color::from_rgba(0.218, 0.106, 0.332, 1.0),
@@ -33,6 +34,7 @@ pub const DEFAULT_SPECTROGRAM_PALETTE: [Color; 5] = [
     Color::from_rgba(1.000, 1.000, 1.000, 1.0),
 ];
 
+// quiet -> loud
 pub const DEFAULT_SPECTRUM_PALETTE: [Color; 5] = [
     Color::from_rgba(0.218, 0.106, 0.332, 1.0),
     Color::from_rgba(0.609, 0.000, 0.000, 1.0),
@@ -41,19 +43,21 @@ pub const DEFAULT_SPECTRUM_PALETTE: [Color; 5] = [
     Color::from_rgba(1.000, 1.000, 0.000, 1.0),
 ];
 
+// low, mid, high
 pub const DEFAULT_WAVEFORM_PALETTE: [Color; 3] = [
     Color::from_rgba(0.800, 0.200, 0.100, 1.0),
     Color::from_rgba(1.000, 0.600, 0.100, 1.0),
     Color::from_rgba(0.400, 0.300, 0.900, 1.0),
 ];
 
+// trace
 pub const DEFAULT_OSCILLOSCOPE_PALETTE: [Color; 1] = [Color::from_rgba(1.000, 1.000, 1.000, 1.0)];
 
-pub const DEFAULT_STEREOMETER_PALETTE: [Color; 1] = [Color::from_rgba(1.000, 1.000, 1.000, 1.0)];
-
-/// Correlation meter palette: [background, positive, negative, low_band, mid_band, high_band].
-pub const CORRELATION_METER_PALETTE: [Color; 6] = [
+/// trace, corr_bg, corr_center, corr_positive, corr_negative, low, mid, high.
+pub const DEFAULT_STEREOMETER_PALETTE: [Color; 8] = [
+    Color::from_rgba(1.000, 1.000, 1.000, 1.0),
     Color::from_rgba(0.10, 0.10, 0.10, 1.0),
+    Color::from_rgba(0.50, 0.50, 0.50, 1.0),
     Color::from_rgba(0.45, 0.65, 0.50, 1.0),
     Color::from_rgba(0.70, 0.35, 0.35, 1.0),
     Color::from_rgba(0.55, 0.45, 0.70, 1.0),
@@ -61,6 +65,7 @@ pub const CORRELATION_METER_PALETTE: [Color; 6] = [
     Color::from_rgba(0.65, 0.55, 0.45, 1.0),
 ];
 
+// background, left_ch_1, left_ch_2, right_fill, guide_line
 pub const DEFAULT_LOUDNESS_PALETTE: [Color; 5] = [
     Color::from_rgba(0.161, 0.161, 0.161, 1.0),
     Color::from_rgba(0.626, 0.665, 0.680, 1.0),

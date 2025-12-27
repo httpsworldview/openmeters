@@ -234,6 +234,7 @@ settings_enum!(pub enum ChannelMode {
 settings_enum!(pub enum StereometerMode  { Lissajous => "Lissajous", #[default] DotCloud => "Dot Cloud" });
 settings_enum!(pub enum StereometerScale { Linear => "Linear", #[default] Exponential => "Exponential" });
 settings_enum!(pub enum CorrelationMeterMode { Off => "Off", #[default] SingleBand => "Single Band", MultiBand => "Multi Band" });
+settings_enum!(pub enum CorrelationMeterSide { #[default] Left => "Left", Right => "Right" });
 settings_enum!(pub enum PianoRollSide { #[default] Left => "Left", Right => "Right" });
 
 visual_settings!(OscilloscopeSettings from OscilloscopeConfig {
@@ -261,6 +262,7 @@ visual_settings!(StereometerSettings from StereometerConfig {
     persistence: f32 = 0.0, mode: StereometerMode = StereometerMode::default(),
     scale: StereometerScale = StereometerScale::default(), scale_range: f32 = 15.0, rotation: i8 = -1, flip: bool = true,
     correlation_meter: CorrelationMeterMode = CorrelationMeterMode::default(),
+    correlation_meter_side: CorrelationMeterSide = CorrelationMeterSide::default(),
 });
 
 visual_settings!(LoudnessSettings {
