@@ -8,8 +8,7 @@ use crate::ui::render::common::{
     ClipTransform, SdfPipeline, SdfVertex, dot_vertices, gradient_quad_vertices, line_vertices,
     quad_vertices,
 };
-use crate::ui::settings::{CorrelationMeterMode, StereometerMode};
-use crate::ui::theme::{CORRELATION_METER_PALETTE as CORR_PAL, color_to_rgba};
+use crate::ui::settings::{CorrelationMeterMode, CorrelationMeterSide, StereometerMode};
 
 const CORR_W: f32 = 28.0;
 const CORR_PAD: f32 = 4.0;
@@ -20,11 +19,12 @@ pub struct StereometerParams {
     pub key: u64,
     pub bounds: Rectangle,
     pub points: Vec<(f32, f32)>,
-    pub trace_color: [f32; 4],
+    pub palette: [[f32; 4]; 8],
     pub mode: StereometerMode,
     pub rotation: i8,
     pub flip: bool,
     pub correlation_meter: CorrelationMeterMode,
+    pub correlation_meter_side: CorrelationMeterSide,
     pub corr_trail: Vec<f32>,
     pub band_trail: Vec<BandCorrelation>,
 }
@@ -37,17 +37,44 @@ impl StereometerPrimitive {
         Self(params)
     }
 
-    fn vectorscope_bounds(&self) -> Rectangle {
-        let margin = if self.0.correlation_meter == CorrelationMeterMode::Off {
+    fn corr_margin(&self) -> f32 {
+        if self.0.correlation_meter == CorrelationMeterMode::Off {
             0.0
         } else {
             CORR_W + CORR_PAD
+        }
+    }
+
+    fn vectorscope_bounds(&self) -> Rectangle {
+        let margin = self.corr_margin();
+        match self.0.correlation_meter_side {
+            CorrelationMeterSide::Left => Rectangle {
+                x: self.0.bounds.x + margin,
+                y: self.0.bounds.y,
+                width: (self.0.bounds.width - margin).max(0.0),
+                height: self.0.bounds.height,
+            },
+            CorrelationMeterSide::Right => Rectangle {
+                x: self.0.bounds.x,
+                y: self.0.bounds.y,
+                width: (self.0.bounds.width - margin).max(0.0),
+                height: self.0.bounds.height,
+            },
+        }
+    }
+
+    fn correlation_meter_bounds(&self) -> Rectangle {
+        let x = match self.0.correlation_meter_side {
+            CorrelationMeterSide::Left => self.0.bounds.x,
+            CorrelationMeterSide::Right => {
+                (self.0.bounds.x + self.0.bounds.width - CORR_W).max(self.0.bounds.x)
+            }
         };
         Rectangle {
-            x: self.0.bounds.x + margin,
-            y: self.0.bounds.y,
-            width: (self.0.bounds.width - margin).max(0.0),
-            height: self.0.bounds.height,
+            x,
+            y: self.0.bounds.y + 16.0,
+            width: CORR_W,
+            height: (self.0.bounds.height - 32.0).max(0.0),
         }
     }
 
@@ -66,21 +93,26 @@ impl StereometerPrimitive {
             return;
         }
 
+        let pal = &self.0.palette;
+        let bg = pal[1];
+        let center = pal[2];
+
+        let single_band_color = |val: f32| if val < 0.0 { pal[4] } else { pal[3] };
+        let band_color = |band: usize| match band {
+            0 => pal[5],
+            1 => pal[6],
+            _ => pal[7],
+        };
+
         let (bars, gap) = if mode == CorrelationMeterMode::SingleBand {
             (1, 0.0)
         } else {
             (3, BAND_GAP)
         };
         let bar_w = (CORR_W - gap * (bars - 1) as f32) / bars as f32;
-        let bounds = Rectangle {
-            x: self.0.bounds.x,
-            y: self.0.bounds.y + 16.0,
-            width: CORR_W,
-            height: (self.0.bounds.height - 32.0).max(0.0),
-        };
+        let bounds = self.correlation_meter_bounds();
         let (cy, half_h) = (bounds.y + bounds.height * 0.5, bounds.height * 0.5);
         let val_y = |val: f32| cy - val.clamp(-1.0, 1.0) * half_h;
-        let bg = color_to_rgba(CORR_PAL[0]);
 
         for band in 0..bars {
             let bx = bounds.x + band as f32 * (bar_w + gap);
@@ -100,14 +132,14 @@ impl StereometerPrimitive {
                 bx + bar_w,
                 cy + 0.5,
                 clip,
-                [0.5, 0.5, 0.5, 1.0],
+                center,
             ));
 
             // Trail data accessor
-            let (trail_len, color_idx) = if mode == CorrelationMeterMode::SingleBand {
-                (self.0.corr_trail.len(), 1)
+            let trail_len = if mode == CorrelationMeterMode::SingleBand {
+                self.0.corr_trail.len()
             } else {
-                (self.0.band_trail.len(), band + 3)
+                self.0.band_trail.len()
             };
             let get = |i: usize| {
                 if mode == CorrelationMeterMode::SingleBand {
@@ -144,13 +176,11 @@ impl StereometerPrimitive {
                 }
 
                 // Emit gradient quads for non-zero runs
-                let base = color_to_rgba(
-                    CORR_PAL[if color_idx == 1 && get(0) < 0.0 {
-                        2
-                    } else {
-                        color_idx
-                    }],
-                );
+                let base = if mode == CorrelationMeterMode::SingleBand {
+                    single_band_color(get(0))
+                } else {
+                    band_color(band)
+                };
                 let mut i = 0;
                 while i < height {
                     if alpha[i] <= 0.0 {
@@ -183,13 +213,11 @@ impl StereometerPrimitive {
             if trail_len > 0 {
                 let val = get(0);
                 let y = val_y(val);
-                let c = color_to_rgba(
-                    CORR_PAL[if color_idx == 1 && val < 0.0 {
-                        2
-                    } else {
-                        color_idx
-                    }],
-                );
+                let c = if mode == CorrelationMeterMode::SingleBand {
+                    single_band_color(val)
+                } else {
+                    band_color(band)
+                };
                 v.extend(quad_vertices(
                     bx + 1.0,
                     y - 1.0,
@@ -208,7 +236,7 @@ impl StereometerPrimitive {
         let theta = (self.0.rotation as f32) * std::f32::consts::FRAC_PI_4;
         let (sin_t, cos_t) = theta.sin_cos();
         let radius = ((vs.width.min(vs.height) * 0.5) - 2.0) / (sin_t.abs() + cos_t.abs());
-        let [cr, cg, cb, ca] = self.0.trace_color;
+        let [cr, cg, cb, ca] = self.0.palette[0];
         let flip = self.0.flip;
 
         let xform = |l: f32, r: f32| {

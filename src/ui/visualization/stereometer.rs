@@ -7,7 +7,8 @@ use crate::dsp::stereometer::{
 use crate::dsp::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::ui::render::stereometer::{StereometerParams, StereometerPrimitive};
 use crate::ui::settings::{
-    CorrelationMeterMode, StereometerMode, StereometerScale, StereometerSettings,
+    CorrelationMeterMode, CorrelationMeterSide, StereometerMode, StereometerScale,
+    StereometerSettings,
 };
 use crate::ui::theme;
 use iced::advanced::renderer::{self, Quad};
@@ -67,7 +68,7 @@ pub struct StereometerState {
     points: Vec<(f32, f32)>,
     corr_trail: Vec<f32>,
     band_trail: Vec<BandCorrelation>,
-    trace_color: Color,
+    palette: [Color; 8],
     persistence: f32,
     mode: StereometerMode,
     scale: StereometerScale,
@@ -75,6 +76,7 @@ pub struct StereometerState {
     rotation: i8,
     flip: bool,
     correlation_meter: CorrelationMeterMode,
+    correlation_meter_side: CorrelationMeterSide,
     key: u64,
 }
 
@@ -84,14 +86,15 @@ impl StereometerState {
             points: Vec::new(),
             corr_trail: Vec::with_capacity(TRAIL_LEN),
             band_trail: Vec::with_capacity(TRAIL_LEN),
-            trace_color: theme::DEFAULT_STEREOMETER_PALETTE[0],
+            palette: theme::DEFAULT_STEREOMETER_PALETTE,
             persistence: 0.0,
             mode: StereometerMode::default(),
             scale: StereometerScale::default(),
             scale_range: 15.0,
-            rotation: 0,
-            flip: false,
+            rotation: -1,
+            flip: true,
             correlation_meter: CorrelationMeterMode::default(),
+            correlation_meter_side: CorrelationMeterSide::default(),
             key: next_key(),
         }
     }
@@ -104,17 +107,19 @@ impl StereometerState {
         self.rotation = s.rotation.clamp(-4, 4);
         self.flip = s.flip;
         self.correlation_meter = s.correlation_meter;
+        self.correlation_meter_side = s.correlation_meter_side;
     }
 
     pub fn set_palette(&mut self, p: &[Color]) {
-        self.trace_color = p
-            .first()
-            .copied()
-            .unwrap_or(theme::DEFAULT_STEREOMETER_PALETTE[0]);
+        let mut pal = theme::DEFAULT_STEREOMETER_PALETTE;
+        for (i, &c) in p.iter().take(pal.len()).enumerate() {
+            pal[i] = c;
+        }
+        self.palette = pal;
     }
 
-    pub fn palette(&self) -> [Color; 1] {
-        [self.trace_color]
+    pub fn palette(&self) -> [Color; 8] {
+        self.palette
     }
 
     pub fn export_settings(
@@ -127,6 +132,7 @@ impl StereometerState {
         i8,
         bool,
         CorrelationMeterMode,
+        CorrelationMeterSide,
     ) {
         (
             self.persistence,
@@ -136,6 +142,7 @@ impl StereometerState {
             self.rotation,
             self.flip,
             self.correlation_meter,
+            self.correlation_meter_side,
         )
     }
 
@@ -199,15 +206,17 @@ impl StereometerState {
         if self.points.len() < 2 {
             return None;
         }
+        let pal = self.palette;
         Some(StereometerParams {
             key: self.key,
             bounds,
             points: self.points.clone(),
-            trace_color: theme::color_to_rgba(self.trace_color),
+            palette: pal.map(theme::color_to_rgba),
             mode: self.mode,
             rotation: self.rotation,
             flip: self.flip,
             correlation_meter: self.correlation_meter,
+            correlation_meter_side: self.correlation_meter_side,
             corr_trail: self.corr_trail.clone(),
             band_trail: self.band_trail.clone(),
         })
