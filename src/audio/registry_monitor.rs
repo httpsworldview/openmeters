@@ -1,7 +1,7 @@
 use crate::audio::{VIRTUAL_SINK_NAME, pw_registry};
 use crate::ui::RoutingCommand;
 use crate::ui::app::config::{CaptureMode, DeviceSelection};
-use async_channel::Sender;
+use async_channel::{Sender, TrySendError};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::mpsc;
 use tracing::{debug, info, warn};
@@ -34,6 +34,22 @@ fn run_monitor_loop(
     let mut updates = handle.subscribe();
     let mut routing = RoutingManager::new(handle, command_rx);
     let mut last_snapshot: Option<pw_registry::RegistrySnapshot> = None;
+    let mut pending_ui_snapshot: Option<pw_registry::RegistrySnapshot> = None;
+
+    let flush_pending_ui_snapshot = |pending: &mut Option<pw_registry::RegistrySnapshot>| {
+        let Some(snapshot) = pending.take() else {
+            return Ok(());
+        };
+
+        match snapshot_tx.try_send(snapshot) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(snapshot)) => {
+                *pending = Some(snapshot);
+                Ok(())
+            }
+            Err(TrySendError::Closed(_)) => Err(()),
+        }
+    };
 
     loop {
         if routing.process_commands()
@@ -42,18 +58,35 @@ fn run_monitor_loop(
             routing.apply(snapshot);
         }
 
+        if flush_pending_ui_snapshot(&mut pending_ui_snapshot).is_err() {
+            info!("[registry] UI channel closed; stopping");
+            break;
+        }
+
         match updates.recv_timeout(POLL_INTERVAL) {
             Ok(Some(snapshot)) => {
                 log_registry_snapshot(&snapshot);
                 routing.apply(&snapshot);
 
-                if snapshot_tx.send_blocking(snapshot.clone()).is_err() {
+                last_snapshot = Some(snapshot.clone());
+
+                match snapshot_tx.try_send(snapshot) {
+                    Ok(()) => {}
+                    Err(TrySendError::Full(snapshot)) => {
+                        pending_ui_snapshot = Some(snapshot);
+                    }
+                    Err(TrySendError::Closed(_)) => {
+                        info!("[registry] UI channel closed; stopping");
+                        break;
+                    }
+                }
+            }
+            Ok(None) | Err(mpsc::RecvTimeoutError::Timeout) => {
+                if flush_pending_ui_snapshot(&mut pending_ui_snapshot).is_err() {
                     info!("[registry] UI channel closed; stopping");
                     break;
                 }
-                last_snapshot = Some(snapshot);
             }
-            Ok(None) | Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
