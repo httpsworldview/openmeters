@@ -27,13 +27,12 @@ use tracing::{debug, error, info, warn};
 // inlining becase they are only used here and in the registry monitor.
 
 fn dict_to_map(dict: Option<&DictRef>) -> HashMap<String, String> {
-    let mut map = HashMap::new();
-    if let Some(dict) = dict {
-        for (key, value) in dict.iter() {
-            map.insert(key.to_string(), value.to_string());
-        }
-    }
-    map
+    dict.map(|d| {
+        d.iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    })
+    .unwrap_or_default()
 }
 
 /// Direction of a PipeWire port.
@@ -69,41 +68,21 @@ pub struct GraphPort {
 impl GraphPort {
     fn from_global(global: &GlobalObject<&DictRef>) -> Option<Self> {
         let props = dict_to_map(global.props.as_ref().copied());
-
-        let port_id = props
-            .get(*pw::keys::PORT_ID)
-            .or_else(|| props.get("port.id"))
-            .and_then(|v| v.parse().ok())?;
-
-        let node_id = props
-            .get(*pw::keys::NODE_ID)
-            .or_else(|| props.get("node.id"))
-            .and_then(|v| v.parse().ok())?;
-
-        let direction = props
-            .get(*pw::keys::PORT_DIRECTION)
-            .or_else(|| props.get("port.direction"))
-            .map(|d| PortDirection::from_str(d))
-            .unwrap_or_default();
-
-        let channel = props
-            .get(*pw::keys::AUDIO_CHANNEL)
-            .or_else(|| props.get("audio.channel"))
-            .cloned();
-
-        let is_monitor = props
-            .get(*pw::keys::PORT_MONITOR)
-            .or_else(|| props.get("port.monitor"))
-            .map(|v| matches!(v.to_ascii_lowercase().as_str(), "true" | "1"))
-            .unwrap_or(false);
+        let get = |primary: &str, fallback: &str| -> Option<&String> {
+            props.get(primary).or_else(|| props.get(fallback))
+        };
 
         Some(Self {
             global_id: global.id,
-            port_id,
-            node_id,
-            channel,
-            direction,
-            is_monitor,
+            port_id: get(*pw::keys::PORT_ID, "port.id").and_then(|v| v.parse().ok())?,
+            node_id: get(*pw::keys::NODE_ID, "node.id").and_then(|v| v.parse().ok())?,
+            direction: get(*pw::keys::PORT_DIRECTION, "port.direction")
+                .map(|d| PortDirection::from_str(d))
+                .unwrap_or_default(),
+            channel: get(*pw::keys::AUDIO_CHANNEL, "audio.channel").cloned(),
+            is_monitor: get(*pw::keys::PORT_MONITOR, "port.monitor")
+                .map(|v| matches!(v.to_ascii_lowercase().as_str(), "true" | "1"))
+                .unwrap_or(false),
         })
     }
 
@@ -126,23 +105,28 @@ fn derive_node_direction(
     media_class: Option<&str>,
     props: &HashMap<String, String>,
 ) -> NodeDirection {
-    if let Some(class) = media_class {
-        let lowered = class.to_ascii_lowercase();
-        if lowered.contains("sink") || lowered.contains("output") {
-            return NodeDirection::Output;
-        }
-        if lowered.contains("source") || lowered.contains("input") {
-            return NodeDirection::Input;
-        }
+    let class_hint = media_class.map(|c| c.to_ascii_lowercase());
+    if class_hint
+        .as_ref()
+        .is_some_and(|c| c.contains("sink") || c.contains("output"))
+    {
+        return NodeDirection::Output;
     }
-    if let Some(direction) = props.get(*pw::keys::PORT_DIRECTION) {
-        match direction.to_ascii_lowercase().as_str() {
-            "in" => return NodeDirection::Input,
-            "out" => return NodeDirection::Output,
-            _ => {}
-        }
+    if class_hint
+        .as_ref()
+        .is_some_and(|c| c.contains("source") || c.contains("input"))
+    {
+        return NodeDirection::Input;
     }
-    NodeDirection::Unknown
+    match props
+        .get(*pw::keys::PORT_DIRECTION)
+        .map(|s| s.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("in") => NodeDirection::Input,
+        Some("out") => NodeDirection::Output,
+        _ => NodeDirection::Unknown,
+    }
 }
 
 const DEFAULT_AUDIO_SINK_KEY: &str = "default.audio.sink";
@@ -165,23 +149,15 @@ impl DefaultTarget {
         type_hint: Option<&str>,
         name: Option<&str>,
     ) -> bool {
-        let mut changed = false;
-        if self.metadata_id != Some(metadata_id) {
-            self.metadata_id = Some(metadata_id);
-            changed = true;
-        }
-        let new_node_id = if subject != 0 { Some(subject) } else { None };
-        if self.node_id != new_node_id {
-            self.node_id = new_node_id;
-            changed = true;
-        }
-        if self.type_hint.as_deref() != type_hint {
-            self.type_hint = type_hint.map(str::to_string);
-            changed = true;
-        }
-        if self.name.as_deref() != name {
-            self.name = name.map(str::to_string);
-            changed = true;
+        let new = Self {
+            metadata_id: Some(metadata_id),
+            node_id: (subject != 0).then_some(subject),
+            type_hint: type_hint.map(str::to_string),
+            name: name.map(str::to_string),
+        };
+        let changed = *self != new;
+        if changed {
+            *self = new;
         }
         changed
     }
@@ -189,42 +165,30 @@ impl DefaultTarget {
 
 fn parse_metadata_name(type_hint: Option<&str>, value: Option<&str>) -> Option<String> {
     let trimmed = value?.trim();
-    let expects_json = matches!(type_hint, Some(h) if h.eq_ignore_ascii_case("Spa:String:JSON"))
+    let is_json = matches!(type_hint, Some(h) if h.eq_ignore_ascii_case("Spa:String:JSON"))
         || trimmed.starts_with('{');
-
-    if expects_json {
-        match serde_json::from_str::<Value>(trimmed) {
-            Ok(Value::Object(map)) => map.get("name").and_then(|n| n.as_str().map(str::to_string)),
-            Ok(Value::String(s)) => Some(s),
-            _ => None,
+    match (is_json, serde_json::from_str::<Value>(trimmed)) {
+        (true, Ok(Value::Object(map))) => {
+            map.get("name").and_then(|n| n.as_str()).map(str::to_string)
         }
-    } else if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
+        (true, Ok(Value::String(s))) => Some(s),
+        (true, _) => None,
+        (false, _) if trimmed.is_empty() => None,
+        (false, _) => Some(trimmed.to_string()),
     }
 }
 
-struct TargetMetadata {
-    target_object: String,
-    target_node: String,
-}
-
-fn format_target_metadata(
-    object_serial: Option<&str>,
-    node_id: u32,
-    _node_name: &str,
-) -> TargetMetadata {
-    let object_value = object_serial
+fn format_target_metadata(object_serial: Option<&str>, node_id: u32) -> (String, String) {
+    let target_object = object_serial
         .map(str::trim)
         .filter(|v| !v.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| node_id.to_string());
-
-    TargetMetadata {
-        target_object: object_value,
-        target_node: node_id.to_string(),
-    }
+        .unwrap_or_default();
+    let target_object = if target_object.is_empty() {
+        node_id.to_string()
+    } else {
+        target_object.to_string()
+    };
+    (target_object, node_id.to_string())
 }
 
 const LINK_FACTORY_NAME: &str = "link-factory";
@@ -254,48 +218,40 @@ pub fn pair_ports_by_channel(
     mut sources: Vec<GraphPort>,
     targets: Vec<GraphPort>,
 ) -> Vec<(GraphPort, GraphPort)> {
-    let normalize = |s: &str| s.trim().to_ascii_uppercase();
-
     let mut targets_by_channel: HashMap<String, VecDeque<GraphPort>> = HashMap::new();
-    let mut fallback_targets: VecDeque<GraphPort> = VecDeque::new();
+    let mut fallback: VecDeque<GraphPort> = VecDeque::new();
 
     for target in targets {
-        if let Some(ch) = target.channel_key() {
-            targets_by_channel
-                .entry(normalize(ch))
+        match target.channel_key() {
+            Some(ch) => targets_by_channel
+                .entry(ch.trim().to_ascii_uppercase())
                 .or_default()
-                .push_back(target);
-        } else {
-            fallback_targets.push_back(target);
+                .push_back(target),
+            None => fallback.push_back(target),
         }
     }
 
-    sources.sort_by(|a, b| {
-        (a.channel.as_deref().unwrap_or(""), a.port_id)
-            .cmp(&(b.channel.as_deref().unwrap_or(""), b.port_id))
-    });
+    sources
+        .sort_by(|a, b| (a.channel.as_deref(), a.port_id).cmp(&(b.channel.as_deref(), b.port_id)));
 
-    let mut plans = Vec::new();
-    for source in sources {
-        let mut candidate = source
-            .channel_key()
-            .and_then(|ch| targets_by_channel.get_mut(&normalize(ch)))
-            .and_then(VecDeque::pop_front);
-
-        if candidate.is_none() {
-            candidate = fallback_targets.pop_front();
-        }
-        if candidate.is_none() {
-            candidate = targets_by_channel
-                .values_mut()
-                .find(|q| !q.is_empty())
-                .and_then(VecDeque::pop_front);
-        }
-        if let Some(target) = candidate {
-            plans.push((source, target));
-        }
-    }
-    plans
+    sources
+        .into_iter()
+        .filter_map(|src| {
+            let ch_key = src.channel_key().map(|c| c.trim().to_ascii_uppercase());
+            let target = ch_key
+                .as_ref()
+                .and_then(|k| targets_by_channel.get_mut(k))
+                .and_then(VecDeque::pop_front)
+                .or_else(|| fallback.pop_front())
+                .or_else(|| {
+                    targets_by_channel
+                        .values_mut()
+                        .find(|q| !q.is_empty())
+                        .and_then(VecDeque::pop_front)
+                });
+            target.map(|t| (src, t))
+        })
+        .collect()
 }
 
 // registry service
@@ -374,12 +330,11 @@ impl AudioRegistryHandle {
     }
 
     pub fn route_node(&self, application: &NodeInfo, sink: &NodeInfo) -> bool {
-        let metadata =
-            format_target_metadata(sink.object_serial(), sink.id, sink.display_name().as_str());
+        let (target_object, target_node) = format_target_metadata(sink.object_serial(), sink.id);
         self.send_command(RegistryCommand::RouteNode {
             subject: application.id,
-            target_object: metadata.target_object,
-            target_node: metadata.target_node,
+            target_object,
+            target_node,
         })
     }
 }
@@ -423,12 +378,10 @@ pub struct TargetDescription {
 impl RegistrySnapshot {
     pub fn describe_default_target(&self, target: Option<&DefaultTarget>) -> TargetDescription {
         let raw = target.and_then(|t| t.name.as_deref()).unwrap_or("(none)");
-
         let display = target
             .and_then(|t| self.resolve_default_target(t))
-            .map(|node| node.display_name())
+            .map(|n| n.display_name())
             .unwrap_or_else(|| raw.to_string());
-
         TargetDescription {
             display,
             raw: raw.to_string(),
@@ -438,26 +391,24 @@ impl RegistrySnapshot {
     pub fn resolve_default_target<'a>(&'a self, target: &DefaultTarget) -> Option<&'a NodeInfo> {
         target
             .node_id
-            .and_then(|id| self.nodes.iter().find(|node| node.id == id))
+            .and_then(|id| self.nodes.iter().find(|n| n.id == id))
             .or_else(|| {
                 target
                     .name
                     .as_deref()
-                    .and_then(|name| self.nodes.iter().find(|node| node.matches_label(name)))
+                    .and_then(|name| self.find_node_by_label(name))
             })
     }
 
     pub fn find_node_by_label<'a>(&'a self, label: &str) -> Option<&'a NodeInfo> {
-        self.nodes.iter().find(|node| node.matches_label(label))
+        self.nodes.iter().find(|n| n.matches_label(label))
     }
 
     pub fn route_candidates<'a>(
         &'a self,
         sink: &'a NodeInfo,
     ) -> impl Iterator<Item = &'a NodeInfo> + 'a {
-        self.nodes
-            .iter()
-            .filter(move |node| node.should_route_to(sink))
+        self.nodes.iter().filter(move |n| n.should_route_to(sink))
     }
 }
 
@@ -476,27 +427,24 @@ pub struct NodeInfo {
 impl NodeInfo {
     pub fn from_global(global: &GlobalObject<&DictRef>) -> Self {
         let props = dict_to_map(global.props.as_ref().copied());
-
         let name = props.get(*pw::keys::NODE_NAME).cloned();
         let description = props
             .get(*pw::keys::NODE_DESCRIPTION)
-            .cloned()
-            .or_else(|| props.get("media.name").cloned())
-            .or_else(|| name.clone());
-
+            .or_else(|| props.get("media.name"))
+            .or(name.as_ref())
+            .cloned();
         let media_class = props.get(*pw::keys::MEDIA_CLASS).cloned();
-        let direction = derive_node_direction(media_class.as_deref(), &props);
         let is_virtual = props
             .get("node.virtual")
-            .map(|value| value == "true")
+            .map(|v| v == "true")
             .unwrap_or_else(|| name.as_deref() == Some("openmeters.sink"));
 
-        NodeInfo {
+        Self {
             id: global.id,
+            direction: derive_node_direction(media_class.as_deref(), &props),
             name,
             description,
             media_class,
-            direction,
             is_virtual,
             properties: props,
             ports: Vec::new(),
@@ -505,27 +453,24 @@ impl NodeInfo {
 
     pub fn display_name(&self) -> String {
         self.name
-            .clone()
-            .or(self.description.clone())
+            .as_ref()
+            .or(self.description.as_ref())
+            .cloned()
             .unwrap_or_else(|| format!("node#{}", self.id))
     }
 
     pub fn app_name(&self) -> Option<&str> {
         self.properties.get(*pw::keys::APP_NAME).map(String::as_str)
     }
-
     pub fn object_serial(&self) -> Option<&str> {
         self.properties.get("object.serial").map(String::as_str)
     }
 
     pub fn matches_label(&self, label: &str) -> bool {
-        self.name
-            .as_deref()
-            .is_some_and(|value| value.eq_ignore_ascii_case(label))
-            || self
-                .description
-                .as_deref()
-                .is_some_and(|value| value.eq_ignore_ascii_case(label))
+        [&self.name, &self.description].iter().any(|opt| {
+            opt.as_deref()
+                .is_some_and(|v| v.eq_ignore_ascii_case(label))
+        })
     }
 
     pub fn should_route_to(&self, sink: &Self) -> bool {
@@ -543,34 +488,31 @@ impl NodeInfo {
     }
 
     pub fn output_ports_for_loopback(&self) -> Vec<GraphPort> {
-        self.ports_for_loopback(
-            |p| p.direction == PortDirection::Output && p.is_monitor,
-            |p| p.direction == PortDirection::Output,
-        )
+        self.ports_for_loopback(PortDirection::Output, true)
     }
 
     pub fn input_ports_for_loopback(&self) -> Vec<GraphPort> {
-        self.ports_for_loopback(
-            |p| p.direction == PortDirection::Input && !p.is_monitor,
-            |p| p.direction == PortDirection::Input,
-        )
+        self.ports_for_loopback(PortDirection::Input, false)
     }
 
-    fn ports_for_loopback<F, G>(&self, primary: F, secondary: G) -> Vec<GraphPort>
-    where
-        F: Fn(&GraphPort) -> bool,
-        G: Fn(&GraphPort) -> bool,
-    {
-        let collect = |pred: &dyn Fn(&GraphPort) -> bool| -> Vec<GraphPort> {
-            self.ports.iter().filter(|p| pred(p)).cloned().collect()
-        };
-        let result = collect(&primary);
-        if !result.is_empty() {
-            return result;
+    fn ports_for_loopback(&self, dir: PortDirection, prefer_monitor: bool) -> Vec<GraphPort> {
+        let primary: Vec<_> = self
+            .ports
+            .iter()
+            .filter(|p| p.direction == dir && p.is_monitor == prefer_monitor)
+            .cloned()
+            .collect();
+        if !primary.is_empty() {
+            return primary;
         }
-        let result = collect(&secondary);
-        if !result.is_empty() {
-            return result;
+        let secondary: Vec<_> = self
+            .ports
+            .iter()
+            .filter(|p| p.direction == dir)
+            .cloned()
+            .collect();
+        if !secondary.is_empty() {
+            return secondary;
         }
         self.ports.clone()
     }
@@ -605,18 +547,13 @@ impl RegistryState {
     }
 
     fn upsert_node(&mut self, info: NodeInfo) -> bool {
-        let needs_update = !matches!(
-            self.nodes.get(&info.id),
-            Some(existing) if existing == &info
-        );
-
-        if needs_update {
-            self.nodes.insert(info.id, info);
-            self.metadata_defaults.reconcile_with_nodes(&self.nodes);
-            self.bump_serial();
+        if self.nodes.get(&info.id) == Some(&info) {
+            return false;
         }
-
-        needs_update
+        self.nodes.insert(info.id, info);
+        self.metadata_defaults.reconcile_with_nodes(&self.nodes);
+        self.bump_serial();
+        true
     }
 
     fn remove_node(&mut self, id: u32) -> bool {
@@ -639,7 +576,6 @@ impl RegistryState {
 
     fn upsert_port(&mut self, port: GraphPort) -> bool {
         let (node_id, port_id, global_id) = (port.node_id, port.port_id, port.global_id);
-
         let Some(node) = self.nodes.get_mut(&node_id) else {
             return false;
         };
@@ -660,7 +596,6 @@ impl RegistryState {
             self.port_index.insert(global_id, (node_id, port_id));
             self.bump_serial();
         }
-
         changed
     }
 
@@ -668,11 +603,9 @@ impl RegistryState {
         let Some((node_id, port_id)) = self.port_index.remove(&global_id) else {
             return false;
         };
-
         let Some(node) = self.nodes.get_mut(&node_id) else {
             return false;
         };
-
         node.ports.retain(|p| p.port_id != port_id);
         self.bump_serial();
         true
@@ -748,38 +681,50 @@ impl MetadataDefaults {
             if target.node_id.is_some_and(|id| !nodes.contains_key(&id)) {
                 target.node_id = None;
             }
-            if target.node_id.is_none()
-                && let Some(name) = &target.name
-                && let Some((&id, _)) = nodes.iter().find(|(_, n)| n.name.as_deref() == Some(name))
-            {
-                target.node_id = Some(id);
+            if target.node_id.is_none() {
+                target.node_id = target.name.as_ref().and_then(|name| {
+                    nodes
+                        .iter()
+                        .find(|(_, n)| n.name.as_deref() == Some(name))
+                        .map(|(&id, _)| id)
+                });
             }
         }
     }
 
     fn clear_metadata(&mut self, metadata_id: u32) -> bool {
-        let mut changed = false;
-        for slot in [&mut self.audio_sink, &mut self.audio_source] {
-            if slot
-                .as_ref()
-                .is_some_and(|t| t.metadata_id == Some(metadata_id))
-            {
-                *slot = None;
-                changed = true;
-            }
-        }
-        changed
+        self.clear_slots(|t| t.metadata_id == Some(metadata_id), |_| {})
     }
 
     fn clear_node(&mut self, node_id: u32, fallback_name: Option<String>) -> bool {
+        self.clear_slots(
+            |t| t.node_id == Some(node_id),
+            |t| {
+                t.node_id = None;
+                if t.name.is_none() {
+                    t.name = fallback_name.clone();
+                }
+            },
+        )
+    }
+
+    fn clear_slots<P, F>(&mut self, predicate: P, mutate: F) -> bool
+    where
+        P: Fn(&DefaultTarget) -> bool,
+        F: Fn(&mut DefaultTarget),
+    {
         let mut changed = false;
         for slot in [&mut self.audio_sink, &mut self.audio_source] {
             if let Some(target) = slot
-                && target.node_id == Some(node_id)
+                && predicate(target)
             {
-                target.node_id = None;
-                if target.name.is_none() {
-                    target.name = fallback_name.clone();
+                mutate(target);
+                if slot
+                    .as_ref()
+                    .map(|t| t.node_id.is_none() && t.name.is_none())
+                    .unwrap_or(false)
+                {
+                    *slot = None;
                 }
                 changed = true;
             }
@@ -798,21 +743,19 @@ impl RegistryRuntime {
     fn set_command_sender(&self, sender: mpsc::Sender<RegistryCommand>) {
         *self.commands.write() = Some(sender);
     }
-
     fn clear_command_sender(&self) {
         *self.commands.write() = None;
     }
 
     fn send_command(&self, command: RegistryCommand) -> bool {
-        let Some(sender) = self.commands.read().as_ref().cloned() else {
+        let Some(sender) = self.commands.read().clone() else {
             warn!("[registry] command channel not initialised");
             return false;
         };
-        if sender.send(command).is_err() {
-            warn!("[registry] failed to send command; channel closed");
-            return false;
-        }
-        true
+        sender
+            .send(command)
+            .map_err(|_| warn!("[registry] failed to send command; channel closed"))
+            .is_ok()
     }
 
     fn snapshot(&self) -> RegistrySnapshot {
@@ -821,30 +764,18 @@ impl RegistryRuntime {
 
     fn subscribe(&self) -> RegistryUpdates {
         let (tx, rx) = mpsc::channel();
-        {
-            let mut watchers = self.watchers.write();
-            watchers.push(tx);
-        }
-
+        self.watchers.write().push(tx);
         RegistryUpdates {
             initial: Some(self.snapshot()),
             receiver: rx,
         }
     }
 
-    fn mutate<F>(&self, mutate: F) -> bool
-    where
-        F: FnOnce(&mut RegistryState) -> bool,
-    {
-        let changed = {
-            let mut state = self.state.write();
-            mutate(&mut state)
-        };
-
+    fn mutate<F: FnOnce(&mut RegistryState) -> bool>(&self, f: F) -> bool {
+        let changed = f(&mut self.state.write());
         if changed {
             self.notify_watchers();
         }
-
         changed
     }
 
@@ -852,7 +783,7 @@ impl RegistryRuntime {
         let snapshot = self.state.read().snapshot();
         self.watchers
             .write()
-            .retain(|sender| sender.send(snapshot.clone()).is_ok());
+            .retain(|tx| tx.send(snapshot.clone()).is_ok());
     }
 }
 
@@ -990,10 +921,7 @@ impl LinkState {
         self.active_links.retain(|spec, _| {
             let keep = desired_set.contains(spec);
             if !keep {
-                debug!(
-                    "[registry] removed link {}:{} -> {}:{}",
-                    spec.output_node, spec.output_port, spec.input_node, spec.input_port
-                );
+                debug!("[registry] removed link {:?}", spec);
             }
             keep
         });
@@ -1002,7 +930,6 @@ impl LinkState {
             if self.active_links.contains_key(&spec) {
                 continue;
             }
-
             match create_passive_audio_link(
                 &self.core,
                 spec.output_node,
@@ -1011,18 +938,10 @@ impl LinkState {
                 spec.input_port,
             ) {
                 Ok(link) => {
-                    debug!(
-                        "[registry] linked {}:{} -> {}:{}",
-                        spec.output_node, spec.output_port, spec.input_node, spec.input_port
-                    );
+                    debug!("[registry] linked {:?}", spec);
                     self.active_links.insert(spec, link);
                 }
-                Err(err) => {
-                    error!(
-                        "[registry] link failed {}:{} -> {}:{}: {err}",
-                        spec.output_node, spec.output_port, spec.input_node, spec.input_port
-                    );
-                }
+                Err(err) => error!("[registry] link failed {:?}: {err}", spec),
             }
         }
     }
@@ -1035,38 +954,32 @@ fn handle_command(
     mainloop: &pw::main_loop::MainLoopRc,
 ) {
     match command {
-        RegistryCommand::SetLinks(desired) => {
-            link_state.apply_links(desired);
-        }
+        RegistryCommand::SetLinks(desired) => link_state.apply_links(desired),
         RegistryCommand::RouteNode {
             subject,
             target_object,
             target_node,
         } => {
-            if let Some(metadata) = routing_metadata.borrow().as_ref() {
-                let loop_ref = mainloop.loop_();
-
-                metadata.set_property(
-                    subject,
-                    TARGET_OBJECT_KEY,
-                    Some("Spa:Id"),
-                    Some(&target_object),
-                );
-                loop_ref.iterate(Duration::from_millis(10));
-
-                metadata.set_property(subject, TARGET_NODE_KEY, Some("Spa:Id"), Some(&target_node));
-                loop_ref.iterate(Duration::from_millis(10));
-
-                debug!(
-                    "[registry] routed node {} -> object={}, node={}",
-                    subject, target_object, target_node
-                );
-            } else {
+            let borrowed = routing_metadata.borrow();
+            let Some(metadata) = borrowed.as_ref() else {
                 warn!(
                     "[registry] cannot route node {}; no metadata bound",
                     subject
                 );
+                return;
+            };
+            let loop_ref = mainloop.loop_();
+            for (key, value) in [
+                (TARGET_OBJECT_KEY, &target_object),
+                (TARGET_NODE_KEY, &target_node),
+            ] {
+                metadata.set_property(subject, key, Some("Spa:Id"), Some(value));
+                loop_ref.iterate(Duration::from_millis(10));
             }
+            debug!(
+                "[registry] routed node {} -> object={}, node={}",
+                subject, target_object, target_node
+            );
         }
     }
 }
@@ -1080,29 +993,26 @@ fn handle_global_added(
 ) {
     match global.type_ {
         ObjectType::Node => {
-            let info = NodeInfo::from_global(global);
-            runtime.mutate(move |state| state.upsert_node(info));
+            runtime.mutate(|s| s.upsert_node(NodeInfo::from_global(global)));
         }
         ObjectType::Device => {
-            runtime.mutate(|state| {
-                state.add_device();
+            runtime.mutate(|s| {
+                s.add_device();
                 true
             });
         }
         ObjectType::Port => {
-            if let Some(port) = GraphPort::from_global(global) {
-                runtime.mutate(move |state| state.upsert_port(port));
+            if let Some(p) = GraphPort::from_global(global) {
+                runtime.mutate(|s| s.upsert_port(p));
             }
         }
-        ObjectType::Metadata => {
-            process_metadata_added(
-                registry,
-                global,
-                runtime,
-                metadata_bindings,
-                routing_metadata,
-            );
-        }
+        ObjectType::Metadata => process_metadata_added(
+            registry,
+            global,
+            runtime,
+            metadata_bindings,
+            routing_metadata,
+        ),
         _ => {}
     }
 }
@@ -1112,12 +1022,11 @@ fn handle_global_removed(
     runtime: &RegistryRuntime,
     metadata_bindings: &Rc<RefCell<HashMap<u32, MetadataBinding>>>,
 ) {
-    if runtime.mutate(|state| state.remove_port(id) || state.remove_node(id)) {
+    if runtime.mutate(|s| s.remove_port(id) || s.remove_node(id)) {
         return;
     }
-
     if metadata_bindings.borrow_mut().remove(&id).is_some() {
-        runtime.mutate(|state| state.apply_metadata_property(id, 0, None, None, None));
+        runtime.mutate(|s| s.apply_metadata_property(id, 0, None, None, None));
     }
 }
 
@@ -1138,29 +1047,23 @@ fn process_metadata_added(
     let props = dict_to_map(global.props.as_ref().copied());
     let metadata_name = props.get("metadata.name").cloned();
 
-    let metadata = match registry.bind::<Metadata, _>(global) {
-        Ok(metadata) => metadata,
-        Err(err) => {
-            warn!("[registry] failed to bind metadata {metadata_id}: {err}");
-            return;
-        }
+    let Ok(metadata) = registry.bind::<Metadata, _>(global) else {
+        warn!("[registry] failed to bind metadata {metadata_id}");
+        return;
     };
 
-    let is_preferred = metadata_name
-        .as_deref()
-        .map(|candidate| {
-            PREFERRED_METADATA_NAMES
-                .iter()
-                .any(|preferred| preferred.eq_ignore_ascii_case(candidate))
-        })
-        .unwrap_or(false);
+    let is_preferred = metadata_name.as_deref().is_some_and(|n| {
+        PREFERRED_METADATA_NAMES
+            .iter()
+            .any(|p| p.eq_ignore_ascii_case(n))
+    });
 
     {
         let mut routing_ref = routing_metadata.borrow_mut();
         if (is_preferred || routing_ref.is_none())
-            && let Ok(routing_copy) = registry.bind::<Metadata, _>(global)
+            && let Ok(copy) = registry.bind::<Metadata, _>(global)
         {
-            *routing_ref = Some(routing_copy);
+            *routing_ref = Some(copy);
             info!(
                 "[registry] using metadata '{}' for routing",
                 metadata_name.as_deref().unwrap_or("unnamed")
