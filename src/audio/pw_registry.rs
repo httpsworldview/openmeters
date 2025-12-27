@@ -23,7 +23,7 @@ use std::thread;
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
-// helpers previously in utils. 
+// helpers previously in utils.
 // inlining becase they are only used here and in the registry monitor.
 
 fn dict_to_map(dict: Option<&DictRef>) -> HashMap<String, String> {
@@ -189,9 +189,8 @@ impl DefaultTarget {
 
 fn parse_metadata_name(type_hint: Option<&str>, value: Option<&str>) -> Option<String> {
     let trimmed = value?.trim();
-    let expects_json =
-        matches!(type_hint, Some(h) if h.eq_ignore_ascii_case("Spa:String:JSON"))
-            || trimmed.starts_with('{');
+    let expects_json = matches!(type_hint, Some(h) if h.eq_ignore_ascii_case("Spa:String:JSON"))
+        || trimmed.starts_with('{');
 
     if expects_json {
         match serde_json::from_str::<Value>(trimmed) {
@@ -211,7 +210,11 @@ struct TargetMetadata {
     target_node: String,
 }
 
-fn format_target_metadata(object_serial: Option<&str>, node_id: u32, _node_name: &str) -> TargetMetadata {
+fn format_target_metadata(
+    object_serial: Option<&str>,
+    node_id: u32,
+    _node_name: &str,
+) -> TargetMetadata {
     let object_value = object_serial
         .map(str::trim)
         .filter(|v| !v.is_empty())
