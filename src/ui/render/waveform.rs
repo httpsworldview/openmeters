@@ -4,6 +4,7 @@ use iced_wgpu::primitive::{self, Primitive};
 use iced_wgpu::wgpu;
 use std::sync::Arc;
 
+use crate::sdf_render_pass;
 use crate::ui::render::common::{ClipTransform, InstanceBuffer, SdfPipeline, SdfVertex};
 use crate::ui::render::geometry::{self, DEFAULT_FEATHER, append_strip};
 
@@ -228,36 +229,17 @@ impl Primitive for WaveformPrimitive {
         let Some(instance) = pipeline.instance(self.key()) else {
             return;
         };
-
         if instance.vertex_count == 0 {
             return;
         }
-
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Waveform pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-                depth_slice: None,
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-        });
-
-        pass.set_scissor_rect(
-            clip_bounds.x,
-            clip_bounds.y,
-            clip_bounds.width.max(1),
-            clip_bounds.height.max(1),
+        sdf_render_pass!(
+            encoder,
+            target,
+            clip_bounds,
+            "Waveform",
+            &pipeline.inner.pipeline,
+            instance
         );
-        pass.set_pipeline(&pipeline.inner.pipeline);
-        pass.set_vertex_buffer(0, instance.vertex_buffer.slice(0..instance.used_bytes()));
-        pass.draw(0..instance.vertex_count, 0..1);
     }
 }
 

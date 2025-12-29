@@ -4,6 +4,7 @@ use iced_wgpu::primitive::{self, Primitive};
 use iced_wgpu::wgpu;
 
 use crate::dsp::stereometer::BandCorrelation;
+use crate::sdf_render_pass;
 use crate::ui::render::common::{
     ClipTransform, SdfPipeline, SdfVertex, dot_vertices, gradient_quad_vertices, line_vertices,
     quad_vertices,
@@ -258,26 +259,14 @@ impl Primitive for StereometerPrimitive {
         if inst.vertex_count == 0 {
             return;
         }
-
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Stereometer"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
-                resolve_target: None,
-                depth_slice: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-        });
-        pass.set_scissor_rect(clip.x, clip.y, clip.width.max(1), clip.height.max(1));
-        pass.set_pipeline(&pipeline.inner.pipeline);
-        pass.set_vertex_buffer(0, inst.vertex_buffer.slice(0..inst.used_bytes()));
-        pass.draw(0..inst.vertex_count, 0..1);
+        sdf_render_pass!(
+            encoder,
+            target,
+            clip,
+            "Stereometer",
+            &pipeline.inner.pipeline,
+            inst
+        );
     }
 }
 
