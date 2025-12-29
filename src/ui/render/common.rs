@@ -4,40 +4,40 @@ use bytemuck::{Pod, Zeroable};
 use iced::advanced::graphics::Viewport;
 use iced_wgpu::wgpu;
 use std::collections::HashMap;
-use std::mem;
+use std::mem::size_of;
 
 /// Transforms logical screen coordinates to clip space coordinates.
 #[derive(Clone, Copy)]
-pub struct ClipTransform {
-    scale_x: f32,
-    scale_y: f32,
-}
+pub struct ClipTransform(f32, f32);
 
 impl ClipTransform {
-    pub fn new(width: f32, height: f32) -> Self {
-        Self {
-            scale_x: 2.0 / width,
-            scale_y: 2.0 / height,
-        }
+    pub fn new(w: f32, h: f32) -> Self {
+        Self(2.0 / w.max(1.0), 2.0 / h.max(1.0))
     }
 
-    pub fn from_viewport(viewport: &Viewport) -> Self {
-        let logical_size = viewport.logical_size();
-        Self::new(logical_size.width.max(1.0), logical_size.height.max(1.0))
+    pub fn from_viewport(vp: &Viewport) -> Self {
+        let s = vp.logical_size();
+        Self::new(s.width, s.height)
     }
 
     #[inline]
     pub fn to_clip(self, x: f32, y: f32) -> [f32; 2] {
-        [x * self.scale_x - 1.0, 1.0 - y * self.scale_y]
+        [x * self.0 - 1.0, 1.0 - y * self.1]
     }
 }
 
+macro_rules! vertex_attrs {
+    ($($loc:literal : $off:literal => $fmt:ident),+ $(,)?) => {
+        &[$(wgpu::VertexAttribute {
+            offset: $off,
+            shader_location: $loc,
+            format: wgpu::VertexFormat::$fmt,
+        }),+]
+    };
+}
+
 /// Vertex with SDF params for antialiased rendering.
-///
 /// `params`: `[dist_x, dist_y, radius, feather]`
-/// - Solid: `[0, 0, 1000, 1]`
-/// - Line: `[±outer, 0, half_width, feather]`
-/// - Dot: `[ox, oy, radius, feather]`
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct SdfVertex {
@@ -47,54 +47,31 @@ pub struct SdfVertex {
 }
 
 impl SdfVertex {
-    /// Params for solid fills (always full coverage).
     pub const SOLID_PARAMS: [f32; 4] = [0.0, 0.0, 1000.0, 1.0];
 
     pub fn layout() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
-            array_stride: mem::size_of::<SdfVertex>() as wgpu::BufferAddress,
+            array_stride: size_of::<Self>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[
-                wgpu::VertexAttribute {
-                    offset: 0,
-                    shader_location: 0,
-                    format: wgpu::VertexFormat::Float32x2,
-                },
-                wgpu::VertexAttribute {
-                    offset: 8,
-                    shader_location: 1,
-                    format: wgpu::VertexFormat::Float32x4,
-                },
-                wgpu::VertexAttribute {
-                    offset: 24,
-                    shader_location: 2,
-                    format: wgpu::VertexFormat::Float32x4,
-                },
-            ],
+            attributes: vertex_attrs!(0: 0 => Float32x2, 1: 8 => Float32x4, 2: 24 => Float32x4),
         }
     }
 
     #[inline]
-    pub fn solid(position: [f32; 2], color: [f32; 4]) -> Self {
+    pub fn solid(pos: [f32; 2], color: [f32; 4]) -> Self {
         Self {
-            position,
+            position: pos,
             color,
             params: Self::SOLID_PARAMS,
         }
     }
 
     #[inline]
-    pub fn antialiased(
-        position: [f32; 2],
-        color: [f32; 4],
-        signed_distance: f32,
-        half_width: f32,
-        feather: f32,
-    ) -> Self {
+    pub fn antialiased(pos: [f32; 2], color: [f32; 4], dist: f32, half: f32, feather: f32) -> Self {
         Self {
-            position,
+            position: pos,
             color,
-            params: [signed_distance, 0.0, half_width, feather],
+            params: [dist, 0.0, half, feather],
         }
     }
 }
@@ -110,10 +87,15 @@ pub struct InstanceBuffer<V: Pod> {
 
 impl<V: Pod> InstanceBuffer<V> {
     pub fn new(device: &wgpu::Device, label: &'static str, size: wgpu::BufferAddress) -> Self {
-        let buffer = create_vertex_buffer(device, label, size.max(1));
+        let size = size.max(1);
         Self {
-            vertex_buffer: buffer,
-            capacity: size.max(1),
+            vertex_buffer: device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            capacity: size,
             vertex_count: 0,
             _marker: std::marker::PhantomData,
         }
@@ -125,82 +107,44 @@ impl<V: Pod> InstanceBuffer<V> {
         label: &'static str,
         size: wgpu::BufferAddress,
     ) {
-        if size <= self.capacity {
-            return;
+        if size > self.capacity {
+            *self = Self::new(device, label, size.next_power_of_two());
         }
-
-        let new_capacity = size.next_power_of_two().max(1);
-        self.vertex_buffer = create_vertex_buffer(device, label, new_capacity);
-        self.capacity = new_capacity;
     }
 
     pub fn write(&mut self, queue: &wgpu::Queue, vertices: &[V]) {
-        if vertices.is_empty() {
-            self.vertex_count = 0;
-            return;
-        }
-
-        queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(vertices));
         self.vertex_count = vertices.len() as u32;
+        if !vertices.is_empty() {
+            queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(vertices));
+        }
     }
 
+    #[inline]
     pub fn used_bytes(&self) -> wgpu::BufferAddress {
-        self.vertex_count as wgpu::BufferAddress * mem::size_of::<V>() as wgpu::BufferAddress
+        self.vertex_count as wgpu::BufferAddress * size_of::<V>() as wgpu::BufferAddress
     }
-}
-
-pub fn create_vertex_buffer(
-    device: &wgpu::Device,
-    label: &'static str,
-    size: wgpu::BufferAddress,
-) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some(label),
-        size,
-        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    })
 }
 
 /// Produces eviction thresholds for pruning stale cache entries.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CacheTracker {
     frame: u64,
     counter: u64,
-    retain: u64,
-    interval: u64,
 }
 
 impl CacheTracker {
-    pub const fn new(retain: u64, interval: u64) -> Self {
-        Self {
-            frame: 0,
-            counter: 0,
-            retain,
-            interval,
-        }
-    }
+    const RETAIN: u64 = 1024;
+    const INTERVAL: u64 = 256;
 
-    /// Returns `(frame, Some(eviction_threshold))` every `interval` frames.
+    /// Returns `(frame, Some(threshold))` every `INTERVAL` frames for eviction.
     pub fn advance(&mut self) -> (u64, Option<u64>) {
         self.frame = self.frame.wrapping_add(1).max(1);
-        if self.interval == 0 {
-            return (self.frame, None);
-        }
-
         self.counter = self.counter.wrapping_add(1);
-        if self.counter.is_multiple_of(self.interval) {
-            let threshold = self.frame.saturating_sub(self.retain);
-            (self.frame, Some(threshold))
-        } else {
-            (self.frame, None)
-        }
-    }
-}
-
-impl Default for CacheTracker {
-    fn default() -> Self {
-        Self::new(1024, 256)
+        let threshold = self
+            .counter
+            .is_multiple_of(Self::INTERVAL)
+            .then(|| self.frame.saturating_sub(Self::RETAIN));
+        (self.frame, threshold)
     }
 }
 
@@ -224,21 +168,20 @@ pub fn create_sdf_pipeline(
     topology: wgpu::PrimitiveTopology,
 ) -> wgpu::RenderPipeline {
     let shader = create_shader_module(device, label, include_str!("shaders/sdf.wgsl"));
-
-    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label: Some(label),
-        bind_group_layouts: &[],
-        push_constant_ranges: &[],
-    });
-
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(label),
-        layout: Some(&layout),
+        layout: Some(
+            &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some(label),
+                bind_group_layouts: &[],
+                push_constant_ranges: &[],
+            }),
+        ),
         vertex: wgpu::VertexState {
             module: &shader,
             entry_point: Some("vs_main"),
             buffers: &[SdfVertex::layout()],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            compilation_options: Default::default(),
         },
         fragment: Some(wgpu::FragmentState {
             module: &shader,
@@ -248,29 +191,20 @@ pub fn create_sdf_pipeline(
                 blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                 write_mask: wgpu::ColorWrites::ALL,
             })],
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            compilation_options: Default::default(),
         }),
         primitive: wgpu::PrimitiveState {
             topology,
-            strip_index_format: None,
-            front_face: wgpu::FrontFace::Ccw,
-            cull_mode: None,
-            unclipped_depth: false,
-            polygon_mode: wgpu::PolygonMode::Fill,
-            conservative: false,
+            ..Default::default()
         },
         depth_stencil: None,
-        multisample: wgpu::MultisampleState {
-            count: 1,
-            mask: !0,
-            alpha_to_coverage_enabled: false,
-        },
+        multisample: Default::default(),
         multiview: None,
         cache: None,
     })
 }
 
-/// Writes a tightly packed texture region with a consistent `bytes_per_row` layout.
+/// Writes a tightly packed texture region.
 #[inline]
 pub fn write_texture_region(
     queue: &wgpu::Queue,
@@ -297,7 +231,8 @@ pub fn write_texture_region(
     );
 }
 
-/// Helper to generate six SDF vertices forming a solid quad (two triangles).
+/// Generates six SDF vertices forming a quad (two triangles).
+/// Pass identical colors for solid fill, or different for vertical gradient.
 #[inline]
 pub fn quad_vertices(
     x0: f32,
@@ -307,22 +242,10 @@ pub fn quad_vertices(
     clip: ClipTransform,
     color: [f32; 4],
 ) -> [SdfVertex; 6] {
-    let tl = clip.to_clip(x0, y0);
-    let tr = clip.to_clip(x1, y0);
-    let bl = clip.to_clip(x0, y1);
-    let br = clip.to_clip(x1, y1);
-
-    [
-        SdfVertex::solid(tl, color),
-        SdfVertex::solid(bl, color),
-        SdfVertex::solid(br, color),
-        SdfVertex::solid(tl, color),
-        SdfVertex::solid(br, color),
-        SdfVertex::solid(tr, color),
-    ]
+    gradient_quad_vertices(x0, y0, x1, y1, clip, color, color)
 }
 
-/// Quad with per-edge colors for smooth vertical gradients (top_color at y0, bottom_color at y1).
+/// Quad with per-edge colors for smooth vertical gradients.
 #[inline]
 pub fn gradient_quad_vertices(
     x0: f32,
@@ -330,22 +253,26 @@ pub fn gradient_quad_vertices(
     x1: f32,
     y1: f32,
     clip: ClipTransform,
-    top_color: [f32; 4],
-    bottom_color: [f32; 4],
+    top: [f32; 4],
+    bot: [f32; 4],
 ) -> [SdfVertex; 6] {
-    let (tl, tr) = (clip.to_clip(x0, y0), clip.to_clip(x1, y0));
-    let (bl, br) = (clip.to_clip(x0, y1), clip.to_clip(x1, y1));
+    let (tl, tr, bl, br) = (
+        clip.to_clip(x0, y0),
+        clip.to_clip(x1, y0),
+        clip.to_clip(x0, y1),
+        clip.to_clip(x1, y1),
+    );
     [
-        SdfVertex::solid(tl, top_color),
-        SdfVertex::solid(bl, bottom_color),
-        SdfVertex::solid(br, bottom_color),
-        SdfVertex::solid(tl, top_color),
-        SdfVertex::solid(br, bottom_color),
-        SdfVertex::solid(tr, top_color),
+        SdfVertex::solid(tl, top),
+        SdfVertex::solid(bl, bot),
+        SdfVertex::solid(br, bot),
+        SdfVertex::solid(tl, top),
+        SdfVertex::solid(br, bot),
+        SdfVertex::solid(tr, top),
     ]
 }
 
-/// Helper to generate six SDF vertices forming a line segment.
+/// Generates six SDF vertices forming an antialiased line segment.
 #[inline]
 pub fn line_vertices(
     p0: (f32, f32),
@@ -356,35 +283,26 @@ pub fn line_vertices(
     feather: f32,
     clip: ClipTransform,
 ) -> [SdfVertex; 6] {
-    let dx = p1.0 - p0.0;
-    let dy = p1.1 - p0.1;
-    let len = (dx * dx + dy * dy).sqrt().max(1e-6);
-    let (nx, ny) = (-dy / len, dx / len);
-
-    let outer = width + feather;
-    let half = width * 0.5;
-    let (ox, oy) = (nx * outer, ny * outer);
-
-    let v = |px, py, c, p| SdfVertex {
+    let (dx, dy) = (p1.0 - p0.0, p1.1 - p0.1);
+    let inv = (dx * dx + dy * dy).sqrt().max(1e-6).recip();
+    let (half, outer) = (width * 0.5, width + feather);
+    let (ox, oy) = (-dy * inv * outer, dx * inv * outer);
+    let v = |px, py, c, d| SdfVertex {
         position: clip.to_clip(px, py),
         color: c,
-        params: p,
+        params: [d, 0.0, half, feather],
     };
-
-    let p_neg = [-outer, 0.0, half, feather];
-    let p_pos = [outer, 0.0, half, feather];
-
     [
-        v(p0.0 - ox, p0.1 - oy, c0, p_neg),
-        v(p0.0 + ox, p0.1 + oy, c0, p_pos),
-        v(p1.0 - ox, p1.1 - oy, c1, p_neg),
-        v(p0.0 + ox, p0.1 + oy, c0, p_pos),
-        v(p1.0 + ox, p1.1 + oy, c1, p_pos),
-        v(p1.0 - ox, p1.1 - oy, c1, p_neg),
+        v(p0.0 - ox, p0.1 - oy, c0, -outer),
+        v(p0.0 + ox, p0.1 + oy, c0, outer),
+        v(p1.0 - ox, p1.1 - oy, c1, -outer),
+        v(p0.0 + ox, p0.1 + oy, c0, outer),
+        v(p1.0 + ox, p1.1 + oy, c1, outer),
+        v(p1.0 - ox, p1.1 - oy, c1, -outer),
     ]
 }
 
-/// Helper to generate six SDF vertices forming a dot.
+/// Generates six SDF vertices forming an antialiased dot.
 #[inline]
 pub fn dot_vertices(
     cx: f32,
@@ -400,7 +318,6 @@ pub fn dot_vertices(
         color,
         params: [ox, oy, radius, feather],
     };
-
     [
         v(cx - o, cy - o, -o, -o),
         v(cx - o, cy + o, -o, o),
@@ -448,27 +365,52 @@ impl<K: std::hash::Hash + Eq + Copy> SdfPipeline<K> {
         vertices: &[SdfVertex],
     ) {
         let (frame, threshold) = self.cache.advance();
-        let required_size = mem::size_of_val(vertices) as wgpu::BufferAddress;
-
+        let required =
+            size_of::<SdfVertex>() as wgpu::BufferAddress * vertices.len() as wgpu::BufferAddress;
         let entry = self.instances.entry(key).or_insert_with(|| CachedInstance {
-            buffer: InstanceBuffer::new(device, label, required_size.max(1)),
+            buffer: InstanceBuffer::new(device, label, required.max(1)),
             last_used: frame,
         });
         entry.last_used = frame;
-
         if vertices.is_empty() {
             entry.buffer.vertex_count = 0;
         } else {
-            entry.buffer.ensure_capacity(device, label, required_size);
+            entry.buffer.ensure_capacity(device, label, required);
             entry.buffer.write(queue, vertices);
         }
-
         if let Some(t) = threshold {
             self.instances.retain(|_, e| e.last_used >= t);
         }
     }
 
+    #[inline]
     pub fn instance(&self, key: K) -> Option<&InstanceBuffer<SdfVertex>> {
         self.instances.get(&key).map(|e| &e.buffer)
     }
+}
+
+/// Macro to create a render pass, set scissor/pipeline/buffer, and draw in one call.
+#[macro_export]
+macro_rules! sdf_render_pass {
+    ($encoder:expr, $target:expr, $clip:expr, $label:expr, $pipeline:expr, $instance:expr) => {{
+        let mut pass = $encoder.begin_render_pass(&iced_wgpu::wgpu::RenderPassDescriptor {
+            label: Some($label),
+            color_attachments: &[Some(iced_wgpu::wgpu::RenderPassColorAttachment {
+                view: $target,
+                resolve_target: None,
+                depth_slice: None,
+                ops: iced_wgpu::wgpu::Operations {
+                    load: iced_wgpu::wgpu::LoadOp::Load,
+                    store: iced_wgpu::wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        pass.set_scissor_rect($clip.x, $clip.y, $clip.width.max(1), $clip.height.max(1));
+        pass.set_pipeline($pipeline);
+        pass.set_vertex_buffer(0, $instance.vertex_buffer.slice(0..$instance.used_bytes()));
+        pass.draw(0..$instance.vertex_count, 0..1);
+    }};
 }
