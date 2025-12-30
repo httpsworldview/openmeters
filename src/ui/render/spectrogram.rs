@@ -18,6 +18,8 @@ pub const PALETTE_LUT_SIZE: u32 = 256;
 // capacity is power of two for wrapping
 const FLAG_POW2: u32 = 1;
 
+const MAX_TEXTURE_DIM: u32 = 8192;
+
 macro_rules! extent3d {
     ($w:expr, $h:expr) => {
         wgpu::Extent3d {
@@ -516,54 +518,33 @@ impl Resources {
     fn grow_magnitude(
         &mut self,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        _queue: &wgpu::Queue,
         layout: &wgpu::BindGroupLayout,
         w: u32,
         h: u32,
     ) {
-        let (tw, th) = (w.max(1), h.max(1));
+        let (tw, th) = (w.clamp(1, MAX_TEXTURE_DIM), h.clamp(1, MAX_TEXTURE_DIM));
         if tw <= self.magnitude_cap.0 && th <= self.magnitude_cap.1 {
             return;
         }
 
-        let old_tex = std::mem::replace(
-            &mut self.magnitude_tex,
-            device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("Spectrogram magnitude"),
-                size: extent3d!(th, tw),
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::R32Float,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING
-                    | wgpu::TextureUsages::COPY_DST
-                    | wgpu::TextureUsages::COPY_SRC,
-                view_formats: &[wgpu::TextureFormat::R32Float],
-            }),
+        let new_cap = (
+            tw.max(self.magnitude_cap.0),
+            th.max(self.magnitude_cap.1),
         );
-        self.magnitude_view = self.magnitude_tex.create_view(&Default::default());
 
-        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Magnitude copy"),
+        self.magnitude_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Spectrogram magnitude"),
+            size: extent3d!(new_cap.1, new_cap.0),
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R32Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[wgpu::TextureFormat::R32Float],
         });
-        enc.copy_texture_to_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &old_tex,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.magnitude_tex,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            extent3d!(self.magnitude_cap.1, self.magnitude_cap.0),
-        );
-        queue.submit(Some(enc.finish()));
-
-        self.magnitude_cap = (tw.max(self.magnitude_cap.0), th.max(self.magnitude_cap.1));
+        self.magnitude_view = self.magnitude_tex.create_view(&Default::default());
+        self.magnitude_cap = new_cap;
         self.bind_group = make_bind_group(
             device,
             layout,
@@ -643,9 +624,7 @@ fn create_magnitude(
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::R32Float,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING
-            | wgpu::TextureUsages::COPY_DST
-            | wgpu::TextureUsages::COPY_SRC,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[wgpu::TextureFormat::R32Float],
     });
     let view = tex.create_view(&Default::default());
