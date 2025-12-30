@@ -509,33 +509,26 @@ impl Resources {
         layout: &wgpu::BindGroupLayout,
         p: &SpectrogramParams,
     ) {
-        self.grow_magnitude(device, queue, layout, p.texture_width, p.texture_height);
+        self.resize_magnitude(device, layout, p.texture_width, p.texture_height);
         self.write_columns(queue, p);
         self.write_uniforms(queue, p);
         self.write_palette(queue, p);
     }
 
-    fn grow_magnitude(
+    fn resize_magnitude(
         &mut self,
         device: &wgpu::Device,
-        _queue: &wgpu::Queue,
         layout: &wgpu::BindGroupLayout,
         w: u32,
         h: u32,
     ) {
         let (tw, th) = (w.clamp(1, MAX_TEXTURE_DIM), h.clamp(1, MAX_TEXTURE_DIM));
-        if tw <= self.magnitude_cap.0 && th <= self.magnitude_cap.1 {
+        if tw == self.magnitude_cap.0 && th == self.magnitude_cap.1 {
             return;
         }
-
-        let new_cap = (
-            tw.max(self.magnitude_cap.0),
-            th.max(self.magnitude_cap.1),
-        );
-
         self.magnitude_tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Spectrogram magnitude"),
-            size: extent3d!(new_cap.1, new_cap.0),
+            size: extent3d!(th, tw),
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -544,7 +537,7 @@ impl Resources {
             view_formats: &[wgpu::TextureFormat::R32Float],
         });
         self.magnitude_view = self.magnitude_tex.create_view(&Default::default());
-        self.magnitude_cap = new_cap;
+        self.magnitude_cap = (tw, th);
         self.bind_group = make_bind_group(
             device,
             layout,
