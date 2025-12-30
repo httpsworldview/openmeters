@@ -38,6 +38,13 @@ const CONFIDENCE_SNR_RANGE_DB: f32 = 60.0;
 const CONFIDENCE_FLOOR: f32 = 0.01;
 const CHIRP_SAFETY_MARGIN: f32 = 2.0;
 
+// max_correction_hz = bin_hz * OPTIMAL_FREQ_CORRECTION_RATIO
+// max_time_hops = (fft_size / hop_size * WINDOW_SIGMA_T_RATIO * OPTIMAL_TIME_SPREAD).clamp(MIN/MAX)
+const OPTIMAL_FREQ_CORRECTION_RATIO: f32 = 0.75;
+const OPTIMAL_TIME_SPREAD: f32 = 3.5;
+const OPTIMAL_TIME_HOPS_MIN: f32 = 2.0;
+const OPTIMAL_TIME_HOPS_MAX: f32 = 8.0;
+
 const GAUSSIAN_KERNEL_3X3: [[f32; 3]; 3] = {
     const C: f32 = 1.0;
     const E: f32 = 0.324_652_5;
@@ -95,8 +102,8 @@ impl Default for SpectrogramConfig {
             zero_padding_factor: 4,
             display_bin_count: 1024,
             display_min_hz: 20.0,
-            reassignment_max_correction_hz: 0.0,
-            reassignment_max_time_hops: 2.0,
+            reassignment_max_correction_hz: 0.0, // 0.0 = auto (0.75 x bin_hz)
+            reassignment_max_time_hops: 0.0,     // 0.0 = auto
         }
     }
 }
@@ -449,7 +456,23 @@ impl Reassignment2DGrid {
         }
 
         let bins = cfg.display_bin_count.max(2);
-        let hops = (cfg.reassignment_max_time_hops.ceil() as usize).max(1);
+        let hops = if cfg.reassignment_max_time_hops > 0.0 {
+            (cfg.reassignment_max_time_hops.ceil() as usize).max(1)
+        } else {
+            let overlap_ratio = cfg.fft_size as f32 / cfg.hop_size.max(1) as f32;
+            let sigma_t_ratio = match cfg.window {
+                WindowKind::Hann => 0.1414,
+                WindowKind::Blackman => 0.1188,
+                WindowKind::BlackmanHarris => 0.1117,
+                WindowKind::Hamming => 0.1443,
+                WindowKind::Rectangular => 0.2887,
+                WindowKind::PlanckBessel { .. } => 0.12,
+            };
+            let optimal = overlap_ratio * sigma_t_ratio * OPTIMAL_TIME_SPREAD;
+            optimal
+                .clamp(OPTIMAL_TIME_HOPS_MIN, OPTIMAL_TIME_HOPS_MAX)
+                .ceil() as usize
+        };
         let cols = 2 * hops + 1;
         let min = cfg.display_min_hz.max(1.0).min(cfg.sample_rate * 0.5);
         let max = (cfg.sample_rate * 0.5).max(min * 1.001);
@@ -750,7 +773,7 @@ impl SpectrogramProcessor {
         let max_corr = if self.cfg.reassignment_max_correction_hz > 0.0 {
             self.cfg.reassignment_max_correction_hz
         } else {
-            bin_hz
+            bin_hz * OPTIMAL_FREQ_CORRECTION_RATIO
         };
         self.reassign.cache.clear();
 
