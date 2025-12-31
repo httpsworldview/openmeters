@@ -1,51 +1,36 @@
 //! Shared widgets and utilities for the settings panes
 
-use std::borrow::Cow;
-use std::fmt;
-
+use super::SettingsMessage;
 use crate::ui::theme;
 use iced::Length;
 use iced::alignment::Vertical;
 use iced::widget::text::Wrapping;
 use iced::widget::{column, container, pick_list, row, slider, text};
+use std::borrow::Cow;
+use std::fmt;
 
-use super::SettingsMessage;
-
-pub const CONTROL_SPACING: f32 = 8.0;
-pub const LABEL_SIZE: u32 = 12;
-pub const VALUE_SIZE: u32 = 11;
-pub const VALUE_GAP: f32 = 6.0;
 pub struct SliderRange {
     pub min: f32,
     pub max: f32,
     pub step: f32,
 }
-
 impl SliderRange {
     pub const fn new(min: f32, max: f32, step: f32) -> Self {
         Self { min, max, step }
     }
-
     #[inline]
     pub fn snap(self, value: f32) -> f32 {
         debug_assert!(self.step > 0.0, "SliderRange::snap expects a positive step");
         if self.step <= 0.0 {
             return value.clamp(self.min, self.max);
         }
-
-        let steps_from_min = ((value - self.min) / self.step).round();
-        (self.min + steps_from_min * self.step).clamp(self.min, self.max)
+        (self.min + ((value - self.min) / self.step).round() * self.step).clamp(self.min, self.max)
     }
 }
 
-// State Update Helpers
-
 #[inline]
-pub fn set_if_changed<T>(target: &mut T, value: T) -> bool
-where
-    T: PartialEq,
-{
-    if target != &value {
+pub fn set_if_changed<T: PartialEq>(target: &mut T, value: T) -> bool {
+    if *target != value {
         *target = value;
         true
     } else {
@@ -76,12 +61,8 @@ pub fn update_usize_from_f32(target: &mut usize, value: f32, range: SliderRange)
             .all(|v| v.fract().abs() <= f32::EPSILON),
         "update_usize_from_f32 expects integral slider bounds"
     );
-
-    let snapped = range.snap(value);
-    set_if_changed(target, snapped.round() as usize)
+    set_if_changed(target, range.snap(value).round() as usize)
 }
-
-// Widget Constructors
 
 pub fn labeled_slider<'a>(
     label: &'static str,
@@ -90,40 +71,35 @@ pub fn labeled_slider<'a>(
     range: SliderRange,
     on_change: impl Fn(f32) -> SettingsMessage + 'a,
 ) -> iced::widget::Column<'a, SettingsMessage> {
-    let SliderRange { min, max, step } = range;
     column![
         row![
-            container(text(label).size(LABEL_SIZE).wrapping(Wrapping::None)).clip(true),
-            container(text(formatted).size(VALUE_SIZE).wrapping(Wrapping::None)).clip(true),
+            container(text(label).size(12).wrapping(Wrapping::None)).clip(true),
+            container(text(formatted).size(11).wrapping(Wrapping::None)).clip(true),
         ]
-        .spacing(VALUE_GAP),
-        slider::Slider::new(min..=max, value, on_change)
-            .step(step)
+        .spacing(6.0),
+        slider::Slider::new(range.min..=range.max, value, on_change)
+            .step(range.step)
             .style(theme::slider_style),
     ]
-    .spacing(CONTROL_SPACING)
+    .spacing(8.0)
 }
 
-pub fn labeled_pick_list<'a, T>(
+pub fn labeled_pick_list<'a, T: Clone + PartialEq + fmt::Display + 'static>(
     label: &'static str,
     options: impl Into<Cow<'a, [T]>>,
     selected: Option<T>,
     on_select: impl Fn(T) -> SettingsMessage + 'a,
-) -> iced::widget::Row<'a, SettingsMessage>
-where
-    T: Clone + PartialEq + fmt::Display + 'static,
-{
+) -> iced::widget::Row<'a, SettingsMessage> {
     row![
-        container(text(label).size(LABEL_SIZE).wrapping(Wrapping::None))
+        container(text(label).size(12).wrapping(Wrapping::None))
             .width(Length::Shrink)
             .clip(true),
         pick_list(options.into(), selected, on_select),
     ]
-    .spacing(CONTROL_SPACING)
+    .spacing(8.0)
     .align_y(Vertical::Center)
 }
 
-/// Section title that clips on overflow (e.g., "Colors", "Advanced").
 pub fn section_title(label: &'static str) -> container::Container<'static, SettingsMessage> {
     container(text(label).size(14).wrapping(Wrapping::None)).clip(true)
 }

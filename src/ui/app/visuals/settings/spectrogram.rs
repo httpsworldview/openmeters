@@ -1,40 +1,22 @@
-use super::palette::{PaletteEditor, PaletteEvent};
+use super::SettingsMessage;
+use super::palette::PaletteEvent;
 use super::widgets::{
     SliderRange, labeled_pick_list, labeled_slider, section_title, set_if_changed,
     update_f32_range, update_usize_from_f32,
 };
-use super::{ModuleSettingsPane, SettingsMessage};
 use crate::dsp::spectrogram::{
     FrequencyScale, PLANCK_BESSEL_DEFAULT_BETA, PLANCK_BESSEL_DEFAULT_EPSILON, WindowKind,
 };
 use crate::ui::settings::{PianoRollSide, SettingsHandle, SpectrogramSettings};
 use crate::ui::theme;
-use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
+use crate::ui::visualization::visual_manager::{VisualKind, VisualManagerHandle};
 use iced::widget::{column, row, toggler};
 use iced::{Element, Length};
 
 const FFT_OPTIONS: [usize; 5] = [1024, 2048, 4096, 8192, 16384];
 const ZERO_PAD_OPTIONS: [usize; 6] = [1, 2, 4, 8, 16, 32];
 const HOP_DIVISORS: [usize; 7] = [4, 6, 8, 16, 32, 64, 128];
-
-fn get_closest_hop_divisor(fft_size: usize, hop_size: usize) -> usize {
-    if fft_size == 0 || hop_size == 0 {
-        return 8;
-    }
-    let ratio = fft_size as f32 / hop_size as f32;
-    let mut best = 8;
-    let mut best_err = f32::MAX;
-    for &candidate in &HOP_DIVISORS {
-        let err = (ratio - candidate as f32).abs();
-        if err < best_err {
-            best = candidate;
-            best_err = err;
-        }
-    }
-    best
-}
-
-const FREQUENCY_SCALE_OPTIONS: [FrequencyScale; 3] = [
+const FREQ_SCALE_OPTIONS: [FrequencyScale; 3] = [
     FrequencyScale::Linear,
     FrequencyScale::Logarithmic,
     FrequencyScale::Mel,
@@ -42,17 +24,40 @@ const FREQUENCY_SCALE_OPTIONS: [FrequencyScale; 3] = [
 const HISTORY_RANGE: SliderRange = SliderRange::new(120.0, 3840.0, 30.0);
 const REASSIGN_FLOOR_RANGE: SliderRange = SliderRange::new(-120.0, -30.0, 1.0);
 const DISPLAY_BINS_RANGE: SliderRange = SliderRange::new(64.0, 4096.0, 64.0);
-const PLANCK_BESSEL_EPSILON_RANGE: SliderRange = SliderRange::new(0.01, 0.5, 0.01);
-const PLANCK_BESSEL_BETA_RANGE: SliderRange = SliderRange::new(0.0, 20.0, 0.25);
+const PB_EPSILON_RANGE: SliderRange = SliderRange::new(0.01, 0.5, 0.01);
+const PB_BETA_RANGE: SliderRange = SliderRange::new(0.0, 20.0, 0.25);
 
-#[derive(Debug)]
-pub struct SpectrogramSettingsPane {
-    visual_id: VisualId,
-    settings: SpectrogramSettings,
-    palette: PaletteEditor,
-    // Cached PlanckBessel params for when switching away and back to that window
-    planck_bessel: (f32, f32),
+fn get_closest_hop_divisor(fft_size: usize, hop_size: usize) -> usize {
+    if fft_size == 0 || hop_size == 0 {
+        return 8;
+    }
+    let ratio = fft_size as f32 / hop_size as f32;
+    HOP_DIVISORS
+        .iter()
+        .copied()
+        .min_by(|&a, &b| {
+            (ratio - a as f32)
+                .abs()
+                .partial_cmp(&(ratio - b as f32).abs())
+                .unwrap()
+        })
+        .unwrap_or(8)
 }
+
+fn extract_planck_bessel(window: WindowKind) -> (f32, f32) {
+    match window {
+        WindowKind::PlanckBessel { epsilon, beta } => (epsilon, beta),
+        _ => (PLANCK_BESSEL_DEFAULT_EPSILON, PLANCK_BESSEL_DEFAULT_BETA),
+    }
+}
+
+settings_pane!(
+    SpectrogramSettingsPane, SpectrogramSettings, VisualKind::Spectrogram,
+    theme::DEFAULT_SPECTROGRAM_PALETTE,
+    extra_from_settings(settings) {
+        planck_bessel: (f32, f32) = extract_planck_bessel(settings.window),
+    }
+);
 
 #[derive(Debug, Clone, Copy)]
 pub enum Message {
@@ -72,35 +77,7 @@ pub enum Message {
     Palette(PaletteEvent),
 }
 
-pub fn create(
-    visual_id: VisualId,
-    visual_manager: &VisualManagerHandle,
-) -> SpectrogramSettingsPane {
-    let (settings, palette): (SpectrogramSettings, _) = super::load_settings_and_palette(
-        visual_manager,
-        VisualKind::Spectrogram,
-        &theme::DEFAULT_SPECTROGRAM_PALETTE,
-        &[],
-    );
-
-    let planck_bessel = match settings.window {
-        WindowKind::PlanckBessel { epsilon, beta } => (epsilon, beta),
-        _ => (PLANCK_BESSEL_DEFAULT_EPSILON, PLANCK_BESSEL_DEFAULT_BETA),
-    };
-
-    SpectrogramSettingsPane {
-        visual_id,
-        settings,
-        palette,
-        planck_bessel,
-    }
-}
-
-impl ModuleSettingsPane for SpectrogramSettingsPane {
-    fn visual_id(&self) -> VisualId {
-        self.visual_id
-    }
-
+impl SpectrogramSettingsPane {
     fn view(&self) -> Element<'_, SettingsMessage> {
         let s = &self.settings;
         let window = WindowPreset::from_kind(s.window);
@@ -122,7 +99,7 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
             }),
             labeled_pick_list(
                 "Freq scale",
-                &FREQUENCY_SCALE_OPTIONS,
+                &FREQ_SCALE_OPTIONS,
                 Some(s.frequency_scale),
                 |v| SettingsMessage::Spectrogram(Message::FrequencyScale(v))
             ),
@@ -142,14 +119,14 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
                 "PB epsilon",
                 epsilon,
                 format!("{epsilon:.3}"),
-                PLANCK_BESSEL_EPSILON_RANGE,
+                PB_EPSILON_RANGE,
                 |v| SettingsMessage::Spectrogram(Message::PlanckBesselEpsilon(v)),
             ));
             core = core.push(labeled_slider(
                 "PB beta",
                 beta,
                 format!("{beta:.2}"),
-                PLANCK_BESSEL_BETA_RANGE,
+                PB_BETA_RANGE,
                 |v| SettingsMessage::Spectrogram(Message::PlanckBesselBeta(v)),
             ));
         }
@@ -161,12 +138,14 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
             |v| SettingsMessage::Spectrogram(Message::HistoryLength(v)),
         ));
 
-        let reassign_toggle = toggler(s.use_reassignment)
-            .label("Time-frequency reassignment")
-            .text_size(11)
-            .spacing(4)
-            .on_toggle(|v| SettingsMessage::Spectrogram(Message::UseReassignment(v)));
-        let mut adv = column![reassign_toggle].spacing(8);
+        let mut adv = column![
+            toggler(s.use_reassignment)
+                .label("Time-frequency reassignment")
+                .text_size(11)
+                .spacing(4)
+                .on_toggle(|v| SettingsMessage::Spectrogram(Message::UseReassignment(v)))
+        ]
+        .spacing(8);
         if s.use_reassignment {
             adv = adv.push(labeled_slider(
                 "Reassign floor",
@@ -183,12 +162,13 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
                 |v| SettingsMessage::Spectrogram(Message::DisplayBinCount(v)),
             ));
         }
-        let piano_toggle = toggler(s.show_piano_roll)
-            .label("Piano roll overlay")
-            .text_size(11)
-            .spacing(4)
-            .on_toggle(|v| SettingsMessage::Spectrogram(Message::ShowPianoRoll(v)));
-        adv = adv.push(piano_toggle);
+        adv = adv.push(
+            toggler(s.show_piano_roll)
+                .label("Piano roll overlay")
+                .text_size(11)
+                .spacing(4)
+                .on_toggle(|v| SettingsMessage::Spectrogram(Message::ShowPianoRoll(v))),
+        );
         if s.show_piano_roll {
             adv = adv.push(labeled_pick_list(
                 "Side",
@@ -198,18 +178,16 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
             ));
         }
 
-        let colors = super::palette_section(
-            &self.palette,
-            Message::Palette,
-            SettingsMessage::Spectrogram,
-        );
-
         column![
             section_title("Core controls"),
             core,
             section_title("Advanced"),
             adv,
-            colors
+            super::palette_section(
+                &self.palette,
+                Message::Palette,
+                SettingsMessage::Spectrogram
+            )
         ]
         .spacing(16)
         .into()
@@ -224,27 +202,25 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
         let SettingsMessage::Spectrogram(msg) = message else {
             return;
         };
-
         let s = &mut self.settings;
         let mut changed = false;
         match *msg {
             Message::FftSize(size) => {
-                let hop_divisor = get_closest_hop_divisor(s.fft_size, s.hop_size);
+                let hop_div = get_closest_hop_divisor(s.fft_size, s.hop_size);
                 if set_if_changed(&mut s.fft_size, size) {
-                    s.hop_size = (size / hop_divisor).max(1);
+                    s.hop_size = (size / hop_div).max(1);
                     changed = true;
                 }
             }
             Message::HopDivisor(div) => {
-                let new_hop = (s.fft_size / div).max(1);
-                changed |= set_if_changed(&mut s.hop_size, new_hop);
+                changed |= set_if_changed(&mut s.hop_size, (s.fft_size / div).max(1));
             }
-            Message::HistoryLength(value) => {
-                changed |= update_usize_from_f32(&mut s.history_length, value, HISTORY_RANGE);
+            Message::HistoryLength(v) => {
+                changed |= update_usize_from_f32(&mut s.history_length, v, HISTORY_RANGE);
             }
             Message::Window(preset) => {
-                let current = WindowPreset::from_kind(s.window);
-                if current != preset {
+                let cur = WindowPreset::from_kind(s.window);
+                if cur != preset {
                     if let WindowKind::PlanckBessel { epsilon, beta } = s.window {
                         self.planck_bessel = (epsilon, beta);
                     }
@@ -258,60 +234,51 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
                     changed = true;
                 }
             }
-            Message::PlanckBesselEpsilon(value) => {
+            Message::PlanckBesselEpsilon(v) => {
                 if let WindowKind::PlanckBessel { epsilon, beta } = s.window {
-                    let mut new_epsilon = epsilon;
-                    if update_f32_range(&mut new_epsilon, value, PLANCK_BESSEL_EPSILON_RANGE) {
-                        self.planck_bessel.0 = new_epsilon;
-                        s.window = WindowKind::PlanckBessel {
-                            epsilon: new_epsilon,
-                            beta,
-                        };
+                    let mut e = epsilon;
+                    if update_f32_range(&mut e, v, PB_EPSILON_RANGE) {
+                        self.planck_bessel.0 = e;
+                        s.window = WindowKind::PlanckBessel { epsilon: e, beta };
                         changed = true;
                     }
                 }
             }
-            Message::PlanckBesselBeta(value) => {
+            Message::PlanckBesselBeta(v) => {
                 if let WindowKind::PlanckBessel { epsilon, beta } = s.window {
-                    let mut new_beta = beta;
-                    if update_f32_range(&mut new_beta, value, PLANCK_BESSEL_BETA_RANGE) {
-                        self.planck_bessel.1 = new_beta;
-                        s.window = WindowKind::PlanckBessel {
-                            epsilon,
-                            beta: new_beta,
-                        };
+                    let mut b = beta;
+                    if update_f32_range(&mut b, v, PB_BETA_RANGE) {
+                        self.planck_bessel.1 = b;
+                        s.window = WindowKind::PlanckBessel { epsilon, beta: b };
                         changed = true;
                     }
                 }
             }
-            Message::FrequencyScale(scale) => {
-                changed |= set_if_changed(&mut s.frequency_scale, scale);
+            Message::FrequencyScale(sc) => {
+                changed |= set_if_changed(&mut s.frequency_scale, sc);
             }
-            Message::UseReassignment(value) => {
-                changed |= set_if_changed(&mut s.use_reassignment, value);
+            Message::UseReassignment(v) => {
+                changed |= set_if_changed(&mut s.use_reassignment, v);
             }
-            Message::ReassignmentFloor(value) => {
-                changed |= update_f32_range(
-                    &mut s.reassignment_power_floor_db,
-                    value,
-                    REASSIGN_FLOOR_RANGE,
-                );
+            Message::ReassignmentFloor(v) => {
+                changed |=
+                    update_f32_range(&mut s.reassignment_power_floor_db, v, REASSIGN_FLOOR_RANGE);
             }
-            Message::ZeroPadding(value) => {
-                changed |= set_if_changed(&mut s.zero_padding_factor, value);
+            Message::ZeroPadding(v) => {
+                changed |= set_if_changed(&mut s.zero_padding_factor, v);
             }
-            Message::DisplayBinCount(value) => {
+            Message::DisplayBinCount(v) => {
                 changed |= s.use_reassignment
-                    && update_usize_from_f32(&mut s.display_bin_count, value, DISPLAY_BINS_RANGE);
+                    && update_usize_from_f32(&mut s.display_bin_count, v, DISPLAY_BINS_RANGE);
             }
-            Message::ShowPianoRoll(value) => {
-                changed |= set_if_changed(&mut s.show_piano_roll, value);
+            Message::ShowPianoRoll(v) => {
+                changed |= set_if_changed(&mut s.show_piano_roll, v);
             }
             Message::PianoRollSide(side) => {
                 changed |= set_if_changed(&mut s.piano_roll_side, side);
             }
-            Message::Palette(event) => {
-                changed |= self.palette.update(event);
+            Message::Palette(e) => {
+                changed |= self.palette.update(e);
             }
         }
         if changed {
@@ -345,7 +312,6 @@ impl WindowPreset {
         Self::BlackmanHarris,
         Self::PlanckBessel,
     ];
-
     fn from_kind(kind: WindowKind) -> Self {
         match kind {
             WindowKind::Rectangular => Self::Rectangular,
@@ -356,7 +322,6 @@ impl WindowPreset {
             WindowKind::PlanckBessel { .. } => Self::PlanckBessel,
         }
     }
-
     fn to_window_kind(self) -> WindowKind {
         match self {
             Self::Rectangular => WindowKind::Rectangular,

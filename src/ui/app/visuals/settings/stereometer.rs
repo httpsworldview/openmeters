@@ -1,27 +1,26 @@
-use super::palette::{PaletteEditor, PaletteEvent};
+use super::SettingsMessage;
+use super::palette::PaletteEvent;
 use super::widgets::{SliderRange, labeled_pick_list, labeled_slider, set_f32, set_if_changed};
-use super::{ModuleSettingsPane, SettingsMessage};
 use crate::ui::settings::{
     CorrelationMeterMode, CorrelationMeterSide, SettingsHandle, StereometerMode, StereometerScale,
     StereometerSettings,
 };
 use crate::ui::theme;
-use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
+use crate::ui::visualization::visual_manager::{VisualKind, VisualManagerHandle};
 use iced::widget::{column, row, toggler};
 use iced::{Element, Length};
 
 const MODE_OPTIONS: [StereometerMode; 2] = [StereometerMode::Lissajous, StereometerMode::DotCloud];
 const SCALE_OPTIONS: [StereometerScale; 2] =
     [StereometerScale::Linear, StereometerScale::Exponential];
-const CORRELATION_METER_OPTIONS: [CorrelationMeterMode; 3] = [
+const CORR_METER_OPTIONS: [CorrelationMeterMode; 3] = [
     CorrelationMeterMode::Off,
     CorrelationMeterMode::SingleBand,
     CorrelationMeterMode::MultiBand,
 ];
-const CORRELATION_METER_SIDE_OPTIONS: [CorrelationMeterSide; 2] =
+const CORR_SIDE_OPTIONS: [CorrelationMeterSide; 2] =
     [CorrelationMeterSide::Left, CorrelationMeterSide::Right];
-
-const PALETTE_LABELS: [&str; 8] = [
+const LABELS: &[&str] = &[
     "Trace",
     "Corr background",
     "Corr center line",
@@ -32,12 +31,8 @@ const PALETTE_LABELS: [&str; 8] = [
     "High band",
 ];
 
-#[derive(Debug)]
-pub struct StereometerSettingsPane {
-    visual_id: VisualId,
-    settings: StereometerSettings,
-    palette: PaletteEditor,
-}
+settings_pane!(StereometerSettingsPane, StereometerSettings, VisualKind::Stereometer,
+    theme::DEFAULT_STEREOMETER_PALETTE, labels: LABELS);
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -55,28 +50,7 @@ pub enum Message {
     Palette(PaletteEvent),
 }
 
-pub fn create(
-    visual_id: VisualId,
-    visual_manager: &VisualManagerHandle,
-) -> StereometerSettingsPane {
-    let (settings, palette) = super::load_settings_and_palette(
-        visual_manager,
-        VisualKind::Stereometer,
-        &theme::DEFAULT_STEREOMETER_PALETTE,
-        &PALETTE_LABELS,
-    );
-    StereometerSettingsPane {
-        visual_id,
-        settings,
-        palette,
-    }
-}
-
-impl ModuleSettingsPane for StereometerSettingsPane {
-    fn visual_id(&self) -> VisualId {
-        self.visual_id
-    }
-
+impl StereometerSettingsPane {
     fn view(&self) -> Element<'_, SettingsMessage> {
         let s = &self.settings;
         let left = column![
@@ -92,7 +66,7 @@ impl ModuleSettingsPane for StereometerSettingsPane {
             ),
             toggler(s.flip)
                 .label("Flip")
-                .on_toggle(|v| { SettingsMessage::Stereometer(Message::Flip(v)) }),
+                .on_toggle(|v| SettingsMessage::Stereometer(Message::Flip(v))),
         ]
         .spacing(16)
         .width(Length::Fill);
@@ -103,7 +77,7 @@ impl ModuleSettingsPane for StereometerSettingsPane {
             }),
             labeled_pick_list(
                 "Correlation meter",
-                &CORRELATION_METER_OPTIONS,
+                &CORR_METER_OPTIONS,
                 Some(s.correlation_meter),
                 |v| SettingsMessage::Stereometer(Message::CorrelationMeter(v))
             ),
@@ -114,7 +88,7 @@ impl ModuleSettingsPane for StereometerSettingsPane {
         if s.correlation_meter != CorrelationMeterMode::Off {
             right = right.push(labeled_pick_list(
                 "Correlation side",
-                &CORRELATION_METER_SIDE_OPTIONS,
+                &CORR_SIDE_OPTIONS,
                 Some(s.correlation_meter_side),
                 |v| SettingsMessage::Stereometer(Message::CorrelationMeterSide(v)),
             ));

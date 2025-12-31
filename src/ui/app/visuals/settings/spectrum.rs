@@ -1,18 +1,18 @@
-use super::palette::{PaletteEditor, PaletteEvent};
+use super::SettingsMessage;
+use super::palette::PaletteEvent;
 use super::widgets::{
     SliderRange, labeled_pick_list, labeled_slider, set_f32, set_if_changed, update_usize_from_f32,
 };
-use super::{ModuleSettingsPane, SettingsMessage};
 use crate::dsp::spectrogram::FrequencyScale;
 use crate::dsp::spectrum::AveragingMode;
 use crate::ui::settings::{SettingsHandle, SpectrumSettings};
 use crate::ui::theme;
-use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
+use crate::ui::visualization::visual_manager::{VisualKind, VisualManagerHandle};
 use iced::Element;
 use iced::widget::{column, toggler};
 
 const FFT_OPTIONS: [usize; 4] = [1024, 2048, 4096, 8192];
-const FREQUENCY_SCALE_OPTIONS: [FrequencyScale; 3] = [
+const FREQ_SCALE_OPTIONS: [FrequencyScale; 3] = [
     FrequencyScale::Linear,
     FrequencyScale::Logarithmic,
     FrequencyScale::Mel,
@@ -45,16 +45,15 @@ impl std::fmt::Display for SpectrumAveragingMode {
     }
 }
 
-#[derive(Debug)]
-pub struct SpectrumSettingsPane {
-    visual_id: VisualId,
-    settings: SpectrumSettings,
-    // Cached UI state derived from settings.averaging
-    averaging_mode: SpectrumAveragingMode,
-    averaging_factor: f32,
-    peak_hold_decay: f32,
-    palette: PaletteEditor,
-}
+settings_pane!(
+    SpectrumSettingsPane, SpectrumSettings, VisualKind::Spectrum,
+    theme::DEFAULT_SPECTRUM_PALETTE,
+    extra_from_settings(settings) {
+        averaging_mode: SpectrumAveragingMode = split_averaging(settings.averaging).0,
+        averaging_factor: f32 = split_averaging(settings.averaging).1,
+        peak_hold_decay: f32 = split_averaging(settings.averaging).2,
+    }
+);
 
 #[derive(Debug, Clone, Copy)]
 pub enum Message {
@@ -71,30 +70,7 @@ pub enum Message {
     SmoothingPasses(f32),
 }
 
-pub fn create(visual_id: VisualId, visual_manager: &VisualManagerHandle) -> SpectrumSettingsPane {
-    let (settings, palette): (SpectrumSettings, _) = super::load_settings_and_palette(
-        visual_manager,
-        VisualKind::Spectrum,
-        &theme::DEFAULT_SPECTRUM_PALETTE,
-        &[],
-    );
-    let (averaging_mode, averaging_factor, peak_hold_decay) = split_averaging(settings.averaging);
-
-    SpectrumSettingsPane {
-        visual_id,
-        settings,
-        averaging_mode,
-        averaging_factor,
-        peak_hold_decay,
-        palette,
-    }
-}
-
-impl ModuleSettingsPane for SpectrumSettingsPane {
-    fn visual_id(&self) -> VisualId {
-        self.visual_id
-    }
-
+impl SpectrumSettingsPane {
     fn view(&self) -> Element<'_, SettingsMessage> {
         let s = &self.settings;
         let dir_label = if s.reverse_frequency {
@@ -116,7 +92,7 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
             }),
             labeled_pick_list(
                 "Frequency scale",
-                &FREQUENCY_SCALE_OPTIONS,
+                &FREQ_SCALE_OPTIONS,
                 Some(s.frequency_scale),
                 |sc| SettingsMessage::Spectrum(Message::FrequencyScale(sc))
             ),
@@ -186,7 +162,6 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
         let SettingsMessage::Spectrum(msg) = message else {
             return;
         };
-
         let s = &mut self.settings;
         let changed = match *msg {
             Message::FftSize(size) => {
@@ -237,7 +212,6 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
             ),
             Message::Palette(e) => self.palette.update(e),
         };
-
         if changed {
             persist_palette!(
                 visual_manager,
@@ -248,9 +222,7 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
             );
         }
     }
-}
 
-impl SpectrumSettingsPane {
     fn sync_averaging(&mut self) {
         self.settings.averaging = match self.averaging_mode {
             SpectrumAveragingMode::None => AveragingMode::None,
@@ -266,17 +238,15 @@ impl SpectrumSettingsPane {
 }
 
 fn split_averaging(avg: AveragingMode) -> (SpectrumAveragingMode, f32, f32) {
-    let default_factor = AveragingMode::default_exponential_factor();
-    let default_decay = AveragingMode::default_peak_decay();
+    let (df, dd) = (
+        AveragingMode::default_exponential_factor(),
+        AveragingMode::default_peak_decay(),
+    );
     match avg.normalized() {
-        AveragingMode::None => (SpectrumAveragingMode::None, default_factor, default_decay),
-        AveragingMode::Exponential { factor } => {
-            (SpectrumAveragingMode::Exponential, factor, default_decay)
+        AveragingMode::None => (SpectrumAveragingMode::None, df, dd),
+        AveragingMode::Exponential { factor } => (SpectrumAveragingMode::Exponential, factor, dd),
+        AveragingMode::PeakHold { decay_per_second } => {
+            (SpectrumAveragingMode::PeakHold, df, decay_per_second)
         }
-        AveragingMode::PeakHold { decay_per_second } => (
-            SpectrumAveragingMode::PeakHold,
-            default_factor,
-            decay_per_second,
-        ),
     }
 }
