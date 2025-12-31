@@ -1,19 +1,19 @@
-use super::palette::{PaletteEditor, PaletteEvent};
+use super::palette::PaletteEvent;
 use super::widgets::{SliderRange, labeled_pick_list, labeled_slider, set_f32, set_if_changed};
-use super::{CHANNEL_OPTIONS, ModuleSettingsPane, SettingsMessage};
+use super::{CHANNEL_OPTIONS, SettingsMessage};
 use crate::dsp::waveform::{MAX_SCROLL_SPEED, MIN_SCROLL_SPEED};
 use crate::ui::settings::{ChannelMode, SettingsHandle, WaveformSettings};
 use crate::ui::theme;
-use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
+use crate::ui::visualization::visual_manager::{VisualKind, VisualManagerHandle};
 use iced::Element;
 use iced::widget::column;
 
-#[derive(Debug)]
-pub struct WaveformSettingsPane {
-    visual_id: VisualId,
-    settings: WaveformSettings,
-    palette: PaletteEditor,
-}
+settings_pane!(
+    WaveformSettingsPane,
+    WaveformSettings,
+    VisualKind::Waveform,
+    theme::DEFAULT_WAVEFORM_PALETTE
+);
 
 #[derive(Debug, Clone, Copy)]
 pub enum Message {
@@ -22,26 +22,7 @@ pub enum Message {
     Palette(PaletteEvent),
 }
 
-pub fn create(visual_id: VisualId, visual_manager: &VisualManagerHandle) -> WaveformSettingsPane {
-    let (settings, palette) = super::load_settings_and_palette(
-        visual_manager,
-        VisualKind::Waveform,
-        &theme::DEFAULT_WAVEFORM_PALETTE,
-        &[],
-    );
-
-    WaveformSettingsPane {
-        visual_id,
-        settings,
-        palette,
-    }
-}
-
-impl ModuleSettingsPane for WaveformSettingsPane {
-    fn visual_id(&self) -> VisualId {
-        self.visual_id
-    }
-
+impl WaveformSettingsPane {
     fn view(&self) -> Element<'_, SettingsMessage> {
         column![
             labeled_slider(
@@ -55,7 +36,7 @@ impl ModuleSettingsPane for WaveformSettingsPane {
                 "Channels",
                 &CHANNEL_OPTIONS,
                 Some(self.settings.channel_mode),
-                |m| SettingsMessage::Waveform(Message::ChannelMode(m)),
+                |m| SettingsMessage::Waveform(Message::ChannelMode(m))
             ),
             super::palette_section(&self.palette, Message::Palette, SettingsMessage::Waveform)
         ]

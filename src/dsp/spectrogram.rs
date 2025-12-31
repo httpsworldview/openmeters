@@ -45,6 +45,7 @@ const OPTIMAL_TIME_SPREAD: f32 = 3.5;
 const OPTIMAL_TIME_HOPS_MIN: f32 = 2.0;
 const OPTIMAL_TIME_HOPS_MAX: f32 = 8.0;
 
+// this was emperically derived, but the exact sigma escapes me at the moment
 const GAUSSIAN_KERNEL_3X3: [[f32; 3]; 3] = {
     const C: f32 = 1.0;
     const E: f32 = 0.324_652_5;

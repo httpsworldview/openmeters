@@ -13,6 +13,82 @@ macro_rules! persist_palette {
     }};
 }
 
+/// Generates settings pane struct, create function, and trait impl.
+/// Use `extra_from_settings` for fields computed from loaded settings during init.
+macro_rules! settings_pane {
+    // Branch with extra fields computed from settings
+    (
+        $pane:ident, $settings_ty:ty, $kind:expr, $defaults:expr
+        $(, labels: $labels:expr)?
+        , extra_from_settings($s:ident) { $($field:ident : $ty:ty = $init:expr),* $(,)? }
+    ) => {
+        #[derive(Debug)]
+        pub struct $pane {
+            visual_id: super::VisualId,
+            settings: $settings_ty,
+            palette: super::palette::PaletteEditor,
+            $($field: $ty,)*
+        }
+
+        pub fn create(
+            visual_id: super::VisualId,
+            visual_manager: &super::VisualManagerHandle,
+        ) -> $pane {
+            let labels: &[&'static str] = settings_pane!(@labels $($labels)?);
+            let ($s, palette) = super::load_settings_and_palette::<$settings_ty, { $defaults.len() }>(
+                visual_manager, $kind, &$defaults, labels,
+            );
+            $(let $field: $ty = $init;)*
+            $pane { visual_id, settings: $s, palette, $($field,)* }
+        }
+
+        settings_pane!(@impl $pane);
+    };
+    // Branch without extra fields
+    (
+        $pane:ident, $settings_ty:ty, $kind:expr, $defaults:expr
+        $(, labels: $labels:expr)?
+    ) => {
+        #[derive(Debug)]
+        pub struct $pane {
+            visual_id: super::VisualId,
+            settings: $settings_ty,
+            palette: super::palette::PaletteEditor,
+        }
+
+        pub fn create(
+            visual_id: super::VisualId,
+            visual_manager: &super::VisualManagerHandle,
+        ) -> $pane {
+            let labels: &[&'static str] = settings_pane!(@labels $($labels)?);
+            let (settings, palette) = super::load_settings_and_palette::<$settings_ty, { $defaults.len() }>(
+                visual_manager, $kind, &$defaults, labels,
+            );
+            $pane { visual_id, settings, palette }
+        }
+
+        settings_pane!(@impl $pane);
+    };
+    (@impl $pane:ident) => {
+        impl super::ModuleSettingsPane for $pane {
+            fn visual_id(&self) -> super::VisualId { self.visual_id }
+            fn view(&self) -> iced::Element<'_, super::SettingsMessage> {
+                $pane::view(self)
+            }
+            fn handle(
+                &mut self,
+                message: &super::SettingsMessage,
+                visual_manager: &super::VisualManagerHandle,
+                settings_handle: &crate::ui::settings::SettingsHandle,
+            ) {
+                $pane::handle(self, message, visual_manager, settings_handle)
+            }
+        }
+    };
+    (@labels $labels:expr) => { $labels };
+    (@labels) => { &[] };
+}
+
 mod loudness;
 mod oscilloscope;
 pub mod palette;

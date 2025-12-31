@@ -1,13 +1,13 @@
-use super::palette::{PaletteEditor, PaletteEvent};
+use super::SettingsMessage;
+use super::palette::PaletteEvent;
 use super::widgets::{labeled_pick_list, set_if_changed};
-use super::{ModuleSettingsPane, SettingsMessage};
 use crate::ui::settings::{LoudnessSettings, SettingsHandle};
 use crate::ui::theme;
 use crate::ui::visualization::loudness::MeterMode;
-use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
+use crate::ui::visualization::visual_manager::{VisualKind, VisualManagerHandle};
 use iced::{Element, widget::column};
 
-const PALETTE_LABELS: [&str; 5] = [
+const LABELS: &[&str] = &[
     "Background",
     "Left Ch 1",
     "Left Ch 2",
@@ -15,12 +15,8 @@ const PALETTE_LABELS: [&str; 5] = [
     "Guide Line",
 ];
 
-#[derive(Debug)]
-pub struct LoudnessSettingsPane {
-    visual_id: VisualId,
-    settings: LoudnessSettings,
-    palette: PaletteEditor,
-}
+settings_pane!(LoudnessSettingsPane, LoudnessSettings, VisualKind::Loudness,
+    theme::DEFAULT_LOUDNESS_PALETTE, labels: LABELS);
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -29,26 +25,7 @@ pub enum Message {
     Palette(PaletteEvent),
 }
 
-pub fn create(visual_id: VisualId, visual_manager: &VisualManagerHandle) -> LoudnessSettingsPane {
-    let (settings, palette) = super::load_settings_and_palette(
-        visual_manager,
-        VisualKind::Loudness,
-        &theme::DEFAULT_LOUDNESS_PALETTE,
-        &PALETTE_LABELS,
-    );
-
-    LoudnessSettingsPane {
-        visual_id,
-        settings,
-        palette,
-    }
-}
-
-impl ModuleSettingsPane for LoudnessSettingsPane {
-    fn visual_id(&self) -> VisualId {
-        self.visual_id
-    }
-
+impl LoudnessSettingsPane {
     fn view(&self) -> Element<'_, SettingsMessage> {
         column![
             labeled_pick_list(
@@ -78,13 +55,11 @@ impl ModuleSettingsPane for LoudnessSettingsPane {
         let SettingsMessage::Loudness(msg) = message else {
             return;
         };
-
         let changed = match msg {
             Message::LeftMode(mode) => set_if_changed(&mut self.settings.left_mode, *mode),
             Message::RightMode(mode) => set_if_changed(&mut self.settings.right_mode, *mode),
             Message::Palette(event) => self.palette.update(*event),
         };
-
         if changed {
             persist_palette!(
                 visual_manager,

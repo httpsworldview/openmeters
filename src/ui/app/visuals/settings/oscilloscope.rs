@@ -1,19 +1,19 @@
-use super::palette::{PaletteEditor, PaletteEvent};
+use super::palette::PaletteEvent;
 use super::widgets::{SliderRange, labeled_pick_list, labeled_slider, set_f32, set_if_changed};
-use super::{CHANNEL_OPTIONS, ModuleSettingsPane, SettingsMessage};
+use super::{CHANNEL_OPTIONS, SettingsMessage};
 use crate::dsp::oscilloscope::TriggerMode;
 use crate::ui::settings::{ChannelMode, OscilloscopeSettings, SettingsHandle};
 use crate::ui::theme;
-use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
+use crate::ui::visualization::visual_manager::{VisualKind, VisualManagerHandle};
 use iced::Element;
 use iced::widget::column;
 
-#[derive(Debug)]
-pub struct OscilloscopeSettingsPane {
-    visual_id: VisualId,
-    settings: OscilloscopeSettings,
-    palette: PaletteEditor,
-}
+settings_pane!(
+    OscilloscopeSettingsPane,
+    OscilloscopeSettings,
+    VisualKind::Oscilloscope,
+    theme::DEFAULT_OSCILLOSCOPE_PALETTE
+);
 
 #[derive(Debug, Clone, Copy)]
 pub enum Message {
@@ -25,28 +25,7 @@ pub enum Message {
     Palette(PaletteEvent),
 }
 
-pub fn create(
-    visual_id: VisualId,
-    visual_manager: &VisualManagerHandle,
-) -> OscilloscopeSettingsPane {
-    let (settings, palette) = super::load_settings_and_palette(
-        visual_manager,
-        VisualKind::Oscilloscope,
-        &theme::DEFAULT_OSCILLOSCOPE_PALETTE,
-        &[],
-    );
-    OscilloscopeSettingsPane {
-        visual_id,
-        settings,
-        palette,
-    }
-}
-
-impl ModuleSettingsPane for OscilloscopeSettingsPane {
-    fn visual_id(&self) -> VisualId {
-        self.visual_id
-    }
-
+impl OscilloscopeSettingsPane {
     fn view(&self) -> Element<'_, SettingsMessage> {
         let mode = self.settings.trigger_mode;
         let is_stable = matches!(mode, TriggerMode::Stable { .. });
