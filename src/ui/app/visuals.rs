@@ -77,21 +77,21 @@ impl VisualsPage {
 
     pub fn update(&mut self, message: VisualsMessage) -> Task<VisualsMessage> {
         match message {
-            VisualsMessage::PaneDragged(pane_grid::DragEvent::Dropped {
-                pane,
-                target: pane_grid::Target::Pane(target),
-            }) => {
-                if let Some(panes) = self.panes.as_mut() {
+            VisualsMessage::PaneDragged(pane_grid::DragEvent::Moved { pane, target }) => {
+                if let Some(panes) = self.panes.as_mut()
+                    && panes.move_to(pane, target)
+                {
                     let ids: Vec<_> = [pane, target]
                         .iter()
                         .filter_map(|p| panes.get(*p).map(|v| v.id))
                         .collect();
-                    panes.swap(pane, target);
                     self.order = panes.iter().map(|(_, p)| p.id).collect();
                     self.visual_manager.borrow_mut().reorder(&ids);
-                    let snapshot = self.visual_manager.snapshot();
-                    self.settings.update(|s| s.set_visual_order(&snapshot));
                 }
+            }
+            VisualsMessage::PaneDragged(pane_grid::DragEvent::Dropped { .. }) => {
+                self.settings
+                    .update(|s| s.set_visual_order(&self.visual_manager.snapshot()));
             }
             VisualsMessage::PaneDragged(_) => {}
             VisualsMessage::PaneContextRequested(pane) => {

@@ -68,15 +68,17 @@ impl<T> State<T> {
         Some(new_pane)
     }
 
-    /// Swaps the visual order of `a` and `b` if both panes are present.
-    pub fn swap(&mut self, a: Pane, b: Pane) {
-        if a == b {
-            return;
+    /// Moves pane `a` to the position of pane `b`, shifting intermediate panes.
+    pub fn move_to(&mut self, a: Pane, b: Pane) -> bool {
+        let (Some(from), Some(to)) = (self.position(a), self.position(b)) else {
+            return false;
+        };
+        if from == to {
+            return false;
         }
-
-        if let (Some(index_a), Some(index_b)) = (self.position(a), self.position(b)) {
-            self.order.swap(index_a, index_b);
-        }
+        let pane = self.order.remove(from);
+        self.order.insert(to, pane);
+        true
     }
 
     /// Applies `f` to each pane value in visual order.
