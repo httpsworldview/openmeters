@@ -84,7 +84,7 @@ Checked features are implemented, unchecked features are planned. If you have id
    or run it directly with Cargo:
 
    ```bash
-   cargo run
+   cargo run -r
    ```
 
 ## usage/keybinds
