@@ -313,6 +313,8 @@ pub struct SpectrogramState {
     sample_rate: f32,
     fft_size: usize,
     freq_scale: FrequencyScale,
+    zoom: f32,
+    pan: f32,
 }
 
 impl SpectrogramState {
@@ -327,6 +329,8 @@ impl SpectrogramState {
             sample_rate: DEFAULT_SAMPLE_RATE,
             fft_size: 4096,
             freq_scale: FrequencyScale::default(),
+            zoom: 1.0,
+            pan: 0.5,
         }
     }
 
@@ -446,8 +450,6 @@ const ZOOM_STEP: f32 = 1.15;
 struct InteractionState {
     cursor: Option<Point>,
     modifiers: keyboard::Modifiers,
-    zoom: f32,
-    pan: f32,
     drag: Option<(f32, f32)>, // (origin_y, start_pan)
 }
 
@@ -456,14 +458,12 @@ impl Default for InteractionState {
         Self {
             cursor: None,
             modifiers: keyboard::Modifiers::default(),
-            zoom: 1.0,
-            pan: 0.5,
             drag: None,
         }
     }
 }
 
-impl InteractionState {
+impl SpectrogramState {
     fn uv_y_range(&self) -> [f32; 2] {
         let h = 0.5 / self.zoom.max(MIN_ZOOM);
         let min = (self.pan - h).clamp(0.0, 1.0 - 2.0 * h);
@@ -710,8 +710,9 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
             iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
                 st.cursor = b.contains(*position).then_some(*position);
                 if let Some((origin_y, start_pan)) = st.drag {
-                    let h = 0.5 / st.zoom;
-                    st.pan = (start_pan - (position.y - origin_y) / b.height / st.zoom)
+                    let mut state = self.state.borrow_mut();
+                    let h = 0.5 / state.zoom;
+                    state.pan = (start_pan - (position.y - origin_y) / b.height / state.zoom)
                         .clamp(h, 1.0 - h);
                     shell.request_redraw();
                 }
@@ -724,14 +725,20 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
                         mouse::ScrollDelta::Lines { y, .. } => y,
                         mouse::ScrollDelta::Pixels { y, .. } => y / 50.0,
                     };
-                    st.zoom_at((pos.y - b.y) / b.height, ZOOM_STEP.powf(scroll_y));
+                    self.state
+                        .borrow_mut()
+                        .zoom_at((pos.y - b.y) / b.height, ZOOM_STEP.powf(scroll_y));
                     shell.request_redraw();
                     shell.capture_event();
                 }
             }
             iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Middle)) => {
-                if let Some(pos) = st.cursor.filter(|p| b.contains(*p) && st.zoom > MIN_ZOOM) {
-                    st.drag = Some((pos.y, st.pan));
+                let state = self.state.borrow();
+                if let Some(pos) = st
+                    .cursor
+                    .filter(|p| b.contains(*p) && state.zoom > MIN_ZOOM)
+                {
+                    st.drag = Some((pos.y, state.pan));
                     shell.capture_event();
                 }
             }
@@ -754,8 +761,8 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
     ) {
         let bounds = layout.bounds();
         let interaction = tree.state.downcast_ref::<InteractionState>();
-        let uv_y_range = interaction.uv_y_range();
         let state = self.state.borrow();
+        let uv_y_range = state.uv_y_range();
         renderer.fill_quad(
             Quad {
                 bounds,
@@ -794,8 +801,8 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
         _: &Rectangle,
         _: &iced::Renderer,
     ) -> mouse::Interaction {
-        let st = tree.state.downcast_ref::<InteractionState>();
-        if st.drag.is_some() {
+        let interaction = tree.state.downcast_ref::<InteractionState>();
+        if interaction.drag.is_some() {
             mouse::Interaction::Grabbing
         } else if cursor.is_over(layout.bounds()) {
             mouse::Interaction::Crosshair
