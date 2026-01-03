@@ -747,20 +747,14 @@ impl SpectrogramProcessor {
                         .ok();
                 }
                 let samples = self.compute_reassigned(sr, bin_lim);
-                (
-                    Self::fill_arc(self.acquire_mags(self.grid.display_bins), &self.grid.mags),
-                    samples,
-                )
+                (Self::fill_mags(&mut self.pool, &self.grid.mags), samples)
             } else {
                 for i in 0..self.mags.len() {
                     let c = self.spec[i];
                     self.mags[i] =
                         power_to_db((c.re * c.re + c.im * c.im) * self.bin_norm[i], DB_FLOOR);
                 }
-                (
-                    Self::fill_arc(self.acquire_mags(self.mags.len()), &self.mags),
-                    None,
-                )
+                (Self::fill_mags(&mut self.pool, &self.mags), None)
             };
 
             let col = SpectrogramColumn {
@@ -882,23 +876,18 @@ impl SpectrogramProcessor {
         (!self.reassign.cache.is_empty()).then(|| Arc::from(self.reassign.cache.as_slice()))
     }
 
-    fn acquire_mags(&mut self, bins: usize) -> Arc<[f32]> {
+    fn fill_mags(pool: &mut Vec<Arc<[f32]>>, data: &[f32]) -> Arc<[f32]> {
+        let bins = data.len();
         if bins == 0 {
             return Arc::from([]);
         }
-        self.pool
+        let mut arc = pool
             .iter()
             .rposition(|a| a.len() == bins)
-            .map(|i| self.pool.swap_remove(i))
-            .unwrap_or_else(|| Arc::from(vec![0.0; bins]))
-    }
-
-    fn fill_arc(mut arc: Arc<[f32]>, data: &[f32]) -> Arc<[f32]> {
-        if arc.len() != data.len() {
-            return Arc::from(data);
-        }
-        if let Some(b) = Arc::get_mut(&mut arc) {
-            b.copy_from_slice(data);
+            .map(|i| pool.swap_remove(i))
+            .unwrap_or_else(|| Arc::from(vec![0.0; bins]));
+        if let Some(buf) = Arc::get_mut(&mut arc) {
+            buf.copy_from_slice(data);
             arc
         } else {
             Arc::from(data)
@@ -982,36 +971,38 @@ impl Reconfigurable<SpectrogramConfig> for SpectrogramProcessor {
         self.cfg = cfg;
 
         let needs_fft = self.needs_fft_rebuild();
-        let needs_grid = !needs_fft
-            && (prev.use_reassignment != cfg.use_reassignment
-                || prev.display_bin_count != cfg.display_bin_count
-                || (prev.display_min_hz - cfg.display_min_hz).abs() > f32::EPSILON
-                || prev.frequency_scale != cfg.frequency_scale
-                || (prev.reassignment_max_time_hops - cfg.reassignment_max_time_hops).abs()
-                    > f32::EPSILON);
+        let dims_changed = prev.display_bin_count != cfg.display_bin_count
+            || prev.use_reassignment != cfg.use_reassignment;
+        let mapping_changed = prev.hop_size != cfg.hop_size
+            || (prev.display_min_hz - cfg.display_min_hz).abs() > f32::EPSILON
+            || prev.frequency_scale != cfg.frequency_scale
+            || (prev.reassignment_max_time_hops - cfg.reassignment_max_time_hops).abs()
+                > f32::EPSILON;
 
         if needs_fft {
             self.rebuild_fft();
             self.reconfigure_grid();
             self.clear_history();
-            return;
-        }
-        if needs_grid {
+        } else if dims_changed {
             self.reconfigure_grid();
             self.clear_history();
-            return;
-        }
-        // lighter updates that don't require history clear
-        if prev.history_length != cfg.history_length {
-            self.hist_cap = cfg.history_length;
-            while self.hist.len() > self.hist_cap {
-                if let Some(c) = self.hist.pop_front() {
+        } else if mapping_changed {
+            self.reconfigure_grid();
+            self.grid.grid.fill(0.0);
+            self.grid.mags.fill(DB_FLOOR);
+            self.reset = true;
+        } else {
+            if prev.history_length != cfg.history_length {
+                self.hist_cap = cfg.history_length;
+                while self.hist.len() > self.hist_cap
+                    && let Some(c) = self.hist.pop_front()
+                {
                     self.recycle(c);
                 }
             }
-        }
-        if prev.reassignment_power_floor_db != cfg.reassignment_power_floor_db {
-            self.reassign.floor_lin = db_to_power(cfg.reassignment_power_floor_db);
+            if prev.reassignment_power_floor_db != cfg.reassignment_power_floor_db {
+                self.reassign.floor_lin = db_to_power(cfg.reassignment_power_floor_db);
+            }
         }
     }
 }
