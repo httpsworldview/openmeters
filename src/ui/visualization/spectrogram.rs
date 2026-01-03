@@ -188,21 +188,13 @@ struct SpectrogramBuffer {
     pending_base: Option<Arc<Vec<f32>>>,
     pending_cols: Vec<SpectrogramColumnUpdate>,
     mapping: BinMapping,
-    #[allow(clippy::default_trait_access)]
-    sample_rate: f32,
-    fft_size: usize,
-    scale: FrequencyScale,
     display_freqs: Arc<[f32]>,
     pool: ColumnBufferPool,
 }
 
 impl SpectrogramBuffer {
     fn new() -> Self {
-        Self {
-            sample_rate: DEFAULT_SAMPLE_RATE,
-            display_freqs: Arc::from([]),
-            ..Default::default()
-        }
+        Self::default()
     }
 
     fn rebuild(
@@ -212,12 +204,7 @@ impl SpectrogramBuffer {
         style: &SpectrogramStyle,
     ) {
         (self.pending_base, self.pending_cols) = (None, Vec::new());
-        (self.capacity, self.sample_rate, self.fft_size, self.scale) = (
-            upd.history_length as u32,
-            upd.sample_rate.max(1.0),
-            upd.fft_size.max(1),
-            upd.frequency_scale,
-        );
+        self.capacity = upd.history_length as u32;
         self.height = history
             .iter()
             .map(|c| c.magnitudes_db.len().min(MAX_TEXTURE_BINS) as u32)
@@ -239,9 +226,9 @@ impl SpectrogramBuffer {
             .unwrap_or_else(|| Arc::from([]));
         self.mapping = BinMapping::new(
             self.height as usize,
-            self.fft_size,
-            self.sample_rate,
-            self.scale,
+            upd.fft_size,
+            upd.sample_rate,
+            upd.frequency_scale,
             passthrough,
         );
         self.values = vec![0.0; self.capacity as usize * self.height as usize];
@@ -304,8 +291,6 @@ impl SpectrogramBuffer {
             || self.height == 0
             || self.capacity != upd.history_length as u32
             || new_height.is_some_and(|h| h > 0 && h != self.height)
-            || (self.sample_rate - upd.sample_rate).abs() > f32::EPSILON
-            || self.fft_size != upd.fft_size
     }
 
     fn latest_column(&self) -> u32 {
@@ -325,6 +310,9 @@ pub struct SpectrogramState {
     history: VecDeque<SpectrogramColumn>,
     instance_key: u64,
     piano_roll: Option<PianoRollSide>,
+    sample_rate: f32,
+    fft_size: usize,
+    freq_scale: FrequencyScale,
 }
 
 impl SpectrogramState {
@@ -336,6 +324,9 @@ impl SpectrogramState {
             history: VecDeque::new(),
             instance_key: NEXT_INSTANCE_KEY.fetch_add(1, Ordering::Relaxed),
             piano_roll: None,
+            sample_rate: DEFAULT_SAMPLE_RATE,
+            fft_size: 4096,
+            freq_scale: FrequencyScale::default(),
         }
     }
 
@@ -363,6 +354,9 @@ impl SpectrogramState {
         if upd.new_columns.is_empty() && !upd.reset {
             return;
         }
+        self.sample_rate = upd.sample_rate;
+        self.fft_size = upd.fft_size;
+        self.freq_scale = upd.frequency_scale;
         if upd.reset {
             self.history.clear();
         }
@@ -420,14 +414,15 @@ impl SpectrogramState {
                 .get((tex_uv * buf.display_freqs.len() as f32) as usize)
                 .copied();
         }
-        if buf.fft_size == 0 || buf.sample_rate <= 0.0 {
+        drop(buf);
+        if self.fft_size == 0 || self.sample_rate <= 0.0 {
             return None;
         }
         let (nyq, min_f) = (
-            (buf.sample_rate / 2.0).max(1.0),
-            (buf.sample_rate / buf.fft_size as f32).max(20.0),
+            (self.sample_rate / 2.0).max(1.0),
+            (self.sample_rate / self.fft_size as f32).max(20.0),
         );
-        let freq = norm_to_freq(1.0 - tex_uv, nyq, min_f, buf.scale);
+        let freq = norm_to_freq(1.0 - tex_uv, nyq, min_f, self.freq_scale);
         (freq.is_finite() && freq > 0.0).then_some(freq)
     }
 
@@ -592,16 +587,14 @@ impl<'a> Spectrogram<'a> {
         uv_range: [f32; 2],
     ) {
         let state = self.state.borrow();
-        let buf = state.buffer.borrow();
-        if buf.fft_size == 0 || buf.sample_rate <= 0.0 {
+        if state.fft_size == 0 || state.sample_rate <= 0.0 {
             return;
         }
         let (nyq, min_f, scale) = (
-            (buf.sample_rate / 2.0).max(1.0),
-            (buf.sample_rate / buf.fft_size as f32).max(20.0),
-            buf.scale,
+            (state.sample_rate / 2.0).max(1.0),
+            (state.sample_rate / state.fft_size as f32).max(20.0),
+            state.freq_scale,
         );
-        drop(buf);
         drop(state);
 
         let (freq_top, freq_bot) = (
