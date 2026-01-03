@@ -332,7 +332,7 @@ impl ReassignmentBuffers {
     ) {
         self.d_win = compute_derivative(kind, win);
         self.t_win = compute_time_weighted(win);
-        self.d2_win = finite_diff(&self.d_win, true);
+        self.d2_win = finite_diff(win, true);
         for buf in [&mut self.d_buf, &mut self.t_buf, &mut self.d2_buf] {
             buf.resize(size, 0.0);
         }
