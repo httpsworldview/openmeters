@@ -224,11 +224,9 @@ impl WindowCache {
 fn bessel_i0(x: f64) -> f64 {
     let ax = x.abs();
     if ax < 3.75 {
-        let y = (x / 3.75).powi(2);
-        poly!(y; 1.0, 3.5156229, 3.0899424, 1.2067492, 0.2659732, 0.0360768, 0.0045813, 0.00032411)
+        poly!((x / 3.75).powi(2); 1.0, 3.5156229, 3.0899424, 1.2067492, 0.2659732, 0.0360768, 0.0045813, 0.00032411)
     } else {
-        let y = 3.75 / ax;
-        poly!(y; 0.39894228, 0.01328592, 0.00225319, -0.00157565, 0.00916281,
+        poly!(3.75 / ax; 0.39894228, 0.01328592, 0.00225319, -0.00157565, 0.00916281,
               -0.02057706, 0.02635537, -0.01647633, 0.00392377)
             * ax.exp()
             / ax.sqrt()
@@ -238,11 +236,9 @@ fn bessel_i0(x: f64) -> f64 {
 fn bessel_i1(x: f64) -> f64 {
     let ax = x.abs();
     let ans = if ax < 3.75 {
-        let y2 = (x / 3.75).powi(2);
-        x * poly!(y2; 0.5, 0.87890594, 0.51498869, 0.15084934, 0.02658733, 0.00301532, 0.00032411)
+        x * poly!((x / 3.75).powi(2); 0.5, 0.87890594, 0.51498869, 0.15084934, 0.02658733, 0.00301532, 0.00032411)
     } else {
-        let y = 3.75 / ax;
-        poly!(y; 0.39894228, -0.03988024, -0.00362018, 0.00163801, -0.01031555,
+        poly!(3.75 / ax; 0.39894228, -0.03988024, -0.00362018, 0.00163801, -0.01031555,
               0.02282967, -0.02895312, 0.01787654, -0.00420059)
             * ax.exp()
             / ax.sqrt()
@@ -251,33 +247,23 @@ fn bessel_i1(x: f64) -> f64 {
 }
 
 fn planck_bessel(len: usize, epsilon: f32, beta: f32) -> Vec<f32> {
-    let eps = epsilon.clamp(1e-6, 0.5 - 1e-6);
-    let beta = beta.max(0.0) as f64;
-    let denom = bessel_i0(beta);
-    let (span, n_max) = ((len - 1) as f64, (len - 1) as f32);
+    let (eps, beta) = (epsilon.clamp(1e-6, 0.5 - 1e-6), beta.max(0.0) as f64);
+    let (denom, n_max) = (bessel_i0(beta), (len - 1) as f32);
     let taper = (eps * n_max).min(n_max * 0.5);
     (0..len)
         .map(|i| {
-            let p = if taper <= 0.0 {
+            let x = (i as f32).min(n_max - i as f32);
+            let p = if taper <= 0.0 || x >= taper {
                 1.0
+            } else if x <= 0.0 {
+                0.0
             } else {
-                let x = if (i as f32) <= n_max * 0.5 {
-                    i as f32
-                } else {
-                    n_max - i as f32
-                };
-                if x <= 0.0 {
-                    0.0
-                } else if x >= taper {
-                    1.0
-                } else {
-                    1.0 / ((taper / x - taper / (taper - x)).exp() + 1.0)
-                }
+                1.0 / ((taper / x - taper / (taper - x)).exp() + 1.0)
             };
             let k = if beta == 0.0 {
                 1.0
             } else {
-                let r = 2.0 * i as f64 / span - 1.0;
+                let r = 2.0 * i as f64 / (len - 1) as f64 - 1.0;
                 (bessel_i0(beta * (1.0 - r * r).max(0.0).sqrt()) / denom) as f32
             };
             p * k
@@ -572,17 +558,10 @@ impl Reassignment2DGrid {
         self.out.copy_from_slice(&self.grid[..self.display_bins]);
         self.grid.rotate_left(self.display_bins);
         self.grid[(self.cols - 1) * self.display_bins..].fill(0.0);
-        for i in 0..self.mags.len().min(self.out.len()) {
+        for (i, (m, &o)) in self.mags.iter_mut().zip(&self.out).enumerate() {
             let es = e_scale.get(i).or(e_scale.get(1)).copied().unwrap_or(1.0);
             let bn = b_norm.get(i).or(b_norm.get(1)).copied().unwrap_or(1.0);
-            self.mags[i] = power_to_db(
-                if es > f32::EPSILON {
-                    self.out[i] * bn / es
-                } else {
-                    0.0
-                },
-                DB_FLOOR,
-            );
+            *m = power_to_db(if es > f32::EPSILON { o * bn / es } else { 0.0 }, DB_FLOOR);
         }
     }
 }
@@ -877,15 +856,14 @@ impl SpectrogramProcessor {
     }
 
     fn fill_mags(pool: &mut Vec<Arc<[f32]>>, data: &[f32]) -> Arc<[f32]> {
-        let bins = data.len();
-        if bins == 0 {
+        if data.is_empty() {
             return Arc::from([]);
         }
         let mut arc = pool
             .iter()
-            .rposition(|a| a.len() == bins)
+            .rposition(|a| a.len() == data.len())
             .map(|i| pool.swap_remove(i))
-            .unwrap_or_else(|| Arc::from(vec![0.0; bins]));
+            .unwrap_or_else(|| Arc::from(vec![0.0; data.len()]));
         if let Some(buf) = Arc::get_mut(&mut arc) {
             buf.copy_from_slice(data);
             arc
@@ -913,8 +891,7 @@ impl SpectrogramProcessor {
     }
 
     fn clear_history(&mut self) {
-        let cols: Vec<_> = self.hist.drain(..).collect();
-        for c in cols {
+        for c in self.hist.drain(..).collect::<Vec<_>>() {
             self.recycle(c);
         }
         self.reset = true;
@@ -1007,38 +984,25 @@ impl Reconfigurable<SpectrogramConfig> for SpectrogramProcessor {
     }
 }
 
-// finite difference for first/second derivative
-// uses a 5 point stencil in the center and a 3 point stencil
-// at the edges.
 fn finite_diff(d: &[f32], second: bool) -> Vec<f32> {
     let len = d.len();
     if len == 0 {
         return vec![];
     }
+    let get = |i: usize| d.get(i).copied().unwrap_or(d[i.min(len - 1)]);
     (0..len)
         .map(|i| {
-            let (p, c, n) = (
-                if i == 0 { d[0] } else { d[i - 1] },
-                d[i],
-                *d.get(i + 1).unwrap_or(&d[len - 1]),
-            );
+            let use_5pt = len > 4 && i >= 2 && i < len - 2;
             if second {
-                if len <= 4 || i < 2 || i >= len - 2 {
-                    if i == 0 {
-                        d.get(2).copied().unwrap_or(d[1]) - 2.0 * d[1] + d[0]
-                    } else if i == len - 1 {
-                        d[len - 1] - 2.0 * d[len - 2]
-                            + d.get(len.saturating_sub(3)).copied().unwrap_or(d[len - 2])
-                    } else {
-                        n - 2.0 * c + p
-                    }
-                } else {
+                if use_5pt {
                     (-d[i - 2] + 16.0 * d[i - 1] - 30.0 * d[i] + 16.0 * d[i + 1] - d[i + 2]) / 12.0
+                } else {
+                    get(i + 1) - 2.0 * d[i] + get(i.saturating_sub(1))
                 }
-            } else if len <= 4 || i < 2 || i >= len - 2 {
-                0.5 * (n - p)
-            } else {
+            } else if use_5pt {
                 (d[i - 2] - 8.0 * d[i - 1] + 8.0 * d[i + 1] - d[i + 2]) / 12.0
+            } else {
+                0.5 * (get(i + 1) - get(i.saturating_sub(1)))
             }
         })
         .collect()
@@ -1123,27 +1087,24 @@ fn compute_sigma_t(win: &[f32]) -> f32 {
 
 fn compute_energy_norm(win: &[f32], size: usize) -> Vec<f32> {
     let e: f32 = win.iter().map(|c| c * c).sum();
-    let (dc, ac) = (1.0 / e, 2.0 / e);
-    let mut n = vec![ac; size / 2 + 1];
-    let len = n.len();
-    if len > 0 {
-        n[0] = dc;
-        if len > 1 {
-            n[len - 1] = dc;
-        }
-    }
-    n
+    let len = size / 2 + 1;
+    (0..len)
+        .map(|i| {
+            if i == 0 || i == len - 1 {
+                1.0 / e
+            } else {
+                2.0 / e
+            }
+        })
+        .collect()
 }
 
 #[inline(always)]
 fn load_f32_simd(d: &[f32], off: usize) -> f32x8 {
-    if d.len() >= off + 8 {
-        f32x8::new(d[off..off + 8].try_into().unwrap())
-    } else {
-        let mut a = [0.0; 8];
-        a[..d.len().saturating_sub(off)].copy_from_slice(&d[off..]);
-        f32x8::new(a)
-    }
+    let mut a = [0.0; 8];
+    let n = (d.len().saturating_sub(off)).min(8);
+    a[..n].copy_from_slice(&d[off..off + n]);
+    f32x8::new(a)
 }
 
 #[inline(always)]
