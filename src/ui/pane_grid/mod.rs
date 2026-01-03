@@ -23,24 +23,17 @@ use iced_widget::core::{
 
 #[derive(Default)]
 struct Interaction {
-    dragging: Option<Pane>,
-    hovered: Option<Pane>,
-    /// Pane under cursor (tracked even when not dragging)
+    dragging: Option<(Pane, Point)>,
+    last_x: Option<f32>,
     cursor_over: Option<Pane>,
 }
 
-/// Event emitted when a drag interaction occurs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DragEvent {
     Picked { pane: Pane },
-    Dropped { pane: Pane, target: Target },
+    Moved { pane: Pane, target: Pane },
+    Dropped { pane: Pane },
     Canceled { pane: Pane },
-}
-
-/// Drop target for drag events.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Target {
-    Pane(Pane),
 }
 
 /// Lightweight, horizontal-only pane grid widget.
@@ -376,8 +369,8 @@ where
                         && let Some(cursor_position) = cursor.position()
                         && let Some(pane) = self.pane_at(layout, cursor_position)
                     {
-                        interaction.dragging = Some(pane);
-                        interaction.hovered = Some(pane);
+                        interaction.dragging = Some((pane, cursor_position));
+                        interaction.last_x = Some(cursor_position.x);
                         shell.publish(on_drag(DragEvent::Picked { pane }));
                         shell.capture_event();
                     }
@@ -401,43 +394,55 @@ where
                         }
                     }
 
-                    if interaction.dragging.is_some() {
-                        let hovered = pane_under_cursor;
+                    if let Some((pane, origin)) = interaction.dragging {
+                        const DRAG_DEADBAND: f32 = 5.0;
+                        if position.distance(origin) > DRAG_DEADBAND {
+                            let last_x = interaction.last_x.unwrap_or(position.x);
+                            let dragged_idx = self.entries.iter().position(|(p, _)| *p == pane);
 
-                        if interaction.hovered != hovered {
-                            interaction.hovered = hovered;
-                            shell.capture_event();
+                            if let Some(idx) = dragged_idx {
+                                let neighbor_idx = if position.x > last_x {
+                                    (idx + 1 < self.entries.len()).then_some(idx + 1)
+                                } else if position.x < last_x {
+                                    idx.checked_sub(1)
+                                } else {
+                                    None
+                                };
+
+                                if let Some(n_idx) = neighbor_idx {
+                                    let n_bounds = layout.children().nth(n_idx).unwrap().bounds();
+                                    let n_center = n_bounds.x + n_bounds.width / 2.0;
+                                    let crossed = (n_idx > idx && position.x > n_center)
+                                        || (n_idx < idx && position.x < n_center);
+
+                                    if crossed && let Some(on_drag) = &self.on_drag {
+                                        let target = self.entries[n_idx].0;
+                                        shell.publish(on_drag(DragEvent::Moved { pane, target }));
+                                    }
+                                }
+                            }
                         }
+                        interaction.last_x = Some(position.x);
+                        shell.capture_event();
                     }
                 }
                 mouse::Event::ButtonReleased(Button::Left) => {
-                    if let Some(pane) = interaction.dragging.take() {
-                        interaction.hovered = None;
+                    if let Some((pane, _)) = interaction.dragging.take() {
+                        interaction.last_x = None;
                         if let Some(on_drag) = &self.on_drag {
-                            let drag_event = cursor
-                                .position()
-                                .and_then(|pos| self.pane_at(layout, pos))
-                                .map(|target| DragEvent::Dropped {
-                                    pane,
-                                    target: Target::Pane(target),
-                                })
-                                .unwrap_or(DragEvent::Canceled { pane });
-
-                            shell.publish(on_drag(drag_event));
+                            shell.publish(on_drag(DragEvent::Dropped { pane }));
                         }
-
                         shell.capture_event();
                     }
                 }
                 mouse::Event::CursorLeft => {
-                    if let Some(pane) = interaction.dragging.take()
+                    if let Some((pane, _)) = interaction.dragging.take()
                         && let Some(on_drag) = &self.on_drag
                     {
                         shell.publish(on_drag(DragEvent::Canceled { pane }));
                     }
 
-                    interaction.hovered = None;
-
+                    interaction.last_x = None;
                     if interaction.cursor_over.is_some() {
                         interaction.cursor_over = None;
                         if let Some(on_hover) = &self.on_hover {
@@ -485,25 +490,13 @@ where
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
-        let interaction = tree.state.downcast_ref::<Interaction>();
-        let highlight_pane = if interaction.dragging.is_some() {
-            interaction.hovered
-        } else {
-            None
-        };
-
-        let mut highlight_bounds = None;
-
+        let dragging = tree.state.downcast_ref::<Interaction>().dragging;
         for (((pane, content), child), child_layout) in self
             .entries
             .iter()
             .zip(&tree.children)
             .zip(layout.children())
         {
-            if Some(*pane) == highlight_pane {
-                highlight_bounds = Some(child_layout.bounds());
-            }
-
             content.draw(
                 child,
                 renderer,
@@ -513,26 +506,22 @@ where
                 cursor,
                 viewport,
             );
-        }
-
-        if let Some(bounds) = highlight_bounds {
-            let accent = crate::ui::theme::accent_primary();
-            let fill = crate::ui::theme::with_alpha(accent, 0.18);
-            let border = crate::ui::theme::with_alpha(accent, 0.5);
-
-            renderer.fill_quad(
-                Quad {
-                    bounds,
-                    border: iced_widget::core::Border {
-                        radius: Default::default(),
-                        width: 1.0,
-                        color: border,
+            if dragging.is_some_and(|(p, _)| p == *pane) {
+                let accent = crate::ui::theme::accent_primary();
+                renderer.fill_quad(
+                    Quad {
+                        bounds: child_layout.bounds(),
+                        border: iced_widget::core::Border {
+                            radius: Default::default(),
+                            width: 2.0,
+                            color: crate::ui::theme::with_alpha(accent, 0.9),
+                        },
+                        shadow: Default::default(),
+                        snap: true,
                     },
-                    shadow: Default::default(),
-                    snap: true,
-                },
-                Background::Color(fill),
-            );
+                    Background::Color(crate::ui::theme::with_alpha(accent, 0.4)),
+                );
+            }
         }
     }
 
