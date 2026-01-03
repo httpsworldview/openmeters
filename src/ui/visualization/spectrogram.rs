@@ -44,11 +44,20 @@ fn norm_to_freq(inv: f32, nyquist: f32, min_freq: f32, scale: FrequencyScale) ->
     }
 }
 
+fn freq_to_norm(freq: f32, nyquist: f32, min_freq: f32, scale: FrequencyScale) -> f32 {
+    match scale {
+        FrequencyScale::Linear => freq / nyquist,
+        FrequencyScale::Logarithmic => (freq / min_freq).ln() / (nyquist / min_freq).ln(),
+        FrequencyScale::Mel => {
+            (hz_to_mel(freq) - hz_to_mel(min_freq)) / (hz_to_mel(nyquist) - hz_to_mel(min_freq))
+        }
+    }
+}
+
 static NEXT_INSTANCE_KEY: AtomicU64 = AtomicU64::new(1);
 
 pub struct SpectrogramProcessor {
     inner: CoreSpectrogramProcessor,
-    channels: usize,
     sample_rate: f32,
 }
 
@@ -60,7 +69,6 @@ impl SpectrogramProcessor {
                 use_reassignment: true,
                 ..Default::default()
             }),
-            channels: 2,
             sample_rate,
         }
     }
@@ -73,7 +81,6 @@ impl SpectrogramProcessor {
         if samples.is_empty() {
             return ProcessorUpdate::None;
         }
-        self.channels = format.channels.max(1);
         let rate = format.sample_rate.max(1.0);
         if (self.sample_rate - rate).abs() > f32::EPSILON {
             self.sample_rate = rate;
@@ -83,7 +90,7 @@ impl SpectrogramProcessor {
         }
         self.inner.process_block(&AudioBlock {
             samples,
-            channels: self.channels,
+            channels: format.channels.max(1),
             sample_rate: self.sample_rate,
             timestamp: Instant::now(),
         })
@@ -146,35 +153,27 @@ impl BinMapping {
                 weight: vec![0.0; height],
             };
         }
-        let (bins, max_bin, denom) = (
-            fft_size / 2 + 1,
-            (fft_size / 2) as f32,
-            (height - 1).max(1) as f32,
-        );
+        let (max_bin, denom) = ((fft_size / 2) as f32, (height - 1).max(1) as f32);
         let (nyq, min_f) = (
             (sample_rate / 2.0).max(1.0),
             (sample_rate / fft_size as f32).max(20.0),
         );
-        let (mut lower, mut upper, mut weight) = (
-            Vec::with_capacity(height),
-            Vec::with_capacity(height),
-            Vec::with_capacity(height),
-        );
+        let mut res = Self {
+            lower: Vec::with_capacity(height),
+            upper: Vec::with_capacity(height),
+            weight: Vec::with_capacity(height),
+        };
         for row in 0..height {
             let pos = ((norm_to_freq(1.0 - row as f32 / denom, nyq, min_f, scale)
                 * fft_size as f32)
                 / sample_rate)
                 .clamp(0.0, max_bin);
             let lo = pos.floor() as usize;
-            lower.push(lo);
-            upper.push((lo + 1).min(bins - 1));
-            weight.push(pos - lo as f32);
+            res.lower.push(lo);
+            res.upper.push((lo + 1).min(fft_size / 2));
+            res.weight.push(pos - lo as f32);
         }
-        Self {
-            lower,
-            upper,
-            weight,
-        }
+        res
     }
 }
 
@@ -270,14 +269,10 @@ impl SpectrogramBuffer {
         let inv = 1.0 / (style.ceiling_db - style.floor_db).max(f32::EPSILON);
         let out = &mut self.values[col as usize * h..(col as usize + 1) * h];
         for (i, v) in out.iter_mut().enumerate() {
-            let (lo, hi, w) = (
-                self.mapping.lower[i].min(n - 1),
-                self.mapping.upper[i].min(n - 1),
-                self.mapping.weight[i],
-            );
-            *v = ((mags[lo] + w * (mags[hi] - mags[lo])).clamp(style.floor_db, style.ceiling_db)
-                - style.floor_db)
-                * inv;
+            let lo = self.mapping.lower[i].min(n - 1);
+            let hi = self.mapping.upper[i].min(n - 1);
+            let val = mags[lo] + self.mapping.weight[i] * (mags[hi] - mags[lo]);
+            *v = (val.clamp(style.floor_db, style.ceiling_db) - style.floor_db) * inv;
         }
         if self.col_count < self.capacity {
             self.col_count += 1;
@@ -372,13 +367,12 @@ impl SpectrogramState {
             .iter()
             .map(|c| c.magnitudes_db.len().min(MAX_TEXTURE_BINS) as u32)
             .find(|&h| h > 0);
-        let dims_changed = new_h.is_some_and(|h| {
-            let buf = self.buffer.borrow();
-            h > 0 && buf.height > 0 && h != buf.height
-        });
-        if dims_changed {
-            self.history
-                .retain(|c| c.magnitudes_db.len() == new_h.unwrap() as usize);
+
+        if let Some(h) = new_h {
+            let buf_h = self.buffer.borrow().height;
+            if buf_h > 0 && h != buf_h {
+                self.history.retain(|c| c.magnitudes_db.len() == h as usize);
+            }
         }
 
         let mut buf = self.buffer.borrow_mut();
@@ -447,20 +441,11 @@ const MIN_ZOOM: f32 = 1.0;
 const MAX_ZOOM: f32 = 32.0;
 const ZOOM_STEP: f32 = 1.15;
 
+#[derive(Default)]
 struct InteractionState {
     cursor: Option<Point>,
     modifiers: keyboard::Modifiers,
     drag: Option<(f32, f32)>, // (origin_y, start_pan)
-}
-
-impl Default for InteractionState {
-    fn default() -> Self {
-        Self {
-            cursor: None,
-            modifiers: keyboard::Modifiers::default(),
-            drag: None,
-        }
-    }
 }
 
 impl SpectrogramState {
@@ -506,26 +491,20 @@ impl<'a> Spectrogram<'a> {
         let content = MusicalNote::from_frequency(freq)
             .map(|n| format!("{:.1} Hz | {}", freq, n.format()))
             .unwrap_or_else(|| format!("{:.1} Hz", freq));
-        let (lh, font, ax, ay, sh, wr) = (
-            text::LineHeight::default(),
-            iced::Font::default(),
-            iced::alignment::Horizontal::Left.into(),
-            iced::alignment::Vertical::Top,
-            text::Shaping::Basic,
-            text::Wrapping::None,
-        );
+
         let tsz = Paragraph::with_text(text::Text {
             content: content.as_str(),
             bounds: Size::INFINITE,
             size: iced::Pixels(TOOLTIP_SIZE),
-            line_height: lh,
-            font,
-            align_x: ax,
-            align_y: ay,
-            shaping: sh,
-            wrapping: wr,
+            line_height: text::LineHeight::default(),
+            font: iced::Font::default(),
+            align_x: iced::alignment::Horizontal::Left.into(),
+            align_y: iced::alignment::Vertical::Top,
+            shaping: text::Shaping::Basic,
+            wrapping: text::Wrapping::None,
         })
         .min_bounds();
+
         let sz = Size::new(
             tsz.width + TOOLTIP_PAD * 2.0,
             tsz.height + TOOLTIP_PAD * 2.0,
@@ -535,53 +514,42 @@ impl<'a> Spectrogram<'a> {
         } else {
             (cursor.x - 12.0 - sz.width).max(bounds.x)
         };
-        let tb = Rectangle::new(
-            Point::new(
-                x,
-                (cursor.y - sz.height * 0.5).clamp(bounds.y, bounds.y + bounds.height - sz.height),
-            ),
-            sz,
-        );
+        let y = (cursor.y - sz.height * 0.5).clamp(bounds.y, bounds.y + bounds.height - sz.height);
+        let tb = Rectangle::new(Point::new(x, y), sz);
+
         let pal = theme.extended_palette();
-        let q = |r: &mut iced::Renderer, b, brd, bg| {
-            r.fill_quad(
-                Quad {
-                    bounds: b,
-                    border: brd,
-                    shadow: Default::default(),
-                    snap: true,
-                },
-                Background::Color(bg),
-            )
-        };
-        q(
-            renderer,
-            Rectangle::new(Point::new(tb.x + 1.0, tb.y + 1.0), sz),
-            Default::default(),
-            theme::with_alpha(pal.background.base.color, 0.3),
+        renderer.fill_quad(
+            Quad {
+                bounds: Rectangle::new(Point::new(tb.x + 1.0, tb.y + 1.0), sz),
+                border: Default::default(),
+                ..Default::default()
+            },
+            Background::Color(theme::with_alpha(pal.background.base.color, 0.3)),
         );
-        q(
-            renderer,
-            tb,
-            theme::sharp_border(),
-            pal.background.strong.color,
+        renderer.fill_quad(
+            Quad {
+                bounds: tb,
+                border: theme::sharp_border(),
+                ..Default::default()
+            },
+            Background::Color(pal.background.strong.color),
         );
-        let pos = Point::new(tb.x + TOOLTIP_PAD, tb.y + TOOLTIP_PAD);
+
         renderer.fill_text(
             text::Text {
                 content,
                 bounds: tsz,
                 size: iced::Pixels(TOOLTIP_SIZE),
-                line_height: lh,
-                font,
-                align_x: ax,
-                align_y: ay,
-                shaping: sh,
-                wrapping: wr,
+                line_height: text::LineHeight::default(),
+                font: iced::Font::default(),
+                align_x: iced::alignment::Horizontal::Left.into(),
+                align_y: iced::alignment::Vertical::Top,
+                shaping: text::Shaping::Basic,
+                wrapping: text::Wrapping::None,
             },
-            pos,
+            Point::new(tb.x + TOOLTIP_PAD, tb.y + TOOLTIP_PAD),
             pal.background.base.text,
-            Rectangle::new(pos, tsz),
+            Rectangle::new(Point::new(tb.x + TOOLTIP_PAD, tb.y + TOOLTIP_PAD), tsz),
         );
     }
 
@@ -624,13 +592,7 @@ impl<'a> Spectrogram<'a> {
         };
 
         let freq_to_y = |f: f32| {
-            let tex_norm = match scale {
-                FrequencyScale::Linear => f / nyq,
-                FrequencyScale::Logarithmic => (f / min_f).ln() / (nyq / min_f).ln(),
-                FrequencyScale::Mel => {
-                    (hz_to_mel(f) - hz_to_mel(min_f)) / (hz_to_mel(nyq) - hz_to_mel(min_f))
-                }
-            };
+            let tex_norm = freq_to_norm(f, nyq, min_f, scale);
             let view_norm = ((1.0 - tex_norm) - uv_range[0]) / (uv_range[1] - uv_range[0]);
             bounds.y + bounds.height * view_norm.clamp(0.0, 1.0)
         };
@@ -664,8 +626,7 @@ impl<'a> Spectrogram<'a> {
                         Size::new(PIANO_ROLL_WIDTH, (yb - yt).max(1.0)),
                     ),
                     border: brd,
-                    shadow: Default::default(),
-                    snap: true,
+                    ..Default::default()
                 },
                 Background::Color(fill),
             );
