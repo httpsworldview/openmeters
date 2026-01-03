@@ -654,11 +654,18 @@ impl SpectrogramProcessor {
             out_buf: vec![],
         };
         s.rebuild_fft();
+        s.reconfigure_grid();
         s
     }
 
     pub fn config(&self) -> SpectrogramConfig {
         self.cfg
+    }
+
+    fn needs_fft_rebuild(&self) -> bool {
+        self.win_size != self.cfg.fft_size
+            || self.fft_size != self.cfg.fft_size * self.cfg.zero_padding_factor.max(1)
+            || WindowCache::get(self.cfg.window, self.cfg.fft_size).as_ptr() != self.win.as_ptr()
     }
 
     fn rebuild_fft(&mut self) {
@@ -677,17 +684,19 @@ impl SpectrogramProcessor {
             self.fft_size,
             self.cfg.reassignment_power_floor_db,
         );
-        self.grid.reconfigure(&self.cfg);
         self.bin_norm = crate::util::audio::compute_fft_bin_normalization(&self.win, self.fft_size);
         self.energy_norm = compute_energy_norm(&self.win, self.fft_size);
+        self.pcm.truncate(self.win_size * 2);
+    }
+
+    fn reconfigure_grid(&mut self) {
+        self.grid.reconfigure(&self.cfg);
         let out_bins = if self.grid.enabled {
             self.grid.display_bins
         } else {
             self.fft_size / 2 + 1
         };
         self.pool.retain(|b| b.len() == out_bins);
-        self.pcm.truncate(self.win_size * 2);
-        self.clear_history();
     }
 
     fn process_ready_windows(&mut self) -> Vec<SpectrogramColumn> {
@@ -935,9 +944,12 @@ impl AudioProcessor for SpectrogramProcessor {
         {
             self.cfg.sample_rate = block.sample_rate;
             self.rebuild_fft();
-        }
-        if self.win_size != self.cfg.fft_size {
+            self.reconfigure_grid();
+            self.clear_history();
+        } else if self.needs_fft_rebuild() {
             self.rebuild_fft();
+            self.reconfigure_grid();
+            self.clear_history();
         }
         crate::util::audio::mixdown_into_deque(&mut self.pcm, block.samples, block.channels);
         let cols = self.process_ready_windows();
@@ -968,14 +980,28 @@ impl Reconfigurable<SpectrogramConfig> for SpectrogramProcessor {
     fn update_config(&mut self, cfg: SpectrogramConfig) {
         let prev = self.cfg;
         self.cfg = cfg;
-        if prev.fft_size != cfg.fft_size
-            || prev.zero_padding_factor != cfg.zero_padding_factor
-            || prev.window != cfg.window
-            || (prev.sample_rate - cfg.sample_rate).abs() > f32::EPSILON
-        {
+
+        let needs_fft = self.needs_fft_rebuild();
+        let needs_grid = !needs_fft
+            && (prev.use_reassignment != cfg.use_reassignment
+                || prev.display_bin_count != cfg.display_bin_count
+                || (prev.display_min_hz - cfg.display_min_hz).abs() > f32::EPSILON
+                || prev.frequency_scale != cfg.frequency_scale
+                || (prev.reassignment_max_time_hops - cfg.reassignment_max_time_hops).abs()
+                    > f32::EPSILON);
+
+        if needs_fft {
             self.rebuild_fft();
+            self.reconfigure_grid();
+            self.clear_history();
             return;
         }
+        if needs_grid {
+            self.reconfigure_grid();
+            self.clear_history();
+            return;
+        }
+        // lighter updates that don't require history clear
         if prev.history_length != cfg.history_length {
             self.hist_cap = cfg.history_length;
             while self.hist.len() > self.hist_cap {
@@ -986,22 +1012,6 @@ impl Reconfigurable<SpectrogramConfig> for SpectrogramProcessor {
         }
         if prev.reassignment_power_floor_db != cfg.reassignment_power_floor_db {
             self.reassign.floor_lin = db_to_power(cfg.reassignment_power_floor_db);
-        }
-        if prev.use_reassignment != cfg.use_reassignment
-            || prev.display_bin_count != cfg.display_bin_count
-            || (prev.display_min_hz - cfg.display_min_hz).abs() > f32::EPSILON
-            || prev.frequency_scale != cfg.frequency_scale
-            || (prev.reassignment_max_time_hops - cfg.reassignment_max_time_hops).abs()
-                > f32::EPSILON
-        {
-            self.grid.reconfigure(&self.cfg);
-            let bins = if self.grid.enabled {
-                self.grid.display_bins
-            } else {
-                self.fft_size / 2 + 1
-            };
-            self.pool.retain(|b| b.len() == bins);
-            self.clear_history();
         }
     }
 }
