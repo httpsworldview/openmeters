@@ -357,9 +357,7 @@ impl SpectrogramState {
         self.sample_rate = upd.sample_rate;
         self.fft_size = upd.fft_size;
         self.freq_scale = upd.frequency_scale;
-        if upd.reset {
-            self.history.clear();
-        }
+
         self.history.extend(upd.new_columns.iter().cloned());
         if self.history.len() > upd.history_length {
             self.history
@@ -370,6 +368,15 @@ impl SpectrogramState {
             .iter()
             .map(|c| c.magnitudes_db.len().min(MAX_TEXTURE_BINS) as u32)
             .find(|&h| h > 0);
+        let dims_changed = new_h.is_some_and(|h| {
+            let buf = self.buffer.borrow();
+            h > 0 && buf.height > 0 && h != buf.height
+        });
+        if dims_changed {
+            self.history
+                .retain(|c| c.magnitudes_db.len() == new_h.unwrap() as usize);
+        }
+
         let mut buf = self.buffer.borrow_mut();
         if upd.reset || buf.needs_rebuild(upd, new_h) {
             buf.rebuild(&self.history, upd, &self.style);
