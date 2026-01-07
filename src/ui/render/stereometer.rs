@@ -14,6 +14,7 @@ use crate::ui::settings::{CorrelationMeterMode, CorrelationMeterSide, Stereomete
 const CORR_W: f32 = 28.0;
 const CORR_PAD: f32 = 4.0;
 const CORR_VPAD: f32 = 16.0;
+const CORR_EDGE: f32 = 6.0;
 const BAND_GAP: f32 = 2.0;
 
 #[derive(Debug, Clone)]
@@ -47,7 +48,7 @@ impl StereometerPrimitive {
 
         let is_single = p.correlation_meter == CorrelationMeterMode::SingleBand;
         let has_corr = p.correlation_meter != CorrelationMeterMode::Off;
-        let margin = if has_corr { CORR_W + CORR_PAD } else { 0.0 };
+        let margin = if has_corr { CORR_W + CORR_PAD + CORR_EDGE } else { 0.0 };
 
         let (vec_bounds, corr_bounds) = {
             let left = p.correlation_meter_side == CorrelationMeterSide::Left;
@@ -58,9 +59,9 @@ impl StereometerPrimitive {
             };
             let cb = if has_corr {
                 let cx = if left {
-                    p.bounds.x
+                    p.bounds.x + CORR_EDGE
                 } else {
-                    (p.bounds.x + p.bounds.width - CORR_W).max(p.bounds.x)
+                    (p.bounds.x + p.bounds.width - CORR_W - CORR_EDGE).max(p.bounds.x)
                 };
                 Rectangle {
                     x: cx,
