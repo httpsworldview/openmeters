@@ -16,7 +16,6 @@ use std::time::Duration;
 use tracing::{error, info, warn};
 
 const VIRTUAL_SINK_SAMPLE_RATE: u32 = DEFAULT_SAMPLE_RATE as u32;
-const VIRTUAL_SINK_CHANNELS: u32 = 2;
 const CAPTURE_BUFFER_CAPACITY: usize = 256;
 const DESIRED_LATENCY_FRAMES: u32 = 256;
 
@@ -139,9 +138,8 @@ impl Default for VirtualSinkState {
     fn default() -> Self {
         let format = spa::param::audio::AudioFormat::F32LE;
         Self {
-            frame_bytes: VIRTUAL_SINK_CHANNELS as usize
-                * bytes_per_sample(format).unwrap_or(size_of::<f32>()),
-            channels: VIRTUAL_SINK_CHANNELS,
+            frame_bytes: 2 * bytes_per_sample(format).unwrap_or(size_of::<f32>()),
+            channels: 2,
             sample_rate: VIRTUAL_SINK_SAMPLE_RATE,
             format,
         }
@@ -189,7 +187,6 @@ fn run_virtual_sink() -> Result<(), Box<dyn Error + Send + Sync>> {
             *pw::keys::NODE_DESCRIPTION => "OpenMeters Sink",
             *pw::keys::NODE_NAME => "openmeters.sink",
             *pw::keys::APP_NAME => "OpenMeters",
-            *pw::keys::AUDIO_CHANNELS => VIRTUAL_SINK_CHANNELS.to_string(),
             *pw::keys::NODE_LATENCY => format!("{}/{}", DESIRED_LATENCY_FRAMES, VIRTUAL_SINK_SAMPLE_RATE),
         },
     )?;
@@ -253,7 +250,7 @@ fn run_virtual_sink() -> Result<(), Box<dyn Error + Send + Sync>> {
         })
         .register()?;
 
-    let format_bytes = build_format_pod(VIRTUAL_SINK_CHANNELS, VIRTUAL_SINK_SAMPLE_RATE)?;
+    let format_bytes = build_format_pod(VIRTUAL_SINK_SAMPLE_RATE)?;
     let mut params = [Pod::from_bytes(&format_bytes).ok_or(pw::Error::CreationFailed)?];
 
     stream.connect(
@@ -276,12 +273,11 @@ fn run_virtual_sink() -> Result<(), Box<dyn Error + Send + Sync>> {
     Ok(())
 }
 
-/// Describe the desired raw audio format as a SPA pod for negotiation.
-fn build_format_pod(channels: u32, rate: u32) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
+/// Build format pod specifying sample format and rate; channels negotiated by PipeWire.
+fn build_format_pod(rate: u32) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
     let mut info = spa::param::audio::AudioInfoRaw::new();
     info.set_format(spa::param::audio::AudioFormat::F32LE);
     info.set_rate(rate);
-    info.set_channels(channels);
 
     let (cursor, _) = pw::spa::pod::serialize::PodSerializer::serialize(
         Cursor::new(Vec::new()),
@@ -304,14 +300,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn virtual_sink_state_defaults_match_requested_configuration() {
+    fn virtual_sink_state_defaults_to_stereo_before_negotiation() {
         let state = VirtualSinkState::default();
-        assert_eq!(state.channels, VIRTUAL_SINK_CHANNELS);
+        assert_eq!(state.channels, 2);
         assert_eq!(state.sample_rate, VIRTUAL_SINK_SAMPLE_RATE);
         assert_eq!(state.format, spa::param::audio::AudioFormat::F32LE);
         assert_eq!(
             state.frame_bytes,
-            VIRTUAL_SINK_CHANNELS as usize * bytes_per_sample(state.format).unwrap()
+            2 * bytes_per_sample(state.format).unwrap()
         );
     }
 }

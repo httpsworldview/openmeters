@@ -48,7 +48,11 @@ impl StereometerPrimitive {
 
         let is_single = p.correlation_meter == CorrelationMeterMode::SingleBand;
         let has_corr = p.correlation_meter != CorrelationMeterMode::Off;
-        let margin = if has_corr { CORR_W + CORR_PAD + CORR_EDGE } else { 0.0 };
+        let margin = if has_corr {
+            CORR_W + CORR_PAD + CORR_EDGE
+        } else {
+            0.0
+        };
 
         let (vec_bounds, corr_bounds) = {
             let left = p.correlation_meter_side == CorrelationMeterSide::Left;
