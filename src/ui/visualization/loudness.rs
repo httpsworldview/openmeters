@@ -2,7 +2,7 @@
 
 use crate::audio::meter_tap::MeterFormat;
 use crate::dsp::loudness::{
-    LoudnessConfig, LoudnessProcessor as CoreLoudnessProcessor, LoudnessSnapshot,
+    LoudnessConfig, LoudnessProcessor as CoreLoudnessProcessor, LoudnessSnapshot, MAX_CHANNELS,
 };
 use crate::dsp::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::ui::render::loudness::{LoudnessMeterPrimitive, MeterBar, RenderParams};
@@ -19,7 +19,6 @@ use std::cell::RefCell;
 use std::fmt;
 use std::time::Instant;
 
-const CHANNELS: usize = 2;
 const DEFAULT_RANGE: (f32, f32) = (-60.0, 4.0);
 const GUIDE_LEVELS: [f32; 6] = [0.0, -6.0, -12.0, -18.0, -24.0, -36.0];
 const LEFT_PADDING: f32 = 28.0;
@@ -80,7 +79,7 @@ impl LoudnessMeterProcessor {
                 sample_rate,
                 ..Default::default()
             }),
-            channels: CHANNELS,
+            channels: 2,
         }
     }
 
@@ -114,11 +113,12 @@ pub const LOUDNESS_PALETTE_SIZE: usize = 5;
 /// View-model state consumed by the loudness widget.
 #[derive(Debug, Clone)]
 pub struct LoudnessMeterState {
-    short_term_loudness: [f32; CHANNELS],
-    momentary_loudness: [f32; CHANNELS],
-    rms_fast_db: [f32; CHANNELS],
-    rms_slow_db: [f32; CHANNELS],
-    true_peak_db: [f32; CHANNELS],
+    short_term_loudness: f32,
+    momentary_loudness: f32,
+    rms_fast_db: [f32; MAX_CHANNELS],
+    rms_slow_db: [f32; MAX_CHANNELS],
+    true_peak_db: [f32; MAX_CHANNELS],
+    channel_count: usize,
     range: (f32, f32),
     left_mode: MeterMode,
     right_mode: MeterMode,
@@ -128,11 +128,12 @@ pub struct LoudnessMeterState {
 impl LoudnessMeterState {
     pub fn new() -> Self {
         Self {
-            short_term_loudness: [DEFAULT_RANGE.0; CHANNELS],
-            momentary_loudness: [DEFAULT_RANGE.0; CHANNELS],
-            rms_fast_db: [DEFAULT_RANGE.0; CHANNELS],
-            rms_slow_db: [DEFAULT_RANGE.0; CHANNELS],
-            true_peak_db: [DEFAULT_RANGE.0; CHANNELS],
+            short_term_loudness: DEFAULT_RANGE.0,
+            momentary_loudness: DEFAULT_RANGE.0,
+            rms_fast_db: [DEFAULT_RANGE.0; MAX_CHANNELS],
+            rms_slow_db: [DEFAULT_RANGE.0; MAX_CHANNELS],
+            true_peak_db: [DEFAULT_RANGE.0; MAX_CHANNELS],
+            channel_count: 2,
             range: DEFAULT_RANGE,
             left_mode: MeterMode::TruePeak,
             right_mode: MeterMode::LufsShortTerm,
@@ -141,30 +142,13 @@ impl LoudnessMeterState {
     }
 
     pub fn apply_snapshot(&mut self, snapshot: &LoudnessSnapshot) {
-        for (i, &v) in snapshot
-            .short_term_loudness
-            .iter()
-            .take(CHANNELS)
-            .enumerate()
-        {
-            self.short_term_loudness[i] = v;
-        }
-        for (i, &v) in snapshot
-            .momentary_loudness
-            .iter()
-            .take(CHANNELS)
-            .enumerate()
-        {
-            self.momentary_loudness[i] = v;
-        }
-        for (i, &v) in snapshot.rms_fast_db.iter().take(CHANNELS).enumerate() {
-            self.rms_fast_db[i] = v;
-        }
-        for (i, &v) in snapshot.rms_slow_db.iter().take(CHANNELS).enumerate() {
-            self.rms_slow_db[i] = v;
-        }
-        for (i, &v) in snapshot.true_peak_db.iter().take(CHANNELS).enumerate() {
-            self.true_peak_db[i] = v;
+        self.short_term_loudness = snapshot.short_term_loudness;
+        self.momentary_loudness = snapshot.momentary_loudness;
+        self.channel_count = snapshot.channel_count.max(1);
+        for i in 0..self.channel_count.min(MAX_CHANNELS) {
+            self.rms_fast_db[i] = snapshot.rms_fast_db[i];
+            self.rms_slow_db[i] = snapshot.rms_slow_db[i];
+            self.true_peak_db[i] = snapshot.true_peak_db[i];
         }
     }
 
@@ -191,17 +175,13 @@ impl LoudnessMeterState {
 
     #[cfg(test)]
     pub fn short_term_average(&self) -> f32 {
-        self.short_term_loudness.iter().sum::<f32>() / CHANNELS as f32
+        self.short_term_loudness
     }
 
     fn get_value(&self, mode: MeterMode, channel: usize) -> f32 {
         match mode {
-            MeterMode::LufsShortTerm => {
-                self.short_term_loudness.iter().sum::<f32>() / CHANNELS as f32
-            }
-            MeterMode::LufsMomentary => {
-                self.momentary_loudness.iter().sum::<f32>() / CHANNELS as f32
-            }
+            MeterMode::LufsShortTerm => self.short_term_loudness,
+            MeterMode::LufsMomentary => self.momentary_loudness,
             MeterMode::RmsFast => self
                 .rms_fast_db
                 .get(channel)
@@ -227,6 +207,10 @@ impl LoudnessMeterState {
         bg.a = 1.0;
         let bg_color = theme::color_to_rgba(bg);
 
+        // Stereo L/R display with surround aggregation (ITU-R BS.775 layout)
+        let left_value = self.aggregate_left_channels(self.left_mode);
+        let right_value = self.aggregate_right_channels(self.left_mode);
+
         RenderParams {
             min_db: min,
             max_db: max,
@@ -234,14 +218,8 @@ impl LoudnessMeterState {
                 MeterBar {
                     bg_color,
                     fills: vec![
-                        (
-                            self.get_value(self.left_mode, 0),
-                            theme::color_to_rgba(self.palette[1]),
-                        ),
-                        (
-                            self.get_value(self.left_mode, 1),
-                            theme::color_to_rgba(self.palette[2]),
-                        ),
+                        (left_value, theme::color_to_rgba(self.palette[1])),
+                        (right_value, theme::color_to_rgba(self.palette[2])),
                     ],
                 },
                 MeterBar {
@@ -262,6 +240,38 @@ impl LoudnessMeterState {
             left_padding: LEFT_PADDING,
             right_padding: RIGHT_PADDING,
         }
+    }
+
+    fn aggregate_left_channels(&self, mode: MeterMode) -> f32 {
+        if matches!(mode, MeterMode::LufsShortTerm | MeterMode::LufsMomentary) {
+            return self.get_value(mode, 0);
+        }
+        let mut max_val = self.range.0;
+        for &ch in &[0usize, 4, 6] {
+            if ch < self.channel_count {
+                max_val = max_val.max(self.get_value(mode, ch));
+            }
+        }
+        if self.channel_count > 2 {
+            max_val = max_val.max(self.get_value(mode, 2));
+        }
+        max_val
+    }
+
+    fn aggregate_right_channels(&self, mode: MeterMode) -> f32 {
+        if matches!(mode, MeterMode::LufsShortTerm | MeterMode::LufsMomentary) {
+            return self.get_value(mode, 0);
+        }
+        let mut max_val = self.range.0;
+        for &ch in &[1usize, 5, 7] {
+            if ch < self.channel_count {
+                max_val = max_val.max(self.get_value(mode, ch));
+            }
+        }
+        if self.channel_count > 2 {
+            max_val = max_val.max(self.get_value(mode, 2));
+        }
+        max_val
     }
 }
 
@@ -424,11 +434,12 @@ mod tests {
     fn state_aggregates_channels() {
         let mut state = LoudnessMeterState::new();
         state.apply_snapshot(&LoudnessSnapshot {
-            short_term_loudness: [-12.0, -6.0],
-            momentary_loudness: [-10.0, -5.0],
-            rms_fast_db: [-15.0, -9.0],
-            rms_slow_db: [-14.0, -8.0],
-            true_peak_db: [-1.0, -3.0],
+            short_term_loudness: -9.0,
+            momentary_loudness: -7.5,
+            rms_fast_db: [-15.0, -9.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            rms_slow_db: [-14.0, -8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            true_peak_db: [-1.0, -3.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+            channel_count: 2,
         });
 
         assert!((state.short_term_average() + 9.0).abs() < f32::EPSILON);

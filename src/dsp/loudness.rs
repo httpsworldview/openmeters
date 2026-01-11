@@ -231,26 +231,45 @@ impl ChannelState {
     }
 }
 
-/// only supports up to stereo. will be expanded later, fuck off
-pub const MAX_CHANNELS: usize = 2;
+pub const MAX_CHANNELS: usize = 8;
+
+/// L/R/C = 1.0 (0 dB), LFE = 0.0 (excluded), Ls/Rs/Lb/Rb = 1.41 (+1.5 dB).
+#[inline]
+fn channel_weight(channel_index: usize, total_channels: usize) -> f64 {
+    match total_channels {
+        1 => 1.0,
+        2 => 1.0,
+        6 => [1.0, 1.0, 1.0, 0.0, 1.41, 1.41][channel_index.min(5)],
+        8 => [1.0, 1.0, 1.0, 0.0, 1.41, 1.41, 1.41, 1.41][channel_index.min(7)],
+        _ => {
+            if channel_index < 3 {
+                1.0
+            } else {
+                1.41
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct LoudnessSnapshot {
-    pub short_term_loudness: [f32; MAX_CHANNELS],
-    pub momentary_loudness: [f32; MAX_CHANNELS],
+    pub short_term_loudness: f32,
+    pub momentary_loudness: f32,
     pub rms_fast_db: [f32; MAX_CHANNELS],
     pub rms_slow_db: [f32; MAX_CHANNELS],
     pub true_peak_db: [f32; MAX_CHANNELS],
+    pub channel_count: usize,
 }
 
 impl LoudnessSnapshot {
     fn with_floor(floor_db: f32) -> Self {
         Self {
-            short_term_loudness: [floor_db; MAX_CHANNELS],
-            momentary_loudness: [floor_db; MAX_CHANNELS],
+            short_term_loudness: floor_db,
+            momentary_loudness: floor_db,
             rms_fast_db: [floor_db; MAX_CHANNELS],
             rms_slow_db: [floor_db; MAX_CHANNELS],
             true_peak_db: [floor_db; MAX_CHANNELS],
+            channel_count: 0,
         }
     }
 }
@@ -351,14 +370,15 @@ impl AudioProcessor for LoudnessProcessor {
 
         let floor = self.config.floor_db;
         let num_channels = self.channels.len();
-        let mut combined_short_term = 0.0;
-        let mut combined_momentary = 0.0;
+        let mut weighted_short_term = 0.0;
+        let mut weighted_momentary = 0.0;
 
         for (i, ch) in self.channels.iter().enumerate() {
+            let weight = channel_weight(i, num_channels);
             let short_term = ch.windows[WIN_SHORT_TERM].mean().max(MIN_MEAN_SQUARE);
             let momentary = ch.windows[WIN_MOMENTARY].mean().max(MIN_MEAN_SQUARE);
-            combined_short_term += short_term;
-            combined_momentary += momentary;
+            weighted_short_term += short_term * weight;
+            weighted_momentary += momentary * weight;
             self.snapshot.rms_fast_db[i] =
                 mean_square_to_lufs(ch.windows[WIN_RMS_FAST].mean().max(MIN_MEAN_SQUARE), floor);
             self.snapshot.rms_slow_db[i] =
@@ -370,11 +390,9 @@ impl AudioProcessor for LoudnessProcessor {
             self.snapshot.true_peak_db[i] = power_to_db(peak * peak, floor);
         }
 
-        let combined_short_term_loudness = mean_square_to_lufs(combined_short_term, floor);
-        let combined_momentary_loudness = mean_square_to_lufs(combined_momentary, floor);
-
-        self.snapshot.short_term_loudness[..num_channels].fill(combined_short_term_loudness);
-        self.snapshot.momentary_loudness[..num_channels].fill(combined_momentary_loudness);
+        self.snapshot.short_term_loudness = mean_square_to_lufs(weighted_short_term, floor);
+        self.snapshot.momentary_loudness = mean_square_to_lufs(weighted_momentary, floor);
+        self.snapshot.channel_count = num_channels;
 
         ProcessorUpdate::Snapshot(self.snapshot)
     }
@@ -436,7 +454,7 @@ mod tests {
             let s = unwrap_snapshot(
                 LoudnessProcessor::new(LoudnessConfig::default()).process_block(&block),
             );
-            (s.short_term_loudness[0], s.rms_fast_db[0])
+            (s.short_term_loudness, s.rms_fast_db[0])
         };
         let (st_low, rms_low) = measure(0.25);
         let (st_high, rms_high) = measure(0.5);
@@ -455,8 +473,10 @@ mod tests {
                 sample_rate,
                 ..Default::default()
             };
-            let ours = unwrap_snapshot(LoudnessProcessor::new(cfg).process_block(&block))
-                .short_term_loudness[0] as f64;
+            let ours = f64::from(
+                unwrap_snapshot(LoudnessProcessor::new(cfg).process_block(&block))
+                    .short_term_loudness,
+            );
 
             let mut reference = EbuR128::new(2, sample_rate as u32, Mode::S).unwrap();
             reference.add_frames_planar_f32(&[&mono, &mono]).unwrap();

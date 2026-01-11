@@ -80,6 +80,7 @@ pub struct ConfigPage {
     capture_mode: CaptureMode,
     device_choices: Vec<DeviceOption>,
     selected_device: DeviceSelection,
+    pending_device_name: Option<String>,
     bg_palette: PaletteEditor,
 }
 
@@ -97,6 +98,7 @@ impl ConfigPage {
             .map(Into::into)
             .unwrap_or(theme::BG_BASE);
         let capture_mode = settings_ref.settings().capture_mode;
+        let last_device_name = settings_ref.settings().last_device_name.clone();
         drop(settings_ref);
 
         let defaults = [theme::BG_BASE];
@@ -116,6 +118,7 @@ impl ConfigPage {
             capture_mode,
             device_choices: Vec::new(),
             selected_device: DeviceSelection::Default,
+            pending_device_name: last_device_name,
             bg_palette,
         };
         ret.dispatch_capture_state();
@@ -176,6 +179,16 @@ impl ConfigPage {
                 if self.selected_device != selection {
                     self.selected_device = selection;
                     self.dispatch_capture_state();
+                    let device_name = self
+                        .device_choices
+                        .iter()
+                        .find(|opt| opt.1 == selection)
+                        .and_then(|opt| match selection {
+                            DeviceSelection::Default => None,
+                            DeviceSelection::Node(_) => Some(opt.0.clone()),
+                        });
+                    self.settings
+                        .update(|s| s.set_last_device_name(device_name));
                 }
             }
             ConfigMessage::BgPalette(event) => {
@@ -483,6 +496,15 @@ impl ConfigPage {
     fn apply_snapshot(&mut self, snapshot: RegistrySnapshot) {
         self.update_hardware_sink_label(&snapshot);
         let choices = self.build_device_choices(&snapshot);
+
+        // Restore persisted device selection on first snapshot
+        if let Some(name) = self.pending_device_name.take()
+            && let Some(opt) = choices.iter().find(|opt| opt.0 == name)
+        {
+            self.selected_device = opt.1;
+            self.dispatch_capture_state();
+        }
+
         if !choices.iter().any(|opt| opt.1 == self.selected_device) {
             self.selected_device = DeviceSelection::Default;
             self.dispatch_capture_state();

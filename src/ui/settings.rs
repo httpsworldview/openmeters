@@ -43,6 +43,7 @@ pub struct UiSettings {
     pub background_color: Option<ColorSetting>,
     pub decorations: bool,
     pub capture_mode: CaptureMode,
+    pub last_device_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -323,6 +324,9 @@ impl SettingsManager {
     }
     pub fn set_capture_mode(&mut self, m: CaptureMode) {
         self.data.capture_mode = m;
+    }
+    pub fn set_last_device_name(&mut self, name: Option<String>) {
+        self.data.last_device_name = name;
     }
 }
 

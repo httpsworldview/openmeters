@@ -183,7 +183,7 @@ impl AudioProcessor for StereometerProcessor {
             self.history_ch = ch;
         }
 
-        // Process audio through crossovers and correlators
+        // Process audio through crossovers and correlators (front L/R only)
         for frame in block.samples.chunks_exact(ch) {
             let (l, r) = (frame[0], frame[1]);
             self.corr[0].update(l, r);
