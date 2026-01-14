@@ -35,7 +35,8 @@ pub const DEFAULT_SPECTROGRAM_PALETTE: [Color; 5] = [
 ];
 
 // quiet -> loud
-pub const DEFAULT_SPECTRUM_PALETTE: [Color; 5] = [
+pub const DEFAULT_SPECTRUM_PALETTE: [Color; 6] = [
+    Color::from_rgba(0.000, 0.000, 0.000, 0.0),
     Color::from_rgba(0.218, 0.106, 0.332, 1.0),
     Color::from_rgba(0.609, 0.000, 0.000, 1.0),
     Color::from_rgba(0.906, 0.485, 0.000, 1.0),

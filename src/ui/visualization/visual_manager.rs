@@ -139,12 +139,20 @@ visuals! {
             visuals!(@apply_palette st, set, &theme::DEFAULT_SPECTRUM_PALETTE);
             let style = st.style_mut(); style.frequency_scale = set.frequency_scale;
             style.reverse_frequency = set.reverse_frequency; style.smoothing_radius = set.smoothing_radius;
-            style.smoothing_passes = set.smoothing_passes;
+            style.smoothing_passes = set.smoothing_passes; style.highlight_threshold = set.highlight_threshold;
+            style.display_mode = set.display_mode; style.weighting_mode = set.weighting_mode;
+            style.show_secondary_line = set.show_secondary_line;
+            style.bar_count = set.bar_count; style.bar_gap = set.bar_gap;
             st.update_show_grid(set.show_grid); st.update_show_peak_label(set.show_peak_label); };
         export(p, s) { let st = s.borrow(); let mut out = settings_cfg::SpectrumSettings::from_config(&p.config());
             out.palette = visuals!(@export_palette &st.palette(), &theme::DEFAULT_SPECTRUM_PALETTE);
             out.smoothing_radius = st.style().smoothing_radius;
-            out.smoothing_passes = st.style().smoothing_passes; out };
+            out.smoothing_passes = st.style().smoothing_passes;
+            out.highlight_threshold = st.style().highlight_threshold;
+            out.display_mode = st.style().display_mode;
+            out.weighting_mode = st.style().weighting_mode;
+            out.show_secondary_line = st.style().show_secondary_line;
+            out.bar_count = st.style().bar_count; out.bar_gap = st.style().bar_gap; out };
 
     Stereometer("Stereometer", 150.0, 220.0, 100.0) =>
         stereometer::StereometerProcessor, Shared<stereometer::StereometerState>;

@@ -237,6 +237,8 @@ settings_enum!(pub enum StereometerScale { Linear => "Linear", #[default] Expone
 settings_enum!(pub enum CorrelationMeterMode { Off => "Off", #[default] SingleBand => "Single Band", MultiBand => "Multi Band" });
 settings_enum!(pub enum CorrelationMeterSide { #[default] Left => "Left", Right => "Right" });
 settings_enum!(pub enum PianoRollSide { #[default] Left => "Left", Right => "Right" });
+settings_enum!(pub enum SpectrumDisplayMode { #[default] Line => "Line", Bar => "Bar" });
+settings_enum!(pub enum SpectrumWeightingMode { #[default] AWeighted => "A-Weighted", Raw => "Raw" });
 
 visual_settings!(OscilloscopeSettings from OscilloscopeConfig {
     segment_duration: f32, trigger_mode: TriggerMode,
@@ -249,7 +251,15 @@ visual_settings!(WaveformSettings from WaveformConfig {
 visual_settings!(SpectrumSettings from SpectrumConfig {
     fft_size: usize, hop_size: usize, window: WindowKind, averaging: AveragingMode,
     frequency_scale: FrequencyScale, reverse_frequency: bool, show_grid: bool, show_peak_label: bool,
-} extra { smoothing_radius: usize = 0, smoothing_passes: usize = 0 });
+} extra {
+    smoothing_radius: usize = 0, smoothing_passes: usize = 0,
+    display_mode: SpectrumDisplayMode = SpectrumDisplayMode::default(),
+    weighting_mode: SpectrumWeightingMode = SpectrumWeightingMode::default(),
+    show_secondary_line: bool = true,
+    bar_count: usize = 64,
+    bar_gap: f32 = 0.2,
+    highlight_threshold: f32 = 0.45,
+});
 
 visual_settings!(SpectrogramSettings from SpectrogramConfig {
     fft_size: usize, hop_size: usize, history_length: usize, window: WindowKind, frequency_scale: FrequencyScale,

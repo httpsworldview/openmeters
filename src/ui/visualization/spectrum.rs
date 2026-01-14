@@ -5,6 +5,7 @@ use crate::dsp::spectrum::{
 };
 use crate::dsp::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::ui::render::spectrum::{SpectrumParams, SpectrumPrimitive};
+use crate::ui::settings::{SpectrumDisplayMode, SpectrumWeightingMode};
 use crate::ui::theme;
 use crate::util::audio::musical::MusicalNote;
 use crate::util::audio::{hz_to_mel, lerp, mel_to_hz};
@@ -17,7 +18,6 @@ use iced::{Background, Color, Element, Length, Point, Rectangle, Size};
 use iced_wgpu::primitive::Renderer as _;
 use std::cell::RefCell;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 const EPSILON: f32 = 1e-6;
@@ -52,8 +52,6 @@ const GRID_FREQS: &[(f32, u8)] = &[
     (10_000.0, 0),
     (16_000.0, 1),
 ];
-
-static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
 
 pub struct SpectrumProcessor {
     inner: CoreSpectrumProcessor,
@@ -115,15 +113,20 @@ pub struct SpectrumStyle {
     pub max_frequency: f32,
     pub resolution: usize,
     pub line_thickness: f32,
-    pub unweighted_line_thickness: f32,
+    pub secondary_line_thickness: f32,
     pub smoothing_radius: usize,
     pub smoothing_passes: usize,
     pub highlight_threshold: f32,
-    pub spectrum_palette: [Color; 5],
+    pub spectrum_palette: [Color; 6],
     pub frequency_scale: FrequencyScale,
     pub reverse_frequency: bool,
     pub show_grid: bool,
     pub show_peak_label: bool,
+    pub display_mode: SpectrumDisplayMode,
+    pub weighting_mode: SpectrumWeightingMode,
+    pub show_secondary_line: bool,
+    pub bar_count: usize,
+    pub bar_gap: f32,
 }
 
 impl Default for SpectrumStyle {
@@ -135,7 +138,7 @@ impl Default for SpectrumStyle {
             max_frequency: 20_000.0,
             resolution: 1024,
             line_thickness: 1.0,
-            unweighted_line_thickness: 1.6,
+            secondary_line_thickness: 1.6,
             smoothing_radius: 0,
             smoothing_passes: 0,
             highlight_threshold: 0.45,
@@ -144,6 +147,11 @@ impl Default for SpectrumStyle {
             reverse_frequency: false,
             show_grid: true,
             show_peak_label: true,
+            display_mode: SpectrumDisplayMode::default(),
+            weighting_mode: SpectrumWeightingMode::default(),
+            show_secondary_line: true,
+            bar_count: 64,
+            bar_gap: 0.2,
         }
     }
 }
@@ -161,11 +169,13 @@ pub struct SpectrumState {
 
 impl SpectrumState {
     pub fn new() -> Self {
+        let weighted = Arc::new(Vec::new());
+        let instance_key = Arc::as_ptr(&weighted) as usize;
         Self {
             style: SpectrumStyle::default(),
-            weighted: Arc::new(Vec::new()),
+            weighted,
             unweighted: Arc::new(Vec::new()),
-            instance_key: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            instance_key,
             peak: None,
             grid: Arc::new(Vec::new()),
             scratch: Vec::new(),
@@ -194,7 +204,7 @@ impl SpectrumState {
     }
 
     pub fn set_palette(&mut self, palette: &[Color]) {
-        if palette.len() == 5
+        if palette.len() == 6
             && !self
                 .style
                 .spectrum_palette
@@ -206,7 +216,7 @@ impl SpectrumState {
         }
     }
 
-    pub fn palette(&self) -> [Color; 5] {
+    pub fn palette(&self) -> [Color; 6] {
         self.style.spectrum_palette
     }
 
@@ -333,11 +343,17 @@ impl SpectrumState {
             return None;
         }
         let pal = theme.extended_palette();
+
+        let (primary, secondary) = match self.style.weighting_mode {
+            SpectrumWeightingMode::AWeighted => (&self.weighted, &self.unweighted),
+            SpectrumWeightingMode::Raw => (&self.unweighted, &self.weighted),
+        };
+
         Some(SpectrumVisual {
             params: SpectrumParams {
                 bounds,
-                normalized_points: Arc::clone(&self.weighted),
-                secondary_points: Arc::clone(&self.unweighted),
+                normalized_points: Arc::clone(primary),
+                secondary_points: Arc::clone(secondary),
                 instance_key: self.instance_key,
                 line_color: theme::color_to_rgba(theme::mix_colors(
                     pal.primary.base.color,
@@ -349,14 +365,17 @@ impl SpectrumState {
                     pal.secondary.weak.text,
                     0.3,
                 )),
-                secondary_line_width: self.style.unweighted_line_thickness,
+                secondary_line_width: self.style.secondary_line_thickness,
                 highlight_threshold: self.style.highlight_threshold,
                 spectrum_palette: self
                     .style
                     .spectrum_palette
-                    .iter()
-                    .map(|&c| theme::color_to_rgba(c))
-                    .collect(),
+                    .map(theme::color_to_rgba)
+                    .to_vec(),
+                display_mode: self.style.display_mode == SpectrumDisplayMode::Bar,
+                show_secondary_line: self.style.show_secondary_line,
+                bar_count: self.style.bar_count,
+                bar_gap: self.style.bar_gap,
             },
             peak: self
                 .style
@@ -571,19 +590,8 @@ fn fmt_freq(f: f32) -> String {
     }
 }
 
-fn txt(s: &str, px: f32) -> (Size, text::Text<String>) {
-    let t = text::Text {
-        content: s.to_string(),
-        bounds: Size::INFINITE,
-        size: iced::Pixels(px),
-        font: iced::Font::default(),
-        align_x: iced::alignment::Horizontal::Left.into(),
-        align_y: iced::alignment::Vertical::Top,
-        line_height: text::LineHeight::default(),
-        shaping: text::Shaping::Basic,
-        wrapping: text::Wrapping::None,
-    };
-    let measure = text::Text {
+fn measure_text(s: &str, px: f32) -> Size {
+    RenderParagraph::with_text(text::Text {
         content: s,
         bounds: Size::INFINITE,
         size: iced::Pixels(px),
@@ -593,8 +601,22 @@ fn txt(s: &str, px: f32) -> (Size, text::Text<String>) {
         line_height: text::LineHeight::default(),
         shaping: text::Shaping::Basic,
         wrapping: text::Wrapping::None,
-    };
-    (RenderParagraph::with_text(measure).min_bounds(), t)
+    })
+    .min_bounds()
+}
+
+fn make_text(s: &str, px: f32, bounds: Size) -> text::Text<String> {
+    text::Text {
+        content: s.to_string(),
+        bounds,
+        size: iced::Pixels(px),
+        font: iced::Font::default(),
+        align_x: iced::alignment::Horizontal::Left.into(),
+        align_y: iced::alignment::Vertical::Top,
+        line_height: text::LineHeight::default(),
+        shaping: text::Shaping::Basic,
+        wrapping: text::Wrapping::None,
+    }
 }
 
 fn draw_grid(r: &mut iced::Renderer, th: &iced::Theme, b: Rectangle, lines: &[(f32, String, u8)]) {
@@ -612,7 +634,7 @@ fn draw_grid(r: &mut iced::Renderer, th: &iced::Theme, b: Rectangle, lines: &[(f
             let x = b.x + b.width * pos;
             (x >= b.x - 1.0 && x <= b.x + b.width + 1.0)
                 .then(|| {
-                    let (sz, _) = txt(lbl, 10.0);
+                    let sz = measure_text(lbl, 10.0);
                     (sz.width > 0.0 && sz.height > 0.0).then_some((x, lbl, *imp, sz))
                 })
                 .flatten()
@@ -658,10 +680,8 @@ fn draw_grid(r: &mut iced::Renderer, th: &iced::Theme, b: Rectangle, lines: &[(f
         }
         let tx =
             (x - sz.width * 0.5).clamp(b.x + 6.0, (b.x + b.width - 6.0 - sz.width).max(b.x + 6.0));
-        let (_, mut t) = txt(lbl, 10.0);
-        t.bounds = *sz;
         r.fill_text(
-            t,
+            make_text(lbl, 10.0, *sz),
             Point::new(tx, ty),
             tc,
             Rectangle::new(Point::new(tx, ty), *sz),
@@ -674,7 +694,7 @@ fn draw_peak(r: &mut iced::Renderer, th: &iced::Theme, b: Rectangle, pk: &(Strin
     if *op < 0.01 || b.width < 8.0 || b.height < 8.0 {
         return;
     }
-    let (sz, mut t) = txt(s, 12.0);
+    let sz = measure_text(s, 12.0);
     if sz.width <= 0.0 || sz.height <= 0.0 {
         return;
     }
@@ -702,9 +722,8 @@ fn draw_peak(r: &mut iced::Renderer, th: &iced::Theme, b: Rectangle, pk: &(Strin
         },
         Background::Color(theme::with_alpha(pal.background.strong.color, *op)),
     );
-    t.bounds = sz;
     r.fill_text(
-        t,
+        make_text(s, 12.0, sz),
         Point::new(tx, ty),
         theme::with_alpha(pal.background.base.text, *op),
         Rectangle::new(Point::new(tx, ty), sz),
