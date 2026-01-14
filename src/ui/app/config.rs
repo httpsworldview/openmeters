@@ -497,11 +497,11 @@ impl ConfigPage {
         self.update_hardware_sink_label(&snapshot);
         let choices = self.build_device_choices(&snapshot);
 
-        // Restore persisted device selection on first snapshot
-        if let Some(name) = self.pending_device_name.take()
-            && let Some(opt) = choices.iter().find(|opt| opt.0 == name)
+        if let Some(name) = self.pending_device_name.as_ref()
+            && let Some(opt) = choices.iter().find(|opt| opt.0 == *name)
         {
             self.selected_device = opt.1;
+            self.pending_device_name = None;
             self.dispatch_capture_state();
         }
 
