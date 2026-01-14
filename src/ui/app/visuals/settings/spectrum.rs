@@ -14,7 +14,7 @@ use crate::ui::visualization::visual_manager::{VisualKind, VisualManagerHandle};
 use iced::widget::{column, row, toggler};
 use iced::{Element, Length};
 
-const FFT_OPTIONS: [usize; 4] = [1024, 2048, 4096, 8192];
+const FFT_OPTIONS: [usize; 5] = [1024, 2048, 4096, 8192, 16384];
 const FREQ_SCALE: [FrequencyScale; 3] = [
     FrequencyScale::Linear,
     FrequencyScale::Logarithmic,
