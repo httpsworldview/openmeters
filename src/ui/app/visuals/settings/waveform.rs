@@ -21,7 +21,7 @@ pub enum Message {
     ChannelMode(ChannelMode),
     Palette(PaletteEvent),
 }
-
+// TODO: more waveform settings. color based on loudness, bands, static, etc.
 impl WaveformSettingsPane {
     fn view(&self) -> Element<'_, SettingsMessage> {
         column![
