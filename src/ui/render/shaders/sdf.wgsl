@@ -2,7 +2,7 @@
 //
 // params: [dist_x, dist_y, radius, feather]
 // - Solid: (0, 0, large, 1)
-// - Line: (±outer, 0, half_width, feather)
+// - Line: (+-outer, 0, half_width, feather)
 // - Dot: (ox, oy, radius, feather)
 
 struct VertexInput {

@@ -93,9 +93,9 @@ impl SpectrumSettingsPane {
         use Message::*;
         let s = &self.settings;
         let dir = if s.reverse_frequency {
-            "High ← Low"
+            "High <- Low"
         } else {
-            "Low → High"
+            "Low -> High"
         };
         let tog = |v, l, f: fn(bool) -> Message| {
             toggler(v)
