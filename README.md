@@ -48,6 +48,7 @@ Checked features are implemented, unchecked features are planned. If you have id
     - [x] peak hold
     - [x] none
   - [x] mel, log, and linear scales
+  - [x] bar mode
   - [x] Adjustable colormap
 - [x] **stereometer** (X/Y vector scope, M/S goniometer)
   - [x] Correlation meter
@@ -74,7 +75,7 @@ Checked features are implemented, unchecked features are planned. If you have id
    cd openmeters
    ```
 
-3. Build and run the application:
+3. Build and run the application in release mode:
 
    ```bash
    cargo build -r
@@ -87,7 +88,7 @@ Checked features are implemented, unchecked features are planned. If you have id
    cargo run -r
    ```
 
-## usage/keybinds
+## usage & keybinds
 
 ### global
 
