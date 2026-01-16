@@ -1,6 +1,9 @@
 use super::SettingsMessage;
 use super::palette::PaletteEvent;
-use super::widgets::{SliderRange, labeled_pick_list, labeled_slider, set_f32, set_if_changed};
+use super::widgets::{
+    SliderRange, labeled_pick_list, labeled_slider, set_if_changed, update_f32_range,
+    update_usize_from_f32,
+};
 use crate::ui::settings::{
     CorrelationMeterMode, CorrelationMeterSide, SettingsHandle, StereometerMode, StereometerScale,
     StereometerSettings,
@@ -30,6 +33,13 @@ const LABELS: &[&str] = &[
     "Mid band",
     "High band",
 ];
+
+const ROTATION_RANGE: SliderRange = SliderRange::new(-4.0, 4.0, 1.0);
+const SCALE_RANGE: SliderRange = SliderRange::new(1.0, 30.0, 0.5);
+const SEGMENT_DURATION_RANGE: SliderRange = SliderRange::new(0.005, 0.2, 0.001);
+const TARGET_SAMPLE_COUNT_RANGE: SliderRange = SliderRange::new(100.0, 2000.0, 50.0);
+const CORRELATION_WINDOW_RANGE: SliderRange = SliderRange::new(0.05, 1.0, 0.01);
+const PERSISTENCE_RANGE: SliderRange = SliderRange::new(0.0, 1.0, 0.01);
 
 settings_pane!(StereometerSettingsPane, StereometerSettings, VisualKind::Stereometer,
     theme::DEFAULT_STEREOMETER_PALETTE, labels: LABELS);
@@ -61,7 +71,7 @@ impl StereometerSettingsPane {
                 "Rotation",
                 s.rotation as f32,
                 s.rotation.to_string(),
-                SliderRange::new(-4.0, 4.0, 1.0),
+                ROTATION_RANGE,
                 |v| SettingsMessage::Stereometer(Message::Rotation(v))
             ),
             toggler(s.flip)
@@ -98,7 +108,7 @@ impl StereometerSettingsPane {
                 "Scale range",
                 s.scale_range,
                 format!("{:.1}", s.scale_range),
-                SliderRange::new(1.0, 30.0, 0.5),
+                SCALE_RANGE,
                 |v| SettingsMessage::Stereometer(Message::ScaleRange(v)),
             ));
         }
@@ -109,28 +119,28 @@ impl StereometerSettingsPane {
                 "Segment duration",
                 s.segment_duration,
                 format!("{:.1} ms", s.segment_duration * 1000.0),
-                SliderRange::new(0.005, 0.2, 0.001),
+                SEGMENT_DURATION_RANGE,
                 |v| SettingsMessage::Stereometer(Message::SegmentDuration(v))
             ),
             labeled_slider(
                 "Sample count",
                 s.target_sample_count as f32,
                 s.target_sample_count.to_string(),
-                SliderRange::new(100.0, 2000.0, 50.0),
+                TARGET_SAMPLE_COUNT_RANGE,
                 |v| SettingsMessage::Stereometer(Message::TargetSampleCount(v))
             ),
             labeled_slider(
                 "Correlation window",
                 s.correlation_window,
                 format!("{:.0} ms", s.correlation_window * 1000.0),
-                SliderRange::new(0.05, 1.0, 0.01),
+                CORRELATION_WINDOW_RANGE,
                 |v| SettingsMessage::Stereometer(Message::CorrelationWindow(v))
             ),
             labeled_slider(
                 "Persistence",
                 s.persistence,
                 format!("{:.2}", s.persistence),
-                SliderRange::new(0.0, 1.0, 0.01),
+                PERSISTENCE_RANGE,
                 |v| SettingsMessage::Stereometer(Message::Persistence(v))
             ),
             super::palette_section(
@@ -154,18 +164,21 @@ impl StereometerSettingsPane {
         };
         let s = &mut self.settings;
         let changed = match msg {
-            Message::SegmentDuration(v) => set_f32(&mut s.segment_duration, v.clamp(0.005, 0.2)),
-            Message::TargetSampleCount(v) => set_if_changed(
-                &mut s.target_sample_count,
-                (v.round() as usize).clamp(100, 2000),
-            ),
-            Message::CorrelationWindow(v) => set_f32(&mut s.correlation_window, v.clamp(0.05, 1.0)),
-            Message::Persistence(v) => set_f32(&mut s.persistence, v.clamp(0.0, 1.0)),
+            Message::SegmentDuration(v) => {
+                update_f32_range(&mut s.segment_duration, *v, SEGMENT_DURATION_RANGE)
+            }
+            Message::TargetSampleCount(v) => {
+                update_usize_from_f32(&mut s.target_sample_count, *v, TARGET_SAMPLE_COUNT_RANGE)
+            }
+            Message::CorrelationWindow(v) => {
+                update_f32_range(&mut s.correlation_window, *v, CORRELATION_WINDOW_RANGE)
+            }
+            Message::Persistence(v) => update_f32_range(&mut s.persistence, *v, PERSISTENCE_RANGE),
             Message::Rotation(v) => set_if_changed(&mut s.rotation, (v.round() as i8).clamp(-4, 4)),
             Message::Flip(v) => set_if_changed(&mut s.flip, *v),
             Message::Mode(m) => set_if_changed(&mut s.mode, *m),
             Message::Scale(sc) => set_if_changed(&mut s.scale, *sc),
-            Message::ScaleRange(v) => set_f32(&mut s.scale_range, v.clamp(1.0, 30.0)),
+            Message::ScaleRange(v) => update_f32_range(&mut s.scale_range, *v, SCALE_RANGE),
             Message::CorrelationMeter(m) => set_if_changed(&mut s.correlation_meter, *m),
             Message::CorrelationMeterSide(side) => {
                 set_if_changed(&mut s.correlation_meter_side, *side)

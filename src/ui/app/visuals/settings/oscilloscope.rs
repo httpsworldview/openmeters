@@ -1,5 +1,7 @@
 use super::palette::PaletteEvent;
-use super::widgets::{SliderRange, labeled_pick_list, labeled_slider, set_f32, set_if_changed};
+use super::widgets::{
+    SliderRange, labeled_pick_list, labeled_slider, set_if_changed, update_f32_range,
+};
 use super::{CHANNEL_OPTIONS, SettingsMessage};
 use crate::dsp::oscilloscope::TriggerMode;
 use crate::ui::settings::{ChannelMode, OscilloscopeSettings, SettingsHandle};
@@ -14,6 +16,10 @@ settings_pane!(
     VisualKind::Oscilloscope,
     theme::DEFAULT_OSCILLOSCOPE_PALETTE
 );
+
+const SEGMENT_DURATION_RANGE: SliderRange = SliderRange::new(0.005, 0.1, 0.001);
+const PERSISTENCE_RANGE: SliderRange = SliderRange::new(0.0, 1.0, 0.01);
+const NUM_CYCLES_RANGE: SliderRange = SliderRange::new(1.0, 4.0, 1.0);
 
 #[derive(Debug, Clone, Copy)]
 pub enum Message {
@@ -60,7 +66,7 @@ impl OscilloscopeSettingsPane {
                 "Cycles",
                 num_cycles as f32,
                 num_cycles.to_string(),
-                SliderRange::new(1.0, 4.0, 1.0),
+                NUM_CYCLES_RANGE,
                 |v| SettingsMessage::Oscilloscope(Message::NumCycles(v as usize)),
             ));
         }
@@ -70,14 +76,14 @@ impl OscilloscopeSettingsPane {
                 dur_label,
                 self.settings.segment_duration,
                 format!("{:.1} ms", self.settings.segment_duration * 1000.0),
-                SliderRange::new(0.005, 0.1, 0.001),
+                SEGMENT_DURATION_RANGE,
                 |v| SettingsMessage::Oscilloscope(Message::SegmentDuration(v)),
             ))
             .push(labeled_slider(
                 "Persistence",
                 self.settings.persistence,
                 format!("{:.2}", self.settings.persistence),
-                SliderRange::new(0.0, 1.0, 0.01),
+                PERSISTENCE_RANGE,
                 |v| SettingsMessage::Oscilloscope(Message::Persistence(v)),
             ))
             .push(super::palette_section(
@@ -98,10 +104,14 @@ impl OscilloscopeSettingsPane {
             return;
         };
         let changed = match *msg {
-            Message::SegmentDuration(v) => {
-                set_f32(&mut self.settings.segment_duration, v.clamp(0.005, 0.1))
+            Message::SegmentDuration(v) => update_f32_range(
+                &mut self.settings.segment_duration,
+                v,
+                SEGMENT_DURATION_RANGE,
+            ),
+            Message::Persistence(v) => {
+                update_f32_range(&mut self.settings.persistence, v, PERSISTENCE_RANGE)
             }
-            Message::Persistence(v) => set_f32(&mut self.settings.persistence, v.clamp(0.0, 1.0)),
             Message::TriggerMode(m) => set_if_changed(&mut self.settings.trigger_mode, m),
             Message::NumCycles(c) => match self.settings.trigger_mode {
                 TriggerMode::Stable { .. } => set_if_changed(

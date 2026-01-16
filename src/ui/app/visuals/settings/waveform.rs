@@ -1,5 +1,7 @@
 use super::palette::PaletteEvent;
-use super::widgets::{SliderRange, labeled_pick_list, labeled_slider, set_f32, set_if_changed};
+use super::widgets::{
+    SliderRange, labeled_pick_list, labeled_slider, set_if_changed, update_f32_range,
+};
 use super::{CHANNEL_OPTIONS, SettingsMessage};
 use crate::dsp::waveform::{MAX_SCROLL_SPEED, MIN_SCROLL_SPEED};
 use crate::ui::settings::{ChannelMode, SettingsHandle, WaveformSettings};
@@ -15,6 +17,8 @@ settings_pane!(
     theme::DEFAULT_WAVEFORM_PALETTE
 );
 
+const SCROLL_SPEED_RANGE: SliderRange = SliderRange::new(MIN_SCROLL_SPEED, MAX_SCROLL_SPEED, 1.0);
+
 #[derive(Debug, Clone, Copy)]
 pub enum Message {
     ScrollSpeed(f32),
@@ -29,7 +33,7 @@ impl WaveformSettingsPane {
                 "Scroll speed",
                 self.settings.scroll_speed,
                 format!("{:.0} px/s", self.settings.scroll_speed),
-                SliderRange::new(MIN_SCROLL_SPEED, MAX_SCROLL_SPEED, 1.0),
+                SCROLL_SPEED_RANGE,
                 |v| SettingsMessage::Waveform(Message::ScrollSpeed(v)),
             ),
             labeled_pick_list(
@@ -54,10 +58,9 @@ impl WaveformSettingsPane {
             return;
         };
         let changed = match *msg {
-            Message::ScrollSpeed(v) => set_f32(
-                &mut self.settings.scroll_speed,
-                v.clamp(MIN_SCROLL_SPEED, MAX_SCROLL_SPEED),
-            ),
+            Message::ScrollSpeed(v) => {
+                update_f32_range(&mut self.settings.scroll_speed, v, SCROLL_SPEED_RANGE)
+            }
             Message::ChannelMode(m) => set_if_changed(&mut self.settings.channel_mode, m),
             Message::Palette(e) => self.palette.update(e),
         };
