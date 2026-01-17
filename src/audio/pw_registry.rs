@@ -1,10 +1,3 @@
-//! PipeWire registry observer service.
-//!
-//! This module provides a unified PipeWire connection that:
-//! - Observes the graph (nodes, devices, ports, metadata)
-//! - Creates and manages audio links between ports
-//! - Sets routing metadata on application nodes
-
 use anyhow::{Context, Result};
 use parking_lot::RwLock;
 use pipewire as pw;
@@ -16,7 +9,7 @@ use pw::types::ObjectType;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde_json::Value;
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock, mpsc};
 use std::thread;
@@ -192,39 +185,48 @@ fn create_passive_audio_link(
     core.create_object::<pw::link::Link>(LINK_FACTORY_NAME, &props)
 }
 
-/// Pair output and input ports by channel, falling back to positional matching.
+/// Pair output and input ports by channel name, fall back to port_id matching.
+/// General logic inspired by (stolen from) easyeffects
 pub fn pair_ports_by_channel(
     mut sources: Vec<GraphPort>,
-    targets: Vec<GraphPort>,
+    mut targets: Vec<GraphPort>,
 ) -> Vec<(GraphPort, GraphPort)> {
-    let mut targets_by_channel: HashMap<String, VecDeque<GraphPort>> = HashMap::new();
-    let mut fallback: VecDeque<GraphPort> = VecDeque::new();
-    let channel_key = |p: &GraphPort| p.channel.as_deref().map(|c| c.trim().to_ascii_uppercase());
+    sources.sort_by_key(|p| p.port_id);
+    targets.sort_by_key(|p| p.port_id);
 
-    for target in targets {
-        match channel_key(&target) {
-            Some(ch) => targets_by_channel.entry(ch).or_default().push_back(target),
-            None => fallback.push_back(target),
+    let valid_channel = |ch: Option<&str>| {
+        ch.is_some_and(|c| {
+            matches!(
+                c.to_ascii_uppercase().as_str(),
+                "FL" | "FR" | "FC" | "LFE" | "RL" | "RR" | "SL" | "SR" | "MONO"
+            )
+        })
+    };
+
+    let use_channel = sources.iter().all(|p| valid_channel(p.channel.as_deref()))
+        && targets.iter().all(|p| valid_channel(p.channel.as_deref()));
+
+    let mut pairs = Vec::with_capacity(sources.len().min(targets.len()));
+    let mut used: rustc_hash::FxHashSet<u32> = rustc_hash::FxHashSet::default();
+
+    for src in &sources {
+        let target = targets.iter().find(|t| {
+            !used.contains(&t.port_id)
+                && if use_channel {
+                    src.channel.as_deref().map(|c| c.to_ascii_uppercase())
+                        == t.channel.as_deref().map(|c| c.to_ascii_uppercase())
+                } else {
+                    src.port_id == t.port_id
+                }
+        });
+
+        if let Some(tgt) = target {
+            used.insert(tgt.port_id);
+            pairs.push((src.clone(), tgt.clone()));
         }
     }
 
-    sources
-        .sort_by(|a, b| (a.channel.as_deref(), a.port_id).cmp(&(b.channel.as_deref(), b.port_id)));
-
-    sources
-        .into_iter()
-        .filter_map(|src| {
-            let target = channel_key(&src)
-                .and_then(|k| targets_by_channel.get_mut(&k)?.pop_front())
-                .or_else(|| fallback.pop_front())
-                .or_else(|| {
-                    targets_by_channel
-                        .values_mut()
-                        .find_map(VecDeque::pop_front)
-                });
-            target.map(|t| (src, t))
-        })
-        .collect()
+    pairs
 }
 
 // registry service
@@ -1064,6 +1066,92 @@ struct MetadataBinding {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn port(id: u32, channel: Option<&str>) -> GraphPort {
+        GraphPort {
+            global_id: 100 + id,
+            port_id: id,
+            node_id: 1,
+            channel: channel.map(String::from),
+            direction: PortDirection::Output,
+            is_monitor: false,
+        }
+    }
+
+    #[test]
+    fn pair_ports_by_channel_behavior() {
+        let p = pair_ports_by_channel;
+        let ids = |pairs: &[(GraphPort, GraphPort)]| -> Vec<(u32, u32)> {
+            pairs.iter().map(|(s, t)| (s.port_id, t.port_id)).collect()
+        };
+
+        // match by channel name regardless of port_id.
+        assert_eq!(
+            ids(&p(vec![port(0, Some("FL"))], vec![port(0, Some("FL"))])),
+            [(0, 0)]
+        );
+        assert_eq!(
+            ids(&p(vec![port(0, Some("FL"))], vec![port(1, Some("FL"))])),
+            [(0, 1)]
+        );
+        assert_eq!(
+            ids(&p(
+                vec![port(1, Some("FR"))],
+                vec![port(0, Some("FL")), port(1, Some("FR"))]
+            )),
+            [(1, 1)]
+        );
+
+        // unsorted inputs
+        assert_eq!(
+            ids(&p(
+                vec![port(1, Some("FR")), port(0, Some("FL"))],
+                vec![port(1, Some("FR")), port(0, Some("FL"))]
+            )),
+            [(0, 0), (1, 1)]
+        );
+
+        // fall back to port_id if missing/invalid
+        assert_eq!(
+            ids(&p(
+                vec![port(0, None), port(1, None)],
+                vec![port(0, None), port(1, None)]
+            )),
+            [(0, 0), (1, 1)]
+        );
+        assert_eq!(
+            ids(&p(vec![port(0, Some("UNK"))], vec![port(0, Some("FL"))])),
+            [(0, 0)]
+        );
+        assert_eq!(
+            ids(&p(vec![port(0, Some("FL"))], vec![port(0, Some("UNK"))])),
+            [(0, 0)]
+        );
+
+        // Unequal counts = pair what we can
+        assert_eq!(
+            ids(&p(
+                vec![port(0, Some("FL")), port(1, Some("FR"))],
+                vec![port(0, Some("FL"))]
+            )),
+            [(0, 0)]
+        );
+
+        // Surround 5.1: all valid channels match by name
+        let ch51 = ["FL", "FR", "FC", "LFE", "RL", "RR"];
+        let src: Vec<_> = ch51
+            .iter()
+            .enumerate()
+            .map(|(i, c)| port(i as u32, Some(c)))
+            .collect();
+        let tgt: Vec<_> = ch51
+            .iter()
+            .enumerate()
+            .rev()
+            .map(|(i, c)| port(i as u32, Some(c)))
+            .collect();
+        assert!(p(src, tgt).iter().all(|(s, t)| s.channel == t.channel));
+    }
 
     #[test]
     fn metadata_defaults_reconcile_matches_by_name() {
