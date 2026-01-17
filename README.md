@@ -2,13 +2,11 @@
 
 OpenMeters is a fast and simple audio metering application for Linux, built with Rust and PipeWire.
 
-## roadmap
-
-### features
+## features
 
 Checked features are implemented, unchecked features are planned. If you have ideas for more features, please feel free to open an issue/pull request!
 
-#### general
+### general
 
 - [x] Per-application capture
 - [x] Per-device capture
@@ -16,7 +14,7 @@ Checked features are implemented, unchecked features are planned. If you have id
 - [x] Adjustable background color & opacity
 - [x] Ability to enable/disable window decorations
 
-#### visuals
+### visuals
 
 - [x] **loudness**
   - [x] LUFS (ITU-R BS.1770-5)
@@ -63,15 +61,16 @@ Checked features are implemented, unchecked features are planned. If you have id
 
 ## build and run
 
-1. Ensure you have a working Rust toolchain. The recommended way is via [rustup](https://rustup.rs/).
-2. Clone the repository:
+1. **You'll need a graphical Linux system with PipeWire installed and running.**
+2. Ensure you have a working Rust toolchain. The recommended way is via [rustup](https://rustup.rs/).
+3. Clone the repository:
 
    ```bash
    git clone https://github.com/httpsworldview/openmeters/
    cd openmeters
    ```
 
-3. Build and run the application in release mode:
+4. Build and run the application in release mode:
 
    ```bash
    cargo build -r
