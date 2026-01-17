@@ -47,6 +47,7 @@ pub struct SpectrogramParams {
     pub contrast: f32,
     pub uv_y_range: [f32; 2],
     pub screen_height: f32,
+    pub scroll_phase: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -259,7 +260,12 @@ impl Uniforms {
                 f32::from_bits(if pow2 { cap - 1 } else { 0 }),
                 f32::from_bits(if pow2 { FLAG_POW2 } else { 0 }),
             ],
-            latest_count: [p.latest_column, p.column_count, 0, 0],
+            latest_count: [
+                p.latest_column,
+                p.column_count,
+                p.scroll_phase.to_bits(),
+                p.bounds.width.max(1.0).to_bits(),
+            ],
             style: [
                 p.contrast.max(0.01),
                 p.uv_y_range[0],

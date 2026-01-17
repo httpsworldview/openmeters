@@ -32,18 +32,16 @@ struct MagnitudeParams {
 ;
 
 const FLAG_CAPACITY_POW2: u32 = 0x1u;
-const SHARPEN_STRENGTH: f32 = 0.55;
 const SIGMA_HORIZONTAL: f32 = 0.14;
 const SIGMA_VERTICAL: f32 = 0.10;
 const SIGMA_DIAGONAL: f32 = 0.18;
-const VARIANCE_CLAMP: f32 = 0.02;
 const DIAGONAL_SPATIAL_WEIGHT: f32 = 0.70710677;
+const MAX_X_SAMPLES: u32 = 16u;
 // 1 / sqrt(2)
 
 const INV_SIGMA_HORIZONTAL: f32 = 1.0 / SIGMA_HORIZONTAL;
 const INV_SIGMA_VERTICAL: f32 = 1.0 / SIGMA_VERTICAL;
 const INV_SIGMA_DIAGONAL: f32 = 1.0 / SIGMA_DIAGONAL;
-const INV_VARIANCE_CLAMP: f32 = 1.0 / VARIANCE_CLAMP;
 
 @group(0) @binding(0)
 var<uniform> uniforms: SpectrogramUniforms;
@@ -90,6 +88,14 @@ fn sample_magnitude(logical: u32, row: u32, params: MagnitudeParams) -> f32 {
     return textureLoad(magnitudes, vec2<i32>(i32(row), i32(physical)), 0).x;
 }
 
+fn max_magnitude_for_column(logical: u32, row_lo: u32, row_hi: u32, params: MagnitudeParams) -> f32 {
+    var val = sample_magnitude(logical, row_lo, params);
+    for (var r = row_lo + 1u; r < min(row_hi, row_lo + 64u); r = r + 1u) {
+        val = max(val, sample_magnitude(logical, r, params));
+    }
+    return val;
+}
+
 fn bilateral_weight(delta: f32, inv_sigma: f32, spatial_scale: f32) -> f32 {
     let ratio = delta * inv_sigma;
     return spatial_scale * exp(- ratio * ratio);
@@ -122,12 +128,14 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let latest = min(state.x, capacity - 1u);
 
     let clamped_uv = clamp(input.tex_coords, vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 1.0));
-    let logical_width = count;
+    let scroll_phase = bitcast<f32>(state.z);
+    let screen_width = max(bitcast<f32>(state.w), 1.0);
 
-    var x_index: u32 = 0u;
-    if logical_width > 1u {
-        x_index = min(u32(clamped_uv.x * f32(logical_width - 1u) + 0.5), logical_width - 1u);
-    }
+    let x_pos = clamped_uv.x * f32(count - 1u) + scroll_phase;
+    let x_lo = u32(max(floor(x_pos), 0.0));
+    let x_hi = min(x_lo + 1u, count - 1u);
+    let x_frac = fract(x_pos);
+    let x_center = u32(clamp(floor(x_pos + 0.5), 0.0, f32(count - 1u)));
 
     let is_pow2 = (flags & FLAG_CAPACITY_POW2) != 0u;
     let is_full = count == capacity;
@@ -157,16 +165,33 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let row_lo = u32(max(center_bin - half_span, 0.0));
     let row_hi = min(u32(center_bin + half_span) + 1u, height);
 
-    var center = sample_magnitude(x_index, row_lo, params);
-    for (var r = row_lo + 1u; r < min(row_hi, row_lo + 64u); r = r + 1u) {
-        center = max(center, sample_magnitude(x_index, r, params));
+    let columns_per_pixel = f32(count) / screen_width;
+    var center = 0.0;
+    if columns_per_pixel <= 1.0 {
+        let val_lo = max_magnitude_for_column(x_lo, row_lo, row_hi, params);
+        let val_hi = max_magnitude_for_column(x_hi, row_lo, row_hi, params);
+        center = mix(val_lo, val_hi, x_frac);
+    } else {
+        let half_cols = columns_per_pixel * 0.5;
+        let col_lo = u32(max(x_pos - half_cols, 0.0));
+        let col_hi = min(u32(x_pos + half_cols + 1.0), count);
+        let span = max(col_hi - col_lo, 1u);
+        let step = max(span / MAX_X_SAMPLES, 1u);
+        var col = col_lo;
+        for (var i = 0u; i < MAX_X_SAMPLES; i = i + 1u) {
+            if col >= col_hi {
+                break;
+            }
+            center = max(center, max_magnitude_for_column(col, row_lo, row_hi, params));
+            col = col + step;
+        }
     }
     let row = u32(clamp(center_bin + 0.5, 0.0, f32(height - 1u)));
 
-    let has_left = x_index > 0u;
-    let left_logical = select(x_index, x_index - 1u, has_left);
-    let has_right = x_index + 1u < logical_width;
-    let right_logical = select(x_index, x_index + 1u, has_right);
+    let has_left = x_center > 0u;
+    let left_logical = select(x_center, x_center - 1u, has_left);
+    let has_right = x_center + 1u < count;
+    let right_logical = select(x_center, x_center + 1u, has_right);
 
     let has_up = row > 0u;
     let up_row = select(row, row - 1u, has_up);
@@ -176,18 +201,12 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     var accum = vec3<f32>(center, center * center, 1.0);
     accum = accumulate(has_left, left_logical, row, params, INV_SIGMA_HORIZONTAL, 1.0, center, accum);
     accum = accumulate(has_right, right_logical, row, params, INV_SIGMA_HORIZONTAL, 1.0, center, accum);
-    accum = accumulate(has_up, x_index, up_row, params, INV_SIGMA_VERTICAL, 1.0, center, accum);
-    accum = accumulate(has_down, x_index, down_row, params, INV_SIGMA_VERTICAL, 1.0, center, accum);
+    accum = accumulate(has_up, x_center, up_row, params, INV_SIGMA_VERTICAL, 1.0, center, accum);
+    accum = accumulate(has_down, x_center, down_row, params, INV_SIGMA_VERTICAL, 1.0, center, accum);
     accum = accumulate(has_left && has_up, left_logical, up_row, params, INV_SIGMA_DIAGONAL, DIAGONAL_SPATIAL_WEIGHT, center, accum);
     accum = accumulate(has_right && has_up, right_logical, up_row, params, INV_SIGMA_DIAGONAL, DIAGONAL_SPATIAL_WEIGHT, center, accum);
     accum = accumulate(has_left && has_down, left_logical, down_row, params, INV_SIGMA_DIAGONAL, DIAGONAL_SPATIAL_WEIGHT, center, accum);
     accum = accumulate(has_right && has_down, right_logical, down_row, params, INV_SIGMA_DIAGONAL, DIAGONAL_SPATIAL_WEIGHT, center, accum);
 
-    let mean = accum.x / accum.z;
-    let variance = max(accum.y / accum.z - mean * mean, 0.0);
-    let detail = center - mean;
-    let attenuation = clamp((VARIANCE_CLAMP - variance) * INV_VARIANCE_CLAMP, 0.0, 1.0);
-    let sharpened = clamp(center + detail * SHARPEN_STRENGTH * attenuation, 0.0, 1.0);
-
-    return sample_palette(sharpened);
+    return sample_palette(center);
 }
