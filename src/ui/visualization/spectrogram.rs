@@ -254,7 +254,10 @@ impl SpectrogramBuffer {
         }
         let h = self.height as usize;
         let now = Instant::now();
-        let new_cols = columns.iter().filter(|c| c.magnitudes_db.len() >= h).count();
+        let new_cols = columns
+            .iter()
+            .filter(|c| c.magnitudes_db.len() >= h)
+            .count();
         for col in columns.iter().filter(|c| c.magnitudes_db.len() >= h) {
             let idx = self.push_column(&col.magnitudes_db, style);
             let start = idx as usize * h;
@@ -322,7 +325,8 @@ impl SpectrogramBuffer {
         if self.col_interval_secs <= 0.0 {
             return 0.0;
         }
-        (Instant::now().duration_since(last).as_secs_f32() / self.col_interval_secs).fract()
+        let phase = Instant::now().duration_since(last).as_secs_f32() / self.col_interval_secs;
+        if phase >= 1.0 { 0.0 } else { phase }
     }
 }
 
