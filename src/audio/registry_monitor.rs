@@ -284,7 +284,7 @@ fn log_registry_snapshot(snapshot: &pw_registry::RegistrySnapshot) {
     let sink = snapshot.describe_default_target(snapshot.defaults.audio_sink.as_ref());
     let source = snapshot.describe_default_target(snapshot.defaults.audio_source.as_ref());
 
-    info!(
+    debug!(
         "[registry] update: serial={}, nodes={}, devices={}, sink={} (raw={}), source={} (raw={})",
         snapshot.serial,
         snapshot.nodes.len(),
