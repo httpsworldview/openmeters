@@ -5,8 +5,9 @@ use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
 use iced_wgpu::primitive::{self, Primitive};
 use iced_wgpu::wgpu;
+use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::ui::render::common::{
     CacheTracker, ClipTransform, InstanceBuffer, create_shader_module, write_texture_region,
@@ -40,7 +41,7 @@ pub struct SpectrogramParams {
     pub texture_height: u32,
     pub column_count: u32,
     pub latest_column: u32,
-    pub base_data: Option<Arc<Vec<f32>>>,
+    pub base_data: Option<Arc<[f32]>>,
     pub column_updates: Vec<SpectrogramColumnUpdate>,
     pub palette: [[f32; 4]; SPECTROGRAM_PALETTE_SIZE],
     pub background: [f32; 4],
@@ -63,7 +64,7 @@ pub struct ColumnBufferPool(Arc<Mutex<Vec<Vec<f32>>>>);
 
 impl ColumnBufferPool {
     pub fn acquire(&self, len: usize) -> Vec<f32> {
-        let mut pool = self.0.lock().unwrap();
+        let mut pool = self.0.lock();
         pool.iter()
             .rposition(|b| b.capacity() >= len)
             .map(|i| {
@@ -78,7 +79,7 @@ impl ColumnBufferPool {
     pub fn release(&self, mut buf: Vec<f32>) {
         if buf.capacity() <= 16_384 {
             buf.clear();
-            let mut pool = self.0.lock().unwrap();
+            let mut pool = self.0.lock();
             if pool.len() < 64 {
                 pool.push(buf);
             }

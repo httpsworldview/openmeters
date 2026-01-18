@@ -80,9 +80,9 @@ impl WaveformProcessor {
 
 #[derive(Debug, Default, Clone)]
 struct RenderCache {
-    samples: Arc<Vec<[f32; 2]>>,
-    colors: Arc<Vec<[f32; 4]>>,
-    preview: Arc<Vec<PreviewSample>>,
+    samples: Arc<[[f32; 2]]>,
+    colors: Arc<[[f32; 4]]>,
+    preview: Arc<[PreviewSample]>,
 }
 
 #[derive(Debug, Clone)]
@@ -157,36 +157,30 @@ impl WaveformState {
 
         let (vis, start) = (need.min(cols), cols - need.min(cols));
         let mut c = self.cache.borrow_mut();
-        {
-            let s = Arc::make_mut(&mut c.samples);
-            s.clear();
-            s.reserve(vis * ch);
-            for ci in 0..ch {
-                let base = ci * cols;
-                for i in start..cols {
-                    let (v0, v1) = (
-                        self.snapshot.min_values[base + i],
-                        self.snapshot.max_values[base + i],
-                    );
-                    s.push([v0.min(v1), v0.max(v1)]);
-                }
+        let mut samples = Vec::with_capacity(vis * ch);
+        for ci in 0..ch {
+            let base = ci * cols;
+            for i in start..cols {
+                let (v0, v1) = (
+                    self.snapshot.min_values[base + i],
+                    self.snapshot.max_values[base + i],
+                );
+                samples.push([v0.min(v1), v0.max(v1)]);
             }
         }
-        {
-            let cl = Arc::make_mut(&mut c.colors);
-            cl.clear();
-            cl.reserve(vis * ch);
-            for ci in 0..ch {
-                let base = ci * cols;
-                for i in start..cols {
-                    cl.push(theme::color_to_rgba(
-                        self.style
-                            .freq_color(self.snapshot.frequency_normalized[base + i]),
-                    ));
-                }
+        let mut colors = Vec::with_capacity(vis * ch);
+        for ci in 0..ch {
+            let base = ci * cols;
+            for i in start..cols {
+                colors.push(theme::color_to_rgba(
+                    self.style
+                        .freq_color(self.snapshot.frequency_normalized[base + i]),
+                ));
             }
         }
-        let (samples, colors) = (c.samples.clone(), c.colors.clone());
+        c.samples = Arc::from(samples);
+        c.colors = Arc::from(colors);
+        let (samples, colors) = (Arc::clone(&c.samples), Arc::clone(&c.colors));
         let pv = &self.snapshot.preview;
         let pv_ok = pv.progress > 0.0 && pv.min_values.len() >= ch && pv.max_values.len() >= ch;
         let pv_prog = if pv_ok {
@@ -195,9 +189,9 @@ impl WaveformState {
             0.0
         };
         let preview = {
-            let buf = Arc::make_mut(&mut c.preview);
-            buf.clear();
+            let mut buf = Vec::new();
             if pv_ok {
+                buf.reserve(ch);
                 for ci in 0..ch {
                     let (v0, v1) = (pv.min_values[ci], pv.max_values[ci]);
                     buf.push(PreviewSample {
@@ -209,7 +203,8 @@ impl WaveformState {
                     });
                 }
             }
-            c.preview.clone()
+            c.preview = Arc::from(buf);
+            Arc::clone(&c.preview)
         };
 
         Some(WaveformParams {

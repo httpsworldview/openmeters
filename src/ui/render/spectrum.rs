@@ -13,8 +13,8 @@ use crate::ui::render::geometry::{DEFAULT_FEATHER, build_aa_line_list};
 #[derive(Debug, Clone)]
 pub struct SpectrumParams {
     pub bounds: Rectangle,
-    pub normalized_points: Arc<Vec<[f32; 2]>>,
-    pub secondary_points: Arc<Vec<[f32; 2]>>,
+    pub normalized_points: Arc<[[f32; 2]]>,
+    pub secondary_points: Arc<[[f32; 2]]>,
     pub instance_key: usize,
     pub line_color: [f32; 4],
     pub line_width: f32,

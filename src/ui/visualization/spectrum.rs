@@ -159,25 +159,25 @@ impl Default for SpectrumStyle {
 #[derive(Debug, Clone)]
 pub struct SpectrumState {
     style: SpectrumStyle,
-    weighted: Arc<Vec<[f32; 2]>>,
-    unweighted: Arc<Vec<[f32; 2]>>,
+    weighted: Arc<[[f32; 2]]>,
+    unweighted: Arc<[[f32; 2]]>,
     instance_key: usize,
     peak: Option<(String, f32, f32, f32)>, // text, x, y, opacity
-    grid: Arc<Vec<(f32, String, u8)>>,     // pos, label, importance
+    grid: Arc<[(f32, String, u8)]>,        // pos, label, importance
     scratch: Vec<f32>,
 }
 
 impl SpectrumState {
     pub fn new() -> Self {
-        let weighted = Arc::new(Vec::new());
-        let instance_key = Arc::as_ptr(&weighted) as usize;
+        let weighted: Arc<[[f32; 2]]> = Arc::from([]);
+        let instance_key = Arc::as_ptr(&weighted).cast::<u8>() as usize;
         Self {
             style: SpectrumStyle::default(),
             weighted,
-            unweighted: Arc::new(Vec::new()),
+            unweighted: Arc::from([]),
             instance_key,
             peak: None,
-            grid: Arc::new(Vec::new()),
+            grid: Arc::from([]),
             scratch: Vec::new(),
         }
     }
@@ -192,7 +192,7 @@ impl SpectrumState {
     pub fn update_show_grid(&mut self, show: bool) {
         self.style.show_grid = show;
         if !show {
-            self.grid = Arc::new(Vec::new());
+            self.grid = Arc::from([]);
         }
     }
 
@@ -247,19 +247,18 @@ impl SpectrumState {
 
         let scale = Scale::new(min_f, max_f);
         let res = self.style.resolution.max(32);
-        let w = Arc::make_mut(&mut self.weighted);
-        let u = Arc::make_mut(&mut self.unweighted);
-        build_points(&self.style, w, u, res, &scale, snap);
+        let (mut w, mut u) = (Vec::new(), Vec::new());
+        build_points(&self.style, &mut w, &mut u, res, &scale, snap);
 
         if self.style.smoothing_radius > 0 && self.style.smoothing_passes > 0 {
             smooth(
-                w,
+                &mut w[..],
                 self.style.smoothing_radius,
                 self.style.smoothing_passes,
                 &mut self.scratch,
             );
             smooth(
-                u,
+                &mut u[..],
                 self.style.smoothing_radius,
                 self.style.smoothing_passes,
                 &mut self.scratch,
@@ -268,9 +267,12 @@ impl SpectrumState {
         if self.style.reverse_frequency {
             w.reverse();
             u.reverse();
-            reindex(w);
-            reindex(u);
+            reindex(&mut w[..]);
+            reindex(&mut u[..]);
         }
+
+        self.weighted = Arc::from(w);
+        self.unweighted = Arc::from(u);
 
         self.grid = if self.style.show_grid {
             let mut v = Vec::new();
@@ -286,9 +288,9 @@ impl SpectrumState {
                     v.push((p.clamp(0.0, 1.0), fmt_freq(f), imp));
                 }
             }
-            Arc::new(v)
+            Arc::from(v)
         } else {
-            Arc::new(Vec::new())
+            Arc::from([])
         };
 
         let pk = self
@@ -391,7 +393,7 @@ impl SpectrumState {
 struct SpectrumVisual {
     params: SpectrumParams,
     peak: Option<(String, f32, f32, f32)>,
-    grid: Arc<Vec<(f32, String, u8)>>,
+    grid: Arc<[(f32, String, u8)]>,
 }
 
 #[derive(Debug)]

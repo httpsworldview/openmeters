@@ -184,7 +184,7 @@ struct SpectrogramBuffer {
     height: u32,
     write_idx: u32,
     col_count: u32,
-    pending_base: Option<Arc<Vec<f32>>>,
+    pending_base: Option<Arc<[f32]>>,
     pending_cols: Vec<SpectrogramColumnUpdate>,
     mapping: BinMapping,
     display_freqs: Arc<[f32]>,
@@ -243,7 +243,7 @@ impl SpectrogramBuffer {
             }
         }
         if self.col_count > 0 {
-            self.pending_base = Some(Arc::new(self.values.clone()));
+            self.pending_base = Some(Arc::from(self.values.clone()));
             self.last_col_time = Some(Instant::now());
         }
     }
@@ -282,7 +282,7 @@ impl SpectrogramBuffer {
         }
         if self.pending_cols.len() as u32 >= (self.capacity / 2).max(16) {
             self.pending_cols.clear();
-            self.pending_base = Some(Arc::new(self.values.clone()));
+            self.pending_base = Some(Arc::from(self.values.clone()));
         }
     }
 
@@ -374,7 +374,7 @@ impl SpectrogramState {
         if self.palette != palette {
             self.palette = palette;
             let values = self.buffer.borrow().values.clone();
-            self.buffer.borrow_mut().pending_base = Some(Arc::new(values));
+            self.buffer.borrow_mut().pending_base = Some(Arc::from(values));
         }
     }
 
