@@ -1,5 +1,7 @@
 # OpenMeters
 
+![Preview](https://github.com/user-attachments/assets/94b2a531-c93b-41c3-9477-20cb3b9bc046)
+
 OpenMeters is a fast and simple audio metering application for Linux, built with Rust and PipeWire.
 
 ## features
