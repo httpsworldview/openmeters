@@ -409,8 +409,10 @@ where
                                     None
                                 };
 
-                                if let Some(n_idx) = neighbor_idx {
-                                    let n_bounds = layout.children().nth(n_idx).unwrap().bounds();
+                                if let Some(n_idx) = neighbor_idx
+                                    && let Some(child_layout) = layout.children().nth(n_idx)
+                                {
+                                    let n_bounds = child_layout.bounds();
                                     let n_center = n_bounds.x + n_bounds.width / 2.0;
                                     let crossed = (n_idx > idx && position.x > n_center)
                                         || (n_idx < idx && position.x < n_center);

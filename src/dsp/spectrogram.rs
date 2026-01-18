@@ -1132,10 +1132,10 @@ mod tests {
             .collect()
     }
     fn unwrap(r: ProcessorUpdate<SpectrogramUpdate>) -> SpectrogramUpdate {
-        match r {
-            ProcessorUpdate::Snapshot(u) => u,
-            _ => panic!(),
-        }
+        let ProcessorUpdate::Snapshot(u) = r else {
+            panic!("expected snapshot");
+        };
+        u
     }
 
     #[test]
@@ -1160,7 +1160,7 @@ mod tests {
             .magnitudes_db
             .iter()
             .enumerate()
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .max_by(|a, b| a.1.total_cmp(b.1))
             .unwrap();
         assert_eq!(idx, 200);
         assert!(db > -1.5 && db < 2.0);
@@ -1196,7 +1196,7 @@ mod tests {
             .as_ref()
             .unwrap()
             .iter()
-            .max_by(|a, b| a.magnitude_db.partial_cmp(&b.magnitude_db).unwrap())
+            .max_by(|a, b| a.magnitude_db.total_cmp(&b.magnitude_db))
             .unwrap();
         assert!((peak.frequency_hz - freq).abs() < 1.0);
         assert!(peak.group_delay_samples.abs() < 204.8);
@@ -1237,7 +1237,7 @@ mod tests {
             .as_ref()
             .unwrap()
             .iter()
-            .max_by(|a, b| a.magnitude_db.partial_cmp(&b.magnitude_db).unwrap())
+            .max_by(|a, b| a.magnitude_db.total_cmp(&b.magnitude_db))
             .unwrap();
         let exp = f0 + rate * ((256 * mid + 1024) as f32 / sr);
         assert!((peak.frequency_hz - exp).abs() < (exp * 0.01).max(20.0));

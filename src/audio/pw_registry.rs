@@ -156,9 +156,10 @@ fn parse_metadata_name(type_hint: Option<&str>, value: Option<&str>) -> Option<S
 
 fn format_target_metadata(object_serial: Option<&str>, node_id: u32) -> (String, String) {
     let target_object = object_serial
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-        .map(str::to_string)
+        .and_then(|raw| {
+            let trimmed = raw.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        })
         .unwrap_or_else(|| node_id.to_string());
     (target_object, node_id.to_string())
 }
@@ -194,14 +195,18 @@ pub fn pair_ports_by_channel(
     sources.sort_by_key(|p| p.port_id);
     targets.sort_by_key(|p| p.port_id);
 
-    let valid_channel = |ch: Option<&str>| {
-        ch.is_some_and(|c| {
-            matches!(
-                c.to_ascii_uppercase().as_str(),
-                "FL" | "FR" | "FC" | "LFE" | "RL" | "RR" | "SL" | "SR" | "MONO"
-            )
-        })
+    let is_known_channel = |c: &str| {
+        c.eq_ignore_ascii_case("FL")
+            || c.eq_ignore_ascii_case("FR")
+            || c.eq_ignore_ascii_case("FC")
+            || c.eq_ignore_ascii_case("LFE")
+            || c.eq_ignore_ascii_case("RL")
+            || c.eq_ignore_ascii_case("RR")
+            || c.eq_ignore_ascii_case("SL")
+            || c.eq_ignore_ascii_case("SR")
+            || c.eq_ignore_ascii_case("MONO")
     };
+    let valid_channel = |ch: Option<&str>| ch.is_some_and(is_known_channel);
 
     let use_channel = sources.iter().all(|p| valid_channel(p.channel.as_deref()))
         && targets.iter().all(|p| valid_channel(p.channel.as_deref()));
@@ -213,8 +218,10 @@ pub fn pair_ports_by_channel(
         let target = targets.iter().find(|t| {
             !used.contains(&t.port_id)
                 && if use_channel {
-                    src.channel.as_deref().map(|c| c.to_ascii_uppercase())
-                        == t.channel.as_deref().map(|c| c.to_ascii_uppercase())
+                    match (src.channel.as_deref(), t.channel.as_deref()) {
+                        (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
+                        _ => false,
+                    }
                 } else {
                     src.port_id == t.port_id
                 }

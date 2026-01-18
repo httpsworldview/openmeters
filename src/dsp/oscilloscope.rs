@@ -610,15 +610,14 @@ mod tests {
             })
             .collect();
 
-        if let ProcessorUpdate::Snapshot(s) =
+        let ProcessorUpdate::Snapshot(s) =
             processor.process_block(&make_block(&samples, 2, DEFAULT_SAMPLE_RATE))
-        {
-            assert_eq!(s.channels, 2);
-            assert!(s.samples_per_channel > 0 && s.samples_per_channel <= 4096);
-            assert_eq!(s.samples.len(), s.samples_per_channel * 2);
-        } else {
+        else {
             panic!("expected snapshot");
-        }
+        };
+        assert_eq!(s.channels, 2);
+        assert!(s.samples_per_channel > 0 && s.samples_per_channel <= 4096);
+        assert_eq!(s.samples.len(), s.samples_per_channel * 2);
     }
 
     #[test]
@@ -630,7 +629,7 @@ mod tests {
             let samples = sine_samples(freq, rate, (rate * 0.1) as usize);
             let detected = detector
                 .detect_pitch(&samples, rate)
-                .unwrap_or_else(|| panic!("Failed to detect {}Hz", freq));
+                .expect("Failed to detect pitch");
             let error = (detected - freq).abs() / freq;
             assert!(
                 error < 0.05,
