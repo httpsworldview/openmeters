@@ -12,15 +12,8 @@ use std::sync::Arc;
 
 /// Compute frequency bin centers for FFT output.
 fn frequency_bins(sample_rate: f32, fft_size: usize) -> Vec<f32> {
-    if fft_size == 0 {
-        return Vec::new();
-    }
     let bins = fft_size / 2 + 1;
-    let bin_hz = if sample_rate > 0.0 {
-        sample_rate / fft_size as f32
-    } else {
-        0.0
-    };
+    let bin_hz = sample_rate / fft_size as f32;
     (0..bins).map(|i| i as f32 * bin_hz).collect()
 }
 use std::time::Instant;
