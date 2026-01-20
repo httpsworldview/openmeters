@@ -101,8 +101,9 @@ impl ConfigPage {
         let last_device_name = settings_ref.settings().last_device_name.clone();
         drop(settings_ref);
 
-        let defaults = [theme::BG_BASE];
-        let bg_palette = PaletteEditor::new(&[current_bg], &defaults);
+        let mut bg_pal = theme::Palette::new(&theme::background::COLORS, theme::background::LABELS);
+        bg_pal.set(&[current_bg]);
+        let bg_palette = PaletteEditor::new(bg_pal);
 
         let ret = Self {
             routing_sender,

@@ -1,20 +1,20 @@
 use super::palette::PaletteEvent;
 use super::widgets::{
-    SliderRange, labeled_pick_list, labeled_slider, set_if_changed, update_f32_range,
+    labeled_pick_list, labeled_slider, set_if_changed, update_f32_range, SliderRange,
 };
-use super::{CHANNEL_OPTIONS, SettingsMessage};
+use super::{SettingsMessage, CHANNEL_OPTIONS};
 use crate::dsp::waveform::{MAX_SCROLL_SPEED, MIN_SCROLL_SPEED};
 use crate::ui::settings::{ChannelMode, SettingsHandle, WaveformSettings};
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualKind, VisualManagerHandle};
-use iced::Element;
 use iced::widget::column;
+use iced::Element;
 
 settings_pane!(
     WaveformSettingsPane,
     WaveformSettings,
     VisualKind::Waveform,
-    theme::DEFAULT_WAVEFORM_PALETTE
+    theme::waveform
 );
 
 const SCROLL_SPEED_RANGE: SliderRange = SliderRange::new(MIN_SCROLL_SPEED, MAX_SCROLL_SPEED, 1.0);
@@ -70,7 +70,7 @@ impl WaveformSettingsPane {
                 settings_handle,
                 VisualKind::Waveform,
                 self,
-                theme::DEFAULT_WAVEFORM_PALETTE
+                &theme::waveform::COLORS
             );
         }
     }

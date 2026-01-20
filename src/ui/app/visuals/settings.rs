@@ -8,7 +8,7 @@ macro_rules! persist_palette {
             $kind,
             &$this.settings,
             &$this.palette,
-            &$defaults,
+            $defaults,
         );
     }};
 }
@@ -18,8 +18,7 @@ macro_rules! persist_palette {
 macro_rules! settings_pane {
     // Branch with extra fields computed from settings
     (
-        $pane:ident, $settings_ty:ty, $kind:expr, $defaults:expr
-        $(, labels: $labels:expr)?
+        $pane:ident, $settings_ty:ty, $kind:expr, $palette_mod:path
         , extra_from_settings($s:ident) { $($field:ident : $ty:ty = $init:expr),* $(,)? }
     ) => {
         #[derive(Debug)]
@@ -34,9 +33,9 @@ macro_rules! settings_pane {
             visual_id: super::VisualId,
             visual_manager: &super::VisualManagerHandle,
         ) -> $pane {
-            let labels: &[&'static str] = settings_pane!(@labels $($labels)?);
-            let ($s, palette) = super::load_settings_and_palette::<$settings_ty, { $defaults.len() }>(
-                visual_manager, $kind, &$defaults, labels,
+            use $palette_mod as pal;
+            let ($s, palette) = super::load_settings_and_palette::<$settings_ty>(
+                visual_manager, $kind, &pal::COLORS, pal::LABELS,
             );
             $(let $field: $ty = $init;)*
             $pane { visual_id, settings: $s, palette, $($field,)* }
@@ -46,8 +45,7 @@ macro_rules! settings_pane {
     };
     // Branch without extra fields
     (
-        $pane:ident, $settings_ty:ty, $kind:expr, $defaults:expr
-        $(, labels: $labels:expr)?
+        $pane:ident, $settings_ty:ty, $kind:expr, $palette_mod:path
     ) => {
         #[derive(Debug)]
         pub struct $pane {
@@ -60,9 +58,9 @@ macro_rules! settings_pane {
             visual_id: super::VisualId,
             visual_manager: &super::VisualManagerHandle,
         ) -> $pane {
-            let labels: &[&'static str] = settings_pane!(@labels $($labels)?);
-            let (settings, palette) = super::load_settings_and_palette::<$settings_ty, { $defaults.len() }>(
-                visual_manager, $kind, &$defaults, labels,
+            use $palette_mod as pal;
+            let (settings, palette) = super::load_settings_and_palette::<$settings_ty>(
+                visual_manager, $kind, &pal::COLORS, pal::LABELS,
             );
             $pane { visual_id, settings, palette }
         }
@@ -85,8 +83,6 @@ macro_rules! settings_pane {
             }
         }
     };
-    (@labels $labels:expr) => { $labels };
-    (@labels) => { &[] };
 }
 
 mod loudness;
@@ -102,6 +98,7 @@ use self::palette::{PaletteEditor, PaletteEvent};
 use crate::ui::settings::{
     ChannelMode, HasPalette, ModuleSettings, PaletteSettings, SettingsHandle,
 };
+use crate::ui::theme::Palette;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
 use iced::widget::column;
 use iced::{Color, Element};
@@ -209,23 +206,22 @@ where
     applied
 }
 
-pub(super) fn load_settings_and_palette<T, const N: usize>(
+pub(super) fn load_settings_and_palette<T>(
     visual_manager: &VisualManagerHandle,
     kind: VisualKind,
-    defaults: &[Color; N],
-    labels: &[&'static str],
+    defaults: &'static [Color],
+    labels: &'static [&'static str],
 ) -> (T, PaletteEditor)
 where
     T: DeserializeOwned + Default + HasPalette,
 {
     let settings = load_config_or_default::<T>(visual_manager, kind);
-    let current = settings.palette_as_array::<N>().unwrap_or(*defaults);
-    let palette = if labels.is_empty() {
-        PaletteEditor::new(&current, defaults)
-    } else {
-        PaletteEditor::with_labels(&current, defaults, labels)
-    };
-    (settings, palette)
+    let mut palette = Palette::new(defaults, labels);
+    if let Some(stored) = settings.palette() {
+        let colors: Vec<Color> = stored.stops.iter().map(|c| (*c).into()).collect();
+        palette.set(&colors);
+    }
+    (settings, PaletteEditor::new(palette))
 }
 
 pub(super) fn palette_section<'a, M>(

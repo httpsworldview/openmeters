@@ -1,11 +1,11 @@
-use super::SettingsMessage;
 use super::palette::PaletteEvent;
 use super::widgets::{
-    SliderRange, labeled_pick_list, labeled_slider, section_title, set_if_changed,
-    update_f32_range, update_usize_from_f32,
+    labeled_pick_list, labeled_slider, section_title, set_if_changed, update_f32_range,
+    update_usize_from_f32, SliderRange,
 };
+use super::SettingsMessage;
 use crate::dsp::spectrogram::{
-    FrequencyScale, PLANCK_BESSEL_DEFAULT_BETA, PLANCK_BESSEL_DEFAULT_EPSILON, WindowKind,
+    FrequencyScale, WindowKind, PLANCK_BESSEL_DEFAULT_BETA, PLANCK_BESSEL_DEFAULT_EPSILON,
 };
 use crate::ui::settings::{PianoRollSide, SettingsHandle, SpectrogramSettings};
 use crate::ui::theme;
@@ -53,7 +53,7 @@ fn extract_planck_bessel(window: WindowKind) -> (f32, f32) {
 
 settings_pane!(
     SpectrogramSettingsPane, SpectrogramSettings, VisualKind::Spectrogram,
-    theme::DEFAULT_SPECTROGRAM_PALETTE,
+    theme::spectrogram,
     extra_from_settings(settings) {
         planck_bessel: (f32, f32) = extract_planck_bessel(settings.window),
     }
@@ -138,13 +138,11 @@ impl SpectrogramSettingsPane {
             |v| SettingsMessage::Spectrogram(Message::HistoryLength(v)),
         ));
 
-        let mut adv = column![
-            toggler(s.use_reassignment)
-                .label("Time-frequency reassignment")
-                .text_size(11)
-                .spacing(4)
-                .on_toggle(|v| SettingsMessage::Spectrogram(Message::UseReassignment(v)))
-        ]
+        let mut adv = column![toggler(s.use_reassignment)
+            .label("Time-frequency reassignment")
+            .text_size(11)
+            .spacing(4)
+            .on_toggle(|v| SettingsMessage::Spectrogram(Message::UseReassignment(v)))]
         .spacing(8);
         if s.use_reassignment {
             adv = adv.push(labeled_slider(
@@ -287,7 +285,7 @@ impl SpectrogramSettingsPane {
                 settings_handle,
                 VisualKind::Spectrogram,
                 self,
-                theme::DEFAULT_SPECTROGRAM_PALETTE
+                &theme::spectrogram::COLORS
             );
         }
     }

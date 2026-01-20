@@ -86,7 +86,7 @@ impl StereometerState {
             points: Vec::new(),
             corr_trail: VecDeque::with_capacity(TRAIL_LEN),
             band_trail: VecDeque::with_capacity(TRAIL_LEN),
-            palette: theme::DEFAULT_STEREOMETER_PALETTE,
+            palette: theme::stereometer::COLORS,
             persistence: 0.0,
             mode: StereometerMode::default(),
             scale: StereometerScale::default(),

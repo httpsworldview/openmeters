@@ -174,7 +174,7 @@ pub struct OscilloscopeStyle {
 impl Default for OscilloscopeStyle {
     fn default() -> Self {
         Self {
-            colors: theme::DEFAULT_OSCILLOSCOPE_PALETTE.to_vec(),
+            colors: theme::oscilloscope::COLORS.to_vec(),
         }
     }
 }

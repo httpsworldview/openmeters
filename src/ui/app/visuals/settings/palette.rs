@@ -1,6 +1,6 @@
 //! Color palette editor.
 
-use crate::ui::theme;
+use crate::ui::theme::{self, Palette};
 use crate::util::audio::f32_to_u8;
 use iced::alignment::{Horizontal, Vertical};
 use iced::widget::text::Wrapping;
@@ -19,39 +19,25 @@ pub enum PaletteEvent {
 
 #[derive(Debug, Clone)]
 pub struct PaletteEditor {
-    colors: Vec<Color>,
-    defaults: Vec<Color>,
-    labels: Vec<&'static str>,
+    palette: Palette,
     active: Option<usize>,
 }
 
 impl PaletteEditor {
-    pub fn new(current: &[Color], defaults: &[Color]) -> Self {
-        Self::with_labels(current, defaults, &[])
-    }
-
-    pub fn with_labels(current: &[Color], defaults: &[Color], labels: &[&'static str]) -> Self {
-        Self {
-            colors: if current.len() == defaults.len() {
-                current.to_vec()
-            } else {
-                defaults.to_vec()
-            },
-            defaults: defaults.to_vec(),
-            labels: labels.to_vec(),
-            active: None,
-        }
+    /// Creates a new editor from a `Palette` definition.
+    pub fn new(palette: Palette) -> Self {
+        Self { palette, active: None }
     }
 
     fn label_for(&self, index: usize) -> String {
-        self.labels
+        self.palette.labels()
             .get(index)
             .map_or_else(|| format!("Color {}", index + 1), |s| (*s).to_string())
     }
 
     pub fn update(&mut self, event: PaletteEvent) -> bool {
         match event {
-            PaletteEvent::Open(i) if i < self.colors.len() => {
+            PaletteEvent::Open(i) if i < self.palette.len() => {
                 self.active = (self.active != Some(i)).then_some(i);
                 false
             }
@@ -59,20 +45,23 @@ impl PaletteEditor {
                 self.active = None;
                 false
             }
-            PaletteEvent::Adjust { index, color } => self.colors.get_mut(index).is_some_and(|s| {
-                if theme::colors_equal(*s, color) {
-                    false
-                } else {
-                    *s = color;
+            PaletteEvent::Adjust { index, color } => {
+                let colors = self.palette.colors();
+                if index < colors.len() && !theme::colors_equal(colors[index], color) {
+                    let mut new_colors: Vec<Color> = colors.to_vec();
+                    new_colors[index] = color;
+                    self.palette.set(&new_colors);
                     true
+                } else {
+                    false
                 }
-            }),
+            }
             PaletteEvent::Reset => {
                 self.active = None;
-                if self.is_default() {
+                if self.palette.is_default() {
                     false
                 } else {
-                    self.colors.clone_from(&self.defaults);
+                    self.palette.reset();
                     true
                 }
             }
@@ -81,16 +70,16 @@ impl PaletteEditor {
     }
 
     pub fn colors(&self) -> &[Color] {
-        &self.colors
+        self.palette.colors()
     }
 
     pub fn is_default(&self) -> bool {
-        theme::palettes_equal(&self.colors, &self.defaults)
+        self.palette.is_default()
     }
 
     pub fn view(&self) -> Element<'_, PaletteEvent> {
-        let row = self
-            .colors
+        let colors = self.palette.colors();
+        let row = colors
             .iter()
             .enumerate()
             .fold(Row::new().spacing(12.0), |r, (i, &c)| {
@@ -98,7 +87,7 @@ impl PaletteEditor {
             });
         let mut col = Column::new().spacing(12.0).push(row);
         if let Some(i) = self.active
-            && let Some(&c) = self.colors.get(i)
+            && let Some(&c) = colors.get(i)
         {
             col = col.push(self.color_controls(i, c));
         }

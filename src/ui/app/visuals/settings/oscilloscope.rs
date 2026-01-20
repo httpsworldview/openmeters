@@ -1,20 +1,20 @@
 use super::palette::PaletteEvent;
 use super::widgets::{
-    SliderRange, labeled_pick_list, labeled_slider, set_if_changed, update_f32_range,
+    labeled_pick_list, labeled_slider, set_if_changed, update_f32_range, SliderRange,
 };
-use super::{CHANNEL_OPTIONS, SettingsMessage};
+use super::{SettingsMessage, CHANNEL_OPTIONS};
 use crate::dsp::oscilloscope::TriggerMode;
 use crate::ui::settings::{ChannelMode, OscilloscopeSettings, SettingsHandle};
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualKind, VisualManagerHandle};
-use iced::Element;
 use iced::widget::column;
+use iced::Element;
 
 settings_pane!(
     OscilloscopeSettingsPane,
     OscilloscopeSettings,
     VisualKind::Oscilloscope,
-    theme::DEFAULT_OSCILLOSCOPE_PALETTE
+    theme::oscilloscope
 );
 
 const SEGMENT_DURATION_RANGE: SliderRange = SliderRange::new(0.005, 0.1, 0.001);
@@ -131,7 +131,7 @@ impl OscilloscopeSettingsPane {
                 settings_handle,
                 VisualKind::Oscilloscope,
                 self,
-                theme::DEFAULT_OSCILLOSCOPE_PALETTE
+                &theme::oscilloscope::COLORS
             );
         }
     }

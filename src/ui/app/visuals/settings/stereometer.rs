@@ -1,9 +1,9 @@
-use super::SettingsMessage;
 use super::palette::PaletteEvent;
 use super::widgets::{
-    SliderRange, labeled_pick_list, labeled_slider, set_if_changed, update_f32_range,
-    update_usize_from_f32,
+    labeled_pick_list, labeled_slider, set_if_changed, update_f32_range, update_usize_from_f32,
+    SliderRange,
 };
+use super::SettingsMessage;
 use crate::ui::settings::{
     CorrelationMeterMode, CorrelationMeterSide, SettingsHandle, StereometerMode, StereometerScale,
     StereometerSettings,
@@ -23,17 +23,6 @@ const CORR_METER_OPTIONS: [CorrelationMeterMode; 3] = [
 ];
 const CORR_SIDE_OPTIONS: [CorrelationMeterSide; 2] =
     [CorrelationMeterSide::Left, CorrelationMeterSide::Right];
-const LABELS: &[&str] = &[
-    "Trace",
-    "Corr background",
-    "Corr center line",
-    "Corr positive",
-    "Corr negative",
-    "Low band",
-    "Mid band",
-    "High band",
-];
-
 const ROTATION_RANGE: SliderRange = SliderRange::new(-4.0, 4.0, 1.0);
 const SCALE_RANGE: SliderRange = SliderRange::new(1.0, 30.0, 0.5);
 const SEGMENT_DURATION_RANGE: SliderRange = SliderRange::new(0.005, 0.2, 0.001);
@@ -41,8 +30,12 @@ const TARGET_SAMPLE_COUNT_RANGE: SliderRange = SliderRange::new(100.0, 2000.0, 5
 const CORRELATION_WINDOW_RANGE: SliderRange = SliderRange::new(0.05, 1.0, 0.01);
 const PERSISTENCE_RANGE: SliderRange = SliderRange::new(0.0, 1.0, 0.01);
 
-settings_pane!(StereometerSettingsPane, StereometerSettings, VisualKind::Stereometer,
-    theme::DEFAULT_STEREOMETER_PALETTE, labels: LABELS);
+settings_pane!(
+    StereometerSettingsPane,
+    StereometerSettings,
+    VisualKind::Stereometer,
+    theme::stereometer
+);
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -191,7 +184,7 @@ impl StereometerSettingsPane {
                 settings_handle,
                 VisualKind::Stereometer,
                 self,
-                theme::DEFAULT_STEREOMETER_PALETTE
+                &theme::stereometer::COLORS
             );
         }
     }

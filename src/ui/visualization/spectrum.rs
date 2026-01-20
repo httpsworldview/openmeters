@@ -12,8 +12,8 @@ use crate::util::audio::{hz_to_mel, lerp, mel_to_hz};
 use iced::advanced::graphics::text::Paragraph as RenderParagraph;
 use iced::advanced::renderer::{self, Quad};
 use iced::advanced::text::{self, Paragraph as _, Renderer as _};
-use iced::advanced::widget::{Tree, tree};
-use iced::advanced::{Layout, Renderer as _, Widget, layout, mouse};
+use iced::advanced::widget::{tree, Tree};
+use iced::advanced::{layout, mouse, Layout, Renderer as _, Widget};
 use iced::{Background, Color, Element, Length, Point, Rectangle, Size};
 use iced_wgpu::primitive::Renderer as _;
 use std::cell::RefCell;
@@ -137,7 +137,7 @@ impl Default for SpectrumStyle {
             smoothing_radius: 0,
             smoothing_passes: 0,
             highlight_threshold: 0.45,
-            spectrum_palette: theme::DEFAULT_SPECTRUM_PALETTE,
+            spectrum_palette: theme::spectrum::COLORS,
             frequency_scale: FrequencyScale::Logarithmic,
             reverse_frequency: false,
             show_grid: true,

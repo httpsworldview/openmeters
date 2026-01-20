@@ -1,9 +1,9 @@
-use super::SettingsMessage;
 use super::palette::PaletteEvent;
 use super::widgets::{
-    SliderRange, labeled_pick_list, labeled_slider, section_title, set_f32, set_if_changed,
-    update_usize_from_f32,
+    labeled_pick_list, labeled_slider, section_title, set_f32, set_if_changed,
+    update_usize_from_f32, SliderRange,
 };
+use super::SettingsMessage;
 use crate::dsp::spectrogram::FrequencyScale;
 use crate::dsp::spectrum::AveragingMode;
 use crate::ui::settings::{
@@ -53,7 +53,7 @@ impl std::fmt::Display for AvgMode {
 
 settings_pane!(
     SpectrumSettingsPane, SpectrumSettings, VisualKind::Spectrum,
-    theme::DEFAULT_SPECTRUM_PALETTE,
+    theme::spectrum,
     extra_from_settings(settings) {
         avg_mode: AvgMode = split_averaging(settings.averaging).0,
         avg_factor: f32 = split_averaging(settings.averaging).1,
@@ -268,7 +268,7 @@ impl SpectrumSettingsPane {
                 settings_handle,
                 VisualKind::Spectrum,
                 self,
-                theme::DEFAULT_SPECTRUM_PALETTE
+                &theme::spectrum::COLORS
             );
         }
     }

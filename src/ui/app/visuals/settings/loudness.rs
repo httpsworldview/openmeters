@@ -1,22 +1,18 @@
-use super::SettingsMessage;
 use super::palette::PaletteEvent;
 use super::widgets::{labeled_pick_list, set_if_changed};
+use super::SettingsMessage;
 use crate::ui::settings::{LoudnessSettings, SettingsHandle};
 use crate::ui::theme;
 use crate::ui::visualization::loudness::MeterMode;
 use crate::ui::visualization::visual_manager::{VisualKind, VisualManagerHandle};
-use iced::{Element, widget::column};
+use iced::{widget::column, Element};
 
-const LABELS: &[&str] = &[
-    "Background",
-    "Left Ch 1",
-    "Left Ch 2",
-    "Right Fill",
-    "Guide Line",
-];
-
-settings_pane!(LoudnessSettingsPane, LoudnessSettings, VisualKind::Loudness,
-    theme::DEFAULT_LOUDNESS_PALETTE, labels: LABELS);
+settings_pane!(
+    LoudnessSettingsPane,
+    LoudnessSettings,
+    VisualKind::Loudness,
+    theme::loudness
+);
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -66,7 +62,7 @@ impl LoudnessSettingsPane {
                 settings_handle,
                 VisualKind::Loudness,
                 self,
-                theme::DEFAULT_LOUDNESS_PALETTE
+                &theme::loudness::COLORS
             );
         }
     }

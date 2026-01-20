@@ -350,7 +350,7 @@ impl SpectrogramState {
         Self {
             buffer: RefCell::new(SpectrogramBuffer::new()),
             style: SpectrogramStyle::default(),
-            palette: theme::DEFAULT_SPECTROGRAM_PALETTE,
+            palette: theme::spectrogram::COLORS,
             history: VecDeque::new(),
             instance_key: NEXT_INSTANCE_KEY.fetch_add(1, Ordering::Relaxed),
             piano_roll: None,

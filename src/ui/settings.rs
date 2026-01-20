@@ -19,9 +19,9 @@ use crate::{
 };
 use iced::Color;
 use serde::{
-    Deserialize, Serialize,
     de::{DeserializeOwned, Deserializer},
     ser::{SerializeMap, Serializer},
+    Deserialize, Serialize,
 };
 use serde_json::Value;
 use std::{
@@ -31,7 +31,7 @@ use std::{
     fs,
     path::PathBuf,
     rc::Rc,
-    sync::{OnceLock, mpsc},
+    sync::{mpsc, OnceLock},
     time::Duration,
 };
 use tracing::warn;
@@ -184,9 +184,6 @@ impl PaletteSettings {
 pub trait HasPalette {
     fn palette(&self) -> Option<&PaletteSettings>;
     fn set_palette(&mut self, palette: Option<PaletteSettings>);
-    fn palette_as_array<const N: usize>(&self) -> Option<[Color; N]> {
-        self.palette().and_then(PaletteSettings::to_array)
-    }
 }
 
 macro_rules! settings_enum {

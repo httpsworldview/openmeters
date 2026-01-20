@@ -7,10 +7,10 @@ use crate::dsp::loudness::{
 use crate::dsp::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::ui::render::loudness::{LoudnessMeterPrimitive, MeterBar, RenderParams};
 use crate::ui::theme;
-use iced::advanced::Renderer as _;
 use iced::advanced::renderer::{self, Quad};
-use iced::advanced::widget::{Tree, tree};
-use iced::advanced::{Layout, Widget, layout, mouse, text};
+use iced::advanced::widget::{tree, Tree};
+use iced::advanced::Renderer as _;
+use iced::advanced::{layout, mouse, text, Layout, Widget};
 use iced::alignment::{Horizontal, Vertical};
 use iced::{Background, Border, Color, Element, Length, Point, Rectangle, Size, Theme};
 use iced_wgpu::primitive::Renderer as _;
@@ -138,7 +138,7 @@ impl LoudnessMeterState {
             range: DEFAULT_RANGE,
             left_mode: MeterMode::TruePeak,
             right_mode: MeterMode::LufsShortTerm,
-            palette: theme::DEFAULT_LOUDNESS_PALETTE,
+            palette: theme::loudness::COLORS,
         }
     }
 

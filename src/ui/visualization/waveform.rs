@@ -1,7 +1,7 @@
 use crate::audio::meter_tap::MeterFormat;
 use crate::dsp::waveform::{
-    DEFAULT_COLUMN_CAPACITY, MAX_COLUMN_CAPACITY, MIN_COLUMN_CAPACITY, WaveformConfig,
-    WaveformPreview, WaveformProcessor as CoreWaveformProcessor, WaveformSnapshot,
+    WaveformConfig, WaveformPreview, WaveformProcessor as CoreWaveformProcessor, WaveformSnapshot,
+    DEFAULT_COLUMN_CAPACITY, MAX_COLUMN_CAPACITY, MIN_COLUMN_CAPACITY,
 };
 use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::ui::render::waveform::{PreviewSample, WaveformParams, WaveformPrimitive};
@@ -12,8 +12,8 @@ use iced::Color;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::{
-    Arc,
     atomic::{AtomicU64, Ordering},
+    Arc,
 };
 
 const COLUMN_PX: f32 = 2.0;
@@ -283,7 +283,7 @@ impl Default for WaveformStyle {
             ch_gap: 12.0,
             amp_scale: 1.0,
             stroke: 1.0,
-            palette: theme::DEFAULT_WAVEFORM_PALETTE.to_vec(),
+            palette: theme::waveform::COLORS.to_vec(),
         }
     }
 }
