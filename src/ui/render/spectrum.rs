@@ -1,13 +1,9 @@
 use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
-use iced_wgpu::primitive::{self, Primitive};
-use iced_wgpu::wgpu;
 use std::sync::Arc;
 
-use crate::sdf_render_pass;
-use crate::ui::render::common::{
-    ClipTransform, InstanceBuffer, SdfPipeline, SdfVertex, quad_vertices,
-};
+use crate::sdf_primitive;
+use crate::ui::render::common::{ClipTransform, SdfVertex, quad_vertices};
 use crate::ui::render::geometry::{DEFAULT_FEATHER, build_aa_line_list};
 
 #[derive(Debug, Clone)]
@@ -37,10 +33,6 @@ pub struct SpectrumPrimitive {
 impl SpectrumPrimitive {
     pub fn new(params: SpectrumParams) -> Self {
         Self { params }
-    }
-
-    fn key(&self) -> usize {
-        self.params.instance_key
     }
 
     fn build_vertices(&self, viewport: &Viewport) -> Vec<SdfVertex> {
@@ -147,45 +139,6 @@ impl SpectrumPrimitive {
     }
 }
 
-impl Primitive for SpectrumPrimitive {
-    type Pipeline = Pipeline;
-
-    fn prepare(
-        &self,
-        pipeline: &mut Self::Pipeline,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        _bounds: &Rectangle,
-        viewport: &Viewport,
-    ) {
-        let vertices = self.build_vertices(viewport);
-        pipeline.prepare_instance(device, queue, "Spectrum", self.key(), &vertices);
-    }
-
-    fn render(
-        &self,
-        pipeline: &Self::Pipeline,
-        encoder: &mut wgpu::CommandEncoder,
-        target: &wgpu::TextureView,
-        clip_bounds: &Rectangle<u32>,
-    ) {
-        let Some(instance) = pipeline.instance(self.key()) else {
-            return;
-        };
-        if instance.vertex_count == 0 {
-            return;
-        }
-        sdf_render_pass!(
-            encoder,
-            target,
-            clip_bounds,
-            "Spectrum",
-            &pipeline.inner.pipeline,
-            instance
-        );
-    }
-}
-
 fn to_cartesian_positions(bounds: Rectangle, pts: &[[f32; 2]]) -> Vec<(f32, f32)> {
     pts.iter()
         .map(|p| {
@@ -262,38 +215,11 @@ fn sample_lerp(pts: &[[f32; 2]], t: f32) -> f32 {
         .unwrap_or(0.0)
 }
 
-#[derive(Debug)]
-pub struct Pipeline {
-    inner: SdfPipeline<usize>,
-}
-
-impl primitive::Pipeline for Pipeline {
-    fn new(device: &wgpu::Device, _queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
-        Self {
-            inner: SdfPipeline::new(
-                device,
-                format,
-                "Spectrum",
-                wgpu::PrimitiveTopology::TriangleList,
-            ),
-        }
-    }
-}
-
-impl Pipeline {
-    fn prepare_instance(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        label: &'static str,
-        key: usize,
-        vertices: &[SdfVertex],
-    ) {
-        self.inner
-            .prepare_instance(device, queue, label, key, vertices);
-    }
-
-    fn instance(&self, key: usize) -> Option<&InstanceBuffer<SdfVertex>> {
-        self.inner.instance(key)
-    }
-}
+sdf_primitive!(
+    SpectrumPrimitive,
+    Pipeline,
+    usize,
+    "Spectrum",
+    TriangleList,
+    |self| self.params.instance_key
+);

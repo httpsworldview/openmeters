@@ -25,6 +25,10 @@ impl<'a> AudioBlock<'a> {
         }
     }
 
+    pub fn now(samples: &'a [f32], channels: usize, sample_rate: f32) -> Self {
+        Self::new(samples, channels, sample_rate, Instant::now())
+    }
+
     pub fn frame_count(&self) -> usize {
         self.samples.len() / self.channels.max(1)
     }
@@ -34,6 +38,15 @@ impl<'a> AudioBlock<'a> {
 pub enum ProcessorUpdate<T> {
     None,
     Snapshot(T),
+}
+
+impl<T> From<ProcessorUpdate<T>> for Option<T> {
+    fn from(update: ProcessorUpdate<T>) -> Self {
+        match update {
+            ProcessorUpdate::Snapshot(s) => Some(s),
+            ProcessorUpdate::None => None,
+        }
+    }
 }
 
 pub trait AudioProcessor {

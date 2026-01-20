@@ -242,3 +242,24 @@ pub fn colors_equal(a: Color, b: Color) -> bool {
         && (a.b - b.b).abs() <= EPSILON
         && (a.a - b.a).abs() <= EPSILON
 }
+
+/// Compares two color slices for equality.
+#[inline]
+pub fn palettes_equal(a: &[Color], b: &[Color]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| colors_equal(*x, *y))
+}
+
+/// Samples a gradient at position `t` (0.0 to 1.0) using linear interpolation.
+#[inline]
+pub fn sample_gradient(palette: &[Color], t: f32) -> Color {
+    let n = palette.len();
+    match n {
+        0 => ACCENT_PRIMARY,
+        1 => palette[0],
+        _ => {
+            let pos = t.clamp(0.0, 1.0) * (n - 1) as f32;
+            let i = (pos as usize).min(n - 2);
+            mix_colors(palette[i], palette[i + 1], pos - i as f32)
+        }
+    }
+}

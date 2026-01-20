@@ -1,6 +1,7 @@
 //! Color palette editor.
 
 use crate::ui::theme;
+use crate::util::audio::f32_to_u8;
 use iced::alignment::{Horizontal, Vertical};
 use iced::widget::text::Wrapping;
 use iced::widget::{Button, Column, Row, Space, container, slider, text};
@@ -84,12 +85,7 @@ impl PaletteEditor {
     }
 
     pub fn is_default(&self) -> bool {
-        self.colors.len() == self.defaults.len()
-            && self
-                .colors
-                .iter()
-                .zip(&self.defaults)
-                .all(|(c, d)| theme::colors_equal(*c, *d))
+        theme::palettes_equal(&self.colors, &self.defaults)
     }
 
     pub fn view(&self) -> Element<'_, PaletteEvent> {
@@ -162,7 +158,7 @@ impl PaletteEditor {
                 let display = if ch == 3 {
                     format!("{:>3}%", (val.clamp(0.0, 1.0) * 100.0).round() as u8)
                 } else {
-                    format!("{:>3}", (val.clamp(0.0, 1.0) * 255.0).round() as u8)
+                    format!("{:>3}", f32_to_u8(val))
                 };
                 col.push(
                     Row::new()
@@ -223,10 +219,10 @@ fn swatch_style(color: Color, active: bool) -> container::Style {
 
 fn to_hex(c: Color) -> String {
     let (r, g, b, a) = (
-        (c.r.clamp(0.0, 1.0) * 255.0).round() as u8,
-        (c.g.clamp(0.0, 1.0) * 255.0).round() as u8,
-        (c.b.clamp(0.0, 1.0) * 255.0).round() as u8,
-        (c.a.clamp(0.0, 1.0) * 255.0).round() as u8,
+        f32_to_u8(c.r),
+        f32_to_u8(c.g),
+        f32_to_u8(c.b),
+        f32_to_u8(c.a),
     );
     if a == 255 {
         format!("#{r:02X}{g:02X}{b:02X}")

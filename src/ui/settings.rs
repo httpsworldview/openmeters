@@ -232,6 +232,49 @@ macro_rules! visual_settings {
 settings_enum!(pub enum ChannelMode {
     Both => "Left + Right", Left => "Left only", Right => "Right only", #[default] Mono => "Mono blend",
 });
+
+impl ChannelMode {
+    /// Returns output channel count for this mode.
+    #[inline]
+    pub fn output_channels(self, input_channels: usize) -> usize {
+        match self {
+            Self::Both => input_channels,
+            _ => 1,
+        }
+    }
+
+    /// Projects channel data according to this mode.
+    ///
+    /// Data layout: contiguous channels `[ch0_s0..ch0_sN, ch1_s0..ch1_sN, ...]`
+    /// - `data`: interleaved samples with `stride` samples per channel
+    /// - `stride`: number of samples per channel
+    /// - `channels`: number of channels in the input data
+    #[inline]
+    pub fn project_data(self, data: &[f32], stride: usize, channels: usize) -> Vec<f32> {
+        match self {
+            Self::Both => data.to_vec(),
+            Self::Left => data.get(..stride).map(|s| s.to_vec()).unwrap_or_default(),
+            Self::Right => {
+                let offset = if channels > 1 { stride } else { 0 };
+                data.get(offset..offset + stride)
+                    .map(|s| s.to_vec())
+                    .unwrap_or_default()
+            }
+            Self::Mono => {
+                let scale = 1.0 / channels.max(1) as f32;
+                (0..stride)
+                    .map(|i| {
+                        data.chunks(stride)
+                            .take(channels)
+                            .filter_map(|ch| ch.get(i))
+                            .sum::<f32>()
+                            * scale
+                    })
+                    .collect()
+            }
+        }
+    }
+}
 settings_enum!(pub enum StereometerMode  { Lissajous => "Lissajous", #[default] DotCloud => "Dot Cloud" });
 settings_enum!(pub enum StereometerScale { Linear => "Linear", #[default] Exponential => "Exponential" });
 settings_enum!(pub enum CorrelationMeterMode { Off => "Off", #[default] SingleBand => "Single Band", MultiBand => "Multi Band" });

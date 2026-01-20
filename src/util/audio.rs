@@ -21,6 +21,12 @@ const POWER_EPSILON: f32 = 1.0e-20;
 /// Natural log to decibel conversion factor: 10 / ln(10) ~= 4.342944819.
 const LN_TO_DB: f32 = 4.342_944_8;
 
+/// Convert an f32 in [0.0, 1.0] to a u8 in [0, 255].
+#[inline(always)]
+pub fn f32_to_u8(v: f32) -> u8 {
+    (v.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
 /// Convert power (magnitude squared) to decibels with a custom floor.
 #[inline(always)]
 pub fn power_to_db(power: f32, floor: f32) -> f32 {

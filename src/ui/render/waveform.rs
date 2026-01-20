@@ -1,11 +1,9 @@
 use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
-use iced_wgpu::primitive::{self, Primitive};
-use iced_wgpu::wgpu;
 use std::sync::Arc;
 
-use crate::sdf_render_pass;
-use crate::ui::render::common::{ClipTransform, InstanceBuffer, SdfPipeline, SdfVertex};
+use crate::sdf_primitive;
+use crate::ui::render::common::{ClipTransform, SdfVertex};
 use crate::ui::render::geometry::{self, DEFAULT_FEATHER, append_strip};
 
 #[derive(Debug, Clone, Copy)]
@@ -48,10 +46,6 @@ pub struct WaveformPrimitive {
 impl WaveformPrimitive {
     pub fn new(params: WaveformParams) -> Self {
         Self { params }
-    }
-
-    fn key(&self) -> u64 {
-        self.params.instance_key
     }
 
     fn build_vertices(&self, viewport: &Viewport) -> Vec<SdfVertex> {
@@ -204,76 +198,11 @@ impl WaveformPrimitive {
     }
 }
 
-impl Primitive for WaveformPrimitive {
-    type Pipeline = Pipeline;
-
-    fn prepare(
-        &self,
-        pipeline: &mut Self::Pipeline,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        _bounds: &Rectangle,
-        viewport: &Viewport,
-    ) {
-        let vertices = self.build_vertices(viewport);
-        pipeline.prepare_instance(device, queue, self.key(), &vertices);
-    }
-
-    fn render(
-        &self,
-        pipeline: &Self::Pipeline,
-        encoder: &mut wgpu::CommandEncoder,
-        target: &wgpu::TextureView,
-        clip_bounds: &Rectangle<u32>,
-    ) {
-        let Some(instance) = pipeline.instance(self.key()) else {
-            return;
-        };
-        if instance.vertex_count == 0 {
-            return;
-        }
-        sdf_render_pass!(
-            encoder,
-            target,
-            clip_bounds,
-            "Waveform",
-            &pipeline.inner.pipeline,
-            instance
-        );
-    }
-}
-
-#[derive(Debug)]
-pub struct Pipeline {
-    inner: SdfPipeline<u64>,
-}
-
-impl primitive::Pipeline for Pipeline {
-    fn new(device: &wgpu::Device, _queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
-        Self {
-            inner: SdfPipeline::new(
-                device,
-                format,
-                "Waveform",
-                wgpu::PrimitiveTopology::TriangleStrip,
-            ),
-        }
-    }
-}
-
-impl Pipeline {
-    fn prepare_instance(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        key: u64,
-        vertices: &[SdfVertex],
-    ) {
-        self.inner
-            .prepare_instance(device, queue, "Waveform vertex buffer", key, vertices);
-    }
-
-    fn instance(&self, key: u64) -> Option<&InstanceBuffer<SdfVertex>> {
-        self.inner.instance(key)
-    }
-}
+sdf_primitive!(
+    WaveformPrimitive,
+    Pipeline,
+    u64,
+    "Waveform",
+    TriangleStrip,
+    |self| self.params.instance_key
+);

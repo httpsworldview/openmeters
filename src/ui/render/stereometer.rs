@@ -1,13 +1,10 @@
 use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
-use iced_wgpu::primitive::{self, Primitive};
-use iced_wgpu::wgpu;
 
 use crate::dsp::stereometer::BandCorrelation;
-use crate::sdf_render_pass;
+use crate::sdf_primitive;
 use crate::ui::render::common::{
-    ClipTransform, SdfPipeline, SdfVertex, dot_vertices, gradient_quad_vertices, line_vertices,
-    quad_vertices,
+    ClipTransform, SdfVertex, dot_vertices, gradient_quad_vertices, line_vertices, quad_vertices,
 };
 use crate::ui::settings::{CorrelationMeterMode, CorrelationMeterSide, StereometerMode};
 
@@ -231,64 +228,11 @@ impl StereometerPrimitive {
     }
 }
 
-impl Primitive for StereometerPrimitive {
-    type Pipeline = Pipeline;
-
-    fn prepare(
-        &self,
-        pipeline: &mut Self::Pipeline,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        _: &Rectangle,
-        viewport: &Viewport,
-    ) {
-        pipeline.inner.prepare_instance(
-            device,
-            queue,
-            "Stereometer",
-            self.0.key,
-            &self.build_vertices(viewport),
-        );
-    }
-
-    fn render(
-        &self,
-        pipeline: &Self::Pipeline,
-        encoder: &mut wgpu::CommandEncoder,
-        target: &wgpu::TextureView,
-        clip: &Rectangle<u32>,
-    ) {
-        let Some(inst) = pipeline.inner.instance(self.0.key) else {
-            return;
-        };
-        if inst.vertex_count == 0 {
-            return;
-        }
-        sdf_render_pass!(
-            encoder,
-            target,
-            clip,
-            "Stereometer",
-            &pipeline.inner.pipeline,
-            inst
-        );
-    }
-}
-
-#[derive(Debug)]
-pub struct Pipeline {
-    inner: SdfPipeline<u64>,
-}
-
-impl primitive::Pipeline for Pipeline {
-    fn new(device: &wgpu::Device, _: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
-        Self {
-            inner: SdfPipeline::new(
-                device,
-                format,
-                "Stereometer",
-                wgpu::PrimitiveTopology::TriangleList,
-            ),
-        }
-    }
-}
+sdf_primitive!(
+    StereometerPrimitive,
+    Pipeline,
+    u64,
+    "Stereometer",
+    TriangleList,
+    |self| self.0.key
+);

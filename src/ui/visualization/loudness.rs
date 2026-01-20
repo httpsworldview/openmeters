@@ -17,7 +17,6 @@ use iced_wgpu::primitive::Renderer as _;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::fmt;
-use std::time::Instant;
 
 const DEFAULT_RANGE: (f32, f32) = (-60.0, 4.0);
 const GUIDE_LEVELS: [f32; 6] = [0.0, -6.0, -12.0, -18.0, -24.0, -36.0];
@@ -100,8 +99,10 @@ impl LoudnessMeterProcessor {
             self.inner.update_config(config);
         }
 
-        let block = AudioBlock::new(samples, self.channels, sample_rate, Instant::now());
-        match self.inner.process_block(&block) {
+        match self
+            .inner
+            .process_block(&AudioBlock::now(samples, self.channels, sample_rate))
+        {
             ProcessorUpdate::Snapshot(s) => s,
             ProcessorUpdate::None => *self.inner.snapshot(),
         }
@@ -200,7 +201,7 @@ impl LoudnessMeterState {
         }
     }
 
-    fn render_params(&self) -> RenderParams {
+    fn render_params(&self, bounds: Rectangle) -> RenderParams {
         let (min, max) = self.range;
         let guide_color = theme::color_to_rgba(self.palette[4]);
         let mut bg = self.palette[0];
@@ -212,6 +213,7 @@ impl LoudnessMeterState {
         let right_value = self.aggregate_right_channels(self.left_mode);
 
         RenderParams {
+            bounds,
             min_db: min,
             max_db: max,
             bars: vec![
@@ -321,14 +323,14 @@ impl<'a, Message> Widget<Message, Theme, iced::Renderer> for LoudnessMeter<'a> {
     ) {
         let bounds = layout.bounds();
         let state = self.state.borrow();
-        let params = state.render_params();
+        let params = state.render_params(bounds);
 
         renderer.draw_primitive(bounds, LoudnessMeterPrimitive::new(params.clone()));
 
         let palette = theme.extended_palette();
         let label_color = state.palette[4];
 
-        if params.meter_bounds(&bounds).is_some() {
+        if params.meter_bounds().is_some() {
             let height = bounds.height;
 
             for &db in &params.guides {
@@ -361,7 +363,7 @@ impl<'a, Message> Widget<Message, Theme, iced::Renderer> for LoudnessMeter<'a> {
             let y = bounds.y + height * (1.0 - ratio);
             let label = format!("{:.1} {}", value, unit);
 
-            let (meter_x, bar_width, stride) = params.meter_bounds(&bounds).unwrap();
+            let (meter_x, bar_width, stride) = params.meter_bounds().unwrap();
             let right_bar_end = meter_x + stride + bar_width;
             let label_x = right_bar_end + 4.0;
             let label_width = 68.0;
@@ -446,7 +448,7 @@ mod tests {
         assert_eq!(state.true_peak_db[0], -1.0);
         assert_eq!(state.true_peak_db[1], -3.0);
 
-        let params = state.render_params();
+        let params = state.render_params(Rectangle::new(Point::ORIGIN, Size::new(200.0, 100.0)));
         assert_eq!(params.bars.len(), 2);
         assert_eq!(params.bars[0].fills.len(), 2);
         assert_eq!(params.bars[1].fills.len(), 1);

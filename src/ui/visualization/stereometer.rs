@@ -11,15 +11,10 @@ use crate::ui::settings::{
     StereometerSettings,
 };
 use crate::ui::theme;
-use iced::advanced::renderer::{self, Quad};
-use iced::advanced::widget::{Tree, tree};
-use iced::advanced::{Layout, Renderer as _, Widget, layout, mouse};
-use iced::{Background, Color, Element, Length, Rectangle, Size};
-use iced_wgpu::primitive::Renderer as _;
-use std::cell::RefCell;
+use crate::visualization_widget;
+use iced::Color;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
 
 const TRAIL_LEN: usize = 32;
 
@@ -50,8 +45,10 @@ impl StereometerProcessor {
                 ..self.0.config()
             });
         }
-        let block = AudioBlock::new(samples, format.channels.max(1), sr, Instant::now());
-        match self.0.process_block(&block) {
+        match self
+            .0
+            .process_block(&AudioBlock::now(samples, format.channels.max(1), sr))
+        {
             ProcessorUpdate::Snapshot(s) => s,
             ProcessorUpdate::None => self.0.snapshot().clone(),
         }
@@ -192,7 +189,7 @@ impl StereometerState {
         self.band_trail.truncate(TRAIL_LEN);
     }
 
-    fn params(&self, bounds: Rectangle) -> Option<StereometerParams> {
+    pub fn params(&self, bounds: iced::Rectangle) -> Option<StereometerParams> {
         (self.points.len() >= 2).then(|| StereometerParams {
             key: self.key,
             bounds,
@@ -209,60 +206,10 @@ impl StereometerState {
     }
 }
 
-#[derive(Debug)]
-pub struct Stereometer<'a>(&'a RefCell<StereometerState>);
-
-impl<'a> Stereometer<'a> {
-    pub fn new(state: &'a RefCell<StereometerState>) -> Self {
-        Self(state)
-    }
-}
-
-impl<M> Widget<M, iced::Theme, iced::Renderer> for Stereometer<'_> {
-    fn tag(&self) -> tree::Tag {
-        tree::Tag::stateless()
-    }
-    fn state(&self) -> tree::State {
-        tree::State::new(())
-    }
-    fn size(&self) -> Size<Length> {
-        Size::new(Length::Fill, Length::Fill)
-    }
-    fn children(&self) -> Vec<Tree> {
-        Vec::new()
-    }
-    fn diff(&self, _: &mut Tree) {}
-
-    fn layout(&mut self, _: &mut Tree, _: &iced::Renderer, lim: &layout::Limits) -> layout::Node {
-        layout::Node::new(lim.resolve(Length::Fill, Length::Fill, Size::ZERO))
-    }
-
-    fn draw(
-        &self,
-        _: &Tree,
-        r: &mut iced::Renderer,
-        th: &iced::Theme,
-        _: &renderer::Style,
-        lay: Layout<'_>,
-        _: mouse::Cursor,
-        _: &Rectangle,
-    ) {
-        let b = lay.bounds();
-        match self.0.borrow().params(b) {
-            Some(p) => r.draw_primitive(b, StereometerPrimitive::from(p)),
-            None => r.fill_quad(
-                Quad {
-                    bounds: b,
-                    border: Default::default(),
-                    shadow: Default::default(),
-                    snap: true,
-                },
-                Background::Color(th.extended_palette().background.base.color),
-            ),
-        }
-    }
-}
-
-pub fn widget<'a, M: 'a>(state: &'a RefCell<StereometerState>) -> Element<'a, M> {
-    Element::new(Stereometer::new(state))
-}
+visualization_widget!(
+    Stereometer,
+    StereometerState,
+    StereometerPrimitive,
+    |state, bounds| state.params(bounds),
+    |params| StereometerPrimitive::from(params)
+);

@@ -9,6 +9,8 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::util::audio::f32_to_u8;
+
 use crate::ui::render::common::{
     CacheTracker, ClipTransform, InstanceBuffer, create_shader_module, write_texture_region,
 };
@@ -21,14 +23,12 @@ const FLAG_POW2: u32 = 1;
 
 const MAX_TEXTURE_DIM: u32 = 8192;
 
-macro_rules! extent3d {
-    ($w:expr, $h:expr) => {
-        wgpu::Extent3d {
-            width: ($w).max(1),
-            height: ($h).max(1),
-            depth_or_array_layers: 1,
-        }
-    };
+const fn extent3d(w: u32, h: u32) -> wgpu::Extent3d {
+    wgpu::Extent3d {
+        width: if w > 0 { w } else { 1 },
+        height: if h > 0 { h } else { 1 },
+        depth_or_array_layers: 1,
+    }
 }
 
 // public API
@@ -535,7 +535,7 @@ impl Resources {
         }
         self.magnitude_tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Spectrogram magnitude"),
-            size: extent3d!(th, tw),
+            size: extent3d(th, tw),
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -581,7 +581,7 @@ impl Resources {
             queue,
             &self.magnitude_tex,
             wgpu::Origin3d { x: 0, y: col, z: 0 },
-            extent3d!(h, 1),
+            extent3d(h, 1),
             h * 4,
             bytemuck::cast_slice(vals),
         );
@@ -604,7 +604,7 @@ impl Resources {
             queue,
             &self.palette_tex,
             wgpu::Origin3d::ZERO,
-            extent3d!(PALETTE_LUT_SIZE, 1),
+            extent3d(PALETTE_LUT_SIZE, 1),
             PALETTE_LUT_SIZE * 4,
             &lut,
         );
@@ -619,7 +619,7 @@ fn create_magnitude(
 ) -> (wgpu::Texture, wgpu::TextureView, (u32, u32)) {
     let tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("Spectrogram magnitude"),
-        size: extent3d!(h.max(1), w.max(1)),
+        size: extent3d(h.max(1), w.max(1)),
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -695,10 +695,7 @@ fn build_palette_lut(palette: &[[f32; 4]; SPECTROGRAM_PALETTE_SIZE]) -> Vec<u8> 
                 (t.floor() as usize + 1).min(SPECTROGRAM_PALETTE_SIZE - 1),
                 t.fract(),
             );
-            (0..4).map(move |c| {
-                ((palette[lo][c] + (palette[hi][c] - palette[lo][c]) * f).clamp(0.0, 1.0) * 255.0)
-                    .round() as u8
-            })
+            (0..4).map(move |c| f32_to_u8(palette[lo][c] + (palette[hi][c] - palette[lo][c]) * f))
         })
         .collect()
 }

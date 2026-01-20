@@ -26,18 +26,6 @@ impl ClipTransform {
     }
 }
 
-macro_rules! vertex_attrs {
-    ($($loc:literal : $off:literal => $fmt:ident),+ $(,)?) => {
-        &[$(wgpu::VertexAttribute {
-            offset: $off,
-            shader_location: $loc,
-            format: wgpu::VertexFormat::$fmt,
-        }),+]
-    };
-}
-
-/// Vertex with SDF params for antialiased rendering.
-/// `params`: `[dist_x, dist_y, radius, feather]`
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct SdfVertex {
@@ -53,7 +41,23 @@ impl SdfVertex {
         wgpu::VertexBufferLayout {
             array_stride: size_of::<Self>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: vertex_attrs!(0: 0 => Float32x2, 1: 8 => Float32x4, 2: 24 => Float32x4),
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x2,
+                },
+                wgpu::VertexAttribute {
+                    offset: 8,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 24,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+            ],
         }
     }
 
@@ -389,28 +393,61 @@ impl<K: std::hash::Hash + Eq + Copy> SdfPipeline<K> {
     }
 }
 
-/// Macro to create a render pass, set scissor/pipeline/buffer, and draw in one call.
+/// builds an iced_wgpu primitive
+/// spectrogram has different requirements, so it does not use this macro
 #[macro_export]
-macro_rules! sdf_render_pass {
-    ($encoder:expr, $target:expr, $clip:expr, $label:expr, $pipeline:expr, $instance:expr) => {{
-        let mut pass = $encoder.begin_render_pass(&iced_wgpu::wgpu::RenderPassDescriptor {
-            label: Some($label),
-            color_attachments: &[Some(iced_wgpu::wgpu::RenderPassColorAttachment {
-                view: $target,
-                resolve_target: None,
-                depth_slice: None,
-                ops: iced_wgpu::wgpu::Operations {
-                    load: iced_wgpu::wgpu::LoadOp::Load,
-                    store: iced_wgpu::wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-        });
-        pass.set_scissor_rect($clip.x, $clip.y, $clip.width.max(1), $clip.height.max(1));
-        pass.set_pipeline($pipeline);
-        pass.set_vertex_buffer(0, $instance.vertex_buffer.slice(0..$instance.used_bytes()));
-        pass.draw(0..$instance.vertex_count, 0..1);
-    }};
+macro_rules! sdf_primitive {
+    ($primitive:ident, $pipeline:ident, $key_ty:ty, $label:expr, $topology:ident, |$self:ident| $key_expr:expr) => {
+        impl iced_wgpu::primitive::Primitive for $primitive {
+            type Pipeline = $pipeline;
+
+            fn prepare(
+                &$self,
+                pipeline: &mut Self::Pipeline,
+                device: &iced_wgpu::wgpu::Device,
+                queue: &iced_wgpu::wgpu::Queue,
+                _bounds: &iced::Rectangle,
+                viewport: &iced::advanced::graphics::Viewport,
+            ) {
+                let key: $key_ty = $key_expr;
+                pipeline.inner.prepare_instance(device, queue, $label, key, &$self.build_vertices(viewport));
+            }
+
+            fn render(
+                &$self,
+                pipeline: &Self::Pipeline,
+                encoder: &mut iced_wgpu::wgpu::CommandEncoder,
+                target: &iced_wgpu::wgpu::TextureView,
+                clip: &iced::Rectangle<u32>,
+            ) {
+                let key: $key_ty = $key_expr;
+                let Some(inst) = pipeline.inner.instance(key) else { return };
+                if inst.vertex_count == 0 { return }
+                let mut pass = encoder.begin_render_pass(&iced_wgpu::wgpu::RenderPassDescriptor {
+                    label: Some($label),
+                    color_attachments: &[Some(iced_wgpu::wgpu::RenderPassColorAttachment {
+                        view: target, resolve_target: None, depth_slice: None,
+                        ops: iced_wgpu::wgpu::Operations {
+                            load: iced_wgpu::wgpu::LoadOp::Load,
+                            store: iced_wgpu::wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None,
+                });
+                pass.set_scissor_rect(clip.x, clip.y, clip.width.max(1), clip.height.max(1));
+                pass.set_pipeline(&pipeline.inner.pipeline);
+                pass.set_vertex_buffer(0, inst.vertex_buffer.slice(0..inst.used_bytes()));
+                pass.draw(0..inst.vertex_count, 0..1);
+            }
+        }
+
+        #[derive(Debug)]
+        pub struct $pipeline { inner: $crate::ui::render::common::SdfPipeline<$key_ty> }
+
+        impl iced_wgpu::primitive::Pipeline for $pipeline {
+            fn new(device: &iced_wgpu::wgpu::Device, _queue: &iced_wgpu::wgpu::Queue, format: iced_wgpu::wgpu::TextureFormat) -> Self {
+                Self { inner: $crate::ui::render::common::SdfPipeline::new(device, format, $label, iced_wgpu::wgpu::PrimitiveTopology::$topology) }
+            }
+        }
+    };
 }

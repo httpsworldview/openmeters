@@ -2,13 +2,9 @@
 
 use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
-use iced_wgpu::primitive::{self, Primitive};
-use iced_wgpu::wgpu;
 
-use crate::sdf_render_pass;
-use crate::ui::render::common::{
-    ClipTransform, InstanceBuffer, SdfPipeline, SdfVertex, quad_vertices,
-};
+use crate::sdf_primitive;
+use crate::ui::render::common::{ClipTransform, SdfVertex, quad_vertices};
 
 const GAP_FRACTION: f32 = 0.1;
 const BAR_WIDTH_SCALE: f32 = 0.6;
@@ -28,6 +24,7 @@ pub struct MeterBar {
 /// Parameters for rendering the loudness meter.
 #[derive(Debug, Clone)]
 pub struct RenderParams {
+    pub bounds: Rectangle,
     pub min_db: f32,
     pub max_db: f32,
     pub bars: Vec<MeterBar>,
@@ -50,13 +47,13 @@ impl RenderParams {
     }
 
     /// Get horizontal bounds of the meter area.
-    pub fn meter_bounds(&self, bounds: &Rectangle) -> Option<(f32, f32, f32)> {
+    pub fn meter_bounds(&self) -> Option<(f32, f32, f32)> {
         let bar_count = self.bars.len();
         if bar_count == 0 {
             return None;
         }
 
-        let meter_width = (bounds.width - self.left_padding - self.right_padding).max(0.0);
+        let meter_width = (self.bounds.width - self.left_padding - self.right_padding).max(0.0);
         if meter_width <= 0.0 {
             return None;
         }
@@ -67,7 +64,7 @@ impl RenderParams {
         let bar_width = bar_slot * BAR_WIDTH_SCALE;
         let bar_offset = (bar_slot - bar_width) * 0.5;
         let stride = bar_width + gap;
-        let meter_x = bounds.x + self.left_padding + bar_offset;
+        let meter_x = self.bounds.x + self.left_padding + bar_offset;
 
         Some((meter_x, bar_width, stride))
     }
@@ -88,12 +85,13 @@ impl LoudnessMeterPrimitive {
         self as *const Self as usize
     }
 
-    fn build_vertices(&self, bounds: &Rectangle, viewport: &Viewport) -> Vec<SdfVertex> {
+    fn build_vertices(&self, viewport: &Viewport) -> Vec<SdfVertex> {
         let clip = ClipTransform::from_viewport(viewport);
-        let Some((meter_x, bar_width, stride)) = self.params.meter_bounds(bounds) else {
+        let Some((meter_x, bar_width, stride)) = self.params.meter_bounds() else {
             return Vec::new();
         };
 
+        let bounds = self.params.bounds;
         let y0 = bounds.y;
         let y1 = bounds.y + bounds.height;
         let height = y1 - y0;
@@ -167,77 +165,11 @@ impl LoudnessMeterPrimitive {
     }
 }
 
-impl Primitive for LoudnessMeterPrimitive {
-    type Pipeline = Pipeline;
-
-    fn prepare(
-        &self,
-        pipeline: &mut Self::Pipeline,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        bounds: &Rectangle,
-        viewport: &Viewport,
-    ) {
-        let vertices = self.build_vertices(bounds, viewport);
-        pipeline.prepare_instance(device, queue, "Loudness", self.key(), &vertices);
-    }
-
-    fn render(
-        &self,
-        pipeline: &Self::Pipeline,
-        encoder: &mut wgpu::CommandEncoder,
-        target: &wgpu::TextureView,
-        clip_bounds: &Rectangle<u32>,
-    ) {
-        let Some(instance) = pipeline.instance(self.key()) else {
-            return;
-        };
-        if instance.vertex_count == 0 {
-            return;
-        }
-        sdf_render_pass!(
-            encoder,
-            target,
-            clip_bounds,
-            "Loudness",
-            &pipeline.inner.pipeline,
-            instance
-        );
-    }
-}
-
-#[derive(Debug)]
-pub struct Pipeline {
-    inner: SdfPipeline<usize>,
-}
-
-impl primitive::Pipeline for Pipeline {
-    fn new(device: &wgpu::Device, _queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
-        Self {
-            inner: SdfPipeline::new(
-                device,
-                format,
-                "Loudness",
-                wgpu::PrimitiveTopology::TriangleList,
-            ),
-        }
-    }
-}
-
-impl Pipeline {
-    fn prepare_instance(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        label: &'static str,
-        key: usize,
-        vertices: &[SdfVertex],
-    ) {
-        self.inner
-            .prepare_instance(device, queue, label, key, vertices);
-    }
-
-    fn instance(&self, key: usize) -> Option<&InstanceBuffer<SdfVertex>> {
-        self.inner.instance(key)
-    }
-}
+sdf_primitive!(
+    LoudnessMeterPrimitive,
+    Pipeline,
+    usize,
+    "Loudness",
+    TriangleList,
+    |self| self.key()
+);

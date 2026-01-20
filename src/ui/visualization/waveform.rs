@@ -3,22 +3,18 @@ use crate::dsp::waveform::{
     DEFAULT_COLUMN_CAPACITY, MAX_COLUMN_CAPACITY, MIN_COLUMN_CAPACITY, WaveformConfig,
     WaveformPreview, WaveformProcessor as CoreWaveformProcessor, WaveformSnapshot,
 };
-use crate::dsp::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
+use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::ui::render::waveform::{PreviewSample, WaveformParams, WaveformPrimitive};
 use crate::ui::settings::ChannelMode;
 use crate::ui::theme;
-use iced::advanced::renderer::{self, Quad};
-use iced::advanced::widget::{Tree, tree};
-use iced::advanced::{Layout, Renderer as _, Widget, layout, mouse};
-use iced::{Background, Color, Element, Length, Rectangle, Size};
-use iced_wgpu::primitive::Renderer as _;
+use crate::visualization_widget;
+use iced::Color;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
 };
-use std::time::Instant;
 
 const COLUMN_PX: f32 = 2.0;
 
@@ -62,13 +58,9 @@ impl WaveformProcessor {
             cfg.sample_rate = sr;
             self.inner.update_config(cfg);
         }
-        match self
-            .inner
-            .process_block(&AudioBlock::new(samples, self.channels, sr, Instant::now()))
-        {
-            ProcessorUpdate::Snapshot(s) => Some(s),
-            ProcessorUpdate::None => None,
-        }
+        self.inner
+            .process_block(&AudioBlock::now(samples, self.channels, sr))
+            .into()
     }
     pub fn update_config(&mut self, config: WaveformConfig) {
         self.inner.update_config(config);
@@ -135,7 +127,7 @@ impl WaveformState {
         self.desired_cols.get()
     }
 
-    pub fn visual(&self, bounds: Rectangle) -> Option<WaveformParams> {
+    pub fn visual(&self, bounds: iced::Rectangle) -> Option<WaveformParams> {
         let (ch, cols) = (self.snapshot.channels.max(1), self.snapshot.columns);
         if bounds.width <= 0.0 {
             return None;
@@ -236,11 +228,11 @@ impl WaveformState {
         {
             return WaveformSnapshot::default();
         }
-        let proj = |d: &[f32], s| proj_data(d, s, ch, mode);
+        let proj = |d: &[f32], s| mode.project_data(d, s, ch);
         let p = &src.preview;
         let pv_ok = p.min_values.len() >= ch && p.max_values.len() >= ch;
         WaveformSnapshot {
-            channels: if mode == ChannelMode::Both { ch } else { 1 },
+            channels: mode.output_channels(ch),
             columns: cols,
             min_values: proj(&src.min_values, cols),
             max_values: proj(&src.max_values, cols),
@@ -270,22 +262,6 @@ fn freq_hint(s: &WaveformSnapshot, ch: usize) -> f32 {
         .and_then(|r| r.iter().rev().copied().find(|v| v.is_finite() && *v > 0.0))
         .unwrap_or(0.0)
 }
-fn proj_data(d: &[f32], stride: usize, ch: usize, m: ChannelMode) -> Vec<f32> {
-    match m {
-        ChannelMode::Both => d.to_vec(),
-        ChannelMode::Left => d[..stride].to_vec(),
-        ChannelMode::Right => {
-            let s = if ch > 1 { stride } else { 0 };
-            d[s..s + stride].to_vec()
-        }
-        ChannelMode::Mono => {
-            let sc = 1.0 / ch as f32;
-            (0..stride)
-                .map(|i| d.iter().skip(i).step_by(stride).sum::<f32>() * sc)
-                .collect()
-        }
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct WaveformStyle {
@@ -314,25 +290,10 @@ impl Default for WaveformStyle {
 
 impl WaveformStyle {
     fn freq_color(&self, v: f32) -> Color {
-        if self.palette.is_empty() {
-            return theme::accent_primary();
-        }
-        let n = self.palette.len();
-        if n == 1 {
-            return self.palette[0];
-        }
-        let t = v.clamp(0.0, 1.0) * (n - 1) as f32;
-        let lo = (t as usize).min(n - 2);
-        theme::mix_colors(self.palette[lo], self.palette[lo + 1], t - lo as f32)
+        theme::sample_gradient(&self.palette, v)
     }
     fn set_palette(&mut self, p: &[Color]) {
-        if self.palette.len() != p.len()
-            || !self
-                .palette
-                .iter()
-                .zip(p)
-                .all(|(a, b)| theme::colors_equal(*a, *b))
-        {
+        if !theme::palettes_equal(&self.palette, p) {
             self.palette = p.to_vec();
         }
     }
@@ -341,60 +302,10 @@ impl WaveformStyle {
     }
 }
 
-#[derive(Debug)]
-pub struct Waveform<'a> {
-    state: &'a RefCell<WaveformState>,
-}
-
-impl<'a> Waveform<'a> {
-    pub fn new(state: &'a RefCell<WaveformState>) -> Self {
-        Self { state }
-    }
-}
-
-impl<'a, M> Widget<M, iced::Theme, iced::Renderer> for Waveform<'a> {
-    fn tag(&self) -> tree::Tag {
-        tree::Tag::stateless()
-    }
-    fn state(&self) -> tree::State {
-        tree::State::new(())
-    }
-    fn size(&self) -> Size<Length> {
-        Size::new(Length::Fill, Length::Fill)
-    }
-    fn layout(&mut self, _: &mut Tree, _: &iced::Renderer, lim: &layout::Limits) -> layout::Node {
-        layout::Node::new(lim.resolve(Length::Fill, Length::Fill, Size::ZERO))
-    }
-    fn draw(
-        &self,
-        _: &Tree,
-        r: &mut iced::Renderer,
-        th: &iced::Theme,
-        _: &renderer::Style,
-        lay: Layout<'_>,
-        _: mouse::Cursor,
-        _: &Rectangle,
-    ) {
-        let b = lay.bounds();
-        match self.state.borrow().visual(b) {
-            Some(p) => r.draw_primitive(b, WaveformPrimitive::new(p)),
-            None => r.fill_quad(
-                Quad {
-                    bounds: b,
-                    border: Default::default(),
-                    shadow: Default::default(),
-                    snap: true,
-                },
-                Background::Color(th.extended_palette().background.base.color),
-            ),
-        }
-    }
-    fn children(&self) -> Vec<Tree> {
-        Vec::new()
-    }
-    fn diff(&self, _: &mut Tree) {}
-}
-
-pub fn widget<'a, M: 'a>(state: &'a RefCell<WaveformState>) -> Element<'a, M> {
-    Element::new(Waveform::new(state))
-}
+visualization_widget!(
+    Waveform,
+    WaveformState,
+    WaveformPrimitive,
+    |state, bounds| state.visual(bounds),
+    |params| WaveformPrimitive::new(params)
+);

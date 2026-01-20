@@ -4,18 +4,12 @@ use crate::audio::meter_tap::MeterFormat;
 use crate::dsp::oscilloscope::{
     OscilloscopeConfig, OscilloscopeProcessor as CoreOscilloscopeProcessor, OscilloscopeSnapshot,
 };
-use crate::dsp::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
+use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::ui::render::oscilloscope::{OscilloscopeParams, OscilloscopePrimitive};
 use crate::ui::settings::ChannelMode;
 use crate::ui::theme;
-use iced::advanced::Renderer as _;
-use iced::advanced::renderer::{self, Quad};
-use iced::advanced::widget::{Tree, tree};
-use iced::advanced::{Layout, Widget, layout, mouse};
-use iced::{Background, Color, Element, Length, Rectangle, Size};
-use iced_wgpu::primitive::Renderer as _;
-use std::cell::RefCell;
-use std::time::Instant;
+use crate::visualization_widget;
+use iced::Color;
 
 #[derive(Debug, Clone)]
 pub struct OscilloscopeProcessor {
@@ -48,12 +42,13 @@ impl OscilloscopeProcessor {
             self.inner.update_config(config);
         }
 
-        let block = AudioBlock::new(samples, format.channels.max(1), sample_rate, Instant::now());
-
-        match self.inner.process_block(&block) {
-            ProcessorUpdate::Snapshot(snapshot) => Some(snapshot),
-            ProcessorUpdate::None => None,
-        }
+        self.inner
+            .process_block(&AudioBlock::now(
+                samples,
+                format.channels.max(1),
+                sample_rate,
+            ))
+            .into()
     }
 
     pub fn update_config(&mut self, config: OscilloscopeConfig) {
@@ -131,54 +126,18 @@ impl OscilloscopeState {
     }
 
     fn project_channels(source: &OscilloscopeSnapshot, mode: ChannelMode) -> OscilloscopeSnapshot {
-        let channels = source.channels.max(1);
-        let spc = source.samples_per_channel;
-
-        if spc == 0 || source.samples.len() < spc {
+        let (ch, spc) = (source.channels.max(1), source.samples_per_channel);
+        if spc == 0 || source.samples.len() < ch * spc {
             return OscilloscopeSnapshot::default();
         }
-
-        let (out_channels, samples) = match mode {
-            ChannelMode::Both => (channels, source.samples.clone()),
-            ChannelMode::Left => {
-                let samples = source
-                    .samples
-                    .chunks(spc)
-                    .next()
-                    .map(|s| s.to_vec())
-                    .unwrap_or_default();
-                (1, samples)
-            }
-            ChannelMode::Right => {
-                let samples = source
-                    .samples
-                    .chunks(spc)
-                    .nth(1)
-                    .or_else(|| source.samples.chunks(spc).last())
-                    .map(|s| s.to_vec())
-                    .unwrap_or_default();
-                (1, samples)
-            }
-            ChannelMode::Mono => {
-                let mut samples = vec![0.0; spc];
-                let scale = 1.0 / channels as f32;
-                for channel_samples in source.samples.chunks(spc).take(channels) {
-                    for (dest, src) in samples.iter_mut().zip(channel_samples) {
-                        *dest += *src * scale;
-                    }
-                }
-                (1, samples)
-            }
-        };
-
         OscilloscopeSnapshot {
-            channels: out_channels,
+            channels: mode.output_channels(ch),
             samples_per_channel: spc,
-            samples,
+            samples: mode.project_data(&source.samples, spc, ch),
         }
     }
 
-    fn visual_params(&self, bounds: Rectangle) -> Option<OscilloscopeParams> {
+    pub fn visual_params(&self, bounds: iced::Rectangle) -> Option<OscilloscopeParams> {
         let channels = self.snapshot.channels.max(1);
         let samples_per_channel = self.snapshot.samples_per_channel;
         let required = channels.saturating_mul(samples_per_channel);
@@ -220,77 +179,10 @@ impl Default for OscilloscopeStyle {
     }
 }
 
-#[derive(Debug)]
-pub struct Oscilloscope<'a> {
-    state: &'a RefCell<OscilloscopeState>,
-}
-
-impl<'a> Oscilloscope<'a> {
-    pub fn new(state: &'a RefCell<OscilloscopeState>) -> Self {
-        Self { state }
-    }
-}
-
-impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Oscilloscope<'a> {
-    fn tag(&self) -> tree::Tag {
-        tree::Tag::stateless()
-    }
-
-    fn state(&self) -> tree::State {
-        tree::State::new(())
-    }
-
-    fn size(&self) -> Size<Length> {
-        Size::new(Length::Fill, Length::Fill)
-    }
-
-    fn layout(
-        &mut self,
-        _tree: &mut Tree,
-        _renderer: &iced::Renderer,
-        limits: &layout::Limits,
-    ) -> layout::Node {
-        let size = limits.resolve(Length::Fill, Length::Fill, Size::new(0.0, 0.0));
-        layout::Node::new(size)
-    }
-
-    fn draw(
-        &self,
-        _tree: &Tree,
-        renderer: &mut iced::Renderer,
-        theme: &iced::Theme,
-        _style: &renderer::Style,
-        layout: Layout<'_>,
-        _cursor: mouse::Cursor,
-        _viewport: &Rectangle,
-    ) {
-        let bounds = layout.bounds();
-        let Some(params) = self.state.borrow().visual_params(bounds) else {
-            renderer.fill_quad(
-                Quad {
-                    bounds,
-                    border: Default::default(),
-                    shadow: Default::default(),
-                    snap: true,
-                },
-                Background::Color(theme.extended_palette().background.base.color),
-            );
-            return;
-        };
-
-        renderer.draw_primitive(bounds, OscilloscopePrimitive::new(params));
-    }
-
-    fn children(&self) -> Vec<Tree> {
-        Vec::new()
-    }
-
-    fn diff(&self, _tree: &mut Tree) {}
-}
-
-pub fn widget<'a, Message>(state: &'a RefCell<OscilloscopeState>) -> Element<'a, Message>
-where
-    Message: 'a,
-{
-    Element::new(Oscilloscope::new(state))
-}
+visualization_widget!(
+    Oscilloscope,
+    OscilloscopeState,
+    OscilloscopePrimitive,
+    |state, bounds| state.visual_params(bounds),
+    |params| OscilloscopePrimitive::new(params)
+);

@@ -1,10 +1,8 @@
 use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
-use iced_wgpu::primitive::{self, Primitive};
-use iced_wgpu::wgpu;
 
-use crate::sdf_render_pass;
-use crate::ui::render::common::{ClipTransform, SdfPipeline, SdfVertex};
+use crate::sdf_primitive;
+use crate::ui::render::common::{ClipTransform, SdfVertex};
 use crate::ui::render::geometry::{self, DEFAULT_FEATHER, append_strip};
 
 #[derive(Debug, Clone)]
@@ -112,66 +110,11 @@ impl OscilloscopePrimitive {
     }
 }
 
-impl Primitive for OscilloscopePrimitive {
-    type Pipeline = Pipeline;
-
-    fn prepare(
-        &self,
-        pipeline: &mut Self::Pipeline,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        _bounds: &Rectangle,
-        viewport: &Viewport,
-    ) {
-        let vertices = self.build_vertices(viewport);
-        pipeline.prepare(device, queue, &vertices);
-    }
-
-    fn render(
-        &self,
-        pipeline: &Self::Pipeline,
-        encoder: &mut wgpu::CommandEncoder,
-        target: &wgpu::TextureView,
-        clip_bounds: &Rectangle<u32>,
-    ) {
-        let Some(instance) = pipeline.inner.instance(()) else {
-            return;
-        };
-        if instance.vertex_count == 0 {
-            return;
-        }
-        sdf_render_pass!(
-            encoder,
-            target,
-            clip_bounds,
-            "Oscilloscope",
-            &pipeline.inner.pipeline,
-            instance
-        );
-    }
-}
-
-#[derive(Debug)]
-pub struct Pipeline {
-    inner: SdfPipeline<()>,
-}
-
-impl primitive::Pipeline for Pipeline {
-    fn new(device: &wgpu::Device, _queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
-        Self {
-            inner: SdfPipeline::new(
-                device,
-                format,
-                "Oscilloscope",
-                wgpu::PrimitiveTopology::TriangleStrip,
-            ),
-        }
-    }
-}
-
-impl Pipeline {
-    fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, vertices: &[SdfVertex]) {
-        self.inner
-            .prepare_instance(device, queue, "Oscilloscope", (), vertices);
-    }
-}
+sdf_primitive!(
+    OscilloscopePrimitive,
+    Pipeline,
+    (),
+    "Oscilloscope",
+    TriangleStrip,
+    |self| ()
+);

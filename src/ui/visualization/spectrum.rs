@@ -3,7 +3,7 @@ use crate::dsp::spectrogram::FrequencyScale;
 use crate::dsp::spectrum::{
     SpectrumConfig, SpectrumProcessor as CoreSpectrumProcessor, SpectrumSnapshot,
 };
-use crate::dsp::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
+use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::ui::render::spectrum::{SpectrumParams, SpectrumPrimitive};
 use crate::ui::settings::{SpectrumDisplayMode, SpectrumWeightingMode};
 use crate::ui::theme;
@@ -18,7 +18,6 @@ use iced::{Background, Color, Element, Length, Point, Rectangle, Size};
 use iced_wgpu::primitive::Renderer as _;
 use std::cell::RefCell;
 use std::sync::Arc;
-use std::time::Instant;
 
 const EPSILON: f32 = 1e-6;
 const GRID_FREQS: &[(f32, u8)] = &[
@@ -88,13 +87,9 @@ impl SpectrumProcessor {
             cfg.sample_rate = sr;
             self.inner.update_config(cfg);
         }
-        match self
-            .inner
-            .process_block(&AudioBlock::new(samples, self.channels, sr, Instant::now()))
-        {
-            ProcessorUpdate::Snapshot(s) => Some(s),
-            ProcessorUpdate::None => None,
-        }
+        self.inner
+            .process_block(&AudioBlock::now(samples, self.channels, sr))
+            .into()
     }
 
     pub fn update_config(&mut self, c: SpectrumConfig) {
@@ -204,14 +199,7 @@ impl SpectrumState {
     }
 
     pub fn set_palette(&mut self, palette: &[Color]) {
-        if palette.len() == 6
-            && !self
-                .style
-                .spectrum_palette
-                .iter()
-                .zip(palette)
-                .all(|(a, b)| theme::colors_equal(*a, *b))
-        {
+        if palette.len() == 6 && !theme::palettes_equal(&self.style.spectrum_palette, palette) {
             self.style.spectrum_palette.copy_from_slice(palette);
         }
     }
