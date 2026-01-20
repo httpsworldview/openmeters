@@ -1,14 +1,14 @@
 use super::palette::PaletteEvent;
 use super::widgets::{
-    labeled_pick_list, labeled_slider, set_if_changed, update_f32_range, SliderRange,
+    SliderRange, labeled_pick_list, labeled_slider, set_if_changed, update_f32_range,
 };
-use super::{SettingsMessage, CHANNEL_OPTIONS};
+use super::{CHANNEL_OPTIONS, SettingsMessage};
 use crate::dsp::waveform::{MAX_SCROLL_SPEED, MIN_SCROLL_SPEED};
 use crate::ui::settings::{ChannelMode, SettingsHandle, WaveformSettings};
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualKind, VisualManagerHandle};
-use iced::widget::column;
 use iced::Element;
+use iced::widget::column;
 
 settings_pane!(
     WaveformSettingsPane,

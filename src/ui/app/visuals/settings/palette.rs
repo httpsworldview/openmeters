@@ -26,11 +26,15 @@ pub struct PaletteEditor {
 impl PaletteEditor {
     /// Creates a new editor from a `Palette` definition.
     pub fn new(palette: Palette) -> Self {
-        Self { palette, active: None }
+        Self {
+            palette,
+            active: None,
+        }
     }
 
     fn label_for(&self, index: usize) -> String {
-        self.palette.labels()
+        self.palette
+            .labels()
             .get(index)
             .map_or_else(|| format!("Color {}", index + 1), |s| (*s).to_string())
     }

@@ -1,11 +1,11 @@
+use super::SettingsMessage;
 use super::palette::PaletteEvent;
 use super::widgets::{labeled_pick_list, set_if_changed};
-use super::SettingsMessage;
 use crate::ui::settings::{LoudnessSettings, SettingsHandle};
 use crate::ui::theme;
 use crate::ui::visualization::loudness::MeterMode;
 use crate::ui::visualization::visual_manager::{VisualKind, VisualManagerHandle};
-use iced::{widget::column, Element};
+use iced::{Element, widget::column};
 
 settings_pane!(
     LoudnessSettingsPane,

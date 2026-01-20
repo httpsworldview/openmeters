@@ -1,9 +1,9 @@
+use super::SettingsMessage;
 use super::palette::PaletteEvent;
 use super::widgets::{
-    labeled_pick_list, labeled_slider, section_title, set_f32, set_if_changed,
-    update_usize_from_f32, SliderRange,
+    SliderRange, labeled_pick_list, labeled_slider, section_title, set_f32, set_if_changed,
+    update_usize_from_f32,
 };
-use super::SettingsMessage;
 use crate::dsp::spectrogram::FrequencyScale;
 use crate::dsp::spectrum::AveragingMode;
 use crate::ui::settings::{

@@ -1,11 +1,11 @@
+use super::SettingsMessage;
 use super::palette::PaletteEvent;
 use super::widgets::{
-    labeled_pick_list, labeled_slider, section_title, set_if_changed, update_f32_range,
-    update_usize_from_f32, SliderRange,
+    SliderRange, labeled_pick_list, labeled_slider, section_title, set_if_changed,
+    update_f32_range, update_usize_from_f32,
 };
-use super::SettingsMessage;
 use crate::dsp::spectrogram::{
-    FrequencyScale, WindowKind, PLANCK_BESSEL_DEFAULT_BETA, PLANCK_BESSEL_DEFAULT_EPSILON,
+    FrequencyScale, PLANCK_BESSEL_DEFAULT_BETA, PLANCK_BESSEL_DEFAULT_EPSILON, WindowKind,
 };
 use crate::ui::settings::{PianoRollSide, SettingsHandle, SpectrogramSettings};
 use crate::ui::theme;
@@ -138,11 +138,13 @@ impl SpectrogramSettingsPane {
             |v| SettingsMessage::Spectrogram(Message::HistoryLength(v)),
         ));
 
-        let mut adv = column![toggler(s.use_reassignment)
-            .label("Time-frequency reassignment")
-            .text_size(11)
-            .spacing(4)
-            .on_toggle(|v| SettingsMessage::Spectrogram(Message::UseReassignment(v)))]
+        let mut adv = column![
+            toggler(s.use_reassignment)
+                .label("Time-frequency reassignment")
+                .text_size(11)
+                .spacing(4)
+                .on_toggle(|v| SettingsMessage::Spectrogram(Message::UseReassignment(v)))
+        ]
         .spacing(8);
         if s.use_reassignment {
             adv = adv.push(labeled_slider(

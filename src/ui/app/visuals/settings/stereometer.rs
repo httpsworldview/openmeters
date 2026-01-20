@@ -1,9 +1,9 @@
+use super::SettingsMessage;
 use super::palette::PaletteEvent;
 use super::widgets::{
-    labeled_pick_list, labeled_slider, set_if_changed, update_f32_range, update_usize_from_f32,
-    SliderRange,
+    SliderRange, labeled_pick_list, labeled_slider, set_if_changed, update_f32_range,
+    update_usize_from_f32,
 };
-use super::SettingsMessage;
 use crate::ui::settings::{
     CorrelationMeterMode, CorrelationMeterSide, SettingsHandle, StereometerMode, StereometerScale,
     StereometerSettings,

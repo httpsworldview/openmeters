@@ -18,11 +18,7 @@ use crate::{
     },
 };
 use iced::Color;
-use serde::{
-    de::{DeserializeOwned, Deserializer},
-    ser::{SerializeMap, Serializer},
-    Deserialize, Serialize,
-};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::{
     array,
@@ -31,7 +27,7 @@ use std::{
     fs,
     path::PathBuf,
     rc::Rc,
-    sync::{mpsc, OnceLock},
+    sync::{OnceLock, mpsc},
     time::Duration,
 };
 use tracing::warn;
@@ -57,7 +53,7 @@ impl VisualSettings {
     pub fn sanitize(&mut self) {
         macro_rules! check {
             ($($k:ident => $t:ty),+) => {|k: &VisualKind, m: &mut ModuleSettings| match k {
-                $(VisualKind::$k => m.raw.as_ref().is_none_or(|v| serde_json::from_value::<$t>(v.clone()).is_ok())),+
+                $(VisualKind::$k => m.config.as_ref().is_none_or(|v| serde_json::from_value::<$t>(v.clone()).is_ok())),+
             }};
         }
         let valid = check!(Spectrogram => SpectrogramSettings, Spectrum => SpectrumSettings,
@@ -67,27 +63,33 @@ impl VisualSettings {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ModuleSettings {
     pub enabled: Option<bool>,
-    raw: Option<Value>,
+    /// Module configuration payload.
+    ///
+    /// Persisted format is `{ "enabled": bool?, "config": <json>? }`.
+    config: Option<Value>,
 }
 
 impl ModuleSettings {
     pub fn with_config<T: Serialize>(config: &T) -> Self {
         Self {
             enabled: None,
-            raw: serde_json::to_value(config).ok(),
+            config: serde_json::to_value(config).ok(),
         }
     }
     pub fn set_config<T: Serialize>(&mut self, config: &T) {
-        self.raw = serde_json::to_value(config).ok();
+        self.config = serde_json::to_value(config).ok();
     }
     pub fn parse_config<T: DeserializeOwned>(&self) -> Option<T> {
-        self.raw.as_ref().and_then(|val| T::deserialize(val).ok())
+        self.config
+            .as_ref()
+            .and_then(|val| T::deserialize(val).ok())
     }
     pub fn config_or_default<T: DeserializeOwned + Default>(&self) -> T {
-        self.raw
+        self.config
             .as_ref()
             .and_then(|val| {
                 T::deserialize(val)
@@ -95,46 +97,6 @@ impl ModuleSettings {
                     .ok()
             })
             .unwrap_or_default()
-    }
-}
-
-impl Serialize for ModuleSettings {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut map = serializer.serialize_map(None)?;
-        if let Some(enabled) = self.enabled {
-            map.serialize_entry("enabled", &enabled)?;
-        }
-        if let Some(Value::Object(fields)) = &self.raw {
-            for (key, val) in fields {
-                map.serialize_entry(key, val)?;
-            }
-        } else if let Some(val) = &self.raw {
-            map.serialize_entry("config", val)?;
-        }
-        map.end()
-    }
-}
-
-impl<'de> Deserialize<'de> for ModuleSettings {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let Value::Object(mut fields) = Value::deserialize(deserializer)? else {
-            return Err(serde::de::Error::custom("expected object"));
-        };
-        let enabled = fields.remove("enabled").and_then(|val| val.as_bool());
-        let raw = match fields.remove("config") {
-            Some(Value::Object(mut nested)) => {
-                nested.extend(fields);
-                Some(Value::Object(nested))
-            }
-            Some(val) if fields.is_empty() => Some(val),
-            Some(val) => {
-                fields.insert("config".into(), val);
-                Some(Value::Object(fields))
-            }
-            None if fields.is_empty() => None,
-            None => Some(Value::Object(fields)),
-        };
-        Ok(Self { enabled, raw })
     }
 }
 
