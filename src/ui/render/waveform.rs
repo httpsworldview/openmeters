@@ -1,10 +1,10 @@
-use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
+use iced::Rectangle;
 use std::sync::Arc;
 
 use crate::sdf_primitive;
 use crate::ui::render::common::{ClipTransform, SdfVertex};
-use crate::ui::render::geometry::{self, DEFAULT_FEATHER, append_strip};
+use crate::ui::render::geometry::{self, append_strip, DEFAULT_FEATHER};
 
 #[derive(Debug, Clone, Copy)]
 pub struct PreviewSample {
@@ -33,9 +33,21 @@ pub struct WaveformParams {
 }
 
 impl WaveformParams {
-    pub fn preview_active(&self) -> bool {
+    fn preview_active(&self) -> bool {
         self.preview_progress > 0.0 && self.preview_samples.len() >= self.channels
     }
+}
+
+/// Normalize and clamp a min/max pair, ensuring min <= max.
+#[inline]
+fn normalize_sample(min: f32, max: f32) -> (f32, f32) {
+    let (lo, hi) = if min <= max { (min, max) } else { (max, min) };
+    (lo.clamp(-1.0, 1.0), hi.clamp(-1.0, 1.0))
+}
+
+#[inline]
+fn with_alpha(color: [f32; 4], alpha: f32) -> [f32; 4] {
+    [color[0], color[1], color[2], alpha]
 }
 
 #[derive(Debug)]
@@ -49,149 +61,113 @@ impl WaveformPrimitive {
     }
 
     fn build_vertices(&self, viewport: &Viewport) -> Vec<SdfVertex> {
-        let channels = self.params.channels.max(1);
-        let columns = self.params.columns;
-        let total_samples = channels * columns;
-        if (columns > 0
-            && (self.params.samples.len() < total_samples
-                || self.params.colors.len() < total_samples))
-            || (columns == 0 && !self.params.preview_active())
-        {
+        let params = &self.params;
+        let (channels, columns) = (params.channels.max(1), params.columns);
+        let total = channels * columns;
+
+        // Validate data
+        let valid = (columns == 0
+            || (params.samples.len() >= total && params.colors.len() >= total))
+            && (columns > 0 || params.preview_active());
+        if !valid {
             return Vec::new();
         }
 
-        let bounds = self.params.bounds;
         let clip = ClipTransform::from_viewport(viewport);
-
-        let column_width = self.params.column_width.max(0.5);
-        let preview_width = if self.params.preview_active() {
-            column_width
+        let col_width = params.column_width.max(0.5);
+        let preview_width = if params.preview_active() {
+            col_width
         } else {
             0.0
         };
-        let right_edge = bounds.x + bounds.width;
+        let right_edge = params.bounds.x + params.bounds.width;
 
-        let vertical_padding = self.params.vertical_padding.max(0.0);
-        let channel_gap = self.params.channel_gap.max(0.0);
-        let usable_height = (bounds.height
-            - vertical_padding * 2.0
-            - channel_gap * (channels.saturating_sub(1) as f32))
-            .max(1.0);
-        let channel_height = usable_height / channels as f32;
-        let amplitude_scale = channel_height * 0.5 * self.params.amplitude_scale.max(0.01);
-        let stroke_width = self.params.stroke_width.max(0.5);
+        // Channel layout calculations
+        let v_pad = params.vertical_padding.max(0.0);
+        let gap = params.channel_gap.max(0.0);
+        let usable_h =
+            (params.bounds.height - v_pad * 2.0 - gap * (channels.saturating_sub(1) as f32))
+                .max(1.0);
+        let ch_height = usable_h / channels as f32;
+        let amp_scale = ch_height * 0.5 * params.amplitude_scale.max(0.01);
+        let stroke = params.stroke_width.max(0.5);
 
         let mut vertices = Vec::with_capacity(channels * (columns + 1) * 6);
 
-        for channel in 0..channels {
-            let top = bounds.y + vertical_padding + channel as f32 * (channel_height + channel_gap);
-            let center = top + channel_height * 0.5;
+        for ch in 0..channels {
+            let center_y =
+                params.bounds.y + v_pad + ch as f32 * (ch_height + gap) + ch_height * 0.5;
 
-            let mut area_vertices = Vec::with_capacity((columns + 1) * 2);
-            for index in 0..columns {
-                let sample_index = channel * columns + index;
-                let pair = self.params.samples[sample_index];
-                let mut min_value = pair[0];
-                let mut max_value = pair[1];
-                if min_value > max_value {
-                    std::mem::swap(&mut min_value, &mut max_value);
-                }
-                min_value = min_value.clamp(-1.0, 1.0);
-                max_value = max_value.clamp(-1.0, 1.0);
+            // Build area fill vertices
+            let mut area = Vec::with_capacity((columns + 1) * 2);
+            for i in 0..columns {
+                let idx = ch * columns + i;
+                let (min, max) = normalize_sample(params.samples[idx][0], params.samples[idx][1]);
+                let x = (right_edge - preview_width - col_width * (columns - 1 - i) as f32).round();
+                let color = with_alpha(
+                    params.colors.get(idx).copied().unwrap_or([1.0; 4]),
+                    params.fill_alpha,
+                );
 
-                let x =
-                    (right_edge - preview_width - column_width * ((columns - 1 - index) as f32))
-                        .round();
-                let top_y = center - max_value * amplitude_scale;
-                let bottom_y = center - min_value * amplitude_scale;
-                let color = self
-                    .params
-                    .colors
-                    .get(channel * columns + index)
-                    .copied()
-                    .unwrap_or([1.0; 4]);
-                let fill_color = [color[0], color[1], color[2], self.params.fill_alpha];
-
-                area_vertices.push(SdfVertex::solid(clip.to_clip(x, top_y), fill_color));
-                area_vertices.push(SdfVertex::solid(clip.to_clip(x, bottom_y), fill_color));
+                area.push(SdfVertex::solid(
+                    clip.to_clip(x, center_y - max * amp_scale),
+                    color,
+                ));
+                area.push(SdfVertex::solid(
+                    clip.to_clip(x, center_y - min * amp_scale),
+                    color,
+                ));
             }
 
-            if self.params.preview_active() {
-                let sample = self.params.preview_samples[channel];
-                let mut min_value = sample.min;
-                let mut max_value = sample.max;
-                if min_value > max_value {
-                    std::mem::swap(&mut min_value, &mut max_value);
-                }
-                min_value = min_value.clamp(-1.0, 1.0);
-                max_value = max_value.clamp(-1.0, 1.0);
+            if params.preview_active() {
+                let ps = params.preview_samples[ch];
+                let (min, max) = normalize_sample(ps.min, ps.max);
                 let x = right_edge.round();
-                let top_y = center - max_value * amplitude_scale;
-                let bottom_y = center - min_value * amplitude_scale;
-                let preview_base = sample.color;
-                let fill_color = [
-                    preview_base[0],
-                    preview_base[1],
-                    preview_base[2],
-                    self.params.fill_alpha,
-                ];
-
-                area_vertices.push(SdfVertex::solid(clip.to_clip(x, top_y), fill_color));
-                area_vertices.push(SdfVertex::solid(clip.to_clip(x, bottom_y), fill_color));
+                let color = with_alpha(ps.color, params.fill_alpha);
+                area.push(SdfVertex::solid(
+                    clip.to_clip(x, center_y - max * amp_scale),
+                    color,
+                ));
+                area.push(SdfVertex::solid(
+                    clip.to_clip(x, center_y - min * amp_scale),
+                    color,
+                ));
             }
+            append_strip(&mut vertices, area);
 
-            append_strip(&mut vertices, area_vertices);
-
+            // Build center line vertices
             let mut positions = Vec::with_capacity(columns + 1);
             let mut line_colors = Vec::with_capacity(columns + 1);
-            for index in 0..columns {
-                let sample_index = channel * columns + index;
-                let pair = self.params.samples[sample_index];
-                let min_value = pair[0].clamp(-1.0, 1.0);
-                let max_value = pair[1].clamp(-1.0, 1.0);
-                let average = 0.5 * (min_value + max_value);
-                let x =
-                    (right_edge - preview_width - column_width * ((columns - 1 - index) as f32))
-                        .round();
-                let y = center - average * amplitude_scale;
+
+            for i in 0..columns {
+                let idx = ch * columns + i;
+                let (min, max) = normalize_sample(params.samples[idx][0], params.samples[idx][1]);
+                let x = (right_edge - preview_width - col_width * (columns - 1 - i) as f32).round();
+                let y = center_y - 0.5 * (min + max) * amp_scale;
                 positions.push((x, y));
-                line_colors.push(
-                    self.params
-                        .colors
-                        .get(channel * columns + index)
-                        .copied()
-                        .unwrap_or([1.0; 4]),
+                line_colors.push(with_alpha(
+                    params.colors.get(idx).copied().unwrap_or([1.0; 4]),
+                    params.line_alpha,
+                ));
+            }
+
+            if params.preview_active() {
+                let ps = params.preview_samples[ch];
+                let (min, max) = normalize_sample(ps.min, ps.max);
+                positions.push((right_edge.round(), center_y - 0.5 * (min + max) * amp_scale));
+                line_colors.push(with_alpha(ps.color, params.line_alpha));
+            }
+
+            if positions.len() >= 2 {
+                let line = geometry::build_aa_line_strip_colored(
+                    &positions,
+                    &line_colors,
+                    stroke,
+                    DEFAULT_FEATHER,
+                    &clip,
                 );
+                append_strip(&mut vertices, line);
             }
-
-            if self.params.preview_active() {
-                let sample = self.params.preview_samples[channel];
-                let min_value = sample.min.clamp(-1.0, 1.0);
-                let max_value = sample.max.clamp(-1.0, 1.0);
-                let average = 0.5 * (min_value + max_value);
-                let x = right_edge.round();
-                let y = center - average * amplitude_scale;
-                positions.push((x, y));
-                line_colors.push(sample.color);
-            }
-
-            if positions.len() < 2 {
-                continue;
-            }
-
-            let line_colors_alpha: Vec<_> = line_colors
-                .iter()
-                .map(|base| [base[0], base[1], base[2], self.params.line_alpha])
-                .collect();
-
-            let line_strip = geometry::build_aa_line_strip_colored(
-                &positions,
-                &line_colors_alpha,
-                stroke_width,
-                DEFAULT_FEATHER,
-                &clip,
-            );
-            append_strip(&mut vertices, line_strip);
         }
 
         vertices

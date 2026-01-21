@@ -84,11 +84,11 @@ fn clamp_extrema(min: f32, max: f32) -> (f32, f32) {
 struct BandAnalyzer {
     fft: Arc<dyn RealToComplex<f32>>,
     size: usize,
-    buf: Vec<f32>,
-    out: Vec<Complex32>,
+    input_buffer: Vec<f32>,
+    output_spectrum: Vec<Complex32>,
     scratch: Vec<Complex32>,
-    low: usize,
-    high: usize,
+    low_band_bin: usize,
+    high_band_bin: usize,
 }
 
 impl std::fmt::Debug for BandAnalyzer {
@@ -100,228 +100,300 @@ impl std::fmt::Debug for BandAnalyzer {
 }
 
 impl BandAnalyzer {
-    fn new(size: usize, sr: f32) -> Self {
+    fn new(size: usize, sample_rate: f32) -> Self {
         let fft = RealFftPlanner::new().plan_fft_forward(size);
-        let (low, high) = Self::crossover_bins(size, sr);
+        let (low_band_bin, high_band_bin) = Self::crossover_bins(size, sample_rate);
         Self {
             scratch: vec![Complex32::default(); fft.get_scratch_len()],
-            buf: vec![0.0; size],
-            out: vec![Complex32::default(); size / 2 + 1],
-            low,
-            high,
+            input_buffer: vec![0.0; size],
+            output_spectrum: vec![Complex32::default(); size / 2 + 1],
+            low_band_bin,
+            high_band_bin,
             size,
             fft,
         }
     }
 
-    fn reconfigure(&mut self, size: usize, sr: f32) {
+    fn reconfigure(&mut self, size: usize, sample_rate: f32) {
         if size != self.size {
             self.fft = RealFftPlanner::new().plan_fft_forward(size);
             self.size = size;
             self.scratch
                 .resize(self.fft.get_scratch_len(), Complex32::default());
-            self.buf.resize(size, 0.0);
-            self.out.resize(size / 2 + 1, Complex32::default());
+            self.input_buffer.resize(size, 0.0);
+            self.output_spectrum
+                .resize(size / 2 + 1, Complex32::default());
         }
-        (self.low, self.high) = Self::crossover_bins(size, sr);
+        (self.low_band_bin, self.high_band_bin) = Self::crossover_bins(size, sample_rate);
     }
 
-    fn crossover_bins(size: usize, sr: f32) -> (usize, usize) {
-        let bw = sr / size as f32;
-        let max = size / 2;
+    fn crossover_bins(size: usize, sample_rate: f32) -> (usize, usize) {
+        let bin_width = sample_rate / size as f32;
+        let max_bin = size / 2;
         (
-            (LOW_CROSSOVER / bw).round().min(max as f32) as usize,
-            (HIGH_CROSSOVER / bw).round().min(max as f32) as usize,
+            (LOW_CROSSOVER / bin_width).round().min(max_bin as f32) as usize,
+            (HIGH_CROSSOVER / bin_width).round().min(max_bin as f32) as usize,
         )
     }
 
+    /// Computes a normalized frequency value in [0,1] where 0=low, 0.5=mid, 1=high.
+    /// Mid band is weighted at 50% to create a smooth gradient between bass and treble.
     fn analyze(&mut self, samples: &[f32]) -> f32 {
+        const NEUTRAL_FREQUENCY: f32 = 0.5;
         if samples.len() < 2 {
-            return 0.5;
+            return NEUTRAL_FREQUENCY;
         }
-        self.buf.fill(0.0);
-        let len = samples.len().min(self.size);
-        let k = std::f32::consts::PI / len as f32;
-        for (i, &s) in samples.iter().take(len).enumerate() {
-            self.buf[i] = s * 0.5 * (1.0 - (2.0 * k * i as f32).cos());
+
+        self.apply_hann_window(samples);
+
+        if self.compute_fft().is_err() {
+            return NEUTRAL_FREQUENCY;
         }
-        self.out.fill(Complex32::default());
-        if self
-            .fft
-            .process_with_scratch(&mut self.buf, &mut self.out, &mut self.scratch)
-            .is_err()
-        {
-            return 0.5;
+
+        self.compute_frequency_position()
+    }
+
+    fn apply_hann_window(&mut self, samples: &[f32]) {
+        self.input_buffer.fill(0.0);
+        let window_length = samples.len().min(self.size);
+        let angular_step = std::f32::consts::PI / window_length as f32;
+
+        for (index, &sample) in samples.iter().take(window_length).enumerate() {
+            let hann_coefficient = 0.5 * (1.0 - (2.0 * angular_step * index as f32).cos());
+            self.input_buffer[index] = sample * hann_coefficient;
         }
-        let (l, m, h) =
-            self.out
-                .iter()
-                .enumerate()
-                .fold((0.0f32, 0.0f32, 0.0f32), |(l, m, h), (i, c)| {
-                    let e = c.norm_sqr();
-                    if i <= self.low {
-                        (l + e, m, h)
-                    } else if i < self.high {
-                        (l, m + e, h)
-                    } else {
-                        (l, m, h + e)
-                    }
-                });
-        let t = l + m + h;
-        if t <= f32::EPSILON {
-            0.5
-        } else {
-            (m * 0.5 + h) / t
+    }
+
+    fn compute_fft(&mut self) -> Result<(), ()> {
+        self.output_spectrum.fill(Complex32::default());
+        self.fft
+            .process_with_scratch(
+                &mut self.input_buffer,
+                &mut self.output_spectrum,
+                &mut self.scratch,
+            )
+            .map_err(|_| ())
+    }
+
+    fn compute_frequency_position(&self) -> f32 {
+        const MID_BAND_WEIGHT: f32 = 0.5; // Creates smooth gradient: low=0, mid=0.5, high=1.0
+
+        let (low_energy, mid_energy, high_energy) = self.sum_band_energies();
+        let total_energy = low_energy + mid_energy + high_energy;
+
+        if total_energy <= f32::EPSILON {
+            return MID_BAND_WEIGHT;
         }
+
+        (mid_energy * MID_BAND_WEIGHT + high_energy) / total_energy
+    }
+
+    fn sum_band_energies(&self) -> (f32, f32, f32) {
+        self.output_spectrum.iter().enumerate().fold(
+            (0.0f32, 0.0f32, 0.0f32),
+            |(low, mid, high), (bin, complex)| {
+                let energy = complex.norm_sqr();
+                if bin <= self.low_band_bin {
+                    (low + energy, mid, high)
+                } else if bin < self.high_band_bin {
+                    (low, mid + energy, high)
+                } else {
+                    (low, mid, high + energy)
+                }
+            },
+        )
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct WaveformProcessor {
-    cfg: WaveformConfig,
-    snap: WaveformSnapshot,
-    ch: usize,
-    spc: usize,
-    mins: Vec<f32>,
-    maxs: Vec<f32>,
-    freqs: Vec<f32>,
-    head: usize,
-    count: usize,
-    written: u64,
-    acc: Vec<Vec<f32>>,
-    acc_min: Vec<f32>,
-    acc_max: Vec<f32>,
-    fft: BandAnalyzer,
-    dirty: bool,
+    config: WaveformConfig,
+    snapshot: WaveformSnapshot,
+    channel_count: usize,
+    samples_per_column: usize,
+    min_values: Vec<f32>,
+    max_values: Vec<f32>,
+    frequency_values: Vec<f32>,
+    ring_head: usize,
+    column_count: usize,
+    total_columns_written: u64,
+    sample_accumulators: Vec<Vec<f32>>,
+    accumulator_min: Vec<f32>,
+    accumulator_max: Vec<f32>,
+    band_analyzer: BandAnalyzer,
+    has_pending_changes: bool,
 }
 
 impl WaveformProcessor {
     pub fn new(config: WaveformConfig) -> Self {
-        let cfg = config.normalized();
-        let mut p = Self {
-            spc: cfg.samples_per_column(),
-            fft: BandAnalyzer::new(cfg.fft_size(), cfg.sample_rate),
-            cfg,
-            snap: WaveformSnapshot::default(),
-            ch: 2,
-            mins: Vec::new(),
-            maxs: Vec::new(),
-            freqs: Vec::new(),
-            head: 0,
-            count: 0,
-            written: 0,
-            acc: Vec::new(),
-            acc_min: Vec::new(),
-            acc_max: Vec::new(),
-            dirty: false,
+        let normalized_config = config.normalized();
+        let mut processor = Self {
+            samples_per_column: normalized_config.samples_per_column(),
+            band_analyzer: BandAnalyzer::new(
+                normalized_config.fft_size(),
+                normalized_config.sample_rate,
+            ),
+            config: normalized_config,
+            snapshot: WaveformSnapshot::default(),
+            channel_count: 2,
+            min_values: Vec::new(),
+            max_values: Vec::new(),
+            frequency_values: Vec::new(),
+            ring_head: 0,
+            column_count: 0,
+            total_columns_written: 0,
+            sample_accumulators: Vec::new(),
+            accumulator_min: Vec::new(),
+            accumulator_max: Vec::new(),
+            has_pending_changes: false,
         };
-        p.alloc_buffers();
-        p
+        processor.allocate_buffers();
+        processor
     }
 
     pub fn config(&self) -> WaveformConfig {
-        self.cfg
+        self.config
     }
 
-    fn alloc_buffers(&mut self) {
-        let cap = self.cfg.max_columns * self.ch;
-        self.mins.resize(cap, 0.0);
-        self.maxs.resize(cap, 0.0);
-        self.freqs.resize(cap, 0.0);
-        self.acc = (0..self.ch).map(|_| Vec::with_capacity(self.spc)).collect();
-        self.acc_min = vec![f32::MAX; self.ch];
-        self.acc_max = vec![f32::MIN; self.ch];
+    fn allocate_buffers(&mut self) {
+        let capacity = self.config.max_columns * self.channel_count;
+        self.min_values.resize(capacity, 0.0);
+        self.max_values.resize(capacity, 0.0);
+        self.frequency_values.resize(capacity, 0.0);
+        self.sample_accumulators = (0..self.channel_count)
+            .map(|_| Vec::with_capacity(self.samples_per_column))
+            .collect();
+        self.accumulator_min = vec![f32::MAX; self.channel_count];
+        self.accumulator_max = vec![f32::MIN; self.channel_count];
     }
 
     fn rebuild(&mut self) {
-        self.spc = self.cfg.samples_per_column();
-        self.fft
-            .reconfigure(self.cfg.fft_size(), self.cfg.sample_rate);
-        self.head = 0;
-        self.count = 0;
-        self.written = 0;
-        self.dirty = false;
-        self.alloc_buffers();
+        self.samples_per_column = self.config.samples_per_column();
+        self.band_analyzer
+            .reconfigure(self.config.fft_size(), self.config.sample_rate);
+        self.ring_head = 0;
+        self.column_count = 0;
+        self.total_columns_written = 0;
+        self.has_pending_changes = false;
+        self.allocate_buffers();
     }
 
-    fn flush(&mut self) {
-        let cap = self.cfg.max_columns;
-        for c in 0..self.ch {
-            if self.acc[c].is_empty() {
+    fn flush_accumulated_samples(&mut self) {
+        let max_columns = self.config.max_columns;
+
+        for channel in 0..self.channel_count {
+            if self.sample_accumulators[channel].is_empty() {
                 continue;
             }
-            let (mn, mx) = clamp_extrema(self.acc_min[c], self.acc_max[c]);
-            let idx = c * cap + self.head;
-            self.mins[idx] = mn;
-            self.maxs[idx] = mx;
-            self.freqs[idx] = self.fft.analyze(&self.acc[c]);
+
+            let (clamped_min, clamped_max) =
+                clamp_extrema(self.accumulator_min[channel], self.accumulator_max[channel]);
+            let ring_index = channel * max_columns + self.ring_head;
+
+            self.min_values[ring_index] = clamped_min;
+            self.max_values[ring_index] = clamped_max;
+            self.frequency_values[ring_index] = self
+                .band_analyzer
+                .analyze(&self.sample_accumulators[channel]);
         }
-        self.head = (self.head + 1) % cap;
-        self.count = (self.count + 1).min(cap);
-        self.written = self.written.saturating_add(1);
-        self.dirty = true;
-        for c in 0..self.ch {
-            self.acc[c].clear();
+
+        // Advance ring buffer
+        self.ring_head = (self.ring_head + 1) % max_columns;
+        self.column_count = (self.column_count + 1).min(max_columns);
+        self.total_columns_written = self.total_columns_written.saturating_add(1);
+        self.has_pending_changes = true;
+
+        // Reset accumulators
+        for acc in &mut self.sample_accumulators {
+            acc.clear();
         }
-        self.acc_min.fill(f32::MAX);
-        self.acc_max.fill(f32::MIN);
+        self.accumulator_min.fill(f32::MAX);
+        self.accumulator_max.fill(f32::MIN);
     }
 
-    fn ingest(&mut self, samples: &[f32]) {
-        for frame in samples.chunks_exact(self.ch) {
-            for (c, &s) in frame.iter().enumerate() {
-                self.acc_min[c] = self.acc_min[c].min(s);
-                self.acc_max[c] = self.acc_max[c].max(s);
-                self.acc[c].push(s);
+    fn ingest_samples(&mut self, samples: &[f32]) {
+        for frame in samples.chunks_exact(self.channel_count) {
+            for (channel, &sample) in frame.iter().enumerate() {
+                self.accumulator_min[channel] = self.accumulator_min[channel].min(sample);
+                self.accumulator_max[channel] = self.accumulator_max[channel].max(sample);
+                self.sample_accumulators[channel].push(sample);
             }
-            if self.acc[0].len() >= self.spc {
-                self.flush();
+
+            if self.sample_accumulators[0].len() >= self.samples_per_column {
+                self.flush_accumulated_samples();
             }
         }
     }
 
     fn sync_ring_to_snapshot(&mut self) {
-        let (ch, cap, cols) = (self.ch, self.cfg.max_columns, self.count);
-        let sz = cols * ch;
-        self.snap.min_values.resize(sz, 0.0);
-        self.snap.max_values.resize(sz, 0.0);
-        self.snap.frequency_normalized.resize(sz, 0.0);
-        self.snap.channels = ch;
-        self.snap.columns = cols;
-        if cols > 0 {
-            let start = if self.count < cap { 0 } else { self.head };
-            for c in 0..ch {
-                for i in 0..cols {
-                    let (src, dst) = (c * cap + (start + i) % cap, c * cols + i);
-                    self.snap.min_values[dst] = self.mins[src];
-                    self.snap.max_values[dst] = self.maxs[src];
-                    self.snap.frequency_normalized[dst] = self.freqs[src];
+        let (channels, max_columns, visible_columns) = (
+            self.channel_count,
+            self.config.max_columns,
+            self.column_count,
+        );
+        let size = visible_columns * channels;
+
+        self.snapshot.min_values.resize(size, 0.0);
+        self.snapshot.max_values.resize(size, 0.0);
+        self.snapshot.frequency_normalized.resize(size, 0.0);
+        self.snapshot.channels = channels;
+        self.snapshot.columns = visible_columns;
+
+        if visible_columns > 0 {
+            let start = if self.column_count < max_columns {
+                0
+            } else {
+                self.ring_head
+            };
+            for channel in 0..channels {
+                for column in 0..visible_columns {
+                    let src = channel * max_columns + (start + column) % max_columns;
+                    let dst = channel * visible_columns + column;
+                    self.snapshot.min_values[dst] = self.min_values[src];
+                    self.snapshot.max_values[dst] = self.max_values[src];
+                    self.snapshot.frequency_normalized[dst] = self.frequency_values[src];
                 }
             }
         }
-        self.snap.column_spacing_seconds = 1.0 / self.cfg.scroll_speed;
-        self.dirty = false;
+
+        self.snapshot.column_spacing_seconds = 1.0 / self.config.scroll_speed;
+        self.has_pending_changes = false;
     }
 
-    fn progress(&self) -> f32 {
-        self.acc.first().map_or(0.0, |a| {
-            (a.len() as f32 / self.spc.max(1) as f32).clamp(0.0, 1.0)
+    fn accumulator_progress(&self) -> f32 {
+        self.sample_accumulators.first().map_or(0.0, |a| {
+            (a.len() as f32 / self.samples_per_column.max(1) as f32).clamp(0.0, 1.0)
         })
     }
 
     fn sync_preview(&mut self) {
-        self.snap.preview.progress = self.progress();
-        if self.acc.first().is_none_or(|a| a.is_empty()) {
-            self.snap.preview.min_values.clear();
-            self.snap.preview.max_values.clear();
+        let progress = self.accumulator_progress();
+        self.snapshot.preview.progress = progress;
+
+        let has_data = self
+            .sample_accumulators
+            .first()
+            .is_some_and(|a| !a.is_empty());
+        if !has_data {
+            self.snapshot.preview.min_values.clear();
+            self.snapshot.preview.max_values.clear();
             return;
         }
-        self.snap.preview.min_values.resize(self.ch, 0.0);
-        self.snap.preview.max_values.resize(self.ch, 0.0);
-        for c in 0..self.ch {
-            let (mn, mx) = clamp_extrema(self.acc_min[c], self.acc_max[c]);
-            self.snap.preview.min_values[c] = mn;
-            self.snap.preview.max_values[c] = mx;
+
+        self.snapshot
+            .preview
+            .min_values
+            .resize(self.channel_count, 0.0);
+        self.snapshot
+            .preview
+            .max_values
+            .resize(self.channel_count, 0.0);
+
+        for channel in 0..self.channel_count {
+            let (min, max) =
+                clamp_extrema(self.accumulator_min[channel], self.accumulator_max[channel]);
+            self.snapshot.preview.min_values[channel] = min;
+            self.snapshot.preview.max_values[channel] = max;
         }
     }
 }
@@ -333,35 +405,45 @@ impl AudioProcessor for WaveformProcessor {
         if block.frame_count() == 0 {
             return ProcessorUpdate::None;
         }
-        let (ch, sr) = (block.channels.max(1), block.sample_rate.max(1.0));
-        if ch != self.ch || (self.cfg.sample_rate - sr).abs() > f32::EPSILON {
-            self.ch = ch;
-            self.cfg.sample_rate = sr;
+
+        let (channels, sample_rate) = (block.channels.max(1), block.sample_rate.max(1.0));
+        let needs_reconfigure = channels != self.channel_count
+            || (self.config.sample_rate - sample_rate).abs() > f32::EPSILON;
+
+        if needs_reconfigure {
+            self.channel_count = channels;
+            self.config.sample_rate = sample_rate;
             self.rebuild();
         }
-        self.ingest(block.samples);
-        if self.dirty {
+
+        self.ingest_samples(block.samples);
+
+        if self.has_pending_changes {
             self.sync_ring_to_snapshot();
         }
+
         self.sync_preview();
-        self.snap.scroll_position = self.written as f32 + self.progress();
-        ProcessorUpdate::Snapshot(self.snap.clone())
+        self.snapshot.scroll_position =
+            self.total_columns_written as f32 + self.accumulator_progress();
+
+        ProcessorUpdate::Snapshot(self.snapshot.clone())
     }
 
     fn reset(&mut self) {
-        self.snap = WaveformSnapshot::default();
+        self.snapshot = WaveformSnapshot::default();
         self.rebuild();
     }
 }
 
 impl Reconfigurable<WaveformConfig> for WaveformProcessor {
     fn update_config(&mut self, config: WaveformConfig) {
-        let c = config.normalized();
-        if self.cfg.sample_rate != c.sample_rate
-            || self.cfg.scroll_speed != c.scroll_speed
-            || self.cfg.max_columns != c.max_columns
-        {
-            self.cfg = c;
+        let normalized = config.normalized();
+        let changed = self.config.sample_rate != normalized.sample_rate
+            || self.config.scroll_speed != normalized.scroll_speed
+            || self.config.max_columns != normalized.max_columns;
+
+        if changed {
+            self.config = normalized;
             self.rebuild();
         }
     }
@@ -373,75 +455,76 @@ mod tests {
     use std::f32::consts::PI;
     use std::time::Instant;
 
-    fn block(samples: &[f32], ch: usize, sr: f32) -> AudioBlock<'_> {
-        AudioBlock::new(samples, ch, sr, Instant::now())
+    fn block(samples: &[f32], channels: usize, sample_rate: f32) -> AudioBlock<'_> {
+        AudioBlock::new(samples, channels, sample_rate, Instant::now())
     }
-    fn snap(u: ProcessorUpdate<WaveformSnapshot>) -> WaveformSnapshot {
-        match u {
-            ProcessorUpdate::Snapshot(s) => s,
+
+    fn extract_snapshot(update: ProcessorUpdate<WaveformSnapshot>) -> WaveformSnapshot {
+        match update {
+            ProcessorUpdate::Snapshot(snapshot) => snapshot,
             _ => panic!("expected snapshot"),
         }
     }
 
     #[test]
     fn downsampling_produces_min_max_pairs() {
-        let cfg = WaveformConfig {
+        let config = WaveformConfig {
             sample_rate: 48_000.0,
             scroll_speed: 120.0,
             ..Default::default()
         };
-        let mut p = WaveformProcessor::new(cfg);
-        let samples: Vec<f32> = (0..p.spc)
+        let mut processor = WaveformProcessor::new(config);
+        let samples: Vec<f32> = (0..processor.samples_per_column)
             .map(|i| if i % 2 == 0 { 0.5 } else { -0.25 })
             .collect();
-        let s = snap(p.process_block(&block(&samples, 1, 48_000.0)));
-        assert_eq!(s.columns, 1);
-        assert!((s.max_values[0] - 0.5).abs() < 1e-3);
-        assert!((s.min_values[0] + 0.25).abs() < 1e-3);
+        let snapshot = extract_snapshot(processor.process_block(&block(&samples, 1, 48_000.0)));
+        assert_eq!(snapshot.columns, 1);
+        assert!((snapshot.max_values[0] - 0.5).abs() < 1e-3);
+        assert!((snapshot.min_values[0] + 0.25).abs() < 1e-3);
     }
 
     #[test]
     fn detects_correct_bands_for_frequencies() {
-        let cfg = WaveformConfig {
+        let config = WaveformConfig {
             sample_rate: 48_000.0,
             scroll_speed: 200.0,
             ..Default::default()
         };
-        let spc = cfg.samples_per_column();
-        for &(freq, expected) in &[(100.0, 0.0), (440.0, 0.5), (1000.0, 0.5), (5000.0, 1.0)] {
-            let mut p = WaveformProcessor::new(cfg);
-            let samples: Vec<f32> = (0..spc * 4)
-                .map(|n| (2.0 * PI * freq * n as f32 / 48_000.0).sin())
+        let samples_per_column = config.samples_per_column();
+        for &(frequency, expected) in &[(100.0, 0.0), (440.0, 0.5), (1000.0, 0.5), (5000.0, 1.0)] {
+            let mut processor = WaveformProcessor::new(config);
+            let samples: Vec<f32> = (0..samples_per_column * 4)
+                .map(|n| (2.0 * PI * frequency * n as f32 / 48_000.0).sin())
                 .collect();
-            let band = snap(p.process_block(&block(&samples, 1, 48_000.0)))
+            let band = extract_snapshot(processor.process_block(&block(&samples, 1, 48_000.0)))
                 .frequency_normalized
                 .last()
                 .copied()
                 .unwrap_or(0.5);
             assert!(
                 (band - expected).abs() < 0.05,
-                "{freq:.0} Hz: expected ~{expected:.1}, got {band:.3}"
+                "{frequency:.0} Hz: expected ~{expected:.1}, got {band:.3}"
             );
         }
     }
 
     #[test]
     fn ring_buffer_wraps_correctly() {
-        let cfg = WaveformConfig {
+        let config = WaveformConfig {
             sample_rate: 48_000.0,
             scroll_speed: 200.0,
             max_columns: MIN_COLUMN_CAPACITY,
         };
-        let mut p = WaveformProcessor::new(cfg);
+        let mut processor = WaveformProcessor::new(config);
         for batch in 0..MIN_COLUMN_CAPACITY + 10 {
-            p.process_block(&block(
-                &vec![((batch + 1) as f32 * 0.001).min(1.0); p.spc],
+            processor.process_block(&block(
+                &vec![((batch + 1) as f32 * 0.001).min(1.0); processor.samples_per_column],
                 1,
                 48_000.0,
             ));
         }
         assert_eq!(
-            p.snap.columns, MIN_COLUMN_CAPACITY,
+            processor.snapshot.columns, MIN_COLUMN_CAPACITY,
             "ring buffer should cap at max_columns"
         );
     }

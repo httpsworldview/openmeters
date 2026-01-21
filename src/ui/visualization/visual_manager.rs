@@ -106,10 +106,10 @@ visuals! {
     Waveform("Waveform", 220.0, 180.0, 220.0) =>
         waveform::WaveformProcessor, Shared<waveform::WaveformState>;
         init(sr) { waveform::WaveformProcessor::new(sr), waveform::WaveformState::new() }
-        ingest(p, s, samples, fmt) { waveform::WaveformProcessor::sync_capacity(s, p);
+        ingest(p, s, samples, fmt) { p.sync_capacity(s.borrow().desired_columns());
             if let Some(snap) = p.ingest(samples, fmt) { s.borrow_mut().apply_snapshot(snap); } };
         settings_cfg::WaveformSettings, &theme::waveform::COLORS;
-        apply(p, s, set) { visuals!(@apply_config p, set); waveform::WaveformProcessor::sync_capacity(s, p);
+        apply(p, s, set) { visuals!(@apply_config p, set); p.sync_capacity(s.borrow().desired_columns());
             let mut st = s.borrow_mut(); st.set_channel_mode(set.channel_mode); st.set_color_mode(set.color_mode);
             visuals!(@apply_palette st, set, &theme::waveform::COLORS); };
         export(p, s) { let st = s.borrow(); let mut out = settings_cfg::WaveformSettings::from_config(&p.config());
