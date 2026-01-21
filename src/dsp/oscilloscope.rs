@@ -52,8 +52,8 @@ impl Default for OscilloscopeConfig {
 
 #[derive(Clone)]
 struct PitchDetector {
-    diff: Vec<f32>,
-    cmean: Vec<f32>,
+    difference_function: Vec<f32>,
+    cumulative_mean_normalized: Vec<f32>,
     fft_size: usize,
     fft_forward: Option<Arc<dyn RealToComplex<f32>>>,
     fft_inverse: Option<Arc<dyn realfft::ComplexToReal<f32>>>,
@@ -66,8 +66,8 @@ struct PitchDetector {
 impl std::fmt::Debug for PitchDetector {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PitchDetector")
-            .field("diff", &self.diff.len())
-            .field("cmean", &self.cmean.len())
+            .field("diff", &self.difference_function.len())
+            .field("cmean", &self.cumulative_mean_normalized.len())
             .field("fft_size", &self.fft_size)
             .field("has_fft", &self.fft_forward.is_some())
             .finish()
@@ -77,8 +77,8 @@ impl std::fmt::Debug for PitchDetector {
 impl PitchDetector {
     fn new() -> Self {
         Self {
-            diff: Vec::new(),
-            cmean: Vec::new(),
+            difference_function: Vec::new(),
+            cumulative_mean_normalized: Vec::new(),
             fft_size: 0,
             fft_forward: None,
             fft_inverse: None,
@@ -113,75 +113,59 @@ impl PitchDetector {
         if samples.is_empty() {
             return None;
         }
-
         let min_period = (rate / PITCH_MAX_HZ).max(2.0) as usize;
         let max_period = (rate / PITCH_MIN_HZ).min(samples.len() as f32 / 2.0) as usize;
-
         if max_period <= min_period || samples.len() < max_period * 2 {
             return None;
         }
 
-        self.diff.resize(max_period, 0.0);
-        self.cmean.resize(max_period, 0.0);
-
-        if samples.len() >= FFT_AUTOCORR_THRESHOLD {
-            if !self.compute_diff_fft(samples, max_period) {
-                self.compute_diff_direct(samples, max_period);
-            }
-        } else {
+        // Compute difference function (YIN step 2)
+        self.difference_function.resize(max_period, 0.0);
+        let use_fft = samples.len() >= FFT_AUTOCORR_THRESHOLD;
+        if !use_fft || !self.compute_diff_fft(samples, max_period) {
             self.compute_diff_direct(samples, max_period);
         }
 
-        self.cmean[0] = 1.0;
+        // Cumulative mean normalized difference (YIN step 3)
+        self.cumulative_mean_normalized.resize(max_period, 0.0);
+        self.cumulative_mean_normalized[0] = 1.0;
         let mut sum = 0.0;
         for tau in 1..max_period {
-            sum += self.diff[tau];
-            self.cmean[tau] = if sum > f32::EPSILON {
-                self.diff[tau] * tau as f32 / sum
+            sum += self.difference_function[tau];
+            self.cumulative_mean_normalized[tau] = if sum > f32::EPSILON {
+                self.difference_function[tau] * tau as f32 / sum
             } else {
                 1.0
             };
         }
 
+        // Find first minimum below threshold (YIN step 4)
         for tau in min_period..max_period - 1 {
-            if self.cmean[tau] < PITCH_THRESHOLD && self.cmean[tau] < self.cmean[tau + 1] {
-                let refined_tau = if tau > 0 && tau + 1 < max_period {
-                    parabolic_refine(
-                        self.cmean[tau - 1],
-                        self.cmean[tau],
-                        self.cmean[tau + 1],
-                        tau,
-                    )
-                } else {
-                    tau as f32
-                };
-                return Some(rate / refined_tau);
+            if self.cumulative_mean_normalized[tau] < PITCH_THRESHOLD
+                && self.cumulative_mean_normalized[tau] < self.cumulative_mean_normalized[tau + 1]
+            {
+                return Some(rate / self.refine_tau(tau, max_period));
             }
         }
 
-        let mut best_tau = min_period;
-        let mut best_val = f32::MAX;
-        for tau in min_period..max_period {
-            if self.cmean[tau] < best_val {
-                best_val = self.cmean[tau];
-                best_tau = tau;
-            }
-        }
+        // Fallback: absolute minimum if good enough
+        let (best_tau, best_val) = (min_period..max_period)
+            .map(|t| (t, self.cumulative_mean_normalized[t]))
+            .min_by(|a, b| a.1.total_cmp(&b.1))?;
+        (best_val < 0.5).then(|| rate / self.refine_tau(best_tau, max_period))
+    }
 
-        if best_val < 0.5 {
-            let refined_tau = if best_tau > 0 && best_tau + 1 < max_period {
-                parabolic_refine(
-                    self.cmean[best_tau - 1],
-                    self.cmean[best_tau],
-                    self.cmean[best_tau + 1],
-                    best_tau,
-                )
-            } else {
-                best_tau as f32
-            };
-            Some(rate / refined_tau)
+    #[inline]
+    fn refine_tau(&self, tau: usize, max_period: usize) -> f32 {
+        if tau > 0 && tau + 1 < max_period {
+            parabolic_refine(
+                self.cumulative_mean_normalized[tau - 1],
+                self.cumulative_mean_normalized[tau],
+                self.cumulative_mean_normalized[tau + 1],
+                tau,
+            )
         } else {
-            None
+            tau as f32
         }
     }
 
@@ -230,7 +214,7 @@ impl PitchDetector {
 
         for tau in 0..max_period {
             let acf_tau = self.fft_output[tau] * norm;
-            self.diff[tau] = 2.0 * (acf_0 - acf_tau);
+            self.difference_function[tau] = 2.0 * (acf_0 - acf_tau);
         }
         true
     }
@@ -247,83 +231,84 @@ impl PitchDetector {
                 let delta = samples[i] - samples[i + tau];
                 sum += delta * delta;
             }
-            self.diff[tau] = sum;
+            self.difference_function[tau] = sum;
         }
     }
 }
 
 #[derive(Debug, Clone, Default)]
 struct TriggerScratch {
-    sin: Vec<f32>,
-    cos: Vec<f32>,
-    psin: Vec<f32>,
-    pcos: Vec<f32>,
+    sine_prefix_sum: Vec<f32>,
+    cosine_prefix_sum: Vec<f32>,
+    phase_sine: Vec<f32>,
+    phase_cosine: Vec<f32>,
 }
 
 impl TriggerScratch {
     fn clear(&mut self) {
-        self.sin.clear();
-        self.cos.clear();
-        self.psin.clear();
-        self.pcos.clear();
+        self.sine_prefix_sum.clear();
+        self.cosine_prefix_sum.clear();
+        self.phase_sine.clear();
+        self.phase_cosine.clear();
     }
 
     fn prepare(&mut self, data: &[f32], period: usize) {
         let len = data.len();
 
-        self.sin.clear();
-        self.cos.clear();
-        self.psin.clear();
-        self.pcos.clear();
+        self.sine_prefix_sum.clear();
+        self.cosine_prefix_sum.clear();
+        self.phase_sine.clear();
+        self.phase_cosine.clear();
 
-        self.sin.resize(len + 1, 0.0);
-        self.cos.resize(len + 1, 0.0);
-        self.psin.resize(len + 1, 0.0);
-        self.pcos.resize(len + 1, 0.0);
+        self.sine_prefix_sum.resize(len + 1, 0.0);
+        self.cosine_prefix_sum.resize(len + 1, 0.0);
+        self.phase_sine.resize(len + 1, 0.0);
+        self.phase_cosine.resize(len + 1, 0.0);
 
         let step = std::f32::consts::TAU / period as f32;
-        let (s_step, c_step) = step.sin_cos();
+        let (step_sine, step_cosine) = step.sin_cos();
 
-        let mut s = 0.0_f32;
-        let mut c = 1.0_f32;
+        let mut sine_value = 0.0_f32;
+        let mut cosine_value = 1.0_f32;
 
-        self.psin[0] = s;
-        self.pcos[0] = c;
+        self.phase_sine[0] = sine_value;
+        self.phase_cosine[0] = cosine_value;
 
         for (i, &sample) in data.iter().take(len).enumerate() {
-            self.sin[i + 1] = self.sin[i] + sample * s;
-            self.cos[i + 1] = self.cos[i] + sample * c;
+            self.sine_prefix_sum[i + 1] = self.sine_prefix_sum[i] + sample * sine_value;
+            self.cosine_prefix_sum[i + 1] = self.cosine_prefix_sum[i] + sample * cosine_value;
 
-            let mut ns = s * c_step + c * s_step;
-            let mut nc = c * c_step - s * s_step;
+            let mut next_sine = sine_value * step_cosine + cosine_value * step_sine;
+            let mut next_cosine = cosine_value * step_cosine - sine_value * step_sine;
 
+            // Periodically renormalize to prevent floating-point drift
             if (i & 127) == 127 {
-                let mag = (ns * ns + nc * nc).sqrt();
-                if mag > f32::EPSILON {
-                    ns /= mag;
-                    nc /= mag;
+                let magnitude = (next_sine * next_sine + next_cosine * next_cosine).sqrt();
+                if magnitude > f32::EPSILON {
+                    next_sine /= magnitude;
+                    next_cosine /= magnitude;
                 } else {
-                    ns = 0.0;
-                    nc = 1.0;
+                    next_sine = 0.0;
+                    next_cosine = 1.0;
                 }
             }
 
-            s = ns;
-            c = nc;
+            sine_value = next_sine;
+            cosine_value = next_cosine;
 
-            self.psin[i + 1] = s;
-            self.pcos[i + 1] = c;
+            self.phase_sine[i + 1] = sine_value;
+            self.phase_cosine[i + 1] = cosine_value;
         }
     }
 
     #[inline]
     fn correlation(&self, offset: usize, length: usize) -> f32 {
-        debug_assert!(offset + length < self.sin.len());
-        debug_assert!(offset < self.pcos.len());
+        debug_assert!(offset + length < self.sine_prefix_sum.len());
+        debug_assert!(offset < self.phase_cosine.len());
 
-        let ss = self.sin[offset + length] - self.sin[offset];
-        let sc = self.cos[offset + length] - self.cos[offset];
-        self.pcos[offset] * ss - self.psin[offset] * sc
+        let ss = self.sine_prefix_sum[offset + length] - self.sine_prefix_sum[offset];
+        let sc = self.cosine_prefix_sum[offset + length] - self.cosine_prefix_sum[offset];
+        self.phase_cosine[offset] * ss - self.phase_sine[offset] * sc
     }
 }
 
@@ -423,22 +408,24 @@ impl AudioProcessor for OscilloscopeProcessor {
     type Output = OscilloscopeSnapshot;
 
     fn process_block(&mut self, block: &AudioBlock<'_>) -> ProcessorUpdate<Self::Output> {
-        let ch = block.channels.max(1);
+        let channel_count = block.channels.max(1);
         if block.frame_count() == 0 {
             return ProcessorUpdate::None;
         }
 
-        let base = (self.config.sample_rate * self.config.segment_duration)
+        let base_frames = (self.config.sample_rate * self.config.segment_duration)
             .round()
             .max(1.0) as usize;
-        let detect = (self.config.sample_rate * 0.1) as usize;
-        let capacity = detect.max(base) * ch;
 
-        if !self.history.is_empty() && !self.history.len().is_multiple_of(ch) {
+        // Compute buffer capacity for history
+        let detection_frames = (self.config.sample_rate * 0.1) as usize;
+        let capacity = detection_frames.max(base_frames) * channel_count;
+
+        // Update history buffer
+        if !self.history.is_empty() && !self.history.len().is_multiple_of(channel_count) {
             self.history.clear();
             self.last_pitch = None;
         }
-
         if block.samples.len() >= capacity {
             self.history.clear();
             self.history
@@ -446,47 +433,44 @@ impl AudioProcessor for OscilloscopeProcessor {
         } else {
             let overflow = self.history.len() + block.samples.len();
             if overflow > capacity {
-                let remove = ((overflow - capacity).div_ceil(ch) * ch).min(self.history.len());
+                let remove = ((overflow - capacity).div_ceil(channel_count) * channel_count)
+                    .min(self.history.len());
                 self.history.drain(..remove);
             }
             self.history.extend(block.samples);
         }
 
-        let avail = self.history.len() / ch;
+        let available = self.history.len() / channel_count;
 
         let (frames, start) = match self.config.trigger_mode {
             TriggerMode::FreeRun => {
-                let frames = base.min(avail);
+                let frames = base_frames.min(available);
                 if frames == 0 {
                     return ProcessorUpdate::None;
                 }
-                (frames, avail.saturating_sub(frames))
+                (frames, available.saturating_sub(frames))
             }
             TriggerMode::Stable { num_cycles } => {
-                if avail < base {
+                if available < base_frames {
                     return ProcessorUpdate::None;
                 }
 
-                {
-                    let data = self.history.make_contiguous();
-                    self.mono_buffer.clear();
-                    self.mono_buffer.reserve(avail);
-
-                    if ch == 1 {
-                        self.mono_buffer.extend_from_slice(&data[..avail]);
-                    } else {
-                        let scale = 1.0 / ch as f32;
-                        for i in 0..avail {
-                            let idx = i * ch;
-                            let mut sum = 0.0_f32;
-                            for c in 0..ch {
-                                sum += data[idx + c];
-                            }
-                            self.mono_buffer.push(sum * scale);
-                        }
+                // Prepare mono buffer for pitch detection
+                let data = self.history.make_contiguous();
+                self.mono_buffer.clear();
+                self.mono_buffer.reserve(available);
+                if channel_count == 1 {
+                    self.mono_buffer.extend_from_slice(&data[..available]);
+                } else {
+                    let scale = 1.0 / channel_count as f32;
+                    for i in 0..available {
+                        let idx = i * channel_count;
+                        let sum: f32 = (0..channel_count).map(|c| data[idx + c]).sum();
+                        self.mono_buffer.push(sum * scale);
                     }
                 }
 
+                // Detect pitch and find stable segment
                 let freq = self
                     .pitch_detector
                     .detect_pitch(&self.mono_buffer, self.config.sample_rate)
@@ -498,33 +482,32 @@ impl AudioProcessor for OscilloscopeProcessor {
                     find_trigger(
                         period,
                         num_cycles,
-                        avail,
+                        available,
                         &self.mono_buffer,
                         &mut self.trigger_scratch,
                     )
                 } else {
-                    (base, avail.saturating_sub(base))
+                    (base_frames, available.saturating_sub(base_frames))
                 }
             }
         };
 
+        // Extract and downsample to snapshot
         const TARGET: usize = 4096;
         let target = TARGET.clamp(1, frames);
-        let extract_start = start * ch;
+        let extract_start = start * channel_count;
         let data = self.history.make_contiguous();
-        let extract_len = (frames * ch).min(data.len() - extract_start);
+        let extract_len = (frames * channel_count).min(data.len() - extract_start);
 
         self.snapshot.samples.clear();
-
         downsample_interleaved(
             &mut self.snapshot.samples,
             &data[extract_start..extract_start + extract_len],
-            frames.min(extract_len / ch),
-            ch,
+            frames.min(extract_len / channel_count),
+            channel_count,
             target,
         );
-
-        self.snapshot.channels = ch;
+        self.snapshot.channels = channel_count;
         self.snapshot.samples_per_channel = target;
 
         ProcessorUpdate::Snapshot(self.snapshot.clone())
@@ -550,27 +533,27 @@ fn downsample_interleaved(
     output: &mut Vec<f32>,
     data: &[f32],
     frames: usize,
-    ch: usize,
+    channel_count: usize,
     target: usize,
 ) {
-    if frames == 0 || ch == 0 || target == 0 {
+    if frames == 0 || channel_count == 0 || target == 0 {
         return;
     }
 
     let step = frames as f32 / target as f32;
 
-    for c in 0..ch {
+    for channel in 0..channel_count {
         for i in 0..target {
             let pos = i as f32 * step;
             let idx = pos as usize;
             let frac = pos - idx as f32;
 
             let sample = if frac > f32::EPSILON && idx + 1 < frames {
-                let curr = data[idx * ch + c];
-                let next = data[(idx + 1) * ch + c];
+                let curr = data[idx * channel_count + channel];
+                let next = data[(idx + 1) * channel_count + channel];
                 crate::util::audio::lerp(curr, next, frac)
             } else {
-                data[idx * ch + c]
+                data[idx * channel_count + channel]
             };
 
             output.push(sample);

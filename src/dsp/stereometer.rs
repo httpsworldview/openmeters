@@ -51,6 +51,17 @@ pub struct StereometerSnapshot {
     pub band_correlation: BandCorrelation,
 }
 
+impl StereometerSnapshot {
+    fn prepare_xy_points(&mut self, capacity: usize) {
+        self.xy_points.clear();
+        self.xy_points.reserve(capacity);
+    }
+
+    fn push_xy_point(&mut self, left: f32, right: f32) {
+        self.xy_points.push((left, right));
+    }
+}
+
 /// Linkwitz-Riley 4th-order crossover (two cascaded 2nd-order Butterworth).
 #[derive(Debug, Clone, Copy, Default)]
 struct LR4 {
@@ -174,17 +185,17 @@ impl AudioProcessor for StereometerProcessor {
     type Output = StereometerSnapshot;
 
     fn process_block(&mut self, block: &AudioBlock<'_>) -> ProcessorUpdate<Self::Output> {
-        let ch = block.channels.max(1);
-        if block.frame_count() == 0 || ch < 2 {
+        let channel_count = block.channels.max(1);
+        if block.frame_count() == 0 || channel_count < 2 {
             return ProcessorUpdate::None;
         }
-        if self.history_ch != ch {
+        if self.history_ch != channel_count {
             self.history.clear();
-            self.history_ch = ch;
+            self.history_ch = channel_count;
         }
 
         // Process audio through crossovers and correlators (front L/R only)
-        for frame in block.samples.chunks_exact(ch) {
+        for frame in block.samples.chunks_exact(channel_count) {
             let (l, r) = (frame[0], frame[1]);
             self.corr[0].update(l, r);
 
@@ -202,7 +213,7 @@ impl AudioProcessor for StereometerProcessor {
         let frames = (self.config.sample_rate * self.config.segment_duration)
             .round()
             .max(1.0) as usize;
-        let capacity = frames * ch;
+        let capacity = frames * channel_count;
 
         if block.samples.len() >= capacity {
             self.history.clear();
@@ -211,7 +222,7 @@ impl AudioProcessor for StereometerProcessor {
         } else {
             let total = self.history.len() + block.samples.len();
             if total > capacity {
-                let drain = (total - capacity).div_ceil(ch) * ch;
+                let drain = (total - capacity).div_ceil(channel_count) * channel_count;
                 self.history.drain(..drain.min(self.history.len()));
             }
             self.history.extend(block.samples);
@@ -224,11 +235,10 @@ impl AudioProcessor for StereometerProcessor {
         // Downsample to target point count
         let data = self.history.make_contiguous();
         let target = self.config.target_sample_count.clamp(1, frames);
-        self.snapshot.xy_points.clear();
-        self.snapshot.xy_points.reserve(target);
+        self.snapshot.prepare_xy_points(target);
         for i in 0..target {
-            let idx = (i * frames / target) * ch;
-            self.snapshot.xy_points.push((data[idx], data[idx + 1]));
+            let idx = (i * frames / target) * channel_count;
+            self.snapshot.push_xy_point(data[idx], data[idx + 1]);
         }
 
         self.snapshot.correlation = self.corr[0].value();

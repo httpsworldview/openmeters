@@ -59,6 +59,23 @@ pub struct WaveformPreview {
     pub max_values: Vec<f32>,
 }
 
+impl WaveformPreview {
+    fn clear(&mut self) {
+        self.min_values.clear();
+        self.max_values.clear();
+    }
+
+    fn resize(&mut self, channel_count: usize) {
+        self.min_values.resize(channel_count, 0.0);
+        self.max_values.resize(channel_count, 0.0);
+    }
+
+    fn set_channel(&mut self, channel: usize, min: f32, max: f32) {
+        self.min_values[channel] = min;
+        self.max_values[channel] = max;
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct WaveformSnapshot {
     pub channels: usize,
@@ -375,25 +392,16 @@ impl WaveformProcessor {
             .first()
             .is_some_and(|a| !a.is_empty());
         if !has_data {
-            self.snapshot.preview.min_values.clear();
-            self.snapshot.preview.max_values.clear();
+            self.snapshot.preview.clear();
             return;
         }
 
-        self.snapshot
-            .preview
-            .min_values
-            .resize(self.channel_count, 0.0);
-        self.snapshot
-            .preview
-            .max_values
-            .resize(self.channel_count, 0.0);
+        self.snapshot.preview.resize(self.channel_count);
 
         for channel in 0..self.channel_count {
             let (min, max) =
                 clamp_extrema(self.accumulator_min[channel], self.accumulator_max[channel]);
-            self.snapshot.preview.min_values[channel] = min;
-            self.snapshot.preview.max_values[channel] = max;
+            self.snapshot.preview.set_channel(channel, min, max);
         }
     }
 }

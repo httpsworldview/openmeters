@@ -374,27 +374,26 @@ fn averaging_update(
     current_timestamp: Instant,
 ) -> Option<usize> {
     let bins = input.len();
-    if averaged_db.len() != bins {
-        averaged_db.resize(bins, DB_FLOOR);
-    }
-    if peak_hold_db.len() != bins {
-        peak_hold_db.resize(bins, DB_FLOOR);
+
+    // Resize buffers if needed
+    for buf in [&mut *averaged_db, &mut *peak_hold_db, &mut *output] {
+        if buf.len() != bins {
+            buf.resize(bins, DB_FLOOR);
+        }
     }
 
-    if output.len() != bins {
-        output.resize(bins, DB_FLOOR);
-    }
-
-    let dt = last_timestamp
+    let dt_seconds = last_timestamp
         .map(|last| current_timestamp.saturating_duration_since(last))
-        .unwrap_or_default();
-    let dt_seconds = dt.as_secs_f32().max(0.0);
+        .unwrap_or_default()
+        .as_secs_f32()
+        .max(0.0);
+
     let mut peak_index = None;
     let mut peak_value = DB_FLOOR;
 
     match mode {
         AveragingMode::None => {
-            for (idx, value) in input.iter().enumerate() {
+            for (idx, &value) in input.iter().enumerate() {
                 let val = value.max(DB_FLOOR);
                 output[idx] = val;
                 if val > peak_value {
@@ -405,12 +404,12 @@ fn averaging_update(
         }
         AveragingMode::Exponential { factor } => {
             let alpha = factor.clamp(0.0, 0.9999);
-            for (idx, value) in input.iter().enumerate() {
+            for (idx, &value) in input.iter().enumerate() {
                 let previous = averaged_db[idx];
                 let smoothed = if previous <= DB_FLOOR + f32::EPSILON {
-                    *value
+                    value
                 } else {
-                    previous * alpha + *value * (1.0 - alpha)
+                    previous * alpha + value * (1.0 - alpha)
                 };
                 averaged_db[idx] = smoothed;
                 let val = smoothed.max(DB_FLOOR);
@@ -422,10 +421,9 @@ fn averaging_update(
             }
         }
         AveragingMode::PeakHold { decay_per_second } => {
-            let decay = (decay_per_second.max(0.0)) * dt_seconds;
-            for (idx, value) in input.iter().enumerate() {
-                let decayed = (peak_hold_db[idx] - decay).max(DB_FLOOR);
-                let hold = decayed.max(*value);
+            let decay = decay_per_second.max(0.0) * dt_seconds;
+            for (idx, &value) in input.iter().enumerate() {
+                let hold = (peak_hold_db[idx] - decay).max(DB_FLOOR).max(value);
                 peak_hold_db[idx] = hold;
                 output[idx] = hold;
                 if hold > peak_value {

@@ -1,10 +1,10 @@
-use iced::advanced::graphics::Viewport;
 use iced::Rectangle;
+use iced::advanced::graphics::Viewport;
 use std::sync::Arc;
 
 use crate::sdf_primitive;
 use crate::ui::render::common::{ClipTransform, SdfVertex};
-use crate::ui::render::geometry::{self, append_strip, DEFAULT_FEATHER};
+use crate::ui::render::geometry::{self, DEFAULT_FEATHER, append_strip};
 
 #[derive(Debug, Clone, Copy)]
 pub struct PreviewSample {

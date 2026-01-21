@@ -280,18 +280,18 @@ pub struct ReassignedSample {
 }
 
 struct ReassignmentBuffers {
-    d_win: Vec<f32>,
-    t_win: Vec<f32>,
-    d2_win: Vec<f32>,
-    d_buf: Vec<f32>,
-    t_buf: Vec<f32>,
-    d2_buf: Vec<f32>,
-    d_spec: Vec<Complex32>,
-    t_spec: Vec<Complex32>,
-    d2_spec: Vec<Complex32>,
+    derivative_window: Vec<f32>,
+    time_weighted_window: Vec<f32>,
+    second_derivative_window: Vec<f32>,
+    derivative_buffer: Vec<f32>,
+    time_weighted_buffer: Vec<f32>,
+    second_derivative_buffer: Vec<f32>,
+    derivative_spectrum: Vec<Complex32>,
+    time_weighted_spectrum: Vec<Complex32>,
+    second_derivative_spectrum: Vec<Complex32>,
     cache: Vec<ReassignedSample>,
-    floor_lin: f32,
-    inv_sigma_t: f32,
+    floor_linear: f32,
+    inverse_sigma_t: f32,
     max_chirp: f32,
 }
 
@@ -304,18 +304,18 @@ impl ReassignmentBuffers {
         floor_db: f32,
     ) -> Self {
         let mut s = Self {
-            d_win: vec![],
-            t_win: vec![],
-            d2_win: vec![],
-            d_buf: vec![],
-            t_buf: vec![],
-            d2_buf: vec![],
-            d_spec: vec![],
-            t_spec: vec![],
-            d2_spec: vec![],
+            derivative_window: vec![],
+            time_weighted_window: vec![],
+            second_derivative_window: vec![],
+            derivative_buffer: vec![],
+            time_weighted_buffer: vec![],
+            second_derivative_buffer: vec![],
+            derivative_spectrum: vec![],
+            time_weighted_spectrum: vec![],
+            second_derivative_spectrum: vec![],
             cache: Vec::with_capacity(size / 32),
-            floor_lin: 0.0,
-            inv_sigma_t: 0.0,
+            floor_linear: 0.0,
+            inverse_sigma_t: 0.0,
             max_chirp: 0.0,
         };
         s.resize(kind, win, fft, size, floor_db);
@@ -330,19 +330,43 @@ impl ReassignmentBuffers {
         size: usize,
         floor_db: f32,
     ) {
-        self.d_win = compute_derivative(kind, win);
-        self.t_win = compute_time_weighted(win);
-        self.d2_win = finite_diff(win, true);
-        for buf in [&mut self.d_buf, &mut self.t_buf, &mut self.d2_buf] {
+        self.derivative_window = compute_derivative(kind, win);
+        self.time_weighted_window = compute_time_weighted(win);
+        self.second_derivative_window = finite_diff(win, true);
+        for buf in [
+            &mut self.derivative_buffer,
+            &mut self.time_weighted_buffer,
+            &mut self.second_derivative_buffer,
+        ] {
             buf.resize(size, 0.0);
         }
-        self.d_spec = fft.make_output_vec();
-        self.t_spec = fft.make_output_vec();
-        self.d2_spec = fft.make_output_vec();
-        self.floor_lin = db_to_power(floor_db);
+        self.derivative_spectrum = fft.make_output_vec();
+        self.time_weighted_spectrum = fft.make_output_vec();
+        self.second_derivative_spectrum = fft.make_output_vec();
+        self.floor_linear = db_to_power(floor_db);
         let sigma_t = compute_sigma_t(win);
-        self.inv_sigma_t = 1.0 / sigma_t;
+        self.inverse_sigma_t = 1.0 / sigma_t;
         self.max_chirp = 0.5 / (sigma_t * sigma_t);
+    }
+
+    fn clear_cache(&mut self) {
+        self.cache.clear();
+    }
+
+    fn cache_has_capacity(&self) -> bool {
+        self.cache.len() < MAX_REASSIGNMENT_SAMPLES
+    }
+
+    fn push_sample(&mut self, sample: ReassignedSample) {
+        self.cache.push(sample);
+    }
+
+    fn take_cached_samples(&mut self) -> Option<Arc<[ReassignedSample]>> {
+        (!self.cache.is_empty()).then(|| Arc::from(self.cache.as_slice()))
+    }
+
+    fn set_floor_db(&mut self, floor_db: f32) {
+        self.floor_linear = db_to_power(floor_db);
     }
 }
 
@@ -564,6 +588,35 @@ impl Reassignment2DGrid {
             *m = power_to_db(if es > f32::EPSILON { o * bn / es } else { 0.0 }, DB_FLOOR);
         }
     }
+
+    fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    fn output_bin_count(&self) -> usize {
+        self.display_bins
+    }
+
+    fn magnitudes(&self) -> &[f32] {
+        &self.mags
+    }
+
+    fn bin_frequencies(&self) -> Arc<[f32]> {
+        self.bin_freqs.clone()
+    }
+
+    fn frequency_range(&self) -> (f32, f32) {
+        (self.min_hz, self.max_hz)
+    }
+
+    fn hz_to_bin_simd(&self, hz: f32x8) -> f32x8 {
+        self.params.hz_to_bin_simd(hz, self.scale)
+    }
+
+    fn clear_buffers(&mut self) {
+        self.grid.fill(0.0);
+        self.mags.fill(DB_FLOOR);
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -585,23 +638,23 @@ pub struct SpectrogramUpdate {
 }
 
 pub struct SpectrogramProcessor {
-    cfg: SpectrogramConfig,
+    config: SpectrogramConfig,
     planner: RealFftPlanner<f32>,
     fft: Arc<dyn RealToComplex<f32>>,
-    win_size: usize,
+    window_size: usize,
     fft_size: usize,
-    win: Arc<[f32]>,
+    window: Arc<[f32]>,
     real: Vec<f32>,
-    spec: Vec<Complex32>,
+    spectrum: Vec<Complex32>,
     scratch: Vec<Complex32>,
-    mags: Vec<f32>,
+    magnitudes: Vec<f32>,
     reassign: ReassignmentBuffers,
     grid: Reassignment2DGrid,
     bin_norm: Vec<f32>,
     energy_norm: Vec<f32>,
-    pcm: VecDeque<f32>,
-    hist: VecDeque<SpectrogramColumn>,
-    hist_cap: usize,
+    audio_buffer: VecDeque<f32>,
+    history: VecDeque<SpectrogramColumn>,
+    history_capacity: usize,
     pool: Vec<Arc<[f32]>>,
     reset: bool,
     out_buf: Vec<SpectrogramColumn>,
@@ -611,23 +664,23 @@ impl SpectrogramProcessor {
     pub fn new(cfg: SpectrogramConfig) -> Self {
         let dummy_fft = realfft::RealFftPlanner::new().plan_fft_forward(1024);
         let mut s = Self {
-            cfg,
+            config: cfg,
             planner: RealFftPlanner::new(),
             fft: dummy_fft.clone(),
-            win_size: 0,
+            window_size: 0,
             fft_size: 0,
-            win: Arc::from([]),
+            window: Arc::from([]),
             real: vec![],
-            spec: vec![],
+            spectrum: vec![],
             scratch: vec![],
-            mags: vec![],
+            magnitudes: vec![],
             reassign: ReassignmentBuffers::new(WindowKind::Hann, &[], &dummy_fft, 1024, -80.0),
             grid: Reassignment2DGrid::new(&cfg),
             bin_norm: vec![],
             energy_norm: vec![],
-            pcm: VecDeque::new(),
-            hist: VecDeque::with_capacity(cfg.history_length),
-            hist_cap: cfg.history_length,
+            audio_buffer: VecDeque::new(),
+            history: VecDeque::with_capacity(cfg.history_length),
+            history_capacity: cfg.history_length,
             pool: vec![],
             reset: true,
             out_buf: vec![],
@@ -638,40 +691,42 @@ impl SpectrogramProcessor {
     }
 
     pub fn config(&self) -> SpectrogramConfig {
-        self.cfg
+        self.config
     }
 
     fn needs_fft_rebuild(&self) -> bool {
-        self.win_size != self.cfg.fft_size
-            || self.fft_size != self.cfg.fft_size * self.cfg.zero_padding_factor.max(1)
-            || WindowCache::get(self.cfg.window, self.cfg.fft_size).as_ptr() != self.win.as_ptr()
+        self.window_size != self.config.fft_size
+            || self.fft_size != self.config.fft_size * self.config.zero_padding_factor.max(1)
+            || WindowCache::get(self.config.window, self.config.fft_size).as_ptr()
+                != self.window.as_ptr()
     }
 
     fn rebuild_fft(&mut self) {
-        self.win_size = self.cfg.fft_size;
-        self.fft_size = self.win_size * self.cfg.zero_padding_factor.max(1);
+        self.window_size = self.config.fft_size;
+        self.fft_size = self.window_size * self.config.zero_padding_factor.max(1);
         self.fft = self.planner.plan_fft_forward(self.fft_size);
-        self.win = WindowCache::get(self.cfg.window, self.win_size);
+        self.window = WindowCache::get(self.config.window, self.window_size);
         self.real.resize(self.fft_size, 0.0);
-        self.spec = self.fft.make_output_vec();
+        self.spectrum = self.fft.make_output_vec();
         self.scratch = self.fft.make_scratch_vec();
-        self.mags.resize(self.fft_size / 2 + 1, 0.0);
+        self.magnitudes.resize(self.fft_size / 2 + 1, 0.0);
         self.reassign.resize(
-            self.cfg.window,
-            &self.win,
+            self.config.window,
+            &self.window,
             &self.fft,
             self.fft_size,
-            self.cfg.reassignment_power_floor_db,
+            self.config.reassignment_power_floor_db,
         );
-        self.bin_norm = crate::util::audio::compute_fft_bin_normalization(&self.win, self.fft_size);
-        self.energy_norm = compute_energy_norm(&self.win, self.fft_size);
-        self.pcm.truncate(self.win_size * 2);
+        self.bin_norm =
+            crate::util::audio::compute_fft_bin_normalization(&self.window, self.fft_size);
+        self.energy_norm = compute_energy_norm(&self.window, self.fft_size);
+        self.audio_buffer.truncate(self.window_size * 2);
     }
 
     fn reconfigure_grid(&mut self) {
-        self.grid.reconfigure(&self.cfg);
-        let out_bins = if self.grid.enabled {
-            self.grid.display_bins
+        self.grid.reconfigure(&self.config);
+        let out_bins = if self.grid.is_enabled() {
+            self.grid.output_bin_count()
         } else {
             self.fft_size / 2 + 1
         };
@@ -680,60 +735,74 @@ impl SpectrogramProcessor {
 
     fn process_ready_windows(&mut self) -> Vec<SpectrogramColumn> {
         self.out_buf.clear();
-        if self.win_size == 0 {
+        if self.window_size == 0 {
             return vec![];
         }
-        let (hop, sr) = (self.cfg.hop_size, self.cfg.sample_rate);
-        let re_en = self.cfg.use_reassignment && sr > f32::EPSILON && self.grid.enabled;
-        let bin_lim = if self.cfg.reassignment_low_bin_limit == 0 {
+        let (hop, sr) = (self.config.hop_size, self.config.sample_rate);
+        let re_en = self.config.use_reassignment && sr > f32::EPSILON && self.grid.is_enabled();
+        let bin_lim = if self.config.reassignment_low_bin_limit == 0 {
             self.fft_size / 2 + 1
         } else {
-            self.cfg
+            self.config
                 .reassignment_low_bin_limit
                 .min(self.fft_size / 2 + 1)
         };
 
-        while self.pcm.len() >= self.win_size {
-            copy_from_deque(&mut self.real[..self.win_size], &self.pcm);
-            crate::util::audio::remove_dc(&mut self.real[..self.win_size]);
+        while self.audio_buffer.len() >= self.window_size {
+            copy_from_deque(&mut self.real[..self.window_size], &self.audio_buffer);
+            crate::util::audio::remove_dc(&mut self.real[..self.window_size]);
 
             if re_en {
-                for i in 0..self.win_size {
+                for i in 0..self.window_size {
                     let s = self.real[i];
-                    self.reassign.d_buf[i] = s * self.reassign.d_win[i];
-                    self.reassign.t_buf[i] = s * self.reassign.t_win[i];
-                    self.reassign.d2_buf[i] = s * self.reassign.d2_win[i];
+                    self.reassign.derivative_buffer[i] = s * self.reassign.derivative_window[i];
+                    self.reassign.time_weighted_buffer[i] =
+                        s * self.reassign.time_weighted_window[i];
+                    self.reassign.second_derivative_buffer[i] =
+                        s * self.reassign.second_derivative_window[i];
                 }
-                self.reassign.d_buf[self.win_size..].fill(0.0);
-                self.reassign.t_buf[self.win_size..].fill(0.0);
-                self.reassign.d2_buf[self.win_size..].fill(0.0);
+                self.reassign.derivative_buffer[self.window_size..].fill(0.0);
+                self.reassign.time_weighted_buffer[self.window_size..].fill(0.0);
+                self.reassign.second_derivative_buffer[self.window_size..].fill(0.0);
             }
 
-            crate::util::audio::apply_window(&mut self.real[..self.win_size], &self.win);
-            self.real[self.win_size..].fill(0.0);
+            crate::util::audio::apply_window(&mut self.real[..self.window_size], &self.window);
+            self.real[self.window_size..].fill(0.0);
             self.fft
-                .process_with_scratch(&mut self.real, &mut self.spec, &mut self.scratch)
+                .process_with_scratch(&mut self.real, &mut self.spectrum, &mut self.scratch)
                 .ok();
 
             let (mags, reassigned) = if re_en {
                 for (buf, spec) in [
-                    (&mut self.reassign.d_buf, &mut self.reassign.d_spec),
-                    (&mut self.reassign.t_buf, &mut self.reassign.t_spec),
-                    (&mut self.reassign.d2_buf, &mut self.reassign.d2_spec),
+                    (
+                        &mut self.reassign.derivative_buffer,
+                        &mut self.reassign.derivative_spectrum,
+                    ),
+                    (
+                        &mut self.reassign.time_weighted_buffer,
+                        &mut self.reassign.time_weighted_spectrum,
+                    ),
+                    (
+                        &mut self.reassign.second_derivative_buffer,
+                        &mut self.reassign.second_derivative_spectrum,
+                    ),
                 ] {
                     self.fft
                         .process_with_scratch(buf, spec, &mut self.scratch)
                         .ok();
                 }
                 let samples = self.compute_reassigned(sr, bin_lim);
-                (Self::fill_mags(&mut self.pool, &self.grid.mags), samples)
+                (
+                    Self::fill_mags(&mut self.pool, self.grid.magnitudes()),
+                    samples,
+                )
             } else {
-                for i in 0..self.mags.len() {
-                    let c = self.spec[i];
-                    self.mags[i] =
+                for i in 0..self.magnitudes.len() {
+                    let c = self.spectrum[i];
+                    self.magnitudes[i] =
                         power_to_db((c.re * c.re + c.im * c.im) * self.bin_norm[i], DB_FLOOR);
                 }
-                (Self::fill_mags(&mut self.pool, &self.mags), None)
+                (Self::fill_mags(&mut self.pool, &self.magnitudes), None)
             };
 
             let col = SpectrogramColumn {
@@ -745,53 +814,63 @@ impl SpectrogramProcessor {
                 magnitudes_db: mags,
                 reassigned,
             });
-            self.pcm.drain(..hop.min(self.pcm.len()));
+            self.audio_buffer.drain(..hop.min(self.audio_buffer.len()));
         }
         std::mem::take(&mut self.out_buf)
     }
 
     fn compute_reassigned(&mut self, sr: f32, limit: usize) -> Option<Arc<[ReassignedSample]>> {
+        // Reassignment parameters (computed once per frame)
         let bin_hz = sr / self.fft_size as f32;
-        let inv_2pi = sr / core::f32::consts::TAU;
-        let max_corr = if self.cfg.reassignment_max_correction_hz > 0.0 {
-            self.cfg.reassignment_max_correction_hz
+        let max_corr = if self.config.reassignment_max_correction_hz > 0.0 {
+            self.config.reassignment_max_correction_hz
         } else {
             bin_hz * OPTIMAL_FREQ_CORRECTION_RATIO
         };
-        self.reassign.cache.clear();
+        let (min_hz, max_hz) = self.grid.frequency_range();
+        let floor_linear = self.reassign.floor_linear;
+        let max_chirp = self.reassign.max_chirp * CHIRP_SAFETY_MARGIN;
+        let inv_2pi = sr / core::f32::consts::TAU;
+        let inv_sigma = self.reassign.inverse_sigma_t;
 
-        let (v_floor, v_bin_hz) = (f32x8::splat(self.reassign.floor_lin), f32x8::splat(bin_hz));
-        let (v_inv_2pi, v_max_corr) = (f32x8::splat(inv_2pi), f32x8::splat(max_corr));
-        let v_max_chirp = f32x8::splat(self.reassign.max_chirp * CHIRP_SAFETY_MARGIN);
-        let v_inv_sigma = f32x8::splat(self.reassign.inv_sigma_t);
-        let (v_min_hz, v_max_hz) = (
-            f32x8::splat(self.grid.min_hz),
-            f32x8::splat(self.grid.max_hz),
-        );
-        let v_snr_range = f32x8::splat(CONFIDENCE_SNR_RANGE_DB);
+        // SIMD constants
         let v_eps = f32x8::splat(f32::MIN_POSITIVE);
+        let v_floor = f32x8::splat(floor_linear);
+        let v_bin_hz = f32x8::splat(bin_hz);
+        let v_inv_2pi = f32x8::splat(inv_2pi);
+        let v_max_chirp = f32x8::splat(max_chirp);
+        let v_inv_sigma = f32x8::splat(inv_sigma);
+        let v_max_corr = f32x8::splat(max_corr);
+        let v_min_hz = f32x8::splat(min_hz);
+        let v_max_hz = f32x8::splat(max_hz);
+        let v_snr_range = f32x8::splat(CONFIDENCE_SNR_RANGE_DB);
+
+        self.reassign.clear_cache();
 
         for chunk in 0..limit.div_ceil(8) {
             let off = chunk * 8;
             let k_idx = f32x8::new(std::array::from_fn(|j| (off + j) as f32));
             if k_idx.simd_ge(f32x8::splat(limit as f32)).all() {
-                break;
+                continue;
             }
 
-            let (base_re, base_im) = load_complex_simd(&self.spec, off);
-            let (d_re, d_im) = load_complex_simd(&self.reassign.d_spec, off);
-            let (t_re, t_im) = load_complex_simd(&self.reassign.t_spec, off);
-            let (d2_re, d2_im) = load_complex_simd(&self.reassign.d2_spec, off);
-            let bn = load_f32_simd(&self.bin_norm, off);
-            let es = load_f32_simd(&self.energy_norm, off);
+            // Load spectra for this chunk
+            let (base_re, base_im) = load_complex_simd(&self.spectrum, off);
+            let (d_re, d_im) = load_complex_simd(&self.reassign.derivative_spectrum, off);
+            let (t_re, t_im) = load_complex_simd(&self.reassign.time_weighted_spectrum, off);
+            let (d2_re, d2_im) = load_complex_simd(&self.reassign.second_derivative_spectrum, off);
+            let chunk_bin_norm = load_f32_simd(&self.bin_norm, off);
+            let energy_scale = load_f32_simd(&self.energy_norm, off);
 
+            // Power and initial mask
             let pow = base_re * base_re + base_im * base_im;
-            let disp_pow = pow * bn;
-            let mask = disp_pow.simd_ge(v_floor) & es.simd_gt(f32x8::splat(0.0));
+            let disp_pow = pow * chunk_bin_norm;
+            let mask = disp_pow.simd_ge(v_floor) & energy_scale.simd_gt(f32x8::splat(0.0));
             if mask.none() {
                 continue;
             }
 
+            // Instantaneous frequency correction
             let inv_pow = f32x8::splat(1.0) / pow.max(v_eps);
             let d_omega = -(d_im * base_re - d_re * base_im) * inv_pow;
             let mut f_corr = d_omega * v_inv_2pi;
@@ -808,6 +887,8 @@ impl SpectrogramProcessor {
                 .blend(f_corr + chirp * weight * f32x8::splat(0.5), f_corr);
 
             let freq = k_idx.mul_add(v_bin_hz, f_corr);
+
+            // Final mask: frequency correction and range bounds
             let final_mask = mask
                 & f_corr.abs().simd_le(v_max_corr)
                 & freq.simd_ge(v_min_hz)
@@ -816,6 +897,7 @@ impl SpectrogramProcessor {
                 continue;
             }
 
+            // Group delay and confidence
             let d_tau = -(t_re * base_re + t_im * base_im) * inv_pow;
             let snr = ((disp_pow.ln() - v_floor.ln()) * f32x8::splat(4.3429448))
                 .max(f32x8::splat(0.0))
@@ -823,26 +905,27 @@ impl SpectrogramProcessor {
             let coh = f32x8::splat(1.0) - (f_corr.abs() / v_bin_hz).min(f32x8::splat(1.0));
             let conf = (snr.min(f32x8::splat(1.0)) * coh).max(f32x8::splat(CONFIDENCE_FLOOR));
 
+            // Accumulate into 2D grid
+            let mask_f32 = final_mask.blend(f32x8::splat(1.0), f32x8::splat(0.0));
             self.grid.accumulate_simd(
-                self.grid.params.hz_to_bin_simd(freq, self.grid.scale),
+                self.grid.hz_to_bin_simd(freq),
                 d_tau,
-                pow * es,
+                pow * energy_scale,
                 conf,
-                final_mask.blend(f32x8::splat(1.0), f32x8::splat(0.0)),
+                mask_f32,
             );
 
-            if self.reassign.cache.len() < MAX_REASSIGNMENT_SAMPLES {
+            // Cache samples for debug output
+            if self.reassign.cache_has_capacity() {
                 let (fa, ga, pa, ma) = (
                     freq.to_array(),
                     d_tau.to_array(),
                     disp_pow.to_array(),
-                    final_mask
-                        .blend(f32x8::splat(1.0), f32x8::splat(0.0))
-                        .to_array(),
+                    mask_f32.to_array(),
                 );
                 for j in 0..8 {
                     if ma[j] > 0.0 {
-                        self.reassign.cache.push(ReassignedSample {
+                        self.reassign.push_sample(ReassignedSample {
                             frequency_hz: fa[j],
                             group_delay_samples: ga[j],
                             magnitude_db: power_to_db(pa[j], DB_FLOOR),
@@ -851,8 +934,9 @@ impl SpectrogramProcessor {
                 }
             }
         }
+
         self.grid.advance(&self.energy_norm, &self.bin_norm);
-        (!self.reassign.cache.is_empty()).then(|| Arc::from(self.reassign.cache.as_slice()))
+        self.reassign.take_cached_samples()
     }
 
     fn fill_mags(pool: &mut Vec<Arc<[f32]>>, data: &[f32]) -> Arc<[f32]> {
@@ -879,19 +963,19 @@ impl SpectrogramProcessor {
     }
 
     fn hist_push(&mut self, col: SpectrogramColumn) {
-        if self.hist_cap == 0 {
+        if self.history_capacity == 0 {
             return;
         }
-        if self.hist.len() == self.hist_cap
-            && let Some(ev) = self.hist.pop_front()
+        if self.history.len() == self.history_capacity
+            && let Some(ev) = self.history.pop_front()
         {
             self.recycle(ev);
         }
-        self.hist.push_back(col);
+        self.history.push_back(col);
     }
 
     fn clear_history(&mut self) {
-        for c in self.hist.drain(..).collect::<Vec<_>>() {
+        for c in self.history.drain(..).collect::<Vec<_>>() {
             self.recycle(c);
         }
         self.reset = true;
@@ -905,10 +989,10 @@ impl AudioProcessor for SpectrogramProcessor {
         if block.frame_count() == 0 || block.channels == 0 {
             return ProcessorUpdate::None;
         }
-        if self.cfg.sample_rate <= 0.0
-            || (self.cfg.sample_rate - block.sample_rate).abs() > f32::EPSILON
+        if self.config.sample_rate <= 0.0
+            || (self.config.sample_rate - block.sample_rate).abs() > f32::EPSILON
         {
-            self.cfg.sample_rate = block.sample_rate;
+            self.config.sample_rate = block.sample_rate;
             self.rebuild_fft();
             self.reconfigure_grid();
             self.clear_history();
@@ -917,18 +1001,22 @@ impl AudioProcessor for SpectrogramProcessor {
             self.reconfigure_grid();
             self.clear_history();
         }
-        crate::util::audio::mixdown_into_deque(&mut self.pcm, block.samples, block.channels);
+        crate::util::audio::mixdown_into_deque(
+            &mut self.audio_buffer,
+            block.samples,
+            block.channels,
+        );
         let cols = self.process_ready_windows();
         if cols.is_empty() {
             ProcessorUpdate::None
         } else {
             ProcessorUpdate::Snapshot(SpectrogramUpdate {
                 fft_size: self.fft_size,
-                sample_rate: self.cfg.sample_rate,
-                frequency_scale: self.cfg.frequency_scale,
-                history_length: self.cfg.history_length,
+                sample_rate: self.config.sample_rate,
+                frequency_scale: self.config.frequency_scale,
+                history_length: self.config.history_length,
                 reset: std::mem::take(&mut self.reset),
-                display_bins_hz: self.grid.bin_freqs.clone().into(),
+                display_bins_hz: self.grid.bin_frequencies().into(),
                 new_columns: cols,
             })
         }
@@ -936,16 +1024,15 @@ impl AudioProcessor for SpectrogramProcessor {
 
     fn reset(&mut self) {
         self.clear_history();
-        self.pcm.clear();
-        self.grid.grid.fill(0.0);
-        self.grid.mags.fill(DB_FLOOR);
+        self.audio_buffer.clear();
+        self.grid.clear_buffers();
     }
 }
 
 impl Reconfigurable<SpectrogramConfig> for SpectrogramProcessor {
     fn update_config(&mut self, cfg: SpectrogramConfig) {
-        let prev = self.cfg;
-        self.cfg = cfg;
+        let prev = self.config;
+        self.config = cfg;
 
         let needs_fft = self.needs_fft_rebuild();
         let dims_changed = prev.display_bin_count != cfg.display_bin_count
@@ -965,20 +1052,19 @@ impl Reconfigurable<SpectrogramConfig> for SpectrogramProcessor {
             self.clear_history();
         } else if mapping_changed {
             self.reconfigure_grid();
-            self.grid.grid.fill(0.0);
-            self.grid.mags.fill(DB_FLOOR);
+            self.grid.clear_buffers();
             self.reset = true;
         } else {
             if prev.history_length != cfg.history_length {
-                self.hist_cap = cfg.history_length;
-                while self.hist.len() > self.hist_cap
-                    && let Some(c) = self.hist.pop_front()
+                self.history_capacity = cfg.history_length;
+                while self.history.len() > self.history_capacity
+                    && let Some(c) = self.history.pop_front()
                 {
                     self.recycle(c);
                 }
             }
             if prev.reassignment_power_floor_db != cfg.reassignment_power_floor_db {
-                self.reassign.floor_lin = db_to_power(cfg.reassignment_power_floor_db);
+                self.reassign.set_floor_db(cfg.reassignment_power_floor_db);
             }
         }
     }

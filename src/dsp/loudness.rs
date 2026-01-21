@@ -97,8 +97,8 @@ fn compute_fir_coefficients() -> [[f32; PHASES]; TAPS_PER_PHASE] {
 
 #[derive(Debug, Clone)]
 struct TruePeakMeter {
-    buf: [f32; TAPS_PER_PHASE * 2],
-    pos: usize,
+    delay_buffer: [f32; TAPS_PER_PHASE * 2],
+    write_position: usize,
     fir: [[f32; PHASES]; TAPS_PER_PHASE],
     peak: f32,
 }
@@ -106,8 +106,8 @@ struct TruePeakMeter {
 impl TruePeakMeter {
     fn new() -> Self {
         Self {
-            buf: [0.0; TAPS_PER_PHASE * 2],
-            pos: TAPS_PER_PHASE,
+            delay_buffer: [0.0; TAPS_PER_PHASE * 2],
+            write_position: TAPS_PER_PHASE,
             fir: compute_fir_coefficients(),
             peak: 0.0,
         }
@@ -115,15 +115,15 @@ impl TruePeakMeter {
 
     #[inline]
     fn process(&mut self, sample: f32) {
-        self.pos = if self.pos == 0 {
+        self.write_position = if self.write_position == 0 {
             TAPS_PER_PHASE - 1
         } else {
-            self.pos - 1
+            self.write_position - 1
         };
-        self.buf[self.pos] = sample;
-        self.buf[self.pos + TAPS_PER_PHASE] = sample;
+        self.delay_buffer[self.write_position] = sample;
+        self.delay_buffer[self.write_position + TAPS_PER_PHASE] = sample;
         let mut out = [0.0_f32; PHASES];
-        for (s, h) in self.buf[self.pos..self.pos + TAPS_PER_PHASE]
+        for (s, h) in self.delay_buffer[self.write_position..self.write_position + TAPS_PER_PHASE]
             .iter()
             .zip(&self.fir)
         {
@@ -359,12 +359,12 @@ impl AudioProcessor for LoudnessProcessor {
         }
 
         for frame in block.samples.chunks_exact(block.channels) {
-            for (ch, &sample) in self.channels.iter_mut().zip(frame) {
-                let energy = f64::from(ch.filter.process(sample)).powi(2);
-                for w in &mut ch.windows {
-                    w.push(energy);
+            for (channel, &sample) in self.channels.iter_mut().zip(frame) {
+                let energy = f64::from(channel.filter.process(sample)).powi(2);
+                for window in &mut channel.windows {
+                    window.push(energy);
                 }
-                ch.true_peak.process(sample);
+                channel.true_peak.process(sample);
             }
         }
 
@@ -373,21 +373,33 @@ impl AudioProcessor for LoudnessProcessor {
         let mut weighted_short_term = 0.0;
         let mut weighted_momentary = 0.0;
 
-        for (i, ch) in self.channels.iter().enumerate() {
-            let weight = channel_weight(i, num_channels);
-            let short_term = ch.windows[WIN_SHORT_TERM].mean().max(MIN_MEAN_SQUARE);
-            let momentary = ch.windows[WIN_MOMENTARY].mean().max(MIN_MEAN_SQUARE);
+        for (channel_index, channel_state) in self.channels.iter().enumerate() {
+            let weight = channel_weight(channel_index, num_channels);
+            let short_term = channel_state.windows[WIN_SHORT_TERM]
+                .mean()
+                .max(MIN_MEAN_SQUARE);
+            let momentary = channel_state.windows[WIN_MOMENTARY]
+                .mean()
+                .max(MIN_MEAN_SQUARE);
             weighted_short_term += short_term * weight;
             weighted_momentary += momentary * weight;
-            self.snapshot.rms_fast_db[i] =
-                mean_square_to_lufs(ch.windows[WIN_RMS_FAST].mean().max(MIN_MEAN_SQUARE), floor);
-            self.snapshot.rms_slow_db[i] =
-                mean_square_to_lufs(ch.windows[WIN_RMS_SLOW].mean().max(MIN_MEAN_SQUARE), floor);
+            self.snapshot.rms_fast_db[channel_index] = mean_square_to_lufs(
+                channel_state.windows[WIN_RMS_FAST]
+                    .mean()
+                    .max(MIN_MEAN_SQUARE),
+                floor,
+            );
+            self.snapshot.rms_slow_db[channel_index] = mean_square_to_lufs(
+                channel_state.windows[WIN_RMS_SLOW]
+                    .mean()
+                    .max(MIN_MEAN_SQUARE),
+                floor,
+            );
         }
 
-        for (i, ch) in self.channels.iter_mut().enumerate() {
-            let peak = ch.true_peak.take_peak();
-            self.snapshot.true_peak_db[i] = power_to_db(peak * peak, floor);
+        for (channel_index, channel_state) in self.channels.iter_mut().enumerate() {
+            let peak = channel_state.true_peak.take_peak();
+            self.snapshot.true_peak_db[channel_index] = power_to_db(peak * peak, floor);
         }
 
         self.snapshot.short_term_loudness = mean_square_to_lufs(weighted_short_term, floor);
