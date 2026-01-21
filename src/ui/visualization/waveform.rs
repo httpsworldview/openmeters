@@ -5,8 +5,9 @@ use crate::dsp::waveform::{
 };
 use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::ui::render::waveform::{PreviewSample, WaveformParams, WaveformPrimitive};
-use crate::ui::settings::ChannelMode;
+use crate::ui::settings::{ChannelMode, WaveformColorMode};
 use crate::ui::theme;
+use crate::util::audio::project_channel_data;
 use crate::visualization_widget;
 use iced::Color;
 use std::cell::{Cell, RefCell};
@@ -85,6 +86,7 @@ pub struct WaveformState {
     key: u64,
     cache: RefCell<RenderCache>,
     ch_mode: ChannelMode,
+    color_mode: WaveformColorMode,
 }
 
 impl WaveformState {
@@ -101,6 +103,7 @@ impl WaveformState {
             key: Self::next_key(),
             cache: RefCell::new(RenderCache::default()),
             ch_mode: ChannelMode::default(),
+            color_mode: WaveformColorMode::default(),
         }
     }
 
@@ -115,6 +118,15 @@ impl WaveformState {
     }
     pub fn channel_mode(&self) -> ChannelMode {
         self.ch_mode
+    }
+    pub fn set_color_mode(&mut self, m: WaveformColorMode) {
+        if self.color_mode != m {
+            self.color_mode = m;
+            self.key = Self::next_key();
+        }
+    }
+    pub fn color_mode(&self) -> WaveformColorMode {
+        self.color_mode
     }
     pub fn set_palette(&mut self, p: &[Color]) {
         self.style.set_palette(p);
@@ -164,10 +176,18 @@ impl WaveformState {
         for ci in 0..ch {
             let base = ci * cols;
             for i in start..cols {
-                colors.push(theme::color_to_rgba(
-                    self.style
-                        .freq_color(self.snapshot.frequency_normalized[base + i]),
-                ));
+                let color_val = match self.color_mode {
+                    WaveformColorMode::Frequency => self.snapshot.frequency_normalized[base + i],
+                    WaveformColorMode::Loudness => {
+                        let (v0, v1) = (
+                            self.snapshot.min_values[base + i],
+                            self.snapshot.max_values[base + i],
+                        );
+                        (v1 - v0).abs().min(1.0)
+                    }
+                    WaveformColorMode::Static => 0.0,
+                };
+                colors.push(theme::color_to_rgba(self.style.sample_color(color_val)));
             }
         }
         c.samples = Arc::from(samples);
@@ -186,12 +206,15 @@ impl WaveformState {
                 buf.reserve(ch);
                 for ci in 0..ch {
                     let (v0, v1) = (pv.min_values[ci], pv.max_values[ci]);
+                    let pv_color_val = match self.color_mode {
+                        WaveformColorMode::Frequency => freq_hint(&self.snapshot, ci),
+                        WaveformColorMode::Loudness => (v1 - v0).abs().min(1.0),
+                        WaveformColorMode::Static => 0.0,
+                    };
                     buf.push(PreviewSample {
                         min: v0.min(v1).clamp(-1.0, 1.0),
                         max: v0.max(v1).clamp(-1.0, 1.0),
-                        color: theme::color_to_rgba(
-                            self.style.freq_color(freq_hint(&self.snapshot, ci)),
-                        ),
+                        color: theme::color_to_rgba(self.style.sample_color(pv_color_val)),
                     });
                 }
             }
@@ -228,7 +251,7 @@ impl WaveformState {
         {
             return WaveformSnapshot::default();
         }
-        let proj = |d: &[f32], s| mode.project_data(d, s, ch);
+        let proj = |d: &[f32], s| project_channel_data(mode, d, s, ch);
         let p = &src.preview;
         let pv_ok = p.min_values.len() >= ch && p.max_values.len() >= ch;
         WaveformSnapshot {
@@ -289,7 +312,7 @@ impl Default for WaveformStyle {
 }
 
 impl WaveformStyle {
-    fn freq_color(&self, v: f32) -> Color {
+    fn sample_color(&self, v: f32) -> Color {
         theme::sample_gradient(&self.palette, v)
     }
     fn set_palette(&mut self, p: &[Color]) {

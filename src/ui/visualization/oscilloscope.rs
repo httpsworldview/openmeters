@@ -7,6 +7,7 @@ use crate::dsp::oscilloscope::{
 use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::ui::render::oscilloscope::{OscilloscopeParams, OscilloscopePrimitive};
 use crate::ui::settings::ChannelMode;
+use crate::util::audio::project_channel_data;
 use crate::ui::theme;
 use crate::visualization_widget;
 use iced::Color;
@@ -133,7 +134,7 @@ impl OscilloscopeState {
         OscilloscopeSnapshot {
             channels: mode.output_channels(ch),
             samples_per_channel: spc,
-            samples: mode.project_data(&source.samples, spc, ch),
+            samples: project_channel_data(mode, &source.samples, spc, ch),
         }
     }
 

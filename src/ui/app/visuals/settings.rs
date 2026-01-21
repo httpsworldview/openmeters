@@ -15,6 +15,7 @@ macro_rules! persist_palette {
 
 /// Generates settings pane struct, create function, and trait impl.
 /// Use `extra_from_settings` for fields computed from loaded settings during init.
+/// Use `init_palette` to run initialization code on the palette after loading.
 macro_rules! settings_pane {
     // Branch with extra fields computed from settings
     (
@@ -39,6 +40,32 @@ macro_rules! settings_pane {
             );
             $(let $field: $ty = $init;)*
             $pane { visual_id, settings: $s, palette, $($field,)* }
+        }
+
+        settings_pane!(@impl $pane);
+    };
+    // Branch with palette init callback
+    (
+        $pane:ident, $settings_ty:ty, $kind:expr, $palette_mod:path
+        , init_palette($s:ident, $p:ident) $init_body:block
+    ) => {
+        #[derive(Debug)]
+        pub struct $pane {
+            visual_id: super::VisualId,
+            settings: $settings_ty,
+            palette: super::palette::PaletteEditor,
+        }
+
+        pub fn create(
+            visual_id: super::VisualId,
+            visual_manager: &super::VisualManagerHandle,
+        ) -> $pane {
+            use $palette_mod as pal;
+            let ($s, mut $p) = super::load_settings_and_palette::<$settings_ty>(
+                visual_manager, $kind, &pal::COLORS, pal::LABELS,
+            );
+            $init_body
+            $pane { visual_id, settings: $s, palette: $p }
         }
 
         settings_pane!(@impl $pane);

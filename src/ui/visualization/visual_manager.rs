@@ -110,10 +110,10 @@ visuals! {
             if let Some(snap) = p.ingest(samples, fmt) { s.borrow_mut().apply_snapshot(snap); } };
         settings_cfg::WaveformSettings, &theme::waveform::COLORS;
         apply(p, s, set) { visuals!(@apply_config p, set); waveform::WaveformProcessor::sync_capacity(s, p);
-            let mut st = s.borrow_mut(); st.set_channel_mode(set.channel_mode);
+            let mut st = s.borrow_mut(); st.set_channel_mode(set.channel_mode); st.set_color_mode(set.color_mode);
             visuals!(@apply_palette st, set, &theme::waveform::COLORS); };
         export(p, s) { let st = s.borrow(); let mut out = settings_cfg::WaveformSettings::from_config(&p.config());
-            out.channel_mode = st.channel_mode();
+            out.channel_mode = st.channel_mode(); out.color_mode = st.color_mode();
             out.palette = visuals!(@export_palette st.palette(), &theme::waveform::COLORS); out };
 
     Spectrogram("Spectrogram", 320.0, 220.0, 300.0) =>

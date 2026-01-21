@@ -21,6 +21,10 @@ pub enum PaletteEvent {
 pub struct PaletteEditor {
     palette: Palette,
     active: Option<usize>,
+    /// Optional visibility filter: only show these indices (if set).
+    visible_indices: Option<Vec<usize>>,
+    /// Optional label overrides for specific indices.
+    label_overrides: Vec<(usize, &'static str)>,
 }
 
 impl PaletteEditor {
@@ -29,10 +33,33 @@ impl PaletteEditor {
         Self {
             palette,
             active: None,
+            visible_indices: None,
+            label_overrides: Vec::new(),
         }
     }
 
+    /// Sets which palette indices are visible. Pass `None` to show all.
+    pub fn set_visible_indices(&mut self, indices: Option<Vec<usize>>) {
+        self.visible_indices = indices;
+        // Close editor if active index is now hidden
+        if let Some(active) = self.active
+            && let Some(ref visible) = self.visible_indices
+            && !visible.contains(&active)
+        {
+            self.active = None;
+        }
+    }
+
+    /// Sets label overrides for specific indices.
+    pub fn set_label_overrides(&mut self, overrides: Vec<(usize, &'static str)>) {
+        self.label_overrides = overrides;
+    }
+
     fn label_for(&self, index: usize) -> String {
+        // Check for label override first
+        if let Some((_, label)) = self.label_overrides.iter().find(|(i, _)| *i == index) {
+            return (*label).to_string();
+        }
         self.palette
             .labels()
             .get(index)
@@ -83,12 +110,14 @@ impl PaletteEditor {
 
     pub fn view(&self) -> Element<'_, PaletteEvent> {
         let colors = self.palette.colors();
-        let row = colors
-            .iter()
-            .enumerate()
-            .fold(Row::new().spacing(12.0), |r, (i, &c)| {
-                r.push(self.color_picker(i, c))
-            });
+        let indices: Vec<usize> = self
+            .visible_indices
+            .as_ref()
+            .map(|v| v.iter().copied().filter(|&i| i < colors.len()).collect())
+            .unwrap_or_else(|| (0..colors.len()).collect());
+        let row = indices.iter().fold(Row::new().spacing(12.0), |r, &i| {
+            r.push(self.color_picker(i, colors[i]))
+        });
         let mut col = Column::new().spacing(12.0).push(row);
         if let Some(i) = self.active
             && let Some(&c) = colors.get(i)

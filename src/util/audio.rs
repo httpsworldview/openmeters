@@ -204,6 +204,45 @@ pub fn mel_to_hz(mel: f32) -> f32 {
     700.0 * (10.0f32.powf(mel / 2595.0) - 1.0)
 }
 
+/// Projects channel data according to a channel mode.
+///
+/// Data layout: contiguous channels `[ch0_s0..ch0_sN, ch1_s0..ch1_sN, ...]`
+/// - `mode`: channel selection/mixing mode
+/// - `data`: samples with `stride` samples per channel
+/// - `stride`: number of samples per channel
+/// - `channels`: number of channels in the input data
+#[inline]
+pub fn project_channel_data(
+    mode: crate::ui::settings::ChannelMode,
+    data: &[f32],
+    stride: usize,
+    channels: usize,
+) -> Vec<f32> {
+    use crate::ui::settings::ChannelMode;
+    match mode {
+        ChannelMode::Both => data.to_vec(),
+        ChannelMode::Left => data.get(..stride).map(|s| s.to_vec()).unwrap_or_default(),
+        ChannelMode::Right => {
+            let offset = if channels > 1 { stride } else { 0 };
+            data.get(offset..offset + stride)
+                .map(|s| s.to_vec())
+                .unwrap_or_default()
+        }
+        ChannelMode::Mono => {
+            let scale = 1.0 / channels.max(1) as f32;
+            (0..stride)
+                .map(|i| {
+                    data.chunks(stride)
+                        .take(channels)
+                        .filter_map(|ch| ch.get(i))
+                        .sum::<f32>()
+                        * scale
+                })
+                .collect()
+        }
+    }
+}
+
 /// Copy from VecDeque to a contiguous slice, handling wraparound.
 #[inline]
 pub fn copy_from_deque(dst: &mut [f32], src: &std::collections::VecDeque<f32>) {

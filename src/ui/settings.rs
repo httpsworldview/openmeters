@@ -201,38 +201,6 @@ impl ChannelMode {
             _ => 1,
         }
     }
-
-    /// Projects channel data according to this mode.
-    ///
-    /// Data layout: contiguous channels `[ch0_s0..ch0_sN, ch1_s0..ch1_sN, ...]`
-    /// - `data`: interleaved samples with `stride` samples per channel
-    /// - `stride`: number of samples per channel
-    /// - `channels`: number of channels in the input data
-    #[inline]
-    pub fn project_data(self, data: &[f32], stride: usize, channels: usize) -> Vec<f32> {
-        match self {
-            Self::Both => data.to_vec(),
-            Self::Left => data.get(..stride).map(|s| s.to_vec()).unwrap_or_default(),
-            Self::Right => {
-                let offset = if channels > 1 { stride } else { 0 };
-                data.get(offset..offset + stride)
-                    .map(|s| s.to_vec())
-                    .unwrap_or_default()
-            }
-            Self::Mono => {
-                let scale = 1.0 / channels.max(1) as f32;
-                (0..stride)
-                    .map(|i| {
-                        data.chunks(stride)
-                            .take(channels)
-                            .filter_map(|ch| ch.get(i))
-                            .sum::<f32>()
-                            * scale
-                    })
-                    .collect()
-            }
-        }
-    }
 }
 settings_enum!(pub enum StereometerMode  { Lissajous => "Lissajous", #[default] DotCloud => "Dot Cloud" });
 settings_enum!(pub enum StereometerScale { Linear => "Linear", #[default] Exponential => "Exponential" });
@@ -241,6 +209,7 @@ settings_enum!(pub enum CorrelationMeterSide { #[default] Left => "Left", Right 
 settings_enum!(pub enum PianoRollSide { #[default] Left => "Left", Right => "Right" });
 settings_enum!(pub enum SpectrumDisplayMode { #[default] Line => "Line", Bar => "Bar" });
 settings_enum!(pub enum SpectrumWeightingMode { #[default] AWeighted => "A-Weighted", Raw => "Raw" });
+settings_enum!(pub enum WaveformColorMode { #[default] Frequency => "Frequency", Loudness => "Loudness", Static => "Static" });
 
 visual_settings!(OscilloscopeSettings from OscilloscopeConfig {
     segment_duration: f32, trigger_mode: TriggerMode,
@@ -248,7 +217,7 @@ visual_settings!(OscilloscopeSettings from OscilloscopeConfig {
 
 visual_settings!(WaveformSettings from WaveformConfig {
     scroll_speed: f32,
-} extra { channel_mode: ChannelMode = ChannelMode::default() });
+} extra { channel_mode: ChannelMode = ChannelMode::default(), color_mode: WaveformColorMode = WaveformColorMode::default() });
 
 visual_settings!(SpectrumSettings from SpectrumConfig {
     fft_size: usize, hop_size: usize, window: WindowKind, averaging: AveragingMode,
