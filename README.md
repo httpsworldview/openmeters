@@ -2,7 +2,7 @@
 
 ![Preview](https://github.com/user-attachments/assets/94b2a531-c93b-41c3-9477-20cb3b9bc046)
 
-OpenMeters is a fast and simple audio metering application for Linux, built with Rust and PipeWire.
+OpenMeters is a fast and simple audio metering application for Linux, built with Rust and PipeWire. It's in active development, so expect bugs and broken configurations. I'm always open to feedback and bug reports, so feel free to open issues.
 
 ## features
 
@@ -102,7 +102,7 @@ Checked features are implemented, unchecked features are planned. If you have id
 ### configuration
 
 Configurations are saved to `~/.config/openmeters/settings.json`. If you want to use settings/values not listed in the GUI, you can edit this file directly, however absurd values often lead to crashes. Invalid values will be replaced with defaults on load, or when saved.
-If you encounter a bug that causes OpenMeters to misbehave, you can delete `settings.json` to reset everything, or change the problematic setting manually.
+If you encounter a bug that causes OpenMeters to misbehave, you can delete `settings.json` to reset everything, or change the problematic setting manually. (then open an issue so I can fix it!)
 
 ## credits
 
