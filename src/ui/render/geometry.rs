@@ -105,20 +105,6 @@ pub fn build_aa_line_strip(
     build_strip_core(pts, stroke, feather, clip, |_| color)
 }
 
-/// Like `build_aa_line_strip` but with per-vertex colors.
-pub fn build_aa_line_strip_colored(
-    pts: &[(f32, f32)],
-    colors: &[[f32; 4]],
-    stroke: f32,
-    feather: f32,
-    clip: &ClipTransform,
-) -> Vec<SdfVertex> {
-    if colors.len() < pts.len() {
-        return Vec::new();
-    }
-    build_strip_core(pts, stroke, feather, clip, |i| colors[i])
-}
-
 /// Builds an antialiased polyline for `TriangleList` topology.
 pub fn build_aa_line_list(
     pts: &[(f32, f32)],

@@ -27,7 +27,7 @@ const MAX_FREQ_HZ: f32 = 5_000.0;
 // lower = longer smoothing
 // helps avoid rapid color changes, but might be a hack
 // as I'm not sure what the best approach is here
-const MAX_SLEW_RATE: f32 = 0.15;
+const MAX_SLEW_RATE: f32 = 0.01;
 
 #[derive(Debug, Clone, Copy)]
 pub struct WaveformConfig {
@@ -40,7 +40,7 @@ impl Default for WaveformConfig {
     fn default() -> Self {
         Self {
             sample_rate: DEFAULT_SAMPLE_RATE,
-            scroll_speed: 80.0,
+            scroll_speed: 300.0,
             max_columns: DEFAULT_COLUMN_CAPACITY,
         }
     }
@@ -525,7 +525,7 @@ mod tests {
         let mut results = Vec::new();
         for &frequency in &[100.0, 440.0, 1000.0, 5000.0] {
             let mut processor = WaveformProcessor::new(config);
-            let samples: Vec<f32> = (0..samples_per_column * 4)
+            let samples: Vec<f32> = (0..samples_per_column * 60)
                 .map(|n| (2.0 * PI * frequency * n as f32 / 48_000.0).sin())
                 .collect();
             let normalized =
@@ -562,7 +562,7 @@ mod tests {
             };
             let samples_per_column = config.samples_per_column();
             let mut processor = WaveformProcessor::new(config);
-            let samples: Vec<f32> = (0..samples_per_column * 4)
+            let samples: Vec<f32> = (0..samples_per_column * 60)
                 .map(|n| (2.0 * PI * frequency * n as f32 / 48_000.0).sin())
                 .collect();
             let normalized =
@@ -574,14 +574,12 @@ mod tests {
             results.push((scroll_speed, normalized));
         }
 
-        // All results should be within 10% of each other
-        // 10% deviation threshold is arbitrary but seems reasonable
-        // (deviation due to fft windowing, binning, etc.)
+        // All results should be within 1% of each other
         let avg: f32 = results.iter().map(|(_, n)| n).sum::<f32>() / results.len() as f32;
         for (speed, normalized) in &results {
             let deviation = (normalized - avg).abs() / avg;
             assert!(
-                deviation < 0.10,
+                deviation < 0.01,
                 "scroll_speed {speed} produced {normalized:.3}, deviates {:.1}% from avg {avg:.3}",
                 deviation * 100.0
             );

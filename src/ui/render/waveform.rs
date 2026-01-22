@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::sdf_primitive;
 use crate::ui::render::common::{ClipTransform, SdfVertex};
-use crate::ui::render::geometry::{self, DEFAULT_FEATHER, append_strip};
+use crate::ui::render::geometry::append_strip;
 
 #[derive(Debug, Clone, Copy)]
 pub struct PreviewSample {
@@ -24,11 +24,9 @@ pub struct WaveformParams {
     pub preview_samples: Arc<[PreviewSample]>,
     pub preview_progress: f32,
     pub fill_alpha: f32,
-    pub line_alpha: f32,
     pub vertical_padding: f32,
     pub channel_gap: f32,
     pub amplitude_scale: f32,
-    pub stroke_width: f32,
     pub instance_key: u64,
 }
 
@@ -90,84 +88,73 @@ impl WaveformPrimitive {
                 .max(1.0);
         let ch_height = usable_h / channels as f32;
         let amp_scale = ch_height * 0.5 * params.amplitude_scale.max(0.01);
-        let stroke = params.stroke_width.max(0.5);
 
         let mut vertices = Vec::with_capacity(channels * (columns + 1) * 6);
+
+        let scroll_offset = if params.preview_active() {
+            params.preview_progress * col_width
+        } else {
+            0.0
+        };
 
         for ch in 0..channels {
             let center_y =
                 params.bounds.y + v_pad + ch as f32 * (ch_height + gap) + ch_height * 0.5;
 
-            // Build area fill vertices
-            let mut area = Vec::with_capacity((columns + 1) * 2);
+            // Build independent pixel columns (discrete quads)
+            let mut strip_builder = Vec::with_capacity((columns + 2) * 6);
+
             for i in 0..columns {
                 let idx = ch * columns + i;
                 let (min, max) = normalize_sample(params.samples[idx][0], params.samples[idx][1]);
-                let x = (right_edge - preview_width - col_width * (columns - 1 - i) as f32).round();
+
+                // Calculate float position for smooth scroll, then floor to snap to pixel grid
+                // i=0 is oldest column (leftmost). i=columns-1 is newest history.
+                // Newest history moves left from `right_edge - preview_width`
+                let dist_steps = (columns - 1 - i) as f32;
+                // Subtract col_width because raw_x represents the LEFT edge of the 1px column
+                let raw_x =
+                    right_edge - preview_width - dist_steps * col_width - scroll_offset - col_width;
+                let x = raw_x.floor();
+                let w = col_width;
+
                 let color = with_alpha(
                     params.colors.get(idx).copied().unwrap_or([1.0; 4]),
                     params.fill_alpha,
                 );
 
-                area.push(SdfVertex::solid(
-                    clip.to_clip(x, center_y - max * amp_scale),
-                    color,
-                ));
-                area.push(SdfVertex::solid(
-                    clip.to_clip(x, center_y - min * amp_scale),
-                    color,
-                ));
+                let quad = vec![
+                    SdfVertex::solid(clip.to_clip(x, center_y - max * amp_scale), color),
+                    SdfVertex::solid(clip.to_clip(x, center_y - min * amp_scale), color),
+                    SdfVertex::solid(clip.to_clip(x + w, center_y - max * amp_scale), color),
+                    SdfVertex::solid(clip.to_clip(x + w, center_y - min * amp_scale), color),
+                ];
+                append_strip(&mut strip_builder, quad);
             }
 
             if params.preview_active() {
+                // Preview connects to the right of the newest history column
+                let raw_last_x = right_edge - preview_width - scroll_offset;
+                let last_x = raw_last_x.floor();
+
+                // Start where the last history column ends (visually)
+                let start_x = last_x;
+                // Stretch to component edge to ensure no background leaks through gap
+                let end_x = right_edge;
+
                 let ps = params.preview_samples[ch];
                 let (min, max) = normalize_sample(ps.min, ps.max);
-                let x = right_edge.round();
                 let color = with_alpha(ps.color, params.fill_alpha);
-                area.push(SdfVertex::solid(
-                    clip.to_clip(x, center_y - max * amp_scale),
-                    color,
-                ));
-                area.push(SdfVertex::solid(
-                    clip.to_clip(x, center_y - min * amp_scale),
-                    color,
-                ));
-            }
-            append_strip(&mut vertices, area);
 
-            // Build center line vertices
-            let mut positions = Vec::with_capacity(columns + 1);
-            let mut line_colors = Vec::with_capacity(columns + 1);
-
-            for i in 0..columns {
-                let idx = ch * columns + i;
-                let (min, max) = normalize_sample(params.samples[idx][0], params.samples[idx][1]);
-                let x = (right_edge - preview_width - col_width * (columns - 1 - i) as f32).round();
-                let y = center_y - 0.5 * (min + max) * amp_scale;
-                positions.push((x, y));
-                line_colors.push(with_alpha(
-                    params.colors.get(idx).copied().unwrap_or([1.0; 4]),
-                    params.line_alpha,
-                ));
+                let quad = vec![
+                    SdfVertex::solid(clip.to_clip(start_x, center_y - max * amp_scale), color),
+                    SdfVertex::solid(clip.to_clip(start_x, center_y - min * amp_scale), color),
+                    SdfVertex::solid(clip.to_clip(end_x, center_y - max * amp_scale), color),
+                    SdfVertex::solid(clip.to_clip(end_x, center_y - min * amp_scale), color),
+                ];
+                append_strip(&mut strip_builder, quad);
             }
-
-            if params.preview_active() {
-                let ps = params.preview_samples[ch];
-                let (min, max) = normalize_sample(ps.min, ps.max);
-                positions.push((right_edge.round(), center_y - 0.5 * (min + max) * amp_scale));
-                line_colors.push(with_alpha(ps.color, params.line_alpha));
-            }
-
-            if positions.len() >= 2 {
-                let line = geometry::build_aa_line_strip_colored(
-                    &positions,
-                    &line_colors,
-                    stroke,
-                    DEFAULT_FEATHER,
-                    &clip,
-                );
-                append_strip(&mut vertices, line);
-            }
+            append_strip(&mut vertices, strip_builder);
         }
 
         vertices

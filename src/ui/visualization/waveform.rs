@@ -16,7 +16,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
-const COLUMN_WIDTH_PIXELS: f32 = 2.0;
+const COLUMN_WIDTH_PIXELS: f32 = 1.0;
 
 type SampleColorData = (Arc<[[f32; 2]]>, Arc<[[f32; 4]]>);
 
@@ -165,11 +165,9 @@ impl WaveformState {
             preview_samples,
             preview_progress,
             fill_alpha: self.style.fill_alpha,
-            line_alpha: self.style.line_alpha,
             vertical_padding: self.style.vertical_padding,
             channel_gap: self.style.channel_gap,
             amplitude_scale: self.style.amplitude_scale,
-            stroke_width: self.style.stroke_width,
             instance_key: self.instance_key,
         })
     }
@@ -297,11 +295,9 @@ impl WaveformState {
 #[derive(Debug, Clone)]
 pub struct WaveformStyle {
     pub fill_alpha: f32,
-    pub line_alpha: f32,
     pub vertical_padding: f32,
     pub channel_gap: f32,
     pub amplitude_scale: f32,
-    pub stroke_width: f32,
     pub palette: [Color; 6],
 }
 
@@ -309,11 +305,9 @@ impl Default for WaveformStyle {
     fn default() -> Self {
         Self {
             fill_alpha: 1.0,
-            line_alpha: 1.0,
             vertical_padding: 8.0,
             channel_gap: 12.0,
             amplitude_scale: 1.0,
-            stroke_width: 1.0,
             palette: theme::waveform::COLORS,
         }
     }
