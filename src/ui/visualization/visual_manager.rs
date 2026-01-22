@@ -30,6 +30,7 @@ fn resolve_palette<const N: usize>(
         .unwrap_or(*default)
 }
 
+// dear future me/future maintainers: I'm sorry for this macro.
 macro_rules! visuals {
     (@export_palette $state:expr, $default:expr) => { PaletteSettings::if_differs_from($state, $default) };
     (@apply_config $proc:ident, $settings:ident) => {{ let mut c = $proc.config(); $settings.apply_to(&mut c); $proc.update_config(c) }};
