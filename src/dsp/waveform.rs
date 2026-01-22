@@ -1,5 +1,6 @@
-//! Scrolling waveform with 3-band frequency coloring (low/mid/high at 200Hz/2kHz crossovers).
+//! Scrolling waveform with peak frequency-based coloring.
 
+use super::spectrogram::WindowKind;
 use super::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::util::audio::DEFAULT_SAMPLE_RATE;
 use realfft::{RealFftPlanner, RealToComplex};
@@ -12,9 +13,21 @@ pub const MIN_COLUMN_CAPACITY: usize = 512;
 pub const MAX_COLUMN_CAPACITY: usize = 16_384;
 pub const DEFAULT_COLUMN_CAPACITY: usize = 4_096;
 
-const LOW_CROSSOVER: f32 = 200.0;
-const HIGH_CROSSOVER: f32 = 2000.0;
-const FFT_SIZE_RANGE: std::ops::RangeInclusive<usize> = 512..=4096;
+// fixed because scroll speed alters timebase
+// which affects sample accumulation, etc.
+const FREQUENCY_FFT_SIZE: usize = 2048;
+
+// Frequency range for mapping to log
+// higher than 5kHz is saturated to the top end
+// of the color scale
+const MIN_FREQ_HZ: f32 = 20.0;
+const MAX_FREQ_HZ: f32 = 5_000.0;
+
+// max allowed sweep rate of normalized frequency
+// lower = longer smoothing
+// helps avoid rapid color changes, but might be a hack
+// as I'm not sure what the best approach is here
+const MAX_SLEW_RATE: f32 = 0.15;
 
 #[derive(Debug, Clone, Copy)]
 pub struct WaveformConfig {
@@ -44,11 +57,6 @@ impl WaveformConfig {
     }
     fn samples_per_column(&self) -> usize {
         (self.sample_rate / self.scroll_speed).round() as usize
-    }
-    fn fft_size(&self) -> usize {
-        self.samples_per_column()
-            .next_power_of_two()
-            .clamp(*FFT_SIZE_RANGE.start(), *FFT_SIZE_RANGE.end())
     }
 }
 
@@ -98,86 +106,80 @@ fn clamp_extrema(min: f32, max: f32) -> (f32, f32) {
 }
 
 #[derive(Clone)]
-struct BandAnalyzer {
+struct FrequencyAnalyzer {
     fft: Arc<dyn RealToComplex<f32>>,
     size: usize,
     input_buffer: Vec<f32>,
     output_spectrum: Vec<Complex32>,
     scratch: Vec<Complex32>,
-    low_band_bin: usize,
-    high_band_bin: usize,
+    sample_history: Vec<f32>,
+    bin_hz: f32,
+    smoothed_frequency: f32,
 }
 
-impl std::fmt::Debug for BandAnalyzer {
+impl std::fmt::Debug for FrequencyAnalyzer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BandAnalyzer")
+        f.debug_struct("FrequencyAnalyzer")
             .field("size", &self.size)
             .finish_non_exhaustive()
     }
 }
 
-impl BandAnalyzer {
-    fn new(size: usize, sample_rate: f32) -> Self {
+impl FrequencyAnalyzer {
+    fn new(sample_rate: f32) -> Self {
+        let size = FREQUENCY_FFT_SIZE;
         let fft = RealFftPlanner::new().plan_fft_forward(size);
-        let (low_band_bin, high_band_bin) = Self::crossover_bins(size, sample_rate);
         Self {
             scratch: vec![Complex32::default(); fft.get_scratch_len()],
             input_buffer: vec![0.0; size],
             output_spectrum: vec![Complex32::default(); size / 2 + 1],
-            low_band_bin,
-            high_band_bin,
+            sample_history: Vec::with_capacity(size),
+            bin_hz: sample_rate / size as f32,
+            smoothed_frequency: 0.5,
             size,
             fft,
         }
     }
 
-    fn reconfigure(&mut self, size: usize, sample_rate: f32) {
-        if size != self.size {
-            self.fft = RealFftPlanner::new().plan_fft_forward(size);
-            self.size = size;
-            self.scratch
-                .resize(self.fft.get_scratch_len(), Complex32::default());
-            self.input_buffer.resize(size, 0.0);
-            self.output_spectrum
-                .resize(size / 2 + 1, Complex32::default());
-        }
-        (self.low_band_bin, self.high_band_bin) = Self::crossover_bins(size, sample_rate);
+    fn reconfigure(&mut self, sample_rate: f32) {
+        self.bin_hz = sample_rate / self.size as f32;
+        self.smoothed_frequency = 0.5;
+        self.sample_history.clear();
     }
 
-    fn crossover_bins(size: usize, sample_rate: f32) -> (usize, usize) {
-        let bin_width = sample_rate / size as f32;
-        let max_bin = size / 2;
-        (
-            (LOW_CROSSOVER / bin_width).round().min(max_bin as f32) as usize,
-            (HIGH_CROSSOVER / bin_width).round().min(max_bin as f32) as usize,
-        )
-    }
-
-    /// Computes a normalized frequency value in [0,1] where 0=low, 0.5=mid, 1=high.
-    /// Mid band is weighted at 50% to create a smooth gradient between bass and treble.
     fn analyze(&mut self, samples: &[f32]) -> f32 {
-        const NEUTRAL_FREQUENCY: f32 = 0.5;
-        if samples.len() < 2 {
-            return NEUTRAL_FREQUENCY;
+        if samples.is_empty() {
+            return self.smoothed_frequency;
         }
 
-        self.apply_hann_window(samples);
+        self.sample_history.extend_from_slice(samples);
+        if self.sample_history.len() > self.size {
+            self.sample_history
+                .drain(..self.sample_history.len() - self.size);
+        }
+
+        if self.sample_history.len() < self.size / 4 {
+            return self.smoothed_frequency;
+        }
+
+        self.apply_hann_window();
 
         if self.compute_fft().is_err() {
-            return NEUTRAL_FREQUENCY;
+            return self.smoothed_frequency;
         }
 
-        self.compute_frequency_position()
+        let raw = self.find_peak_frequency();
+        let delta = (raw - self.smoothed_frequency).clamp(-MAX_SLEW_RATE, MAX_SLEW_RATE);
+        self.smoothed_frequency += delta;
+        self.smoothed_frequency
     }
 
-    fn apply_hann_window(&mut self, samples: &[f32]) {
+    fn apply_hann_window(&mut self) {
         self.input_buffer.fill(0.0);
-        let window_length = samples.len().min(self.size);
-        let angular_step = std::f32::consts::PI / window_length as f32;
-
-        for (index, &sample) in samples.iter().take(window_length).enumerate() {
-            let hann_coefficient = 0.5 * (1.0 - (2.0 * angular_step * index as f32).cos());
-            self.input_buffer[index] = sample * hann_coefficient;
+        let n = self.sample_history.len().min(self.size);
+        let window = WindowKind::Hann.coefficients(n);
+        for (i, (&sample, &w)) in self.sample_history.iter().zip(window.iter()).enumerate() {
+            self.input_buffer[i] = sample * w;
         }
     }
 
@@ -192,33 +194,56 @@ impl BandAnalyzer {
             .map_err(|_| ())
     }
 
-    fn compute_frequency_position(&self) -> f32 {
-        const MID_BAND_WEIGHT: f32 = 0.5; // Creates smooth gradient: low=0, mid=0.5, high=1.0
+    /// Finds the dominant frequency bin and returns a normalized [0,1] value.
+    fn find_peak_frequency(&self) -> f32 {
+        let min_bin = (MIN_FREQ_HZ / self.bin_hz).ceil() as usize;
+        let max_bin =
+            ((MAX_FREQ_HZ / self.bin_hz).floor() as usize).min(self.output_spectrum.len());
 
-        let (low_energy, mid_energy, high_energy) = self.sum_band_energies();
-        let total_energy = low_energy + mid_energy + high_energy;
-
-        if total_energy <= f32::EPSILON {
-            return MID_BAND_WEIGHT;
+        if min_bin >= max_bin {
+            return 0.5;
         }
 
-        (mid_energy * MID_BAND_WEIGHT + high_energy) / total_energy
+        let (peak_bin, peak_mag) = self.output_spectrum[min_bin..max_bin]
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (min_bin + i, c.norm()))
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .unwrap_or((min_bin, 0.0));
+
+        if peak_mag <= f32::EPSILON {
+            return 0.5;
+        }
+
+        Self::hz_to_normalized(self.interpolate_peak(peak_bin))
     }
 
-    fn sum_band_energies(&self) -> (f32, f32, f32) {
-        self.output_spectrum.iter().enumerate().fold(
-            (0.0f32, 0.0f32, 0.0f32),
-            |(low, mid, high), (bin, complex)| {
-                let energy = complex.norm_sqr();
-                if bin <= self.low_band_bin {
-                    (low + energy, mid, high)
-                } else if bin < self.high_band_bin {
-                    (low, mid + energy, high)
-                } else {
-                    (low, mid, high + energy)
-                }
-            },
-        )
+    fn interpolate_peak(&self, bin: usize) -> f32 {
+        let base_hz = bin as f32 * self.bin_hz;
+        if bin == 0 || bin >= self.output_spectrum.len() - 1 {
+            return base_hz;
+        }
+
+        let (y0, y1, y2) = (
+            self.output_spectrum[bin - 1].norm(),
+            self.output_spectrum[bin].norm(),
+            self.output_spectrum[bin + 1].norm(),
+        );
+        let denom = y0 - 2.0 * y1 + y2;
+        if denom.abs() < f32::EPSILON {
+            return base_hz;
+        }
+
+        let offset = (0.5 * (y0 - y2) / denom).clamp(-0.5, 0.5);
+        (bin as f32 + offset) * self.bin_hz
+    }
+
+    /// Maps Hz to [0,1] in log
+    fn hz_to_normalized(hz: f32) -> f32 {
+        // no ln() in `const` contexts cause of floating points :[
+        const LOG_MIN: f32 = 2.995_732_3; // 20.0_f32.ln()
+        const LOG_RANGE: f32 = 5.526_072_4; // (5000.0_f32.ln() - LOG_MIN)
+        ((hz.max(MIN_FREQ_HZ).ln() - LOG_MIN) / LOG_RANGE).clamp(0.0, 1.0)
     }
 }
 
@@ -237,7 +262,7 @@ pub struct WaveformProcessor {
     sample_accumulators: Vec<Vec<f32>>,
     accumulator_min: Vec<f32>,
     accumulator_max: Vec<f32>,
-    band_analyzer: BandAnalyzer,
+    frequency_analyzer: FrequencyAnalyzer,
     has_pending_changes: bool,
 }
 
@@ -246,10 +271,7 @@ impl WaveformProcessor {
         let normalized_config = config.normalized();
         let mut processor = Self {
             samples_per_column: normalized_config.samples_per_column(),
-            band_analyzer: BandAnalyzer::new(
-                normalized_config.fft_size(),
-                normalized_config.sample_rate,
-            ),
+            frequency_analyzer: FrequencyAnalyzer::new(normalized_config.sample_rate),
             config: normalized_config,
             snapshot: WaveformSnapshot::default(),
             channel_count: 2,
@@ -286,8 +308,7 @@ impl WaveformProcessor {
 
     fn rebuild(&mut self) {
         self.samples_per_column = self.config.samples_per_column();
-        self.band_analyzer
-            .reconfigure(self.config.fft_size(), self.config.sample_rate);
+        self.frequency_analyzer.reconfigure(self.config.sample_rate);
         self.ring_head = 0;
         self.column_count = 0;
         self.total_columns_written = 0;
@@ -310,7 +331,7 @@ impl WaveformProcessor {
             self.min_values[ring_index] = clamped_min;
             self.max_values[ring_index] = clamped_max;
             self.frequency_values[ring_index] = self
-                .band_analyzer
+                .frequency_analyzer
                 .analyze(&self.sample_accumulators[channel]);
         }
 
@@ -492,26 +513,77 @@ mod tests {
     }
 
     #[test]
-    fn detects_correct_bands_for_frequencies() {
+    fn peak_frequency_tracks_fundamental() {
         let config = WaveformConfig {
             sample_rate: 48_000.0,
             scroll_speed: 200.0,
             ..Default::default()
         };
         let samples_per_column = config.samples_per_column();
-        for &(frequency, expected) in &[(100.0, 0.0), (440.0, 0.5), (1000.0, 0.5), (5000.0, 1.0)] {
+
+        // higher frequency -> higher normalized value
+        let mut results = Vec::new();
+        for &frequency in &[100.0, 440.0, 1000.0, 5000.0] {
             let mut processor = WaveformProcessor::new(config);
             let samples: Vec<f32> = (0..samples_per_column * 4)
                 .map(|n| (2.0 * PI * frequency * n as f32 / 48_000.0).sin())
                 .collect();
-            let band = extract_snapshot(processor.process_block(&block(&samples, 1, 48_000.0)))
-                .frequency_normalized
-                .last()
-                .copied()
-                .unwrap_or(0.5);
+            let normalized =
+                extract_snapshot(processor.process_block(&block(&samples, 1, 48_000.0)))
+                    .frequency_normalized
+                    .last()
+                    .copied()
+                    .unwrap_or(0.5);
+            results.push((frequency, normalized));
+        }
+
+        // higher frequency -> higher normalized value
+        for window in results.windows(2) {
+            let (low_hz, low_norm) = window[0];
+            let (high_hz, high_norm) = window[1];
             assert!(
-                (band - expected).abs() < 0.05,
-                "{frequency:.0} Hz: expected ~{expected:.1}, got {band:.3}"
+                high_norm > low_norm,
+                "{high_hz:.0} Hz ({high_norm:.3}) should be > {low_hz:.0} Hz ({low_norm:.3})"
+            );
+        }
+    }
+
+    #[test]
+    fn scroll_speed_does_not_affect_frequency_detection() {
+        // Test that the same frequency produces consistent results across scroll speeds
+        let frequency = 440.0;
+        let mut results = Vec::new();
+
+        for &scroll_speed in &[50.0, 100.0, 200.0, 500.0] {
+            let config = WaveformConfig {
+                sample_rate: 48_000.0,
+                scroll_speed,
+                ..Default::default()
+            };
+            let samples_per_column = config.samples_per_column();
+            let mut processor = WaveformProcessor::new(config);
+            let samples: Vec<f32> = (0..samples_per_column * 4)
+                .map(|n| (2.0 * PI * frequency * n as f32 / 48_000.0).sin())
+                .collect();
+            let normalized =
+                extract_snapshot(processor.process_block(&block(&samples, 1, 48_000.0)))
+                    .frequency_normalized
+                    .last()
+                    .copied()
+                    .unwrap_or(0.5);
+            results.push((scroll_speed, normalized));
+        }
+
+        // All results should be within 10% of each other
+        // 10% deviation threshold is arbitrary but seems reasonable
+        // (deviation due to fft windowing, binning, etc.)
+        let avg: f32 = results.iter().map(|(_, n)| n).sum::<f32>() / results.len() as f32;
+        for (speed, normalized) in &results {
+            let deviation = (normalized - avg).abs() / avg;
+            assert!(
+                deviation < 0.10,
+                "scroll_speed {speed} produced {normalized:.3}, deviates {:.1}% from avg {avg:.3}",
+                deviation * 100.0
             );
         }
     }

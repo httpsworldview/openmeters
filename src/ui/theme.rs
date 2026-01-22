@@ -108,15 +108,27 @@ pub mod spectrum {
     pub const LABELS: &[&str] = &["Floor", "Low", "Low-Mid", "Mid", "High", "Peak"];
 }
 
-/// Waveform display: low, mid, high frequency bands (3 stops)
+/// Waveform display: 6-stop frequency gradient (sub-bass to brilliance)
+/// Spectral rainbow: dark red (low) → orange → green → cyan → blue (high)
+/// Matches MiniMeters-style frequency coloring conventions
 pub mod waveform {
     use super::*;
-    pub const COLORS: [Color; 3] = [
-        Color::from_rgba(0.800, 0.200, 0.100, 1.0),
-        Color::from_rgba(1.000, 0.600, 0.100, 1.0),
-        Color::from_rgba(0.400, 0.300, 0.900, 1.0),
+    pub const COLORS: [Color; 6] = [
+        Color::from_rgba(0.545, 0.000, 0.000, 1.0), // #8B0000 Sub-bass (dark red)
+        Color::from_rgba(1.000, 0.259, 0.000, 1.0), // #FF4200 Bass (red-orange)
+        Color::from_rgba(1.000, 0.412, 0.000, 1.0), // #FF6900 Low-mid (orange)
+        Color::from_rgba(0.298, 1.000, 0.180, 1.0), // #4CFF2E Mid (lime green)
+        Color::from_rgba(0.196, 0.804, 1.000, 1.0), // #32CDFF Upper-mid (cyan)
+        Color::from_rgba(0.000, 0.000, 1.000, 1.0), // #0000FF Brilliance (blue)
     ];
-    pub const LABELS: &[&str] = &["Low", "Mid", "High"];
+    pub const LABELS: &[&str] = &[
+        "Sub-bass",
+        "Bass",
+        "Low-mid",
+        "Mid",
+        "Upper-mid",
+        "Brilliance",
+    ];
 }
 
 /// Oscilloscope trace color (1 stop)
@@ -280,14 +292,114 @@ pub fn accent_primary() -> Color {
     ACCENT_PRIMARY
 }
 
+/// Interpolates colors in Oklch space along the hue circle for perceptually
+/// smooth transitions (e.g., orange -> green passes through yellow).
 pub fn mix_colors(a: Color, b: Color, factor: f32) -> Color {
     let t = factor.clamp(0.0, 1.0);
-    Color::from_rgba(
-        a.r + (b.r - a.r) * t,
-        a.g + (b.g - a.g) * t,
-        a.b + (b.b - a.b) * t,
-        a.a + (b.a - a.a) * t,
+    let (l1, c1, h1) = srgb_to_oklch(a.r, a.g, a.b);
+    let (l2, c2, h2) = srgb_to_oklch(b.r, b.g, b.b);
+
+    let l = l1 + (l2 - l1) * t;
+    let c = c1 + (c2 - c1) * t;
+    let h = interpolate_hue(h1, c1, h2, c2, t);
+
+    let (r, g, b_out) = oklch_to_srgb(l, c, h);
+    Color::from_rgba(r, g, b_out, a.a + (b.a - a.a) * t)
+}
+
+/// Interpolates hue along the shorter arc, handling achromatic colors.
+fn interpolate_hue(h1: f32, c1: f32, h2: f32, c2: f32, t: f32) -> f32 {
+    const EPSILON: f32 = 1e-6;
+    if c1 < EPSILON {
+        return h2;
+    }
+    if c2 < EPSILON {
+        return h1;
+    }
+    let mut delta = h2 - h1;
+    if delta > std::f32::consts::PI {
+        delta -= std::f32::consts::TAU;
+    } else if delta < -std::f32::consts::PI {
+        delta += std::f32::consts::TAU;
+    }
+    h1 + delta * t
+}
+
+// Oklch color space conversions (perceptually uniform with hue interpolation)
+
+/// Convert sRGB (0-1) to Oklch (lightness, chroma, hue).
+#[inline]
+fn srgb_to_oklch(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
+    // sRGB -> linear RGB
+    let r_lin = srgb_to_linear(r);
+    let g_lin = srgb_to_linear(g);
+    let b_lin = srgb_to_linear(b);
+
+    // Linear RGB -> LMS
+    let l = 0.412_221_46 * r_lin + 0.536_332_55 * g_lin + 0.051_445_995 * b_lin;
+    let m = 0.211_903_5 * r_lin + 0.680_699_5 * g_lin + 0.107_396_96 * b_lin;
+    let s = 0.088_302_46 * r_lin + 0.281_718_84 * g_lin + 0.629_978_7 * b_lin;
+
+    // LMS -> Oklab
+    let l_cbrt = l.max(0.0).cbrt();
+    let m_cbrt = m.max(0.0).cbrt();
+    let s_cbrt = s.max(0.0).cbrt();
+
+    let ok_l = 0.210_454_26 * l_cbrt + 0.793_617_8 * m_cbrt - 0.004_072_047 * s_cbrt;
+    let ok_a = 1.977_998_5 * l_cbrt - 2.428_592_2 * m_cbrt + 0.450_593_7 * s_cbrt;
+    let ok_b = 0.025_904_037 * l_cbrt + 0.782_771_77 * m_cbrt - 0.808_675_77 * s_cbrt;
+
+    // Oklab -> Oklch
+    let chroma = (ok_a * ok_a + ok_b * ok_b).sqrt();
+    let hue = ok_b.atan2(ok_a);
+    (ok_l, chroma, hue)
+}
+
+/// Convert Oklch (lightness, chroma, hue) to sRGB (0-1), clamped to valid range.
+#[inline]
+fn oklch_to_srgb(l: f32, c: f32, h: f32) -> (f32, f32, f32) {
+    // Oklch -> Oklab
+    let ok_a = c * h.cos();
+    let ok_b = c * h.sin();
+
+    // Oklab -> LMS
+    let l_cubed = l + 0.396_337_78 * ok_a + 0.215_803_76 * ok_b;
+    let m_cubed = l - 0.105_561_346 * ok_a - 0.063_854_17 * ok_b;
+    let s_cubed = l - 0.089_484_18 * ok_a - 1.291_485_5 * ok_b;
+
+    let l_lin = l_cubed * l_cubed * l_cubed;
+    let m_lin = m_cubed * m_cubed * m_cubed;
+    let s_lin = s_cubed * s_cubed * s_cubed;
+
+    // LMS -> linear RGB
+    let r_lin = 4.076_741_7 * l_lin - 3.307_711_6 * m_lin + 0.230_969_94 * s_lin;
+    let g_lin = -1.268_438 * l_lin + 2.609_757_4 * m_lin - 0.341_319_4 * s_lin;
+    let b_lin = -0.004_196_086 * l_lin - 0.703_418_6 * m_lin + 1.707_614_7 * s_lin;
+
+    // Linear RGB -> sRGB
+    (
+        linear_to_srgb(r_lin).clamp(0.0, 1.0),
+        linear_to_srgb(g_lin).clamp(0.0, 1.0),
+        linear_to_srgb(b_lin).clamp(0.0, 1.0),
     )
+}
+
+#[inline]
+fn srgb_to_linear(c: f32) -> f32 {
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+#[inline]
+fn linear_to_srgb(c: f32) -> f32 {
+    if c <= 0.0031308 {
+        c * 12.92
+    } else {
+        1.055 * c.powf(1.0 / 2.4) - 0.055
+    }
 }
 
 pub fn with_alpha(color: Color, alpha: f32) -> Color {
@@ -345,7 +457,7 @@ pub fn palettes_equal(a: &[Color], b: &[Color]) -> bool {
     a.len() == b.len() && a.iter().zip(b).all(|(x, y)| colors_equal(*x, *y))
 }
 
-/// Samples a gradient at position `t` (0.0 to 1.0) using linear interpolation.
+/// Samples a gradient at position `t` (0.0 to 1.0) using Oklch interpolation.
 #[inline]
 pub fn sample_gradient(palette: &[Color], t: f32) -> Color {
     let n = palette.len();

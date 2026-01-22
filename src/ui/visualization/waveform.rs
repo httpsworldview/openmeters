@@ -131,7 +131,7 @@ impl WaveformState {
         }
     }
 
-    pub fn palette(&self) -> &[Color; 3] {
+    pub fn palette(&self) -> &[Color; 6] {
         &self.style.palette
     }
 
@@ -232,6 +232,7 @@ impl WaveformState {
                 let (min, max) = (preview.min_values[ch], preview.max_values[ch]);
                 let freq = self.latest_frequency_for_channel(ch);
                 let intensity = self.color_intensity(min, max, freq);
+
                 PreviewSample {
                     min: min.min(max).clamp(-1.0, 1.0),
                     max: min.max(max).clamp(-1.0, 1.0),
@@ -301,7 +302,7 @@ pub struct WaveformStyle {
     pub channel_gap: f32,
     pub amplitude_scale: f32,
     pub stroke_width: f32,
-    pub palette: [Color; 3],
+    pub palette: [Color; 6],
 }
 
 impl Default for WaveformStyle {
@@ -324,7 +325,7 @@ impl WaveformStyle {
     }
 
     fn try_update_palette(&mut self, palette: &[Color]) -> bool {
-        let palette_changed = palette.len() == 3 && !theme::palettes_equal(&self.palette, palette);
+        let palette_changed = palette.len() == 6 && !theme::palettes_equal(&self.palette, palette);
         if palette_changed {
             self.palette.copy_from_slice(palette);
         }

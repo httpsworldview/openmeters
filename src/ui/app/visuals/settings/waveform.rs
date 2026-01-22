@@ -36,7 +36,7 @@ fn configure_palette_for_mode(palette: &mut PaletteEditor, mode: WaveformColorMo
         }
         WaveformColorMode::Loudness => {
             palette.set_visible_indices(None);
-            palette.set_label_overrides(vec![(0, "Quiet"), (2, "Loud")]);
+            palette.set_label_overrides(vec![(0, "Quiet"), (5, "Loud")]);
         }
         WaveformColorMode::Frequency => {
             palette.set_visible_indices(None);
