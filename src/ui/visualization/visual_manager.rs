@@ -1,7 +1,6 @@
 //! Central owner of visual modules and their state.
 use crate::{
     audio::meter_tap::{self, MeterFormat},
-    dsp::ProcessorUpdate,
     ui::{
         settings::{self as settings_cfg, ModuleSettings, PaletteSettings, VisualSettings},
         theme,
@@ -47,15 +46,29 @@ macro_rules! visuals {
         #[serde(rename_all = "snake_case")]
         pub enum VisualKind { $($variant),* }
 
-        #[derive(Debug, Clone)]
-        pub enum VisualContent { $($variant(Shared<$module2::$state>)),* }
+        #[derive(Clone)]
+        pub struct VisualContent(VisualContentInner);
+
+        #[derive(Clone)]
+        enum VisualContentInner { $($variant(Shared<$module2::$state>)),* }
+
         impl VisualContent {
+            fn new(inner: VisualContentInner) -> Self {
+                Self(inner)
+            }
+
             pub fn render<M: 'static>(&self, meta: VisualMetadata) -> Element<'_, M> {
-                let elem: Element<'_, M> = match self { $(Self::$variant(s) => $module::widget(s)),* };
+                let elem: Element<'_, M> = match &self.0 { $(VisualContentInner::$variant(s) => $module::widget(s)),* };
                 let (width, height) = (
                     if meta.fill_horizontal { Length::Fill } else { Length::Fixed(meta.preferred_width) },
                     if meta.fill_vertical { Length::Fill } else { Length::Fixed(meta.preferred_height) });
                 container(elem).width(width).height(height).center(Length::Fill).into()
+            }
+        }
+
+        impl std::fmt::Debug for VisualContent {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_struct("VisualContent").finish_non_exhaustive()
             }
         }
         const DESCRIPTORS: &[Descriptor] = &[$(Descriptor {
@@ -64,11 +77,11 @@ macro_rules! visuals {
                 min_width: $min_w, $( max_width: $max_w, )? ..DEFAULT_METADATA },
             build: || { let $sr = DEFAULT_SAMPLE_RATE; Box::new(Visual { p: $proc_init, s: shared($state_init) }) },
         }),*];
-        $(impl Module for Visual<$module::$processor, Shared<$module2::$state>> {
+        $(impl VisualModule for Visual<$module::$processor, Shared<$module2::$state>> {
             fn ingest(&mut self, $samples: &[f32], $fmt: MeterFormat) {
                 let ($p, $s) = (&mut self.p, &mut self.s); $ingest_body
             }
-            fn content(&self) -> VisualContent { VisualContent::$variant(self.s.clone()) }
+            fn content(&self) -> VisualContent { VisualContent::new(VisualContentInner::$variant(self.s.clone())) }
             fn apply(&mut self, module_cfg: &ModuleSettings) {
                 let $aset: $settings_ty = module_cfg.config_or_default();
                 let ($ap, $as) = (&mut self.p, &mut self.s); $apply_body
@@ -82,10 +95,10 @@ macro_rules! visuals {
 }
 
 visuals! {
-    Loudness("Loudness Meter", 140.0, 300.0, 80.0, max=140.0) =>
-        loudness::LoudnessMeterProcessor, Shared<loudness::LoudnessMeterState>;
-        init(sr) { loudness::LoudnessMeterProcessor::new(sr), loudness::LoudnessMeterState::new() }
-        ingest(p, s, sa, fm) { s.borrow_mut().apply_snapshot(&p.ingest(sa, fm)); };
+    Loudness("Loudness", 140.0, 300.0, 80.0, max=140.0) =>
+        loudness::LoudnessProcessor, Shared<loudness::LoudnessState>;
+        init(sr) { loudness::LoudnessProcessor::new(sr), loudness::LoudnessState::new() }
+        ingest(p, s, sa, fm) if let Some(snap) = p.ingest(sa, fm) { s.borrow_mut().apply_snapshot(&snap); };
         settings_cfg::LoudnessSettings, &theme::loudness::COLORS;
         apply(_p, s, set) { let mut st = s.borrow_mut(); st.set_modes(set.left_mode, set.right_mode);
             visuals!(@apply_palette st, set, &theme::loudness::COLORS); };
@@ -94,7 +107,7 @@ visuals! {
 
     Oscilloscope("Oscilloscope", 150.0, 160.0, 100.0) =>
         oscilloscope::OscilloscopeProcessor, Shared<oscilloscope::OscilloscopeState>;
-        init(sr) { oscilloscope::OscilloscopeProcessor::with_sample_rate(sr), oscilloscope::OscilloscopeState::new() }
+        init(sr) { oscilloscope::OscilloscopeProcessor::new(sr), oscilloscope::OscilloscopeState::new() }
         ingest(p, s, samples, fmt) if let Some(snap) = p.ingest(samples, fmt) { s.borrow_mut().apply_snapshot(&snap); };
         settings_cfg::OscilloscopeSettings, &theme::oscilloscope::COLORS;
         apply(p, s, set) { visuals!(@apply_config p, set); let mut st = s.borrow_mut();
@@ -108,7 +121,7 @@ visuals! {
         waveform::WaveformProcessor, Shared<waveform::WaveformState>;
         init(sr) { waveform::WaveformProcessor::new(sr), waveform::WaveformState::new() }
         ingest(p, s, samples, fmt) { p.sync_capacity(s.borrow().desired_columns());
-            if let Some(snap) = p.ingest(samples, fmt) { s.borrow_mut().apply_snapshot(snap); } };
+            if let Some(snap) = p.ingest(samples, fmt) { s.borrow_mut().apply_snapshot(&snap); } };
         settings_cfg::WaveformSettings, &theme::waveform::COLORS;
         apply(p, s, set) { visuals!(@apply_config p, set); p.sync_capacity(s.borrow().desired_columns());
             let mut st = s.borrow_mut(); st.set_channel_mode(set.channel_mode); st.set_color_mode(set.color_mode);
@@ -120,11 +133,11 @@ visuals! {
     Spectrogram("Spectrogram", 320.0, 220.0, 300.0) =>
         spectrogram::SpectrogramProcessor, Shared<spectrogram::SpectrogramState>;
         init(sr) { spectrogram::SpectrogramProcessor::new(sr), spectrogram::SpectrogramState::new() }
-        ingest(p, s, samples, fmt) { if let ProcessorUpdate::Snapshot(update) = p.ingest(samples, fmt) {
-            s.borrow_mut().apply_update(&update); }};
+        ingest(p, s, samples, fmt) if let Some(snap) = p.ingest(samples, fmt) {
+            s.borrow_mut().apply_snapshot(&snap); };
         settings_cfg::SpectrogramSettings, &theme::spectrogram::COLORS;
         apply(p, s, set) { visuals!(@apply_config p, set); let mut st = s.borrow_mut();
-            st.set_palette(resolve_palette(&set.palette, &theme::spectrogram::COLORS));
+            visuals!(@apply_palette st, set, &theme::spectrogram::COLORS);
             st.set_piano_roll(set.show_piano_roll, set.piano_roll_side); };
         export(p, s) { let st = s.borrow(); let mut out = settings_cfg::SpectrogramSettings::from_config(&p.config());
             out.palette = visuals!(@export_palette &st.palette(), &theme::spectrogram::COLORS);
@@ -158,7 +171,7 @@ visuals! {
     Stereometer("Stereometer", 150.0, 220.0, 100.0) =>
         stereometer::StereometerProcessor, Shared<stereometer::StereometerState>;
         init(sr) { stereometer::StereometerProcessor::new(sr), stereometer::StereometerState::new() }
-        ingest(p, s, samples, fmt) { s.borrow_mut().apply_snapshot(&p.ingest(samples, fmt)); };
+        ingest(p, s, samples, fmt) if let Some(snap) = p.ingest(samples, fmt) { s.borrow_mut().apply_snapshot(&snap); };
         settings_cfg::StereometerSettings, &theme::stereometer::COLORS;
         apply(p, s, set) { visuals!(@apply_config p, set); let mut st = s.borrow_mut();
             st.update_view_settings(&set); visuals!(@apply_palette st, set, &theme::stereometer::COLORS); };
@@ -198,7 +211,7 @@ const DEFAULT_METADATA: VisualMetadata = VisualMetadata {
     max_width: f32::INFINITY,
 };
 
-trait Module {
+pub trait VisualModule {
     fn ingest(&mut self, samples: &[f32], format: MeterFormat);
     fn content(&self) -> VisualContent;
     fn apply(&mut self, settings: &ModuleSettings);
@@ -208,7 +221,7 @@ trait Module {
 struct Descriptor {
     kind: VisualKind,
     meta: VisualMetadata,
-    build: fn() -> Box<dyn Module>,
+    build: fn() -> Box<dyn VisualModule>,
 }
 
 struct Entry {
@@ -216,7 +229,7 @@ struct Entry {
     kind: VisualKind,
     enabled: bool,
     meta: VisualMetadata,
-    module: Box<dyn Module>,
+    module: Box<dyn VisualModule>,
     content: VisualContent,
 }
 impl Entry {
@@ -241,12 +254,12 @@ impl Entry {
 }
 
 #[derive(Debug, Clone)]
-pub struct VisualSnapshot {
+pub(crate) struct VisualSnapshot {
     pub slots: Vec<VisualSlotSnapshot>,
 }
 
 #[derive(Debug, Clone)]
-pub struct VisualSlotSnapshot {
+pub(crate) struct VisualSlotSnapshot {
     pub id: VisualId,
     pub kind: VisualKind,
     pub enabled: bool,
@@ -265,7 +278,7 @@ impl From<&Entry> for VisualSlotSnapshot {
     }
 }
 
-pub struct VisualManager {
+pub(crate) struct VisualManager {
     entries: Vec<Entry>,
     next_id: u32,
 }
@@ -375,7 +388,7 @@ impl VisualManager {
 }
 
 #[derive(Clone)]
-pub struct VisualManagerHandle(Rc<RefCell<VisualManager>>);
+pub(crate) struct VisualManagerHandle(Rc<RefCell<VisualManager>>);
 impl VisualManagerHandle {
     pub fn new(m: VisualManager) -> Self {
         Self(Rc::new(RefCell::new(m)))

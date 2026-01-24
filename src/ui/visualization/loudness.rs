@@ -1,11 +1,14 @@
 //! UI wrapper around the loudness DSP processor and renderer.
-
+/// Note: This processor intentionally diverges from project patterns by
+/// omitting `config()` and `update_config()` methods. this is because
+/// loudness settings are not user-configurable
 use crate::audio::meter_tap::MeterFormat;
 use crate::dsp::loudness::{
     LoudnessConfig, LoudnessProcessor as CoreLoudnessProcessor, LoudnessSnapshot, MAX_CHANNELS,
 };
-use crate::dsp::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
-use crate::ui::render::loudness::{LoudnessMeterPrimitive, MeterBar, RenderParams};
+use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
+use crate::ui::render::loudness::{LoudnessParams, LoudnessPrimitive, MeterBar};
+use crate::ui::settings::MeterMode;
 use crate::ui::theme;
 use iced::advanced::Renderer as _;
 use iced::advanced::renderer::{self, Quad};
@@ -14,9 +17,8 @@ use iced::advanced::{Layout, Widget, layout, mouse, text};
 use iced::alignment::{Horizontal, Vertical};
 use iced::{Background, Border, Color, Element, Length, Point, Rectangle, Size, Theme};
 use iced_wgpu::primitive::Renderer as _;
-use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
-use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const DEFAULT_RANGE: (f32, f32) = (-60.0, 4.0);
 const GUIDE_LEVELS: [f32; 6] = [0.0, -6.0, -12.0, -18.0, -24.0, -36.0];
@@ -25,53 +27,19 @@ const RIGHT_PADDING: f32 = 64.0;
 const LABEL_FONT_SIZE: f32 = 10.0;
 const VALUE_FONT_SIZE: f32 = 12.0;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
-pub enum MeterMode {
-    #[default]
-    LufsShortTerm,
-    LufsMomentary,
-    RmsFast,
-    RmsSlow,
-    TruePeak,
-}
+// Standard channel map assumptions for stereo/surround downmix
+// 0: FL, 1: FR, 2: FC, 3: LFE, 4: BL, 5: BR, 6: SL, 7: SR
+const LEFT_CHANNEL_INDICES: &[usize] = &[0, 4, 6];
+const RIGHT_CHANNEL_INDICES: &[usize] = &[1, 5, 7];
+const CENTER_CHANNEL_INDEX: usize = 2;
 
-impl MeterMode {
-    pub const ALL: &'static [MeterMode] = &[
-        MeterMode::LufsShortTerm,
-        MeterMode::LufsMomentary,
-        MeterMode::RmsFast,
-        MeterMode::RmsSlow,
-        MeterMode::TruePeak,
-    ];
-
-    pub fn unit_label(self) -> &'static str {
-        match self {
-            MeterMode::LufsShortTerm | MeterMode::LufsMomentary => "LUFS",
-            MeterMode::RmsFast | MeterMode::RmsSlow | MeterMode::TruePeak => "dB",
-        }
-    }
-}
-
-impl fmt::Display for MeterMode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            MeterMode::LufsShortTerm => f.write_str("LUFS Short-term"),
-            MeterMode::LufsMomentary => f.write_str("LUFS Momentary"),
-            MeterMode::RmsFast => f.write_str("RMS Fast"),
-            MeterMode::RmsSlow => f.write_str("RMS Slow"),
-            MeterMode::TruePeak => f.write_str("True Peak"),
-        }
-    }
-}
-
-/// UI wrapper around the shared loudness processor.
 #[derive(Debug, Clone)]
-pub struct LoudnessMeterProcessor {
+pub(crate) struct LoudnessProcessor {
     inner: CoreLoudnessProcessor,
     channels: usize,
 }
 
-impl LoudnessMeterProcessor {
+impl LoudnessProcessor {
     pub fn new(sample_rate: f32) -> Self {
         Self {
             inner: CoreLoudnessProcessor::new(LoudnessConfig {
@@ -82,9 +50,9 @@ impl LoudnessMeterProcessor {
         }
     }
 
-    pub fn ingest(&mut self, samples: &[f32], format: MeterFormat) -> LoudnessSnapshot {
+    pub fn ingest(&mut self, samples: &[f32], format: MeterFormat) -> Option<LoudnessSnapshot> {
         if samples.is_empty() {
-            return *self.inner.snapshot();
+            return None;
         }
 
         let channels = format.channels.max(1);
@@ -99,13 +67,9 @@ impl LoudnessMeterProcessor {
             self.inner.update_config(config);
         }
 
-        match self
-            .inner
+        self.inner
             .process_block(&AudioBlock::now(samples, self.channels, sample_rate))
-        {
-            ProcessorUpdate::Snapshot(s) => s,
-            ProcessorUpdate::None => *self.inner.snapshot(),
-        }
+            .into()
     }
 }
 
@@ -113,7 +77,7 @@ pub const LOUDNESS_PALETTE_SIZE: usize = 5;
 
 /// View-model state consumed by the loudness widget.
 #[derive(Debug, Clone)]
-pub struct LoudnessMeterState {
+pub(crate) struct LoudnessState {
     short_term_loudness: f32,
     momentary_loudness: f32,
     rms_fast_db: [f32; MAX_CHANNELS],
@@ -124,10 +88,12 @@ pub struct LoudnessMeterState {
     left_mode: MeterMode,
     right_mode: MeterMode,
     palette: [Color; LOUDNESS_PALETTE_SIZE],
+    key: u64,
 }
 
-impl LoudnessMeterState {
+impl LoudnessState {
     pub fn new() -> Self {
+        static NEXT_KEY: AtomicU64 = AtomicU64::new(1);
         Self {
             short_term_loudness: DEFAULT_RANGE.0,
             momentary_loudness: DEFAULT_RANGE.0,
@@ -139,6 +105,7 @@ impl LoudnessMeterState {
             left_mode: MeterMode::TruePeak,
             right_mode: MeterMode::LufsShortTerm,
             palette: theme::loudness::COLORS,
+            key: NEXT_KEY.fetch_add(1, Ordering::Relaxed),
         }
     }
 
@@ -201,7 +168,7 @@ impl LoudnessMeterState {
         }
     }
 
-    fn render_params(&self, bounds: Rectangle) -> RenderParams {
+    fn visual_params(&self, bounds: Rectangle) -> Option<LoudnessParams> {
         let (min, max) = self.range;
         let guide_color = theme::color_to_rgba(self.palette[4]);
         let mut bg = self.palette[0];
@@ -212,7 +179,8 @@ impl LoudnessMeterState {
         let left_value = self.aggregate_left_channels(self.left_mode);
         let right_value = self.aggregate_right_channels(self.left_mode);
 
-        RenderParams {
+        Some(LoudnessParams {
+            key: self.key,
             bounds,
             min_db: min,
             max_db: max,
@@ -241,7 +209,7 @@ impl LoudnessMeterState {
             threshold_db: Some(0.0),
             left_padding: LEFT_PADDING,
             right_padding: RIGHT_PADDING,
-        }
+        })
     }
 
     fn aggregate_left_channels(&self, mode: MeterMode) -> f32 {
@@ -249,13 +217,13 @@ impl LoudnessMeterState {
             return self.get_value(mode, 0);
         }
         let mut max_val = self.range.0;
-        for &ch in &[0usize, 4, 6] {
+        for &ch in LEFT_CHANNEL_INDICES {
             if ch < self.channel_count {
                 max_val = max_val.max(self.get_value(mode, ch));
             }
         }
-        if self.channel_count > 2 {
-            max_val = max_val.max(self.get_value(mode, 2));
+        if self.channel_count > CENTER_CHANNEL_INDEX {
+            max_val = max_val.max(self.get_value(mode, CENTER_CHANNEL_INDEX));
         }
         max_val
     }
@@ -265,13 +233,13 @@ impl LoudnessMeterState {
             return self.get_value(mode, 0);
         }
         let mut max_val = self.range.0;
-        for &ch in &[1usize, 5, 7] {
+        for &ch in RIGHT_CHANNEL_INDICES {
             if ch < self.channel_count {
                 max_val = max_val.max(self.get_value(mode, ch));
             }
         }
-        if self.channel_count > 2 {
-            max_val = max_val.max(self.get_value(mode, 2));
+        if self.channel_count > CENTER_CHANNEL_INDEX {
+            max_val = max_val.max(self.get_value(mode, CENTER_CHANNEL_INDEX));
         }
         max_val
     }
@@ -279,17 +247,17 @@ impl LoudnessMeterState {
 
 /// The loudness meter widget.
 #[derive(Debug)]
-pub struct LoudnessMeter<'a> {
-    state: &'a RefCell<LoudnessMeterState>,
+pub(crate) struct Loudness<'a> {
+    state: &'a RefCell<LoudnessState>,
 }
 
-impl<'a> LoudnessMeter<'a> {
-    pub fn new(state: &'a RefCell<LoudnessMeterState>) -> Self {
+impl<'a> Loudness<'a> {
+    pub fn new(state: &'a RefCell<LoudnessState>) -> Self {
         Self { state }
     }
 }
 
-impl<'a, Message> Widget<Message, Theme, iced::Renderer> for LoudnessMeter<'a> {
+impl<'a, Message> Widget<Message, Theme, iced::Renderer> for Loudness<'a> {
     fn tag(&self) -> tree::Tag {
         tree::Tag::stateless()
     }
@@ -323,9 +291,11 @@ impl<'a, Message> Widget<Message, Theme, iced::Renderer> for LoudnessMeter<'a> {
     ) {
         let bounds = layout.bounds();
         let state = self.state.borrow();
-        let params = state.render_params(bounds);
+        let Some(params) = state.visual_params(bounds) else {
+            return;
+        };
 
-        renderer.draw_primitive(bounds, LoudnessMeterPrimitive::new(params.clone()));
+        renderer.draw_primitive(bounds, LoudnessPrimitive::new(params.clone()));
 
         let palette = theme.extended_palette();
         let label_color = state.palette[4];
@@ -421,11 +391,11 @@ impl<'a, Message> Widget<Message, Theme, iced::Renderer> for LoudnessMeter<'a> {
     fn diff(&self, _tree: &mut Tree) {}
 }
 
-pub fn widget<'a, Message>(state: &'a RefCell<LoudnessMeterState>) -> Element<'a, Message>
+pub(crate) fn widget<'a, Message>(state: &'a RefCell<LoudnessState>) -> Element<'a, Message>
 where
     Message: 'a,
 {
-    Element::new(LoudnessMeter::new(state))
+    Element::new(Loudness::new(state))
 }
 
 #[cfg(test)]
@@ -434,7 +404,7 @@ mod tests {
 
     #[test]
     fn state_aggregates_channels() {
-        let mut state = LoudnessMeterState::new();
+        let mut state = LoudnessState::new();
         state.apply_snapshot(&LoudnessSnapshot {
             short_term_loudness: -9.0,
             momentary_loudness: -7.5,
@@ -448,7 +418,9 @@ mod tests {
         assert_eq!(state.true_peak_db[0], -1.0);
         assert_eq!(state.true_peak_db[1], -3.0);
 
-        let params = state.render_params(Rectangle::new(Point::ORIGIN, Size::new(200.0, 100.0)));
+        let params = state
+            .visual_params(Rectangle::new(Point::ORIGIN, Size::new(200.0, 100.0)))
+            .unwrap();
         assert_eq!(params.bars.len(), 2);
         assert_eq!(params.bars[0].fills.len(), 2);
         assert_eq!(params.bars[1].fills.len(), 1);

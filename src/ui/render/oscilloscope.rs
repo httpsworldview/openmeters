@@ -7,6 +7,7 @@ use crate::ui::render::geometry::{self, DEFAULT_FEATHER, append_strip};
 
 #[derive(Debug, Clone)]
 pub struct OscilloscopeParams {
+    pub key: u64,
     pub bounds: Rectangle,
     pub channels: usize,
     pub samples_per_channel: usize,
@@ -113,8 +114,8 @@ impl OscilloscopePrimitive {
 sdf_primitive!(
     OscilloscopePrimitive,
     Pipeline,
-    (),
+    u64,
     "Oscilloscope",
     TriangleStrip,
-    |self| ()
+    |self| self.params.key
 );

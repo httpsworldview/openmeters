@@ -27,7 +27,7 @@ pub struct WaveformParams {
     pub vertical_padding: f32,
     pub channel_gap: f32,
     pub amplitude_scale: f32,
-    pub instance_key: u64,
+    pub key: u64,
 }
 
 impl WaveformParams {
@@ -167,5 +167,5 @@ sdf_primitive!(
     u64,
     "Waveform",
     TriangleStrip,
-    |self| self.params.instance_key
+    |self| self.params.key
 );

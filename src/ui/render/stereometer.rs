@@ -39,6 +39,10 @@ impl From<StereometerParams> for StereometerPrimitive {
 }
 
 impl StereometerPrimitive {
+    pub fn new(params: StereometerParams) -> Self {
+        Self(params)
+    }
+
     fn build_vertices(&self, viewport: &Viewport) -> Vec<SdfVertex> {
         let clip = ClipTransform::from_viewport(viewport);
         let p = &self.0;

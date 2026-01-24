@@ -8,14 +8,7 @@ use crate::{
         stereometer::StereometerConfig,
         waveform::WaveformConfig,
     },
-    ui::{
-        app::config::CaptureMode,
-        theme,
-        visualization::{
-            loudness::MeterMode,
-            visual_manager::{VisualKind, VisualSnapshot},
-        },
-    },
+    ui::{app::config::CaptureMode, theme, visualization::visual_manager::VisualKind},
 };
 use iced::Color;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -207,6 +200,30 @@ settings_enum!(pub enum StereometerScale { Linear => "Linear", #[default] Expone
 settings_enum!(pub enum CorrelationMeterMode { Off => "Off", #[default] SingleBand => "Single Band", MultiBand => "Multi Band" });
 settings_enum!(pub enum CorrelationMeterSide { #[default] Left => "Left", Right => "Right" });
 settings_enum!(pub enum PianoRollSide { #[default] Left => "Left", Right => "Right" });
+settings_enum!(pub enum MeterMode {
+    #[default] LufsShortTerm => "LUFS Short-term",
+    LufsMomentary => "LUFS Momentary",
+    RmsFast => "RMS Fast",
+    RmsSlow => "RMS Slow",
+    TruePeak => "True Peak",
+});
+
+impl MeterMode {
+    pub const ALL: &'static [MeterMode] = &[
+        MeterMode::LufsShortTerm,
+        MeterMode::LufsMomentary,
+        MeterMode::RmsFast,
+        MeterMode::RmsSlow,
+        MeterMode::TruePeak,
+    ];
+
+    pub fn unit_label(self) -> &'static str {
+        match self {
+            MeterMode::LufsShortTerm | MeterMode::LufsMomentary => "LUFS",
+            MeterMode::RmsFast | MeterMode::RmsSlow | MeterMode::TruePeak => "dB",
+        }
+    }
+}
 settings_enum!(pub enum SpectrumDisplayMode { #[default] Line => "Line", Bar => "Bar" });
 settings_enum!(pub enum SpectrumWeightingMode { #[default] AWeighted => "A-Weighted", Raw => "Raw" });
 settings_enum!(pub enum WaveformColorMode { #[default] Frequency => "Frequency", Loudness => "Loudness", Static => "Static" });
@@ -294,8 +311,8 @@ impl SettingsManager {
             .or_default()
             .set_config(config);
     }
-    pub fn set_visual_order(&mut self, s: &VisualSnapshot) {
-        self.data.visuals.order = s.slots.iter().map(|s| s.kind).collect();
+    pub fn set_visual_order(&mut self, order: impl IntoIterator<Item = VisualKind>) {
+        self.data.visuals.order = order.into_iter().collect();
     }
     pub fn set_background_color(&mut self, c: Option<Color>) {
         self.data.background_color = c.map(Into::into);

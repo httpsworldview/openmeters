@@ -172,9 +172,6 @@ impl StereometerProcessor {
     pub fn config(&self) -> StereometerConfig {
         self.config
     }
-    pub fn snapshot(&self) -> &StereometerSnapshot {
-        &self.snapshot
-    }
 }
 
 fn ema_alpha(sr: f32, window: f32) -> f64 {

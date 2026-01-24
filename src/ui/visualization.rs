@@ -1,10 +1,10 @@
-pub mod loudness;
-pub mod oscilloscope;
-pub mod spectrogram;
-pub mod spectrum;
-pub mod stereometer;
+mod loudness;
+mod oscilloscope;
+mod spectrogram;
+mod spectrum;
+mod stereometer;
 pub mod visual_manager;
-pub mod waveform;
+mod waveform;
 
 /// creates a visualization. very simple macro to reduce boilerplate,
 /// it is used thrice. spectrum, spectrogram, loudness visualizations do

@@ -11,7 +11,7 @@ pub struct SpectrumParams {
     pub bounds: Rectangle,
     pub normalized_points: Arc<[[f32; 2]]>,
     pub secondary_points: Arc<[[f32; 2]]>,
-    pub instance_key: usize,
+    pub key: u64,
     pub line_color: [f32; 4],
     pub line_width: f32,
     pub secondary_line_color: [f32; 4],
@@ -218,8 +218,8 @@ fn sample_lerp(pts: &[[f32; 2]], t: f32) -> f32 {
 sdf_primitive!(
     SpectrumPrimitive,
     Pipeline,
-    usize,
+    u64,
     "Spectrum",
     TriangleList,
-    |self| self.params.instance_key
+    |self| self.params.key
 );

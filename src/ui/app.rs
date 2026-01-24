@@ -493,8 +493,10 @@ impl UiApp {
                 .borrow_mut()
                 .restore_position(popout.visual_id, popout.original_index);
             self.sync_visuals_page();
-            self.settings_handle
-                .update(|settings| settings.set_visual_order(&self.visual_manager.snapshot()));
+            self.settings_handle.update(|settings| {
+                settings
+                    .set_visual_order(self.visual_manager.snapshot().slots.iter().map(|s| s.kind))
+            });
             return window::close(focused);
         }
         let Some((id, kind)) = self.visuals_page.hovered_visual() else {

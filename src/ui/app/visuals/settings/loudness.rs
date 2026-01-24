@@ -1,9 +1,8 @@
 use super::SettingsMessage;
 use super::palette::PaletteEvent;
 use super::widgets::{labeled_pick_list, set_if_changed};
-use crate::ui::settings::{LoudnessSettings, SettingsHandle};
+use crate::ui::settings::{LoudnessSettings, MeterMode, SettingsHandle};
 use crate::ui::theme;
-use crate::ui::visualization::loudness::MeterMode;
 use crate::ui::visualization::visual_manager::{VisualKind, VisualManagerHandle};
 use iced::{Element, widget::column};
 

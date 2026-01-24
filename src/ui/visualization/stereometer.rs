@@ -4,7 +4,7 @@ use crate::audio::meter_tap::MeterFormat;
 use crate::dsp::stereometer::{
     BandCorrelation, StereometerConfig, StereometerProcessor as CoreProcessor, StereometerSnapshot,
 };
-use crate::dsp::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
+use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::ui::render::stereometer::{StereometerParams, StereometerPrimitive};
 use crate::ui::settings::{
     CorrelationMeterMode, CorrelationMeterSide, StereometerMode, StereometerScale,
@@ -18,53 +18,48 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 const TRAIL_LEN: usize = 32;
 
-fn next_key() -> u64 {
-    static KEY: AtomicU64 = AtomicU64::new(1);
-    KEY.fetch_add(1, Ordering::Relaxed)
-}
-
 #[derive(Debug, Clone)]
-pub struct StereometerProcessor(CoreProcessor);
+pub(crate) struct StereometerProcessor {
+    inner: CoreProcessor,
+}
 
 impl StereometerProcessor {
     pub fn new(sample_rate: f32) -> Self {
-        Self(CoreProcessor::new(StereometerConfig {
-            sample_rate,
-            ..Default::default()
-        }))
+        Self {
+            inner: CoreProcessor::new(StereometerConfig {
+                sample_rate,
+                ..Default::default()
+            }),
+        }
     }
 
-    pub fn ingest(&mut self, samples: &[f32], format: MeterFormat) -> StereometerSnapshot {
+    pub fn ingest(&mut self, samples: &[f32], format: MeterFormat) -> Option<StereometerSnapshot> {
         if samples.is_empty() {
-            return self.0.snapshot().clone();
+            return None;
         }
         let sr = format.sample_rate.max(1.0);
-        if (self.0.config().sample_rate - sr).abs() > f32::EPSILON {
-            self.0.update_config(StereometerConfig {
+        if (self.inner.config().sample_rate - sr).abs() > f32::EPSILON {
+            self.inner.update_config(StereometerConfig {
                 sample_rate: sr,
-                ..self.0.config()
+                ..self.inner.config()
             });
         }
-        match self
-            .0
+        self.inner
             .process_block(&AudioBlock::now(samples, format.channels.max(1), sr))
-        {
-            ProcessorUpdate::Snapshot(s) => s,
-            ProcessorUpdate::None => self.0.snapshot().clone(),
-        }
+            .into()
     }
 
     pub fn config(&self) -> StereometerConfig {
-        self.0.config()
+        self.inner.config()
     }
 
     pub fn update_config(&mut self, c: StereometerConfig) {
-        self.0.update_config(c);
+        self.inner.update_config(c);
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct StereometerState {
+pub(crate) struct StereometerState {
     points: Vec<(f32, f32)>,
     corr_trail: VecDeque<f32>,
     band_trail: VecDeque<BandCorrelation>,
@@ -82,6 +77,7 @@ pub struct StereometerState {
 
 impl StereometerState {
     pub fn new() -> Self {
+        static NEXT_KEY: AtomicU64 = AtomicU64::new(1);
         Self {
             points: Vec::new(),
             corr_trail: VecDeque::with_capacity(TRAIL_LEN),
@@ -95,7 +91,7 @@ impl StereometerState {
             flip: true,
             correlation_meter: CorrelationMeterMode::default(),
             correlation_meter_side: CorrelationMeterSide::default(),
-            key: next_key(),
+            key: NEXT_KEY.fetch_add(1, Ordering::Relaxed),
         }
     }
 
@@ -189,7 +185,7 @@ impl StereometerState {
         self.band_trail.truncate(TRAIL_LEN);
     }
 
-    pub fn params(&self, bounds: iced::Rectangle) -> Option<StereometerParams> {
+    pub fn visual_params(&self, bounds: iced::Rectangle) -> Option<StereometerParams> {
         (self.points.len() >= 2).then(|| StereometerParams {
             key: self.key,
             bounds,
@@ -210,6 +206,6 @@ visualization_widget!(
     Stereometer,
     StereometerState,
     StereometerPrimitive,
-    |state, bounds| state.params(bounds),
-    |params| StereometerPrimitive::from(params)
+    |state, bounds| state.visual_params(bounds),
+    |params| StereometerPrimitive::new(params)
 );

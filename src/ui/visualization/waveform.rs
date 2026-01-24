@@ -20,13 +20,8 @@ const COLUMN_WIDTH_PIXELS: f32 = 1.0;
 
 type SampleColorData = (Arc<[[f32; 2]]>, Arc<[[f32; 4]]>);
 
-fn next_instance_key() -> u64 {
-    static COUNTER: AtomicU64 = AtomicU64::new(1);
-    COUNTER.fetch_add(1, Ordering::Relaxed)
-}
-
 #[derive(Debug, Clone)]
-pub struct WaveformProcessor {
+pub(crate) struct WaveformProcessor {
     inner: CoreWaveformProcessor,
 }
 
@@ -78,29 +73,30 @@ impl WaveformProcessor {
 }
 
 #[derive(Debug, Clone)]
-pub struct WaveformState {
+pub(crate) struct WaveformState {
     snapshot: WaveformSnapshot,
     style: WaveformStyle,
     desired_columns: Cell<usize>,
-    instance_key: u64,
+    key: u64,
     channel_mode: ChannelMode,
     color_mode: WaveformColorMode,
 }
 
 impl WaveformState {
     pub fn new() -> Self {
+        static NEXT_KEY: AtomicU64 = AtomicU64::new(1);
         Self {
             snapshot: WaveformSnapshot::default(),
             style: WaveformStyle::default(),
             desired_columns: Cell::new(DEFAULT_COLUMN_CAPACITY),
-            instance_key: next_instance_key(),
+            key: NEXT_KEY.fetch_add(1, Ordering::Relaxed),
             channel_mode: ChannelMode::default(),
             color_mode: WaveformColorMode::default(),
         }
     }
 
-    pub fn apply_snapshot(&mut self, snapshot: WaveformSnapshot) {
-        self.snapshot = Self::project(&snapshot, self.channel_mode);
+    pub fn apply_snapshot(&mut self, snapshot: &WaveformSnapshot) {
+        self.snapshot = Self::project(snapshot, self.channel_mode);
     }
 
     pub fn set_channel_mode(&mut self, mode: ChannelMode) {
@@ -115,10 +111,7 @@ impl WaveformState {
     }
 
     pub fn set_color_mode(&mut self, mode: WaveformColorMode) {
-        if self.color_mode != mode {
-            self.color_mode = mode;
-            self.instance_key = next_instance_key();
-        }
+        self.color_mode = mode;
     }
 
     pub fn color_mode(&self) -> WaveformColorMode {
@@ -126,9 +119,7 @@ impl WaveformState {
     }
 
     pub fn set_palette(&mut self, palette: &[Color]) {
-        if self.style.try_update_palette(palette) {
-            self.instance_key = next_instance_key();
-        }
+        self.style.try_update_palette(palette);
     }
 
     pub fn palette(&self) -> &[Color; 6] {
@@ -139,7 +130,7 @@ impl WaveformState {
         self.desired_columns.get()
     }
 
-    pub fn visual(&self, bounds: iced::Rectangle) -> Option<WaveformParams> {
+    pub fn visual_params(&self, bounds: iced::Rectangle) -> Option<WaveformParams> {
         if !self.has_renderable_data(bounds.width) {
             return None;
         }
@@ -168,7 +159,7 @@ impl WaveformState {
             vertical_padding: self.style.vertical_padding,
             channel_gap: self.style.channel_gap,
             amplitude_scale: self.style.amplitude_scale,
-            instance_key: self.instance_key,
+            key: self.key,
         })
     }
 
@@ -293,7 +284,7 @@ impl WaveformState {
 }
 
 #[derive(Debug, Clone)]
-pub struct WaveformStyle {
+pub(crate) struct WaveformStyle {
     pub fill_alpha: f32,
     pub vertical_padding: f32,
     pub channel_gap: f32,
@@ -331,6 +322,6 @@ visualization_widget!(
     Waveform,
     WaveformState,
     WaveformPrimitive,
-    |state, bounds| state.visual(bounds),
+    |state, bounds| state.visual_params(bounds),
     |params| WaveformPrimitive::new(params)
 );

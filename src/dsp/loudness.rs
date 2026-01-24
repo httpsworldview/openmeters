@@ -311,10 +311,6 @@ impl LoudnessProcessor {
         self.config
     }
 
-    pub fn snapshot(&self) -> &LoudnessSnapshot {
-        &self.snapshot
-    }
-
     fn ensure_state(&mut self, requested_channels: usize, sample_rate: f32) {
         let channels = requested_channels.max(1);
         let rate_changed = sample_rate.is_finite()

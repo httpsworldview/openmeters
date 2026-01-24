@@ -3,7 +3,7 @@ use crate::dsp::spectrogram::{
     FrequencyScale, SpectrogramColumn, SpectrogramConfig,
     SpectrogramProcessor as CoreSpectrogramProcessor, SpectrogramUpdate,
 };
-use crate::dsp::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
+use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::ui::render::spectrogram::{
     ColumnBuffer, ColumnBufferPool, SPECTROGRAM_PALETTE_SIZE, SpectrogramColumnUpdate,
     SpectrogramParams, SpectrogramPrimitive,
@@ -54,9 +54,7 @@ fn freq_to_norm(freq: f32, nyquist: f32, min_freq: f32, scale: FrequencyScale) -
     }
 }
 
-static NEXT_INSTANCE_KEY: AtomicU64 = AtomicU64::new(1);
-
-pub struct SpectrogramProcessor {
+pub(crate) struct SpectrogramProcessor {
     inner: CoreSpectrogramProcessor,
     sample_rate: f32,
 }
@@ -73,13 +71,9 @@ impl SpectrogramProcessor {
         }
     }
 
-    pub fn ingest(
-        &mut self,
-        samples: &[f32],
-        format: MeterFormat,
-    ) -> ProcessorUpdate<SpectrogramUpdate> {
+    pub fn ingest(&mut self, samples: &[f32], format: MeterFormat) -> Option<SpectrogramUpdate> {
         if samples.is_empty() {
-            return ProcessorUpdate::None;
+            return None;
         }
         let rate = format.sample_rate.max(1.0);
         if (self.sample_rate - rate).abs() > f32::EPSILON {
@@ -88,12 +82,14 @@ impl SpectrogramProcessor {
             cfg.sample_rate = rate;
             self.inner.update_config(cfg);
         }
-        self.inner.process_block(&AudioBlock {
-            samples,
-            channels: format.channels.max(1),
-            sample_rate: self.sample_rate,
-            timestamp: Instant::now(),
-        })
+        self.inner
+            .process_block(&AudioBlock {
+                samples,
+                channels: format.channels.max(1),
+                sample_rate: self.sample_rate,
+                timestamp: Instant::now(),
+            })
+            .into()
     }
 
     pub fn update_config(&mut self, config: SpectrogramConfig) {
@@ -107,7 +103,7 @@ impl SpectrogramProcessor {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct SpectrogramStyle {
+pub(crate) struct SpectrogramStyle {
     pub background: Color,
     pub floor_db: f32,
     pub ceiling_db: f32,
@@ -331,12 +327,12 @@ impl SpectrogramBuffer {
 }
 
 #[derive(Clone, Debug)]
-pub struct SpectrogramState {
+pub(crate) struct SpectrogramState {
     buffer: RefCell<SpectrogramBuffer>,
     style: SpectrogramStyle,
     palette: [Color; SPECTROGRAM_PALETTE_SIZE],
     history: VecDeque<SpectrogramColumn>,
-    instance_key: u64,
+    key: u64,
     piano_roll: Option<PianoRollSide>,
     sample_rate: f32,
     fft_size: usize,
@@ -347,12 +343,13 @@ pub struct SpectrogramState {
 
 impl SpectrogramState {
     pub fn new() -> Self {
+        static NEXT_KEY: AtomicU64 = AtomicU64::new(1);
         Self {
             buffer: RefCell::new(SpectrogramBuffer::new()),
             style: SpectrogramStyle::default(),
             palette: theme::spectrogram::COLORS,
             history: VecDeque::new(),
-            instance_key: NEXT_INSTANCE_KEY.fetch_add(1, Ordering::Relaxed),
+            key: NEXT_KEY.fetch_add(1, Ordering::Relaxed),
             piano_roll: None,
             sample_rate: DEFAULT_SAMPLE_RATE,
             fft_size: 4096,
@@ -370,9 +367,9 @@ impl SpectrogramState {
         self.piano_roll
     }
 
-    pub fn set_palette(&mut self, palette: [Color; SPECTROGRAM_PALETTE_SIZE]) {
-        if self.palette != palette {
-            self.palette = palette;
+    pub fn set_palette(&mut self, palette: &[Color; SPECTROGRAM_PALETTE_SIZE]) {
+        if self.palette != *palette {
+            self.palette = *palette;
             let values = self.buffer.borrow().values.clone();
             self.buffer.borrow_mut().pending_base = Some(Arc::from(values));
         }
@@ -382,20 +379,20 @@ impl SpectrogramState {
         self.palette
     }
 
-    pub fn apply_update(&mut self, upd: &SpectrogramUpdate) {
-        if upd.new_columns.is_empty() && !upd.reset {
+    pub fn apply_snapshot(&mut self, snap: &SpectrogramUpdate) {
+        if snap.new_columns.is_empty() && !snap.reset {
             return;
         }
-        self.sample_rate = upd.sample_rate;
-        self.fft_size = upd.fft_size;
-        self.freq_scale = upd.frequency_scale;
+        self.sample_rate = snap.sample_rate;
+        self.fft_size = snap.fft_size;
+        self.freq_scale = snap.frequency_scale;
 
-        self.history.extend(upd.new_columns.iter().cloned());
-        if self.history.len() > upd.history_length {
+        self.history.extend(snap.new_columns.iter().cloned());
+        if self.history.len() > snap.history_length {
             self.history
-                .drain(0..self.history.len() - upd.history_length);
+                .drain(0..self.history.len() - snap.history_length);
         }
-        let new_h = upd
+        let new_h = snap
             .new_columns
             .iter()
             .map(|c| c.magnitudes_db.len().min(MAX_TEXTURE_BINS) as u32)
@@ -409,10 +406,10 @@ impl SpectrogramState {
         }
 
         let mut buf = self.buffer.borrow_mut();
-        if upd.reset || buf.needs_rebuild(upd, new_h) {
-            buf.rebuild(&self.history, upd, &self.style);
-        } else if !upd.new_columns.is_empty() {
-            buf.append(&upd.new_columns, &self.style);
+        if snap.reset || buf.needs_rebuild(snap, new_h) {
+            buf.rebuild(&self.history, snap, &self.style);
+        } else if !snap.new_columns.is_empty() {
+            buf.append(&snap.new_columns, &self.style);
         }
     }
 
@@ -424,7 +421,7 @@ impl SpectrogramState {
         let op = self.style.opacity.clamp(0.0, 1.0);
         let to_rgba = |c: Color| [c.r, c.g, c.b, c.a * op];
         Some(SpectrogramParams {
-            instance_key: self.instance_key,
+            key: self.key,
             bounds,
             texture_width: buf.capacity,
             texture_height: buf.height,
@@ -501,7 +498,7 @@ impl SpectrogramState {
     }
 }
 
-pub struct Spectrogram<'a> {
+pub(crate) struct Spectrogram<'a> {
     state: &'a RefCell<SpectrogramState>,
 }
 
@@ -807,7 +804,9 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
     }
 }
 
-pub fn widget<'a, Message: 'a>(state: &'a RefCell<SpectrogramState>) -> Element<'a, Message> {
+pub(crate) fn widget<'a, Message: 'a>(
+    state: &'a RefCell<SpectrogramState>,
+) -> Element<'a, Message> {
     Element::new(Spectrogram::new(state))
 }
 

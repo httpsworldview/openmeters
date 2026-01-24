@@ -11,24 +11,21 @@ use crate::ui::theme;
 use crate::util::audio::project_channel_data;
 use crate::visualization_widget;
 use iced::Color;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Debug, Clone)]
-pub struct OscilloscopeProcessor {
+pub(crate) struct OscilloscopeProcessor {
     inner: CoreOscilloscopeProcessor,
 }
 
 impl OscilloscopeProcessor {
-    pub fn new(config: OscilloscopeConfig) -> Self {
+    pub fn new(sample_rate: f32) -> Self {
         Self {
-            inner: CoreOscilloscopeProcessor::new(config),
+            inner: CoreOscilloscopeProcessor::new(OscilloscopeConfig {
+                sample_rate,
+                ..Default::default()
+            }),
         }
-    }
-
-    pub fn with_sample_rate(sample_rate: f32) -> Self {
-        Self::new(OscilloscopeConfig {
-            sample_rate,
-            ..Default::default()
-        })
     }
 
     pub fn ingest(&mut self, samples: &[f32], format: MeterFormat) -> Option<OscilloscopeSnapshot> {
@@ -62,20 +59,23 @@ impl OscilloscopeProcessor {
 }
 
 #[derive(Debug, Clone)]
-pub struct OscilloscopeState {
+pub(crate) struct OscilloscopeState {
     snapshot: OscilloscopeSnapshot,
     style: OscilloscopeStyle,
     persistence: f32,
     channel_mode: ChannelMode,
+    key: u64,
 }
 
 impl OscilloscopeState {
     pub fn new() -> Self {
+        static NEXT_KEY: AtomicU64 = AtomicU64::new(1);
         Self {
             snapshot: OscilloscopeSnapshot::default(),
             style: OscilloscopeStyle::default(),
             persistence: 0.0,
             channel_mode: ChannelMode::default(),
+            key: NEXT_KEY.fetch_add(1, Ordering::Relaxed),
         }
     }
 
@@ -157,6 +157,7 @@ impl OscilloscopeState {
             .collect();
 
         Some(OscilloscopeParams {
+            key: self.key,
             bounds,
             channels,
             samples_per_channel,
@@ -168,7 +169,7 @@ impl OscilloscopeState {
 }
 
 #[derive(Debug, Clone)]
-pub struct OscilloscopeStyle {
+pub(crate) struct OscilloscopeStyle {
     pub colors: Vec<Color>,
 }
 

@@ -23,7 +23,8 @@ pub struct MeterBar {
 
 /// Parameters for rendering the loudness meter.
 #[derive(Debug, Clone)]
-pub struct RenderParams {
+pub struct LoudnessParams {
+    pub key: u64,
     pub bounds: Rectangle,
     pub min_db: f32,
     pub max_db: f32,
@@ -35,7 +36,7 @@ pub struct RenderParams {
     pub right_padding: f32,
 }
 
-impl RenderParams {
+impl LoudnessParams {
     /// Convert dB value to 0..1 ratio with visual scaling.
     pub fn db_to_ratio(&self, db: f32) -> f32 {
         let range = self.max_db - self.min_db;
@@ -72,17 +73,13 @@ impl RenderParams {
 
 /// Custom primitive that draws a loudness meter.
 #[derive(Debug)]
-pub struct LoudnessMeterPrimitive {
-    pub params: RenderParams,
+pub struct LoudnessPrimitive {
+    pub params: LoudnessParams,
 }
 
-impl LoudnessMeterPrimitive {
-    pub fn new(params: RenderParams) -> Self {
+impl LoudnessPrimitive {
+    pub fn new(params: LoudnessParams) -> Self {
         Self { params }
-    }
-
-    fn key(&self) -> usize {
-        self as *const Self as usize
     }
 
     fn build_vertices(&self, viewport: &Viewport) -> Vec<SdfVertex> {
@@ -166,10 +163,10 @@ impl LoudnessMeterPrimitive {
 }
 
 sdf_primitive!(
-    LoudnessMeterPrimitive,
+    LoudnessPrimitive,
     Pipeline,
-    usize,
+    u64,
     "Loudness",
     TriangleList,
-    |self| self.key()
+    |self| self.params.key
 );

@@ -90,8 +90,9 @@ impl VisualsPage {
                 }
             }
             VisualsMessage::PaneDragged(pane_grid::DragEvent::Dropped { .. }) => {
-                self.settings
-                    .update(|s| s.set_visual_order(&self.visual_manager.snapshot()));
+                self.settings.update(|s| {
+                    s.set_visual_order(self.visual_manager.snapshot().slots.iter().map(|s| s.kind))
+                });
             }
             VisualsMessage::PaneDragged(_) => {}
             VisualsMessage::PaneContextRequested(pane) => {
@@ -151,7 +152,11 @@ impl VisualsPage {
         self.apply_snapshot_excluding(self.visual_manager.snapshot(), &[]);
     }
 
-    pub fn apply_snapshot_excluding(&mut self, snapshot: VisualSnapshot, exclude: &[VisualId]) {
+    pub(crate) fn apply_snapshot_excluding(
+        &mut self,
+        snapshot: VisualSnapshot,
+        exclude: &[VisualId],
+    ) {
         let exclude_set: std::collections::HashSet<_> = exclude.iter().copied().collect();
         let slots: Vec<_> = snapshot
             .slots

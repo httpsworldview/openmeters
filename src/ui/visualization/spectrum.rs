@@ -18,6 +18,7 @@ use iced::{Background, Color, Element, Length, Point, Rectangle, Size};
 use iced_wgpu::primitive::Renderer as _;
 use std::cell::RefCell;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const EPSILON: f32 = 1e-6;
 const GRID_FREQS: &[(f32, u8)] = &[
@@ -52,7 +53,7 @@ const GRID_FREQS: &[(f32, u8)] = &[
     (16_000.0, 1),
 ];
 
-pub struct SpectrumProcessor {
+pub(crate) struct SpectrumProcessor {
     inner: CoreSpectrumProcessor,
     channels: usize,
 }
@@ -101,7 +102,7 @@ impl SpectrumProcessor {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct SpectrumStyle {
+pub(crate) struct SpectrumStyle {
     pub min_db: f32,
     pub max_db: f32,
     pub min_frequency: f32,
@@ -152,11 +153,11 @@ impl Default for SpectrumStyle {
 }
 
 #[derive(Debug, Clone)]
-pub struct SpectrumState {
+pub(crate) struct SpectrumState {
     style: SpectrumStyle,
     weighted: Arc<[[f32; 2]]>,
     unweighted: Arc<[[f32; 2]]>,
-    instance_key: usize,
+    key: u64,
     peak: Option<(String, f32, f32, f32)>, // text, x, y, opacity
     grid: Arc<[(f32, String, u8)]>,        // pos, label, importance
     scratch: Vec<f32>,
@@ -164,13 +165,12 @@ pub struct SpectrumState {
 
 impl SpectrumState {
     pub fn new() -> Self {
-        let weighted: Arc<[[f32; 2]]> = Arc::from([]);
-        let instance_key = Arc::as_ptr(&weighted).cast::<u8>() as usize;
+        static NEXT_KEY: AtomicU64 = AtomicU64::new(1);
         Self {
             style: SpectrumStyle::default(),
-            weighted,
+            weighted: Arc::from([]),
             unweighted: Arc::from([]),
-            instance_key,
+            key: NEXT_KEY.fetch_add(1, Ordering::Relaxed),
             peak: None,
             grid: Arc::from([]),
             scratch: Vec::new(),
@@ -328,7 +328,18 @@ impl SpectrumState {
         }
     }
 
-    fn visual(&self, bounds: Rectangle, theme: &iced::Theme) -> Option<SpectrumVisual> {
+    pub fn grid(&self) -> Arc<[(f32, String, u8)]> {
+        Arc::clone(&self.grid)
+    }
+
+    pub fn peak(&self) -> Option<(String, f32, f32, f32)> {
+        self.style
+            .show_peak_label
+            .then(|| self.peak.clone())
+            .flatten()
+    }
+
+    fn visual_params(&self, bounds: Rectangle, theme: &iced::Theme) -> Option<SpectrumParams> {
         if self.weighted.len() < 2 {
             return None;
         }
@@ -339,53 +350,38 @@ impl SpectrumState {
             SpectrumWeightingMode::Raw => (&self.unweighted, &self.weighted),
         };
 
-        Some(SpectrumVisual {
-            params: SpectrumParams {
-                bounds,
-                normalized_points: Arc::clone(primary),
-                secondary_points: Arc::clone(secondary),
-                instance_key: self.instance_key,
-                line_color: theme::color_to_rgba(theme::mix_colors(
-                    pal.primary.base.color,
-                    pal.background.base.text,
-                    0.35,
-                )),
-                line_width: self.style.line_thickness,
-                secondary_line_color: theme::color_to_rgba(theme::with_alpha(
-                    pal.secondary.weak.text,
-                    0.3,
-                )),
-                secondary_line_width: self.style.secondary_line_thickness,
-                highlight_threshold: self.style.highlight_threshold,
-                spectrum_palette: self
-                    .style
-                    .spectrum_palette
-                    .map(theme::color_to_rgba)
-                    .to_vec(),
-                display_mode: self.style.display_mode == SpectrumDisplayMode::Bar,
-                show_secondary_line: self.style.show_secondary_line,
-                bar_count: self.style.bar_count,
-                bar_gap: self.style.bar_gap,
-            },
-            peak: self
+        Some(SpectrumParams {
+            bounds,
+            normalized_points: Arc::clone(primary),
+            secondary_points: Arc::clone(secondary),
+            key: self.key,
+            line_color: theme::color_to_rgba(theme::mix_colors(
+                pal.primary.base.color,
+                pal.background.base.text,
+                0.35,
+            )),
+            line_width: self.style.line_thickness,
+            secondary_line_color: theme::color_to_rgba(theme::with_alpha(
+                pal.secondary.weak.text,
+                0.3,
+            )),
+            secondary_line_width: self.style.secondary_line_thickness,
+            highlight_threshold: self.style.highlight_threshold,
+            spectrum_palette: self
                 .style
-                .show_peak_label
-                .then(|| self.peak.clone())
-                .flatten(),
-            grid: Arc::clone(&self.grid),
+                .spectrum_palette
+                .map(theme::color_to_rgba)
+                .to_vec(),
+            display_mode: self.style.display_mode == SpectrumDisplayMode::Bar,
+            show_secondary_line: self.style.show_secondary_line,
+            bar_count: self.style.bar_count,
+            bar_gap: self.style.bar_gap,
         })
     }
 }
 
 #[derive(Debug)]
-struct SpectrumVisual {
-    params: SpectrumParams,
-    peak: Option<(String, f32, f32, f32)>,
-    grid: Arc<[(f32, String, u8)]>,
-}
-
-#[derive(Debug)]
-pub struct Spectrum<'a>(&'a RefCell<SpectrumState>);
+pub(crate) struct Spectrum<'a>(&'a RefCell<SpectrumState>);
 impl<'a> Spectrum<'a> {
     pub fn new(state: &'a RefCell<SpectrumState>) -> Self {
         Self(state)
@@ -420,7 +416,8 @@ impl<'a, M> Widget<M, iced::Theme, iced::Renderer> for Spectrum<'a> {
         _: &Rectangle,
     ) {
         let b = lay.bounds();
-        let Some(v) = self.0.borrow().visual(b, th) else {
+        let state = self.0.borrow();
+        let Some(params) = state.visual_params(b, th) else {
             r.fill_quad(
                 Quad {
                     bounds: b,
@@ -432,17 +429,18 @@ impl<'a, M> Widget<M, iced::Theme, iced::Renderer> for Spectrum<'a> {
             );
             return;
         };
-        if !v.grid.is_empty() {
-            r.with_layer(b, |r| draw_grid(r, th, b, &v.grid));
+        let grid = state.grid();
+        if !grid.is_empty() {
+            r.with_layer(b, |r| draw_grid(r, th, b, &grid));
         }
-        r.draw_primitive(b, SpectrumPrimitive::new(v.params));
-        if let Some(pk) = &v.peak {
-            r.with_layer(b, |r| draw_peak(r, th, b, pk));
+        r.draw_primitive(b, SpectrumPrimitive::new(params));
+        if let Some(pk) = state.peak() {
+            r.with_layer(b, |r| draw_peak(r, th, b, &pk));
         }
     }
 }
 
-pub fn widget<'a, M: 'a>(state: &'a RefCell<SpectrumState>) -> Element<'a, M> {
+pub(crate) fn widget<'a, M: 'a>(state: &'a RefCell<SpectrumState>) -> Element<'a, M> {
     Element::new(Spectrum::new(state))
 }
 

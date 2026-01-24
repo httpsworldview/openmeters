@@ -35,7 +35,7 @@ const fn extent3d(w: u32, h: u32) -> wgpu::Extent3d {
 
 #[derive(Debug, Clone)]
 pub struct SpectrogramParams {
-    pub instance_key: u64,
+    pub key: u64,
     pub bounds: Rectangle,
     pub texture_width: u32,
     pub texture_height: u32,
@@ -125,7 +125,7 @@ impl SpectrogramPrimitive {
         Self { params }
     }
     fn key(&self) -> u64 {
-        self.params.instance_key
+        self.params.key
     }
 
     fn build_quad(&self, vp: &Viewport) -> [Vertex; 6] {
