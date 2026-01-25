@@ -23,9 +23,9 @@ fn main() {
     let (routing_tx, routing_rx) = mpsc::channel::<RoutingCommand>();
     let (snapshot_tx, snapshot_rx) = async_channel::bounded::<pw_registry::RegistrySnapshot>(64);
 
-    registry_monitor::init_registry_monitor(routing_rx, snapshot_tx.clone());
+    let registry_thread = registry_monitor::init_registry_monitor(routing_rx, snapshot_tx.clone());
 
-    pw_virtual_sink::run();
+    let _sink_thread = pw_virtual_sink::run();
 
     let audio_stream = audio::meter_tap::audio_sample_stream();
 
@@ -36,5 +36,10 @@ fn main() {
 
     if let Err(err) = ui::run(ui_config) {
         error!("[ui] failed: {err}");
+    }
+
+    if let Some((_, handle)) = registry_thread {
+        info!("[main] shutdown requested; waiting for registry monitor to exit...");
+        let _ = handle.join();
     }
 }

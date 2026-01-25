@@ -164,6 +164,11 @@ pub enum RegistryCommand {
         target_object: String,
         target_node: String,
     },
+    ResetRoute {
+        subject: u32,
+    },
+    Sync(std::sync::mpsc::Sender<()>),
+    Shutdown,
 }
 
 #[derive(Clone, Debug, Default)]

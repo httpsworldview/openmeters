@@ -9,6 +9,7 @@ use pw::metadata::{Metadata, MetadataListener};
 use pw::properties::properties;
 use pw::registry::{GlobalObject, RegistryRc};
 use pw::spa::utils::dict::DictRef;
+use pw::spa::utils::result::AsyncSeq;
 use pw::types::ObjectType;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::cell::RefCell;
@@ -24,6 +25,10 @@ const TARGET_OBJECT_KEY: &str = "target.object";
 const TARGET_NODE_KEY: &str = "target.node";
 const LINK_FACTORY_NAME: &str = "link-factory";
 const PREFERRED_METADATA_NAMES: &[&str] = &["settings", "default"];
+
+type SyncCompleter = mpsc::Sender<()>;
+type PendingSync = (AsyncSeq, SyncCompleter);
+type PendingSyncs = Vec<PendingSync>;
 
 static RUNTIME: OnceLock<RegistryRuntime> = OnceLock::new();
 
@@ -84,6 +89,25 @@ impl AudioRegistryHandle {
             target_object,
             target_node,
         })
+    }
+
+    pub fn reset_route(&self, application: &NodeInfo) -> bool {
+        self.send_command(RegistryCommand::ResetRoute {
+            subject: application.id,
+        })
+    }
+
+    pub fn sync(&self) -> bool {
+        let (tx, rx) = mpsc::channel();
+        if self.send_command(RegistryCommand::Sync(tx)) {
+            rx.recv().is_ok()
+        } else {
+            false
+        }
+    }
+
+    pub fn destroy(&self) {
+        let _ = self.send_command(RegistryCommand::Shutdown);
     }
 }
 
@@ -187,6 +211,21 @@ fn registry_thread_main(runtime: RegistryRuntime) -> Result<()> {
 
     let metadata_bindings: Rc<RefCell<HashMap<u32, MetadataBinding>>> = Default::default();
 
+    let pending_syncs: Rc<RefCell<PendingSyncs>> = Default::default();
+
+    let _core_listener = {
+        let pending = Rc::clone(&pending_syncs);
+        core.add_listener_local()
+            .done(move |_id, seq| {
+                let mut pending = pending.borrow_mut();
+                if let Some(index) = pending.iter().position(|(s, _)| *s == seq) {
+                    let (_, tx) = pending.remove(index);
+                    let _ = tx.send(());
+                }
+            })
+            .register()
+    };
+
     let _registry_listener = {
         let registry_added = registry.clone();
         let metadata_added = Rc::clone(&metadata_bindings);
@@ -228,7 +267,15 @@ fn registry_thread_main(runtime: RegistryRuntime) -> Result<()> {
             loop {
                 match command_rx.try_recv() {
                     Ok(command) => {
-                        handle_command(command, &mut link_state, &routing_metadata, &mainloop);
+                        if !handle_command(
+                            command,
+                            &mut link_state,
+                            &routing_metadata,
+                            &mainloop,
+                            &pending_syncs,
+                        ) {
+                            break;
+                        }
                     }
                     Err(mpsc::TryRecvError::Empty) => break,
                     Err(mpsc::TryRecvError::Disconnected) => {
@@ -348,9 +395,24 @@ fn handle_command(
     link_state: &mut LinkState,
     routing_metadata: &Rc<RefCell<Option<Metadata>>>,
     mainloop: &pw::main_loop::MainLoopRc,
-) {
+    pending_syncs: &Rc<RefCell<PendingSyncs>>,
+) -> bool {
     match command {
-        RegistryCommand::SetLinks(desired) => link_state.apply_links(desired),
+        RegistryCommand::Sync(tx) => {
+            match link_state.core.sync(0) {
+                Ok(seq) => {
+                    pending_syncs.borrow_mut().push((seq, tx));
+                }
+                Err(err) => {
+                    error!("[registry] failed to sync core: {err}");
+                }
+            }
+            true
+        }
+        RegistryCommand::SetLinks(desired) => {
+            link_state.apply_links(desired);
+            true
+        }
         RegistryCommand::RouteNode {
             subject,
             target_object,
@@ -362,7 +424,7 @@ fn handle_command(
                     "[registry] cannot route node {}; no metadata bound",
                     subject
                 );
-                return;
+                return true;
             };
             metadata.set_property(
                 subject,
@@ -371,11 +433,30 @@ fn handle_command(
                 Some(&target_object),
             );
             metadata.set_property(subject, TARGET_NODE_KEY, Some("Spa:Id"), Some(&target_node));
-            mainloop.loop_().iterate(Duration::from_millis(10));
             debug!(
                 "[registry] routed node {} -> object={}, node={}",
                 subject, target_object, target_node
             );
+            true
+        }
+        RegistryCommand::ResetRoute { subject } => {
+            let borrowed = routing_metadata.borrow();
+            let Some(metadata) = borrowed.as_ref() else {
+                warn!(
+                    "[registry] cannot reset route for node {}; no metadata bound",
+                    subject
+                );
+                return true;
+            };
+            metadata.set_property(subject, TARGET_OBJECT_KEY, None, None);
+            metadata.set_property(subject, TARGET_NODE_KEY, None, None);
+            debug!("[registry] reset route for node {}", subject);
+            true
+        }
+        RegistryCommand::Shutdown => {
+            info!("[registry] shutting down...");
+            mainloop.quit();
+            false
         }
     }
 }

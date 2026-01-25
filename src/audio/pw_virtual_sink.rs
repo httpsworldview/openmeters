@@ -98,11 +98,11 @@ impl CaptureBuffer {
 }
 
 /// Spawn the virtual sink in a background thread.
-pub fn run() {
+pub fn run() -> Option<std::thread::JoinHandle<()>> {
     ensure_capture_buffer();
 
     if SINK_THREAD.get().is_some() {
-        return;
+        return None;
     }
 
     match thread::Builder::new()
@@ -112,12 +112,11 @@ pub fn run() {
                 error!("[virtual-sink] stopped: {err}");
             }
         }) {
-        Ok(handle) => {
-            if SINK_THREAD.set(handle).is_err() {
-                // Another caller raced us; the thread will keep running but we can drop our handle.
-            }
+        Ok(handle) => Some(handle),
+        Err(err) => {
+            error!("[virtual-sink] failed to start PipeWire thread: {err}");
+            None
         }
-        Err(err) => error!("[virtual-sink] failed to start PipeWire thread: {err}"),
     }
 }
 

@@ -11,19 +11,26 @@ const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100)
 pub fn init_registry_monitor(
     command_rx: mpsc::Receiver<RoutingCommand>,
     snapshot_tx: Sender<pw_registry::RegistrySnapshot>,
-) -> Option<pw_registry::AudioRegistryHandle> {
+) -> Option<(
+    pw_registry::AudioRegistryHandle,
+    std::thread::JoinHandle<()>,
+)> {
     let handle = pw_registry::spawn_registry()
-        .inspect_err(|err| tracing::error!("[registry] failed to start PipeWire registry: {err:?}"))
+        .inspect_err(|err| {
+            tracing::error!("[registry-monitor] failed to start PipeWire registry: {err:?}")
+        })
         .ok()?;
 
     let handle_for_thread = handle.clone();
-    std::thread::Builder::new()
+    let thread_handle = std::thread::Builder::new()
         .name("openmeters-registry-monitor".into())
         .spawn(move || run_monitor_loop(handle_for_thread, command_rx, snapshot_tx))
-        .inspect_err(|err| tracing::error!("[registry] failed to spawn monitor thread: {err}"))
+        .inspect_err(|err| {
+            tracing::error!("[registry-monitor] failed to spawn monitor thread: {err}")
+        })
         .ok()?;
 
-    Some(handle)
+    Some((handle, thread_handle))
 }
 
 fn run_monitor_loop(
@@ -52,6 +59,11 @@ fn run_monitor_loop(
     };
 
     loop {
+        if snapshot_tx.is_closed() {
+            info!("[registry-monitor] UI channel closed; stopping");
+            break;
+        }
+
         if routing.process_commands()
             && let Some(snapshot) = last_snapshot.as_ref()
         {
@@ -59,7 +71,7 @@ fn run_monitor_loop(
         }
 
         if flush_pending_ui_snapshot(&mut pending_ui_snapshot).is_err() {
-            info!("[registry] UI channel closed; stopping");
+            info!("[registry-monitor] UI channel closed; stopping");
             break;
         }
 
@@ -76,14 +88,14 @@ fn run_monitor_loop(
                         pending_ui_snapshot = Some(snapshot);
                     }
                     Err(TrySendError::Closed(_)) => {
-                        info!("[registry] UI channel closed; stopping");
+                        info!("[registry-monitor] UI channel closed; stopping");
                         break;
                     }
                 }
             }
             Ok(None) | Err(mpsc::RecvTimeoutError::Timeout) => {
                 if flush_pending_ui_snapshot(&mut pending_ui_snapshot).is_err() {
-                    info!("[registry] UI channel closed; stopping");
+                    info!("[registry-monitor] UI channel closed; stopping");
                     break;
                 }
             }
@@ -91,7 +103,51 @@ fn run_monitor_loop(
         }
     }
 
-    info!("[registry] update stream ended");
+    info!("[registry-monitor] update stream ended");
+    restore_all_routes(&mut routing, last_snapshot.as_ref());
+}
+
+fn restore_all_routes(
+    routing: &mut RoutingManager,
+    snapshot: Option<&pw_registry::RegistrySnapshot>,
+) {
+    let Some(snapshot) = snapshot else { return };
+
+    let routed_nodes: Vec<_> = routing.routed_to.keys().copied().collect();
+    if !routed_nodes.is_empty() {
+        info!(
+            "[registry-monitor] restoring {} routed node(s)...",
+            routed_nodes.len()
+        );
+
+        let hw_sink_id = routing.hw_sink(snapshot).map(|n| n.id);
+
+        for node_id in &routed_nodes {
+            if let Some(node) = snapshot.nodes.iter().find(|n| n.id == *node_id) {
+                if let Some(sink_id) = hw_sink_id
+                    && let Some(sink) = snapshot.nodes.iter().find(|n| n.id == sink_id)
+                {
+                    routing.handle.route_node(node, sink);
+                } else {
+                    // relying on the policy manager to pick a default.
+                    routing.handle.reset_route(node);
+                }
+            }
+        }
+
+        // Wait for the audio server to process the re-routing messages.
+        if !routing.handle.sync() {
+            warn!("[registry-monitor] failed to sync with registry thread");
+        }
+
+        for node_id in &routed_nodes {
+            if let Some(node) = snapshot.nodes.iter().find(|n| n.id == *node_id) {
+                routing.handle.reset_route(node);
+            }
+        }
+    }
+
+    routing.handle.destroy();
 }
 
 struct RoutingManager {
@@ -285,7 +341,7 @@ fn log_registry_snapshot(snapshot: &pw_registry::RegistrySnapshot) {
     let source = snapshot.describe_default_target(snapshot.defaults.audio_source.as_ref());
 
     debug!(
-        "[registry] update: serial={}, nodes={}, devices={}, sink={} (raw={}), source={} (raw={})",
+        "[registry-monitor] update: serial={}, nodes={}, devices={}, sink={} (raw={}), source={} (raw={})",
         snapshot.serial,
         snapshot.nodes.len(),
         snapshot.device_count,
