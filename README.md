@@ -96,7 +96,7 @@ Checked features are implemented, unchecked features are planned. If you have id
 
 ### spectrogram
 
-- `ctrl+zoom in/out`: Zoom vertically
+- `ctrl+scroll up/down`: Zoom vertically
 - `middle click+drag`: Pan vertically
 
 ### configuration
