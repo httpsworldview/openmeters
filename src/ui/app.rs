@@ -16,8 +16,7 @@ use config::{ConfigMessage, ConfigPage};
 use iced::alignment::{Horizontal, Vertical};
 use iced::event::{self, Event};
 use iced::keyboard::{self, Key};
-use iced::widget::text::Wrapping;
-use iced::widget::{button, column, container, mouse_area, row, scrollable, stack, text};
+use iced::widget::{column, container, mouse_area, row, scrollable, stack, text};
 use iced::{Element, Length, Result, Settings, Size, Subscription, Task, daemon, exit, window};
 use rustc_hash::FxHashMap;
 use std::sync::{Arc, mpsc};
@@ -32,6 +31,9 @@ const WINDOW_MIN_SIZE: Size = Size::new(200.0, 150.0);
 const SETTINGS_WINDOW_SIZE: Size = Size::new(480.0, 600.0);
 const MAIN_WINDOW_INITIAL_SIZE: Size = Size::new(420.0, 520.0);
 const TOAST_DISPLAY_DURATION: Duration = Duration::from_secs(2);
+const DEFAULT_DRAWER_RATIO: f32 = 0.20;
+const MIN_DRAWER_RATIO: f32 = 0.10;
+const MAX_DRAWER_RATIO: f32 = 0.50;
 
 /// Wraps content in a container that expands to fill available space.
 macro_rules! fill {
@@ -125,15 +127,17 @@ pub fn run(config: UiConfig) -> Result {
 
 #[derive(Debug)]
 struct UiApp {
-    current_page: Page,
     config_page: ConfigPage,
     visuals_page: VisualsPage,
     visual_manager: VisualManagerHandle,
     settings_handle: SettingsHandle,
     audio_frames: Option<Arc<AsyncReceiver<Vec<f32>>>>,
-    ui_visible: bool,
+    drawer_open: bool,
+    drawer_width_ratio: f32,
+    drawer_resizing: bool,
+    drawer_resize_offset: Option<f32>,
     rendering_paused: bool,
-    overlay_until: Option<Instant>,
+    toast_until: Option<Instant>,
     main_window_id: window::Id,
     main_window_size: Size,
     settings_window: Option<(window::Id, ActiveSettings)>,
@@ -142,28 +146,23 @@ struct UiApp {
     exit_warning_until: Option<Instant>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Page {
-    Config,
-    Visuals,
-}
-
 #[derive(Debug, Clone)]
 enum Message {
-    Page(Page),
     Config(ConfigMessage),
     Visuals(VisualsMessage),
     AudioFrame(Vec<f32>),
-    ToggleChrome,
+    ToggleDrawer,
     TogglePause,
     PopOutOrDock,
+    DrawerResizeStart,
+    DrawerResizeMove(iced::Point),
+    DrawerResizeEnd,
     Quit,
     Resize,
     WindowOpened,
     WindowClosed(window::Id),
     WindowResized(window::Id, Size),
     WindowFocused(window::Id),
-    WindowDragged(window::Id),
     Settings(window::Id, SettingsMessage),
 }
 
@@ -175,7 +174,7 @@ fn handle_keyboard_shortcut(event: keyboard::Event) -> Option<Message> {
         (modifiers.control(), modifiers.shift(), modifiers.is_empty());
     match &key {
         Key::Character(ch) if ctrl && shift && ch.eq_ignore_ascii_case("h") => {
-            Some(Message::ToggleChrome)
+            Some(Message::ToggleDrawer)
         }
         Key::Named(keyboard::key::Named::Space) if ctrl => Some(Message::PopOutOrDock),
         Key::Character(ch) if no_modifiers && ch.eq_ignore_ascii_case("p") => {
@@ -214,15 +213,17 @@ impl UiApp {
         let (main_id, open_task) = open_window(MAIN_WINDOW_INITIAL_SIZE, use_decorations, true);
         (
             Self {
-                current_page: Page::Config,
                 config_page,
                 visuals_page,
                 visual_manager,
                 settings_handle,
                 audio_frames,
-                ui_visible: true,
+                drawer_open: false,
+                drawer_width_ratio: DEFAULT_DRAWER_RATIO,
+                drawer_resizing: false,
+                drawer_resize_offset: None,
                 rendering_paused: false,
-                overlay_until: None,
+                toast_until: None,
                 main_window_id: main_id,
                 main_window_size: MAIN_WINDOW_INITIAL_SIZE,
                 settings_window: None,
@@ -235,10 +236,8 @@ impl UiApp {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        let page_sub = match self.current_page {
-            Page::Config => self.config_page.subscription().map(Message::Config),
-            Page::Visuals => self.visuals_page.subscription().map(Message::Visuals),
-        };
+        let config_sub = self.config_page.subscription().map(Message::Config);
+        let visuals_sub = self.visuals_page.subscription().map(Message::Visuals);
         let audio_sub = self
             .audio_frames
             .as_ref()
@@ -247,26 +246,44 @@ impl UiApp {
             matches!(evt, Event::Window(window::Event::Focused))
                 .then_some(Message::WindowFocused(window_id))
         });
+        let resize_sub = (self.drawer_resizing && self.drawer_open).then(|| {
+            event::listen_with(|evt, _, _| match evt {
+                Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
+                    Some(Message::DrawerResizeMove(position))
+                }
+                Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
+                    Some(Message::DrawerResizeEnd)
+                }
+                _ => None,
+            })
+        });
         Subscription::batch(
             [
-                Some(page_sub),
+                Some(config_sub),
+                Some(visuals_sub),
                 audio_sub,
                 Some(keyboard::listen().filter_map(handle_keyboard_shortcut)),
                 Some(window::close_events().map(Message::WindowClosed)),
                 Some(window::resize_events().map(|(id, size)| Message::WindowResized(id, size))),
                 Some(focus_sub),
+                resize_sub,
             ]
             .into_iter()
             .flatten(),
         )
     }
 
-    fn toggle_visibility(&mut self) {
-        self.ui_visible = !self.ui_visible;
-        if !self.ui_visible {
-            self.current_page = Page::Visuals;
-        }
-        self.overlay_until = (!self.ui_visible).then(|| Instant::now() + TOAST_DISPLAY_DURATION);
+    fn toggle_drawer(&mut self) {
+        self.drawer_open = !self.drawer_open;
+        self.end_drawer_resize();
+        self.toast_until = self
+            .drawer_open
+            .then(|| Instant::now() + TOAST_DISPLAY_DURATION);
+    }
+
+    fn end_drawer_resize(&mut self) {
+        self.drawer_resizing = false;
+        self.drawer_resize_offset = None;
     }
 
     fn open_settings_window(&mut self, visual_id: VisualId, kind: VisualKind) -> Task<Message> {
@@ -404,21 +421,24 @@ impl UiApp {
 
     fn main_window_view(&self) -> Element<'_, Message> {
         let use_decorations = self.settings_handle.borrow().settings().decorations;
+        // Visuals are always visible; show controls only when drawer is open
         let visuals_view = self
             .visuals_page
-            .view(self.ui_visible)
+            .view(self.drawer_open)
             .map(Message::Visuals);
+
         let now = Instant::now();
         let is_active = |deadline: Option<Instant>| deadline.is_some_and(|expires| now < expires);
         let toasts: Vec<_> = [
-            (!self.ui_visible && is_active(self.overlay_until))
-                .then_some("ctrl+shift+h to restore"),
+            (self.drawer_open && is_active(self.toast_until))
+                .then_some("ctrl+shift+h to close drawer"),
             self.rendering_paused.then_some("paused (p to resume)"),
             is_active(self.exit_warning_until).then_some("q again to exit"),
         ]
         .into_iter()
         .flatten()
         .collect();
+
         let toast_bar = || {
             container(
                 row(toasts
@@ -430,33 +450,9 @@ impl UiApp {
             .width(Length::Fill)
             .align_x(Horizontal::Center)
         };
-        let content: Element<'_, Message> = if self.ui_visible {
-            let mut tabs = row![
-                create_tab_button("config", Page::Config, self.current_page),
-                create_tab_button("visuals", Page::Visuals, self.current_page)
-            ]
-            .spacing(8)
-            .width(Length::Fill);
-            if !use_decorations {
-                tabs = tabs.push(create_drag_handle(
-                    "::",
-                    Message::WindowDragged(self.main_window_id),
-                    iced::mouse::Interaction::Grab,
-                ))
-            }
-            let page_content = match self.current_page {
-                Page::Config => fill!(self.config_page.view().map(Message::Config))
-                    .style(theme::opaque_container)
-                    .into(),
-                Page::Visuals => visuals_view,
-            };
-            let inner = if toasts.is_empty() {
-                column![tabs, fill!(page_content)].spacing(12)
-            } else {
-                column![column![tabs, fill!(page_content)].spacing(12), toast_bar()].spacing(0)
-            };
-            fill!(inner).padding(16).into()
-        } else {
+
+        // Base layer: always show visuals with optional toast bar
+        let visuals_layer: Element<'_, Message> = {
             let inner = if toasts.is_empty() {
                 column![fill!(visuals_view)]
             } else {
@@ -468,6 +464,36 @@ impl UiApp {
                 .height(Length::Fill)
                 .into()
         };
+
+        // Drawer overlay when open
+        let content: Element<'_, Message> = if self.drawer_open {
+            let drawer_width = self.main_window_size.width * self.drawer_width_ratio;
+            let drawer_content = self.config_page.view().map(Message::Config);
+            let drawer: Element<'_, Message> = fill!(drawer_content)
+                .width(Length::Fixed(drawer_width))
+                .style(theme::opaque_container)
+                .into();
+
+            let resize_handle: Element<'_, Message> = mouse_area(
+                container(text(":").size(12).align_x(Horizontal::Center))
+                    .width(12)
+                    .height(Length::Fill)
+                    .align_x(Horizontal::Center)
+                    .align_y(Vertical::Center)
+                    .style(theme::resize_handle_container),
+            )
+            .on_press(Message::DrawerResizeStart)
+            .interaction(iced::mouse::Interaction::ResizingHorizontally)
+            .into();
+
+            row![drawer, resize_handle, fill!(visuals_layer)]
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into()
+        } else {
+            visuals_layer
+        };
+
         if use_decorations {
             content
         } else {
@@ -551,10 +577,6 @@ impl UiApp {
 
 fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
     match msg {
-        Message::Page(page) => {
-            app.current_page = page;
-            Task::none()
-        }
         Message::Config(config_msg) => {
             let decoration_task = if let ConfigMessage::DecorationsToggled(enabled) = &config_msg {
                 app.recreate_windows(*enabled)
@@ -572,8 +594,8 @@ fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
         }
         Message::Visuals(VisualsMessage::WindowDragRequested) => window::drag(app.main_window_id),
         Message::Visuals(visuals_msg) => app.visuals_page.update(visuals_msg).map(Message::Visuals),
-        Message::ToggleChrome => {
-            app.toggle_visibility();
+        Message::ToggleDrawer => {
+            app.toggle_drawer();
             Task::none()
         }
         Message::TogglePause => {
@@ -581,6 +603,29 @@ fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
             Task::none()
         }
         Message::PopOutOrDock => app.handle_popout_or_dock(),
+        Message::DrawerResizeStart => {
+            if app.drawer_open {
+                app.drawer_resizing = true;
+                app.drawer_resize_offset = None;
+            }
+            Task::none()
+        }
+        Message::DrawerResizeMove(position) => {
+            if app.drawer_resizing && app.main_window_size.width > 0.0 {
+                let current_drawer_width = app.drawer_width_ratio * app.main_window_size.width;
+                let offset = app
+                    .drawer_resize_offset
+                    .get_or_insert(position.x - current_drawer_width);
+                let new_edge = position.x - *offset;
+                let ratio = new_edge / app.main_window_size.width;
+                app.drawer_width_ratio = ratio.clamp(MIN_DRAWER_RATIO, MAX_DRAWER_RATIO);
+            }
+            Task::none()
+        }
+        Message::DrawerResizeEnd => {
+            app.end_drawer_resize();
+            Task::none()
+        }
         Message::Quit => {
             if app
                 .exit_warning_until
@@ -608,7 +653,6 @@ fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
             app.focused_window = Some(window_id);
             Task::none()
         }
-        Message::WindowDragged(window_id) => window::drag(window_id),
         Message::Settings(window_id, settings_msg) => {
             if let Some((settings_wid, panel)) = app.settings_window.as_mut()
                 && *settings_wid == window_id
@@ -642,36 +686,4 @@ fn view(app: &UiApp, window_id: window::Id) -> Element<'_, Message> {
         .get(&window_id)
         .map(|popout| popout.view().map(Message::Visuals))
         .unwrap_or_else(|| fill!(text("")).into())
-}
-
-fn create_tab_button(
-    label: &'static str,
-    target: Page,
-    current: Page,
-) -> Element<'static, Message> {
-    let is_active = current == target;
-    let inner = container(text(label).wrapping(Wrapping::None))
-        .width(Length::Fill)
-        .clip(true);
-    let tab = button(inner)
-        .style(move |theme, status| theme::tab_button_style(theme, is_active, status))
-        .width(Length::Fill)
-        .padding(8);
-    if is_active {
-        tab
-    } else {
-        tab.on_press(Message::Page(target))
-    }
-    .into()
-}
-
-fn create_drag_handle(
-    label: &str,
-    on_press: Message,
-    cursor: iced::mouse::Interaction,
-) -> Element<'_, Message> {
-    mouse_area(container(text(label).size(14).align_y(Vertical::Center)).padding(4))
-        .on_press(on_press)
-        .interaction(cursor)
-        .into()
 }

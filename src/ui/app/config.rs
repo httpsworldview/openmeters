@@ -19,14 +19,42 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, mpsc};
 
-const GRID_COLUMNS: usize = 4;
+const GRID_COLUMNS: usize = 2;
+const TEXT_SIZE: f32 = 12.0;
+const TITLE_SIZE: f32 = 14.0;
+const MAX_DEVICE_NAME_LEN: usize = 48;
+
+fn truncate_label(label: &str, max_len: usize) -> (&str, bool) {
+    if max_len == 0 {
+        return ("", !label.is_empty());
+    }
+
+    let mut cutoff = label.len();
+    let trunc_at = max_len.saturating_sub(3);
+
+    for (count, (idx, _)) in label.char_indices().enumerate() {
+        if count == trunc_at {
+            cutoff = idx;
+        }
+        if count == max_len {
+            return (&label[..cutoff], true);
+        }
+    }
+
+    (label, false)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DeviceOption(String, DeviceSelection);
 
 impl std::fmt::Display for DeviceOption {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
+        let (trimmed, truncated) = truncate_label(&self.0, MAX_DEVICE_NAME_LEN);
+        if truncated {
+            write!(f, "{trimmed}...")
+        } else {
+            f.write_str(trimmed)
+        }
     }
 }
 
@@ -214,22 +242,48 @@ impl ConfigPage {
         let bg_section = self.render_bg_section();
 
         let content = Column::new()
-            .spacing(20)
+            .spacing(14)
             .push(capture_section)
-            .push(self.divider())
             .push(visuals_section)
-            .push(self.divider())
             .push(bg_section);
 
-        container(scrollable(content))
+        container(scrollable(content).style(|_, _| Self::clear_scrollable_style()))
             .width(Length::Fill)
             .height(Length::Fill)
-            .padding(16)
+            .padding(8)
             .into()
     }
 
+    fn clear_scrollable_style() -> scrollable::Style {
+        scrollable::Style {
+            container: container::Style::default(),
+            vertical_rail: scrollable::Rail {
+                background: None,
+                border: iced::Border::default(),
+                scroller: scrollable::Scroller {
+                    background: iced::Background::Color(iced::Color::TRANSPARENT),
+                    border: iced::Border::default(),
+                },
+            },
+            horizontal_rail: scrollable::Rail {
+                background: None,
+                border: iced::Border::default(),
+                scroller: scrollable::Scroller {
+                    background: iced::Background::Color(iced::Color::TRANSPARENT),
+                    border: iced::Border::default(),
+                },
+            },
+            gap: None,
+            auto_scroll: scrollable::AutoScroll {
+                background: iced::Background::Color(iced::Color::TRANSPARENT),
+                border: iced::Border::default(),
+                shadow: iced::Shadow::default(),
+                icon: iced::Color::TRANSPARENT,
+            },
+        }
+    }
+
     fn render_capture_section(&self) -> Column<'_, ConfigMessage> {
-        let status_label = self.capture_status_label();
         let capture_controls = self.render_capture_mode_controls();
         let primary_section: Element<'_, ConfigMessage> = match self.capture_mode {
             CaptureMode::Applications => self.render_applications_section().into(),
@@ -237,27 +291,26 @@ impl ConfigPage {
         };
 
         let content = Column::new()
-            .spacing(12)
-            .push(text(status_label).size(12).style(theme::weak_text_style))
+            .spacing(8)
             .push(capture_controls)
             .push(primary_section);
 
-        self.section("Audio Capture", content)
+        self.section_with_divider("Audio Capture", content)
     }
 
     fn render_applications_section(&self) -> Column<'_, ConfigMessage> {
         let status_suffix = if self.applications.is_empty() {
             if self.registry_updates.is_some() {
                 if self.registry_ready {
-                    " - none detected"
+                    " - none detected".to_string()
                 } else {
-                    " - waiting..."
+                    " - waiting...".to_string()
                 }
             } else {
-                " - unavailable"
+                " - unavailable".to_string()
             }
         } else {
-            &format!(" - {} total", self.applications.len())
+            format!(" - {} total", self.applications.len())
         };
 
         let indicator = if self.applications_expanded { "v" } else { ">" };
@@ -266,13 +319,14 @@ impl ConfigPage {
         let summary_button = button(
             container(
                 text(summary_label)
+                    .size(TEXT_SIZE)
                     .wrapping(Wrapping::None)
                     .align_x(alignment::Horizontal::Left),
             )
             .width(Length::Fill)
             .clip(true),
         )
-        .padding(8)
+        .padding(6)
         .width(Length::Fill)
         .style({
             let expanded = self.applications_expanded;
@@ -291,7 +345,7 @@ impl ConfigPage {
                 } else {
                     "Waiting for PipeWire registry snapshots..."
                 };
-                text(msg).into()
+                text(msg).size(TEXT_SIZE).into()
             } else {
                 self.render_applications_grid()
             };
@@ -319,30 +373,29 @@ impl ConfigPage {
         .into()
     }
 
-    fn capture_status_label(&self) -> String {
-        match self.capture_mode {
-            CaptureMode::Applications => {
-                format!("Default hardware sink: {}", self.hardware_sink_label)
-            }
-            CaptureMode::Device => format!("Capturing from: {}", self.selected_device_label()),
-        }
-    }
-
     fn render_capture_mode_controls(&self) -> Row<'_, ConfigMessage> {
         Row::new()
             .spacing(12)
-            .push(radio(
-                "Applications",
-                CaptureMode::Applications,
-                Some(self.capture_mode),
-                ConfigMessage::CaptureModeChanged,
-            ))
-            .push(radio(
-                "Devices",
-                CaptureMode::Device,
-                Some(self.capture_mode),
-                ConfigMessage::CaptureModeChanged,
-            ))
+            .push(
+                radio(
+                    "Applications",
+                    CaptureMode::Applications,
+                    Some(self.capture_mode),
+                    ConfigMessage::CaptureModeChanged,
+                )
+                .size(14)
+                .text_size(TEXT_SIZE),
+            )
+            .push(
+                radio(
+                    "Devices",
+                    CaptureMode::Device,
+                    Some(self.capture_mode),
+                    ConfigMessage::CaptureModeChanged,
+                )
+                .size(14)
+                .text_size(TEXT_SIZE),
+            )
     }
 
     fn render_device_section(&self) -> Column<'_, ConfigMessage> {
@@ -355,27 +408,21 @@ impl ConfigPage {
             self.device_choices.clone(),
             selected,
             |opt: DeviceOption| ConfigMessage::CaptureDeviceChanged(opt.1),
-        );
+        )
+        .text_size(TEXT_SIZE)
+        .width(Length::Fill);
         if self.device_choices.len() <= 1 {
             picker = picker.placeholder("No devices available");
         }
 
-        Column::new().spacing(8).push(picker).push(
-            text("Direct device capture. Application routing disabled.")
-                .size(12)
-                .style(theme::weak_text_style),
-        )
-    }
-
-    fn selected_device_label(&self) -> String {
-        self.device_choices
-            .iter()
-            .find(|opt| opt.1 == self.selected_device)
-            .map(|opt| opt.0.clone())
-            .unwrap_or_else(|| match self.selected_device {
-                DeviceSelection::Default => format!("Default ({})", &self.hardware_sink_label),
-                DeviceSelection::Node(id) => format!("Node #{id}"),
-            })
+        Column::new()
+            .spacing(6)
+            .push(container(picker).width(Length::Fill).clip(true))
+            .push(
+                text("Direct device capture. Application routing disabled.")
+                    .size(TEXT_SIZE)
+                    .style(theme::weak_text_style),
+            )
     }
 
     fn build_device_choices(&self, snapshot: &RegistrySnapshot) -> Vec<DeviceOption> {
@@ -414,20 +461,20 @@ impl ConfigPage {
     }
 
     fn render_bg_section(&self) -> Column<'_, ConfigMessage> {
-        let content = self.bg_palette.view().map(ConfigMessage::BgPalette);
         let decorations_enabled = self.settings.borrow().settings().decorations;
 
         let decorations_toggle = iced::widget::checkbox(decorations_enabled)
             .label("Enable Window Decorations")
+            .size(14)
+            .text_size(TEXT_SIZE)
             .on_toggle(ConfigMessage::DecorationsToggled);
 
-        self.section(
-            "Global",
-            Column::new()
-                .spacing(12)
-                .push(content)
-                .push(decorations_toggle),
-        )
+        let content = Column::new()
+            .spacing(12)
+            .push(self.bg_palette.view().map(ConfigMessage::BgPalette))
+            .push(decorations_toggle);
+
+        self.section_with_divider("Global", content)
     }
 
     fn render_visuals_section(
@@ -439,7 +486,7 @@ impl ConfigPage {
         let title = format!("Visual Modules ({enabled}/{total})");
 
         let content: Element<'_, ConfigMessage> = if snapshot.slots.is_empty() {
-            text("No visual modules available.").into()
+            text("No visual modules available.").size(TEXT_SIZE).into()
         } else {
             render_toggle_grid(&snapshot.slots, |slot| {
                 (
@@ -458,18 +505,7 @@ impl ConfigPage {
             .into()
         };
 
-        self.section(&title, content)
-    }
-
-    fn section<'a>(
-        &self,
-        title: impl Into<String>,
-        content: impl Into<Element<'a, ConfigMessage>>,
-    ) -> Column<'a, ConfigMessage> {
-        Column::new()
-            .spacing(12)
-            .push(text(title.into()).size(14))
-            .push(content)
+        self.section_with_divider(title, content)
     }
 
     fn divider<'a>(&self) -> Rule<'a> {
@@ -479,6 +515,18 @@ impl ConfigPage {
             fill_mode: rule::FillMode::Percent(100.0),
             snap: true,
         })
+    }
+
+    fn section_with_divider<'a>(
+        &self,
+        title: impl Into<String>,
+        content: impl Into<Element<'a, ConfigMessage>>,
+    ) -> Column<'a, ConfigMessage> {
+        Column::new()
+            .spacing(8)
+            .push(text(title.into()).size(TITLE_SIZE))
+            .push(self.divider())
+            .push(content)
     }
 
     fn update_hardware_sink_label(&mut self, snapshot: &RegistrySnapshot) {
@@ -545,10 +593,10 @@ fn render_toggle_grid<'a, T, F>(items: &[T], mut project: F) -> Column<'a, Confi
 where
     F: FnMut(&T) -> (String, bool, ConfigMessage),
 {
-    let mut grid = Column::new().spacing(12);
+    let mut grid = Column::new().spacing(6);
 
     for chunk in items.chunks(GRID_COLUMNS) {
-        let mut row = Row::new().spacing(12);
+        let mut row = Row::new().spacing(6);
 
         for item in chunk {
             let (label, enabled, message) = project(item);
@@ -575,11 +623,11 @@ fn toggle_button<'a>(
     message: ConfigMessage,
 ) -> iced::widget::Button<'a, ConfigMessage> {
     button(
-        container(text(label).wrapping(Wrapping::None))
+        container(text(label).size(TEXT_SIZE).wrapping(Wrapping::None))
             .width(Length::Fill)
             .clip(true),
     )
-    .padding(12)
+    .padding(8)
     .width(Length::FillPortion(1))
     .style(move |theme: &iced::Theme, status| theme::tab_button_style(theme, enabled, status))
     .on_press(message)

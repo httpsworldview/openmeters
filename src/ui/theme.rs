@@ -288,6 +288,17 @@ pub fn opaque_container(theme: &Theme) -> container::Style {
     }
 }
 
+pub fn resize_handle_container(theme: &Theme) -> container::Style {
+    let palette = theme.extended_palette();
+    container::Style {
+        background: Some(Background::Color(with_alpha(
+            palette.secondary.weak.color,
+            0.1,
+        ))),
+        ..Default::default()
+    }
+}
+
 pub fn accent_primary() -> Color {
     ACCENT_PRIMARY
 }

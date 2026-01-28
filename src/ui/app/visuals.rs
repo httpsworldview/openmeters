@@ -11,6 +11,8 @@ use iced::widget::{container, mouse_area, text};
 use iced::{Element, Length, Subscription, Task};
 use std::collections::HashMap;
 
+const GRID_SPACING: f32 = 16.0;
+
 #[derive(Debug, Clone)]
 pub enum VisualsMessage {
     PaneDragged(pane_grid::DragEvent),
@@ -117,9 +119,9 @@ impl VisualsPage {
     }
 
     pub fn view(&self, controls_visible: bool) -> Element<'_, VisualsMessage> {
-        let spacing = if controls_visible { 16.0 } else { 0.0 };
+        let spacing = if controls_visible { GRID_SPACING } else { 0.0 };
         let Some(panes) = &self.panes else {
-            return container(text("enable one or more visual modules to get started"))
+            return container(text("enable some visuals to see them here (Ctrl+Shift+H)"))
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .center_x(Length::Fill)
