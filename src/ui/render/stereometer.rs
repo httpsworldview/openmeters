@@ -86,14 +86,17 @@ impl StereometerPrimitive {
         );
         let theta = (p.rotation as f32) * std::f32::consts::FRAC_PI_4;
         let (sin_t, cos_t) = theta.sin_cos();
+        let rot_scale = 1.0 / (cos_t.abs() + sin_t.abs()).max(f32::EPSILON);
         let radius = (vec_bounds.width.min(vec_bounds.height) * 0.5) - 2.0;
         let [cr, cg, cb, ca] = p.palette[0];
 
         let xform = |l: f32, r: f32| {
             let (l, r) = if p.flip { (r, l) } else { (l, r) };
+            let l = l * rot_scale;
+            let r = r * rot_scale;
             (
-                cx + (l * cos_t + r * sin_t).clamp(-1., 1.) * radius,
-                cy + (l * sin_t - r * cos_t).clamp(-1., 1.) * radius,
+                cx + (l * cos_t + r * sin_t) * radius,
+                cy + (l * sin_t - r * cos_t) * radius,
             )
         };
 
