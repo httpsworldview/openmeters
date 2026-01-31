@@ -45,11 +45,15 @@ fn truncate_label(label: &str, max_len: usize) -> (&str, bool) {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct DeviceOption(String, DeviceSelection);
+struct DeviceOption {
+    label: String,
+    token: Option<String>,
+    selection: DeviceSelection,
+}
 
 impl std::fmt::Display for DeviceOption {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let (trimmed, truncated) = truncate_label(&self.0, MAX_DEVICE_NAME_LEN);
+        let (trimmed, truncated) = truncate_label(&self.label, MAX_DEVICE_NAME_LEN);
         if truncated {
             write!(f, "{trimmed}...")
         } else {
@@ -133,7 +137,7 @@ impl ConfigPage {
         bg_pal.set(&[current_bg]);
         let bg_palette = PaletteEditor::new(bg_pal);
 
-        let ret = Self {
+        Self {
             routing_sender,
             registry_updates,
             visual_manager,
@@ -149,9 +153,7 @@ impl ConfigPage {
             selected_device: DeviceSelection::Default,
             pending_device_name: last_device_name,
             bg_palette,
-        };
-        ret.dispatch_capture_state();
-        ret
+        }
     }
 
     pub fn subscription(&self) -> Subscription<ConfigMessage> {
@@ -200,24 +202,17 @@ impl ConfigPage {
             ConfigMessage::CaptureModeChanged(mode) => {
                 if self.capture_mode != mode {
                     self.capture_mode = mode;
-                    self.dispatch_capture_state();
+                    self.dispatch_capture_state(self.selected_device);
                     self.settings.update(|s| s.set_capture_mode(mode));
                 }
             }
             ConfigMessage::CaptureDeviceChanged(selection) => {
                 if self.selected_device != selection {
                     self.selected_device = selection;
-                    self.dispatch_capture_state();
-                    let device_name = self
-                        .device_choices
-                        .iter()
-                        .find(|opt| opt.1 == selection)
-                        .and_then(|opt| match selection {
-                            DeviceSelection::Default => None,
-                            DeviceSelection::Node(_) => Some(opt.0.clone()),
-                        });
-                    self.settings
-                        .update(|s| s.set_last_device_name(device_name));
+                    self.dispatch_capture_state(selection);
+                    self.settings.update(|s| {
+                        s.set_last_device_name(self.device_token_for(selection));
+                    });
                 }
             }
             ConfigMessage::BgPalette(event) => {
@@ -402,12 +397,12 @@ impl ConfigPage {
         let selected = self
             .device_choices
             .iter()
-            .find(|opt| opt.1 == self.selected_device)
+            .find(|opt| opt.selection == self.selected_device)
             .cloned();
         let mut picker = pick_list(
             self.device_choices.clone(),
             selected,
-            |opt: DeviceOption| ConfigMessage::CaptureDeviceChanged(opt.1),
+            |opt: DeviceOption| ConfigMessage::CaptureDeviceChanged(opt.selection),
         )
         .text_size(TEXT_SIZE)
         .width(Length::Fill);
@@ -430,18 +425,31 @@ impl ConfigPage {
 
         // Use the cached hardware sink label which has fallback to last known value
         let default_label = format!("Default sink - {}", &self.hardware_sink_label);
-        choices.push(DeviceOption(default_label, DeviceSelection::Default));
+        choices.push(DeviceOption {
+            label: default_label,
+            token: None,
+            selection: DeviceSelection::Default,
+        });
 
         let mut nodes: Vec<_> = snapshot
             .nodes
             .iter()
             .filter(|node| Self::is_capture_candidate(node))
-            .map(|node| (node.display_name(), node.id))
             .collect();
-        nodes.sort_by(|a, b| a.0.to_ascii_lowercase().cmp(&b.0.to_ascii_lowercase()));
+        nodes.sort_by_key(|node| node.display_name().to_ascii_lowercase());
 
-        for (label, id) in nodes {
-            choices.push(DeviceOption(label, DeviceSelection::Node(id)));
+        for node in nodes {
+            let label = node.display_name();
+            let token = node
+                .name
+                .clone()
+                .or(node.description.clone())
+                .or_else(|| Some(label.clone()));
+            choices.push(DeviceOption {
+                label,
+                token,
+                selection: DeviceSelection::Node(node.id),
+            });
         }
         choices
     }
@@ -545,18 +553,13 @@ impl ConfigPage {
     fn apply_snapshot(&mut self, snapshot: RegistrySnapshot) {
         self.update_hardware_sink_label(&snapshot);
         let choices = self.build_device_choices(&snapshot);
+        self.resolve_pending_device(&choices);
 
-        if let Some(name) = self.pending_device_name.as_ref()
-            && let Some(opt) = choices.iter().find(|opt| opt.0 == *name)
+        if !choices
+            .iter()
+            .any(|opt| opt.selection == self.selected_device)
         {
-            self.selected_device = opt.1;
-            self.pending_device_name = None;
-            self.dispatch_capture_state();
-        }
-
-        if !choices.iter().any(|opt| opt.1 == self.selected_device) {
             self.selected_device = DeviceSelection::Default;
-            self.dispatch_capture_state();
         }
         self.device_choices = choices;
 
@@ -576,16 +579,40 @@ impl ConfigPage {
         entries.sort_by_key(|a| a.sort_key());
         self.applications = entries;
     }
+
+    fn resolve_pending_device(&mut self, choices: &[DeviceOption]) {
+        let Some(token) = self.pending_device_name.as_ref() else {
+            return;
+        };
+
+        let opt = choices
+            .iter()
+            .find(|opt| opt.token.as_deref() == Some(token) || opt.label == *token);
+
+        if let Some(opt) = opt {
+            self.selected_device = opt.selection;
+            self.pending_device_name = None;
+            self.settings
+                .update(|s| s.set_last_device_name(opt.token.clone()));
+        }
+    }
 }
 
 impl ConfigPage {
-    fn dispatch_capture_state(&self) {
+    fn dispatch_capture_state(&self, selection: DeviceSelection) {
         let _ = self
             .routing_sender
             .send(RoutingCommand::SetCaptureMode(self.capture_mode));
         let _ = self
             .routing_sender
-            .send(RoutingCommand::SelectCaptureDevice(self.selected_device));
+            .send(RoutingCommand::SelectCaptureDevice(selection));
+    }
+
+    fn device_token_for(&self, selection: DeviceSelection) -> Option<String> {
+        self.device_choices
+            .iter()
+            .find(|opt| opt.selection == selection)
+            .and_then(|opt| opt.token.clone())
     }
 }
 

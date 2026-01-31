@@ -1,6 +1,7 @@
 use crate::audio::{VIRTUAL_SINK_NAME, pw_registry};
 use crate::ui::RoutingCommand;
 use crate::ui::app::config::{CaptureMode, DeviceSelection};
+use crate::ui::settings::SettingsManager;
 use async_channel::{Sender, TrySendError};
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::mpsc;
@@ -24,7 +25,10 @@ pub fn init_registry_monitor(
     let handle_for_thread = handle.clone();
     let thread_handle = std::thread::Builder::new()
         .name("openmeters-registry-monitor".into())
-        .spawn(move || run_monitor_loop(handle_for_thread, command_rx, snapshot_tx))
+        .spawn(move || {
+            let routing_config = RoutingConfig::load();
+            run_monitor_loop(handle_for_thread, command_rx, snapshot_tx, routing_config)
+        })
         .inspect_err(|err| {
             tracing::error!("[registry-monitor] failed to spawn monitor thread: {err}")
         })
@@ -37,9 +41,10 @@ fn run_monitor_loop(
     handle: pw_registry::AudioRegistryHandle,
     command_rx: mpsc::Receiver<RoutingCommand>,
     snapshot_tx: Sender<pw_registry::RegistrySnapshot>,
+    routing_config: RoutingConfig,
 ) {
     let mut updates = handle.subscribe();
-    let mut routing = RoutingManager::new(handle, command_rx);
+    let mut routing = RoutingManager::new(handle, command_rx, routing_config);
     let mut last_snapshot: Option<pw_registry::RegistrySnapshot> = None;
     let mut pending_ui_snapshot: Option<pw_registry::RegistrySnapshot> = None;
 
@@ -156,6 +161,7 @@ struct RoutingManager {
     disabled_nodes: FxHashSet<u32>,
     routed_to: FxHashMap<u32, u32>,
     capture_mode: CaptureMode,
+    preferred_device: Option<String>,
     device_target: DeviceSelection,
     hw_sink_cache: Option<(u32, String)>,
     current_links: Vec<pw_registry::LinkSpec>,
@@ -167,13 +173,15 @@ impl RoutingManager {
     fn new(
         handle: pw_registry::AudioRegistryHandle,
         commands: mpsc::Receiver<RoutingCommand>,
+        routing_config: RoutingConfig,
     ) -> Self {
         Self {
             handle,
             commands,
             disabled_nodes: FxHashSet::default(),
             routed_to: FxHashMap::default(),
-            capture_mode: CaptureMode::Applications,
+            capture_mode: routing_config.capture_mode,
+            preferred_device: routing_config.preferred_device,
             device_target: DeviceSelection::Default,
             hw_sink_cache: None,
             current_links: Vec::new(),
@@ -198,6 +206,9 @@ impl RoutingManager {
                     true
                 }
                 RoutingCommand::SelectCaptureDevice(sel) if self.device_target != sel => {
+                    if sel == DeviceSelection::Default {
+                        self.preferred_device = None;
+                    }
                     self.device_target = sel;
                     true
                 }
@@ -293,20 +304,12 @@ impl RoutingManager {
     ) -> Option<Vec<pw_registry::LinkSpec>> {
         let om_sink = snapshot.find_node_by_label(VIRTUAL_SINK_NAME)?;
 
-        let (source, target) = match (self.capture_mode, self.device_target) {
-            (CaptureMode::Applications, _) => (om_sink, self.hw_sink(snapshot)?),
-            (CaptureMode::Device, DeviceSelection::Default) => (self.hw_sink(snapshot)?, om_sink),
-            (CaptureMode::Device, DeviceSelection::Node(id)) => {
-                let src = snapshot.nodes.iter().find(|n| n.id == id).or_else(|| {
-                    if !self.warned_device_missing {
-                        warn!("[router] capture device #{id} unavailable; using default");
-                        self.warned_device_missing = true;
-                    }
-                    self.hw_sink(snapshot)
-                })?;
-                self.warned_device_missing = false;
-                (src, om_sink)
-            }
+        let (source, target) = match self.capture_mode {
+            CaptureMode::Applications => (om_sink, self.hw_sink(snapshot)?),
+            CaptureMode::Device => match self.device_target {
+                DeviceSelection::Node(id) => (self.find_node(snapshot, id)?, om_sink),
+                DeviceSelection::Default => self.device_source(snapshot, om_sink)?,
+            },
         };
 
         let (src_ports, tgt_ports) = (
@@ -333,6 +336,60 @@ impl RoutingManager {
                 })
                 .collect(),
         )
+    }
+
+    fn device_source<'a>(
+        &mut self,
+        snapshot: &'a pw_registry::RegistrySnapshot,
+        om_sink: &'a pw_registry::NodeInfo,
+    ) -> Option<(&'a pw_registry::NodeInfo, &'a pw_registry::NodeInfo)> {
+        if let Some(device) = self.resolve_preferred_device(snapshot) {
+            self.warned_device_missing = false;
+            return Some((device, om_sink));
+        }
+        if self.preferred_device.is_some() {
+            if !self.warned_device_missing {
+                warn!("[router] preferred capture device unavailable; waiting");
+                self.warned_device_missing = true;
+            }
+            return None;
+        }
+        Some((self.hw_sink(snapshot)?, om_sink))
+    }
+
+    fn resolve_preferred_device<'a>(
+        &self,
+        snapshot: &'a pw_registry::RegistrySnapshot,
+    ) -> Option<&'a pw_registry::NodeInfo> {
+        let token = self.preferred_device.as_deref()?;
+        snapshot
+            .nodes
+            .iter()
+            .find(|n| n.name.as_deref() == Some(token) || n.matches_label(token))
+    }
+
+    fn find_node<'a>(
+        &self,
+        snapshot: &'a pw_registry::RegistrySnapshot,
+        id: u32,
+    ) -> Option<&'a pw_registry::NodeInfo> {
+        snapshot.nodes.iter().find(|n| n.id == id)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RoutingConfig {
+    pub capture_mode: CaptureMode,
+    pub preferred_device: Option<String>,
+}
+
+impl RoutingConfig {
+    fn load() -> Self {
+        let settings = SettingsManager::load_or_default();
+        Self {
+            capture_mode: settings.settings().capture_mode,
+            preferred_device: settings.settings().last_device_name.clone(),
+        }
     }
 }
 
