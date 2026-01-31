@@ -108,18 +108,16 @@ pub mod spectrum {
     pub const LABELS: &[&str] = &["Floor", "Low", "Low-Mid", "Mid", "High", "Peak"];
 }
 
-/// Waveform display: 6-stop frequency gradient (sub-bass to brilliance)
-/// Spectral rainbow: dark red (low) → orange → green → cyan → blue (high)
-/// Matches MiniMeters-style frequency coloring conventions
+/// dark red (low) -> orange -> green -> cyan -> blue (high)
 pub mod waveform {
     use super::*;
     pub const COLORS: [Color; 6] = [
-        Color::from_rgba(0.545, 0.000, 0.000, 1.0), // #8B0000 Sub-bass (dark red)
-        Color::from_rgba(1.000, 0.259, 0.000, 1.0), // #FF4200 Bass (red-orange)
-        Color::from_rgba(1.000, 0.412, 0.000, 1.0), // #FF6900 Low-mid (orange)
-        Color::from_rgba(0.298, 1.000, 0.180, 1.0), // #4CFF2E Mid (lime green)
-        Color::from_rgba(0.196, 0.804, 1.000, 1.0), // #32CDFF Upper-mid (cyan)
-        Color::from_rgba(0.000, 0.000, 1.000, 1.0), // #0000FF Brilliance (blue)
+        Color::from_rgba(0.545, 0.000, 0.000, 1.0),
+        Color::from_rgba(1.000, 0.259, 0.000, 1.0),
+        Color::from_rgba(1.000, 0.412, 0.000, 1.0),
+        Color::from_rgba(0.298, 1.000, 0.180, 1.0),
+        Color::from_rgba(0.196, 0.804, 1.000, 1.0),
+        Color::from_rgba(0.000, 0.000, 1.000, 1.0),
     ];
     pub const LABELS: &[&str] = &[
         "Sub-bass",
