@@ -89,10 +89,10 @@ Checked features are implemented, unchecked features are planned. If you have id
 
 ### global
 
-- `ctrl+shift+h`: Show/hide top bar
-- `p`: Pause/resume audio capture
-- `q` twice: Quit application
-- `ctrl+space`: Pop-out/in hovered visual.
+- `ctrl+shift+h`: Show/hide global configuration drawer
+- `p`: Pause/resume rendering.
+- `q` twice: Quit the application.
+- `ctrl+space`: Move a hovered visual to a new window, or back to the main window.
 
 ### spectrogram
 
@@ -101,8 +101,10 @@ Checked features are implemented, unchecked features are planned. If you have id
 
 ### configuration
 
-Configurations are saved to `~/.config/openmeters/settings.json`. If you want to use settings/values not listed in the GUI, you can edit this file directly, however absurd values often lead to crashes. Invalid values will be replaced with defaults on load, or when saved.
-If you encounter a bug that causes OpenMeters to misbehave, you can delete `settings.json` to reset everything, or change the problematic setting manually. (then open an issue so I can fix it!)
+- Configurations are saved to `~/.config/openmeters/settings.json`. If you want to use settings/values not listed in the GUI, you can edit this file directly, however absurd/invalid values may cause crashes (or be ignored).
+- Configurations are validated on startup. Invalid JSON will be ignored and default settings will be used instead. Your configuration file will not be overwritten unless you change settings in the GUI.
+- The internal structure of this file will likely change often during development, so be aware that your settings **may be reset inexplicably after updates**. As this project grows, I will try to maintain backwards compatibility as much as possible, but no guarantees are made. The public API for settings is mostly stable as of now, so breaking changes should be infrequent.
+- If you encounter a bug that causes OpenMeters to misbehave, the application settings can be reset by deleting this file.
 
 ## credits
 
