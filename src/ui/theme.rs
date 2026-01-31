@@ -119,14 +119,7 @@ pub mod waveform {
         Color::from_rgba(0.196, 0.804, 1.000, 1.0),
         Color::from_rgba(0.000, 0.000, 1.000, 1.0),
     ];
-    pub const LABELS: &[&str] = &[
-        "Sub-bass",
-        "Bass",
-        "Low-mid",
-        "Mid",
-        "Upper-mid",
-        "Brilliance",
-    ];
+    pub const LABELS: &[&str] = &["Sub-bass", "->", "->", "->", "->", "Brilliance"];
 }
 
 /// Oscilloscope trace color (1 stop)
