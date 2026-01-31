@@ -4,7 +4,7 @@ use crate::ui::theme::{self, Palette};
 use crate::util::audio::f32_to_u8;
 use iced::alignment::{Horizontal, Vertical};
 use iced::widget::text::Wrapping;
-use iced::widget::{Button, Column, Row, Space, container, slider, text};
+use iced::widget::{Button, Column, Row, Space, container, scrollable, slider, text};
 use iced::{Background, Color, Element, Length};
 
 const SWATCH_SIZE: (f32, f32) = (56.0, 28.0);
@@ -118,7 +118,8 @@ impl PaletteEditor {
         let row = indices.iter().fold(Row::new().spacing(12.0), |r, &i| {
             r.push(self.color_picker(i, colors[i]))
         });
-        let mut col = Column::new().spacing(12.0).push(row);
+        let swatches = scrollable(row).horizontal().width(Length::Fill);
+        let mut col = Column::new().spacing(12.0).push(swatches);
         if let Some(i) = self.active
             && let Some(&c) = colors.get(i)
         {
