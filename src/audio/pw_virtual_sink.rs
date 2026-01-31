@@ -1,11 +1,11 @@
 //! PipeWire virtual sink integration.
 
-use super::ring_buffer::RingBuffer;
 use crate::util::audio::DEFAULT_SAMPLE_RATE;
 use crate::util::{bytes_per_sample, convert_samples_to_f32};
 use pipewire as pw;
 use pw::{properties::properties, spa};
 use spa::pod::Pod;
+use std::collections::VecDeque;
 use std::error::Error;
 use std::io::Cursor;
 use std::mem::size_of;
@@ -31,7 +31,8 @@ pub struct CapturedAudio {
 }
 
 pub struct CaptureBuffer {
-    inner: Mutex<RingBuffer<CapturedAudio>>,
+    inner: Mutex<VecDeque<CapturedAudio>>,
+    capacity: usize,
     available: Condvar,
     dropped_frames: AtomicU64,
 }
@@ -39,7 +40,8 @@ pub struct CaptureBuffer {
 impl CaptureBuffer {
     fn new(capacity: usize) -> Self {
         Self {
-            inner: Mutex::new(RingBuffer::with_capacity(capacity)),
+            inner: Mutex::new(VecDeque::with_capacity(capacity)),
+            capacity,
             available: Condvar::new(),
             dropped_frames: AtomicU64::new(0),
         }
@@ -48,9 +50,11 @@ impl CaptureBuffer {
     pub fn try_push(&self, frame: CapturedAudio) {
         match self.inner.try_lock() {
             Ok(mut guard) => {
-                if guard.push(frame).is_some() {
+                if guard.len() >= self.capacity {
+                    guard.pop_front();
                     self.dropped_frames.fetch_add(1, Ordering::Relaxed);
                 }
+                guard.push_back(frame);
                 self.available.notify_one();
             }
             Err(_) => {
@@ -69,7 +73,7 @@ impl CaptureBuffer {
             })
             .map_err(|_| ())?;
 
-        if let Some(frame) = guard.pop() {
+        if let Some(frame) = guard.pop_front() {
             return Ok(Some(frame));
         }
         if timeout.is_zero() {
@@ -83,7 +87,7 @@ impl CaptureBuffer {
                 .map_err(|_| ())?;
             guard = new_guard;
 
-            if let Some(frame) = guard.pop() {
+            if let Some(frame) = guard.pop_front() {
                 return Ok(Some(frame));
             }
             if result.timed_out() {
