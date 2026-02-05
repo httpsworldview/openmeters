@@ -24,9 +24,6 @@ wide = "1.1.1"
 iced_layershell = "0.15.0-rc1"
 wayland-client = "0.31.11"
 
-[target.'cfg(not(target_env = "msvc"))'.dependencies]
-tikv-jemallocator = "0.6.1"
-
 [dev-dependencies]
 ebur128 = "0.1.10"
 
