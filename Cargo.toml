@@ -5,7 +5,6 @@ edition = "2024"
 
 [dependencies]
 pipewire = "0.9.2"
-spa = "0.5.1"
 anyhow = "1.0.100"
 parking_lot = "0.12.5"
 serde_json = "1.0.149"
@@ -28,10 +27,14 @@ wayland-client = "0.31.11"
 ebur128 = "0.1.10"
 
 [profile.dev]
-opt-level = 3
+opt-level = "z"
 
 [profile.release]
 lto = "thin"
+codegen-units = 1
+opt-level = 3
+strip = true
+panic = "abort"
 
 # TODO: remove when my patches are published to crates.io
 [patch.crates-io.layershellev]
