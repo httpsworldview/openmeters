@@ -5,7 +5,7 @@ pub mod visuals;
 
 use crate::audio::pw_registry::RegistrySnapshot;
 use crate::ui::channel_subscription::channel_subscription;
-use crate::ui::settings::SettingsHandle;
+use crate::ui::settings::{BarAlignment, BarSettings, SettingsHandle, clamp_bar_height};
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{
     VisualContent, VisualId, VisualKind, VisualManager, VisualManagerHandle, VisualMetadata,
@@ -17,13 +17,23 @@ use iced::alignment::{Horizontal, Vertical};
 use iced::event::{self, Event};
 use iced::keyboard::{self, Key};
 use iced::widget::{column, container, mouse_area, row, scrollable, stack, text};
-use iced::{Element, Length, Result, Settings, Size, Subscription, Task, daemon, exit, window};
+use iced::{
+    Element, Length, Settings as IcedSettings, Size, Subscription, Task, daemon as iced_daemon,
+    exit, window,
+};
+use iced_layershell::actions::IcedXdgWindowSettings;
+use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings};
+use iced_layershell::settings::{LayerShellSettings, Settings as LayerSettings, StartMode};
+use iced_layershell::to_layer_message;
 use rustc_hash::FxHashMap;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 use visuals::{
     ActiveSettings, SettingsMessage, VisualsMessage, VisualsPage, create_settings_panel,
 };
+use wayland_client::globals::{GlobalListContents, registry_queue_init};
+use wayland_client::protocol::wl_registry;
+use wayland_client::{Connection, Dispatch, QueueHandle};
 
 pub use config::RoutingCommand;
 
@@ -34,6 +44,10 @@ const TOAST_DISPLAY_DURATION: Duration = Duration::from_secs(2);
 const DEFAULT_DRAWER_RATIO: f32 = 0.20;
 const MIN_DRAWER_RATIO: f32 = 0.10;
 const MAX_DRAWER_RATIO: f32 = 0.50;
+const BAR_RESIZE_HANDLE_THICKNESS: f32 = 6.0;
+const DRAWER_RESIZE_HANDLE_WIDTH: f32 = 6.0;
+
+pub type UiResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
 /// Wraps content in a container that expands to fill available space.
 macro_rules! fill {
@@ -46,15 +60,109 @@ fn open_window(
     size: Size,
     with_decorations: bool,
     transparent: bool,
-) -> (window::Id, Task<window::Id>) {
-    window::open(window::Settings {
+) -> (window::Id, Task<Message>) {
+    let (id, task) = window::open(window::Settings {
         size,
         min_size: Some(WINDOW_MIN_SIZE),
         resizable: true,
         decorations: with_decorations,
         transparent,
         ..Default::default()
+    });
+    (id, task.map(|_| Message::WindowOpened))
+}
+
+#[derive(Debug, Default)]
+struct LayerShellProbe;
+
+impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for LayerShellProbe {
+    fn event(
+        _state: &mut Self,
+        _proxy: &wl_registry::WlRegistry,
+        _event: wl_registry::Event,
+        _data: &GlobalListContents,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+fn layershell_available() -> bool {
+    let conn = match Connection::connect_to_env() {
+        Ok(conn) => conn,
+        Err(_) => return false,
+    };
+    let (globals, _queue) = match registry_queue_init::<LayerShellProbe>(&conn) {
+        Ok(state) => state,
+        Err(_) => return false,
+    };
+    globals.contents().with_list(|list| {
+        list.iter()
+            .any(|global| global.interface == "zwlr_layer_shell_v1")
     })
+}
+
+fn namespace() -> String {
+    "openmeters-ui".into()
+}
+
+fn bar_anchor(alignment: BarAlignment) -> Anchor {
+    match alignment {
+        BarAlignment::Top => Anchor::Top | Anchor::Left | Anchor::Right,
+        BarAlignment::Bottom => Anchor::Bottom | Anchor::Left | Anchor::Right,
+    }
+}
+
+fn bar_layershell_settings(alignment: BarAlignment, height: u32) -> NewLayerShellSettings {
+    NewLayerShellSettings {
+        size: Some((0, height)),
+        layer: Layer::Top,
+        anchor: bar_anchor(alignment),
+        exclusive_zone: Some(height as i32),
+        keyboard_interactivity: KeyboardInteractivity::OnDemand,
+        ..Default::default()
+    }
+}
+
+fn open_base_window(
+    use_layershell: bool,
+    size: Size,
+    with_decorations: bool,
+    transparent: bool,
+) -> (window::Id, Task<Message>) {
+    if use_layershell {
+        let settings = IcedXdgWindowSettings {
+            size: Some((size.width.round() as u32, size.height.round() as u32)),
+        };
+        Message::base_window_open(settings)
+    } else {
+        open_window(size, with_decorations, transparent)
+    }
+}
+
+fn open_main_window(
+    use_layershell: bool,
+    bar_settings: BarSettings,
+    base_size: Size,
+    with_decorations: bool,
+) -> (window::Id, Task<Message>, bool, Size) {
+    if use_layershell && bar_settings.enabled {
+        let height = clamp_bar_height(bar_settings.height);
+        let settings = bar_layershell_settings(bar_settings.alignment, height);
+        let (id, task) = Message::layershell_open(settings);
+        let new_size = Size::new(base_size.width, height as f32);
+        return (id, task, true, new_size);
+    }
+
+    let (id, task) = open_base_window(use_layershell, base_size, with_decorations, true);
+    (id, task, false, base_size)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BarResizeState {
+    start_y: f32,
+    start_height: u32,
+    pending_height: u32,
 }
 
 #[derive(Debug)]
@@ -113,9 +221,17 @@ impl UiConfig {
     }
 }
 
-pub fn run(config: UiConfig) -> Result {
-    daemon(move || UiApp::new(config.clone()), update, view)
-        .settings(Settings {
+pub fn run(config: UiConfig) -> UiResult {
+    if layershell_available() {
+        run_layershell(config)
+    } else {
+        run_iced(config)
+    }
+}
+
+fn run_iced(config: UiConfig) -> UiResult {
+    iced_daemon(move || UiApp::new(config.clone(), false), update, view)
+        .settings(IcedSettings {
             id: Some("openmeters-ui".into()),
             ..Default::default()
         })
@@ -123,6 +239,32 @@ pub fn run(config: UiConfig) -> Result {
         .title(UiApp::title)
         .theme(UiApp::theme)
         .run()
+        .map_err(|e| Box::new(e) as _)
+}
+
+fn run_layershell(config: UiConfig) -> UiResult {
+    let layer_settings = LayerShellSettings {
+        start_mode: StartMode::Background,
+        size: None,
+        ..Default::default()
+    };
+
+    iced_layershell::daemon(
+        move || UiApp::new(config.clone(), true),
+        namespace,
+        update,
+        view,
+    )
+    .settings(LayerSettings {
+        id: Some("openmeters-ui".into()),
+        layer_settings,
+        ..Default::default()
+    })
+    .subscription(UiApp::subscription)
+    .title(|app, window_id| Some(app.title(window_id)))
+    .theme(|app: &UiApp, window_id| Some(app.theme(window_id)))
+    .run()
+    .map_err(|e| Box::new(e) as _)
 }
 
 #[derive(Debug)]
@@ -136,16 +278,21 @@ struct UiApp {
     drawer_width_ratio: f32,
     drawer_resizing: bool,
     drawer_resize_offset: Option<f32>,
+    bar_resize_state: Option<BarResizeState>,
     rendering_paused: bool,
     toast_until: Option<Instant>,
     main_window_id: window::Id,
     main_window_size: Size,
+    last_base_window_size: Size,
+    main_window_is_layer: bool,
+    use_layershell: bool,
     settings_window: Option<(window::Id, ActiveSettings)>,
     popout_windows: FxHashMap<window::Id, PopoutWindow>,
     focused_window: Option<window::Id>,
     exit_warning_until: Option<Instant>,
 }
 
+#[to_layer_message(multi)]
 #[derive(Debug, Clone)]
 enum Message {
     Config(ConfigMessage),
@@ -157,6 +304,9 @@ enum Message {
     DrawerResizeStart,
     DrawerResizeMove(iced::Point),
     DrawerResizeEnd,
+    BarResizeStart,
+    BarResizeMove(iced::Point),
+    BarResizeEnd,
     Quit,
     Resize,
     WindowOpened,
@@ -186,18 +336,19 @@ fn handle_keyboard_shortcut(event: keyboard::Event) -> Option<Message> {
 }
 
 impl UiApp {
-    fn new(config: UiConfig) -> (Self, Task<Message>) {
+    fn new(config: UiConfig, use_layershell: bool) -> (Self, Task<Message>) {
         let UiConfig {
             routing_sender,
             registry_updates,
             audio_frames,
         } = config;
         let settings_handle = SettingsHandle::load_or_default();
-        let (visual_settings, use_decorations) = {
+        let (visual_settings, use_decorations, bar_settings) = {
             let guard = settings_handle.borrow();
             (
                 guard.settings().visuals.clone(),
                 guard.settings().decorations,
+                guard.settings().bar.clone(),
             )
         };
         let mut manager = VisualManager::new();
@@ -208,9 +359,12 @@ impl UiApp {
             registry_updates,
             visual_manager.clone(),
             settings_handle.clone(),
+            use_layershell,
         );
         let visuals_page = VisualsPage::new(visual_manager.clone(), settings_handle.clone());
-        let (main_id, open_task) = open_window(MAIN_WINDOW_INITIAL_SIZE, use_decorations, true);
+        let base_size = MAIN_WINDOW_INITIAL_SIZE;
+        let (main_id, open_task, main_is_layer, main_size) =
+            open_main_window(use_layershell, bar_settings, base_size, use_decorations);
         (
             Self {
                 config_page,
@@ -222,16 +376,20 @@ impl UiApp {
                 drawer_width_ratio: DEFAULT_DRAWER_RATIO,
                 drawer_resizing: false,
                 drawer_resize_offset: None,
+                bar_resize_state: None,
                 rendering_paused: false,
                 toast_until: None,
                 main_window_id: main_id,
-                main_window_size: MAIN_WINDOW_INITIAL_SIZE,
+                main_window_size: main_size,
+                last_base_window_size: base_size,
+                main_window_is_layer: main_is_layer,
+                use_layershell,
                 settings_window: None,
                 popout_windows: FxHashMap::default(),
                 focused_window: Some(main_id),
                 exit_warning_until: None,
             },
-            open_task.map(|_| Message::WindowOpened),
+            open_task,
         )
     }
 
@@ -257,6 +415,17 @@ impl UiApp {
                 _ => None,
             })
         });
+        let bar_resize_sub = self.bar_resize_state.is_some().then(|| {
+            event::listen_with(|evt, _, _| match evt {
+                Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
+                    Some(Message::BarResizeMove(position))
+                }
+                Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
+                    Some(Message::BarResizeEnd)
+                }
+                _ => None,
+            })
+        });
         Subscription::batch(
             [
                 Some(config_sub),
@@ -267,6 +436,7 @@ impl UiApp {
                 Some(window::resize_events().map(|(id, size)| Message::WindowResized(id, size))),
                 Some(focus_sub),
                 resize_sub,
+                bar_resize_sub,
             ]
             .into_iter()
             .flatten(),
@@ -286,6 +456,11 @@ impl UiApp {
         self.drawer_resize_offset = None;
     }
 
+    fn pending_bar_resize(&self) -> Option<(u32, u32)> {
+        self.bar_resize_state
+            .map(|s| (s.start_height, s.pending_height))
+    }
+
     fn open_settings_window(&mut self, visual_id: VisualId, kind: VisualKind) -> Task<Message> {
         let new_panel = create_settings_panel(visual_id, kind, &self.visual_manager);
         let previous = self.settings_window.take();
@@ -296,14 +471,12 @@ impl UiApp {
             self.settings_window = previous.map(|(id, _)| (id, new_panel));
             return Task::none();
         }
-        let (new_id, open_task) = open_window(SETTINGS_WINDOW_SIZE, true, false);
+        let (new_id, open_task) =
+            open_base_window(self.use_layershell, SETTINGS_WINDOW_SIZE, true, false);
         self.settings_window = Some((new_id, new_panel));
         match previous {
-            Some((old_id, _)) => Task::batch([
-                window::close(old_id),
-                open_task.map(|_| Message::WindowOpened),
-            ]),
-            None => open_task.map(|_| Message::WindowOpened),
+            Some((old_id, _)) => Task::batch([window::close(old_id), open_task]),
+            None => open_task,
         }
     }
 
@@ -328,7 +501,7 @@ impl UiApp {
             slot.metadata.preferred_width.max(400.0),
             slot.metadata.preferred_height.max(300.0),
         );
-        let (new_id, open_task) = open_window(window_size, true, true);
+        let (new_id, open_task) = open_base_window(self.use_layershell, window_size, true, true);
         let mut popout = PopoutWindow {
             visual_id,
             kind,
@@ -337,7 +510,7 @@ impl UiApp {
         };
         popout.sync_from_snapshot(&snapshot);
         self.popout_windows.insert(new_id, popout);
-        open_task.map(|_| Message::WindowOpened)
+        open_task
     }
 
     fn on_window_closed(&mut self, id: window::Id) -> Task<Message> {
@@ -465,12 +638,12 @@ impl UiApp {
                 .into()
         };
 
-        // Drawer overlay when open
         let content: Element<'_, Message> = if self.drawer_open {
-            let drawer_width = self.main_window_size.width * self.drawer_width_ratio;
+            let drawer_portion = (self.drawer_width_ratio * 1000.0).round() as u16;
+            let visuals_portion = 1000 - drawer_portion;
             let drawer_content = self.config_page.view().map(Message::Config);
             let drawer: Element<'_, Message> = fill!(drawer_content)
-                .width(Length::Fixed(drawer_width))
+                .width(Length::FillPortion(drawer_portion))
                 .style(theme::opaque_container)
                 .into();
 
@@ -486,7 +659,11 @@ impl UiApp {
             .interaction(iced::mouse::Interaction::ResizingHorizontally)
             .into();
 
-            row![drawer, resize_handle, fill!(visuals_layer)]
+            let visuals_with_portion: Element<'_, Message> = fill!(visuals_layer)
+                .width(Length::FillPortion(visuals_portion))
+                .into();
+
+            row![drawer, resize_handle, visuals_with_portion]
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .into()
@@ -494,20 +671,64 @@ impl UiApp {
             visuals_layer
         };
 
+        let bar_resize_handle = self
+            .main_window_is_layer
+            .then(|| {
+                let bar = self.settings_handle.borrow().settings().bar.clone();
+                bar.enabled.then(|| {
+                    let handle = mouse_area(
+                        container(text(" "))
+                            .width(Length::Fill)
+                            .height(BAR_RESIZE_HANDLE_THICKNESS),
+                    )
+                    .on_press(Message::BarResizeStart)
+                    .interaction(iced::mouse::Interaction::ResizingVertically);
+                    let v_align = match bar.alignment {
+                        BarAlignment::Top => Vertical::Bottom,
+                        BarAlignment::Bottom => Vertical::Top,
+                    };
+                    fill!(handle).align_y(v_align)
+                })
+            })
+            .flatten();
+
+        let bar_resize_overlay: Option<Element<'_, Message>> =
+            self.pending_bar_resize().map(|(current, pending)| {
+                let label = format!("{current}px -> {pending}px");
+                container(text(label).size(14))
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .align_x(Horizontal::Center)
+                    .align_y(Vertical::Center)
+                    .style(theme::resize_overlay)
+                    .into()
+            });
+
+        let content: Element<'_, Message> = match (bar_resize_handle, bar_resize_overlay) {
+            (Some(handle), Some(overlay)) => stack![content, overlay, handle].into(),
+            (Some(handle), None) => stack![content, handle].into(),
+            _ => content,
+        };
+
         if use_decorations {
             content
         } else {
-            let resize_handle = mouse_area(container(text(" ")).width(20).height(20))
-                .on_press(Message::Resize)
-                .interaction(iced::mouse::Interaction::ResizingDiagonallyDown);
-            stack![
-                content,
-                fill!(resize_handle)
-                    .align_x(Horizontal::Right)
-                    .align_y(Vertical::Bottom)
-                    .padding(4)
-            ]
-            .into()
+            let bar_enabled = self.settings_handle.borrow().settings().bar.enabled;
+            if bar_enabled {
+                content
+            } else {
+                let resize_handle = mouse_area(container(text(" ")).width(20).height(20))
+                    .on_press(Message::Resize)
+                    .interaction(iced::mouse::Interaction::ResizingDiagonallyDown);
+                stack![
+                    content,
+                    fill!(resize_handle)
+                        .align_x(Horizontal::Right)
+                        .align_y(Vertical::Bottom)
+                        .padding(4)
+                ]
+                .into()
+            }
         }
     }
 
@@ -538,10 +759,113 @@ impl UiApp {
             .apply_snapshot_excluding(self.visual_manager.snapshot(), &self.popped_out_ids());
     }
 
+    fn apply_bar_layout(&mut self, alignment: BarAlignment, height: u32) -> Task<Message> {
+        if !self.main_window_is_layer {
+            return Task::none();
+        }
+        let height = clamp_bar_height(height);
+        self.main_window_size.height = height as f32;
+        Task::batch([
+            Task::done(Message::AnchorSizeChange {
+                id: self.main_window_id,
+                anchor: bar_anchor(alignment),
+                size: (0, height),
+            }),
+            Task::done(Message::ExclusiveZoneChange {
+                id: self.main_window_id,
+                zone_size: height as i32,
+            }),
+        ])
+    }
+
+    fn handle_main_window_resize(
+        &mut self,
+        window_id: window::Id,
+        new_size: Size,
+    ) -> Task<Message> {
+        if window_id != self.main_window_id {
+            return Task::none();
+        }
+
+        self.main_window_size = new_size;
+        if self.main_window_is_layer {
+            let height = clamp_bar_height(new_size.height.round().max(1.0) as u32);
+            let current_height = self.settings_handle.borrow().settings().bar.height;
+            if current_height != height {
+                self.settings_handle.update(|s| s.set_bar_height(height));
+            }
+            return Task::done(Message::ExclusiveZoneChange {
+                id: self.main_window_id,
+                zone_size: height as i32,
+            });
+        }
+
+        self.last_base_window_size = new_size;
+        Task::none()
+    }
+
+    fn recreate_main_window(
+        &mut self,
+        bar_settings: BarSettings,
+        use_decorations: bool,
+    ) -> Task<Message> {
+        let old_main_id = self.main_window_id;
+        let (new_main_id, open_main, main_is_layer, main_size) = open_main_window(
+            self.use_layershell,
+            bar_settings,
+            self.last_base_window_size,
+            use_decorations,
+        );
+        self.main_window_id = new_main_id;
+        self.main_window_size = main_size;
+        self.main_window_is_layer = main_is_layer;
+        self.focused_window = Some(new_main_id);
+        Task::batch([open_main, window::close(old_main_id)])
+    }
+
+    fn handle_bar_config_message(&mut self, config_msg: &ConfigMessage) -> Task<Message> {
+        if !self.use_layershell {
+            return Task::none();
+        }
+        let bar = self.settings_handle.borrow().settings().bar.clone();
+        match config_msg {
+            ConfigMessage::BarModeToggled(enabled) if *enabled == self.main_window_is_layer => {
+                if self.main_window_is_layer {
+                    self.apply_bar_layout(bar.alignment, bar.height)
+                } else {
+                    Task::none()
+                }
+            }
+            ConfigMessage::BarModeToggled(enabled) => {
+                let decorations = self.settings_handle.borrow().settings().decorations;
+                self.recreate_main_window(
+                    BarSettings {
+                        enabled: *enabled,
+                        ..bar
+                    },
+                    decorations,
+                )
+            }
+            ConfigMessage::BarAlignmentChanged(alignment) if self.main_window_is_layer => {
+                self.apply_bar_layout(*alignment, bar.height)
+            }
+            ConfigMessage::BarHeightChanged(height) if self.main_window_is_layer => {
+                self.apply_bar_layout(bar.alignment, *height as u32)
+            }
+            _ => Task::none(),
+        }
+    }
+
     fn recreate_windows(&mut self, use_decorations: bool) -> Task<Message> {
         let old_main_id = self.main_window_id;
-        let (new_main_id, open_main) = open_window(self.main_window_size, use_decorations, true);
+        let (new_main_id, open_main) = open_base_window(
+            self.use_layershell,
+            self.main_window_size,
+            use_decorations,
+            true,
+        );
         self.main_window_id = new_main_id;
+        self.main_window_is_layer = false;
         let snapshot = self.visual_manager.snapshot();
         let settings_task = self
             .settings_window
@@ -553,46 +877,50 @@ impl UiApp {
                     .iter()
                     .find(|slot| slot.id == visual_id)
                     .map(|slot| {
-                        let (new_settings_id, open_settings) =
-                            open_window(SETTINGS_WINDOW_SIZE, true, false);
+                        let (new_settings_id, open_settings) = open_base_window(
+                            self.use_layershell,
+                            SETTINGS_WINDOW_SIZE,
+                            true,
+                            false,
+                        );
                         self.settings_window = Some((
                             new_settings_id,
                             create_settings_panel(visual_id, slot.kind, &self.visual_manager),
                         ));
-                        Task::batch([
-                            open_settings.map(|_| Message::WindowOpened),
-                            window::close(old_settings_id),
-                        ])
+                        Task::batch([open_settings, window::close(old_settings_id)])
                     })
                     .unwrap_or_else(|| window::close(old_settings_id))
             })
             .unwrap_or_else(Task::none);
-        Task::batch([
-            open_main.map(|_| Message::WindowOpened),
-            window::close(old_main_id),
-            settings_task,
-        ])
+        Task::batch([open_main, window::close(old_main_id), settings_task])
     }
 }
 
 fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
     match msg {
         Message::Config(config_msg) => {
-            let decoration_task = if let ConfigMessage::DecorationsToggled(enabled) = &config_msg {
+            let decoration_task = if let ConfigMessage::DecorationsToggled(enabled) = &config_msg
+                && !app.main_window_is_layer
+            {
                 app.recreate_windows(*enabled)
             } else {
                 Task::none()
             };
+            let bar_task = app.handle_bar_config_message(&config_msg);
             Task::batch([
                 app.config_page.update(config_msg).map(Message::Config),
                 decoration_task,
+                bar_task,
                 app.sync_all_windows(),
             ])
         }
         Message::Visuals(VisualsMessage::SettingsRequested { visual_id, kind }) => {
             app.open_settings_window(visual_id, kind)
         }
-        Message::Visuals(VisualsMessage::WindowDragRequested) => window::drag(app.main_window_id),
+        Message::Visuals(VisualsMessage::WindowDragRequested) if !app.main_window_is_layer => {
+            window::drag(app.main_window_id)
+        }
+        Message::Visuals(VisualsMessage::WindowDragRequested) => Task::none(),
         Message::Visuals(visuals_msg) => app.visuals_page.update(visuals_msg).map(Message::Visuals),
         Message::ToggleDrawer => {
             app.toggle_drawer();
@@ -611,14 +939,14 @@ fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
             Task::none()
         }
         Message::DrawerResizeMove(position) => {
-            if app.drawer_resizing && app.main_window_size.width > 0.0 {
-                let current_drawer_width = app.drawer_width_ratio * app.main_window_size.width;
-                let offset = app
-                    .drawer_resize_offset
-                    .get_or_insert(position.x - current_drawer_width);
-                let new_edge = position.x - *offset;
-                let ratio = new_edge / app.main_window_size.width;
-                app.drawer_width_ratio = ratio.clamp(MIN_DRAWER_RATIO, MAX_DRAWER_RATIO);
+            if app.drawer_resizing && app.drawer_width_ratio > 0.0 {
+                let estimated_width = app.drawer_resize_offset.get_or_insert_with(|| {
+                    (position.x - DRAWER_RESIZE_HANDLE_WIDTH) / app.drawer_width_ratio
+                });
+                if *estimated_width > 0.0 {
+                    let ratio = position.x / *estimated_width;
+                    app.drawer_width_ratio = ratio.clamp(MIN_DRAWER_RATIO, MAX_DRAWER_RATIO);
+                }
             }
             Task::none()
         }
@@ -626,6 +954,45 @@ fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
             app.end_drawer_resize();
             Task::none()
         }
+        Message::BarResizeStart => {
+            if app.main_window_is_layer && app.settings_handle.borrow().settings().bar.enabled {
+                let bar = app.settings_handle.borrow().settings().bar.clone();
+                let height = clamp_bar_height(bar.height);
+                let start_y = match bar.alignment {
+                    BarAlignment::Top => height as f32,
+                    BarAlignment::Bottom => 0.0,
+                };
+                app.bar_resize_state = Some(BarResizeState {
+                    start_y,
+                    start_height: height,
+                    pending_height: height,
+                });
+            }
+            Task::none()
+        }
+        Message::BarResizeMove(position) => {
+            if let Some(state) = &mut app.bar_resize_state {
+                let alignment = app.settings_handle.borrow().settings().bar.alignment;
+                let delta = match alignment {
+                    BarAlignment::Top => position.y - state.start_y,
+                    BarAlignment::Bottom => state.start_y - position.y,
+                };
+                let raw = state.start_height as f32 + delta;
+                state.pending_height = clamp_bar_height(raw.round().max(1.0) as u32);
+            }
+            Task::none()
+        }
+        Message::BarResizeEnd => app
+            .bar_resize_state
+            .take()
+            .filter(|s| s.pending_height != s.start_height)
+            .map(|s| {
+                let alignment = app.settings_handle.borrow().settings().bar.alignment;
+                app.settings_handle
+                    .update(|settings| settings.set_bar_height(s.pending_height));
+                app.apply_bar_layout(alignment, s.pending_height)
+            })
+            .unwrap_or_else(Task::none),
         Message::Quit => {
             if app
                 .exit_warning_until
@@ -636,7 +1003,10 @@ fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
             app.exit_warning_until = Some(Instant::now() + TOAST_DISPLAY_DURATION);
             Task::none()
         }
-        Message::Resize => window::drag_resize(app.main_window_id, window::Direction::SouthEast),
+        Message::Resize if !app.main_window_is_layer => {
+            window::drag_resize(app.main_window_id, window::Direction::SouthEast)
+        }
+        Message::Resize => Task::none(),
         Message::AudioFrame(samples) if !app.rendering_paused => {
             app.visual_manager.borrow_mut().ingest_samples(&samples);
             app.sync_all_windows()
@@ -644,10 +1014,7 @@ fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
         Message::AudioFrame(_) | Message::WindowOpened => Task::none(),
         Message::WindowClosed(window_id) => app.on_window_closed(window_id),
         Message::WindowResized(window_id, new_size) => {
-            if window_id == app.main_window_id {
-                app.main_window_size = new_size
-            }
-            Task::none()
+            app.handle_main_window_resize(window_id, new_size)
         }
         Message::WindowFocused(window_id) => {
             app.focused_window = Some(window_id);
@@ -660,6 +1027,24 @@ fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
                 panel.handle_message(&settings_msg, &app.visual_manager, &app.settings_handle)
             }
             Task::none()
+        }
+        Message::AnchorChange { .. }
+        | Message::SetInputRegion { .. }
+        | Message::AnchorSizeChange { .. }
+        | Message::LayerChange { .. }
+        | Message::MarginChange { .. }
+        | Message::ExclusiveZoneChange { .. }
+        | Message::VirtualKeyboardPressed { .. }
+        | Message::NewLayerShell { .. }
+        | Message::NewBaseWindow { .. }
+        | Message::NewPopUp { .. }
+        | Message::NewMenu { .. }
+        | Message::NewInputPanel { .. }
+        | Message::RemoveWindow(_)
+        | Message::ForgetLastOutput => Task::none(),
+        Message::SizeChange { id, size } => {
+            let new_size = Size::new(size.0 as f32, size.1 as f32);
+            app.handle_main_window_resize(id, new_size)
         }
     }
 }

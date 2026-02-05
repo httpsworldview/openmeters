@@ -10,6 +10,9 @@ Checked items are implemented; unchecked items are planned. If you have ideas fo
 
 ### General
 
+- [x] Bar mode
+  - Places the application at the top or bottom of the screen, spanning the entire width.
+  - (Relies on the `wlr-layer-shell` protocol; requires a Wayland compositor.)
 - [x] Per-application capture
 - [x] Per-device capture
 - [x] Pop-out windows for individual visuals
@@ -120,6 +123,8 @@ Thank *you* for checking out my shitty passion project. If you think OpenMeters 
 
 ### Libraries used
 
+- **iced_layershell** and related crates (<https://github.com/waycrate/exwlshelleventloop>)
+  - Special thanks to Decodetalkers for reviewing and merging my patches.
 - **Iced** (<https://github.com/iced-rs/iced>)
 - **RustFFT** (<https://github.com/ejmahler/RustFFT>)
 - **RealFFT** (<https://github.com/HEnquist/realfft>)

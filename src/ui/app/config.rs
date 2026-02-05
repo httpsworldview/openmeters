@@ -6,13 +6,14 @@ use crate::ui::app::visuals::settings::palette::{PaletteEditor, PaletteEvent};
 use crate::ui::application_row::ApplicationRow;
 use crate::ui::channel_subscription::channel_subscription;
 use crate::ui::settings::SettingsHandle;
+use crate::ui::settings::{BAR_MAX_HEIGHT, BAR_MIN_HEIGHT, BarAlignment};
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualKind, VisualManagerHandle};
 use async_channel::Receiver as AsyncReceiver;
 use iced::alignment;
 use iced::widget::text::Wrapping;
 use iced::widget::{
-    Column, Row, Rule, Space, button, container, pick_list, radio, rule, scrollable, text,
+    Column, Row, Rule, Space, button, container, pick_list, radio, rule, scrollable, slider, text,
 };
 use iced::{Element, Length, Subscription, Task};
 use serde::{Deserialize, Serialize};
@@ -95,6 +96,9 @@ pub enum ConfigMessage {
     CaptureDeviceChanged(DeviceSelection),
     BgPalette(PaletteEvent),
     DecorationsToggled(bool),
+    BarModeToggled(bool),
+    BarAlignmentChanged(BarAlignment),
+    BarHeightChanged(u16),
 }
 
 #[derive(Debug)]
@@ -103,6 +107,7 @@ pub struct ConfigPage {
     registry_updates: Option<Arc<AsyncReceiver<RegistrySnapshot>>>,
     visual_manager: VisualManagerHandle,
     settings: SettingsHandle,
+    bar_supported: bool,
     preferences: HashMap<u32, bool>,
     applications: Vec<ApplicationRow>,
     hardware_sink_label: String,
@@ -122,6 +127,7 @@ impl ConfigPage {
         registry_updates: Option<Arc<AsyncReceiver<RegistrySnapshot>>>,
         visual_manager: VisualManagerHandle,
         settings: SettingsHandle,
+        bar_supported: bool,
     ) -> Self {
         let settings_ref = settings.borrow();
         let current_bg = settings_ref
@@ -142,6 +148,7 @@ impl ConfigPage {
             registry_updates,
             visual_manager,
             settings,
+            bar_supported,
             preferences: HashMap::new(),
             applications: Vec::new(),
             hardware_sink_label: String::from("(detecting hardware sink...)"),
@@ -224,6 +231,15 @@ impl ConfigPage {
             ConfigMessage::DecorationsToggled(enabled) => {
                 self.settings.update(|s| s.set_decorations(enabled));
             }
+            ConfigMessage::BarModeToggled(enabled) => {
+                self.settings.update(|s| s.set_bar_enabled(enabled));
+            }
+            ConfigMessage::BarAlignmentChanged(alignment) => {
+                self.settings.update(|s| s.set_bar_alignment(alignment));
+            }
+            ConfigMessage::BarHeightChanged(height) => {
+                self.settings.update(|s| s.set_bar_height(height as u32));
+            }
         }
 
         Task::none()
@@ -241,6 +257,12 @@ impl ConfigPage {
             .push(capture_section)
             .push(visuals_section)
             .push(bg_section);
+
+        let content = if self.bar_supported {
+            content.push(self.render_bar_section())
+        } else {
+            content
+        };
 
         container(scrollable(content).style(|_, _| Self::clear_scrollable_style()))
             .width(Length::Fill)
@@ -483,6 +505,64 @@ impl ConfigPage {
             .push(decorations_toggle);
 
         self.section_with_divider("Global", content)
+    }
+
+    fn render_bar_section(&self) -> Column<'_, ConfigMessage> {
+        let bar_settings = self.settings.borrow().settings().bar.clone();
+        let bar_enabled = bar_settings.enabled;
+
+        let bar_toggle = iced::widget::checkbox(bar_enabled)
+            .label("Enable Bar Mode")
+            .size(14)
+            .text_size(TEXT_SIZE)
+            .on_toggle(ConfigMessage::BarModeToggled);
+
+        let alignment_controls = Row::new()
+            .spacing(12)
+            .push(
+                radio(
+                    "Top",
+                    BarAlignment::Top,
+                    Some(bar_settings.alignment),
+                    ConfigMessage::BarAlignmentChanged,
+                )
+                .size(14)
+                .text_size(TEXT_SIZE),
+            )
+            .push(
+                radio(
+                    "Bottom",
+                    BarAlignment::Bottom,
+                    Some(bar_settings.alignment),
+                    ConfigMessage::BarAlignmentChanged,
+                )
+                .size(14)
+                .text_size(TEXT_SIZE),
+            );
+
+        let height_range = BAR_MIN_HEIGHT..=BAR_MAX_HEIGHT;
+        let height_slider = slider(
+            height_range,
+            bar_settings.height.clamp(BAR_MIN_HEIGHT, BAR_MAX_HEIGHT),
+            |value| ConfigMessage::BarHeightChanged(value as u16),
+        )
+        .step(1u32)
+        .width(Length::Fill);
+
+        let height_label = text(format!("Height: {} px", bar_settings.height))
+            .size(TEXT_SIZE)
+            .style(theme::weak_text_style);
+
+        let mut content = Column::new().spacing(10).push(bar_toggle);
+
+        if bar_enabled {
+            content = content
+                .push(alignment_controls)
+                .push(height_slider)
+                .push(height_label);
+        }
+
+        self.section_with_divider("Bar Mode", content)
     }
 
     fn render_visuals_section(

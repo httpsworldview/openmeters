@@ -290,6 +290,18 @@ pub fn resize_handle_container(theme: &Theme) -> container::Style {
     }
 }
 
+pub fn resize_overlay(theme: &Theme) -> container::Style {
+    let palette = theme.extended_palette();
+    container::Style {
+        background: Some(Background::Color(with_alpha(
+            palette.background.base.color,
+            0.7,
+        ))),
+        text_color: Some(palette.background.base.text),
+        ..Default::default()
+    }
+}
+
 pub fn accent_primary() -> Color {
     ACCENT_PRIMARY
 }

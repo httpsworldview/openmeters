@@ -25,12 +25,21 @@ use std::{
 };
 use tracing::warn;
 
+pub const BAR_MIN_HEIGHT: u32 = 24;
+pub const BAR_MAX_HEIGHT: u32 = 800;
+pub const BAR_DEFAULT_HEIGHT: u32 = 180;
+
+pub fn clamp_bar_height(height: u32) -> u32 {
+    height.clamp(BAR_MIN_HEIGHT, BAR_MAX_HEIGHT)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct UiSettings {
     pub visuals: VisualSettings,
     pub background_color: Option<ColorSetting>,
     pub decorations: bool,
+    pub bar: BarSettings,
     pub capture_mode: CaptureMode,
     pub last_device_name: Option<String>,
 }
@@ -152,6 +161,30 @@ macro_rules! settings_enum {
             }
         }
     };
+}
+
+settings_enum!(pub enum BarAlignment {
+    #[default]
+    Top => "Top",
+    Bottom => "Bottom",
+});
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BarSettings {
+    pub enabled: bool,
+    pub alignment: BarAlignment,
+    pub height: u32,
+}
+
+impl Default for BarSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            alignment: BarAlignment::default(),
+            height: BAR_DEFAULT_HEIGHT,
+        }
+    }
 }
 
 macro_rules! visual_settings {
@@ -295,6 +328,7 @@ impl SettingsManager {
             })
             .unwrap_or_default();
         data.visuals.sanitize();
+        data.bar.height = clamp_bar_height(data.bar.height);
         Self { path, data }
     }
     pub fn settings(&self) -> &UiSettings {
@@ -320,6 +354,15 @@ impl SettingsManager {
     pub fn set_decorations(&mut self, e: bool) {
         self.data.decorations = e;
     }
+    pub fn set_bar_enabled(&mut self, enabled: bool) {
+        self.data.bar.enabled = enabled;
+    }
+    pub fn set_bar_alignment(&mut self, alignment: BarAlignment) {
+        self.data.bar.alignment = alignment;
+    }
+    pub fn set_bar_height(&mut self, height: u32) {
+        self.data.bar.height = clamp_bar_height(height);
+    }
     pub fn set_capture_mode(&mut self, m: CaptureMode) {
         self.data.capture_mode = m;
     }
@@ -331,6 +374,7 @@ impl SettingsManager {
 fn schedule_persist(path: PathBuf, mut settings: UiSettings) {
     static SENDER: OnceLock<Option<mpsc::Sender<(PathBuf, UiSettings)>>> = OnceLock::new();
     settings.visuals.sanitize();
+    settings.bar.height = clamp_bar_height(settings.bar.height);
     if let Some(sender) = SENDER.get_or_init(|| {
         let (tx, rx) = mpsc::channel::<(PathBuf, UiSettings)>();
         std::thread::Builder::new()
