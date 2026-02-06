@@ -2,17 +2,24 @@
 
 ![Preview](https://github.com/user-attachments/assets/94b2a531-c93b-41c3-9477-20cb3b9bc046)
 
-OpenMeters is a fast and simple audio metering application for Linux, built with Rust and PipeWire. It's in active development, so expect bugs and broken configurations. I'm always open to feedback and bug reports, so feel free to open issues.
+OpenMeters is a fast and simple audio metering application for Linux,
+built with Rust and PipeWire. It's in active development, so expect
+bugs and broken configurations. I'm always open to feedback and bug
+reports, so feel free to open issues.
 
 ## Features
 
-Checked items are implemented; unchecked items are planned. If you have ideas for more features, please feel free to open an issue or pull request!
+Checked items are implemented; unchecked items are planned. If you
+have ideas for more features, please feel free to open an issue or
+pull request!
 
 ### General
 
 - [x] Bar mode
-  - Places the application at the top or bottom of the screen, spanning the entire width.
-  - (Relies on the `wlr-layer-shell` protocol; requires a Wayland compositor.)
+  - Places the application at the top or bottom of the screen,
+    spanning the entire width.
+  - (Relies on the `wlr-layer-shell` protocol; requires a Wayland
+    compositor.)
 - [x] Per-application capture
 - [x] Per-device capture
 - [x] Pop-out windows for individual visuals
@@ -32,9 +39,11 @@ Checked items are implemented; unchecked items are planned. If you have ideas fo
 - [x] **oscilloscope**
   - [x] Channel selection (L, R, L+R)
   - [x] Stable mode — follows X cycles of the fundamental.
-  - [x] Free-run mode — scrolls continuously through time, not triggered.
+  - [x] Free-run mode — scrolls continuously through time, not
+        triggered.
 - [x] **spectrogram**
-  - [x] Reassignment and synchrosqueezing (sharper frequency resolution)
+  - [x] Reassignment and synchrosqueezing (sharper frequency
+        resolution)
   - [x] Note & frequency tooltips
   - [x] Piano roll overlay
   - [x] Ability to zoom & pan vertically
@@ -64,10 +73,22 @@ Checked items are implemented; unchecked items are planned. If you have ideas fo
   - [x] Adjustable scroll speed
   - [x] Adjustable colormap
 
-## Build and run
+## Installation
 
-1. **You'll need a graphical Linux system with PipeWire installed and running.**
-2. Ensure you have a working Rust toolchain. The recommended way is via [rustup](https://rustup.rs/).
+### On Arch Linux
+
+Install the `openmeters-git` package via the AUR.
+
+```bash
+yay -S openmeters-git
+```
+
+### Building from source (Other distributions)
+
+1. **You'll need a graphical Linux system with PipeWire installed and
+   running.**
+2. Ensure you have a working Rust toolchain. The recommended way is
+   via [rustup](https://rustup.rs/).
 3. Clone the repository:
 
    ```bash
@@ -95,7 +116,8 @@ Checked items are implemented; unchecked items are planned. If you have ideas fo
 - `ctrl+shift+h`: Show/hide global configuration drawer
 - `p`: Pause/resume rendering.
 - `q` twice: Quit the application.
-- `ctrl+space`: Move a hovered visual to a new window, or back to the main window.
+- `ctrl+space`: Move a hovered visual to a new window, or back to the
+  main window.
 
 ### Spectrogram
 
@@ -105,26 +127,45 @@ Checked items are implemented; unchecked items are planned. If you have ideas fo
 ### Configuration
 
 - Configurations are saved to `~/.config/openmeters/settings.json`.
-- Invalid JSON will be ignored and default settings will be used instead. Your configuration file will not be overwritten unless you change settings in the GUI.
-- The internal structure of this file will likely change often during development, so be aware that your settings **may be reset inexplicably after updates**. As this project grows, I will try to maintain backwards compatibility as much as possible, but no guarantees are made. The public API for settings is mostly stable as of now, so breaking changes should be infrequent.
-- If you encounter a bug that causes OpenMeters to misbehave, the application settings can be reset by deleting this file.
+- Invalid JSON will be ignored and default settings will be used
+  instead. Your configuration file will not be overwritten unless you
+  change settings in the GUI.
+- The internal structure of this file will likely change often during
+  development, so be aware that your settings **may be reset
+  inexplicably after updates**. As this project grows, I will try to
+  maintain backwards compatibility as much as possible, but no
+  guarantees are made. The public API for settings is mostly stable as
+  of now, so breaking changes should be infrequent.
+- If you encounter a bug that causes OpenMeters to misbehave, the
+  application settings can be reset by deleting this file.
 
 ## Credits
 
-Thank *you* for checking out my shitty passion project. If you think OpenMeters is useful, please consider starring the repository and sharing it with others. I appreciate any and all criticism and feedback, so feel free to open issues or reach out to me.
+Thank *you* for checking out my shitty passion project. If you think
+OpenMeters is useful, please consider starring the repository and
+sharing it with others. I appreciate any and all criticism and
+feedback, so feel free to open issues or reach out to me.
 
 ### Inspiration
 
-- **EasyEffects** (<https://github.com/wwmm/easyeffects>) for being a great source of inspiration and for their excellent work in audio processing. Reading through their codebase taught me a lot about PipeWire.
-- **MiniMeters** (<https://minimeters.app/>) for inspiring this entire project and for doing it better than I ever could. If you can, please support their work!
+- **EasyEffects** (<https://github.com/wwmm/easyeffects>) for being a
+  great source of inspiration and for their excellent work in audio
+  processing. Reading through their codebase taught me a lot about
+  PipeWire.
+- **MiniMeters** (<https://minimeters.app/>) for inspiring this entire
+  project and for doing it better than I ever could. If you can,
+  please support their work!
 - **Ardura's Scrolloscope** (<https://github.com/ardura/Scrollscope>)
-- **Tim Strasser's Oszilloskop** (<https://github.com/timstr/oszilloskop>)
+- **Tim Strasser's Oszilloskop**
+  (<https://github.com/timstr/oszilloskop>)
 - **Audacity** (<https://www.audacityteam.org/>)
 
 ### Libraries used
 
-- **iced_layershell** and related crates (<https://github.com/waycrate/exwlshelleventloop>)
-  - Special thanks to Decodetalkers for reviewing and merging my patches.
+- **iced_layershell** and related crates
+  (<https://github.com/waycrate/exwlshelleventloop>)
+  - Special thanks to Decodetalkers for reviewing and merging my
+    patches.
 - **Iced** (<https://github.com/iced-rs/iced>)
 - **RustFFT** (<https://github.com/ejmahler/RustFFT>)
 - **RealFFT** (<https://github.com/HEnquist/realfft>)
