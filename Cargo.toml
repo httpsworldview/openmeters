@@ -36,7 +36,8 @@ opt-level = 3
 strip = true
 panic = "abort"
 
-# TODO: remove when my patches are published to crates.io
+# my fork of layershellev. allows me to make 
+# use of my fixes without waiting for upstream
+# to merge them.
 [patch.crates-io.layershellev]
-git = "https://github.com/waycrate/exwlshelleventloop"
-rev = "9af98116c895cc13f8b2fed8fb74fd2c7ada85b1"
+git = "https://github.com/httpsworldview/exwlshelleventloop"

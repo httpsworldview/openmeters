@@ -1664,7 +1664,7 @@ dependencies = [
 [[package]]
 name = "layershellev"
 version = "0.15.0-rc1"
-source = "git+https://github.com/waycrate/exwlshelleventloop?rev=9af98116c895cc13f8b2fed8fb74fd2c7ada85b1#9af98116c895cc13f8b2fed8fb74fd2c7ada85b1"
+source = "git+https://github.com/httpsworldview/exwlshelleventloop#16c33f3d8df18756c39b8b677d71a130e535d128"
 dependencies = [
  "bitflags 2.10.0",
  "calloop 0.14.3",
@@ -3672,7 +3672,7 @@ dependencies = [
 [[package]]
 name = "waycrate_xkbkeycode"
 version = "0.15.0-rc1"
-source = "git+https://github.com/waycrate/exwlshelleventloop?rev=9af98116c895cc13f8b2fed8fb74fd2c7ada85b1#9af98116c895cc13f8b2fed8fb74fd2c7ada85b1"
+source = "git+https://github.com/httpsworldview/exwlshelleventloop#16c33f3d8df18756c39b8b677d71a130e535d128"
 dependencies = [
  "bitflags 2.10.0",
  "calloop 0.14.3",
