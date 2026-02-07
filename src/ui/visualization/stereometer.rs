@@ -1,4 +1,4 @@
-//! Stereometer visualization: vectorscope + correlation meter.
+// Stereometer visualization: vectorscope + correlation meter.
 
 use crate::audio::meter_tap::MeterFormat;
 use crate::dsp::stereometer::{
@@ -17,6 +17,7 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const TRAIL_LEN: usize = 32;
+const CORRELATION_SMOOTHING: f32 = 0.85;
 
 #[derive(Debug, Clone)]
 pub(crate) struct StereometerProcessor {
@@ -46,7 +47,6 @@ impl StereometerProcessor {
         }
         self.inner
             .process_block(&AudioBlock::now(samples, format.channels.max(1), sr))
-            .into()
     }
 
     pub fn config(&self) -> StereometerConfig {
@@ -163,7 +163,8 @@ impl StereometerState {
             };
         }
 
-        let sm = |old: f32, new: f32| old * 0.85 + new * 0.15;
+        let sm =
+            |old: f32, new: f32| old * CORRELATION_SMOOTHING + new * (1.0 - CORRELATION_SMOOTHING);
         let c = self
             .corr_trail
             .front()

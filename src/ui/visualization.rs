@@ -6,9 +6,9 @@ mod stereometer;
 pub mod visual_manager;
 mod waveform;
 
-/// creates a visualization. very simple macro to reduce boilerplate,
-/// it is used thrice. spectrum, spectrogram, loudness visualizations do
-/// *not* use this macro, as they have more complex requirements.
+// creates a visualization. very simple macro to reduce boilerplate,
+// it is used thrice. spectrum, spectrogram, loudness visualizations do
+// *not* use this macro, as they have more complex requirements.
 #[macro_export]
 macro_rules! visualization_widget {
     ($widget:ident, $state:ty, $primitive:ty, |$st:ident, $bounds:ident| $params_expr:expr, |$p:ident| $prim_expr:expr) => {

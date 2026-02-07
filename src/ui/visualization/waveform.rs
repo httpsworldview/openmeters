@@ -54,13 +54,11 @@ impl WaveformProcessor {
             config.sample_rate = sample_rate;
             self.inner.update_config(config);
         }
-        self.inner
-            .process_block(&AudioBlock::now(
-                samples,
-                format.channels.max(1),
-                sample_rate,
-            ))
-            .into()
+        self.inner.process_block(&AudioBlock::now(
+            samples,
+            format.channels.max(1),
+            sample_rate,
+        ))
     }
 
     pub fn update_config(&mut self, config: WaveformConfig) {

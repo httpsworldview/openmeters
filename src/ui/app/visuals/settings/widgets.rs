@@ -1,4 +1,4 @@
-//! Shared widgets and utilities for the settings panes
+// Shared widgets and utilities for the settings panes
 
 use super::SettingsMessage;
 use crate::ui::theme;

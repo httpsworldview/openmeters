@@ -36,7 +36,7 @@ impl WaveformParams {
     }
 }
 
-/// Normalize and clamp a min/max pair, ensuring min <= max.
+// Normalize and clamp a min/max pair, ensuring min <= max.
 #[inline]
 fn normalize_sample(min: f32, max: f32) -> (f32, f32) {
     let (lo, hi) = if min <= max { (min, max) } else { (max, min) };

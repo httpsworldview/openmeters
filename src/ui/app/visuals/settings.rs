@@ -1,4 +1,4 @@
-//! Contains the settings panes for visual modules.
+// Contains the settings panes for visual modules.
 
 macro_rules! persist_palette {
     ($visual_manager:expr, $settings_handle:expr, $kind:expr, $this:expr, $defaults:expr) => {{
@@ -13,9 +13,9 @@ macro_rules! persist_palette {
     }};
 }
 
-/// Generates settings pane struct, create function, and trait impl.
-/// Use `extra_from_settings` for fields computed from loaded settings during init.
-/// Use `init_palette` to run initialization code on the palette after loading.
+// Generates settings pane struct, create function, and trait impl.
+// Use `extra_from_settings` for fields computed from loaded settings during init.
+// Use `init_palette` to run initialization code on the palette after loading.
 macro_rules! settings_pane {
     // Branch with extra fields computed from settings
     (

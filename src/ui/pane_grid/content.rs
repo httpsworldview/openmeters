@@ -5,7 +5,7 @@ use iced_widget::core::renderer;
 use iced_widget::core::widget::{self, Tree};
 use iced_widget::core::{self, Clipboard, Element, Layout, Rectangle, Shell};
 
-/// pane content wrapper used by the pane grid.
+// pane content wrapper used by the pane grid.
 #[allow(missing_debug_implementations)]
 pub struct Content<'a, Message, Theme = iced::Theme, Renderer = iced::Renderer>
 where
@@ -21,7 +21,7 @@ impl<'a, Message, Theme, Renderer> Content<'a, Message, Theme, Renderer>
 where
     Renderer: core::Renderer,
 {
-    /// Creates new [`Content`] from any `Element`.
+    // Creates new [`Content`] from any `Element`.
     pub fn new(body: impl Into<Element<'a, Message, Theme, Renderer>>) -> Self {
         Self {
             body: body.into(),

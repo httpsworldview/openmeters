@@ -1,7 +1,7 @@
-//! Scrolling waveform with peak frequency-based coloring.
+// Scrolling waveform with peak frequency-based coloring.
 
 use super::spectrogram::WindowKind;
-use super::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
+use super::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::util::audio::DEFAULT_SAMPLE_RATE;
 use realfft::{RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex32;
@@ -96,7 +96,7 @@ pub struct WaveformSnapshot {
     pub preview: WaveformPreview,
 }
 
-/// Converts sentinel extrema values to zero for display.
+// Converts sentinel extrema values to zero for display.
 #[inline]
 fn clamp_extrema(min: f32, max: f32) -> (f32, f32) {
     (
@@ -194,7 +194,7 @@ impl FrequencyAnalyzer {
             .map_err(|_| ())
     }
 
-    /// Finds the dominant frequency bin and returns a normalized [0,1] value.
+    // Finds the dominant frequency bin and returns a normalized [0,1] value.
     fn find_peak_frequency(&self) -> f32 {
         let min_bin = (MIN_FREQ_HZ / self.bin_hz).ceil() as usize;
         let max_bin =
@@ -238,7 +238,7 @@ impl FrequencyAnalyzer {
         (bin as f32 + offset) * self.bin_hz
     }
 
-    /// Maps Hz to [0,1] in log
+    // Maps Hz to [0,1] in log
     fn hz_to_normalized(hz: f32) -> f32 {
         // no ln() in `const` contexts cause of floating points :[
         const LOG_MIN: f32 = 2.995_732_3; // 20.0_f32.ln()
@@ -430,9 +430,9 @@ impl WaveformProcessor {
 impl AudioProcessor for WaveformProcessor {
     type Output = WaveformSnapshot;
 
-    fn process_block(&mut self, block: &AudioBlock<'_>) -> ProcessorUpdate<Self::Output> {
+    fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<Self::Output> {
         if block.frame_count() == 0 {
-            return ProcessorUpdate::None;
+            return None;
         }
 
         let (channels, sample_rate) = (block.channels.max(1), block.sample_rate.max(1.0));
@@ -455,7 +455,7 @@ impl AudioProcessor for WaveformProcessor {
         self.snapshot.scroll_position =
             self.total_columns_written as f32 + self.accumulator_progress();
 
-        ProcessorUpdate::Snapshot(self.snapshot.clone())
+        Some(self.snapshot.clone())
     }
 
     fn reset(&mut self) {
@@ -488,11 +488,8 @@ mod tests {
         AudioBlock::new(samples, channels, sample_rate, Instant::now())
     }
 
-    fn extract_snapshot(update: ProcessorUpdate<WaveformSnapshot>) -> WaveformSnapshot {
-        match update {
-            ProcessorUpdate::Snapshot(snapshot) => snapshot,
-            _ => panic!("expected snapshot"),
-        }
+    fn extract_snapshot(update: Option<WaveformSnapshot>) -> WaveformSnapshot {
+        update.expect("expected snapshot")
     }
 
     #[test]

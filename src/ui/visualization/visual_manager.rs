@@ -1,4 +1,4 @@
-//! Central owner of visual modules and their state.
+// Central owner of visual modules and their state.
 use crate::{
     audio::meter_tap::{self, MeterFormat},
     ui::{

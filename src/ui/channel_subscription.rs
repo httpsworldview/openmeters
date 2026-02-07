@@ -6,7 +6,7 @@ use std::fmt;
 use std::hash::Hasher as _;
 use std::sync::Arc;
 
-/// Build an `iced` subscription that forwards every value produced by the given async channel.
+// Build an `iced` subscription that forwards every value produced by the given async channel.
 pub fn channel_subscription<T>(receiver: Arc<AsyncReceiver<T>>) -> Subscription<T>
 where
     T: Send + 'static,

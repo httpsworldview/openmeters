@@ -1,4 +1,4 @@
-//! Main application logic.
+// Main application logic.
 
 pub mod config;
 pub mod visuals;
@@ -49,7 +49,7 @@ const DRAWER_RESIZE_HANDLE_WIDTH: f32 = 6.0;
 
 pub type UiResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
-/// Wraps content in a container that expands to fill available space.
+// Wraps content in a container that expands to fill available space.
 macro_rules! fill {
     ($e:expr) => {
         container($e).width(Length::Fill).height(Length::Fill)

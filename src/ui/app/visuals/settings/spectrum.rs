@@ -82,12 +82,6 @@ pub enum Message {
     Palette(PaletteEvent),
 }
 
-macro_rules! sm {
-    ($m:expr) => {
-        SettingsMessage::Spectrum($m)
-    };
-}
-
 impl SpectrumSettingsPane {
     fn view(&self) -> Element<'_, SettingsMessage> {
         use Message::*;
@@ -102,30 +96,30 @@ impl SpectrumSettingsPane {
                 .label(l)
                 .spacing(4)
                 .text_size(11)
-                .on_toggle(move |b| sm!(f(b)))
+                .on_toggle(move |b| SettingsMessage::Spectrum(f(b)))
         };
 
         let left = column![
-            labeled_pick_list("Display", &DISPLAY_MODE, Some(s.display_mode), |m| sm!(
-                DisplayMode(m)
-            )),
-            labeled_pick_list("Weighting", &WEIGHTING, Some(s.weighting_mode), |m| sm!(
-                WeightingMode(m)
-            )),
-            labeled_pick_list("FFT size", &FFT_OPTIONS, Some(s.fft_size), |v| sm!(
-                FftSize(v)
-            )),
+            labeled_pick_list("Display", &DISPLAY_MODE, Some(s.display_mode), |m| {
+                SettingsMessage::Spectrum(DisplayMode(m))
+            }),
+            labeled_pick_list("Weighting", &WEIGHTING, Some(s.weighting_mode), |m| {
+                SettingsMessage::Spectrum(WeightingMode(m))
+            }),
+            labeled_pick_list("FFT size", &FFT_OPTIONS, Some(s.fft_size), |v| {
+                SettingsMessage::Spectrum(FftSize(v))
+            }),
         ]
         .spacing(8)
         .width(Length::Fill);
 
         let right = column![
-            labeled_pick_list("Freq scale", &FREQ_SCALE, Some(s.frequency_scale), |v| sm!(
-                FrequencyScale(v)
-            )),
-            labeled_pick_list("Averaging", &AVG_MODE, Some(self.avg_mode), |m| sm!(
-                Averaging(m)
-            )),
+            labeled_pick_list("Freq scale", &FREQ_SCALE, Some(s.frequency_scale), |v| {
+                SettingsMessage::Spectrum(FrequencyScale(v))
+            }),
+            labeled_pick_list("Averaging", &AVG_MODE, Some(self.avg_mode), |m| {
+                SettingsMessage::Spectrum(Averaging(m))
+            }),
         ]
         .spacing(8)
         .width(Length::Fill);
@@ -138,7 +132,7 @@ impl SpectrumSettingsPane {
                     self.avg_factor,
                     format!("{:.2}", self.avg_factor),
                     EXP_R,
-                    |v| sm!(AvgFactor(v)),
+                    |v| SettingsMessage::Spectrum(AvgFactor(v)),
                 ))
             }
             AvgMode::PeakHold => {
@@ -147,7 +141,7 @@ impl SpectrumSettingsPane {
                     self.peak_decay,
                     format!("{:.1} dB/s", self.peak_decay),
                     DECAY_R,
-                    |v| sm!(PeakDecay(v)),
+                    |v| SettingsMessage::Spectrum(PeakDecay(v)),
                 ))
             }
             AvgMode::None => {}
@@ -159,14 +153,14 @@ impl SpectrumSettingsPane {
                 s.smoothing_radius as f32,
                 format!("{} bins", s.smoothing_radius),
                 SRAD_R,
-                |v| sm!(SmoothRadius(v))
+                |v| SettingsMessage::Spectrum(SmoothRadius(v))
             ),
             labeled_slider(
                 "Smooth passes",
                 s.smoothing_passes as f32,
                 s.smoothing_passes.to_string(),
                 SPAS_R,
-                |v| sm!(SmoothPasses(v))
+                |v| SettingsMessage::Spectrum(SmoothPasses(v))
             ),
         ]
         .spacing(8);
@@ -177,14 +171,14 @@ impl SpectrumSettingsPane {
                     s.bar_count as f32,
                     s.bar_count.to_string(),
                     BARS_R,
-                    |v| sm!(BarCount(v)),
+                    |v| SettingsMessage::Spectrum(BarCount(v)),
                 ))
                 .push(labeled_slider(
                     "Bar gap",
                     s.bar_gap,
                     format!("{:.0}%", s.bar_gap * 100.0),
                     GAP_R,
-                    |v| sm!(BarGap(v)),
+                    |v| SettingsMessage::Spectrum(BarGap(v)),
                 ));
         }
         visual = visual.push(labeled_slider(
@@ -192,7 +186,7 @@ impl SpectrumSettingsPane {
             s.highlight_threshold,
             format!("{:.0}%", s.highlight_threshold * 100.0),
             HIGH_R,
-            |v| sm!(Highlight(v)),
+            |v| SettingsMessage::Spectrum(Highlight(v)),
         ));
 
         let toggles = row![

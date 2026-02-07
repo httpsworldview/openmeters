@@ -1,7 +1,7 @@
-//! UI wrapper around the loudness DSP processor and renderer.
-/// Note: This processor intentionally diverges from project patterns by
-/// omitting `config()` and `update_config()` methods. this is because
-/// loudness settings are not user-configurable
+// UI wrapper around the loudness DSP processor and renderer.
+// Note: This processor intentionally diverges from project patterns by
+// omitting `config()` and `update_config()` methods. this is because
+// loudness settings are not user-configurable
 use crate::audio::meter_tap::MeterFormat;
 use crate::dsp::loudness::{
     LoudnessConfig, LoudnessProcessor as CoreLoudnessProcessor, LoudnessSnapshot, MAX_CHANNELS,
@@ -36,7 +36,6 @@ const CENTER_CHANNEL_INDEX: usize = 2;
 #[derive(Debug, Clone)]
 pub(crate) struct LoudnessProcessor {
     inner: CoreLoudnessProcessor,
-    channels: usize,
 }
 
 impl LoudnessProcessor {
@@ -46,7 +45,6 @@ impl LoudnessProcessor {
                 sample_rate,
                 ..Default::default()
             }),
-            channels: 2,
         }
     }
 
@@ -54,28 +52,23 @@ impl LoudnessProcessor {
         if samples.is_empty() {
             return None;
         }
-
-        let channels = format.channels.max(1);
-        if self.channels != channels {
-            self.channels = channels;
-        }
-
         let sample_rate = format.sample_rate.max(1.0);
         let mut config = self.inner.config();
         if (config.sample_rate - sample_rate).abs() > f32::EPSILON {
             config.sample_rate = sample_rate;
             self.inner.update_config(config);
         }
-
-        self.inner
-            .process_block(&AudioBlock::now(samples, self.channels, sample_rate))
-            .into()
+        self.inner.process_block(&AudioBlock::now(
+            samples,
+            format.channels.max(1),
+            sample_rate,
+        ))
     }
 }
 
 pub const LOUDNESS_PALETTE_SIZE: usize = 5;
 
-/// View-model state consumed by the loudness widget.
+// View-model state consumed by the loudness widget.
 #[derive(Debug, Clone)]
 pub(crate) struct LoudnessState {
     short_term_loudness: f32,
@@ -245,7 +238,7 @@ impl LoudnessState {
     }
 }
 
-/// The loudness meter widget.
+// The loudness meter widget.
 #[derive(Debug)]
 pub(crate) struct Loudness<'a> {
     state: &'a RefCell<LoudnessState>,

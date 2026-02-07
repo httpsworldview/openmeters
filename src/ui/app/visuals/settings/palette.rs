@@ -1,4 +1,4 @@
-//! Color palette editor.
+// Color palette editor.
 
 use crate::ui::theme::{self, Palette};
 use crate::util::audio::f32_to_u8;
@@ -21,14 +21,14 @@ pub enum PaletteEvent {
 pub struct PaletteEditor {
     palette: Palette,
     active: Option<usize>,
-    /// Optional visibility filter: only show these indices (if set).
+    // Optional visibility filter: only show these indices (if set).
     visible_indices: Option<Vec<usize>>,
-    /// Optional label overrides for specific indices.
+    // Optional label overrides for specific indices.
     label_overrides: Vec<(usize, &'static str)>,
 }
 
 impl PaletteEditor {
-    /// Creates a new editor from a `Palette` definition.
+    // Creates a new editor from a `Palette` definition.
     pub fn new(palette: Palette) -> Self {
         Self {
             palette,
@@ -38,7 +38,7 @@ impl PaletteEditor {
         }
     }
 
-    /// Sets which palette indices are visible. Pass `None` to show all.
+    // Sets which palette indices are visible. Pass `None` to show all.
     pub fn set_visible_indices(&mut self, indices: Option<Vec<usize>>) {
         self.visible_indices = indices;
         // Close editor if active index is now hidden
@@ -50,7 +50,7 @@ impl PaletteEditor {
         }
     }
 
-    /// Sets label overrides for specific indices.
+    // Sets label overrides for specific indices.
     pub fn set_label_overrides(&mut self, overrides: Vec<(usize, &'static str)>) {
         self.label_overrides = overrides;
     }

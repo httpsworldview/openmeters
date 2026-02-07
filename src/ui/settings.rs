@@ -1,4 +1,4 @@
-//! Settings persistence and management.
+// Settings persistence and management.
 
 use crate::{
     dsp::{
@@ -69,9 +69,9 @@ impl VisualSettings {
 #[serde(default)]
 pub struct ModuleSettings {
     pub enabled: Option<bool>,
-    /// Module configuration payload.
-    ///
-    /// Persisted format is `{ "enabled": bool?, "config": <json>? }`.
+    // Module configuration payload.
+    //
+    // Persisted format is `{ "enabled": bool?, "config": <json>? }`.
     config: Option<Value>,
 }
 
@@ -132,7 +132,7 @@ impl PaletteSettings {
     pub fn to_array<const N: usize>(&self) -> Option<[Color; N]> {
         (self.stops.len() == N).then(|| array::from_fn(|idx| self.stops[idx].into()))
     }
-    /// Returns `Some` only if colors differ from defaults (avoids persisting unchanged palettes).
+    // Returns `Some` only if colors differ from defaults (avoids persisting unchanged palettes).
     pub fn if_differs_from(colors: &[Color], defaults: &[Color]) -> Option<Self> {
         let differs = colors.len() == defaults.len()
             && colors
@@ -219,7 +219,7 @@ settings_enum!(pub enum ChannelMode {
 });
 
 impl ChannelMode {
-    /// Returns output channel count for this mode.
+    // Returns output channel count for this mode.
     #[inline]
     pub fn output_channels(self, input_channels: usize) -> usize {
         match self {

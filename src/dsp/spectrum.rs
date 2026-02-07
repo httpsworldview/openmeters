@@ -1,6 +1,6 @@
-//! Spectrum analyser DSP.
+// Spectrum analyser DSP.
 
-use super::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
+use super::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::dsp::spectrogram::{FrequencyScale, WindowKind};
 use crate::util::audio::{DB_FLOOR, DEFAULT_SAMPLE_RATE, power_to_db};
 use realfft::{RealFftPlanner, RealToComplex};
@@ -10,7 +10,7 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::sync::Arc;
 
-/// Compute frequency bin centers for FFT output.
+// Compute frequency bin centers for FFT output.
 fn frequency_bins(sample_rate: f32, fft_size: usize) -> Vec<f32> {
     let bins = fft_size / 2 + 1;
     let bin_hz = sample_rate / fft_size as f32;
@@ -27,7 +27,7 @@ pub const MAX_SPECTRUM_PEAK_DECAY: f32 = 60.0;
 pub const DEFAULT_SPECTRUM_EXP_FACTOR: f32 = 0.5;
 pub const DEFAULT_SPECTRUM_PEAK_DECAY: f32 = 12.0;
 
-/// Output magnitude spectrum.
+// Output magnitude spectrum.
 #[derive(Debug, Clone, Default)]
 pub struct SpectrumSnapshot {
     pub frequency_bins: Vec<f32>,
@@ -36,7 +36,7 @@ pub struct SpectrumSnapshot {
     pub peak_frequency_hz: Option<f32>,
 }
 
-/// Configuration for the spectrum analyser.
+// Configuration for the spectrum analyser.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct SpectrumConfig {
     pub sample_rate: f32,
@@ -325,9 +325,9 @@ impl fmt::Debug for SpectrumProcessor {
 impl AudioProcessor for SpectrumProcessor {
     type Output = SpectrumSnapshot;
 
-    fn process_block(&mut self, block: &AudioBlock<'_>) -> ProcessorUpdate<Self::Output> {
+    fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<Self::Output> {
         if block.frame_count() == 0 {
-            return ProcessorUpdate::None;
+            return None;
         }
 
         if (block.sample_rate - self.config.sample_rate).abs() > f32::EPSILON {
@@ -339,9 +339,9 @@ impl AudioProcessor for SpectrumProcessor {
         self.mixdown_into(block);
 
         if self.process_ready_windows(block.timestamp) {
-            ProcessorUpdate::Snapshot(self.snapshot.clone())
+            Some(self.snapshot.clone())
         } else {
-            ProcessorUpdate::None
+            None
         }
     }
 

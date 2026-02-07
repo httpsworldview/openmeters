@@ -1,4 +1,4 @@
-//! Spectrogram rendering pipeline for GPU-accelerated time-frequency visualization.
+// Spectrogram rendering pipeline for GPU-accelerated time-frequency visualization.
 
 use bytemuck::{Pod, Zeroable};
 use iced::Rectangle;

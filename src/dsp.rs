@@ -16,6 +16,7 @@ pub struct AudioBlock<'a> {
 }
 
 impl<'a> AudioBlock<'a> {
+    #[cfg(test)]
     pub fn new(samples: &'a [f32], channels: usize, sample_rate: f32, timestamp: Instant) -> Self {
         Self {
             samples,
@@ -26,7 +27,12 @@ impl<'a> AudioBlock<'a> {
     }
 
     pub fn now(samples: &'a [f32], channels: usize, sample_rate: f32) -> Self {
-        Self::new(samples, channels, sample_rate, Instant::now())
+        Self {
+            samples,
+            channels,
+            sample_rate,
+            timestamp: Instant::now(),
+        }
     }
 
     pub fn frame_count(&self) -> usize {
@@ -34,25 +40,10 @@ impl<'a> AudioBlock<'a> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ProcessorUpdate<T> {
-    None,
-    Snapshot(T),
-}
-
-impl<T> From<ProcessorUpdate<T>> for Option<T> {
-    fn from(update: ProcessorUpdate<T>) -> Self {
-        match update {
-            ProcessorUpdate::Snapshot(s) => Some(s),
-            ProcessorUpdate::None => None,
-        }
-    }
-}
-
 pub trait AudioProcessor {
     type Output;
 
-    fn process_block(&mut self, block: &AudioBlock<'_>) -> ProcessorUpdate<Self::Output>;
+    fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<Self::Output>;
     fn reset(&mut self);
 }
 

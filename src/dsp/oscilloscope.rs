@@ -1,4 +1,4 @@
-use super::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
+use super::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::util::audio::DEFAULT_SAMPLE_RATE;
 use realfft::{RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex;
@@ -407,10 +407,10 @@ impl OscilloscopeProcessor {
 impl AudioProcessor for OscilloscopeProcessor {
     type Output = OscilloscopeSnapshot;
 
-    fn process_block(&mut self, block: &AudioBlock<'_>) -> ProcessorUpdate<Self::Output> {
+    fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<Self::Output> {
         let channel_count = block.channels.max(1);
         if block.frame_count() == 0 {
-            return ProcessorUpdate::None;
+            return None;
         }
 
         let base_frames = (self.config.sample_rate * self.config.segment_duration)
@@ -446,13 +446,13 @@ impl AudioProcessor for OscilloscopeProcessor {
             TriggerMode::FreeRun => {
                 let frames = base_frames.min(available);
                 if frames == 0 {
-                    return ProcessorUpdate::None;
+                    return None;
                 }
                 (frames, available.saturating_sub(frames))
             }
             TriggerMode::Stable { num_cycles } => {
                 if available < base_frames {
-                    return ProcessorUpdate::None;
+                    return None;
                 }
 
                 // Prepare mono buffer for pitch detection
@@ -510,7 +510,7 @@ impl AudioProcessor for OscilloscopeProcessor {
         self.snapshot.channels = channel_count;
         self.snapshot.samples_per_channel = target;
 
-        ProcessorUpdate::Snapshot(self.snapshot.clone())
+        Some(self.snapshot.clone())
     }
 
     fn reset(&mut self) {
@@ -564,7 +564,7 @@ fn downsample_interleaved(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dsp::{AudioBlock, ProcessorUpdate};
+    use crate::dsp::AudioBlock;
     use std::time::Instant;
 
     fn make_block(samples: &[f32], channels: usize, sample_rate: f32) -> AudioBlock<'_> {
@@ -593,9 +593,7 @@ mod tests {
             })
             .collect();
 
-        let ProcessorUpdate::Snapshot(s) =
-            processor.process_block(&make_block(&samples, 2, DEFAULT_SAMPLE_RATE))
-        else {
+        let Some(s) = processor.process_block(&make_block(&samples, 2, DEFAULT_SAMPLE_RATE)) else {
             panic!("expected snapshot");
         };
         assert_eq!(s.channels, 2);

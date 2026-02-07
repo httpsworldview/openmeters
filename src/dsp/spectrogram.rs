@@ -1,23 +1,23 @@
-//! Spectrogram DSP - Time-frequency analysis with reassignment
-//!
-//! # References
-//! 1. F. Auger and P. Flandrin, "Improving the readability of time-frequency and
-//!    time-scale representations by the reassignment method", IEEE Trans. SP,
-//!    vol. 43, no. 5, pp. 1068-1089, May 1995.
-//!    Note: in our delta calculations the signs are inverted compared to the original
-//!    paper, to match the more common convention.
-//! 2. K. Kodera, R. Gendrin & C. de Villedary, "Analysis of time-varying signals
-//!    with small BT values", IEEE Trans. ASSP, vol. 26, no. 1, pp. 64-76, Feb 1978.
-//! 3. T. Oberlin, S. Meignen, V. Perrier, "Second-order synchrosqueezing transform
-//!    or invertible reassignment? Towards ideal time-frequency representations",
-//!    IEEE Trans. SP, vol. 63, no. 5, pp. 1335-1344, 2015.
-//!    Note: we aren't implementing "true" SST, rather a simpler form of frequency
-//!    correction based on second derivatives. *Our spectrogram is not invertible*
-//!    by design.
-//! 4. F. Auger et al., "Time-Frequency Reassignment and Synchrosqueezing: An
-//!    Overview", IEEE Signal Processing Magazine, vol. 30, pp. 32-41, Nov 2013.
+// Spectrogram DSP - Time-frequency analysis with reassignment
+//
+// # References
+// 1. F. Auger and P. Flandrin, "Improving the readability of time-frequency and
+//    time-scale representations by the reassignment method", IEEE Trans. SP,
+//    vol. 43, no. 5, pp. 1068-1089, May 1995.
+//    Note: in our delta calculations the signs are inverted compared to the original
+//    paper, to match the more common convention.
+// 2. K. Kodera, R. Gendrin & C. de Villedary, "Analysis of time-varying signals
+//    with small BT values", IEEE Trans. ASSP, vol. 26, no. 1, pp. 64-76, Feb 1978.
+// 3. T. Oberlin, S. Meignen, V. Perrier, "Second-order synchrosqueezing transform
+//    or invertible reassignment? Towards ideal time-frequency representations",
+//    IEEE Trans. SP, vol. 63, no. 5, pp. 1335-1344, 2015.
+//    Note: we aren't implementing "true" SST, rather a simpler form of frequency
+//    correction based on second derivatives. *Our spectrogram is not invertible*
+//    by design.
+// 4. F. Auger et al., "Time-Frequency Reassignment and Synchrosqueezing: An
+//    Overview", IEEE Signal Processing Magazine, vol. 30, pp. 32-41, Nov 2013.
 
-use super::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
+use super::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::util::audio::{
     DB_FLOOR, DEFAULT_SAMPLE_RATE, copy_from_deque, db_to_power, hz_to_mel, mel_to_hz, power_to_db,
 };
@@ -985,9 +985,9 @@ impl SpectrogramProcessor {
 impl AudioProcessor for SpectrogramProcessor {
     type Output = SpectrogramUpdate;
 
-    fn process_block(&mut self, block: &AudioBlock<'_>) -> ProcessorUpdate<Self::Output> {
+    fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<Self::Output> {
         if block.frame_count() == 0 || block.channels == 0 {
-            return ProcessorUpdate::None;
+            return None;
         }
         if self.config.sample_rate <= 0.0
             || (self.config.sample_rate - block.sample_rate).abs() > f32::EPSILON
@@ -1008,9 +1008,9 @@ impl AudioProcessor for SpectrogramProcessor {
         );
         let cols = self.process_ready_windows();
         if cols.is_empty() {
-            ProcessorUpdate::None
+            None
         } else {
-            ProcessorUpdate::Snapshot(SpectrogramUpdate {
+            Some(SpectrogramUpdate {
                 fft_size: self.fft_size,
                 sample_rate: self.config.sample_rate,
                 frequency_scale: self.config.frequency_scale,
@@ -1206,7 +1206,7 @@ fn load_complex_simd(d: &[Complex32], off: usize) -> (f32x8, f32x8) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dsp::{AudioBlock, ProcessorUpdate};
+    use crate::dsp::AudioBlock;
     use std::time::Instant;
 
     fn make_block(s: Vec<f32>, c: usize, r: f32) -> AudioBlock<'static> {
@@ -1217,11 +1217,8 @@ mod tests {
             .map(|i| (core::f32::consts::TAU * f * i as f32 / r).sin())
             .collect()
     }
-    fn unwrap(r: ProcessorUpdate<SpectrogramUpdate>) -> SpectrogramUpdate {
-        let ProcessorUpdate::Snapshot(u) = r else {
-            panic!("expected snapshot");
-        };
-        u
+    fn unwrap(r: Option<SpectrogramUpdate>) -> SpectrogramUpdate {
+        r.expect("expected snapshot")
     }
 
     #[test]

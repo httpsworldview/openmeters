@@ -1,6 +1,6 @@
-//! Stereometer (vectorscope & correlation meter) DSP.
+// Stereometer (vectorscope & correlation meter) DSP.
 
-use super::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
+use super::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::util::audio::DEFAULT_SAMPLE_RATE;
 use std::collections::VecDeque;
 
@@ -62,7 +62,7 @@ impl StereometerSnapshot {
     }
 }
 
-/// Linkwitz-Riley 4th-order crossover (two cascaded 2nd-order Butterworth).
+// Linkwitz-Riley 4th-order crossover (two cascaded 2nd-order Butterworth).
 #[derive(Debug, Clone, Copy, Default)]
 struct LR4 {
     // Coefficients: b[0..3], a[0..2] for each of 2 stages
@@ -103,7 +103,7 @@ impl LR4 {
     }
 }
 
-/// EMA-based stereo correlation with continuous update.
+// EMA-based stereo correlation with continuous update.
 #[derive(Debug, Clone, Copy, Default)]
 struct Correlator {
     lr: f64,
@@ -181,10 +181,10 @@ fn ema_alpha(sr: f32, window: f32) -> f64 {
 impl AudioProcessor for StereometerProcessor {
     type Output = StereometerSnapshot;
 
-    fn process_block(&mut self, block: &AudioBlock<'_>) -> ProcessorUpdate<Self::Output> {
+    fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<Self::Output> {
         let channel_count = block.channels.max(1);
         if block.frame_count() == 0 || channel_count < 2 {
-            return ProcessorUpdate::None;
+            return None;
         }
         if self.history_ch != channel_count {
             self.history.clear();
@@ -226,7 +226,7 @@ impl AudioProcessor for StereometerProcessor {
         }
 
         if self.history.len() < capacity {
-            return ProcessorUpdate::None;
+            return None;
         }
 
         // Downsample to target point count
@@ -245,7 +245,7 @@ impl AudioProcessor for StereometerProcessor {
             high: self.corr[3].value(),
         };
 
-        ProcessorUpdate::Snapshot(self.snapshot.clone())
+        Some(self.snapshot.clone())
     }
 
     fn reset(&mut self) {

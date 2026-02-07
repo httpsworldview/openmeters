@@ -18,7 +18,7 @@ pub struct SpectrumParams {
     pub secondary_line_width: f32,
     pub highlight_threshold: f32,
     pub spectrum_palette: Vec<[f32; 4]>,
-    /// true = bar mode, false = line mode
+    // true = bar mode, false = line mode
     pub display_mode: bool,
     pub show_secondary_line: bool,
     pub bar_count: usize,

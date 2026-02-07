@@ -36,7 +36,7 @@ pub enum DragEvent {
     Canceled { pane: Pane },
 }
 
-/// Lightweight, horizontal-only pane grid widget.
+// Lightweight, horizontal-only pane grid widget.
 #[allow(missing_debug_implementations)]
 pub struct PaneGrid<'a, Message, Theme = iced::Theme, Renderer = iced::Renderer>
 where

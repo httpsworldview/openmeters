@@ -55,14 +55,11 @@ const GRID_FREQS: &[(f32, u8)] = &[
 
 pub(crate) struct SpectrumProcessor {
     inner: CoreSpectrumProcessor,
-    channels: usize,
 }
 
 impl std::fmt::Debug for SpectrumProcessor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SpectrumProcessor")
-            .field("channels", &self.channels)
-            .finish()
+        f.debug_struct("SpectrumProcessor").finish_non_exhaustive()
     }
 }
 
@@ -73,7 +70,6 @@ impl SpectrumProcessor {
                 sample_rate,
                 ..Default::default()
             }),
-            channels: 2,
         }
     }
 
@@ -81,7 +77,6 @@ impl SpectrumProcessor {
         if samples.is_empty() {
             return None;
         }
-        self.channels = format.channels.max(1);
         let sr = format.sample_rate.max(1.0);
         let mut cfg = self.inner.config();
         if (cfg.sample_rate - sr).abs() > f32::EPSILON {
@@ -89,8 +84,7 @@ impl SpectrumProcessor {
             self.inner.update_config(cfg);
         }
         self.inner
-            .process_block(&AudioBlock::now(samples, self.channels, sr))
-            .into()
+            .process_block(&AudioBlock::now(samples, format.channels.max(1), sr))
     }
 
     pub fn update_config(&mut self, c: SpectrumConfig) {
@@ -153,13 +147,21 @@ impl Default for SpectrumStyle {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct PeakLabel {
+    text: String,
+    x: f32,
+    y: f32,
+    opacity: f32,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct SpectrumState {
     style: SpectrumStyle,
     weighted: Arc<[[f32; 2]]>,
     unweighted: Arc<[[f32; 2]]>,
     key: u64,
-    peak: Option<(String, f32, f32, f32)>, // text, x, y, opacity
-    grid: Arc<[(f32, String, u8)]>,        // pos, label, importance
+    peak: Option<PeakLabel>,
+    grid: Arc<[(f32, String, u8)]>,
     scratch: Vec<f32>,
 }
 
@@ -289,7 +291,7 @@ impl SpectrumState {
         self.fade_peak(pk);
     }
 
-    fn build_peak(&self, snap: &SpectrumSnapshot, sc: &Scale) -> Option<(String, f32, f32)> {
+    fn build_peak(&self, snap: &SpectrumSnapshot, sc: &Scale) -> Option<PeakLabel> {
         let f = snap
             .peak_frequency_hz
             .filter(|&f| f.is_finite() && f > 0.0)?;
@@ -303,24 +305,32 @@ impl SpectrumState {
         if y < 0.08 {
             return None;
         }
-        let txt = MusicalNote::from_frequency(f).map_or_else(
+        let text = MusicalNote::from_frequency(f).map_or_else(
             || format!("{:.1} Hz", f),
             |n| format!("{:.1} Hz | {}", f, n.format()),
         );
-        Some((txt, x.clamp(0.0, 1.0), y))
+        Some(PeakLabel {
+            text,
+            x: x.clamp(0.0, 1.0),
+            y,
+            opacity: 0.0,
+        })
     }
 
-    fn fade_peak(&mut self, data: Option<(String, f32, f32)>) {
-        match (data, &mut self.peak) {
-            (Some((t, x, y)), Some(p)) => {
-                *p = (t, x, y, (p.3 + (1.0 - p.3) * 0.35).min(1.0));
+    fn fade_peak(&mut self, incoming: Option<PeakLabel>) {
+        match (incoming, &mut self.peak) {
+            (Some(new), Some(p)) => {
+                p.text = new.text;
+                p.x = new.x;
+                p.y = new.y;
+                p.opacity = (p.opacity + (1.0 - p.opacity) * 0.35).min(1.0);
             }
-            (Some((t, x, y)), None) => {
-                self.peak = Some((t, x, y, 0.0));
+            (Some(new), None) => {
+                self.peak = Some(new);
             }
             (None, Some(p)) => {
-                p.3 += (0.0 - p.3) * 0.12;
-                if p.3 < 0.01 {
+                p.opacity += (0.0 - p.opacity) * 0.12;
+                if p.opacity < 0.01 {
                     self.peak = None;
                 }
             }
@@ -332,10 +342,10 @@ impl SpectrumState {
         Arc::clone(&self.grid)
     }
 
-    pub fn peak(&self) -> Option<(String, f32, f32, f32)> {
+    pub fn peak(&self) -> Option<&PeakLabel> {
         self.style
             .show_peak_label
-            .then(|| self.peak.clone())
+            .then_some(self.peak.as_ref())
             .flatten()
     }
 
@@ -435,7 +445,7 @@ impl<'a, M> Widget<M, iced::Theme, iced::Renderer> for Spectrum<'a> {
         }
         r.draw_primitive(b, SpectrumPrimitive::new(params));
         if let Some(pk) = state.peak() {
-            r.with_layer(b, |r| draw_peak(r, th, b, &pk));
+            r.with_layer(b, |r| draw_peak(r, th, b, pk));
         }
     }
 }
@@ -677,18 +687,17 @@ fn draw_grid(r: &mut iced::Renderer, th: &iced::Theme, b: Rectangle, lines: &[(f
     }
 }
 
-fn draw_peak(r: &mut iced::Renderer, th: &iced::Theme, b: Rectangle, pk: &(String, f32, f32, f32)) {
-    let (s, nx, ny, op) = pk;
-    if *op < 0.01 || b.width < 8.0 || b.height < 8.0 {
+fn draw_peak(r: &mut iced::Renderer, th: &iced::Theme, b: Rectangle, pk: &PeakLabel) {
+    if pk.opacity < 0.01 || b.width < 8.0 || b.height < 8.0 {
         return;
     }
-    let sz = measure_text(s, 12.0);
+    let sz = measure_text(&pk.text, 12.0);
     if sz.width <= 0.0 || sz.height <= 0.0 {
         return;
     }
     let (ax, ay) = (
-        b.x + b.width * nx.clamp(0.0, 1.0),
-        b.y + b.height * (1.0 - ny.clamp(0.0, 1.0)),
+        b.x + b.width * pk.x.clamp(0.0, 1.0),
+        b.y + b.height * (1.0 - pk.y.clamp(0.0, 1.0)),
     );
     let tx =
         (ax - sz.width * 0.5).clamp(b.x + 4.0, (b.x + b.width - 4.0 - sz.width).max(b.x + 4.0));
@@ -699,7 +708,7 @@ fn draw_peak(r: &mut iced::Renderer, th: &iced::Theme, b: Rectangle, pk: &(Strin
         Size::new(sz.width + 8.0, sz.height + 8.0),
     );
     let mut bdr = theme::sharp_border();
-    bdr.color = theme::with_alpha(bdr.color, *op);
+    bdr.color = theme::with_alpha(bdr.color, pk.opacity);
     let pal = th.extended_palette();
     r.fill_quad(
         Quad {
@@ -708,12 +717,12 @@ fn draw_peak(r: &mut iced::Renderer, th: &iced::Theme, b: Rectangle, pk: &(Strin
             shadow: Default::default(),
             snap: true,
         },
-        Background::Color(theme::with_alpha(pal.background.strong.color, *op)),
+        Background::Color(theme::with_alpha(pal.background.strong.color, pk.opacity)),
     );
     r.fill_text(
-        make_text(s, 12.0, sz),
+        make_text(&pk.text, 12.0, sz),
         Point::new(tx, ty),
-        theme::with_alpha(pal.background.base.text, *op),
+        theme::with_alpha(pal.background.base.text, pk.opacity),
         Rectangle::new(Point::new(tx, ty), sz),
     );
 }

@@ -7,27 +7,27 @@ use tracing::warn;
 
 pub use batcher::SampleBatcher;
 
-/// Default sample rate (Hz) used throughout the audio pipeline.
+// Default sample rate (Hz) used throughout the audio pipeline.
 pub const DEFAULT_SAMPLE_RATE: f32 = 48_000.0;
 
 // decibel conversion constants/utils
 
-/// Floor value (dB) below which magnitudes are clamped.
+// Floor value (dB) below which magnitudes are clamped.
 pub const DB_FLOOR: f32 = -140.0;
 
-/// Minimum power value to avoid log(0) in dB conversions.
+// Minimum power value to avoid log(0) in dB conversions.
 const POWER_EPSILON: f32 = 1.0e-20;
 
-/// Natural log to decibel conversion factor: 10 / ln(10) ~= 4.342944819.
+// Natural log to decibel conversion factor: 10 / ln(10) ~= 4.342944819.
 const LN_TO_DB: f32 = 4.342_944_8;
 
-/// Convert an f32 in [0.0, 1.0] to a u8 in [0, 255].
+// Convert an f32 in [0.0, 1.0] to a u8 in [0, 255].
 #[inline(always)]
 pub fn f32_to_u8(v: f32) -> u8 {
     (v.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
-/// Convert power (magnitude squared) to decibels with a custom floor.
+// Convert power (magnitude squared) to decibels with a custom floor.
 #[inline(always)]
 pub fn power_to_db(power: f32, floor: f32) -> f32 {
     if power > POWER_EPSILON {
@@ -80,7 +80,7 @@ pub fn convert_samples_to_f32(
     let sample_count = bytes.len() / sample_bytes;
     let mut samples = Vec::with_capacity(sample_count);
 
-    /// Helper macro to reduce duplication for integer format conversions.
+    // Helper macro to reduce duplication for integer format conversions.
     macro_rules! convert_int {
         ($ty:ty, $endian:ident, $divisor:expr, $unsigned_offset:expr) => {{
             for chunk in bytes.chunks_exact(std::mem::size_of::<$ty>()) {
@@ -185,32 +185,32 @@ pub fn remove_dc(buffer: &mut [f32]) {
     }
 }
 
-/// Convert dB to linear power: 10^(db/10).
+// Convert dB to linear power: 10^(db/10).
 #[inline(always)]
 pub fn db_to_power(db: f32) -> f32 {
     const DB_TO_LOG2: f32 = 0.1 * core::f32::consts::LOG2_10;
     (db * DB_TO_LOG2).exp2()
 }
 
-/// Convert frequency in Hz to mel scale.
+// Convert frequency in Hz to mel scale.
 #[inline(always)]
 pub fn hz_to_mel(hz: f32) -> f32 {
     2595.0 * (1.0 + hz / 700.0).log10()
 }
 
-/// Convert mel scale to frequency in Hz.
+// Convert mel scale to frequency in Hz.
 #[inline(always)]
 pub fn mel_to_hz(mel: f32) -> f32 {
     700.0 * (10.0f32.powf(mel / 2595.0) - 1.0)
 }
 
-/// Projects channel data according to a channel mode.
-///
-/// Data layout: contiguous channels `[ch0_s0..ch0_sN, ch1_s0..ch1_sN, ...]`
-/// - `mode`: channel selection/mixing mode
-/// - `data`: samples with `stride` samples per channel
-/// - `stride`: number of samples per channel
-/// - `channels`: number of channels in the input data
+// Projects channel data according to a channel mode.
+//
+// Data layout: contiguous channels `[ch0_s0..ch0_sN, ch1_s0..ch1_sN, ...]`
+// - `mode`: channel selection/mixing mode
+// - `data`: samples with `stride` samples per channel
+// - `stride`: number of samples per channel
+// - `channels`: number of channels in the input data
 #[inline]
 pub fn project_channel_data(
     mode: crate::ui::settings::ChannelMode,
@@ -243,7 +243,7 @@ pub fn project_channel_data(
     }
 }
 
-/// Copy from VecDeque to a contiguous slice, handling wraparound.
+// Copy from VecDeque to a contiguous slice, handling wraparound.
 #[inline]
 pub fn copy_from_deque(dst: &mut [f32], src: &std::collections::VecDeque<f32>) {
     let len = dst.len().min(src.len());

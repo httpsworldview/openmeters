@@ -1,4 +1,4 @@
-//! UI wrapper around the oscilloscope DSP processor and renderer.
+// UI wrapper around the oscilloscope DSP processor and renderer.
 
 use crate::audio::meter_tap::MeterFormat;
 use crate::dsp::oscilloscope::{
@@ -12,6 +12,9 @@ use crate::util::audio::project_channel_data;
 use crate::visualization_widget;
 use iced::Color;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+const MAX_PERSISTENCE: f32 = 0.98;
+const FILL_ALPHA: f32 = 0.15;
 
 #[derive(Debug, Clone)]
 pub(crate) struct OscilloscopeProcessor {
@@ -40,13 +43,11 @@ impl OscilloscopeProcessor {
             self.inner.update_config(config);
         }
 
-        self.inner
-            .process_block(&AudioBlock::now(
-                samples,
-                format.channels.max(1),
-                sample_rate,
-            ))
-            .into()
+        self.inner.process_block(&AudioBlock::now(
+            samples,
+            format.channels.max(1),
+            sample_rate,
+        ))
     }
 
     pub fn update_config(&mut self, config: OscilloscopeConfig) {
@@ -104,7 +105,7 @@ impl OscilloscopeState {
             && !self.snapshot.samples.is_empty()
             && projected.samples.len() == self.snapshot.samples.len()
         {
-            let persistence = self.persistence.clamp(0.0, 0.98);
+            let persistence = self.persistence.clamp(0.0, MAX_PERSISTENCE);
             if persistence > f32::EPSILON {
                 let fresh = 1.0 - persistence;
                 for (current, incoming) in self.snapshot.samples.iter_mut().zip(&projected.samples)
@@ -163,7 +164,7 @@ impl OscilloscopeState {
             samples_per_channel,
             samples: self.snapshot.samples.clone(),
             colors,
-            fill_alpha: 0.15,
+            fill_alpha: FILL_ALPHA,
         })
     }
 }

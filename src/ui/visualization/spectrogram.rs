@@ -56,7 +56,6 @@ fn freq_to_norm(freq: f32, nyquist: f32, min_freq: f32, scale: FrequencyScale) -
 
 pub(crate) struct SpectrogramProcessor {
     inner: CoreSpectrogramProcessor,
-    sample_rate: f32,
 }
 
 impl SpectrogramProcessor {
@@ -67,7 +66,6 @@ impl SpectrogramProcessor {
                 use_reassignment: true,
                 ..Default::default()
             }),
-            sample_rate,
         }
     }
 
@@ -76,24 +74,16 @@ impl SpectrogramProcessor {
             return None;
         }
         let rate = format.sample_rate.max(1.0);
-        if (self.sample_rate - rate).abs() > f32::EPSILON {
-            self.sample_rate = rate;
+        if (self.inner.config().sample_rate - rate).abs() > f32::EPSILON {
             let mut cfg = self.inner.config();
             cfg.sample_rate = rate;
             self.inner.update_config(cfg);
         }
         self.inner
-            .process_block(&AudioBlock {
-                samples,
-                channels: format.channels.max(1),
-                sample_rate: self.sample_rate,
-                timestamp: Instant::now(),
-            })
-            .into()
+            .process_block(&AudioBlock::now(samples, format.channels.max(1), rate))
     }
 
     pub fn update_config(&mut self, config: SpectrogramConfig) {
-        self.sample_rate = config.sample_rate;
         self.inner.update_config(config);
     }
 

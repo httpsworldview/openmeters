@@ -3,14 +3,10 @@ struct VertexInput {
     @location(1) tex_coords: vec2<f32>,
 }
 
-;
-
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) tex_coords: vec2<f32>,
 }
-
-;
 
 struct SpectrogramUniforms {
     dims_wrap_flags: vec4<f32>,
@@ -18,8 +14,6 @@ struct SpectrogramUniforms {
     style: vec4<f32>,
     background: vec4<f32>,
 }
-
-;
 
 struct MagnitudeParams {
     capacity: u32,
@@ -29,19 +23,8 @@ struct MagnitudeParams {
     is_full: bool,
 }
 
-;
-
 const FLAG_CAPACITY_POW2: u32 = 0x1u;
-const SIGMA_HORIZONTAL: f32 = 0.14;
-const SIGMA_VERTICAL: f32 = 0.10;
-const SIGMA_DIAGONAL: f32 = 0.18;
-const DIAGONAL_SPATIAL_WEIGHT: f32 = 0.70710677;
 const MAX_X_SAMPLES: u32 = 16u;
-// 1 / sqrt(2)
-
-const INV_SIGMA_HORIZONTAL: f32 = 1.0 / SIGMA_HORIZONTAL;
-const INV_SIGMA_VERTICAL: f32 = 1.0 / SIGMA_VERTICAL;
-const INV_SIGMA_DIAGONAL: f32 = 1.0 / SIGMA_DIAGONAL;
 
 @group(0) @binding(0)
 var<uniform> uniforms: SpectrogramUniforms;
@@ -94,20 +77,6 @@ fn max_magnitude_for_column(logical: u32, row_lo: u32, row_hi: u32, params: Magn
         val = max(val, sample_magnitude(logical, r, params));
     }
     return val;
-}
-
-fn bilateral_weight(delta: f32, inv_sigma: f32, spatial_scale: f32) -> f32 {
-    let ratio = delta * inv_sigma;
-    return spatial_scale * exp(- ratio * ratio);
-}
-
-fn accumulate(enabled: bool, logical: u32, row: u32, params: MagnitudeParams, inv_sigma: f32, spatial_scale: f32, center: f32, accum: vec3<f32>,) -> vec3<f32> {
-    if !enabled {
-        return accum;
-    }
-    let value = sample_magnitude(logical, row, params);
-    let weight = bilateral_weight(abs(center - value), inv_sigma, spatial_scale);
-    return accum + vec3<f32>(value * weight, value * value * weight, weight);
 }
 
 @fragment
@@ -187,26 +156,6 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
     let row = u32(clamp(center_bin + 0.5, 0.0, f32(height - 1u)));
-
-    let has_left = x_center > 0u;
-    let left_logical = select(x_center, x_center - 1u, has_left);
-    let has_right = x_center + 1u < count;
-    let right_logical = select(x_center, x_center + 1u, has_right);
-
-    let has_up = row > 0u;
-    let up_row = select(row, row - 1u, has_up);
-    let has_down = row + 1u < height;
-    let down_row = select(row, row + 1u, has_down);
-
-    var accum = vec3<f32>(center, center * center, 1.0);
-    accum = accumulate(has_left, left_logical, row, params, INV_SIGMA_HORIZONTAL, 1.0, center, accum);
-    accum = accumulate(has_right, right_logical, row, params, INV_SIGMA_HORIZONTAL, 1.0, center, accum);
-    accum = accumulate(has_up, x_center, up_row, params, INV_SIGMA_VERTICAL, 1.0, center, accum);
-    accum = accumulate(has_down, x_center, down_row, params, INV_SIGMA_VERTICAL, 1.0, center, accum);
-    accum = accumulate(has_left && has_up, left_logical, up_row, params, INV_SIGMA_DIAGONAL, DIAGONAL_SPATIAL_WEIGHT, center, accum);
-    accum = accumulate(has_right && has_up, right_logical, up_row, params, INV_SIGMA_DIAGONAL, DIAGONAL_SPATIAL_WEIGHT, center, accum);
-    accum = accumulate(has_left && has_down, left_logical, down_row, params, INV_SIGMA_DIAGONAL, DIAGONAL_SPATIAL_WEIGHT, center, accum);
-    accum = accumulate(has_right && has_down, right_logical, down_row, params, INV_SIGMA_DIAGONAL, DIAGONAL_SPATIAL_WEIGHT, center, accum);
 
     return sample_palette(center);
 }

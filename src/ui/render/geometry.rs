@@ -1,14 +1,14 @@
-//! Geometry utilities for rendering.
+// Geometry utilities for rendering.
 
 use crate::ui::render::common::{ClipTransform, SdfVertex};
 
 const MIN_SEG: f32 = 0.1;
 const MAX_MITER: f32 = 4.0;
 
-/// Default feather distance for antialiased lines.
+// Default feather distance for antialiased lines.
 pub const DEFAULT_FEATHER: f32 = 1.0;
 
-/// Joins triangle strips with degenerate triangles for batched draw calls.
+// Joins triangle strips with degenerate triangles for batched draw calls.
 pub fn append_strip(dest: &mut Vec<SdfVertex>, strip: Vec<SdfVertex>) {
     if strip.is_empty() {
         return;
@@ -94,7 +94,7 @@ fn build_strip_core(
         .collect()
 }
 
-/// Builds an antialiased polyline for `TriangleStrip` topology.
+// Builds an antialiased polyline for `TriangleStrip` topology.
 pub fn build_aa_line_strip(
     pts: &[(f32, f32)],
     stroke: f32,
@@ -105,7 +105,7 @@ pub fn build_aa_line_strip(
     build_strip_core(pts, stroke, feather, clip, |_| color)
 }
 
-/// Builds an antialiased polyline for `TriangleList` topology.
+// Builds an antialiased polyline for `TriangleList` topology.
 pub fn build_aa_line_list(
     pts: &[(f32, f32)],
     stroke: f32,

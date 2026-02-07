@@ -1,4 +1,4 @@
-//! Rendering code for the loudness meters.
+// Rendering code for the loudness meters.
 
 use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
@@ -14,14 +14,14 @@ const GUIDE_THICKNESS: f32 = 1.0;
 const GUIDE_PADDING: f32 = 3.0;
 const THRESHOLD_THICKNESS: f32 = 1.5;
 
-/// A single meter bar with background and fill segments.
+// A single meter bar with background and fill segments.
 #[derive(Debug, Clone)]
 pub struct MeterBar {
     pub bg_color: [f32; 4],
     pub fills: Vec<(f32, [f32; 4])>,
 }
 
-/// Parameters for rendering the loudness meter.
+// Parameters for rendering the loudness meter.
 #[derive(Debug, Clone)]
 pub struct LoudnessParams {
     pub key: u64,
@@ -37,7 +37,7 @@ pub struct LoudnessParams {
 }
 
 impl LoudnessParams {
-    /// Convert dB value to 0..1 ratio with visual scaling.
+    // Convert dB value to 0..1 ratio with visual scaling.
     pub fn db_to_ratio(&self, db: f32) -> f32 {
         let range = self.max_db - self.min_db;
         if range <= f32::EPSILON {
@@ -47,7 +47,7 @@ impl LoudnessParams {
         raw.powf(0.9)
     }
 
-    /// Get horizontal bounds of the meter area.
+    // Get horizontal bounds of the meter area.
     pub fn meter_bounds(&self) -> Option<(f32, f32, f32)> {
         let bar_count = self.bars.len();
         if bar_count == 0 {
@@ -71,7 +71,7 @@ impl LoudnessParams {
     }
 }
 
-/// Custom primitive that draws a loudness meter.
+// Custom primitive that draws a loudness meter.
 #[derive(Debug)]
 pub struct LoudnessPrimitive {
     pub params: LoudnessParams,

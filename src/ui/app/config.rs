@@ -1,4 +1,4 @@
-//! Configuration page for application and visual settings.
+// Configuration page for application and visual settings.
 
 use crate::audio::VIRTUAL_SINK_NAME;
 use crate::audio::pw_registry::RegistrySnapshot;
@@ -264,40 +264,11 @@ impl ConfigPage {
             content
         };
 
-        container(scrollable(content).style(|_, _| Self::clear_scrollable_style()))
+        container(scrollable(content).style(theme::transparent_scrollable))
             .width(Length::Fill)
             .height(Length::Fill)
             .padding(8)
             .into()
-    }
-
-    fn clear_scrollable_style() -> scrollable::Style {
-        scrollable::Style {
-            container: container::Style::default(),
-            vertical_rail: scrollable::Rail {
-                background: None,
-                border: iced::Border::default(),
-                scroller: scrollable::Scroller {
-                    background: iced::Background::Color(iced::Color::TRANSPARENT),
-                    border: iced::Border::default(),
-                },
-            },
-            horizontal_rail: scrollable::Rail {
-                background: None,
-                border: iced::Border::default(),
-                scroller: scrollable::Scroller {
-                    background: iced::Background::Color(iced::Color::TRANSPARENT),
-                    border: iced::Border::default(),
-                },
-            },
-            gap: None,
-            auto_scroll: scrollable::AutoScroll {
-                background: iced::Background::Color(iced::Color::TRANSPARENT),
-                border: iced::Border::default(),
-                shadow: iced::Shadow::default(),
-                icon: iced::Color::TRANSPARENT,
-            },
-        }
     }
 
     fn render_capture_section(&self) -> Column<'_, ConfigMessage> {

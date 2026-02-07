@@ -1,6 +1,6 @@
-//! ITU-R BS.1770-5 compliant loudness and true peak metering.
+// ITU-R BS.1770-5 compliant loudness and true peak metering.
 
-use super::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
+use super::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::util::audio::{DEFAULT_SAMPLE_RATE, power_to_db};
 use std::f64::consts::PI;
 
@@ -233,7 +233,7 @@ impl ChannelState {
 
 pub const MAX_CHANNELS: usize = 8;
 
-/// L/R/C = 1.0 (0 dB), LFE = 0.0 (excluded), Ls/Rs/Lb/Rb = 1.41 (+1.5 dB).
+// L/R/C = 1.0 (0 dB), LFE = 0.0 (excluded), Ls/Rs/Lb/Rb = 1.41 (+1.5 dB).
 #[inline]
 fn channel_weight(channel_index: usize, total_channels: usize) -> f64 {
     match total_channels {
@@ -343,15 +343,15 @@ impl LoudnessProcessor {
 impl AudioProcessor for LoudnessProcessor {
     type Output = LoudnessSnapshot;
 
-    fn process_block(&mut self, block: &AudioBlock<'_>) -> ProcessorUpdate<Self::Output> {
+    fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<Self::Output> {
         if block.channels == 0 || block.frame_count() == 0 {
-            return ProcessorUpdate::None;
+            return None;
         }
 
         self.ensure_state(block.channels, block.sample_rate);
 
         if self.channels.is_empty() {
-            return ProcessorUpdate::None;
+            return None;
         }
 
         for frame in block.samples.chunks_exact(block.channels) {
@@ -402,7 +402,7 @@ impl AudioProcessor for LoudnessProcessor {
         self.snapshot.momentary_loudness = mean_square_to_lufs(weighted_momentary, floor);
         self.snapshot.channel_count = num_channels;
 
-        ProcessorUpdate::Snapshot(self.snapshot)
+        Some(self.snapshot)
     }
 
     fn reset(&mut self) {
@@ -433,11 +433,8 @@ mod tests {
             .collect()
     }
 
-    fn unwrap_snapshot(update: ProcessorUpdate<LoudnessSnapshot>) -> LoudnessSnapshot {
-        match update {
-            ProcessorUpdate::Snapshot(s) => s,
-            ProcessorUpdate::None => panic!("expected snapshot"),
-        }
+    fn unwrap_snapshot(update: Option<LoudnessSnapshot>) -> LoudnessSnapshot {
+        update.expect("expected snapshot")
     }
 
     #[test]

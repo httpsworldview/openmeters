@@ -1,11 +1,11 @@
-//! Monochrome Iced theme.
-//!
-//! GPU palette colors are defined in sRGB. The sRGB framebuffer format handles
-//! gamma correction automatically, so colors are passed through without conversion.
+// Monochrome Iced theme.
+//
+// GPU palette colors are defined in sRGB. The sRGB framebuffer format handles
+// gamma correction automatically, so colors are passed through without conversion.
 
 use iced::border::Border;
 use iced::theme::palette::{self, Extended};
-use iced::widget::{button, container, slider, text};
+use iced::widget::{button, container, scrollable, slider, text};
 use iced::{Background, Color, Theme};
 
 // Core palette stops
@@ -25,7 +25,7 @@ const ACCENT_DANGER: Color = Color::from_rgba(0.557, 0.478, 0.478, 1.0);
 
 // Unified GPU Palette system
 
-/// A GPU visualization palette with colors and optional labels.
+// A GPU visualization palette with colors and optional labels.
 #[derive(Debug, Clone, Default)]
 pub struct Palette {
     colors: Vec<Color>,
@@ -61,7 +61,7 @@ impl Palette {
         self.defaults.len()
     }
 
-    /// Sets colors, only stores if different from defaults.
+    // Sets colors, only stores if different from defaults.
     pub fn set(&mut self, colors: &[Color]) {
         self.colors.clear();
         if colors.len() == self.defaults.len() && !palettes_equal(colors, self.defaults) {
@@ -81,7 +81,7 @@ impl Palette {
 
 // Default palette definitions
 
-/// Spectrogram heat map: quiet -> loud (5 stops)
+// Spectrogram heat map: quiet -> loud (5 stops)
 pub mod spectrogram {
     use super::*;
     pub const COLORS: [Color; 5] = [
@@ -94,7 +94,7 @@ pub mod spectrogram {
     pub const LABELS: &[&str] = &["Quietest", "->", "->", "->", "Loud"];
 }
 
-/// Spectrum analyzer gradient: quiet -> loud (6 stops)
+// Spectrum analyzer gradient: quiet -> loud (6 stops)
 pub mod spectrum {
     use super::*;
     pub const COLORS: [Color; 6] = [
@@ -108,7 +108,7 @@ pub mod spectrum {
     pub const LABELS: &[&str] = &["Floor", "Low", "Low-Mid", "Mid", "High", "Peak"];
 }
 
-/// dark red (low) -> orange -> green -> cyan -> blue (high)
+// dark red (low) -> orange -> green -> cyan -> blue (high)
 pub mod waveform {
     use super::*;
     pub const COLORS: [Color; 6] = [
@@ -122,14 +122,14 @@ pub mod waveform {
     pub const LABELS: &[&str] = &["Sub-bass", "->", "->", "->", "->", "Brilliance"];
 }
 
-/// Oscilloscope trace color (1 stop)
+// Oscilloscope trace color (1 stop)
 pub mod oscilloscope {
     use super::*;
     pub const COLORS: [Color; 1] = [Color::from_rgba(1.000, 1.000, 1.000, 1.0)];
     pub const LABELS: &[&str] = &["Trace"];
 }
 
-/// Stereometer (8 stops)
+// Stereometer (8 stops)
 pub mod stereometer {
     use super::*;
     pub const COLORS: [Color; 8] = [
@@ -154,7 +154,7 @@ pub mod stereometer {
     ];
 }
 
-/// Loudness meter: background, left_ch_1, left_ch_2, right_fill, guide_line (5 stops)
+// Loudness meter: background, left_ch_1, left_ch_2, right_fill, guide_line (5 stops)
 pub mod loudness {
     use super::*;
     pub const COLORS: [Color; 5] = [
@@ -167,7 +167,7 @@ pub mod loudness {
     pub const LABELS: &[&str] = &["Background", "Left 1", "Left 2", "Right", "Guide"];
 }
 
-/// App background color (1 stop)
+// App background color (1 stop)
 pub mod background {
     use super::*;
     pub const COLORS: [Color; 1] = [BG_BASE];
@@ -202,7 +202,7 @@ fn palette(custom_bg: Option<Color>) -> palette::Palette {
 
 // styling helpers
 
-/// Standard sharp border for buttons and containers.
+// Standard sharp border for buttons and containers.
 pub fn sharp_border() -> Border {
     Border {
         color: BORDER_SUBTLE,
@@ -306,8 +306,8 @@ pub fn accent_primary() -> Color {
     ACCENT_PRIMARY
 }
 
-/// Interpolates colors in Oklch space along the hue circle for perceptually
-/// smooth transitions (e.g., orange -> green passes through yellow).
+// Interpolates colors in Oklch space along the hue circle for perceptually
+// smooth transitions (e.g., orange -> green passes through yellow).
 pub fn mix_colors(a: Color, b: Color, factor: f32) -> Color {
     let t = factor.clamp(0.0, 1.0);
     let (l1, c1, h1) = srgb_to_oklch(a.r, a.g, a.b);
@@ -321,7 +321,7 @@ pub fn mix_colors(a: Color, b: Color, factor: f32) -> Color {
     Color::from_rgba(r, g, b_out, a.a + (b.a - a.a) * t)
 }
 
-/// Interpolates hue along the shorter arc, handling achromatic colors.
+// Interpolates hue along the shorter arc, handling achromatic colors.
 fn interpolate_hue(h1: f32, c1: f32, h2: f32, c2: f32, t: f32) -> f32 {
     const EPSILON: f32 = 1e-6;
     if c1 < EPSILON {
@@ -341,7 +341,7 @@ fn interpolate_hue(h1: f32, c1: f32, h2: f32, c2: f32, t: f32) -> f32 {
 
 // Oklch color space conversions (perceptually uniform with hue interpolation)
 
-/// Convert sRGB (0-1) to Oklch (lightness, chroma, hue).
+// Convert sRGB (0-1) to Oklch (lightness, chroma, hue).
 #[inline]
 fn srgb_to_oklch(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
     // sRGB -> linear RGB
@@ -369,7 +369,7 @@ fn srgb_to_oklch(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
     (ok_l, chroma, hue)
 }
 
-/// Convert Oklch (lightness, chroma, hue) to sRGB (0-1), clamped to valid range.
+// Convert Oklch (lightness, chroma, hue) to sRGB (0-1), clamped to valid range.
 #[inline]
 fn oklch_to_srgb(l: f32, c: f32, h: f32) -> (f32, f32, f32) {
     // Oklch -> Oklab
@@ -449,13 +449,13 @@ pub fn slider_style(theme: &Theme, status: slider::Status) -> slider::Style {
     }
 }
 
-/// Converts a color to `[f32; 4]` RGBA array for GPU pipelines.
+// Converts a color to `[f32; 4]` RGBA array for GPU pipelines.
 #[inline]
 pub fn color_to_rgba(color: Color) -> [f32; 4] {
     [color.r, color.g, color.b, color.a]
 }
 
-/// Compares two colors for approximate equality.
+// Compares two colors for approximate equality.
 #[inline]
 pub fn colors_equal(a: Color, b: Color) -> bool {
     const EPSILON: f32 = 1e-4;
@@ -465,13 +465,13 @@ pub fn colors_equal(a: Color, b: Color) -> bool {
         && (a.a - b.a).abs() <= EPSILON
 }
 
-/// Compares two color slices for equality.
+// Compares two color slices for equality.
 #[inline]
 pub fn palettes_equal(a: &[Color], b: &[Color]) -> bool {
     a.len() == b.len() && a.iter().zip(b).all(|(x, y)| colors_equal(*x, *y))
 }
 
-/// Samples a gradient at position `t` (0.0 to 1.0) using Oklch interpolation.
+// Samples a gradient at position `t` (0.0 to 1.0) using Oklch interpolation.
 #[inline]
 pub fn sample_gradient(palette: &[Color], t: f32) -> Color {
     let n = palette.len();
@@ -483,5 +483,30 @@ pub fn sample_gradient(palette: &[Color], t: f32) -> Color {
             let i = (pos as usize).min(n - 2);
             mix_colors(palette[i], palette[i + 1], pos - i as f32)
         }
+    }
+}
+
+// Transparent scrollable with no visible rails or scrollers.
+pub fn transparent_scrollable(_theme: &Theme, _status: scrollable::Status) -> scrollable::Style {
+    let transparent_scroller = scrollable::Scroller {
+        background: Background::Color(Color::TRANSPARENT),
+        border: Border::default(),
+    };
+    let transparent_rail = scrollable::Rail {
+        background: None,
+        border: Border::default(),
+        scroller: transparent_scroller,
+    };
+    scrollable::Style {
+        container: container::Style::default(),
+        vertical_rail: transparent_rail,
+        horizontal_rail: transparent_rail,
+        gap: None,
+        auto_scroll: scrollable::AutoScroll {
+            background: Background::Color(Color::TRANSPARENT),
+            border: Border::default(),
+            shadow: iced::Shadow::default(),
+            icon: Color::TRANSPARENT,
+        },
     }
 }

@@ -1,4 +1,4 @@
-//! PipeWire virtual sink integration.
+// PipeWire virtual sink integration.
 
 use crate::util::audio::DEFAULT_SAMPLE_RATE;
 use crate::util::{bytes_per_sample, convert_samples_to_f32};
@@ -22,7 +22,7 @@ const DESIRED_LATENCY_FRAMES: u32 = 256;
 static SINK_THREAD: OnceLock<thread::JoinHandle<()>> = OnceLock::new();
 static CAPTURE_BUFFER: OnceLock<Arc<CaptureBuffer>> = OnceLock::new();
 
-/// Audio block captured from PipeWire with associated format metadata.
+// Audio block captured from PipeWire with associated format metadata.
 #[derive(Debug, Clone)]
 pub struct CapturedAudio {
     pub samples: Vec<f32>,
@@ -101,7 +101,7 @@ impl CaptureBuffer {
     }
 }
 
-/// Spawn the virtual sink in a background thread.
+// Spawn the virtual sink in a background thread.
 pub fn run() -> Option<std::thread::JoinHandle<()>> {
     ensure_capture_buffer();
 
@@ -124,12 +124,12 @@ pub fn run() -> Option<std::thread::JoinHandle<()>> {
     }
 }
 
-/// Accessor for the shared ring buffer that stores captured audio frames.
+// Accessor for the shared ring buffer that stores captured audio frames.
 pub fn capture_buffer_handle() -> Arc<CaptureBuffer> {
     ensure_capture_buffer().clone()
 }
 
-/// Cached parameters describing the negotiated stream format.
+// Cached parameters describing the negotiated stream format.
 struct VirtualSinkState {
     frame_bytes: usize,
     channels: u32,
@@ -171,7 +171,7 @@ impl VirtualSinkState {
     }
 }
 
-/// PipeWire main loop body that registers and services the virtual sink.
+// PipeWire main loop body that registers and services the virtual sink.
 fn run_virtual_sink() -> Result<(), Box<dyn Error + Send + Sync>> {
     pw::init();
 
@@ -276,7 +276,7 @@ fn run_virtual_sink() -> Result<(), Box<dyn Error + Send + Sync>> {
     Ok(())
 }
 
-/// Build format pod specifying sample format and rate; channels negotiated by PipeWire.
+// Build format pod specifying sample format and rate; channels negotiated by PipeWire.
 fn build_format_pod(rate: u32) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
     let mut info = spa::param::audio::AudioInfoRaw::new();
     info.set_format(spa::param::audio::AudioFormat::F32LE);

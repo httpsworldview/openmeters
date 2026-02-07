@@ -1,4 +1,4 @@
-//! Common rendering utilities shared across visualization primitives.
+// Common rendering utilities shared across visualization primitives.
 
 use bytemuck::{Pod, Zeroable};
 use iced::advanced::graphics::Viewport;
@@ -6,7 +6,7 @@ use iced_wgpu::wgpu;
 use std::collections::HashMap;
 use std::mem::size_of;
 
-/// Transforms logical screen coordinates to clip space coordinates.
+// Transforms logical screen coordinates to clip space coordinates.
 #[derive(Clone, Copy)]
 pub struct ClipTransform(f32, f32);
 
@@ -80,7 +80,7 @@ impl SdfVertex {
     }
 }
 
-/// Manages a growable GPU vertex buffer for a single primitive instance.
+// Manages a growable GPU vertex buffer for a single primitive instance.
 #[derive(Debug)]
 pub struct InstanceBuffer<V: Pod> {
     pub vertex_buffer: wgpu::Buffer,
@@ -129,7 +129,7 @@ impl<V: Pod> InstanceBuffer<V> {
     }
 }
 
-/// Produces eviction thresholds for pruning stale cache entries.
+// Produces eviction thresholds for pruning stale cache entries.
 #[derive(Debug, Clone, Default)]
 pub struct CacheTracker {
     frame: u64,
@@ -140,7 +140,7 @@ impl CacheTracker {
     const RETAIN: u64 = 1024;
     const INTERVAL: u64 = 256;
 
-    /// Returns `(frame, Some(threshold))` every `INTERVAL` frames for eviction.
+    // Returns `(frame, Some(threshold))` every `INTERVAL` frames for eviction.
     pub fn advance(&mut self) -> (u64, Option<u64>) {
         self.frame = self.frame.wrapping_add(1).max(1);
         self.counter = self.counter.wrapping_add(1);
@@ -164,7 +164,7 @@ pub fn create_shader_module(
     })
 }
 
-/// Creates a render pipeline using `sdf.wgsl` with the given topology.
+// Creates a render pipeline using `sdf.wgsl` with the given topology.
 pub fn create_sdf_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
@@ -208,7 +208,7 @@ pub fn create_sdf_pipeline(
     })
 }
 
-/// Writes a tightly packed texture region.
+// Writes a tightly packed texture region.
 #[inline]
 pub fn write_texture_region(
     queue: &wgpu::Queue,
@@ -235,8 +235,8 @@ pub fn write_texture_region(
     );
 }
 
-/// Generates six SDF vertices forming a quad (two triangles).
-/// Pass identical colors for solid fill, or different for vertical gradient.
+// Generates six SDF vertices forming a quad (two triangles).
+// Pass identical colors for solid fill, or different for vertical gradient.
 #[inline]
 pub fn quad_vertices(
     x0: f32,
@@ -249,7 +249,7 @@ pub fn quad_vertices(
     gradient_quad_vertices(x0, y0, x1, y1, clip, color, color)
 }
 
-/// Quad with per-edge colors for smooth vertical gradients.
+// Quad with per-edge colors for smooth vertical gradients.
 #[inline]
 pub fn gradient_quad_vertices(
     x0: f32,
@@ -276,7 +276,7 @@ pub fn gradient_quad_vertices(
     ]
 }
 
-/// Generates six SDF vertices forming an antialiased line segment.
+// Generates six SDF vertices forming an antialiased line segment.
 #[inline]
 pub fn line_vertices(
     p0: (f32, f32),
@@ -306,7 +306,7 @@ pub fn line_vertices(
     ]
 }
 
-/// Generates six SDF vertices forming an antialiased dot.
+// Generates six SDF vertices forming an antialiased dot.
 #[inline]
 pub fn dot_vertices(
     cx: f32,
@@ -338,7 +338,7 @@ pub struct CachedInstance {
     pub last_used: u64,
 }
 
-/// Pipeline + instance cache for SDF-based primitives.
+// Pipeline + instance cache for SDF-based primitives.
 #[derive(Debug)]
 pub struct SdfPipeline<K> {
     pub pipeline: wgpu::RenderPipeline,
@@ -393,8 +393,8 @@ impl<K: std::hash::Hash + Eq + Copy> SdfPipeline<K> {
     }
 }
 
-/// builds an iced_wgpu primitive
-/// spectrogram has different requirements, so it does not use this macro
+// builds an iced_wgpu primitive
+// spectrogram has different requirements, so it does not use this macro
 #[macro_export]
 macro_rules! sdf_primitive {
     ($primitive:ident, $pipeline:ident, $key_ty:ty, $label:expr, $topology:ident, |$self:ident| $key_expr:expr) => {
