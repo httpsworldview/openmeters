@@ -1,8 +1,8 @@
 use super::SettingsMessage;
 use super::palette::PaletteEvent;
 use super::widgets::{
-    SliderRange, labeled_pick_list, labeled_slider, set_if_changed, update_f32_range,
-    update_usize_from_f32,
+    SliderRange, labeled_pick_list, labeled_slider, section_title, set_if_changed,
+    update_f32_range, update_usize_from_f32,
 };
 use crate::ui::settings::{
     CorrelationMeterMode, CorrelationMeterSide, SettingsHandle, StereometerMode, StereometerScale,
@@ -55,94 +55,124 @@ pub enum Message {
 
 impl StereometerSettingsPane {
     fn view(&self) -> Element<'_, SettingsMessage> {
+        use Message::*;
         let s = &self.settings;
-        let left = column![
-            labeled_pick_list("Mode", &MODE_OPTIONS, Some(s.mode), |m| {
-                SettingsMessage::Stereometer(Message::Mode(m))
-            }),
-            labeled_slider(
-                "Rotation",
-                s.rotation as f32,
-                s.rotation.to_string(),
-                ROTATION_RANGE,
-                |v| SettingsMessage::Stereometer(Message::Rotation(v))
-            ),
-            toggler(s.flip)
-                .label("Flip")
-                .on_toggle(|v| SettingsMessage::Stereometer(Message::Flip(v))),
+
+        let picks = row![
+            column![labeled_pick_list(
+                "Mode",
+                &MODE_OPTIONS,
+                Some(s.mode),
+                |m| { SettingsMessage::Stereometer(Mode(m)) }
+            ),]
+            .width(Length::Fill),
+            column![labeled_pick_list(
+                "Scale",
+                &SCALE_OPTIONS,
+                Some(s.scale),
+                |v| { SettingsMessage::Stereometer(Scale(v)) }
+            ),]
+            .width(Length::Fill),
         ]
-        .spacing(16)
-        .width(Length::Fill);
+        .spacing(16);
 
-        let mut right = column![
-            labeled_pick_list("Scale", &SCALE_OPTIONS, Some(s.scale), |v| {
-                SettingsMessage::Stereometer(Message::Scale(v))
-            }),
-            labeled_pick_list(
-                "Correlation meter",
-                &CORR_METER_OPTIONS,
-                Some(s.correlation_meter),
-                |v| SettingsMessage::Stereometer(Message::CorrelationMeter(v))
-            ),
-        ]
-        .spacing(16)
-        .width(Length::Fill);
-
-        if s.correlation_meter != CorrelationMeterMode::Off {
-            right = right.push(labeled_pick_list(
-                "Correlation side",
-                &CORR_SIDE_OPTIONS,
-                Some(s.correlation_meter_side),
-                |v| SettingsMessage::Stereometer(Message::CorrelationMeterSide(v)),
-            ));
-        }
-        if s.scale == StereometerScale::Exponential {
-            right = right.push(labeled_slider(
-                "Scale range",
-                s.scale_range,
-                format!("{:.1}", s.scale_range),
-                SCALE_RANGE,
-                |v| SettingsMessage::Stereometer(Message::ScaleRange(v)),
-            ));
-        }
-
-        column![
-            row![left, right].spacing(24),
+        let mut core = column![
+            picks,
             labeled_slider(
                 "Segment duration",
                 s.segment_duration,
                 format!("{:.1} ms", s.segment_duration * 1000.0),
                 SEGMENT_DURATION_RANGE,
-                |v| SettingsMessage::Stereometer(Message::SegmentDuration(v))
+                |v| SettingsMessage::Stereometer(SegmentDuration(v))
             ),
             labeled_slider(
                 "Sample count",
                 s.target_sample_count as f32,
                 s.target_sample_count.to_string(),
                 TARGET_SAMPLE_COUNT_RANGE,
-                |v| SettingsMessage::Stereometer(Message::TargetSampleCount(v))
+                |v| SettingsMessage::Stereometer(TargetSampleCount(v))
             ),
+        ]
+        .spacing(8);
+
+        if s.scale == StereometerScale::Exponential {
+            core = core.push(labeled_slider(
+                "Scale range",
+                s.scale_range,
+                format!("{:.1}", s.scale_range),
+                SCALE_RANGE,
+                |v| SettingsMessage::Stereometer(ScaleRange(v)),
+            ));
+        }
+
+        let display = column![
             labeled_slider(
-                "Correlation window",
-                s.correlation_window,
-                format!("{:.0} ms", s.correlation_window * 1000.0),
-                CORRELATION_WINDOW_RANGE,
-                |v| SettingsMessage::Stereometer(Message::CorrelationWindow(v))
+                "Rotation",
+                s.rotation as f32,
+                s.rotation.to_string(),
+                ROTATION_RANGE,
+                |v| SettingsMessage::Stereometer(Rotation(v))
             ),
             labeled_slider(
                 "Persistence",
                 s.persistence,
                 format!("{:.2}", s.persistence),
                 PERSISTENCE_RANGE,
-                |v| SettingsMessage::Stereometer(Message::Persistence(v))
+                |v| SettingsMessage::Stereometer(Persistence(v))
             ),
-            super::palette_section(
-                &self.palette,
-                Message::Palette,
-                SettingsMessage::Stereometer
-            )
+            toggler(s.flip)
+                .label("Flip")
+                .spacing(4)
+                .text_size(11)
+                .on_toggle(|b| SettingsMessage::Stereometer(Flip(b))),
         ]
-        .spacing(16)
+        .spacing(8);
+
+        let mut corr_picks = row![
+            column![labeled_pick_list(
+                "Meter",
+                &CORR_METER_OPTIONS,
+                Some(s.correlation_meter),
+                |v| SettingsMessage::Stereometer(CorrelationMeter(v))
+            ),]
+            .width(Length::Fill),
+        ]
+        .spacing(16);
+
+        if s.correlation_meter != CorrelationMeterMode::Off {
+            corr_picks = corr_picks.push(
+                column![labeled_pick_list(
+                    "Side",
+                    &CORR_SIDE_OPTIONS,
+                    Some(s.correlation_meter_side),
+                    |v| SettingsMessage::Stereometer(CorrelationMeterSide(v)),
+                ),]
+                .width(Length::Fill),
+            );
+        }
+
+        let mut correlation = column![corr_picks].spacing(8);
+
+        if s.correlation_meter != CorrelationMeterMode::Off {
+            correlation = correlation.push(labeled_slider(
+                "Window",
+                s.correlation_window,
+                format!("{:.0} ms", s.correlation_window * 1000.0),
+                CORRELATION_WINDOW_RANGE,
+                |v| SettingsMessage::Stereometer(CorrelationWindow(v)),
+            ));
+        }
+
+        column![
+            section_title("Core"),
+            core,
+            section_title("Display"),
+            display,
+            section_title("Correlation"),
+            correlation,
+            super::palette_section(&self.palette, Palette, SettingsMessage::Stereometer)
+        ]
+        .spacing(12)
         .into()
     }
 
