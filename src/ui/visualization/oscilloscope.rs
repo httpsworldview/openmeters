@@ -6,7 +6,7 @@ use crate::dsp::oscilloscope::{
 };
 use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::ui::render::oscilloscope::{OscilloscopeParams, OscilloscopePrimitive};
-use crate::ui::settings::ChannelMode;
+use crate::ui::settings::{ChannelMode, OscilloscopeSettings};
 use crate::ui::theme;
 use crate::util::audio::project_channel_data;
 use crate::visualization_widget;
@@ -70,12 +70,13 @@ pub(crate) struct OscilloscopeState {
 
 impl OscilloscopeState {
     pub fn new() -> Self {
+        let defaults = OscilloscopeSettings::default();
         static NEXT_KEY: AtomicU64 = AtomicU64::new(1);
         Self {
             snapshot: OscilloscopeSnapshot::default(),
             style: OscilloscopeStyle::default(),
-            persistence: 0.0,
-            channel_mode: ChannelMode::default(),
+            persistence: defaults.persistence,
+            channel_mode: defaults.channel_mode,
             key: NEXT_KEY.fetch_add(1, Ordering::Relaxed),
         }
     }

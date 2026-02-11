@@ -5,7 +5,7 @@ use crate::dsp::spectrum::{
 };
 use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::ui::render::spectrum::{SpectrumParams, SpectrumPrimitive};
-use crate::ui::settings::{SpectrumDisplayMode, SpectrumWeightingMode};
+use crate::ui::settings::{SpectrumDisplayMode, SpectrumSettings, SpectrumWeightingMode};
 use crate::ui::theme;
 use crate::util::audio::musical::MusicalNote;
 use crate::util::audio::{hz_to_mel, lerp, mel_to_hz};
@@ -121,6 +121,7 @@ pub(crate) struct SpectrumStyle {
 
 impl Default for SpectrumStyle {
     fn default() -> Self {
+        let defaults = SpectrumSettings::default();
         Self {
             min_db: -120.0,
             max_db: 0.0,
@@ -129,19 +130,19 @@ impl Default for SpectrumStyle {
             resolution: 1024,
             line_thickness: 0.5,
             secondary_line_thickness: 0.5,
-            smoothing_radius: 0,
-            smoothing_passes: 0,
-            highlight_threshold: 0.45,
+            smoothing_radius: defaults.smoothing_radius,
+            smoothing_passes: defaults.smoothing_passes,
+            highlight_threshold: defaults.highlight_threshold,
             spectrum_palette: theme::spectrum::COLORS,
-            frequency_scale: FrequencyScale::Logarithmic,
-            reverse_frequency: false,
-            show_grid: true,
-            show_peak_label: true,
-            display_mode: SpectrumDisplayMode::default(),
-            weighting_mode: SpectrumWeightingMode::default(),
-            show_secondary_line: true,
-            bar_count: 64,
-            bar_gap: 0.2,
+            frequency_scale: defaults.frequency_scale,
+            reverse_frequency: defaults.reverse_frequency,
+            show_grid: defaults.show_grid,
+            show_peak_label: defaults.show_peak_label,
+            display_mode: defaults.display_mode,
+            weighting_mode: defaults.weighting_mode,
+            show_secondary_line: defaults.show_secondary_line,
+            bar_count: defaults.bar_count,
+            bar_gap: defaults.bar_gap,
         }
     }
 }

@@ -197,7 +197,10 @@ impl StereometerSettingsPane {
                 update_f32_range(&mut s.correlation_window, *v, CORRELATION_WINDOW_RANGE)
             }
             Message::Persistence(v) => update_f32_range(&mut s.persistence, *v, PERSISTENCE_RANGE),
-            Message::Rotation(v) => set_if_changed(&mut s.rotation, (v.round() as i8).clamp(-4, 4)),
+            Message::Rotation(v) => set_if_changed(
+                &mut s.rotation,
+                (v.round() as i8).clamp(ROTATION_RANGE.min as i8, ROTATION_RANGE.max as i8),
+            ),
             Message::Flip(v) => set_if_changed(&mut s.flip, *v),
             Message::Mode(m) => set_if_changed(&mut s.mode, *m),
             Message::Scale(sc) => set_if_changed(&mut s.scale, *sc),

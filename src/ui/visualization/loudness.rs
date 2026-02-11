@@ -8,7 +8,7 @@ use crate::dsp::loudness::{
 };
 use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::ui::render::loudness::{LoudnessParams, LoudnessPrimitive, MeterBar};
-use crate::ui::settings::MeterMode;
+use crate::ui::settings::{LoudnessSettings, MeterMode};
 use crate::ui::theme;
 use iced::advanced::Renderer as _;
 use iced::advanced::renderer::{self, Quad};
@@ -86,6 +86,7 @@ pub(crate) struct LoudnessState {
 
 impl LoudnessState {
     pub fn new() -> Self {
+        let defaults = LoudnessSettings::default();
         static NEXT_KEY: AtomicU64 = AtomicU64::new(1);
         Self {
             short_term_loudness: DEFAULT_RANGE.0,
@@ -95,8 +96,8 @@ impl LoudnessState {
             true_peak_db: [DEFAULT_RANGE.0; MAX_CHANNELS],
             channel_count: 2,
             range: DEFAULT_RANGE,
-            left_mode: MeterMode::TruePeak,
-            right_mode: MeterMode::LufsShortTerm,
+            left_mode: defaults.left_mode,
+            right_mode: defaults.right_mode,
             palette: theme::loudness::COLORS,
             key: NEXT_KEY.fetch_add(1, Ordering::Relaxed),
         }

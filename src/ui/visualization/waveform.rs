@@ -5,7 +5,7 @@ use crate::dsp::waveform::{
 };
 use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::ui::render::waveform::{PreviewSample, WaveformParams, WaveformPrimitive};
-use crate::ui::settings::{ChannelMode, WaveformColorMode};
+use crate::ui::settings::{ChannelMode, WaveformColorMode, WaveformSettings};
 use crate::ui::theme;
 use crate::util::audio::project_channel_data;
 use crate::visualization_widget;
@@ -82,14 +82,15 @@ pub(crate) struct WaveformState {
 
 impl WaveformState {
     pub fn new() -> Self {
+        let defaults = WaveformSettings::default();
         static NEXT_KEY: AtomicU64 = AtomicU64::new(1);
         Self {
             snapshot: WaveformSnapshot::default(),
             style: WaveformStyle::default(),
             desired_columns: Cell::new(DEFAULT_COLUMN_CAPACITY),
             key: NEXT_KEY.fetch_add(1, Ordering::Relaxed),
-            channel_mode: ChannelMode::default(),
-            color_mode: WaveformColorMode::default(),
+            channel_mode: defaults.channel_mode,
+            color_mode: defaults.color_mode,
         }
     }
 

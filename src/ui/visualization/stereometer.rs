@@ -18,6 +18,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 const TRAIL_LEN: usize = 32;
 const CORRELATION_SMOOTHING: f32 = 0.85;
+const MAX_PERSISTENCE: f32 = 0.9;
 
 #[derive(Debug, Clone)]
 pub(crate) struct StereometerProcessor {
@@ -77,26 +78,27 @@ pub(crate) struct StereometerState {
 
 impl StereometerState {
     pub fn new() -> Self {
+        let defaults = StereometerSettings::default();
         static NEXT_KEY: AtomicU64 = AtomicU64::new(1);
         Self {
             points: Vec::new(),
             corr_trail: VecDeque::with_capacity(TRAIL_LEN),
             band_trail: VecDeque::with_capacity(TRAIL_LEN),
             palette: theme::stereometer::COLORS,
-            persistence: 0.0,
-            mode: StereometerMode::default(),
-            scale: StereometerScale::default(),
-            scale_range: 15.0,
-            rotation: -1,
-            flip: true,
-            correlation_meter: CorrelationMeterMode::default(),
-            correlation_meter_side: CorrelationMeterSide::default(),
+            persistence: defaults.persistence,
+            mode: defaults.mode,
+            scale: defaults.scale,
+            scale_range: defaults.scale_range,
+            rotation: defaults.rotation,
+            flip: defaults.flip,
+            correlation_meter: defaults.correlation_meter,
+            correlation_meter_side: defaults.correlation_meter_side,
             key: NEXT_KEY.fetch_add(1, Ordering::Relaxed),
         }
     }
 
     pub fn update_view_settings(&mut self, s: &StereometerSettings) {
-        self.persistence = s.persistence.clamp(0.0, 0.9);
+        self.persistence = s.persistence.clamp(0.0, MAX_PERSISTENCE);
         self.mode = s.mode;
         self.scale = s.scale;
         self.scale_range = s.scale_range;
