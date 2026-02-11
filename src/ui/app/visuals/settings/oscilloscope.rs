@@ -117,7 +117,8 @@ impl OscilloscopeSettingsPane {
                 TriggerMode::Stable { .. } => set_if_changed(
                     &mut self.settings.trigger_mode,
                     TriggerMode::Stable {
-                        num_cycles: c.clamp(1, 4),
+                        num_cycles: c
+                            .clamp(NUM_CYCLES_RANGE.min as usize, NUM_CYCLES_RANGE.max as usize),
                     },
                 ),
                 TriggerMode::FreeRun => false,

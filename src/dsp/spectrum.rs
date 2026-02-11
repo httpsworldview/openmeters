@@ -1,7 +1,9 @@
 // Spectrum analyser DSP.
 
 use super::{AudioBlock, AudioProcessor, Reconfigurable};
-use crate::dsp::spectrogram::{FrequencyScale, WindowKind};
+use crate::dsp::spectrogram::{
+    FrequencyScale, PLANCK_BESSEL_DEFAULT_BETA, PLANCK_BESSEL_DEFAULT_EPSILON, WindowKind,
+};
 use crate::util::audio::{DB_FLOOR, DEFAULT_SAMPLE_RATE, power_to_db};
 use realfft::{RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex32;
@@ -23,7 +25,7 @@ pub const DEFAULT_SPECTRUM_HOP_DIVISOR: usize = 4;
 pub const MIN_SPECTRUM_EXP_FACTOR: f32 = 0.0;
 pub const MAX_SPECTRUM_EXP_FACTOR: f32 = 0.95;
 pub const MIN_SPECTRUM_PEAK_DECAY: f32 = 0.0;
-pub const MAX_SPECTRUM_PEAK_DECAY: f32 = 60.0;
+pub const MAX_SPECTRUM_PEAK_DECAY: f32 = 120.0;
 pub const DEFAULT_SPECTRUM_EXP_FACTOR: f32 = 0.5;
 pub const DEFAULT_SPECTRUM_PEAK_DECAY: f32 = 12.0;
 
@@ -57,8 +59,8 @@ impl Default for SpectrumConfig {
             fft_size: 2048,
             hop_size: 256,
             window: WindowKind::PlanckBessel {
-                epsilon: 0.1,
-                beta: 5.5,
+                epsilon: PLANCK_BESSEL_DEFAULT_EPSILON,
+                beta: PLANCK_BESSEL_DEFAULT_BETA,
             },
             averaging: AveragingMode::Exponential {
                 factor: DEFAULT_SPECTRUM_EXP_FACTOR,

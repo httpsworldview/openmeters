@@ -5,7 +5,10 @@ use super::widgets::{
     update_usize_from_f32,
 };
 use crate::dsp::spectrogram::FrequencyScale;
-use crate::dsp::spectrum::AveragingMode;
+use crate::dsp::spectrum::{
+    AveragingMode, MAX_SPECTRUM_EXP_FACTOR, MAX_SPECTRUM_PEAK_DECAY, MIN_SPECTRUM_EXP_FACTOR,
+    MIN_SPECTRUM_PEAK_DECAY,
+};
 use crate::ui::settings::{
     SettingsHandle, SpectrumDisplayMode, SpectrumSettings, SpectrumWeightingMode,
 };
@@ -26,8 +29,12 @@ const WEIGHTING: [SpectrumWeightingMode; 2] =
     [SpectrumWeightingMode::AWeighted, SpectrumWeightingMode::Raw];
 const AVG_MODE: [AvgMode; 3] = [AvgMode::None, AvgMode::Exponential, AvgMode::PeakHold];
 
-const EXP_R: SliderRange = SliderRange::new(0.0, 0.95, 0.01);
-const DECAY_R: SliderRange = SliderRange::new(0.0, 60.0, 0.5);
+// imported from DSP to keep things consistent.
+const EXP_R: SliderRange = SliderRange::new(MIN_SPECTRUM_EXP_FACTOR, MAX_SPECTRUM_EXP_FACTOR, 0.01);
+const DECAY_R: SliderRange =
+    SliderRange::new(MIN_SPECTRUM_PEAK_DECAY, MAX_SPECTRUM_PEAK_DECAY, 0.5);
+
+// only used for display settings.
 const SRAD_R: SliderRange = SliderRange::new(0.0, 20.0, 1.0);
 const SPAS_R: SliderRange = SliderRange::new(0.0, 5.0, 1.0);
 const BARS_R: SliderRange = SliderRange::new(8.0, 128.0, 1.0);
