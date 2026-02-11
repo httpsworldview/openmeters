@@ -91,15 +91,15 @@ impl Default for SpectrogramConfig {
     fn default() -> Self {
         Self {
             sample_rate: DEFAULT_SAMPLE_RATE,
-            fft_size: 4096,
-            hop_size: 256,
+            fft_size: 2048,
+            hop_size: 64,
             window: WindowKind::Blackman,
             frequency_scale: FrequencyScale::default(),
-            history_length: 240,
+            history_length: 480,
             use_reassignment: true,
             reassignment_low_bin_limit: 0,
-            zero_padding_factor: 4,
-            display_bin_count: 1024,
+            zero_padding_factor: 2,
+            display_bin_count: 4096,
             display_min_hz: 20.0,
             reassignment_max_correction_hz: 0.0, // 0.0 = auto (0.75 x bin_hz)
             reassignment_max_time_hops: 0.0,     // 0.0 = auto

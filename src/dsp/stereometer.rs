@@ -20,8 +20,8 @@ impl Default for StereometerConfig {
         Self {
             sample_rate: DEFAULT_SAMPLE_RATE,
             segment_duration: 0.02,
-            target_sample_count: 1_024,
-            correlation_window: 0.3,
+            target_sample_count: 2_000,
+            correlation_window: 0.05,
         }
     }
 }

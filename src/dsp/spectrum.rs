@@ -11,6 +11,20 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::fmt;
 use std::sync::Arc;
+use std::time::Instant;
+
+// configurable and used in the UI.
+pub const MIN_SPECTRUM_EXP_FACTOR: f32 = 0.0;
+pub const MAX_SPECTRUM_EXP_FACTOR: f32 = 0.95;
+pub const MIN_SPECTRUM_PEAK_DECAY: f32 = 0.0;
+pub const MAX_SPECTRUM_PEAK_DECAY: f32 = 120.0;
+
+// non-configurable defaults, used internally only.
+const MIN_SPECTRUM_FFT_SIZE: usize = 128;
+const DEFAULT_SPECTRUM_HOP_DIVISOR: usize = 8;
+const DEFAULT_SPECTRUM_FFT_SIZE: usize = 4096;
+const DEFAULT_SPECTRUM_EXP_FACTOR: f32 = 0.5;
+const DEFAULT_SPECTRUM_PEAK_DECAY: f32 = 12.0;
 
 // Compute frequency bin centers for FFT output.
 fn frequency_bins(sample_rate: f32, fft_size: usize) -> Vec<f32> {
@@ -18,16 +32,6 @@ fn frequency_bins(sample_rate: f32, fft_size: usize) -> Vec<f32> {
     let bin_hz = sample_rate / fft_size as f32;
     (0..bins).map(|i| i as f32 * bin_hz).collect()
 }
-use std::time::Instant;
-
-pub const MIN_SPECTRUM_FFT_SIZE: usize = 128;
-pub const DEFAULT_SPECTRUM_HOP_DIVISOR: usize = 4;
-pub const MIN_SPECTRUM_EXP_FACTOR: f32 = 0.0;
-pub const MAX_SPECTRUM_EXP_FACTOR: f32 = 0.95;
-pub const MIN_SPECTRUM_PEAK_DECAY: f32 = 0.0;
-pub const MAX_SPECTRUM_PEAK_DECAY: f32 = 120.0;
-pub const DEFAULT_SPECTRUM_EXP_FACTOR: f32 = 0.5;
-pub const DEFAULT_SPECTRUM_PEAK_DECAY: f32 = 12.0;
 
 // Output magnitude spectrum.
 #[derive(Debug, Clone, Default)]
@@ -56,8 +60,8 @@ impl Default for SpectrumConfig {
     fn default() -> Self {
         Self {
             sample_rate: DEFAULT_SAMPLE_RATE,
-            fft_size: 2048,
-            hop_size: 256,
+            fft_size: DEFAULT_SPECTRUM_FFT_SIZE,
+            hop_size: DEFAULT_SPECTRUM_FFT_SIZE / DEFAULT_SPECTRUM_HOP_DIVISOR,
             window: WindowKind::PlanckBessel {
                 epsilon: PLANCK_BESSEL_DEFAULT_EPSILON,
                 beta: PLANCK_BESSEL_DEFAULT_BETA,

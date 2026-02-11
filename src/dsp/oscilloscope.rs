@@ -29,7 +29,7 @@ pub enum TriggerMode {
 
 impl Default for TriggerMode {
     fn default() -> Self {
-        Self::Stable { num_cycles: 1 }
+        Self::Stable { num_cycles: 2 }
     }
 }
 

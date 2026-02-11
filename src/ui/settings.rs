@@ -230,8 +230,8 @@ impl ChannelMode {
 }
 settings_enum!(pub enum StereometerMode  { Lissajous => "Lissajous", #[default] DotCloud => "Dot Cloud" });
 settings_enum!(pub enum StereometerScale { Linear => "Linear", #[default] Exponential => "Exponential" });
-settings_enum!(pub enum CorrelationMeterMode { Off => "Off", #[default] SingleBand => "Single Band", MultiBand => "Multi Band" });
-settings_enum!(pub enum CorrelationMeterSide { #[default] Left => "Left", Right => "Right" });
+settings_enum!(pub enum CorrelationMeterMode { Off => "Off", SingleBand => "Single Band", #[default] MultiBand => "Multi Band" });
+settings_enum!(pub enum CorrelationMeterSide { Left => "Left", #[default] Right => "Right" });
 settings_enum!(pub enum PianoRollSide { #[default] Left => "Left", Right => "Right" });
 settings_enum!(pub enum MeterMode {
     #[default] LufsShortTerm => "LUFS Short-term",
