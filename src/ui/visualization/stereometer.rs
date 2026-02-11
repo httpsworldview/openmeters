@@ -15,7 +15,6 @@ use crate::visualization_widget;
 use iced::Color;
 use std::collections::VecDeque;
 
-
 const TRAIL_LEN: usize = 32;
 const CORRELATION_SMOOTHING: f32 = 0.85;
 const MAX_PERSISTENCE: f32 = 0.9;

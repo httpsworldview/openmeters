@@ -19,7 +19,6 @@ use iced_wgpu::primitive::Renderer as _;
 use std::cell::RefCell;
 use std::sync::Arc;
 
-
 const EPSILON: f32 = 1e-6;
 const GRID_FREQS: &[(f32, u8)] = &[
     (10.0, 0),
