@@ -22,7 +22,7 @@ const FREQ_SCALE_OPTIONS: [FrequencyScale; 3] = [
     FrequencyScale::Mel,
 ];
 const HISTORY_RANGE: SliderRange = SliderRange::new(120.0, 3840.0, 30.0);
-const REASSIGN_FLOOR_RANGE: SliderRange = SliderRange::new(-140.0, -30.0, 1.0);
+const FLOOR_DB_RANGE: SliderRange = SliderRange::new(-140.0, -1.0, 1.0);
 const DISPLAY_BINS_RANGE: SliderRange = SliderRange::new(64.0, 4096.0, 64.0);
 const PB_EPSILON_RANGE: SliderRange = SliderRange::new(0.01, 0.5, 0.01);
 const PB_BETA_RANGE: SliderRange = SliderRange::new(0.0, 20.0, 0.25);
@@ -69,7 +69,7 @@ pub enum Message {
     PlanckBesselBeta(f32),
     FrequencyScale(FrequencyScale),
     UseReassignment(bool),
-    ReassignmentFloor(f32),
+    FloorDb(f32),
     ZeroPadding(usize),
     DisplayBinCount(f32),
     ShowPianoRoll(bool),
@@ -146,14 +146,14 @@ impl SpectrogramSettingsPane {
                 .on_toggle(|v| SettingsMessage::Spectrogram(Message::UseReassignment(v)))
         ]
         .spacing(8);
+        adv = adv.push(labeled_slider(
+            "Floor",
+            s.floor_db,
+            format!("{:.0} dB", s.floor_db),
+            FLOOR_DB_RANGE,
+            |v| SettingsMessage::Spectrogram(Message::FloorDb(v)),
+        ));
         if s.use_reassignment {
-            adv = adv.push(labeled_slider(
-                "Reassign floor",
-                s.reassignment_power_floor_db,
-                format!("{:.0} dB", s.reassignment_power_floor_db),
-                REASSIGN_FLOOR_RANGE,
-                |v| SettingsMessage::Spectrogram(Message::ReassignmentFloor(v)),
-            ));
             adv = adv.push(labeled_slider(
                 "Display bins",
                 s.display_bin_count as f32,
@@ -260,9 +260,8 @@ impl SpectrogramSettingsPane {
             Message::UseReassignment(v) => {
                 changed |= set_if_changed(&mut s.use_reassignment, v);
             }
-            Message::ReassignmentFloor(v) => {
-                changed |=
-                    update_f32_range(&mut s.reassignment_power_floor_db, v, REASSIGN_FLOOR_RANGE);
+            Message::FloorDb(v) => {
+                changed |= update_f32_range(&mut s.floor_db, v, FLOOR_DB_RANGE);
             }
             Message::ZeroPadding(v) => {
                 changed |= set_if_changed(&mut s.zero_padding_factor, v);

@@ -284,9 +284,13 @@ visual_settings!(SpectrumSettings from SpectrumConfig {
 
 visual_settings!(SpectrogramSettings from SpectrogramConfig {
     fft_size: usize, hop_size: usize, history_length: usize, window: WindowKind, frequency_scale: FrequencyScale,
-    use_reassignment: bool, reassignment_power_floor_db: f32, reassignment_low_bin_limit: usize,
+    use_reassignment: bool, reassignment_low_bin_limit: usize,
     zero_padding_factor: usize, display_bin_count: usize, display_min_hz: f32,
-} extra { show_piano_roll: bool = false, piano_roll_side: PianoRollSide = PianoRollSide::default() });
+} extra {
+    floor_db: f32 = -96.0,
+    show_piano_roll: bool = false,
+    piano_roll_side: PianoRollSide = PianoRollSide::default(),
+});
 
 visual_settings!(StereometerSettings from StereometerConfig {
     segment_duration: f32, target_sample_count: usize, correlation_window: f32,

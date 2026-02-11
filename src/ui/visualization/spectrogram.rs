@@ -11,7 +11,7 @@ use crate::ui::render::spectrogram::{
 use crate::ui::settings::PianoRollSide;
 use crate::ui::theme;
 use crate::util::audio::musical::MusicalNote;
-use crate::util::audio::{DEFAULT_SAMPLE_RATE, hz_to_mel, mel_to_hz};
+use crate::util::audio::{DB_FLOOR, DEFAULT_SAMPLE_RATE, hz_to_mel, mel_to_hz};
 use iced::advanced::graphics::text::Paragraph;
 use iced::advanced::renderer::{self, Quad};
 use iced::advanced::text::{self, Paragraph as _, Renderer as TextRenderer};
@@ -24,7 +24,6 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Instant;
 
-const DB_FLOOR: f32 = -140.0;
 const DB_CEILING: f32 = 0.0;
 const MAX_TEXTURE_BINS: usize = 8_192;
 const TOOLTIP_SIZE: f32 = 14.0;
@@ -361,8 +360,27 @@ impl SpectrogramState {
         }
     }
 
+    pub fn set_floor_db(&mut self, floor_db: f32) {
+        let mut floor = if floor_db.is_finite() {
+            floor_db
+        } else {
+            DB_FLOOR
+        };
+        if floor >= self.style.ceiling_db - 1.0 {
+            floor = self.style.ceiling_db - 1.0;
+        }
+        if (self.style.floor_db - floor).abs() > f32::EPSILON {
+            self.style.floor_db = floor;
+            self.rebuild_buffer();
+        }
+    }
+
     pub fn palette(&self) -> [Color; SPECTROGRAM_PALETTE_SIZE] {
         self.palette
+    }
+
+    pub fn floor_db(&self) -> f32 {
+        self.style.floor_db
     }
 
     pub fn apply_snapshot(&mut self, snap: &SpectrogramUpdate) {
@@ -451,6 +469,34 @@ impl SpectrogramState {
     fn clear_pending(&self) {
         let mut buf = self.buffer.borrow_mut();
         (buf.pending_base, buf.pending_cols) = (None, vec![]);
+    }
+
+    fn rebuild_buffer(&mut self) {
+        let (history_length, display_bins_hz) = {
+            let buf = self.buffer.borrow();
+            (
+                buf.capacity as usize,
+                (!buf.display_freqs.is_empty()).then(|| buf.display_freqs.clone()),
+            )
+        };
+        if self.history.is_empty() || history_length == 0 {
+            return;
+        }
+        if history_length == 0 {
+            return;
+        }
+        let update = SpectrogramUpdate {
+            fft_size: self.fft_size,
+            sample_rate: self.sample_rate,
+            frequency_scale: self.freq_scale,
+            history_length,
+            reset: false,
+            display_bins_hz,
+            new_columns: Vec::new(),
+        };
+        self.buffer
+            .borrow_mut()
+            .rebuild(&self.history, &update, &self.style);
     }
 }
 

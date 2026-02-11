@@ -79,7 +79,6 @@ pub struct SpectrogramConfig {
     pub frequency_scale: FrequencyScale,
     pub history_length: usize,
     pub use_reassignment: bool,
-    pub reassignment_power_floor_db: f32,
     pub reassignment_low_bin_limit: usize,
     pub zero_padding_factor: usize,
     pub display_bin_count: usize,
@@ -98,7 +97,6 @@ impl Default for SpectrogramConfig {
             frequency_scale: FrequencyScale::default(),
             history_length: 240,
             use_reassignment: true,
-            reassignment_power_floor_db: -80.0,
             reassignment_low_bin_limit: 0,
             zero_padding_factor: 4,
             display_bin_count: 1024,
@@ -296,13 +294,7 @@ struct ReassignmentBuffers {
 }
 
 impl ReassignmentBuffers {
-    fn new(
-        kind: WindowKind,
-        win: &[f32],
-        fft: &Arc<dyn RealToComplex<f32>>,
-        size: usize,
-        floor_db: f32,
-    ) -> Self {
+    fn new(kind: WindowKind, win: &[f32], fft: &Arc<dyn RealToComplex<f32>>, size: usize) -> Self {
         let mut s = Self {
             derivative_window: vec![],
             time_weighted_window: vec![],
@@ -318,7 +310,7 @@ impl ReassignmentBuffers {
             inverse_sigma_t: 0.0,
             max_chirp: 0.0,
         };
-        s.resize(kind, win, fft, size, floor_db);
+        s.resize(kind, win, fft, size);
         s
     }
 
@@ -328,7 +320,6 @@ impl ReassignmentBuffers {
         win: &[f32],
         fft: &Arc<dyn RealToComplex<f32>>,
         size: usize,
-        floor_db: f32,
     ) {
         self.derivative_window = compute_derivative(kind, win);
         self.time_weighted_window = compute_time_weighted(win);
@@ -343,7 +334,7 @@ impl ReassignmentBuffers {
         self.derivative_spectrum = fft.make_output_vec();
         self.time_weighted_spectrum = fft.make_output_vec();
         self.second_derivative_spectrum = fft.make_output_vec();
-        self.floor_linear = db_to_power(floor_db);
+        self.floor_linear = db_to_power(DB_FLOOR);
         let sigma_t = compute_sigma_t(win);
         self.inverse_sigma_t = 1.0 / sigma_t;
         self.max_chirp = 0.5 / (sigma_t * sigma_t);
@@ -363,10 +354,6 @@ impl ReassignmentBuffers {
 
     fn take_cached_samples(&mut self) -> Option<Arc<[ReassignedSample]>> {
         (!self.cache.is_empty()).then(|| Arc::from(self.cache.as_slice()))
-    }
-
-    fn set_floor_db(&mut self, floor_db: f32) {
-        self.floor_linear = db_to_power(floor_db);
     }
 }
 
@@ -674,7 +661,7 @@ impl SpectrogramProcessor {
             spectrum: vec![],
             scratch: vec![],
             magnitudes: vec![],
-            reassign: ReassignmentBuffers::new(WindowKind::Hann, &[], &dummy_fft, 1024, -80.0),
+            reassign: ReassignmentBuffers::new(WindowKind::Hann, &[], &dummy_fft, 1024),
             grid: Reassignment2DGrid::new(&cfg),
             bin_norm: vec![],
             energy_norm: vec![],
@@ -710,13 +697,8 @@ impl SpectrogramProcessor {
         self.spectrum = self.fft.make_output_vec();
         self.scratch = self.fft.make_scratch_vec();
         self.magnitudes.resize(self.fft_size / 2 + 1, 0.0);
-        self.reassign.resize(
-            self.config.window,
-            &self.window,
-            &self.fft,
-            self.fft_size,
-            self.config.reassignment_power_floor_db,
-        );
+        self.reassign
+            .resize(self.config.window, &self.window, &self.fft, self.fft_size);
         self.bin_norm =
             crate::util::audio::compute_fft_bin_normalization(&self.window, self.fft_size);
         self.energy_norm = compute_energy_norm(&self.window, self.fft_size);
@@ -1054,17 +1036,12 @@ impl Reconfigurable<SpectrogramConfig> for SpectrogramProcessor {
             self.reconfigure_grid();
             self.grid.clear_buffers();
             self.reset = true;
-        } else {
-            if prev.history_length != cfg.history_length {
-                self.history_capacity = cfg.history_length;
-                while self.history.len() > self.history_capacity
-                    && let Some(c) = self.history.pop_front()
-                {
-                    self.recycle(c);
-                }
-            }
-            if prev.reassignment_power_floor_db != cfg.reassignment_power_floor_db {
-                self.reassign.set_floor_db(cfg.reassignment_power_floor_db);
+        } else if prev.history_length != cfg.history_length {
+            self.history_capacity = cfg.history_length;
+            while self.history.len() > self.history_capacity
+                && let Some(c) = self.history.pop_front()
+            {
+                self.recycle(c);
             }
         }
     }
