@@ -186,6 +186,13 @@ impl AudioProcessor for StereometerProcessor {
         if block.frame_count() == 0 || channel_count < 2 {
             return None;
         }
+
+        let sample_rate = block.sample_rate.max(1.0);
+        if (self.config.sample_rate - sample_rate).abs() > f32::EPSILON {
+            let mut config = self.config;
+            config.sample_rate = sample_rate;
+            self.update_config(config);
+        }
         if self.history_ch != channel_count {
             self.history.clear();
             self.history_ch = channel_count;

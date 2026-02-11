@@ -307,10 +307,6 @@ impl LoudnessProcessor {
         }
     }
 
-    pub fn config(&self) -> LoudnessConfig {
-        self.config
-    }
-
     fn ensure_state(&mut self, requested_channels: usize, sample_rate: f32) {
         let channels = requested_channels.max(1);
         let rate_changed = sample_rate.is_finite()

@@ -413,6 +413,13 @@ impl AudioProcessor for OscilloscopeProcessor {
             return None;
         }
 
+        let sample_rate = block.sample_rate.max(1.0);
+        if (self.config.sample_rate - sample_rate).abs() > f32::EPSILON {
+            let mut config = self.config;
+            config.sample_rate = sample_rate;
+            self.update_config(config);
+        }
+
         let base_frames = (self.config.sample_rate * self.config.segment_duration)
             .round()
             .max(1.0) as usize;

@@ -6,7 +6,7 @@ use crate::audio::meter_tap::MeterFormat;
 use crate::dsp::loudness::{
     LoudnessConfig, LoudnessProcessor as CoreLoudnessProcessor, LoudnessSnapshot, MAX_CHANNELS,
 };
-use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
+use crate::dsp::{AudioBlock, AudioProcessor};
 use crate::ui::render::loudness::{LoudnessParams, LoudnessPrimitive, MeterBar};
 use crate::ui::settings::{LoudnessSettings, MeterMode};
 use crate::ui::theme;
@@ -51,11 +51,6 @@ impl LoudnessProcessor {
             return None;
         }
         let sample_rate = format.sample_rate.max(1.0);
-        let mut config = self.inner.config();
-        if (config.sample_rate - sample_rate).abs() > f32::EPSILON {
-            config.sample_rate = sample_rate;
-            self.inner.update_config(config);
-        }
         self.inner.process_block(&AudioBlock::now(
             samples,
             format.channels.max(1),

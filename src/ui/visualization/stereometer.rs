@@ -38,14 +38,12 @@ impl StereometerProcessor {
         if samples.is_empty() {
             return None;
         }
-        let sr = format.sample_rate.max(1.0);
-        let mut cfg = self.inner.config();
-        if (cfg.sample_rate - sr).abs() > f32::EPSILON {
-            cfg.sample_rate = sr;
-            self.inner.update_config(cfg);
-        }
-        self.inner
-            .process_block(&AudioBlock::now(samples, format.channels.max(1), sr))
+        let sample_rate = format.sample_rate.max(1.0);
+        self.inner.process_block(&AudioBlock::now(
+            samples,
+            format.channels.max(1),
+            sample_rate,
+        ))
     }
 
     pub fn config(&self) -> StereometerConfig {
