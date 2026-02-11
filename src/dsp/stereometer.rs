@@ -1,7 +1,7 @@
 // Stereometer (vectorscope & correlation meter) DSP.
 
 use super::{AudioBlock, AudioProcessor, Reconfigurable};
-use crate::util::audio::DEFAULT_SAMPLE_RATE;
+use crate::util::audio::{DEFAULT_SAMPLE_RATE, extend_interleaved_history};
 use std::collections::VecDeque;
 
 const LOW_MID_HZ: f32 = 250.0;
@@ -219,18 +219,7 @@ impl AudioProcessor for StereometerProcessor {
             .max(1.0) as usize;
         let capacity = frames * channel_count;
 
-        if block.samples.len() >= capacity {
-            self.history.clear();
-            self.history
-                .extend(&block.samples[block.samples.len() - capacity..]);
-        } else {
-            let total = self.history.len() + block.samples.len();
-            if total > capacity {
-                let drain = (total - capacity).div_ceil(channel_count) * channel_count;
-                self.history.drain(..drain.min(self.history.len()));
-            }
-            self.history.extend(block.samples);
-        }
+        extend_interleaved_history(&mut self.history, block.samples, capacity, channel_count);
 
         if self.history.len() < capacity {
             return None;

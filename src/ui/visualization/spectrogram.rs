@@ -24,7 +24,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Instant;
 
-const DB_FLOOR: f32 = -96.0;
+const DB_FLOOR: f32 = -140.0;
 const DB_CEILING: f32 = 0.0;
 const MAX_TEXTURE_BINS: usize = 8_192;
 const TOOLTIP_SIZE: f32 = 14.0;

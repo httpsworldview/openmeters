@@ -7,7 +7,7 @@ use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::ui::render::waveform::{PreviewSample, WaveformParams, WaveformPrimitive};
 use crate::ui::settings::{ChannelMode, WaveformColorMode, WaveformSettings};
 use crate::ui::theme;
-use crate::util::audio::project_channel_data;
+use crate::ui::visualization::project_channel_data;
 use crate::visualization_widget;
 use iced::Color;
 use std::cell::Cell;

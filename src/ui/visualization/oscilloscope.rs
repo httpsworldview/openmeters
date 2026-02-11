@@ -8,7 +8,7 @@ use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::ui::render::oscilloscope::{OscilloscopeParams, OscilloscopePrimitive};
 use crate::ui::settings::{ChannelMode, OscilloscopeSettings};
 use crate::ui::theme;
-use crate::util::audio::project_channel_data;
+use crate::ui::visualization::project_channel_data;
 use crate::visualization_widget;
 use iced::Color;
 

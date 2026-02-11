@@ -22,7 +22,7 @@ const FREQ_SCALE_OPTIONS: [FrequencyScale; 3] = [
     FrequencyScale::Mel,
 ];
 const HISTORY_RANGE: SliderRange = SliderRange::new(120.0, 3840.0, 30.0);
-const REASSIGN_FLOOR_RANGE: SliderRange = SliderRange::new(-120.0, -30.0, 1.0);
+const REASSIGN_FLOOR_RANGE: SliderRange = SliderRange::new(-140.0, -30.0, 1.0);
 const DISPLAY_BINS_RANGE: SliderRange = SliderRange::new(64.0, 4096.0, 64.0);
 const PB_EPSILON_RANGE: SliderRange = SliderRange::new(0.01, 0.5, 0.01);
 const PB_BETA_RANGE: SliderRange = SliderRange::new(0.0, 20.0, 0.25);

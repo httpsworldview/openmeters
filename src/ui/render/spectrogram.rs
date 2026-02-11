@@ -9,7 +9,7 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::util::audio::f32_to_u8;
+use crate::ui::theme::f32_to_u8;
 
 use crate::ui::render::common::{
     CacheTracker, ClipTransform, InstanceBuffer, create_shader_module, write_texture_region,

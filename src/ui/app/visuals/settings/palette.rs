@@ -1,7 +1,7 @@
 // Color palette editor.
 
+use crate::ui::theme::f32_to_u8;
 use crate::ui::theme::{self, Palette};
-use crate::util::audio::f32_to_u8;
 use iced::alignment::{Horizontal, Vertical};
 use iced::widget::text::Wrapping;
 use iced::widget::{Button, Column, Row, Space, container, scrollable, slider, text};

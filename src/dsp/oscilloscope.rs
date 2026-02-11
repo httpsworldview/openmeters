@@ -1,5 +1,5 @@
 use super::{AudioBlock, AudioProcessor, Reconfigurable};
-use crate::util::audio::DEFAULT_SAMPLE_RATE;
+use crate::util::audio::{DEFAULT_SAMPLE_RATE, extend_interleaved_history};
 use realfft::{RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex;
 use serde::{Deserialize, Serialize};
@@ -433,19 +433,7 @@ impl AudioProcessor for OscilloscopeProcessor {
             self.history.clear();
             self.last_pitch = None;
         }
-        if block.samples.len() >= capacity {
-            self.history.clear();
-            self.history
-                .extend(&block.samples[block.samples.len() - capacity..]);
-        } else {
-            let overflow = self.history.len() + block.samples.len();
-            if overflow > capacity {
-                let remove = ((overflow - capacity).div_ceil(channel_count) * channel_count)
-                    .min(self.history.len());
-                self.history.drain(..remove);
-            }
-            self.history.extend(block.samples);
-        }
+        extend_interleaved_history(&mut self.history, block.samples, capacity, channel_count);
 
         let available = self.history.len() / channel_count;
 

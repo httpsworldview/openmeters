@@ -455,6 +455,12 @@ pub fn color_to_rgba(color: Color) -> [f32; 4] {
     [color.r, color.g, color.b, color.a]
 }
 
+// Converts a normalized channel in [0.0, 1.0] to u8.
+#[inline]
+pub fn f32_to_u8(v: f32) -> u8 {
+    (v.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
 // Compares two colors for approximate equality.
 #[inline]
 pub fn colors_equal(a: Color, b: Color) -> bool {

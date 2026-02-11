@@ -6,12 +6,51 @@ mod stereometer;
 pub mod visual_manager;
 mod waveform;
 
+use crate::ui::settings::ChannelMode;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_VIS_KEY: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) fn next_key() -> u64 {
     NEXT_VIS_KEY.fetch_add(1, Ordering::Relaxed)
+}
+
+// Projects channel data according to a channel mode.
+//
+// Data layout: contiguous channels `[ch0_s0..ch0_sN, ch1_s0..ch1_sN, ...]`
+// - `mode`: channel selection/mixing mode
+// - `data`: samples with `stride` samples per channel
+// - `stride`: number of samples per channel
+// - `channels`: number of channels in the input data
+#[inline]
+pub(crate) fn project_channel_data(
+    mode: ChannelMode,
+    data: &[f32],
+    stride: usize,
+    channels: usize,
+) -> Vec<f32> {
+    match mode {
+        ChannelMode::Both => data.to_vec(),
+        ChannelMode::Left => data.get(..stride).map(|s| s.to_vec()).unwrap_or_default(),
+        ChannelMode::Right => {
+            let offset = if channels > 1 { stride } else { 0 };
+            data.get(offset..offset + stride)
+                .map(|s| s.to_vec())
+                .unwrap_or_default()
+        }
+        ChannelMode::Mono => {
+            let scale = 1.0 / channels.max(1) as f32;
+            (0..stride)
+                .map(|i| {
+                    data.chunks(stride)
+                        .take(channels)
+                        .filter_map(|ch| ch.get(i))
+                        .sum::<f32>()
+                        * scale
+                })
+                .collect()
+        }
+    }
 }
 
 // creates a visualization. very simple macro to reduce boilerplate,
