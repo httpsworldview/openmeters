@@ -21,10 +21,7 @@ use iced::{Background, Color, Element, Length, Point, Rectangle, Size, keyboard}
 use iced_wgpu::primitive::Renderer as _;
 use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-};
+use std::sync::Arc;
 use std::time::Instant;
 
 const DB_FLOOR: f32 = -96.0;
@@ -74,8 +71,8 @@ impl SpectrogramProcessor {
             return None;
         }
         let rate = format.sample_rate.max(1.0);
-        if (self.inner.config().sample_rate - rate).abs() > f32::EPSILON {
-            let mut cfg = self.inner.config();
+        let mut cfg = self.inner.config();
+        if (cfg.sample_rate - rate).abs() > f32::EPSILON {
             cfg.sample_rate = rate;
             self.inner.update_config(cfg);
         }
@@ -333,13 +330,12 @@ pub(crate) struct SpectrogramState {
 
 impl SpectrogramState {
     pub fn new() -> Self {
-        static NEXT_KEY: AtomicU64 = AtomicU64::new(1);
         Self {
             buffer: RefCell::new(SpectrogramBuffer::new()),
             style: SpectrogramStyle::default(),
             palette: theme::spectrogram::COLORS,
             history: VecDeque::new(),
-            key: NEXT_KEY.fetch_add(1, Ordering::Relaxed),
+            key: super::next_key(),
             piano_roll: None,
             sample_rate: DEFAULT_SAMPLE_RATE,
             fft_size: 4096,

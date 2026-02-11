@@ -11,10 +11,7 @@ use crate::util::audio::project_channel_data;
 use crate::visualization_widget;
 use iced::Color;
 use std::cell::Cell;
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-};
+use std::sync::Arc;
 
 const COLUMN_WIDTH_PIXELS: f32 = 1.0;
 
@@ -83,12 +80,11 @@ pub(crate) struct WaveformState {
 impl WaveformState {
     pub fn new() -> Self {
         let defaults = WaveformSettings::default();
-        static NEXT_KEY: AtomicU64 = AtomicU64::new(1);
         Self {
             snapshot: WaveformSnapshot::default(),
             style: WaveformStyle::default(),
             desired_columns: Cell::new(DEFAULT_COLUMN_CAPACITY),
-            key: NEXT_KEY.fetch_add(1, Ordering::Relaxed),
+            key: super::next_key(),
             channel_mode: defaults.channel_mode,
             color_mode: defaults.color_mode,
         }

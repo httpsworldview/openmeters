@@ -11,7 +11,6 @@ use crate::ui::theme;
 use crate::util::audio::project_channel_data;
 use crate::visualization_widget;
 use iced::Color;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 const MAX_PERSISTENCE: f32 = 0.98;
 const FILL_ALPHA: f32 = 0.15;
@@ -71,13 +70,12 @@ pub(crate) struct OscilloscopeState {
 impl OscilloscopeState {
     pub fn new() -> Self {
         let defaults = OscilloscopeSettings::default();
-        static NEXT_KEY: AtomicU64 = AtomicU64::new(1);
         Self {
             snapshot: OscilloscopeSnapshot::default(),
             style: OscilloscopeStyle::default(),
             persistence: defaults.persistence,
             channel_mode: defaults.channel_mode,
-            key: NEXT_KEY.fetch_add(1, Ordering::Relaxed),
+            key: super::next_key(),
         }
     }
 

@@ -18,7 +18,7 @@ use iced::{Background, Color, Element, Length, Point, Rectangle, Size};
 use iced_wgpu::primitive::Renderer as _;
 use std::cell::RefCell;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+
 
 const EPSILON: f32 = 1e-6;
 const GRID_FREQS: &[(f32, u8)] = &[
@@ -168,12 +168,11 @@ pub(crate) struct SpectrumState {
 
 impl SpectrumState {
     pub fn new() -> Self {
-        static NEXT_KEY: AtomicU64 = AtomicU64::new(1);
         Self {
             style: SpectrumStyle::default(),
             weighted: Arc::from([]),
             unweighted: Arc::from([]),
-            key: NEXT_KEY.fetch_add(1, Ordering::Relaxed),
+            key: super::next_key(),
             peak: None,
             grid: Arc::from([]),
             scratch: Vec::new(),

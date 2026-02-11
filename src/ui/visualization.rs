@@ -6,6 +6,14 @@ mod stereometer;
 pub mod visual_manager;
 mod waveform;
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_VIS_KEY: AtomicU64 = AtomicU64::new(1);
+
+pub(crate) fn next_key() -> u64 {
+    NEXT_VIS_KEY.fetch_add(1, Ordering::Relaxed)
+}
+
 // creates a visualization. very simple macro to reduce boilerplate,
 // it is used thrice. spectrum, spectrogram, loudness visualizations do
 // *not* use this macro, as they have more complex requirements.

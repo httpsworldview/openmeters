@@ -18,8 +18,6 @@ use iced::alignment::{Horizontal, Vertical};
 use iced::{Background, Border, Color, Element, Length, Point, Rectangle, Size, Theme};
 use iced_wgpu::primitive::Renderer as _;
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicU64, Ordering};
-
 const DEFAULT_RANGE: (f32, f32) = (-60.0, 4.0);
 const GUIDE_LEVELS: [f32; 6] = [0.0, -6.0, -12.0, -18.0, -24.0, -36.0];
 const LEFT_PADDING: f32 = 28.0;
@@ -87,7 +85,6 @@ pub(crate) struct LoudnessState {
 impl LoudnessState {
     pub fn new() -> Self {
         let defaults = LoudnessSettings::default();
-        static NEXT_KEY: AtomicU64 = AtomicU64::new(1);
         Self {
             short_term_loudness: DEFAULT_RANGE.0,
             momentary_loudness: DEFAULT_RANGE.0,
@@ -99,7 +96,7 @@ impl LoudnessState {
             left_mode: defaults.left_mode,
             right_mode: defaults.right_mode,
             palette: theme::loudness::COLORS,
-            key: NEXT_KEY.fetch_add(1, Ordering::Relaxed),
+            key: super::next_key(),
         }
     }
 
@@ -170,8 +167,8 @@ impl LoudnessState {
         let bg_color = theme::color_to_rgba(bg);
 
         // Stereo L/R display with surround aggregation (ITU-R BS.775 layout)
-        let left_value = self.aggregate_left_channels(self.left_mode);
-        let right_value = self.aggregate_right_channels(self.left_mode);
+        let left_value = self.aggregate_channels(self.left_mode, LEFT_CHANNEL_INDICES);
+        let right_value = self.aggregate_channels(self.left_mode, RIGHT_CHANNEL_INDICES);
 
         Some(LoudnessParams {
             key: self.key,
@@ -206,28 +203,12 @@ impl LoudnessState {
         })
     }
 
-    fn aggregate_left_channels(&self, mode: MeterMode) -> f32 {
+    fn aggregate_channels(&self, mode: MeterMode, indices: &[usize]) -> f32 {
         if matches!(mode, MeterMode::LufsShortTerm | MeterMode::LufsMomentary) {
             return self.get_value(mode, 0);
         }
         let mut max_val = self.range.0;
-        for &ch in LEFT_CHANNEL_INDICES {
-            if ch < self.channel_count {
-                max_val = max_val.max(self.get_value(mode, ch));
-            }
-        }
-        if self.channel_count > CENTER_CHANNEL_INDEX {
-            max_val = max_val.max(self.get_value(mode, CENTER_CHANNEL_INDEX));
-        }
-        max_val
-    }
-
-    fn aggregate_right_channels(&self, mode: MeterMode) -> f32 {
-        if matches!(mode, MeterMode::LufsShortTerm | MeterMode::LufsMomentary) {
-            return self.get_value(mode, 0);
-        }
-        let mut max_val = self.range.0;
-        for &ch in RIGHT_CHANNEL_INDICES {
+        for &ch in indices {
             if ch < self.channel_count {
                 max_val = max_val.max(self.get_value(mode, ch));
             }

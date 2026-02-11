@@ -14,7 +14,7 @@ use crate::ui::theme;
 use crate::visualization_widget;
 use iced::Color;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
+
 
 const TRAIL_LEN: usize = 32;
 const CORRELATION_SMOOTHING: f32 = 0.85;
@@ -40,11 +40,10 @@ impl StereometerProcessor {
             return None;
         }
         let sr = format.sample_rate.max(1.0);
-        if (self.inner.config().sample_rate - sr).abs() > f32::EPSILON {
-            self.inner.update_config(StereometerConfig {
-                sample_rate: sr,
-                ..self.inner.config()
-            });
+        let mut cfg = self.inner.config();
+        if (cfg.sample_rate - sr).abs() > f32::EPSILON {
+            cfg.sample_rate = sr;
+            self.inner.update_config(cfg);
         }
         self.inner
             .process_block(&AudioBlock::now(samples, format.channels.max(1), sr))
@@ -79,7 +78,6 @@ pub(crate) struct StereometerState {
 impl StereometerState {
     pub fn new() -> Self {
         let defaults = StereometerSettings::default();
-        static NEXT_KEY: AtomicU64 = AtomicU64::new(1);
         Self {
             points: Vec::new(),
             corr_trail: VecDeque::with_capacity(TRAIL_LEN),
@@ -93,7 +91,7 @@ impl StereometerState {
             flip: defaults.flip,
             correlation_meter: defaults.correlation_meter,
             correlation_meter_side: defaults.correlation_meter_side,
-            key: NEXT_KEY.fetch_add(1, Ordering::Relaxed),
+            key: super::next_key(),
         }
     }
 

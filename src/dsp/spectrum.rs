@@ -305,9 +305,7 @@ impl SpectrumProcessor {
                 peak_index.and_then(|idx| self.snapshot.frequency_bins.get(idx).copied());
             self.last_update_at = Some(timestamp);
 
-            for _ in 0..hop {
-                self.pcm_buffer.pop_front();
-            }
+            self.pcm_buffer.drain(..hop);
 
             produced = true;
         }
