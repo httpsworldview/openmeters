@@ -196,7 +196,7 @@ macro_rules! visual_settings {
     };
     ($name:ident from $config_ty:ty { $($field:ident : $ty:ty),* $(,)? } $(extra { $($extra:ident : $extra_ty:ty = $default:expr),* $(,)? })?) => {
         #[derive(Debug, Clone, Serialize, Deserialize)]
-        #[serde(default, deny_unknown_fields)]
+        #[serde(default)]
         pub struct $name { $(pub $field: $ty,)* $($(pub $extra: $extra_ty,)*)? pub palette: Option<PaletteSettings> }
         impl Default for $name { fn default() -> Self { Self::from_config(&<$config_ty>::default()) } }
         impl $name {
@@ -207,7 +207,7 @@ macro_rules! visual_settings {
     };
     ($name:ident { $($field:ident : $ty:ty = $default:expr),* $(,)? }) => {
         #[derive(Debug, Clone, Serialize, Deserialize)]
-        #[serde(default, deny_unknown_fields)]
+        #[serde(default)]
         pub struct $name { $(pub $field: $ty,)* pub palette: Option<PaletteSettings> }
         impl Default for $name { fn default() -> Self { Self { $($field: $default,)* palette: None } } }
         visual_settings!(@has_palette $name);
@@ -284,8 +284,8 @@ visual_settings!(SpectrumSettings from SpectrumConfig {
 
 visual_settings!(SpectrogramSettings from SpectrogramConfig {
     fft_size: usize, hop_size: usize, history_length: usize, window: WindowKind, frequency_scale: FrequencyScale,
-    use_reassignment: bool, reassignment_low_bin_limit: usize,
-    zero_padding_factor: usize, display_bin_count: usize, display_min_hz: f32,
+    use_reassignment: bool,
+    zero_padding_factor: usize, display_bin_count: usize,
 } extra {
     floor_db: f32 = -96.0,
     show_piano_roll: bool = false,

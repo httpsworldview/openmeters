@@ -79,7 +79,6 @@ pub struct SpectrogramConfig {
     pub frequency_scale: FrequencyScale,
     pub history_length: usize,
     pub use_reassignment: bool,
-    pub reassignment_low_bin_limit: usize,
     pub zero_padding_factor: usize,
     pub display_bin_count: usize,
     pub display_min_hz: f32,
@@ -97,7 +96,6 @@ impl Default for SpectrogramConfig {
             frequency_scale: FrequencyScale::default(),
             history_length: 480,
             use_reassignment: true,
-            reassignment_low_bin_limit: 0,
             zero_padding_factor: 2,
             display_bin_count: 4096,
             display_min_hz: 20.0,
@@ -722,13 +720,7 @@ impl SpectrogramProcessor {
         }
         let (hop, sr) = (self.config.hop_size, self.config.sample_rate);
         let re_en = self.config.use_reassignment && sr > f32::EPSILON && self.grid.is_enabled();
-        let bin_lim = if self.config.reassignment_low_bin_limit == 0 {
-            self.fft_size / 2 + 1
-        } else {
-            self.config
-                .reassignment_low_bin_limit
-                .min(self.fft_size / 2 + 1)
-        };
+        let bin_lim = self.fft_size / 2 + 1;
 
         while self.audio_buffer.len() >= self.window_size {
             copy_from_deque(&mut self.real[..self.window_size], &self.audio_buffer);
@@ -1240,7 +1232,6 @@ mod tests {
             hop_size: 512,
             history_length: 4,
             use_reassignment: true,
-            reassignment_low_bin_limit: 0,
             zero_padding_factor: 1,
             ..Default::default()
         };
