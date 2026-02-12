@@ -163,19 +163,19 @@ fn push_highlight_columns(
         return;
     }
     for (seg, pts) in positions.windows(2).zip(normalized_points.windows(2)) {
-        let amp = pts[0][1].max(pts[1][1]);
-        let color = palette_color(palette, amp, threshold);
-        if color[3] <= 0.0 {
+        let c0 = palette_color(palette, pts[0][1], threshold);
+        let c1 = palette_color(palette, pts[1][1], threshold);
+        if c0[3] <= 0.0 && c1[3] <= 0.0 {
             continue;
         }
-        vertices.extend_from_slice(&quad_vertices(
-            seg[0].0,
-            seg[0].1.min(seg[1].1),
-            seg[1].0,
-            baseline,
-            *clip,
-            color,
-        ));
+        vertices.extend([
+            SdfVertex::solid(clip.to_clip(seg[0].0, seg[0].1), c0),
+            SdfVertex::solid(clip.to_clip(seg[0].0, baseline), c0),
+            SdfVertex::solid(clip.to_clip(seg[1].0, baseline), c1),
+            SdfVertex::solid(clip.to_clip(seg[0].0, seg[0].1), c0),
+            SdfVertex::solid(clip.to_clip(seg[1].0, baseline), c1),
+            SdfVertex::solid(clip.to_clip(seg[1].0, seg[1].1), c1),
+        ]);
     }
 }
 

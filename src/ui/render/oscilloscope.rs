@@ -3,7 +3,7 @@ use iced::advanced::graphics::Viewport;
 
 use crate::sdf_primitive;
 use crate::ui::render::common::{ClipTransform, SdfVertex};
-use crate::ui::render::geometry::{self, DEFAULT_FEATHER, append_strip};
+use crate::ui::render::geometry::{DEFAULT_FEATHER, build_aa_line_list};
 
 #[derive(Debug, Clone)]
 pub struct OscilloscopeParams {
@@ -82,29 +82,29 @@ impl OscilloscopePrimitive {
                 })
                 .collect();
 
-            let mut fill_vertices = Vec::with_capacity(positions.len() * 2);
             let fill_color = [color[0], color[1], color[2], self.params.fill_alpha];
-
-            for &(x, y) in &positions {
-                let above_zero = y < center;
-                let fill_to_y = if above_zero { y } else { center };
-                let fill_from_y = if above_zero { center } else { y };
-
-                fill_vertices.push(SdfVertex::solid(clip.to_clip(x, fill_to_y), fill_color));
-                fill_vertices.push(SdfVertex::solid(clip.to_clip(x, fill_from_y), fill_color));
+            for pair in positions.windows(2) {
+                let ((x0, y0), (x1, y1)) = (pair[0], pair[1]);
+                let (t0, b0) = (y0.min(center), y0.max(center));
+                let (t1, b1) = (y1.min(center), y1.max(center));
+                vertices.extend([
+                    SdfVertex::solid(clip.to_clip(x0, t0), fill_color),
+                    SdfVertex::solid(clip.to_clip(x0, b0), fill_color),
+                    SdfVertex::solid(clip.to_clip(x1, b1), fill_color),
+                    SdfVertex::solid(clip.to_clip(x0, t0), fill_color),
+                    SdfVertex::solid(clip.to_clip(x1, b1), fill_color),
+                    SdfVertex::solid(clip.to_clip(x1, t1), fill_color),
+                ]);
             }
 
-            append_strip(&mut vertices, fill_vertices);
-
             let line_color = [color[0], color[1], color[2], LINE_ALPHA];
-            let line_strip = geometry::build_aa_line_strip(
+            vertices.extend(build_aa_line_list(
                 &positions,
                 STROKE_WIDTH,
                 DEFAULT_FEATHER,
                 line_color,
                 &clip,
-            );
-            append_strip(&mut vertices, line_strip);
+            ));
         }
 
         vertices
@@ -116,6 +116,6 @@ sdf_primitive!(
     Pipeline,
     u64,
     "Oscilloscope",
-    TriangleStrip,
+    TriangleList,
     |self| self.params.key
 );
