@@ -36,8 +36,6 @@ opt-level = 3
 strip = true
 panic = "abort"
 
-# my fork of layershellev. allows me to make 
-# use of my fixes without waiting for upstream
-# to merge them.
 [patch.crates-io.layershellev]
-git = "https://github.com/httpsworldview/exwlshelleventloop"
+git = "https://github.com/waycrate/exwlshelleventloop"
+rev = "9a70bd8a12b6deff9b533aa228631d9d141ef074"
