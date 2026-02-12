@@ -35,6 +35,7 @@ pub const PLANCK_BESSEL_DEFAULT_BETA: f32 = 5.5;
 const CONFIDENCE_SNR_RANGE_DB: f32 = 60.0;
 const CONFIDENCE_FLOOR: f32 = 0.01;
 const CHIRP_SAFETY_MARGIN: f32 = 2.0;
+const LN_TO_DB: f32 = 4.342_944_8;
 
 // max_correction_hz = bin_hz * OPTIMAL_FREQ_CORRECTION_RATIO
 // max_time_hops = (fft_size / hop_size * WINDOW_SIGMA_T_RATIO * OPTIMAL_TIME_SPREAD).clamp(MIN/MAX)
@@ -738,11 +739,7 @@ impl SpectrogramProcessor {
                 self.compute_reassigned(sr, bin_lim);
                 Self::fill_mags(&mut self.pool, self.grid.magnitudes())
             } else {
-                for i in 0..self.magnitudes.len() {
-                    let c = self.spectrum[i];
-                    self.magnitudes[i] =
-                        power_to_db((c.re * c.re + c.im * c.im) * self.bin_norm[i], DB_FLOOR);
-                }
+                self.compute_standard_magnitudes(bin_lim);
                 Self::fill_mags(&mut self.pool, &self.magnitudes)
             };
 
@@ -756,6 +753,24 @@ impl SpectrogramProcessor {
             self.audio_buffer.drain(..hop.min(self.audio_buffer.len()));
         }
         std::mem::take(&mut self.out_buf)
+    }
+
+    fn compute_standard_magnitudes(&mut self, limit: usize) {
+        let v_floor = f32x8::splat(DB_FLOOR);
+        let v_ln_to_db = f32x8::splat(LN_TO_DB);
+        let v_eps = f32x8::splat(1.0e-20);
+
+        for chunk in 0..limit.div_ceil(8) {
+            let off = chunk * 8;
+            let (re, im) = load_complex_simd(&self.spectrum, off);
+            let norm = load_f32_simd(&self.bin_norm, off);
+            let p = (re * re + im * im) * norm;
+            let valid = p.simd_gt(v_eps);
+            let db = (p.max(v_eps).ln() * v_ln_to_db).max(v_floor);
+            let out = valid.blend(db, v_floor).to_array();
+            let n = (limit.saturating_sub(off)).min(8);
+            self.magnitudes[off..off + n].copy_from_slice(&out[..n]);
+        }
     }
 
     fn compute_reassigned(&mut self, sr: f32, limit: usize) {
