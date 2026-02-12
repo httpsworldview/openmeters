@@ -7,7 +7,7 @@ use super::widgets::{
 use crate::dsp::spectrogram::{
     FrequencyScale, PLANCK_BESSEL_DEFAULT_BETA, PLANCK_BESSEL_DEFAULT_EPSILON, WindowKind,
 };
-use crate::ui::settings::{PianoRollSide, SettingsHandle, SpectrogramSettings};
+use crate::ui::settings::{PianoRollOverlay, SettingsHandle, SpectrogramSettings};
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualKind, VisualManagerHandle};
 use iced::widget::{column, row, toggler};
@@ -21,9 +21,15 @@ const FREQ_SCALE_OPTIONS: [FrequencyScale; 3] = [
     FrequencyScale::Logarithmic,
     FrequencyScale::Mel,
 ];
+const PIANO_ROLL_OVERLAY_OPTIONS: [PianoRollOverlay; 3] = [
+    PianoRollOverlay::Off,
+    PianoRollOverlay::Right,
+    PianoRollOverlay::Left,
+];
 const HISTORY_RANGE: SliderRange = SliderRange::new(120.0, 3840.0, 30.0);
 const FLOOR_DB_RANGE: SliderRange = SliderRange::new(-140.0, -1.0, 1.0);
 const DISPLAY_BINS_RANGE: SliderRange = SliderRange::new(64.0, 4096.0, 64.0);
+const MAX_CORR_HZ_RANGE: SliderRange = SliderRange::new(0.0, 200.0, 1.0);
 const PB_EPSILON_RANGE: SliderRange = SliderRange::new(0.01, 0.5, 0.01);
 const PB_BETA_RANGE: SliderRange = SliderRange::new(0.0, 20.0, 0.25);
 
@@ -69,11 +75,11 @@ pub enum Message {
     PlanckBesselBeta(f32),
     FrequencyScale(FrequencyScale),
     UseReassignment(bool),
+    MaxCorrectionHz(f32),
     FloorDb(f32),
     ZeroPadding(usize),
     DisplayBinCount(f32),
-    ShowPianoRoll(bool),
-    PianoRollSide(PianoRollSide),
+    PianoRoll(PianoRollOverlay),
     Palette(PaletteEvent),
 }
 
@@ -82,6 +88,7 @@ impl SpectrogramSettingsPane {
         let s = &self.settings;
         let window = WindowPreset::from_kind(s.window);
         let hop_divisor = get_closest_hop_divisor(s.fft_size, s.hop_size);
+        let piano_roll_opt = s.piano_roll_overlay;
 
         let left_col = column![
             labeled_pick_list("FFT size", &FFT_OPTIONS, Some(s.fft_size), |v| {
@@ -90,8 +97,15 @@ impl SpectrogramSettingsPane {
             labeled_pick_list("Hop divisor", &HOP_DIVISORS, Some(hop_divisor), |v| {
                 SettingsMessage::Spectrogram(Message::HopDivisor(v))
             }),
+            labeled_pick_list(
+                "Piano roll overlay",
+                &PIANO_ROLL_OVERLAY_OPTIONS,
+                Some(piano_roll_opt),
+                |v| SettingsMessage::Spectrogram(Message::PianoRoll(v))
+            ),
         ]
-        .spacing(8);
+        .spacing(8)
+        .width(Length::Fill);
 
         let right_col = column![
             labeled_pick_list("Window", &WindowPreset::ALL, Some(window), |v| {
@@ -110,7 +124,8 @@ impl SpectrogramSettingsPane {
                 |v| SettingsMessage::Spectrogram(Message::ZeroPadding(v))
             ),
         ]
-        .spacing(8);
+        .spacing(8)
+        .width(Length::Fill);
 
         let mut core =
             column![row![left_col, right_col].spacing(10).width(Length::Fill)].spacing(8);
@@ -137,6 +152,13 @@ impl SpectrogramSettingsPane {
             HISTORY_RANGE,
             |v| SettingsMessage::Spectrogram(Message::HistoryLength(v)),
         ));
+        core = core.push(labeled_slider(
+            "Floor",
+            s.floor_db,
+            format!("{:.0} dB", s.floor_db),
+            FLOOR_DB_RANGE,
+            |v| SettingsMessage::Spectrogram(Message::FloorDb(v)),
+        ));
 
         let mut adv = column![
             toggler(s.use_reassignment)
@@ -146,13 +168,6 @@ impl SpectrogramSettingsPane {
                 .on_toggle(|v| SettingsMessage::Spectrogram(Message::UseReassignment(v)))
         ]
         .spacing(8);
-        adv = adv.push(labeled_slider(
-            "Floor",
-            s.floor_db,
-            format!("{:.0} dB", s.floor_db),
-            FLOOR_DB_RANGE,
-            |v| SettingsMessage::Spectrogram(Message::FloorDb(v)),
-        ));
         if s.use_reassignment {
             adv = adv.push(labeled_slider(
                 "Display bins",
@@ -161,20 +176,19 @@ impl SpectrogramSettingsPane {
                 DISPLAY_BINS_RANGE,
                 |v| SettingsMessage::Spectrogram(Message::DisplayBinCount(v)),
             ));
-        }
-        adv = adv.push(
-            toggler(s.show_piano_roll)
-                .label("Piano roll overlay")
-                .text_size(11)
-                .spacing(4)
-                .on_toggle(|v| SettingsMessage::Spectrogram(Message::ShowPianoRoll(v))),
-        );
-        if s.show_piano_roll {
-            adv = adv.push(labeled_pick_list(
-                "Side",
-                &[PianoRollSide::Left, PianoRollSide::Right],
-                Some(s.piano_roll_side),
-                |v| SettingsMessage::Spectrogram(Message::PianoRollSide(v)),
+
+            let corr_is_auto = !s.reassignment_max_correction_hz.is_finite()
+                || s.reassignment_max_correction_hz <= 0.0;
+            adv = adv.push(labeled_slider(
+                "Max correction",
+                s.reassignment_max_correction_hz,
+                if corr_is_auto {
+                    "Auto".to_string()
+                } else {
+                    format!("{:.0} Hz", s.reassignment_max_correction_hz)
+                },
+                MAX_CORR_HZ_RANGE,
+                |v| SettingsMessage::Spectrogram(Message::MaxCorrectionHz(v)),
             ));
         }
 
@@ -260,6 +274,10 @@ impl SpectrogramSettingsPane {
             Message::UseReassignment(v) => {
                 changed |= set_if_changed(&mut s.use_reassignment, v);
             }
+            Message::MaxCorrectionHz(v) => {
+                changed |=
+                    update_f32_range(&mut s.reassignment_max_correction_hz, v, MAX_CORR_HZ_RANGE);
+            }
             Message::FloorDb(v) => {
                 changed |= update_f32_range(&mut s.floor_db, v, FLOOR_DB_RANGE);
             }
@@ -270,11 +288,8 @@ impl SpectrogramSettingsPane {
                 changed |= s.use_reassignment
                     && update_usize_from_f32(&mut s.display_bin_count, v, DISPLAY_BINS_RANGE);
             }
-            Message::ShowPianoRoll(v) => {
-                changed |= set_if_changed(&mut s.show_piano_roll, v);
-            }
-            Message::PianoRollSide(side) => {
-                changed |= set_if_changed(&mut s.piano_roll_side, side);
+            Message::PianoRoll(opt) => {
+                changed |= set_if_changed(&mut s.piano_roll_overlay, opt);
             }
             Message::Palette(e) => {
                 changed |= self.palette.update(e);

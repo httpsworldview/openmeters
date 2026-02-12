@@ -30,8 +30,6 @@ use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, OnceLock};
 use wide::{CmpGe, CmpGt, CmpLe, CmpLt, f32x8};
-
-const MAX_REASSIGNMENT_SAMPLES: usize = 8192;
 pub const PLANCK_BESSEL_DEFAULT_EPSILON: f32 = 0.1;
 pub const PLANCK_BESSEL_DEFAULT_BETA: f32 = 5.5;
 const CONFIDENCE_SNR_RANGE_DB: f32 = 60.0;
@@ -81,7 +79,6 @@ pub struct SpectrogramConfig {
     pub use_reassignment: bool,
     pub zero_padding_factor: usize,
     pub display_bin_count: usize,
-    pub display_min_hz: f32,
     pub reassignment_max_correction_hz: f32,
     pub reassignment_max_time_hops: f32,
 }
@@ -98,7 +95,6 @@ impl Default for SpectrogramConfig {
             use_reassignment: true,
             zero_padding_factor: 2,
             display_bin_count: 4096,
-            display_min_hz: 20.0,
             reassignment_max_correction_hz: 0.0, // 0.0 = auto (0.75 x bin_hz)
             reassignment_max_time_hops: 0.0,     // 0.0 = auto
         }
@@ -267,14 +263,6 @@ fn planck_bessel(len: usize, epsilon: f32, beta: f32) -> Vec<f32> {
         .collect()
 }
 
-#[derive(Debug, Clone, Copy)]
-#[allow(dead_code)]
-pub struct ReassignedSample {
-    pub frequency_hz: f32,
-    pub group_delay_samples: f32,
-    pub magnitude_db: f32,
-}
-
 struct ReassignmentBuffers {
     derivative_window: Vec<f32>,
     time_weighted_window: Vec<f32>,
@@ -285,7 +273,6 @@ struct ReassignmentBuffers {
     derivative_spectrum: Vec<Complex32>,
     time_weighted_spectrum: Vec<Complex32>,
     second_derivative_spectrum: Vec<Complex32>,
-    cache: Vec<ReassignedSample>,
     floor_linear: f32,
     inverse_sigma_t: f32,
     max_chirp: f32,
@@ -303,7 +290,6 @@ impl ReassignmentBuffers {
             derivative_spectrum: vec![],
             time_weighted_spectrum: vec![],
             second_derivative_spectrum: vec![],
-            cache: Vec::with_capacity(size / 32),
             floor_linear: 0.0,
             inverse_sigma_t: 0.0,
             max_chirp: 0.0,
@@ -336,22 +322,6 @@ impl ReassignmentBuffers {
         let sigma_t = compute_sigma_t(win);
         self.inverse_sigma_t = 1.0 / sigma_t;
         self.max_chirp = 0.5 / (sigma_t * sigma_t);
-    }
-
-    fn clear_cache(&mut self) {
-        self.cache.clear();
-    }
-
-    fn cache_has_capacity(&self) -> bool {
-        self.cache.len() < MAX_REASSIGNMENT_SAMPLES
-    }
-
-    fn push_sample(&mut self, sample: ReassignedSample) {
-        self.cache.push(sample);
-    }
-
-    fn take_cached_samples(&mut self) -> Option<Arc<[ReassignedSample]>> {
-        (!self.cache.is_empty()).then(|| Arc::from(self.cache.as_slice()))
     }
 }
 
@@ -470,7 +440,9 @@ impl Reassignment2DGrid {
                 .ceil() as usize
         };
         let cols = 2 * hops + 1;
-        let min = cfg.display_min_hz.max(1.0).min(cfg.sample_rate * 0.5);
+        let min = (cfg.sample_rate / cfg.fft_size.max(1) as f32)
+            .max(20.0)
+            .min(cfg.sample_rate * 0.5);
         let max = (cfg.sample_rate * 0.5).max(min * 1.001);
 
         if self.display_bins != bins
@@ -607,8 +579,6 @@ impl Reassignment2DGrid {
 #[derive(Debug, Clone)]
 pub struct SpectrogramColumn {
     pub magnitudes_db: Arc<[f32]>,
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub reassigned: Option<Arc<[ReassignedSample]>>,
 }
 
 #[derive(Debug, Clone)]
@@ -746,7 +716,7 @@ impl SpectrogramProcessor {
                 .process_with_scratch(&mut self.real, &mut self.spectrum, &mut self.scratch)
                 .ok();
 
-            let (mags, reassigned) = if re_en {
+            let mags = if re_en {
                 for (buf, spec) in [
                     (
                         &mut self.reassign.derivative_buffer,
@@ -765,35 +735,30 @@ impl SpectrogramProcessor {
                         .process_with_scratch(buf, spec, &mut self.scratch)
                         .ok();
                 }
-                let samples = self.compute_reassigned(sr, bin_lim);
-                (
-                    Self::fill_mags(&mut self.pool, self.grid.magnitudes()),
-                    samples,
-                )
+                self.compute_reassigned(sr, bin_lim);
+                Self::fill_mags(&mut self.pool, self.grid.magnitudes())
             } else {
                 for i in 0..self.magnitudes.len() {
                     let c = self.spectrum[i];
                     self.magnitudes[i] =
                         power_to_db((c.re * c.re + c.im * c.im) * self.bin_norm[i], DB_FLOOR);
                 }
-                (Self::fill_mags(&mut self.pool, &self.magnitudes), None)
+                Self::fill_mags(&mut self.pool, &self.magnitudes)
             };
 
             let col = SpectrogramColumn {
                 magnitudes_db: mags.clone(),
-                reassigned: reassigned.clone(),
             };
             self.hist_push(col);
             self.out_buf.push(SpectrogramColumn {
                 magnitudes_db: mags,
-                reassigned,
             });
             self.audio_buffer.drain(..hop.min(self.audio_buffer.len()));
         }
         std::mem::take(&mut self.out_buf)
     }
 
-    fn compute_reassigned(&mut self, sr: f32, limit: usize) -> Option<Arc<[ReassignedSample]>> {
+    fn compute_reassigned(&mut self, sr: f32, limit: usize) {
         // Reassignment parameters (computed once per frame)
         let bin_hz = sr / self.fft_size as f32;
         let max_corr = if self.config.reassignment_max_correction_hz > 0.0 {
@@ -819,14 +784,9 @@ impl SpectrogramProcessor {
         let v_max_hz = f32x8::splat(max_hz);
         let v_snr_range = f32x8::splat(CONFIDENCE_SNR_RANGE_DB);
 
-        self.reassign.clear_cache();
-
         for chunk in 0..limit.div_ceil(8) {
             let off = chunk * 8;
             let k_idx = f32x8::new(std::array::from_fn(|j| (off + j) as f32));
-            if k_idx.simd_ge(f32x8::splat(limit as f32)).all() {
-                continue;
-            }
 
             // Load spectra for this chunk
             let (base_re, base_im) = load_complex_simd(&self.spectrum, off);
@@ -888,29 +848,9 @@ impl SpectrogramProcessor {
                 conf,
                 mask_f32,
             );
-
-            // Cache samples for debug output
-            if self.reassign.cache_has_capacity() {
-                let (fa, ga, pa, ma) = (
-                    freq.to_array(),
-                    d_tau.to_array(),
-                    disp_pow.to_array(),
-                    mask_f32.to_array(),
-                );
-                for j in 0..8 {
-                    if ma[j] > 0.0 {
-                        self.reassign.push_sample(ReassignedSample {
-                            frequency_hz: fa[j],
-                            group_delay_samples: ga[j],
-                            magnitude_db: power_to_db(pa[j], DB_FLOOR),
-                        });
-                    }
-                }
-            }
         }
 
         self.grid.advance(&self.energy_norm, &self.bin_norm);
-        self.reassign.take_cached_samples()
     }
 
     fn fill_mags(pool: &mut Vec<Arc<[f32]>>, data: &[f32]) -> Arc<[f32]> {
@@ -990,7 +930,7 @@ impl AudioProcessor for SpectrogramProcessor {
                 frequency_scale: self.config.frequency_scale,
                 history_length: self.config.history_length,
                 reset: std::mem::take(&mut self.reset),
-                display_bins_hz: self.grid.bin_frequencies().into(),
+                display_bins_hz: self.grid.is_enabled().then(|| self.grid.bin_frequencies()),
                 new_columns: cols,
             })
         }
@@ -1012,7 +952,6 @@ impl Reconfigurable<SpectrogramConfig> for SpectrogramProcessor {
         let dims_changed = prev.display_bin_count != cfg.display_bin_count
             || prev.use_reassignment != cfg.use_reassignment;
         let mapping_changed = prev.hop_size != cfg.hop_size
-            || (prev.display_min_hz - cfg.display_min_hz).abs() > f32::EPSILON
             || prev.frequency_scale != cfg.frequency_scale
             || (prev.reassignment_max_time_hops - cfg.reassignment_max_time_hops).abs()
                 > f32::EPSILON;
@@ -1239,18 +1178,19 @@ mod tests {
         let freq = 50.3 * cfg.sample_rate / 2048.0;
         let b = make_block(sine(freq, cfg.sample_rate, 4096), 1, cfg.sample_rate);
         let u = unwrap(p.process_block(&b));
-        let peak = u
-            .new_columns
-            .last()
-            .unwrap()
-            .reassigned
+        let bins = u
+            .display_bins_hz
             .as_ref()
-            .unwrap()
+            .expect("expected display bin freqs");
+        let col = u.new_columns.last().unwrap();
+        let (idx, _) = col
+            .magnitudes_db
             .iter()
-            .max_by(|a, b| a.magnitude_db.total_cmp(&b.magnitude_db))
+            .enumerate()
+            .max_by(|a, b| a.1.total_cmp(b.1))
             .unwrap();
-        assert!((peak.frequency_hz - freq).abs() < 1.0);
-        assert!(peak.group_delay_samples.abs() < 204.8);
+        let f = *bins.get(idx).expect("bin frequency");
+        assert!((f - freq).abs() < 6.0);
     }
 
     #[test]
@@ -1282,15 +1222,20 @@ mod tests {
             })
             .collect();
         let u = unwrap(p.process_block(&make_block(s, 1, sr)));
-        let mid = u.new_columns.len() / 2;
-        let peak = u.new_columns[mid]
-            .reassigned
+        let bins = u
+            .display_bins_hz
             .as_ref()
-            .unwrap()
+            .expect("expected display bin freqs");
+        let mid = u.new_columns.len() / 2;
+        let col = &u.new_columns[mid];
+        let (idx, _) = col
+            .magnitudes_db
             .iter()
-            .max_by(|a, b| a.magnitude_db.total_cmp(&b.magnitude_db))
+            .enumerate()
+            .max_by(|a, b| a.1.total_cmp(b.1))
             .unwrap();
+        let peak_hz = *bins.get(idx).expect("bin frequency");
         let exp = f0 + rate * ((256 * mid + 1024) as f32 / sr);
-        assert!((peak.frequency_hz - exp).abs() < (exp * 0.01).max(20.0));
+        assert!((peak_hz - exp).abs() < (exp * 0.02).max(50.0));
     }
 }

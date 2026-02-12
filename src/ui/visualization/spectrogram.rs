@@ -8,7 +8,7 @@ use crate::ui::render::spectrogram::{
     ColumnBuffer, ColumnBufferPool, SPECTROGRAM_PALETTE_SIZE, SpectrogramColumnUpdate,
     SpectrogramParams, SpectrogramPrimitive,
 };
-use crate::ui::settings::PianoRollSide;
+use crate::ui::settings::PianoRollOverlay;
 use crate::ui::theme;
 use crate::util::audio::musical::MusicalNote;
 use crate::util::audio::{DB_FLOOR, DEFAULT_SAMPLE_RATE, hz_to_mel, mel_to_hz};
@@ -319,7 +319,7 @@ pub(crate) struct SpectrogramState {
     palette: [Color; SPECTROGRAM_PALETTE_SIZE],
     history: VecDeque<SpectrogramColumn>,
     key: u64,
-    piano_roll: Option<PianoRollSide>,
+    pub(crate) piano_roll_overlay: PianoRollOverlay,
     sample_rate: f32,
     fft_size: usize,
     freq_scale: FrequencyScale,
@@ -335,21 +335,13 @@ impl SpectrogramState {
             palette: theme::spectrogram::COLORS,
             history: VecDeque::new(),
             key: super::next_key(),
-            piano_roll: None,
+            piano_roll_overlay: PianoRollOverlay::Off,
             sample_rate: DEFAULT_SAMPLE_RATE,
             fft_size: 4096,
             freq_scale: FrequencyScale::default(),
             zoom: 1.0,
             pan: 0.5,
         }
-    }
-
-    pub fn set_piano_roll(&mut self, enabled: bool, side: PianoRollSide) {
-        self.piano_roll = enabled.then_some(side);
-    }
-
-    pub fn piano_roll(&self) -> Option<PianoRollSide> {
-        self.piano_roll
     }
 
     pub fn set_palette(&mut self, palette: &[Color; SPECTROGRAM_PALETTE_SIZE]) {
@@ -480,9 +472,6 @@ impl SpectrogramState {
             )
         };
         if self.history.is_empty() || history_length == 0 {
-            return;
-        }
-        if history_length == 0 {
             return;
         }
         let update = SpectrogramUpdate {
@@ -621,7 +610,7 @@ impl<'a> Spectrogram<'a> {
         renderer: &mut iced::Renderer,
         theme: &iced::Theme,
         bounds: Rectangle,
-        side: PianoRollSide,
+        overlay: PianoRollOverlay,
         uv_range: [f32; 2],
     ) {
         let state = self.state.borrow();
@@ -648,10 +637,10 @@ impl<'a> Spectrogram<'a> {
 
         let pal = theme.extended_palette();
         let (white, black) = (pal.background.weak.color, Color::from_rgb(0.1, 0.1, 0.1));
-        let x = if side == PianoRollSide::Left {
-            bounds.x
-        } else {
-            bounds.x + bounds.width - PIANO_ROLL_WIDTH
+        let x = match overlay {
+            PianoRollOverlay::Left => bounds.x,
+            PianoRollOverlay::Right => bounds.x + bounds.width - PIANO_ROLL_WIDTH,
+            PianoRollOverlay::Off => return,
         };
 
         let freq_to_y = |f: f32| {
@@ -800,12 +789,12 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
             p.uv_y_range = uv_y_range;
             renderer.draw_primitive(bounds, SpectrogramPrimitive::new(p));
         }
-        let piano_roll = state.piano_roll;
+        let piano_roll = state.piano_roll_overlay;
         state.clear_pending();
         drop(state);
-        if let Some(side) = piano_roll {
+        if piano_roll != PianoRollOverlay::Off {
             renderer.with_layer(bounds, |r| {
-                self.draw_piano_roll(r, theme, bounds, side, uv_y_range)
+                self.draw_piano_roll(r, theme, bounds, piano_roll, uv_y_range)
             });
         }
         if let Some(c) = interaction.cursor

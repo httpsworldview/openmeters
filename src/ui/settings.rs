@@ -232,7 +232,7 @@ settings_enum!(pub enum StereometerMode  { Lissajous => "Lissajous", #[default] 
 settings_enum!(pub enum StereometerScale { Linear => "Linear", #[default] Exponential => "Exponential" });
 settings_enum!(pub enum CorrelationMeterMode { Off => "Off", SingleBand => "Single Band", #[default] MultiBand => "Multi Band" });
 settings_enum!(pub enum CorrelationMeterSide { Left => "Left", #[default] Right => "Right" });
-settings_enum!(pub enum PianoRollSide { #[default] Left => "Left", Right => "Right" });
+settings_enum!(pub enum PianoRollOverlay { #[default] Off => "Off", Right => "Right", Left => "Left" });
 settings_enum!(pub enum MeterMode {
     #[default] LufsShortTerm => "LUFS Short-term",
     LufsMomentary => "LUFS Momentary",
@@ -286,10 +286,10 @@ visual_settings!(SpectrogramSettings from SpectrogramConfig {
     fft_size: usize, hop_size: usize, history_length: usize, window: WindowKind, frequency_scale: FrequencyScale,
     use_reassignment: bool,
     zero_padding_factor: usize, display_bin_count: usize,
+    reassignment_max_correction_hz: f32,
 } extra {
     floor_db: f32 = -96.0,
-    show_piano_roll: bool = false,
-    piano_roll_side: PianoRollSide = PianoRollSide::default(),
+    piano_roll_overlay: PianoRollOverlay = PianoRollOverlay::default(),
 });
 
 visual_settings!(StereometerSettings from StereometerConfig {

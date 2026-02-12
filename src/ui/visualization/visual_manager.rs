@@ -138,12 +138,11 @@ visuals! {
         settings_cfg::SpectrogramSettings, &theme::spectrogram::COLORS;
         apply(p, s, set) { visuals!(@apply_config p, set); let mut st = s.borrow_mut();
             visuals!(@apply_palette st, set, &theme::spectrogram::COLORS);
-            st.set_piano_roll(set.show_piano_roll, set.piano_roll_side);
+            st.piano_roll_overlay = set.piano_roll_overlay;
             st.set_floor_db(set.floor_db); };
         export(p, s) { let st = s.borrow(); let mut out = settings_cfg::SpectrogramSettings::from_config(&p.config());
             out.palette = visuals!(@export_palette &st.palette(), &theme::spectrogram::COLORS);
-            out.show_piano_roll = st.piano_roll().is_some();
-            out.piano_roll_side = st.piano_roll().unwrap_or_default();
+            out.piano_roll_overlay = st.piano_roll_overlay;
             out.floor_db = st.floor_db(); out };
 
     Spectrum("Spectrum analyzer", 400.0, 180.0, 400.0) =>
