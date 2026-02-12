@@ -20,7 +20,7 @@ realfft = "3.5"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt"] }
 wide = "1.1.1"
-iced_layershell = "0.15.0-rc1"
+iced_layershell = "0.15.0"
 wayland-client = "0.31.12"
 
 [dev-dependencies]
@@ -35,7 +35,3 @@ codegen-units = 1
 opt-level = 3
 strip = true
 panic = "abort"
-
-[patch.crates-io.layershellev]
-git = "https://github.com/waycrate/exwlshelleventloop"
-rev = "9a70bd8a12b6deff9b533aa228631d9d141ef074"
