@@ -43,7 +43,7 @@ const OPTIMAL_TIME_SPREAD: f32 = 3.5;
 const OPTIMAL_TIME_HOPS_MIN: f32 = 2.0;
 const OPTIMAL_TIME_HOPS_MAX: f32 = 8.0;
 
-// this was emperically derived, but the exact sigma escapes me at the moment
+// sigma=2/3
 const GAUSSIAN_KERNEL_3X3: [[f32; 3]; 3] = {
     const C: f32 = 1.0;
     const E: f32 = 0.324_652_5;
@@ -228,7 +228,7 @@ fn bessel_i0(x: f64) -> f64 {
 fn bessel_i1(x: f64) -> f64 {
     let ax = x.abs();
     let ans = if ax < 3.75 {
-        x * poly!((x / 3.75).powi(2); 0.5, 0.87890594, 0.51498869, 0.15084934, 0.02658733, 0.00301532, 0.00032411)
+        ax * poly!((ax / 3.75).powi(2); 0.5, 0.87890594, 0.51498869, 0.15084934, 0.02658733, 0.00301532, 0.00032411)
     } else {
         poly!(3.75 / ax; 0.39894228, -0.03988024, -0.00362018, 0.00163801, -0.01031555,
               0.02282967, -0.02895312, 0.01787654, -0.00420059)
