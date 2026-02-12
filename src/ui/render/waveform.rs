@@ -3,8 +3,7 @@ use iced::advanced::graphics::Viewport;
 use std::sync::Arc;
 
 use crate::sdf_primitive;
-use crate::ui::render::common::{ClipTransform, SdfVertex};
-use crate::ui::render::geometry::append_strip;
+use crate::ui::render::common::{ClipTransform, SdfVertex, append_strip};
 
 #[derive(Debug, Clone, Copy)]
 pub struct PreviewSample {

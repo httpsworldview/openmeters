@@ -2,8 +2,7 @@ use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
 
 use crate::sdf_primitive;
-use crate::ui::render::common::{ClipTransform, SdfVertex};
-use crate::ui::render::geometry::{DEFAULT_FEATHER, build_aa_line_list};
+use crate::ui::render::common::{ClipTransform, DEFAULT_FEATHER, SdfVertex, build_aa_line_list};
 
 #[derive(Debug, Clone)]
 pub struct OscilloscopeParams {

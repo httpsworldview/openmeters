@@ -3,8 +3,9 @@ use iced::advanced::graphics::Viewport;
 use std::sync::Arc;
 
 use crate::sdf_primitive;
-use crate::ui::render::common::{ClipTransform, SdfVertex, quad_vertices};
-use crate::ui::render::geometry::{DEFAULT_FEATHER, build_aa_line_list};
+use crate::ui::render::common::{
+    ClipTransform, DEFAULT_FEATHER, SdfVertex, build_aa_line_list, quad_vertices,
+};
 
 #[derive(Debug, Clone)]
 pub struct SpectrumParams {

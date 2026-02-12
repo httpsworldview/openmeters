@@ -1,4 +1,10 @@
-// Common rendering utilities shared across visualization primitives.
+// Rendering primitives and GPU pipeline infrastructure.
+//
+//   1. Coordinate transform + vertex type
+//   2. Shape builders (quads, lines, dots, polylines)
+//   3. GPU buffer management + pipeline creation
+//   4. Pipeline cache composite
+//   5. sdf_primitive!
 
 use bytemuck::{Pod, Zeroable};
 use iced::advanced::graphics::Viewport;
@@ -25,6 +31,8 @@ impl ClipTransform {
         [x * self.0 - 1.0, 1.0 - y * self.1]
     }
 }
+
+// sdf vertex
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -80,7 +88,150 @@ impl SdfVertex {
     }
 }
 
-// Manages a growable GPU vertex buffer for a single primitive instance.
+// shapes
+
+pub const DEFAULT_FEATHER: f32 = 1.0;
+
+#[inline]
+pub fn quad_vertices(
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+    clip: ClipTransform,
+    color: [f32; 4],
+) -> [SdfVertex; 6] {
+    gradient_quad_vertices(x0, y0, x1, y1, clip, color, color)
+}
+
+#[inline]
+pub fn gradient_quad_vertices(
+    x0: f32,
+    y0: f32,
+    x1: f32,
+    y1: f32,
+    clip: ClipTransform,
+    top: [f32; 4],
+    bot: [f32; 4],
+) -> [SdfVertex; 6] {
+    let (tl, tr, bl, br) = (
+        clip.to_clip(x0, y0),
+        clip.to_clip(x1, y0),
+        clip.to_clip(x0, y1),
+        clip.to_clip(x1, y1),
+    );
+    [
+        SdfVertex::solid(tl, top),
+        SdfVertex::solid(bl, bot),
+        SdfVertex::solid(br, bot),
+        SdfVertex::solid(tl, top),
+        SdfVertex::solid(br, bot),
+        SdfVertex::solid(tr, top),
+    ]
+}
+
+#[inline]
+pub fn line_vertices(
+    p0: (f32, f32),
+    p1: (f32, f32),
+    c0: [f32; 4],
+    c1: [f32; 4],
+    width: f32,
+    feather: f32,
+    clip: ClipTransform,
+) -> [SdfVertex; 6] {
+    let (dx, dy) = (p1.0 - p0.0, p1.1 - p0.1);
+    let inv = (dx * dx + dy * dy).sqrt().max(1e-6).recip();
+    let (half, outer) = (width * 0.5, width * 0.5 + feather);
+    let (ox, oy) = (-dy * inv * outer, dx * inv * outer);
+    let v = |px, py, c, d| SdfVertex {
+        position: clip.to_clip(px, py),
+        color: c,
+        params: [d, 0.0, half, feather],
+    };
+    [
+        v(p0.0 - ox, p0.1 - oy, c0, -outer),
+        v(p0.0 + ox, p0.1 + oy, c0, outer),
+        v(p1.0 + ox, p1.1 + oy, c1, outer),
+        v(p0.0 - ox, p0.1 - oy, c0, -outer),
+        v(p1.0 + ox, p1.1 + oy, c1, outer),
+        v(p1.0 - ox, p1.1 - oy, c1, -outer),
+    ]
+}
+
+#[inline]
+pub fn dot_vertices(
+    cx: f32,
+    cy: f32,
+    radius: f32,
+    feather: f32,
+    color: [f32; 4],
+    clip: ClipTransform,
+) -> [SdfVertex; 6] {
+    let o = radius + feather;
+    let v = |px, py, ox, oy| SdfVertex {
+        position: clip.to_clip(px, py),
+        color,
+        params: [ox, oy, radius, feather],
+    };
+    [
+        v(cx - o, cy - o, -o, -o),
+        v(cx - o, cy + o, -o, o),
+        v(cx + o, cy - o, o, -o),
+        v(cx + o, cy - o, o, -o),
+        v(cx - o, cy + o, -o, o),
+        v(cx + o, cy + o, o, o),
+    ]
+}
+
+// Builds an antialiased polyline for `TriangleList` topology.
+pub fn build_aa_line_list(
+    pts: &[(f32, f32)],
+    stroke: f32,
+    feather: f32,
+    color: [f32; 4],
+    clip: &ClipTransform,
+) -> Vec<SdfVertex> {
+    if pts.len() < 2 {
+        return Vec::new();
+    }
+    let (half, outer) = (stroke.max(0.1) * 0.5, stroke.max(0.1) * 0.5 + feather);
+    let mut verts = Vec::with_capacity((pts.len() - 1) * 6);
+    for seg in pts.windows(2) {
+        let ((x0, y0), (x1, y1)) = (seg[0], seg[1]);
+        let (dx, dy) = (x1 - x0, y1 - y0);
+        let len = (dx * dx + dy * dy).sqrt();
+        if len < 1e-4 {
+            continue;
+        }
+        let inv = len.recip();
+        let (ox, oy) = (-dy * inv * outer, dx * inv * outer);
+        let mk = |px, py, d| SdfVertex::antialiased(clip.to_clip(px, py), color, d, half, feather);
+        verts.extend([
+            mk(x0 - ox, y0 - oy, -outer),
+            mk(x0 + ox, y0 + oy, outer),
+            mk(x1 + ox, y1 + oy, outer),
+            mk(x0 - ox, y0 - oy, -outer),
+            mk(x1 + ox, y1 + oy, outer),
+            mk(x1 - ox, y1 - oy, -outer),
+        ]);
+    }
+    verts
+}
+
+// Joins triangle strips with degenerate triangles for batched draw calls.
+pub fn append_strip(dest: &mut Vec<SdfVertex>, strip: Vec<SdfVertex>) {
+    if strip.is_empty() {
+        return;
+    }
+    if let Some(&last) = dest.last() {
+        dest.extend([last, last, strip[0], strip[0]]);
+    }
+    dest.extend(strip);
+}
+
+// gpu infra
+
 #[derive(Debug)]
 pub struct InstanceBuffer<V: Pod> {
     pub vertex_buffer: wgpu::Buffer,
@@ -129,7 +280,6 @@ impl<V: Pod> InstanceBuffer<V> {
     }
 }
 
-// Produces eviction thresholds for pruning stale cache entries.
 #[derive(Debug, Clone, Default)]
 pub struct CacheTracker {
     frame: u64,
@@ -140,7 +290,6 @@ impl CacheTracker {
     const RETAIN: u64 = 1024;
     const INTERVAL: u64 = 256;
 
-    // Returns `(frame, Some(threshold))` every `INTERVAL` frames for eviction.
     pub fn advance(&mut self) -> (u64, Option<u64>) {
         self.frame = self.frame.wrapping_add(1).max(1);
         self.counter = self.counter.wrapping_add(1);
@@ -164,7 +313,6 @@ pub fn create_shader_module(
     })
 }
 
-// Creates a render pipeline using `sdf.wgsl` with the given topology.
 pub fn create_sdf_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
@@ -208,7 +356,6 @@ pub fn create_sdf_pipeline(
     })
 }
 
-// Writes a tightly packed texture region.
 #[inline]
 pub fn write_texture_region(
     queue: &wgpu::Queue,
@@ -235,102 +382,7 @@ pub fn write_texture_region(
     );
 }
 
-// Generates six SDF vertices forming a quad (two triangles).
-// Pass identical colors for solid fill, or different for vertical gradient.
-#[inline]
-pub fn quad_vertices(
-    x0: f32,
-    y0: f32,
-    x1: f32,
-    y1: f32,
-    clip: ClipTransform,
-    color: [f32; 4],
-) -> [SdfVertex; 6] {
-    gradient_quad_vertices(x0, y0, x1, y1, clip, color, color)
-}
-
-// Quad with per-edge colors for smooth vertical gradients.
-#[inline]
-pub fn gradient_quad_vertices(
-    x0: f32,
-    y0: f32,
-    x1: f32,
-    y1: f32,
-    clip: ClipTransform,
-    top: [f32; 4],
-    bot: [f32; 4],
-) -> [SdfVertex; 6] {
-    let (tl, tr, bl, br) = (
-        clip.to_clip(x0, y0),
-        clip.to_clip(x1, y0),
-        clip.to_clip(x0, y1),
-        clip.to_clip(x1, y1),
-    );
-    [
-        SdfVertex::solid(tl, top),
-        SdfVertex::solid(bl, bot),
-        SdfVertex::solid(br, bot),
-        SdfVertex::solid(tl, top),
-        SdfVertex::solid(br, bot),
-        SdfVertex::solid(tr, top),
-    ]
-}
-
-// Generates six SDF vertices forming an antialiased line segment.
-#[inline]
-pub fn line_vertices(
-    p0: (f32, f32),
-    p1: (f32, f32),
-    c0: [f32; 4],
-    c1: [f32; 4],
-    width: f32,
-    feather: f32,
-    clip: ClipTransform,
-) -> [SdfVertex; 6] {
-    let (dx, dy) = (p1.0 - p0.0, p1.1 - p0.1);
-    let inv = (dx * dx + dy * dy).sqrt().max(1e-6).recip();
-    let (half, outer) = (width * 0.5, width + feather);
-    let (ox, oy) = (-dy * inv * outer, dx * inv * outer);
-    let v = |px, py, c, d| SdfVertex {
-        position: clip.to_clip(px, py),
-        color: c,
-        params: [d, 0.0, half, feather],
-    };
-    [
-        v(p0.0 - ox, p0.1 - oy, c0, -outer),
-        v(p0.0 + ox, p0.1 + oy, c0, outer),
-        v(p1.0 - ox, p1.1 - oy, c1, -outer),
-        v(p0.0 + ox, p0.1 + oy, c0, outer),
-        v(p1.0 + ox, p1.1 + oy, c1, outer),
-        v(p1.0 - ox, p1.1 - oy, c1, -outer),
-    ]
-}
-
-// Generates six SDF vertices forming an antialiased dot.
-#[inline]
-pub fn dot_vertices(
-    cx: f32,
-    cy: f32,
-    radius: f32,
-    feather: f32,
-    color: [f32; 4],
-    clip: ClipTransform,
-) -> [SdfVertex; 6] {
-    let o = radius + feather;
-    let v = |px, py, ox, oy| SdfVertex {
-        position: clip.to_clip(px, py),
-        color,
-        params: [ox, oy, radius, feather],
-    };
-    [
-        v(cx - o, cy - o, -o, -o),
-        v(cx - o, cy + o, -o, o),
-        v(cx + o, cy - o, o, -o),
-        v(cx + o, cy - o, o, -o),
-        v(cx - o, cy + o, -o, o),
-        v(cx + o, cy + o, o, o),
-    ]
-}
+// pipeline cache
 
 #[derive(Debug)]
 pub struct CachedInstance {
@@ -338,7 +390,6 @@ pub struct CachedInstance {
     pub last_used: u64,
 }
 
-// Pipeline + instance cache for SDF-based primitives.
 #[derive(Debug)]
 pub struct SdfPipeline<K> {
     pub pipeline: wgpu::RenderPipeline,
@@ -393,8 +444,7 @@ impl<K: std::hash::Hash + Eq + Copy> SdfPipeline<K> {
     }
 }
 
-// builds an iced_wgpu primitive
-// spectrogram has different requirements, so it does not use this macro
+// Spectrogram has different requirements, so it does not use this macro.
 #[macro_export]
 macro_rules! sdf_primitive {
     ($primitive:ident, $pipeline:ident, $key_ty:ty, $label:expr, $topology:ident, |$self:ident| $key_expr:expr) => {
