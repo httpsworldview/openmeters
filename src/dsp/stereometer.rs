@@ -65,69 +65,66 @@ impl StereometerSnapshot {
 // Linkwitz-Riley 4th-order crossover (two cascaded 2nd-order Butterworth).
 #[derive(Debug, Clone, Copy, Default)]
 struct LR4 {
-    // Coefficients: b[0..3], a[0..2] for each of 2 stages
-    b: [[f32; 3]; 2],
-    a: [[f32; 2]; 2],
-    // State: x[n-1], x[n-2], y[n-1], y[n-2] for each stage
-    state: [[f32; 4]; 2],
+    feedforward: [[f32; 3]; 2],
+    feedback: [[f32; 2]; 2],
+    delays: [[f32; 4]; 2],
 }
 
 impl LR4 {
-    fn new(sr: f32, freq: f32, highpass: bool) -> Self {
-        let w = std::f32::consts::TAU * freq / sr;
-        let (s, c) = w.sin_cos();
-        let alpha = s * std::f32::consts::FRAC_1_SQRT_2;
+    fn lowpass(sample_rate: f32, freq: f32) -> Self {
+        let omega = std::f32::consts::TAU * freq / sample_rate;
+        let (sin_w, cos_w) = omega.sin_cos();
+        let alpha = sin_w * std::f32::consts::FRAC_1_SQRT_2;
         let a0_inv = 1.0 / (1.0 + alpha);
-        let k = if highpass { 1.0 + c } else { 1.0 - c };
-        let (b0, b1) = (k * 0.5 * a0_inv, if highpass { -k } else { k } * a0_inv);
-        let coef = ([b0, b1, b0], [-2.0 * c * a0_inv, (1.0 - alpha) * a0_inv]);
+        let gain = 1.0 - cos_w;
+        let (b0, b1) = (gain * 0.5 * a0_inv, gain * a0_inv);
         Self {
-            b: [coef.0; 2],
-            a: [coef.1; 2],
-            state: [[0.0; 4]; 2],
+            feedforward: [[b0, b1, b0]; 2],
+            feedback: [[-2.0 * cos_w * a0_inv, (1.0 - alpha) * a0_inv]; 2],
+            delays: [[0.0; 4]; 2],
         }
     }
 
     #[inline]
-    fn process(&mut self, x: f32) -> f32 {
-        let mut v = x;
+    fn process(&mut self, sample: f32) -> f32 {
+        let mut signal = sample;
         for i in 0..2 {
-            let [b0, b1, b2] = self.b[i];
-            let [a1, a2] = self.a[i];
-            let [x1, x2, y1, y2] = self.state[i];
-            let y = b0 * v + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
-            self.state[i] = [v, x1, y, y1];
-            v = y;
+            let [b0, b1, b2] = self.feedforward[i];
+            let [a1, a2] = self.feedback[i];
+            let [x1, x2, y1, y2] = self.delays[i];
+            let y = b0 * signal + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
+            self.delays[i] = [signal, x1, y, y1];
+            signal = y;
         }
-        v
+        signal
     }
 }
 
 // EMA-based stereo correlation with continuous update.
 #[derive(Debug, Clone, Copy, Default)]
 struct Correlator {
-    lr: f64,
-    l2: f64,
-    r2: f64,
+    cross: f64,
+    left_power: f64,
+    right_power: f64,
     alpha: f64,
 }
 
 impl Correlator {
     #[inline]
-    fn update(&mut self, l: f32, r: f32) {
-        let (l, r) = (l as f64, r as f64);
-        self.lr += self.alpha * (l * r - self.lr);
-        self.l2 += self.alpha * (l * l - self.l2);
-        self.r2 += self.alpha * (r * r - self.r2);
+    fn update(&mut self, left: f32, right: f32) {
+        let (left, right) = (left as f64, right as f64);
+        self.cross += self.alpha * (left * right - self.cross);
+        self.left_power += self.alpha * (left * left - self.left_power);
+        self.right_power += self.alpha * (right * right - self.right_power);
     }
 
     #[inline]
     fn value(&self) -> f32 {
-        let denom = (self.l2 * self.r2).sqrt();
+        let denom = (self.left_power * self.right_power).sqrt();
         if denom < 1e-12 {
             0.0
         } else {
-            (self.lr / denom).clamp(-1.0, 1.0) as f32
+            (self.cross / denom).clamp(-1.0, 1.0) as f32
         }
     }
 }
@@ -137,11 +134,11 @@ pub struct StereometerProcessor {
     config: StereometerConfig,
     snapshot: StereometerSnapshot,
     history: VecDeque<f32>,
-    history_ch: usize,
-    // Crossovers: [L low/mid, R low/mid, L mid/high, R mid/high]
-    xover: [LR4; 4],
-    // Correlators: [full, low, mid, high]
-    corr: [Correlator; 4],
+    history_channels: usize,
+    // [left low/mid, right low/mid, left mid/high, right mid/high]
+    crossovers: [LR4; 4],
+    // [full, low, mid, high]
+    correlators: [Correlator; 4],
 }
 
 impl StereometerProcessor {
@@ -151,21 +148,21 @@ impl StereometerProcessor {
             config,
             snapshot: StereometerSnapshot::default(),
             history: VecDeque::new(),
-            history_ch: 0,
-            xover: Self::build_xover(config.sample_rate),
-            corr: [Correlator {
+            history_channels: 0,
+            crossovers: Self::build_crossovers(config.sample_rate),
+            correlators: [Correlator {
                 alpha,
                 ..Default::default()
             }; 4],
         }
     }
 
-    fn build_xover(sr: f32) -> [LR4; 4] {
+    fn build_crossovers(sample_rate: f32) -> [LR4; 4] {
         [
-            LR4::new(sr, LOW_MID_HZ, false),  // L lowpass
-            LR4::new(sr, LOW_MID_HZ, false),  // R lowpass
-            LR4::new(sr, MID_HIGH_HZ, false), // L mid lowpass
-            LR4::new(sr, MID_HIGH_HZ, false), // R mid lowpass
+            LR4::lowpass(sample_rate, LOW_MID_HZ),
+            LR4::lowpass(sample_rate, LOW_MID_HZ),
+            LR4::lowpass(sample_rate, MID_HIGH_HZ),
+            LR4::lowpass(sample_rate, MID_HIGH_HZ),
         ]
     }
 
@@ -174,8 +171,8 @@ impl StereometerProcessor {
     }
 }
 
-fn ema_alpha(sr: f32, window: f32) -> f64 {
-    1.0 - (-1.0 / (sr as f64 * window as f64).max(1.0)).exp()
+fn ema_alpha(sample_rate: f32, window: f32) -> f64 {
+    1.0 - (-1.0 / (sample_rate as f64 * window as f64).max(1.0)).exp()
 }
 
 impl AudioProcessor for StereometerProcessor {
@@ -193,24 +190,25 @@ impl AudioProcessor for StereometerProcessor {
             config.sample_rate = sample_rate;
             self.update_config(config);
         }
-        if self.history_ch != channel_count {
+        if self.history_channels != channel_count {
             self.history.clear();
-            self.history_ch = channel_count;
+            self.history_channels = channel_count;
         }
 
-        // Process audio through crossovers and correlators (front L/R only)
         for frame in block.samples.chunks_exact(channel_count) {
-            let (l, r) = (frame[0], frame[1]);
-            self.corr[0].update(l, r);
+            let (left, right) = (frame[0], frame[1]);
+            self.correlators[0].update(left, right);
 
             // 3-band split: low < 250Hz, mid 250-4000Hz, high > 4000Hz
-            let (ll, lr) = (self.xover[0].process(l), self.xover[1].process(r));
-            let (ml, mr) = (self.xover[2].process(l - ll), self.xover[3].process(r - lr));
-            let (hl, hr) = (l - ll - ml, r - lr - mr);
+            let low_l = self.crossovers[0].process(left);
+            let low_r = self.crossovers[1].process(right);
+            let mid_l = self.crossovers[2].process(left - low_l);
+            let mid_r = self.crossovers[3].process(right - low_r);
+            let (high_l, high_r) = (left - low_l - mid_l, right - low_r - mid_r);
 
-            self.corr[1].update(ll, lr);
-            self.corr[2].update(ml, mr);
-            self.corr[3].update(hl, hr);
+            self.correlators[1].update(low_l, low_r);
+            self.correlators[2].update(mid_l, mid_r);
+            self.correlators[3].update(high_l, high_r);
         }
 
         // Manage history buffer for XY display
@@ -234,11 +232,11 @@ impl AudioProcessor for StereometerProcessor {
             self.snapshot.push_xy_point(data[idx], data[idx + 1]);
         }
 
-        self.snapshot.correlation = self.corr[0].value();
+        self.snapshot.correlation = self.correlators[0].value();
         self.snapshot.band_correlation = BandCorrelation {
-            low: self.corr[1].value(),
-            mid: self.corr[2].value(),
-            high: self.corr[3].value(),
+            low: self.correlators[1].value(),
+            mid: self.correlators[2].value(),
+            high: self.correlators[3].value(),
         };
 
         Some(self.snapshot.clone())
@@ -248,9 +246,9 @@ impl AudioProcessor for StereometerProcessor {
         let alpha = ema_alpha(self.config.sample_rate, self.config.correlation_window);
         self.snapshot = StereometerSnapshot::default();
         self.history.clear();
-        self.history_ch = 0;
-        self.xover = Self::build_xover(self.config.sample_rate);
-        self.corr = [Correlator {
+        self.history_channels = 0;
+        self.crossovers = Self::build_crossovers(self.config.sample_rate);
+        self.correlators = [Correlator {
             alpha,
             ..Default::default()
         }; 4];
@@ -259,16 +257,17 @@ impl AudioProcessor for StereometerProcessor {
 
 impl Reconfigurable<StereometerConfig> for StereometerProcessor {
     fn update_config(&mut self, config: StereometerConfig) {
-        let sr_changed = (self.config.sample_rate - config.sample_rate).abs() > f32::EPSILON;
-        let win_changed =
+        let sample_rate_changed =
+            (self.config.sample_rate - config.sample_rate).abs() > f32::EPSILON;
+        let window_changed =
             (self.config.correlation_window - config.correlation_window).abs() > f32::EPSILON;
         self.config = config;
 
-        if sr_changed {
+        if sample_rate_changed {
             self.reset();
-        } else if win_changed {
+        } else if window_changed {
             let alpha = ema_alpha(config.sample_rate, config.correlation_window);
-            self.corr.iter_mut().for_each(|c| c.alpha = alpha);
+            self.correlators.iter_mut().for_each(|c| c.alpha = alpha);
         }
     }
 }
