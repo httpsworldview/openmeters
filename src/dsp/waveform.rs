@@ -505,8 +505,8 @@ mod tests {
             .collect();
         let snapshot = extract_snapshot(processor.process_block(&block(&samples, 1, 48_000.0)));
         assert_eq!(snapshot.columns, 1);
-        assert!((snapshot.max_values[0] - 0.5).abs() < 1e-3);
-        assert!((snapshot.min_values[0] + 0.25).abs() < 1e-3);
+        assert!((snapshot.max_values[0] - 0.5).abs() < f32::EPSILON);
+        assert!((snapshot.min_values[0] + 0.25).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -576,8 +576,8 @@ mod tests {
         for (speed, normalized) in &results {
             let deviation = (normalized - avg).abs() / avg;
             assert!(
-                deviation < 0.01,
-                "scroll_speed {speed} produced {normalized:.3}, deviates {:.1}% from avg {avg:.3}",
+                deviation < 0.001,
+                "scroll_speed {speed} produced {normalized:.6}, deviates {:.3}% from avg {avg:.6}",
                 deviation * 100.0
             );
         }

@@ -461,7 +461,10 @@ mod tests {
         let (st_high, rms_high) = measure(0.5);
         let (st_delta, rms_delta) = (st_high - st_low, rms_high - rms_low);
         assert!(st_high > st_low && rms_high > rms_low);
-        assert!((5.0..7.0).contains(&st_delta) && (5.0..7.0).contains(&rms_delta));
+        assert!(
+            (5.5..6.5).contains(&st_delta) && (5.5..6.5).contains(&rms_delta),
+            "st_delta={st_delta:.4}, rms_delta={rms_delta:.4}"
+        );
     }
 
     #[test]
@@ -484,8 +487,8 @@ mod tests {
             let expected = reference.loudness_shortterm().unwrap();
             let diff = (ours - expected).abs();
             assert!(
-                diff < 0.01,
-                "{sample_rate}Hz mismatch: {ours:.4} vs {expected:.4} (diff={diff:.4})"
+                diff < 0.001,
+                "{sample_rate}Hz mismatch: {ours:.6} vs {expected:.6} (diff={diff:.8})"
             );
         }
     }
@@ -514,8 +517,8 @@ mod tests {
             20.0 * (mono.iter().map(|x| x.abs()).fold(0.0_f32, f32::max) as f64).log10();
 
         assert!(
-            (ours - ref_db).abs() < 1.0,
-            "true peak: {ours:.2} vs {ref_db:.2} dBTP"
+            (ours - ref_db).abs() < 0.1,
+            "true peak: {ours:.4} vs {ref_db:.4} dBTP"
         );
         assert!(ours >= sample_peak_db - 0.1 && ref_db >= sample_peak_db - 0.1);
     }

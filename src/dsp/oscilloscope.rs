@@ -608,7 +608,7 @@ mod tests {
                 .expect("Failed to detect pitch");
             let error = (detected - freq).abs() / freq;
             assert!(
-                error < 0.05,
+                error < 0.02,
                 "Detected {}Hz, expected {}Hz (error {:.1}%)",
                 detected,
                 freq,
@@ -621,6 +621,6 @@ mod tests {
     fn parabolic_interpolation() {
         let y = |x: f32| (x - 5.3_f32).powi(2);
         let refined = parabolic_refine(y(4.0), y(5.0), y(6.0), 5);
-        assert!((refined - 5.3).abs() < 0.01);
+        assert!((refined - 5.3).abs() < 0.001);
     }
 }

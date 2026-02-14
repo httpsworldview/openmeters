@@ -165,7 +165,7 @@ impl WindowKind {
         match self {
             Self::Rectangular => vec![1.0; len],
             Self::Hann => cosine_window(len, &[0.5, -0.5]),
-            Self::Hamming => cosine_window(len, &[0.54, -0.46]),
+            Self::Hamming => cosine_window(len, &[25.0 / 46.0, -21.0 / 46.0]),
             Self::Blackman => cosine_window(len, &[0.42, -0.5, 0.08]),
             Self::BlackmanHarris => cosine_window(len, &[0.35875, -0.48829, 0.14128, -0.01168]),
             Self::PlanckBessel { epsilon, beta } => planck_bessel(len, epsilon, beta),
@@ -217,7 +217,7 @@ impl WindowCache {
 fn bessel_i0(x: f64) -> f64 {
     let ax = x.abs();
     if ax < 3.75 {
-        poly!((x / 3.75).powi(2); 1.0, 3.5156229, 3.0899424, 1.2067492, 0.2659732, 0.0360768, 0.0045813, 0.00032411)
+        poly!((x / 3.75).powi(2); 1.0, 3.5156229, 3.0899424, 1.2067492, 0.2659732, 0.0360768, 0.0045813)
     } else {
         poly!(3.75 / ax; 0.39894228, 0.01328592, 0.00225319, -0.00157565, 0.00916281,
               -0.02057706, 0.02635537, -0.01647633, 0.00392377)
@@ -430,10 +430,10 @@ impl Reassignment2DGrid {
             let sigma_t_ratio = match cfg.window {
                 WindowKind::Hann => 0.1414,
                 WindowKind::Blackman => 0.1188,
-                WindowKind::BlackmanHarris => 0.1117,
-                WindowKind::Hamming => 0.1443,
+                WindowKind::BlackmanHarris => 0.1013,
+                WindowKind::Hamming => 0.1540,
                 WindowKind::Rectangular => 0.2887,
-                WindowKind::PlanckBessel { .. } => 0.12,
+                WindowKind::PlanckBessel { .. } => 0.1472,
             };
             let optimal = overlap_ratio * sigma_t_ratio * OPTIMAL_TIME_SPREAD;
             optimal
@@ -1169,13 +1169,13 @@ mod tests {
             .max_by(|a, b| a.1.total_cmp(b.1))
             .unwrap();
         assert_eq!(idx, 200);
-        assert!(db > -1.5 && db < 2.0);
+        assert!(db > -0.01 && db < 0.01, "peak dB = {db:.6}, expected ~0.0");
     }
 
     #[test]
     fn mel_conversions_are_invertible() {
         for &h in &[20.0, 100.0, 440.0, 1000.0, 4000.0, 10000.0] {
-            assert!((h - mel_to_hz(hz_to_mel(h))).abs() < 0.01);
+            assert!((h - mel_to_hz(hz_to_mel(h))).abs() < 0.002);
         }
     }
 
@@ -1205,15 +1205,37 @@ mod tests {
             .max_by(|a, b| a.1.total_cmp(b.1))
             .unwrap();
         let f = *bins.get(idx).expect("bin frequency");
-        assert!((f - freq).abs() < 6.0);
+        assert!(
+            (f - freq).abs() < 2.0,
+            "reassigned freq {f:.4} vs expected {freq:.4}"
+        );
     }
 
     #[test]
     fn window_sigma_t_matches_theoretical_ratios() {
-        let h = WindowKind::Hann.coefficients(4096);
-        assert!((compute_sigma_t(&h) / 4096.0 - 0.1414).abs() < 0.01);
-        let b = WindowKind::Blackman.coefficients(4096);
-        assert!((compute_sigma_t(&b) / 4096.0 - 0.1188).abs() < 0.01);
+        let n = 4096_f32;
+        let pairs: &[(WindowKind, f32)] = &[
+            (WindowKind::Rectangular, 0.2887),
+            (WindowKind::Hann, 0.1414),
+            (WindowKind::Hamming, 0.1540),
+            (WindowKind::Blackman, 0.1188),
+            (WindowKind::BlackmanHarris, 0.1013),
+            (
+                WindowKind::PlanckBessel {
+                    epsilon: PLANCK_BESSEL_DEFAULT_EPSILON,
+                    beta: PLANCK_BESSEL_DEFAULT_BETA,
+                },
+                0.1472,
+            ),
+        ];
+        for &(kind, expected) in pairs {
+            let w = kind.coefficients(n as usize);
+            let ratio = compute_sigma_t(&w) / n;
+            assert!(
+                (ratio - expected).abs() < 0.001,
+                "{kind:?}: sigma_t ratio = {ratio:.6}, expected ~{expected}"
+            );
+        }
     }
 
     #[test]
