@@ -3,9 +3,7 @@
 ![Preview](https://github.com/user-attachments/assets/94b2a531-c93b-41c3-9477-20cb3b9bc046)
 
 OpenMeters is a fast and simple audio metering application for Linux,
-built with Rust and PipeWire. It's in active development, so expect
-bugs and broken configurations. I'm always open to feedback and bug
-reports, so feel free to open issues.
+built with Rust and PipeWire.
 
 ## Features
 
@@ -44,7 +42,7 @@ pull request!
 - [x] **spectrogram**
   - [x] Reassignment and synchrosqueezing for sharper frequency and
         time resolution.
-  - [x] Note & frequency tooltips
+  - [x] Note & frequency tool tips
   - [x] Piano roll overlay
   - [x] Ability to zoom & pan vertically
   - [x] Mel, log, and linear scales
@@ -57,7 +55,7 @@ pull request!
     - [x] None
   - [x] Mel, log, and linear scales
   - [x] Bar mode
-  - [x] Adjustable colormap
+  - [x] Adjustable color map
 - [x] **stereometer** (X/Y vector scope, M/S goniometer)
   - [x] Correlation meter
     - [x] Single or multi-band
@@ -72,7 +70,7 @@ pull request!
 - [x] **waveform**
   - [x] Channel selection (L, R, L+R)
   - [x] Adjustable scroll speed
-  - [x] Adjustable colormap
+  - [x] Adjustable color map
 
 ## Installation
 
@@ -110,7 +108,7 @@ yay -S openmeters-git
    cargo run -r
    ```
 
-## Usage & keybinds
+## Usage & key binds
 
 ### Global
 
