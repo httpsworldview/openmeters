@@ -13,21 +13,13 @@ pub const MIN_COLUMN_CAPACITY: usize = 512;
 pub const MAX_COLUMN_CAPACITY: usize = 16_384;
 pub const DEFAULT_COLUMN_CAPACITY: usize = 4_096;
 
-// fixed because scroll speed alters timebase
-// which affects sample accumulation, etc.
 const FREQUENCY_FFT_SIZE: usize = 2048;
 
-// Frequency range for mapping to log
-// higher than 5kHz is saturated to the top end
-// of the color scale
 const MIN_FREQ_HZ: f32 = 20.0;
 const MAX_FREQ_HZ: f32 = 5_000.0;
 
-// max allowed sweep rate of normalized frequency
-// lower = longer smoothing
-// helps avoid rapid color changes, but might be a hack
-// as I'm not sure what the best approach is here
-const MAX_SLEW_RATE: f32 = 0.01;
+// EMA coefficient for smoothing the spectral centroid.
+const CENTROID_EMA_ALPHA: f32 = 0.3;
 
 #[derive(Debug, Clone, Copy)]
 pub struct WaveformConfig {
@@ -114,7 +106,7 @@ struct FrequencyAnalyzer {
     scratch: Vec<Complex32>,
     sample_history: Vec<f32>,
     bin_hz: f32,
-    smoothed_frequency: f32,
+    smoothed: f32,
 }
 
 impl std::fmt::Debug for FrequencyAnalyzer {
@@ -135,7 +127,7 @@ impl FrequencyAnalyzer {
             output_spectrum: vec![Complex32::default(); size / 2 + 1],
             sample_history: Vec::with_capacity(size),
             bin_hz: sample_rate / size as f32,
-            smoothed_frequency: 0.5,
+            smoothed: 0.5,
             size,
             fft,
         }
@@ -143,13 +135,13 @@ impl FrequencyAnalyzer {
 
     fn reconfigure(&mut self, sample_rate: f32) {
         self.bin_hz = sample_rate / self.size as f32;
-        self.smoothed_frequency = 0.5;
+        self.smoothed = 0.5;
         self.sample_history.clear();
     }
 
     fn analyze(&mut self, samples: &[f32]) -> f32 {
         if samples.is_empty() {
-            return self.smoothed_frequency;
+            return self.smoothed;
         }
 
         self.sample_history.extend_from_slice(samples);
@@ -159,19 +151,18 @@ impl FrequencyAnalyzer {
         }
 
         if self.sample_history.len() < self.size / 4 {
-            return self.smoothed_frequency;
+            return self.smoothed;
         }
 
         self.apply_hann_window();
 
         if self.compute_fft().is_err() {
-            return self.smoothed_frequency;
+            return self.smoothed;
         }
 
-        let raw = self.find_peak_frequency();
-        let delta = (raw - self.smoothed_frequency).clamp(-MAX_SLEW_RATE, MAX_SLEW_RATE);
-        self.smoothed_frequency += delta;
-        self.smoothed_frequency
+        let raw = self.spectral_centroid();
+        self.smoothed += CENTROID_EMA_ALPHA * (raw - self.smoothed);
+        self.smoothed
     }
 
     fn apply_hann_window(&mut self) {
@@ -194,8 +185,7 @@ impl FrequencyAnalyzer {
             .map_err(|_| ())
     }
 
-    // Finds the dominant frequency bin and returns a normalized [0,1] value.
-    fn find_peak_frequency(&self) -> f32 {
+    fn spectral_centroid(&self) -> f32 {
         let min_bin = (MIN_FREQ_HZ / self.bin_hz).ceil() as usize;
         let max_bin =
             ((MAX_FREQ_HZ / self.bin_hz).floor() as usize).min(self.output_spectrum.len());
@@ -204,45 +194,25 @@ impl FrequencyAnalyzer {
             return 0.5;
         }
 
-        let (peak_bin, peak_mag) = self.output_spectrum[min_bin..max_bin]
+        let (weighted_sum, power_sum) = self.output_spectrum[min_bin..max_bin]
             .iter()
             .enumerate()
-            .map(|(i, c)| (min_bin + i, c.norm()))
-            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-            .unwrap_or((min_bin, 0.0));
+            .fold((0.0_f64, 0.0_f64), |(ws, ps), (i, c)| {
+                let hz = (min_bin + i) as f64 * self.bin_hz as f64;
+                let power = c.norm_sqr() as f64;
+                (ws + hz * power, ps + power)
+            });
 
-        if peak_mag <= f32::EPSILON {
+        if power_sum <= f64::EPSILON {
             return 0.5;
         }
 
-        Self::hz_to_normalized(self.interpolate_peak(peak_bin))
+        Self::hz_to_normalized((weighted_sum / power_sum) as f32)
     }
 
-    fn interpolate_peak(&self, bin: usize) -> f32 {
-        let base_hz = bin as f32 * self.bin_hz;
-        if bin == 0 || bin >= self.output_spectrum.len() - 1 {
-            return base_hz;
-        }
-
-        let (y0, y1, y2) = (
-            self.output_spectrum[bin - 1].norm(),
-            self.output_spectrum[bin].norm(),
-            self.output_spectrum[bin + 1].norm(),
-        );
-        let denom = y0 - 2.0 * y1 + y2;
-        if denom.abs() < f32::EPSILON {
-            return base_hz;
-        }
-
-        let offset = (0.5 * (y0 - y2) / denom).clamp(-0.5, 0.5);
-        (bin as f32 + offset) * self.bin_hz
-    }
-
-    // Maps Hz to [0,1] in log
     fn hz_to_normalized(hz: f32) -> f32 {
-        // no ln() in `const` contexts cause of floating points :[
-        const LOG_MIN: f32 = 2.995_732_3; // 20.0_f32.ln()
-        const LOG_RANGE: f32 = 5.526_072_4; // (5000.0_f32.ln() - LOG_MIN)
+        const LOG_MIN: f32 = 4.382_026_7; // 70.0_f32.ln()
+        const LOG_RANGE: f32 = 4.135_166_6; // 5000.0_f32.ln() - LOG_MIN
         ((hz.max(MIN_FREQ_HZ).ln() - LOG_MIN) / LOG_RANGE).clamp(0.0, 1.0)
     }
 }
@@ -510,7 +480,7 @@ mod tests {
     }
 
     #[test]
-    fn peak_frequency_tracks_fundamental() {
+    fn centroid_tracks_brightness() {
         let config = WaveformConfig {
             sample_rate: 48_000.0,
             scroll_speed: 200.0,
@@ -518,7 +488,6 @@ mod tests {
         };
         let samples_per_column = config.samples_per_column();
 
-        // higher frequency -> higher normalized value
         let mut results = Vec::new();
         for &frequency in &[100.0, 440.0, 1000.0, 5000.0] {
             let mut processor = WaveformProcessor::new(config);
@@ -534,7 +503,6 @@ mod tests {
             results.push((frequency, normalized));
         }
 
-        // higher frequency -> higher normalized value
         for window in results.windows(2) {
             let (low_hz, low_norm) = window[0];
             let (high_hz, high_norm) = window[1];
@@ -546,8 +514,7 @@ mod tests {
     }
 
     #[test]
-    fn scroll_speed_does_not_affect_frequency_detection() {
-        // Test that the same frequency produces consistent results across scroll speeds
+    fn scroll_speed_does_not_affect_centroid() {
         let frequency = 440.0;
         let mut results = Vec::new();
 
@@ -571,7 +538,6 @@ mod tests {
             results.push((scroll_speed, normalized));
         }
 
-        // All results should be within 1% of each other
         let avg: f32 = results.iter().map(|(_, n)| n).sum::<f32>() / results.len() as f32;
         for (speed, normalized) in &results {
             let deviation = (normalized - avg).abs() / avg;
