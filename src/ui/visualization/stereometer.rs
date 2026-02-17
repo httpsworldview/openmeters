@@ -5,7 +5,7 @@ use crate::dsp::stereometer::{
     BandCorrelation, StereometerConfig, StereometerProcessor as CoreProcessor, StereometerSnapshot,
 };
 use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
-use crate::ui::render::stereometer::{StereometerParams, StereometerPrimitive};
+use crate::ui::render::stereometer::{StereometerParams, StereometerPrimitive, scale_point};
 use crate::ui::settings::{
     CorrelationMeterMode, CorrelationMeterSide, StereometerMode, StereometerScale,
     StereometerSettings,
@@ -60,7 +60,7 @@ pub(crate) struct StereometerState {
     points: Vec<(f32, f32)>,
     corr_trail: VecDeque<f32>,
     band_trail: VecDeque<BandCorrelation>,
-    palette: [Color; 8],
+    palette: [Color; 9],
     persistence: f32,
     mode: StereometerMode,
     scale: StereometerScale,
@@ -109,7 +109,7 @@ impl StereometerState {
         }
     }
 
-    pub fn palette(&self) -> [Color; 8] {
+    pub fn palette(&self) -> [Color; 9] {
         self.palette
     }
 
@@ -130,21 +130,12 @@ impl StereometerState {
     pub fn apply_snapshot(&mut self, snap: &StereometerSnapshot) {
         if snap.xy_points.is_empty() {
             self.points.clear();
+            self.corr_trail.clear();
+            self.band_trail.clear();
             return;
         }
 
-        let scale = |x: f32, y: f32| match self.scale {
-            StereometerScale::Linear => (x, y),
-            StereometerScale::Exponential => {
-                let len = x.hypot(y);
-                if len < f32::EPSILON {
-                    return (0.0, 0.0);
-                }
-                let k = (len.max((-self.scale_range).exp2()).log2() + self.scale_range)
-                    / (-self.scale_range * len);
-                (k * x, k * y)
-            }
-        };
+        let scale = |x: f32, y: f32| scale_point(self.scale, x, y, self.scale_range);
 
         self.points.resize(snap.xy_points.len(), (0.0, 0.0));
         let fresh = 1.0 - self.persistence;
@@ -184,12 +175,14 @@ impl StereometerState {
     }
 
     pub fn visual_params(&self, bounds: iced::Rectangle) -> Option<StereometerParams> {
-        (self.points.len() >= 2).then(|| StereometerParams {
+        Some(StereometerParams {
             key: self.key,
             bounds,
             points: self.points.clone(),
             palette: self.palette.map(theme::color_to_rgba),
             mode: self.mode,
+            scale: self.scale,
+            scale_range: self.scale_range,
             rotation: self.rotation,
             flip: self.flip,
             correlation_meter: self.correlation_meter,

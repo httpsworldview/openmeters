@@ -42,8 +42,8 @@ pull request!
   - [x] Free-run mode — scrolls continuously through time, not
         triggered.
 - [x] **spectrogram**
-  - [x] Reassignment and synchrosqueezing (sharper frequency
-        resolution)
+  - [x] Reassignment and synchrosqueezing for sharper frequency and
+        time resolution.
   - [x] Note & frequency tooltips
   - [x] Piano roll overlay
   - [x] Ability to zoom & pan vertically
@@ -68,6 +68,7 @@ pull request!
   - [x] Ability to flip L/R channels (for M/S monitoring)
   - [x] Adjustable scale (linear/exponential)
   - [x] Adjustable rotation
+  - [x] Grid overlay
 - [x] **waveform**
   - [x] Channel selection (L, R, L+R)
   - [x] Adjustable scroll speed
@@ -75,7 +76,7 @@ pull request!
 
 ## Installation
 
-### On Arch Linux
+### On Arch Linux (and Arch-based distributions)
 
 Install the `openmeters-git` package via the AUR.
 

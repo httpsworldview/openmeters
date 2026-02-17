@@ -129,10 +129,10 @@ pub mod oscilloscope {
     pub const LABELS: &[&str] = &["Trace"];
 }
 
-// Stereometer (8 stops)
+// Stereometer (9 stops)
 pub mod stereometer {
     use super::*;
-    pub const COLORS: [Color; 8] = [
+    pub const COLORS: [Color; 9] = [
         Color::from_rgba(1.000, 1.000, 1.000, 1.0),
         Color::from_rgba(0.10, 0.10, 0.10, 1.0),
         Color::from_rgba(0.50, 0.50, 0.50, 1.0),
@@ -141,6 +141,7 @@ pub mod stereometer {
         Color::from_rgba(0.55, 0.45, 0.70, 1.0),
         Color::from_rgba(0.50, 0.60, 0.55, 1.0),
         Color::from_rgba(0.65, 0.55, 0.45, 1.0),
+        Color::from_rgba(0.50, 0.50, 0.50, 0.25),
     ];
     pub const LABELS: &[&str] = &[
         "Trace",
@@ -151,6 +152,7 @@ pub mod stereometer {
         "Low",
         "Mid",
         "High",
+        "Grid",
     ];
 }
 
