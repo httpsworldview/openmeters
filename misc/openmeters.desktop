@@ -1,0 +1,14 @@
+[Desktop Entry]
+Version=0.1.0
+Type=Application
+Name=OpenMeters
+GenericName=Audio Meter
+Comment=OpenMeters is a fast and simple audio metering application for Linux, built with Rust and PipeWire
+TryExec=openmeters
+Exec=openmeters
+Icon=openmeters
+Terminal=false
+Categories=AudioVideo;Audio;
+Keywords=audio;meter;pipewire;spectrum;loudness;oscilloscope;waveform;stereo;
+StartupNotify=true
+StartupWMClass=openmeters-ui
