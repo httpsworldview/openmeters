@@ -1,27 +1,23 @@
+use super::CHANNEL_OPTIONS;
 use super::palette::{PaletteEditor, PaletteEvent};
 use super::widgets::{
     SliderRange, labeled_pick_list, labeled_slider, set_if_changed, update_f32_range,
 };
-use super::{CHANNEL_OPTIONS, SettingsMessage};
 use crate::dsp::waveform::{MAX_SCROLL_SPEED, MIN_SCROLL_SPEED};
-use crate::ui::settings::{ChannelMode, SettingsHandle, WaveformColorMode, WaveformSettings};
+use crate::ui::settings::{ChannelMode, WaveformColorMode, WaveformSettings};
 use crate::ui::theme;
-use crate::ui::visualization::visual_manager::{VisualKind, VisualManagerHandle};
+use crate::ui::visualization::visual_manager::VisualKind;
 use iced::Element;
 use iced::widget::column;
 
 settings_pane!(
-    WaveformSettingsPane,
-    WaveformSettings,
-    VisualKind::Waveform,
-    theme::waveform,
+    WaveformSettingsPane, WaveformSettings, VisualKind::Waveform, theme::waveform, Waveform,
     init_palette(settings, palette) {
         configure_palette_for_mode(&mut palette, settings.color_mode);
     }
 );
 
 const SCROLL_SPEED_RANGE: SliderRange = SliderRange::new(MIN_SCROLL_SPEED, MAX_SCROLL_SPEED, 1.0);
-
 const COLOR_MODE_OPTIONS: [WaveformColorMode; 3] = [
     WaveformColorMode::Frequency,
     WaveformColorMode::Loudness,
@@ -52,44 +48,37 @@ pub enum Message {
     ColorMode(WaveformColorMode),
     Palette(PaletteEvent),
 }
+
 impl WaveformSettingsPane {
-    fn view(&self) -> Element<'_, SettingsMessage> {
+    fn view(&self) -> Element<'_, Message> {
         column![
             labeled_slider(
                 "Scroll speed",
                 self.settings.scroll_speed,
                 format!("{:.0} px/s", self.settings.scroll_speed),
                 SCROLL_SPEED_RANGE,
-                |v| SettingsMessage::Waveform(Message::ScrollSpeed(v)),
+                Message::ScrollSpeed
             ),
             labeled_pick_list(
                 "Channels",
                 &CHANNEL_OPTIONS,
                 Some(self.settings.channel_mode),
-                |m| SettingsMessage::Waveform(Message::ChannelMode(m))
+                Message::ChannelMode
             ),
             labeled_pick_list(
                 "Color mode",
                 &COLOR_MODE_OPTIONS,
                 Some(self.settings.color_mode),
-                |m| SettingsMessage::Waveform(Message::ColorMode(m))
+                Message::ColorMode
             ),
-            super::palette_section(&self.palette, Message::Palette, SettingsMessage::Waveform)
+            super::palette_section(&self.palette, Message::Palette)
         ]
         .spacing(16)
         .into()
     }
 
-    fn handle(
-        &mut self,
-        message: &SettingsMessage,
-        visual_manager: &VisualManagerHandle,
-        settings_handle: &SettingsHandle,
-    ) {
-        let SettingsMessage::Waveform(msg) = message else {
-            return;
-        };
-        let changed = match *msg {
+    fn handle(&mut self, msg: &Message) -> bool {
+        match *msg {
             Message::ScrollSpeed(v) => {
                 update_f32_range(&mut self.settings.scroll_speed, v, SCROLL_SPEED_RANGE)
             }
@@ -102,15 +91,6 @@ impl WaveformSettingsPane {
                 changed
             }
             Message::Palette(e) => self.palette.update(e),
-        };
-        if changed {
-            persist_palette!(
-                visual_manager,
-                settings_handle,
-                VisualKind::Waveform,
-                self,
-                &theme::waveform::COLORS
-            );
         }
     }
 }
