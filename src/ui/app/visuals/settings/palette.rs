@@ -38,10 +38,8 @@ impl PaletteEditor {
         }
     }
 
-    // Sets which palette indices are visible. Pass `None` to show all.
     pub fn set_visible_indices(&mut self, indices: Option<Vec<usize>>) {
         self.visible_indices = indices;
-        // Close editor if active index is now hidden
         if let Some(active) = self.active
             && let Some(ref visible) = self.visible_indices
             && !visible.contains(&active)
@@ -56,7 +54,6 @@ impl PaletteEditor {
     }
 
     fn label_for(&self, index: usize) -> String {
-        // Check for label override first
         if let Some((_, label)) = self.label_overrides.iter().find(|(i, _)| *i == index) {
             return (*label).to_string();
         }
@@ -79,9 +76,9 @@ impl PaletteEditor {
             PaletteEvent::Adjust { index, color } => {
                 let colors = self.palette.colors();
                 if index < colors.len() && !theme::colors_equal(colors[index], color) {
-                    let mut new_colors: Vec<Color> = colors.to_vec();
-                    new_colors[index] = color;
-                    self.palette.set(&new_colors);
+                    let mut c = colors.to_vec();
+                    c[index] = color;
+                    self.palette.set(&c);
                     true
                 } else {
                     false
@@ -118,8 +115,9 @@ impl PaletteEditor {
         let row = indices.iter().fold(Row::new().spacing(12.0), |r, &i| {
             r.push(self.color_picker(i, colors[i]))
         });
-        let swatches = scrollable(row).horizontal().width(Length::Fill);
-        let mut col = Column::new().spacing(12.0).push(swatches);
+        let mut col = Column::new()
+            .spacing(12.0)
+            .push(scrollable(row).horizontal().width(Length::Fill));
         if let Some(i) = self.active
             && let Some(&c) = colors.get(i)
         {
@@ -225,28 +223,25 @@ impl PaletteEditor {
 }
 
 fn swatch_style(color: Color, active: bool) -> container::Style {
+    let a = color.a;
     let d = Color {
-        r: color.r * color.a,
-        g: color.g * color.a,
-        b: color.b * color.a,
-        a: color.a,
+        r: color.r * a,
+        g: color.g * a,
+        b: color.b * a,
+        a,
+    };
+    let border = if active {
+        theme::focus_border()
+    } else {
+        theme::sharp_border()
     };
     container::Style::default()
         .background(Background::Color(d))
-        .border(if active {
-            theme::focus_border()
-        } else {
-            theme::sharp_border()
-        })
+        .border(border)
 }
 
 fn to_hex(c: Color) -> String {
-    let (r, g, b, a) = (
-        f32_to_u8(c.r),
-        f32_to_u8(c.g),
-        f32_to_u8(c.b),
-        f32_to_u8(c.a),
-    );
+    let [r, g, b, a] = [c.r, c.g, c.b, c.a].map(f32_to_u8);
     if a == 255 {
         format!("#{r:02X}{g:02X}{b:02X}")
     } else {

@@ -1,11 +1,10 @@
 // Shared widgets and utilities for the settings panes
 
-use super::SettingsMessage;
 use crate::ui::theme;
 use iced::Length;
 use iced::alignment::Vertical;
 use iced::widget::text::Wrapping;
-use iced::widget::{column, container, pick_list, row, slider, text};
+use iced::widget::{column, container, pick_list, row, slider, text, toggler};
 use std::borrow::Cow;
 use std::fmt;
 
@@ -64,13 +63,13 @@ pub fn update_usize_from_f32(target: &mut usize, value: f32, range: SliderRange)
     set_if_changed(target, range.snap(value).round() as usize)
 }
 
-pub fn labeled_slider<'a>(
+pub fn labeled_slider<'a, M: Clone + 'a>(
     label: &'static str,
     value: f32,
     formatted: String,
     range: SliderRange,
-    on_change: impl Fn(f32) -> SettingsMessage + 'a,
-) -> iced::widget::Column<'a, SettingsMessage> {
+    on_change: impl Fn(f32) -> M + 'a,
+) -> iced::widget::Column<'a, M> {
     column![
         row![
             container(text(label).size(12).wrapping(Wrapping::None)).clip(true),
@@ -84,12 +83,16 @@ pub fn labeled_slider<'a>(
     .spacing(8.0)
 }
 
-pub fn labeled_pick_list<'a, T: Clone + PartialEq + fmt::Display + 'static>(
+pub fn labeled_pick_list<'a, T, M>(
     label: &'static str,
     options: impl Into<Cow<'a, [T]>>,
     selected: Option<T>,
-    on_select: impl Fn(T) -> SettingsMessage + 'a,
-) -> iced::widget::Row<'a, SettingsMessage> {
+    on_select: impl Fn(T) -> M + 'a,
+) -> iced::widget::Row<'a, M>
+where
+    T: Clone + PartialEq + fmt::Display + 'static,
+    M: Clone + 'a,
+{
     row![
         container(text(label).size(12).wrapping(Wrapping::None))
             .width(Length::Shrink)
@@ -100,6 +103,18 @@ pub fn labeled_pick_list<'a, T: Clone + PartialEq + fmt::Display + 'static>(
     .align_y(Vertical::Center)
 }
 
-pub fn section_title(label: &'static str) -> container::Container<'static, SettingsMessage> {
+pub fn labeled_toggler<'a, M: 'a>(
+    label: &'static str,
+    value: bool,
+    on_toggle: impl Fn(bool) -> M + 'a,
+) -> iced::widget::Toggler<'a, M> {
+    toggler(value)
+        .label(label)
+        .spacing(4)
+        .text_size(11)
+        .on_toggle(on_toggle)
+}
+
+pub fn section_title<'a, M: 'a>(label: &'static str) -> container::Container<'a, M> {
     container(text(label).size(14).wrapping(Wrapping::None)).clip(true)
 }

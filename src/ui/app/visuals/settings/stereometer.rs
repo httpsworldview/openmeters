@@ -1,16 +1,15 @@
-use super::SettingsMessage;
 use super::palette::PaletteEvent;
 use super::widgets::{
-    SliderRange, labeled_pick_list, labeled_slider, section_title, set_if_changed,
+    SliderRange, labeled_pick_list, labeled_slider, labeled_toggler, section_title, set_if_changed,
     update_f32_range, update_usize_from_f32,
 };
 use crate::ui::settings::{
-    CorrelationMeterMode, CorrelationMeterSide, SettingsHandle, StereometerMode, StereometerScale,
+    CorrelationMeterMode, CorrelationMeterSide, StereometerMode, StereometerScale,
     StereometerSettings,
 };
 use crate::ui::theme;
-use crate::ui::visualization::visual_manager::{VisualKind, VisualManagerHandle};
-use iced::widget::{column, row, toggler};
+use crate::ui::visualization::visual_manager::VisualKind;
+use iced::widget::{column, row};
 use iced::{Element, Length};
 
 const MODE_OPTIONS: [StereometerMode; 2] = [StereometerMode::Lissajous, StereometerMode::DotCloud];
@@ -34,7 +33,8 @@ settings_pane!(
     StereometerSettingsPane,
     StereometerSettings,
     VisualKind::Stereometer,
-    theme::stereometer
+    theme::stereometer,
+    Stereometer
 );
 
 #[derive(Debug, Clone)]
@@ -54,24 +54,19 @@ pub enum Message {
 }
 
 impl StereometerSettingsPane {
-    fn view(&self) -> Element<'_, SettingsMessage> {
+    fn view(&self) -> Element<'_, Message> {
         use Message::*;
         let s = &self.settings;
 
         let picks = row![
-            column![labeled_pick_list(
-                "Mode",
-                &MODE_OPTIONS,
-                Some(s.mode),
-                |m| { SettingsMessage::Stereometer(Mode(m)) }
-            ),]
-            .width(Length::Fill),
+            column![labeled_pick_list("Mode", &MODE_OPTIONS, Some(s.mode), Mode)]
+                .width(Length::Fill),
             column![labeled_pick_list(
                 "Scale",
                 &SCALE_OPTIONS,
                 Some(s.scale),
-                |v| { SettingsMessage::Stereometer(Scale(v)) }
-            ),]
+                Scale
+            )]
             .width(Length::Fill),
         ]
         .spacing(16);
@@ -83,25 +78,24 @@ impl StereometerSettingsPane {
                 s.segment_duration,
                 format!("{:.1} ms", s.segment_duration * 1000.0),
                 SEGMENT_DURATION_RANGE,
-                |v| SettingsMessage::Stereometer(SegmentDuration(v))
+                SegmentDuration
             ),
             labeled_slider(
                 "Sample count",
                 s.target_sample_count as f32,
                 s.target_sample_count.to_string(),
                 TARGET_SAMPLE_COUNT_RANGE,
-                |v| SettingsMessage::Stereometer(TargetSampleCount(v))
+                TargetSampleCount
             ),
         ]
         .spacing(8);
-
         if s.scale == StereometerScale::Exponential {
             core = core.push(labeled_slider(
                 "Scale range",
                 s.scale_range,
                 format!("{:.1}", s.scale_range),
                 SCALE_RANGE,
-                |v| SettingsMessage::Stereometer(ScaleRange(v)),
+                ScaleRange,
             ));
         }
 
@@ -111,20 +105,16 @@ impl StereometerSettingsPane {
                 s.rotation as f32,
                 s.rotation.to_string(),
                 ROTATION_RANGE,
-                |v| SettingsMessage::Stereometer(Rotation(v))
+                Rotation
             ),
             labeled_slider(
                 "Persistence",
                 s.persistence,
                 format!("{:.2}", s.persistence),
                 PERSISTENCE_RANGE,
-                |v| SettingsMessage::Stereometer(Persistence(v))
+                Persistence
             ),
-            toggler(s.flip)
-                .label("Flip")
-                .spacing(4)
-                .text_size(11)
-                .on_toggle(|b| SettingsMessage::Stereometer(Flip(b))),
+            labeled_toggler("Flip", s.flip, Flip),
         ]
         .spacing(8);
 
@@ -133,33 +123,31 @@ impl StereometerSettingsPane {
                 "Meter",
                 &CORR_METER_OPTIONS,
                 Some(s.correlation_meter),
-                |v| SettingsMessage::Stereometer(CorrelationMeter(v))
-            ),]
+                CorrelationMeter
+            )]
             .width(Length::Fill),
         ]
         .spacing(16);
-
         if s.correlation_meter != CorrelationMeterMode::Off {
             corr_picks = corr_picks.push(
                 column![labeled_pick_list(
                     "Side",
                     &CORR_SIDE_OPTIONS,
                     Some(s.correlation_meter_side),
-                    |v| SettingsMessage::Stereometer(CorrelationMeterSide(v)),
-                ),]
+                    CorrelationMeterSide
+                )]
                 .width(Length::Fill),
             );
         }
 
         let mut correlation = column![corr_picks].spacing(8);
-
         if s.correlation_meter != CorrelationMeterMode::Off {
             correlation = correlation.push(labeled_slider(
                 "Window",
                 s.correlation_window,
                 format!("{:.0} ms", s.correlation_window * 1000.0),
                 CORRELATION_WINDOW_RANGE,
-                |v| SettingsMessage::Stereometer(CorrelationWindow(v)),
+                CorrelationWindow,
             ));
         }
 
@@ -170,23 +158,15 @@ impl StereometerSettingsPane {
             display,
             section_title("Correlation"),
             correlation,
-            super::palette_section(&self.palette, Palette, SettingsMessage::Stereometer)
+            super::palette_section(&self.palette, Palette)
         ]
         .spacing(12)
         .into()
     }
 
-    fn handle(
-        &mut self,
-        message: &SettingsMessage,
-        visual_manager: &VisualManagerHandle,
-        settings_handle: &SettingsHandle,
-    ) {
-        let SettingsMessage::Stereometer(msg) = message else {
-            return;
-        };
+    fn handle(&mut self, msg: &Message) -> bool {
         let s = &mut self.settings;
-        let changed = match msg {
+        match msg {
             Message::SegmentDuration(v) => {
                 update_f32_range(&mut s.segment_duration, *v, SEGMENT_DURATION_RANGE)
             }
@@ -210,15 +190,6 @@ impl StereometerSettingsPane {
                 set_if_changed(&mut s.correlation_meter_side, *side)
             }
             Message::Palette(e) => self.palette.update(*e),
-        };
-        if changed {
-            persist_palette!(
-                visual_manager,
-                settings_handle,
-                VisualKind::Stereometer,
-                self,
-                &theme::stereometer::COLORS
-            );
         }
     }
 }

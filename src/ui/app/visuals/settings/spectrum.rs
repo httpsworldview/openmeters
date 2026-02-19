@@ -1,20 +1,17 @@
-use super::SettingsMessage;
 use super::palette::PaletteEvent;
 use super::widgets::{
-    SliderRange, labeled_pick_list, labeled_slider, section_title, set_f32, set_if_changed,
-    update_usize_from_f32,
+    SliderRange, labeled_pick_list, labeled_slider, labeled_toggler, section_title, set_f32,
+    set_if_changed, update_usize_from_f32,
 };
 use crate::dsp::spectrogram::FrequencyScale;
 use crate::dsp::spectrum::{
     AveragingMode, MAX_SPECTRUM_EXP_FACTOR, MAX_SPECTRUM_PEAK_DECAY, MIN_SPECTRUM_EXP_FACTOR,
     MIN_SPECTRUM_PEAK_DECAY,
 };
-use crate::ui::settings::{
-    SettingsHandle, SpectrumDisplayMode, SpectrumSettings, SpectrumWeightingMode,
-};
+use crate::ui::settings::{SpectrumDisplayMode, SpectrumSettings, SpectrumWeightingMode};
 use crate::ui::theme;
-use crate::ui::visualization::visual_manager::{VisualKind, VisualManagerHandle};
-use iced::widget::{column, row, toggler};
+use crate::ui::visualization::visual_manager::VisualKind;
+use iced::widget::{column, row};
 use iced::{Element, Length};
 
 const FFT_OPTIONS: [usize; 5] = [1024, 2048, 4096, 8192, 16384];
@@ -29,12 +26,9 @@ const WEIGHTING: [SpectrumWeightingMode; 2] =
     [SpectrumWeightingMode::AWeighted, SpectrumWeightingMode::Raw];
 const AVG_MODE: [AvgMode; 3] = [AvgMode::None, AvgMode::Exponential, AvgMode::PeakHold];
 
-// imported from DSP to keep things consistent.
 const EXP_R: SliderRange = SliderRange::new(MIN_SPECTRUM_EXP_FACTOR, MAX_SPECTRUM_EXP_FACTOR, 0.01);
 const DECAY_R: SliderRange =
     SliderRange::new(MIN_SPECTRUM_PEAK_DECAY, MAX_SPECTRUM_PEAK_DECAY, 0.5);
-
-// only used for display settings.
 const SRAD_R: SliderRange = SliderRange::new(0.0, 20.0, 1.0);
 const SPAS_R: SliderRange = SliderRange::new(0.0, 5.0, 1.0);
 const BARS_R: SliderRange = SliderRange::new(8.0, 128.0, 1.0);
@@ -48,6 +42,7 @@ pub(crate) enum AvgMode {
     Exponential,
     PeakHold,
 }
+
 impl std::fmt::Display for AvgMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
@@ -60,7 +55,7 @@ impl std::fmt::Display for AvgMode {
 
 settings_pane!(
     SpectrumSettingsPane, SpectrumSettings, VisualKind::Spectrum,
-    theme::spectrum,
+    theme::spectrum, Spectrum,
     extra_from_settings(settings) {
         avg_mode: AvgMode = split_averaging(settings.averaging).0,
         avg_factor: f32 = split_averaging(settings.averaging).1,
@@ -90,7 +85,7 @@ pub enum Message {
 }
 
 impl SpectrumSettingsPane {
-    fn view(&self) -> Element<'_, SettingsMessage> {
+    fn view(&self) -> Element<'_, Message> {
         use Message::*;
         let s = &self.settings;
         let dir = if s.reverse_frequency {
@@ -98,35 +93,28 @@ impl SpectrumSettingsPane {
         } else {
             "Low -> High"
         };
-        let tog = |v, l, f: fn(bool) -> Message| {
-            toggler(v)
-                .label(l)
-                .spacing(4)
-                .text_size(11)
-                .on_toggle(move |b| SettingsMessage::Spectrum(f(b)))
-        };
 
         let left = column![
-            labeled_pick_list("Display", &DISPLAY_MODE, Some(s.display_mode), |m| {
-                SettingsMessage::Spectrum(DisplayMode(m))
-            }),
-            labeled_pick_list("Weighting", &WEIGHTING, Some(s.weighting_mode), |m| {
-                SettingsMessage::Spectrum(WeightingMode(m))
-            }),
-            labeled_pick_list("FFT size", &FFT_OPTIONS, Some(s.fft_size), |v| {
-                SettingsMessage::Spectrum(FftSize(v))
-            }),
+            labeled_pick_list("Display", &DISPLAY_MODE, Some(s.display_mode), DisplayMode),
+            labeled_pick_list(
+                "Weighting",
+                &WEIGHTING,
+                Some(s.weighting_mode),
+                WeightingMode
+            ),
+            labeled_pick_list("FFT size", &FFT_OPTIONS, Some(s.fft_size), FftSize),
         ]
         .spacing(8)
         .width(Length::Fill);
 
         let right = column![
-            labeled_pick_list("Freq scale", &FREQ_SCALE, Some(s.frequency_scale), |v| {
-                SettingsMessage::Spectrum(FrequencyScale(v))
-            }),
-            labeled_pick_list("Averaging", &AVG_MODE, Some(self.avg_mode), |m| {
-                SettingsMessage::Spectrum(Averaging(m))
-            }),
+            labeled_pick_list(
+                "Freq scale",
+                &FREQ_SCALE,
+                Some(s.frequency_scale),
+                FrequencyScale
+            ),
+            labeled_pick_list("Averaging", &AVG_MODE, Some(self.avg_mode), Averaging),
         ]
         .spacing(8)
         .width(Length::Fill);
@@ -139,7 +127,7 @@ impl SpectrumSettingsPane {
                     self.avg_factor,
                     format!("{:.2}", self.avg_factor),
                     EXP_R,
-                    |v| SettingsMessage::Spectrum(AvgFactor(v)),
+                    AvgFactor,
                 ))
             }
             AvgMode::PeakHold => {
@@ -148,7 +136,7 @@ impl SpectrumSettingsPane {
                     self.peak_decay,
                     format!("{:.1} dB/s", self.peak_decay),
                     DECAY_R,
-                    |v| SettingsMessage::Spectrum(PeakDecay(v)),
+                    PeakDecay,
                 ))
             }
             AvgMode::None => {}
@@ -160,14 +148,14 @@ impl SpectrumSettingsPane {
                 s.smoothing_radius as f32,
                 format!("{} bins", s.smoothing_radius),
                 SRAD_R,
-                |v| SettingsMessage::Spectrum(SmoothRadius(v))
+                SmoothRadius
             ),
             labeled_slider(
                 "Smooth passes",
                 s.smoothing_passes as f32,
                 s.smoothing_passes.to_string(),
                 SPAS_R,
-                |v| SettingsMessage::Spectrum(SmoothPasses(v))
+                SmoothPasses
             ),
         ]
         .spacing(8);
@@ -178,14 +166,14 @@ impl SpectrumSettingsPane {
                     s.bar_count as f32,
                     s.bar_count.to_string(),
                     BARS_R,
-                    |v| SettingsMessage::Spectrum(BarCount(v)),
+                    BarCount,
                 ))
                 .push(labeled_slider(
                     "Bar gap",
                     s.bar_gap,
                     format!("{:.0}%", s.bar_gap * 100.0),
                     GAP_R,
-                    |v| SettingsMessage::Spectrum(BarGap(v)),
+                    BarGap,
                 ));
         }
         visual = visual.push(labeled_slider(
@@ -193,19 +181,19 @@ impl SpectrumSettingsPane {
             s.highlight_threshold,
             format!("{:.0}%", s.highlight_threshold * 100.0),
             HIGH_R,
-            |v| SettingsMessage::Spectrum(Highlight(v)),
+            Highlight,
         ));
 
         let toggles = row![
             column![
-                tog(s.reverse_frequency, dir, ReverseFrequency),
-                tog(s.show_grid, "Freq grid", ShowGrid)
+                labeled_toggler(dir, s.reverse_frequency, ReverseFrequency),
+                labeled_toggler("Freq grid", s.show_grid, ShowGrid),
             ]
             .spacing(8)
             .width(Length::Fill),
             column![
-                tog(s.show_peak_label, "Peak label", ShowPeakLabel),
-                tog(s.show_secondary_line, "Secondary", ShowSecondary)
+                labeled_toggler("Peak label", s.show_peak_label, ShowPeakLabel),
+                labeled_toggler("Secondary", s.show_secondary_line, ShowSecondary),
             ]
             .spacing(8)
             .width(Length::Fill),
@@ -219,24 +207,17 @@ impl SpectrumSettingsPane {
             section_title("Display"),
             toggles,
             visual,
-            super::palette_section(&self.palette, Palette, SettingsMessage::Spectrum)
+            super::palette_section(&self.palette, Palette)
         ]
         .spacing(12)
         .into()
     }
 
-    fn handle(
-        &mut self,
-        message: &SettingsMessage,
-        visual_manager: &VisualManagerHandle,
-        settings_handle: &SettingsHandle,
-    ) {
+    fn handle(&mut self, msg: &Message) -> bool {
         use Message::*;
-        let SettingsMessage::Spectrum(msg) = message else {
-            return;
-        };
         let s = &mut self.settings;
-        let changed = match *msg {
+
+        match *msg {
             FftSize(v) => set_if_changed(&mut s.fft_size, v)
                 .then(|| s.hop_size = (v / 4).max(1))
                 .is_some(),
@@ -262,15 +243,6 @@ impl SpectrumSettingsPane {
             BarGap(v) => set_f32(&mut s.bar_gap, GAP_R.snap(v)),
             Highlight(v) => set_f32(&mut s.highlight_threshold, HIGH_R.snap(v)),
             Palette(e) => self.palette.update(e),
-        };
-        if changed {
-            persist_palette!(
-                visual_manager,
-                settings_handle,
-                VisualKind::Spectrum,
-                self,
-                &theme::spectrum::COLORS
-            );
         }
     }
 

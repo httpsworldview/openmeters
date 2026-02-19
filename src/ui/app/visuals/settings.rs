@@ -1,26 +1,9 @@
 // Contains the settings panes for visual modules.
 
-macro_rules! persist_palette {
-    ($visual_manager:expr, $settings_handle:expr, $kind:expr, $this:expr, $defaults:expr) => {{
-        super::persist_with_palette(
-            $visual_manager,
-            $settings_handle,
-            $kind,
-            &$this.settings,
-            &$this.palette,
-            $defaults,
-        );
-    }};
-}
-
-// Generates settings pane struct, create function, and trait impl.
-// Use `extra_from_settings` for fields computed from loaded settings during init.
-// Use `init_palette` to run initialization code on the palette after loading.
 macro_rules! settings_pane {
-    // Branch with extra fields computed from settings
     (
-        $pane:ident, $settings_ty:ty, $kind:expr, $palette_mod:path
-        , extra_from_settings($s:ident) { $($field:ident : $ty:ty = $init:expr),* $(,)? }
+        $pane:ident, $settings_ty:ty, $kind:expr, $palette_mod:path, $variant:ident,
+        extra_from_settings($s:ident) { $($field:ident : $ty:ty = $init:expr),* $(,)? }
     ) => {
         #[derive(Debug)]
         pub struct $pane {
@@ -30,10 +13,7 @@ macro_rules! settings_pane {
             $($field: $ty,)*
         }
 
-        pub fn create(
-            visual_id: super::VisualId,
-            visual_manager: &super::VisualManagerHandle,
-        ) -> $pane {
+        pub fn create(visual_id: super::VisualId, visual_manager: &super::VisualManagerHandle) -> $pane {
             use $palette_mod as pal;
             let ($s, palette) = super::load_settings_and_palette::<$settings_ty>(
                 visual_manager, $kind, &pal::COLORS, pal::LABELS,
@@ -42,12 +22,11 @@ macro_rules! settings_pane {
             $pane { visual_id, settings: $s, palette, $($field,)* }
         }
 
-        settings_pane!(@impl $pane);
+        settings_pane!(@impl $pane, $variant, $kind, $palette_mod);
     };
-    // Branch with palette init callback
     (
-        $pane:ident, $settings_ty:ty, $kind:expr, $palette_mod:path
-        , init_palette($s:ident, $p:ident) $init_body:block
+        $pane:ident, $settings_ty:ty, $kind:expr, $palette_mod:path, $variant:ident,
+        init_palette($s:ident, $p:ident) $init_body:block
     ) => {
         #[derive(Debug)]
         pub struct $pane {
@@ -56,10 +35,7 @@ macro_rules! settings_pane {
             palette: super::palette::PaletteEditor,
         }
 
-        pub fn create(
-            visual_id: super::VisualId,
-            visual_manager: &super::VisualManagerHandle,
-        ) -> $pane {
+        pub fn create(visual_id: super::VisualId, visual_manager: &super::VisualManagerHandle) -> $pane {
             use $palette_mod as pal;
             let ($s, mut $p) = super::load_settings_and_palette::<$settings_ty>(
                 visual_manager, $kind, &pal::COLORS, pal::LABELS,
@@ -68,37 +44,16 @@ macro_rules! settings_pane {
             $pane { visual_id, settings: $s, palette: $p }
         }
 
-        settings_pane!(@impl $pane);
+        settings_pane!(@impl $pane, $variant, $kind, $palette_mod);
     };
-    // Branch without extra fields
-    (
-        $pane:ident, $settings_ty:ty, $kind:expr, $palette_mod:path
-    ) => {
-        #[derive(Debug)]
-        pub struct $pane {
-            visual_id: super::VisualId,
-            settings: $settings_ty,
-            palette: super::palette::PaletteEditor,
-        }
-
-        pub fn create(
-            visual_id: super::VisualId,
-            visual_manager: &super::VisualManagerHandle,
-        ) -> $pane {
-            use $palette_mod as pal;
-            let (settings, palette) = super::load_settings_and_palette::<$settings_ty>(
-                visual_manager, $kind, &pal::COLORS, pal::LABELS,
-            );
-            $pane { visual_id, settings, palette }
-        }
-
-        settings_pane!(@impl $pane);
+    ($pane:ident, $settings_ty:ty, $kind:expr, $palette_mod:path, $variant:ident) => {
+        settings_pane!($pane, $settings_ty, $kind, $palette_mod, $variant, init_palette(_s, _p) {});
     };
-    (@impl $pane:ident) => {
+    (@impl $pane:ident, $variant:ident, $kind:expr, $palette_mod:path) => {
         impl super::ModuleSettingsPane for $pane {
             fn visual_id(&self) -> super::VisualId { self.visual_id }
             fn view(&self) -> iced::Element<'_, super::SettingsMessage> {
-                $pane::view(self)
+                $pane::view(self).map(super::SettingsMessage::$variant)
             }
             fn handle(
                 &mut self,
@@ -106,7 +61,15 @@ macro_rules! settings_pane {
                 visual_manager: &super::VisualManagerHandle,
                 settings_handle: &crate::ui::settings::SettingsHandle,
             ) {
-                $pane::handle(self, message, visual_manager, settings_handle)
+                if let super::SettingsMessage::$variant(msg) = message {
+                    if $pane::handle(self, msg) {
+                        use $palette_mod as pal;
+                        super::persist_with_palette(
+                            visual_manager, settings_handle, $kind,
+                            &self.settings, &self.palette, &pal::COLORS,
+                        );
+                    }
+                }
             }
         }
     };
@@ -129,8 +92,7 @@ use crate::ui::theme::Palette;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
 use iced::widget::column;
 use iced::{Color, Element};
-use serde::Serialize;
-use serde::de::DeserializeOwned;
+use serde::{Serialize, de::DeserializeOwned};
 
 pub(super) const CHANNEL_OPTIONS: [ChannelMode; 4] = [
     ChannelMode::Both,
@@ -166,9 +128,6 @@ pub struct ActiveSettings {
 }
 
 impl ActiveSettings {
-    pub fn new(pane: Box<dyn ModuleSettingsPane>) -> Self {
-        Self { pane }
-    }
     pub fn visual_id(&self) -> VisualId {
         self.pane.visual_id()
     }
@@ -190,94 +149,64 @@ pub fn create_panel(
     kind: VisualKind,
     visual_manager: &VisualManagerHandle,
 ) -> ActiveSettings {
-    let pane: Box<dyn ModuleSettingsPane> = match kind {
-        VisualKind::Loudness => Box::new(loudness::create(visual_id, visual_manager)),
-        VisualKind::Oscilloscope => Box::new(oscilloscope::create(visual_id, visual_manager)),
-        VisualKind::Spectrogram => Box::new(spectrogram::create(visual_id, visual_manager)),
-        VisualKind::Spectrum => Box::new(spectrum::create(visual_id, visual_manager)),
-        VisualKind::Stereometer => Box::new(stereometer::create(visual_id, visual_manager)),
-        VisualKind::Waveform => Box::new(waveform::create(visual_id, visual_manager)),
-    };
-
-    ActiveSettings::new(pane)
-}
-
-pub(super) fn load_config_or_default<T>(visual_manager: &VisualManagerHandle, kind: VisualKind) -> T
-where
-    T: DeserializeOwned + Default,
-{
-    visual_manager
-        .borrow()
-        .module_settings(kind)
-        .and_then(|stored| stored.parse_config::<T>())
-        .unwrap_or_default()
-}
-
-pub(super) fn persist_module_config<T>(
-    visual_manager: &VisualManagerHandle,
-    settings_handle: &SettingsHandle,
-    kind: VisualKind,
-    config: &T,
-) -> bool
-where
-    T: Serialize,
-{
-    let applied = visual_manager
-        .borrow_mut()
-        .apply_module_settings(kind, &ModuleSettings::with_config(config));
-
-    if applied {
-        settings_handle.update(|s| s.set_module_config(kind, config));
+    ActiveSettings {
+        pane: match kind {
+            VisualKind::Loudness => Box::new(loudness::create(visual_id, visual_manager)),
+            VisualKind::Oscilloscope => Box::new(oscilloscope::create(visual_id, visual_manager)),
+            VisualKind::Spectrogram => Box::new(spectrogram::create(visual_id, visual_manager)),
+            VisualKind::Spectrum => Box::new(spectrum::create(visual_id, visual_manager)),
+            VisualKind::Stereometer => Box::new(stereometer::create(visual_id, visual_manager)),
+            VisualKind::Waveform => Box::new(waveform::create(visual_id, visual_manager)),
+        },
     }
-
-    applied
 }
 
-pub(super) fn load_settings_and_palette<T>(
+pub(super) fn load_settings_and_palette<T: DeserializeOwned + Default + HasPalette>(
     visual_manager: &VisualManagerHandle,
     kind: VisualKind,
     defaults: &'static [Color],
     labels: &'static [&'static str],
-) -> (T, PaletteEditor)
-where
-    T: DeserializeOwned + Default + HasPalette,
-{
-    let settings = load_config_or_default::<T>(visual_manager, kind);
+) -> (T, PaletteEditor) {
+    let settings: T = visual_manager
+        .borrow()
+        .module_settings(kind)
+        .and_then(|stored| stored.parse_config::<T>())
+        .unwrap_or_default();
     let mut palette = Palette::new(defaults, labels);
     if let Some(stored) = settings.palette() {
-        let colors: Vec<Color> = stored.stops.iter().map(|c| (*c).into()).collect();
-        palette.set(&colors);
+        palette.set(
+            &stored
+                .stops
+                .iter()
+                .map(|c| (*c).into())
+                .collect::<Vec<Color>>(),
+        );
     }
     (settings, PaletteEditor::new(palette))
 }
 
-pub(super) fn palette_section<'a, M>(
+pub(super) fn palette_section<'a, M: 'a>(
     palette: &'a PaletteEditor,
     map: fn(PaletteEvent) -> M,
-    wrap: fn(M) -> SettingsMessage,
-) -> iced::widget::Column<'a, SettingsMessage>
-where
-    M: 'a,
-{
-    column![
-        widgets::section_title("Colors"),
-        palette.view().map(map).map(wrap)
-    ]
-    .spacing(8)
+) -> iced::widget::Column<'a, M> {
+    column![widgets::section_title("Colors"), palette.view().map(map)].spacing(8)
 }
 
-pub(super) fn persist_with_palette<T>(
+pub(super) fn persist_with_palette<T: Clone + Serialize + HasPalette>(
     visual_manager: &VisualManagerHandle,
     settings_handle: &SettingsHandle,
     kind: VisualKind,
     config: &T,
     palette: &PaletteEditor,
     defaults: &[Color],
-) -> bool
-where
-    T: Clone + Serialize + HasPalette,
-{
+) -> bool {
     let mut stored = config.clone();
     stored.set_palette(PaletteSettings::if_differs_from(palette.colors(), defaults));
-    persist_module_config(visual_manager, settings_handle, kind, &stored)
+    let applied = visual_manager
+        .borrow_mut()
+        .apply_module_settings(kind, &ModuleSettings::with_config(&stored));
+    if applied {
+        settings_handle.update(|s| s.set_module_config(kind, &stored));
+    }
+    applied
 }
