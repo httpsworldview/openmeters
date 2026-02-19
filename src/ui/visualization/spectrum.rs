@@ -1,17 +1,15 @@
-use crate::audio::meter_tap::MeterFormat;
 use crate::dsp::spectrogram::FrequencyScale;
 use crate::dsp::spectrum::{
     SpectrumConfig, SpectrumProcessor as CoreSpectrumProcessor, SpectrumSnapshot,
 };
-use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::ui::render::spectrum::{SpectrumParams, SpectrumPrimitive};
 use crate::ui::settings::{SpectrumDisplayMode, SpectrumSettings, SpectrumWeightingMode};
 use crate::ui::theme;
 use crate::util::audio::musical::MusicalNote;
-use crate::util::audio::{hz_to_mel, lerp, mel_to_hz};
-use iced::advanced::graphics::text::Paragraph as RenderParagraph;
+use crate::util::audio::{fmt_freq, lerp};
+use crate::vis_processor;
 use iced::advanced::renderer::{self, Quad};
-use iced::advanced::text::{self, Paragraph as _, Renderer as _};
+use iced::advanced::text::Renderer as _;
 use iced::advanced::widget::{Tree, tree};
 use iced::advanced::{Layout, Renderer as _, Widget, layout, mouse};
 use iced::{Background, Color, Element, Length, Point, Rectangle, Size};
@@ -52,45 +50,17 @@ const GRID_FREQS: &[(f32, u8)] = &[
     (16_000.0, 1),
 ];
 
-pub(crate) struct SpectrumProcessor {
-    inner: CoreSpectrumProcessor,
-}
+vis_processor!(
+    SpectrumProcessor,
+    CoreSpectrumProcessor,
+    SpectrumConfig,
+    SpectrumSnapshot,
+    sync_rate
+);
 
 impl std::fmt::Debug for SpectrumProcessor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SpectrumProcessor").finish_non_exhaustive()
-    }
-}
-
-impl SpectrumProcessor {
-    pub fn new(sample_rate: f32) -> Self {
-        Self {
-            inner: CoreSpectrumProcessor::new(SpectrumConfig {
-                sample_rate,
-                ..Default::default()
-            }),
-        }
-    }
-
-    pub fn ingest(&mut self, samples: &[f32], format: MeterFormat) -> Option<SpectrumSnapshot> {
-        if samples.is_empty() {
-            return None;
-        }
-        let sr = format.sample_rate.max(1.0);
-        let mut cfg = self.inner.config();
-        if (cfg.sample_rate - sr).abs() > f32::EPSILON {
-            cfg.sample_rate = sr;
-            self.inner.update_config(cfg);
-        }
-        self.inner
-            .process_block(&AudioBlock::now(samples, format.channels.max(1), sr))
-    }
-
-    pub fn update_config(&mut self, c: SpectrumConfig) {
-        self.inner.update_config(c);
-    }
-    pub fn config(&self) -> SpectrumConfig {
-        self.inner.config()
     }
 }
 
@@ -304,10 +274,7 @@ impl SpectrumState {
         if y < 0.08 {
             return None;
         }
-        let text = MusicalNote::from_frequency(f).map_or_else(
-            || format!("{:.1} Hz", f),
-            |n| format!("{:.1} Hz | {}", f, n.format()),
-        );
+        let text = MusicalNote::format_with_hz(f);
         Some(PeakLabel {
             text,
             x: x.clamp(0.0, 1.0),
@@ -459,41 +426,17 @@ pub(crate) fn widget<'a, M: 'a>(state: &'a RefCell<SpectrumState>) -> Element<'a
 struct Scale {
     min: f32,
     max: f32,
-    log_min: f32,
-    log_range: f32,
-    mel_min: f32,
-    mel_range: f32,
 }
 
 impl Scale {
     fn new(min: f32, max: f32) -> Self {
-        let log_min = min.max(EPSILON).log10();
-        let log_range = (max.max(min * 1.01).log10() - log_min).max(EPSILON);
-        let mel_min = hz_to_mel(min);
-        Self {
-            min,
-            max,
-            log_min,
-            log_range,
-            mel_min,
-            mel_range: (hz_to_mel(max) - mel_min).max(EPSILON),
-        }
+        Self { min, max }
     }
     fn freq_at(&self, s: FrequencyScale, t: f32) -> f32 {
-        match s {
-            FrequencyScale::Linear => self.min + (self.max - self.min) * t,
-            FrequencyScale::Logarithmic => 10f32.powf(self.log_min + self.log_range * t),
-            FrequencyScale::Mel => mel_to_hz(self.mel_min + self.mel_range * t),
-        }
+        s.freq_at(self.min, self.max, t)
     }
     fn pos_of(&self, s: FrequencyScale, f: f32) -> f32 {
-        let f = f.clamp(self.min, self.max);
-        match s {
-            FrequencyScale::Linear => (f - self.min) / (self.max - self.min).max(EPSILON),
-            FrequencyScale::Logarithmic => (f.max(EPSILON).log10() - self.log_min) / self.log_range,
-            FrequencyScale::Mel => (hz_to_mel(f) - self.mel_min) / self.mel_range,
-        }
-        .clamp(0.0, 1.0)
+        s.pos_of(self.min, self.max, f).clamp(0.0, 1.0)
     }
 }
 
@@ -577,45 +520,6 @@ fn reindex(pts: &mut [[f32; 2]]) {
     }
 }
 
-fn fmt_freq(f: f32) -> String {
-    match f {
-        f if f >= 10_000.0 => format!("{:.0} kHz", f / 1000.0),
-        f if f >= 1_000.0 => format!("{:.1} kHz", f / 1000.0),
-        f if f >= 100.0 => format!("{:.0} Hz", f),
-        f if f >= 10.0 => format!("{:.1} Hz", f),
-        _ => format!("{:.2} Hz", f),
-    }
-}
-
-fn measure_text(s: &str, px: f32) -> Size {
-    RenderParagraph::with_text(text::Text {
-        content: s,
-        bounds: Size::INFINITE,
-        size: iced::Pixels(px),
-        font: iced::Font::default(),
-        align_x: iced::alignment::Horizontal::Left.into(),
-        align_y: iced::alignment::Vertical::Top,
-        line_height: text::LineHeight::default(),
-        shaping: text::Shaping::Basic,
-        wrapping: text::Wrapping::None,
-    })
-    .min_bounds()
-}
-
-fn make_text(s: &str, px: f32, bounds: Size) -> text::Text<String> {
-    text::Text {
-        content: s.to_string(),
-        bounds,
-        size: iced::Pixels(px),
-        font: iced::Font::default(),
-        align_x: iced::alignment::Horizontal::Left.into(),
-        align_y: iced::alignment::Vertical::Top,
-        line_height: text::LineHeight::default(),
-        shaping: text::Shaping::Basic,
-        wrapping: text::Wrapping::None,
-    }
-}
-
 fn draw_grid(r: &mut iced::Renderer, th: &iced::Theme, b: Rectangle, lines: &[(f32, String, u8)]) {
     if b.width <= 0.0 || b.height <= 0.0 {
         return;
@@ -631,7 +535,7 @@ fn draw_grid(r: &mut iced::Renderer, th: &iced::Theme, b: Rectangle, lines: &[(f
             let x = b.x + b.width * pos;
             (x >= b.x - 1.0 && x <= b.x + b.width + 1.0)
                 .then(|| {
-                    let sz = measure_text(lbl, 10.0);
+                    let sz = super::measure_text(lbl, 10.0);
                     (sz.width > 0.0 && sz.height > 0.0).then_some((x, lbl, *imp, sz))
                 })
                 .flatten()
@@ -678,7 +582,7 @@ fn draw_grid(r: &mut iced::Renderer, th: &iced::Theme, b: Rectangle, lines: &[(f
         let tx =
             (x - sz.width * 0.5).clamp(b.x + 6.0, (b.x + b.width - 6.0 - sz.width).max(b.x + 6.0));
         r.fill_text(
-            make_text(lbl, 10.0, *sz),
+            super::make_text(lbl, 10.0, *sz),
             Point::new(tx, ty),
             tc,
             Rectangle::new(Point::new(tx, ty), *sz),
@@ -690,7 +594,7 @@ fn draw_peak(r: &mut iced::Renderer, th: &iced::Theme, b: Rectangle, pk: &PeakLa
     if pk.opacity < 0.01 || b.width < 8.0 || b.height < 8.0 {
         return;
     }
-    let sz = measure_text(&pk.text, 12.0);
+    let sz = super::measure_text(&pk.text, 12.0);
     if sz.width <= 0.0 || sz.height <= 0.0 {
         return;
     }
@@ -719,7 +623,7 @@ fn draw_peak(r: &mut iced::Renderer, th: &iced::Theme, b: Rectangle, pk: &PeakLa
         Background::Color(theme::with_alpha(pal.background.strong.color, pk.opacity)),
     );
     r.fill_text(
-        make_text(&pk.text, 12.0, sz),
+        super::make_text(&pk.text, 12.0, sz),
         Point::new(tx, ty),
         theme::with_alpha(pal.background.base.text, pk.opacity),
         Rectangle::new(Point::new(tx, ty), sz),

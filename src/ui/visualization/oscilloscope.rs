@@ -1,62 +1,25 @@
 // UI wrapper around the oscilloscope DSP processor and renderer.
 
-use crate::audio::meter_tap::MeterFormat;
 use crate::dsp::oscilloscope::{
     OscilloscopeConfig, OscilloscopeProcessor as CoreOscilloscopeProcessor, OscilloscopeSnapshot,
 };
-use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::ui::render::oscilloscope::{OscilloscopeParams, OscilloscopePrimitive};
 use crate::ui::settings::{ChannelMode, OscilloscopeSettings};
 use crate::ui::theme;
 use crate::ui::visualization::project_channel_data;
-use crate::visualization_widget;
+use crate::{vis_processor, visualization_widget};
 use iced::Color;
 
 const MAX_PERSISTENCE: f32 = 0.98;
 const FILL_ALPHA: f32 = 0.15;
 
-#[derive(Debug, Clone)]
-pub(crate) struct OscilloscopeProcessor {
-    inner: CoreOscilloscopeProcessor,
-}
-
-impl OscilloscopeProcessor {
-    pub fn new(sample_rate: f32) -> Self {
-        Self {
-            inner: CoreOscilloscopeProcessor::new(OscilloscopeConfig {
-                sample_rate,
-                ..Default::default()
-            }),
-        }
-    }
-
-    pub fn ingest(&mut self, samples: &[f32], format: MeterFormat) -> Option<OscilloscopeSnapshot> {
-        if samples.is_empty() {
-            return None;
-        }
-
-        let sample_rate = format.sample_rate.max(1.0);
-        let mut config = self.inner.config();
-        if (config.sample_rate - sample_rate).abs() > f32::EPSILON {
-            config.sample_rate = sample_rate;
-            self.inner.update_config(config);
-        }
-
-        self.inner.process_block(&AudioBlock::now(
-            samples,
-            format.channels.max(1),
-            sample_rate,
-        ))
-    }
-
-    pub fn update_config(&mut self, config: OscilloscopeConfig) {
-        self.inner.update_config(config);
-    }
-
-    pub fn config(&self) -> OscilloscopeConfig {
-        self.inner.config()
-    }
-}
+vis_processor!(
+    OscilloscopeProcessor,
+    CoreOscilloscopeProcessor,
+    OscilloscopeConfig,
+    OscilloscopeSnapshot,
+    sync_rate
+);
 
 #[derive(Debug, Clone)]
 pub(crate) struct OscilloscopeState {
@@ -181,10 +144,4 @@ impl Default for OscilloscopeStyle {
     }
 }
 
-visualization_widget!(
-    Oscilloscope,
-    OscilloscopeState,
-    OscilloscopePrimitive,
-    |state, bounds| state.visual_params(bounds),
-    |params| OscilloscopePrimitive::new(params)
-);
+visualization_widget!(Oscilloscope, OscilloscopeState, OscilloscopePrimitive);

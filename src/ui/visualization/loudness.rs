@@ -2,14 +2,13 @@
 // Note: This processor intentionally diverges from project patterns by
 // omitting `config()` and `update_config()` methods. this is because
 // loudness settings are not user-configurable
-use crate::audio::meter_tap::MeterFormat;
 use crate::dsp::loudness::{
     LoudnessConfig, LoudnessProcessor as CoreLoudnessProcessor, LoudnessSnapshot, MAX_CHANNELS,
 };
-use crate::dsp::{AudioBlock, AudioProcessor};
 use crate::ui::render::loudness::{LoudnessParams, LoudnessPrimitive, MeterBar};
 use crate::ui::settings::{LoudnessSettings, MeterMode};
 use crate::ui::theme;
+use crate::vis_processor;
 use iced::advanced::Renderer as _;
 use iced::advanced::renderer::{self, Quad};
 use iced::advanced::widget::{Tree, tree};
@@ -31,33 +30,13 @@ const LEFT_CHANNEL_INDICES: &[usize] = &[0, 4, 6];
 const RIGHT_CHANNEL_INDICES: &[usize] = &[1, 5, 7];
 const CENTER_CHANNEL_INDEX: usize = 2;
 
-#[derive(Debug, Clone)]
-pub(crate) struct LoudnessProcessor {
-    inner: CoreLoudnessProcessor,
-}
-
-impl LoudnessProcessor {
-    pub fn new(sample_rate: f32) -> Self {
-        Self {
-            inner: CoreLoudnessProcessor::new(LoudnessConfig {
-                sample_rate,
-                ..Default::default()
-            }),
-        }
-    }
-
-    pub fn ingest(&mut self, samples: &[f32], format: MeterFormat) -> Option<LoudnessSnapshot> {
-        if samples.is_empty() {
-            return None;
-        }
-        let sample_rate = format.sample_rate.max(1.0);
-        self.inner.process_block(&AudioBlock::now(
-            samples,
-            format.channels.max(1),
-            sample_rate,
-        ))
-    }
-}
+vis_processor!(
+    LoudnessProcessor,
+    CoreLoudnessProcessor,
+    LoudnessConfig,
+    LoudnessSnapshot,
+    no_config
+);
 
 pub const LOUDNESS_PALETTE_SIZE: usize = 5;
 

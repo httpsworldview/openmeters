@@ -1,9 +1,7 @@
-use crate::audio::meter_tap::MeterFormat;
 use crate::dsp::spectrogram::{
     FrequencyScale, SpectrogramColumn, SpectrogramConfig,
     SpectrogramProcessor as CoreSpectrogramProcessor, SpectrogramUpdate,
 };
-use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::ui::render::spectrogram::{
     ColumnBuffer, ColumnBufferPool, SPECTROGRAM_PALETTE_SIZE, SpectrogramColumnUpdate,
     SpectrogramParams, SpectrogramPrimitive,
@@ -11,10 +9,10 @@ use crate::ui::render::spectrogram::{
 use crate::ui::settings::PianoRollOverlay;
 use crate::ui::theme;
 use crate::util::audio::musical::MusicalNote;
-use crate::util::audio::{DB_FLOOR, DEFAULT_SAMPLE_RATE, hz_to_mel, mel_to_hz};
-use iced::advanced::graphics::text::Paragraph;
+use crate::util::audio::{DB_FLOOR, DEFAULT_SAMPLE_RATE};
+use crate::vis_processor;
 use iced::advanced::renderer::{self, Quad};
-use iced::advanced::text::{self, Paragraph as _, Renderer as TextRenderer};
+use iced::advanced::text::Renderer as _;
 use iced::advanced::widget::{Tree, tree};
 use iced::advanced::{Layout, Renderer as _, Widget, layout, mouse};
 use iced::{Background, Color, Element, Length, Point, Rectangle, Size, keyboard};
@@ -30,63 +28,29 @@ const TOOLTIP_SIZE: f32 = 14.0;
 const TOOLTIP_PAD: f32 = 8.0;
 const PIANO_ROLL_WIDTH: f32 = 18.0;
 
-fn norm_to_freq(inv: f32, nyquist: f32, min_freq: f32, scale: FrequencyScale) -> f32 {
-    match scale {
-        FrequencyScale::Linear => nyquist * inv,
-        FrequencyScale::Logarithmic => min_freq * (nyquist / min_freq).max(1.0).powf(inv),
-        FrequencyScale::Mel => {
-            mel_to_hz(hz_to_mel(min_freq) + (hz_to_mel(nyquist) - hz_to_mel(min_freq)) * inv)
-        }
+fn spec_freq_min(scale: FrequencyScale, min_freq: f32) -> f32 {
+    if matches!(scale, FrequencyScale::Linear) {
+        0.0
+    } else {
+        min_freq
     }
+}
+
+fn norm_to_freq(inv: f32, nyquist: f32, min_freq: f32, scale: FrequencyScale) -> f32 {
+    scale.freq_at(spec_freq_min(scale, min_freq), nyquist, inv)
 }
 
 fn freq_to_norm(freq: f32, nyquist: f32, min_freq: f32, scale: FrequencyScale) -> f32 {
-    match scale {
-        FrequencyScale::Linear => freq / nyquist,
-        FrequencyScale::Logarithmic => (freq / min_freq).ln() / (nyquist / min_freq).ln(),
-        FrequencyScale::Mel => {
-            (hz_to_mel(freq) - hz_to_mel(min_freq)) / (hz_to_mel(nyquist) - hz_to_mel(min_freq))
-        }
-    }
+    scale.pos_of(spec_freq_min(scale, min_freq), nyquist, freq)
 }
 
-pub(crate) struct SpectrogramProcessor {
-    inner: CoreSpectrogramProcessor,
-}
-
-impl SpectrogramProcessor {
-    pub fn new(sample_rate: f32) -> Self {
-        Self {
-            inner: CoreSpectrogramProcessor::new(SpectrogramConfig {
-                sample_rate,
-                use_reassignment: true,
-                ..Default::default()
-            }),
-        }
-    }
-
-    pub fn ingest(&mut self, samples: &[f32], format: MeterFormat) -> Option<SpectrogramUpdate> {
-        if samples.is_empty() {
-            return None;
-        }
-        let rate = format.sample_rate.max(1.0);
-        let mut cfg = self.inner.config();
-        if (cfg.sample_rate - rate).abs() > f32::EPSILON {
-            cfg.sample_rate = rate;
-            self.inner.update_config(cfg);
-        }
-        self.inner
-            .process_block(&AudioBlock::now(samples, format.channels.max(1), rate))
-    }
-
-    pub fn update_config(&mut self, config: SpectrogramConfig) {
-        self.inner.update_config(config);
-    }
-
-    pub fn config(&self) -> SpectrogramConfig {
-        self.inner.config()
-    }
-}
+vis_processor!(
+    SpectrogramProcessor,
+    CoreSpectrogramProcessor,
+    SpectrogramConfig,
+    SpectrogramUpdate,
+    sync_rate
+);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct SpectrogramStyle {
@@ -202,19 +166,7 @@ impl SpectrogramBuffer {
         let passthrough = upd.display_bins_hz.as_ref().is_some_and(|b| {
             !b.is_empty() && history.iter().all(|c| c.magnitudes_db.len() == b.len())
         });
-        self.display_freqs = upd
-            .display_bins_hz
-            .clone()
-            .filter(|b| passthrough && b.len() >= self.height as usize)
-            .map(|b| Arc::from(&b[..self.height as usize]))
-            .unwrap_or_else(|| Arc::from([]));
-        self.mapping = BinMapping::new(
-            self.height as usize,
-            upd.fft_size,
-            upd.sample_rate,
-            upd.frequency_scale,
-            passthrough,
-        );
+        self.update_mapping(upd, passthrough);
         self.values = vec![0.0; self.capacity as usize * self.height as usize];
         (self.write_idx, self.col_count) = (0, 0);
         self.last_col_time = None;
@@ -283,6 +235,23 @@ impl SpectrogramBuffer {
         }
         self.write_idx = (self.write_idx + 1) % self.capacity;
         col
+    }
+
+    fn update_mapping(&mut self, upd: &SpectrogramUpdate, passthrough: bool) {
+        let h = self.height as usize;
+        self.display_freqs = upd
+            .display_bins_hz
+            .clone()
+            .filter(|b| passthrough && b.len() >= h)
+            .map(|b| Arc::from(&b[..h]))
+            .unwrap_or_else(|| Arc::from([]));
+        self.mapping = BinMapping::new(
+            h,
+            upd.fft_size,
+            upd.sample_rate,
+            upd.frequency_scale,
+            passthrough,
+        );
     }
 
     fn needs_rebuild(&self, upd: &SpectrogramUpdate, new_height: Option<u32>) -> bool {
@@ -540,22 +509,9 @@ impl<'a> Spectrogram<'a> {
         let Some(freq) = state.frequency_at_y_zoomed(cursor.y, bounds, uv_range) else {
             return;
         };
-        let content = MusicalNote::from_frequency(freq)
-            .map(|n| format!("{:.1} Hz | {}", freq, n.format()))
-            .unwrap_or_else(|| format!("{:.1} Hz", freq));
+        let content = MusicalNote::format_with_hz(freq);
 
-        let tsz = Paragraph::with_text(text::Text {
-            content: content.as_str(),
-            bounds: Size::INFINITE,
-            size: iced::Pixels(TOOLTIP_SIZE),
-            line_height: text::LineHeight::default(),
-            font: iced::Font::default(),
-            align_x: iced::alignment::Horizontal::Left.into(),
-            align_y: iced::alignment::Vertical::Top,
-            shaping: text::Shaping::Basic,
-            wrapping: text::Wrapping::None,
-        })
-        .min_bounds();
+        let tsz = super::measure_text(&content, TOOLTIP_SIZE);
 
         let sz = Size::new(
             tsz.width + TOOLTIP_PAD * 2.0,
@@ -588,17 +544,7 @@ impl<'a> Spectrogram<'a> {
         );
 
         renderer.fill_text(
-            text::Text {
-                content,
-                bounds: tsz,
-                size: iced::Pixels(TOOLTIP_SIZE),
-                line_height: text::LineHeight::default(),
-                font: iced::Font::default(),
-                align_x: iced::alignment::Horizontal::Left.into(),
-                align_y: iced::alignment::Vertical::Top,
-                shaping: text::Shaping::Basic,
-                wrapping: text::Wrapping::None,
-            },
+            super::make_text(&content, TOOLTIP_SIZE, tsz),
             Point::new(tb.x + TOOLTIP_PAD, tb.y + TOOLTIP_PAD),
             pal.background.base.text,
             Rectangle::new(Point::new(tb.x + TOOLTIP_PAD, tb.y + TOOLTIP_PAD), tsz),

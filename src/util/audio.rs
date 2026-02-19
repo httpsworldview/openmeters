@@ -136,6 +136,16 @@ pub fn extend_interleaved_history(
     history.extend(samples);
 }
 
+pub fn fmt_freq(f: f32) -> String {
+    match f {
+        f if f >= 10_000.0 => format!("{:.0} kHz", f / 1000.0),
+        f if f >= 1_000.0 => format!("{:.1} kHz", f / 1000.0),
+        f if f >= 100.0 => format!("{:.0} Hz", f),
+        f if f >= 10.0 => format!("{:.1} Hz", f),
+        _ => format!("{:.2} Hz", f),
+    }
+}
+
 pub fn compute_fft_bin_normalization(window: &[f32], fft_size: usize) -> Vec<f32> {
     let bins = fft_size / 2 + 1;
     if bins == 0 {

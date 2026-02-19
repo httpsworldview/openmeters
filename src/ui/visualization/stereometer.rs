@@ -1,17 +1,15 @@
 // Stereometer visualization: vectorscope + correlation meter.
 
-use crate::audio::meter_tap::MeterFormat;
 use crate::dsp::stereometer::{
     BandCorrelation, StereometerConfig, StereometerProcessor as CoreProcessor, StereometerSnapshot,
 };
-use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::ui::render::stereometer::{StereometerParams, StereometerPrimitive, scale_point};
 use crate::ui::settings::{
     CorrelationMeterMode, CorrelationMeterSide, StereometerMode, StereometerScale,
     StereometerSettings,
 };
 use crate::ui::theme;
-use crate::visualization_widget;
+use crate::{vis_processor, visualization_widget};
 use iced::Color;
 use std::collections::VecDeque;
 
@@ -19,41 +17,12 @@ const TRAIL_LEN: usize = 32;
 const CORRELATION_SMOOTHING: f32 = 0.85;
 const MAX_PERSISTENCE: f32 = 0.9;
 
-#[derive(Debug, Clone)]
-pub(crate) struct StereometerProcessor {
-    inner: CoreProcessor,
-}
-
-impl StereometerProcessor {
-    pub fn new(sample_rate: f32) -> Self {
-        Self {
-            inner: CoreProcessor::new(StereometerConfig {
-                sample_rate,
-                ..Default::default()
-            }),
-        }
-    }
-
-    pub fn ingest(&mut self, samples: &[f32], format: MeterFormat) -> Option<StereometerSnapshot> {
-        if samples.is_empty() {
-            return None;
-        }
-        let sample_rate = format.sample_rate.max(1.0);
-        self.inner.process_block(&AudioBlock::now(
-            samples,
-            format.channels.max(1),
-            sample_rate,
-        ))
-    }
-
-    pub fn config(&self) -> StereometerConfig {
-        self.inner.config()
-    }
-
-    pub fn update_config(&mut self, c: StereometerConfig) {
-        self.inner.update_config(c);
-    }
-}
+vis_processor!(
+    StereometerProcessor,
+    CoreProcessor,
+    StereometerConfig,
+    StereometerSnapshot
+);
 
 #[derive(Debug, Clone)]
 pub(crate) struct StereometerState {
@@ -193,10 +162,4 @@ impl StereometerState {
     }
 }
 
-visualization_widget!(
-    Stereometer,
-    StereometerState,
-    StereometerPrimitive,
-    |state, bounds| state.visual_params(bounds),
-    |params| StereometerPrimitive::new(params)
-);
+visualization_widget!(Stereometer, StereometerState, StereometerPrimitive);

@@ -51,4 +51,11 @@ impl MusicalNote {
     pub fn format(&self) -> String {
         format!("{}{}", self.name, self.octave)
     }
+
+    pub fn format_with_hz(freq_hz: f32) -> String {
+        match Self::from_frequency(freq_hz) {
+            Some(note) => format!("{:.1} Hz | {}", freq_hz, note.format()),
+            None => format!("{:.1} Hz", freq_hz),
+        }
+    }
 }
