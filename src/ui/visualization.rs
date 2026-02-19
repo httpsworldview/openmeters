@@ -53,12 +53,103 @@ pub(crate) fn project_channel_data(
     }
 }
 
+pub(crate) fn measure_text(s: &str, px: f32) -> iced::Size {
+    use iced::advanced::graphics::text::Paragraph;
+    use iced::advanced::text::{self, Paragraph as _};
+    Paragraph::with_text(text::Text {
+        content: s,
+        bounds: iced::Size::INFINITE,
+        size: iced::Pixels(px),
+        font: iced::Font::default(),
+        align_x: iced::alignment::Horizontal::Left.into(),
+        align_y: iced::alignment::Vertical::Top,
+        line_height: text::LineHeight::default(),
+        shaping: text::Shaping::Basic,
+        wrapping: text::Wrapping::None,
+    })
+    .min_bounds()
+}
+
+pub(crate) fn make_text(
+    s: &str,
+    px: f32,
+    bounds: iced::Size,
+) -> iced::advanced::text::Text<String> {
+    use iced::advanced::text;
+    text::Text {
+        content: s.to_string(),
+        bounds,
+        size: iced::Pixels(px),
+        font: iced::Font::default(),
+        align_x: iced::alignment::Horizontal::Left.into(),
+        align_y: iced::alignment::Vertical::Top,
+        line_height: text::LineHeight::default(),
+        shaping: text::Shaping::Basic,
+        wrapping: text::Wrapping::None,
+    }
+}
+
+#[macro_export]
+macro_rules! vis_processor {
+    (@struct_new $name:ident, $core:ty, $config:ident) => {
+        pub(crate) struct $name { inner: $core }
+        impl $name {
+            pub fn new(sample_rate: f32) -> Self {
+                Self { inner: <$core>::new($config { sample_rate, ..Default::default() }) }
+            }
+        }
+    };
+    (@config $name:ident, $config:ident) => {
+        impl $name {
+            pub fn config(&self) -> $config { self.inner.config() }
+            pub fn update_config(&mut self, c: $config) {
+                use $crate::dsp::Reconfigurable as _;
+                self.inner.update_config(c);
+            }
+        }
+    };
+    (@sync_rate $self_:ident, $sr:ident) => {
+        use $crate::dsp::Reconfigurable as _;
+        let mut cfg = $self_.inner.config();
+        if (cfg.sample_rate - $sr).abs() > f32::EPSILON {
+            cfg.sample_rate = $sr;
+            $self_.inner.update_config(cfg);
+        }
+    };
+    (@ingest $name:ident, $output:ty $(, $sync:ident)?) => {
+        impl $name {
+            pub fn ingest(
+                &mut self,
+                samples: &[f32],
+                format: $crate::audio::meter_tap::MeterFormat,
+            ) -> Option<$output> {
+                use $crate::dsp::AudioProcessor as _;
+                if samples.is_empty() { return None; }
+                let sr = format.sample_rate.max(1.0);
+                $($crate::vis_processor!(@$sync self, sr);)?
+                self.inner.process_block(&$crate::dsp::AudioBlock::now(
+                    samples, format.channels.max(1), sr,
+                ))
+            }
+        }
+    };
+    ($name:ident, $core:ty, $config:ident, $output:ty, no_config) => {
+        $crate::vis_processor!(@struct_new $name, $core, $config);
+        $crate::vis_processor!(@ingest $name, $output);
+    };
+    ($name:ident, $core:ty, $config:ident, $output:ty $(, $sync:ident)?) => {
+        $crate::vis_processor!(@struct_new $name, $core, $config);
+        $crate::vis_processor!(@config $name, $config);
+        $crate::vis_processor!(@ingest $name, $output $(, $sync)?);
+    };
+}
+
 // creates a visualization. very simple macro to reduce boilerplate,
 // it is used thrice. spectrum, spectrogram, loudness visualizations do
 // *not* use this macro, as they have more complex requirements.
 #[macro_export]
 macro_rules! visualization_widget {
-    ($widget:ident, $state:ty, $primitive:ty, |$st:ident, $bounds:ident| $params_expr:expr, |$p:ident| $prim_expr:expr) => {
+    ($widget:ident, $state:ty, $primitive:ty) => {
         #[derive(Debug)]
         pub struct $widget<'a> {
             state: &'a std::cell::RefCell<$state>,
@@ -110,13 +201,13 @@ macro_rules! visualization_widget {
             ) {
                 use iced::advanced::Renderer as _;
                 use iced_wgpu::primitive::Renderer as _;
-                let $bounds = layout.bounds();
-                let $st = self.state.borrow();
-                match $params_expr {
-                    Some($p) => renderer.draw_primitive($bounds, $prim_expr),
+                let bounds = layout.bounds();
+                let state = self.state.borrow();
+                match state.visual_params(bounds) {
+                    Some(params) => renderer.draw_primitive(bounds, <$primitive>::new(params)),
                     None => renderer.fill_quad(
                         iced::advanced::renderer::Quad {
-                            bounds: $bounds,
+                            bounds,
                             border: Default::default(),
                             shadow: Default::default(),
                             snap: true,

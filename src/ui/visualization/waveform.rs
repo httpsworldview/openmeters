@@ -1,14 +1,12 @@
-use crate::audio::meter_tap::MeterFormat;
 use crate::dsp::waveform::{
     DEFAULT_COLUMN_CAPACITY, MAX_COLUMN_CAPACITY, MIN_COLUMN_CAPACITY, WaveformConfig,
     WaveformPreview, WaveformProcessor as CoreWaveformProcessor, WaveformSnapshot,
 };
-use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::ui::render::waveform::{PreviewSample, WaveformParams, WaveformPrimitive};
 use crate::ui::settings::{ChannelMode, WaveformColorMode, WaveformSettings};
 use crate::ui::theme;
 use crate::ui::visualization::project_channel_data;
-use crate::visualization_widget;
+use crate::{vis_processor, visualization_widget};
 use iced::Color;
 use std::cell::Cell;
 use std::sync::Arc;
@@ -17,48 +15,21 @@ const COLUMN_WIDTH_PIXELS: f32 = 1.0;
 
 type SampleColorData = (Arc<[[f32; 2]]>, Arc<[[f32; 4]]>);
 
-#[derive(Debug, Clone)]
-pub(crate) struct WaveformProcessor {
-    inner: CoreWaveformProcessor,
-}
+vis_processor!(
+    WaveformProcessor,
+    CoreWaveformProcessor,
+    WaveformConfig,
+    WaveformSnapshot
+);
 
 impl WaveformProcessor {
-    pub fn new(sample_rate: f32) -> Self {
-        Self {
-            inner: CoreWaveformProcessor::new(WaveformConfig {
-                sample_rate,
-                ..Default::default()
-            }),
-        }
-    }
-
     pub fn sync_capacity(&mut self, desired: usize) {
         let target = desired.clamp(MIN_COLUMN_CAPACITY, MAX_COLUMN_CAPACITY);
-        let mut config = self.inner.config();
+        let mut config = self.config();
         if config.max_columns != target {
             config.max_columns = target;
-            self.inner.update_config(config);
+            self.update_config(config);
         }
-    }
-
-    pub fn ingest(&mut self, samples: &[f32], format: MeterFormat) -> Option<WaveformSnapshot> {
-        if samples.is_empty() {
-            return None;
-        }
-        let sample_rate = format.sample_rate.max(1.0);
-        self.inner.process_block(&AudioBlock::now(
-            samples,
-            format.channels.max(1),
-            sample_rate,
-        ))
-    }
-
-    pub fn update_config(&mut self, config: WaveformConfig) {
-        self.inner.update_config(config);
-    }
-
-    pub fn config(&self) -> WaveformConfig {
-        self.inner.config()
     }
 }
 
@@ -308,10 +279,4 @@ impl WaveformStyle {
     }
 }
 
-visualization_widget!(
-    Waveform,
-    WaveformState,
-    WaveformPrimitive,
-    |state, bounds| state.visual_params(bounds),
-    |params| WaveformPrimitive::new(params)
-);
+visualization_widget!(Waveform, WaveformState, WaveformPrimitive);

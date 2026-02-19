@@ -109,6 +109,42 @@ pub enum FrequencyScale {
     Mel,
 }
 
+impl FrequencyScale {
+    #[inline]
+    pub fn freq_at(self, min: f32, max: f32, t: f32) -> f32 {
+        match self {
+            Self::Linear => min + (max - min) * t,
+            Self::Logarithmic => {
+                let min = min.max(1e-6);
+                min * (max / min).max(1.0).powf(t)
+            }
+            Self::Mel => {
+                let mel_min = hz_to_mel(min);
+                mel_to_hz(mel_min + (hz_to_mel(max) - mel_min) * t)
+            }
+        }
+    }
+
+    #[inline]
+    pub fn pos_of(self, min: f32, max: f32, freq: f32) -> f32 {
+        match self {
+            Self::Linear => (freq - min) / (max - min).max(1e-6),
+            Self::Logarithmic => {
+                let min = min.max(1e-6);
+                let ratio = max / min;
+                if ratio <= 1.0 {
+                    return 0.0;
+                }
+                (freq / min).ln() / ratio.ln()
+            }
+            Self::Mel => {
+                let mel_min = hz_to_mel(min);
+                (hz_to_mel(freq) - mel_min) / (hz_to_mel(max) - mel_min).max(1e-6)
+            }
+        }
+    }
+}
+
 impl std::fmt::Display for FrequencyScale {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", self)
@@ -470,11 +506,7 @@ impl Reassignment2DGrid {
         let mut freqs: Vec<_> = (0..bins)
             .map(|i| {
                 let t = i as f32 / (bins as f32 - 1.0);
-                match scale {
-                    FrequencyScale::Linear => params.min + (params.max - params.min) * t,
-                    FrequencyScale::Logarithmic => (params.log_min + t / params.inv_log).exp(),
-                    FrequencyScale::Mel => mel_to_hz(params.mel_min + t / params.inv_mel),
-                }
+                scale.freq_at(params.min, params.max, t)
             })
             .collect();
         freqs.reverse();
