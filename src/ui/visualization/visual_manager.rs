@@ -29,6 +29,20 @@ fn resolve_palette<const N: usize>(
         .unwrap_or(*default)
 }
 
+fn resolve_positions(custom: &Option<PaletteSettings>, count: usize) -> Vec<f32> {
+    theme::sanitize_stop_positions(
+        custom.as_ref().and_then(|p| p.stop_positions.as_deref()),
+        count,
+    )
+}
+
+fn resolve_spreads(custom: &Option<PaletteSettings>, count: usize) -> Vec<f32> {
+    theme::sanitize_stop_spreads(
+        custom.as_ref().and_then(|p| p.stop_spreads.as_deref()),
+        count,
+    )
+}
+
 // dear future me/future maintainers: I'm sorry for this macro.
 macro_rules! visuals {
     (@export_palette $state:expr, $default:expr) => { PaletteSettings::if_differs_from($state, $default) };
@@ -138,10 +152,12 @@ visuals! {
         settings_cfg::SpectrogramSettings, &theme::spectrogram::COLORS;
         apply(p, s, set) { visuals!(@apply_config p, set); let mut st = s.borrow_mut();
             visuals!(@apply_palette st, set, &theme::spectrogram::COLORS);
+            st.set_stop_positions(&resolve_positions(&set.palette, theme::spectrogram::COLORS.len()));
+            st.set_stop_spreads(&resolve_spreads(&set.palette, theme::spectrogram::COLORS.len()));
             st.piano_roll_overlay = set.piano_roll_overlay;
             st.set_floor_db(set.floor_db); };
         export(p, s) { let st = s.borrow(); let mut out = settings_cfg::SpectrogramSettings::from_config(&p.config());
-            out.palette = visuals!(@export_palette &st.palette(), &theme::spectrogram::COLORS);
+            out.palette = PaletteSettings::from_state(&st.palette(), &theme::spectrogram::COLORS, st.stop_positions(), st.stop_spreads());
             out.piano_roll_overlay = st.piano_roll_overlay;
             out.floor_db = st.floor_db(); out };
 

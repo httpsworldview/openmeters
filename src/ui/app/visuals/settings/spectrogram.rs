@@ -62,6 +62,9 @@ settings_pane!(
     extra_from_settings(settings) {
         planck_bessel: (f32, f32) = extract_planck_bessel(settings.window),
     }
+    init_palette(palette) {
+        palette.set_show_ramp(true);
+    }
 );
 
 #[derive(Debug, Clone, Copy)]

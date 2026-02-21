@@ -68,7 +68,7 @@ impl Default for SpectrogramStyle {
             floor_db: DB_FLOOR,
             ceiling_db: DB_CEILING,
             opacity: 0.95,
-            contrast: 1.4,
+            contrast: 1.0,
         }
     }
 }
@@ -286,6 +286,8 @@ pub(crate) struct SpectrogramState {
     buffer: RefCell<SpectrogramBuffer>,
     style: SpectrogramStyle,
     palette: [Color; SPECTROGRAM_PALETTE_SIZE],
+    stop_positions: [f32; SPECTROGRAM_PALETTE_SIZE],
+    stop_spreads: [f32; SPECTROGRAM_PALETTE_SIZE],
     history: VecDeque<SpectrogramColumn>,
     key: u64,
     pub(crate) piano_roll_overlay: PianoRollOverlay,
@@ -302,6 +304,10 @@ impl SpectrogramState {
             buffer: RefCell::new(SpectrogramBuffer::new()),
             style: SpectrogramStyle::default(),
             palette: theme::spectrogram::COLORS,
+            stop_positions: std::array::from_fn(|i| {
+                i as f32 / (SPECTROGRAM_PALETTE_SIZE - 1) as f32
+            }),
+            stop_spreads: [1.0; SPECTROGRAM_PALETTE_SIZE],
             history: VecDeque::new(),
             key: super::next_key(),
             piano_roll_overlay: PianoRollOverlay::Off,
@@ -319,6 +325,26 @@ impl SpectrogramState {
             let values = self.buffer.borrow().values.clone();
             self.buffer.borrow_mut().pending_base = Some(Arc::from(values));
         }
+    }
+
+    pub fn set_stop_positions(&mut self, positions: &[f32]) {
+        if let Ok(arr) = <[f32; SPECTROGRAM_PALETTE_SIZE]>::try_from(positions) {
+            self.stop_positions = arr;
+        }
+    }
+
+    pub fn stop_positions(&self) -> &[f32; SPECTROGRAM_PALETTE_SIZE] {
+        &self.stop_positions
+    }
+
+    pub fn set_stop_spreads(&mut self, spreads: &[f32]) {
+        if let Ok(arr) = <[f32; SPECTROGRAM_PALETTE_SIZE]>::try_from(spreads) {
+            self.stop_spreads = arr;
+        }
+    }
+
+    pub fn stop_spreads(&self) -> &[f32; SPECTROGRAM_PALETTE_SIZE] {
+        &self.stop_spreads
     }
 
     pub fn set_floor_db(&mut self, floor_db: f32) {
@@ -395,6 +421,8 @@ impl SpectrogramState {
             base_data: buf.pending_base.clone(),
             column_updates: buf.pending_cols.clone(),
             palette: self.palette.map(to_rgba),
+            stop_positions: self.stop_positions,
+            stop_spreads: self.stop_spreads,
             background: to_rgba(self.style.background),
             contrast: self.style.contrast,
             uv_y_range: [0.0, 1.0],
