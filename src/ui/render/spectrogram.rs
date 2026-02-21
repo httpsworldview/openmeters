@@ -44,6 +44,8 @@ pub struct SpectrogramParams {
     pub base_data: Option<Arc<[f32]>>,
     pub column_updates: Vec<SpectrogramColumnUpdate>,
     pub palette: [[f32; 4]; SPECTROGRAM_PALETTE_SIZE],
+    pub stop_positions: [f32; SPECTROGRAM_PALETTE_SIZE],
+    pub stop_spreads: [f32; SPECTROGRAM_PALETTE_SIZE],
     pub background: [f32; 4],
     pub contrast: f32,
     pub uv_y_range: [f32; 2],
@@ -463,6 +465,8 @@ struct Resources {
     bind_group: wgpu::BindGroup,
     uniform_cache: Uniforms,
     palette_cache: [[f32; 4]; SPECTROGRAM_PALETTE_SIZE],
+    positions_cache: [f32; SPECTROGRAM_PALETTE_SIZE],
+    spreads_cache: [f32; SPECTROGRAM_PALETTE_SIZE],
 }
 
 impl Resources {
@@ -506,6 +510,8 @@ impl Resources {
                 background: [0.0; 4],
             },
             palette_cache: [[0.0; 4]; SPECTROGRAM_PALETTE_SIZE],
+            positions_cache: [0.0; SPECTROGRAM_PALETTE_SIZE],
+            spreads_cache: [0.0; SPECTROGRAM_PALETTE_SIZE],
         }
     }
 
@@ -596,10 +602,13 @@ impl Resources {
     }
 
     fn write_palette(&mut self, queue: &wgpu::Queue, p: &SpectrogramParams) {
-        if p.palette == self.palette_cache {
+        if p.palette == self.palette_cache
+            && p.stop_positions == self.positions_cache
+            && p.stop_spreads == self.spreads_cache
+        {
             return;
         }
-        let lut = build_palette_lut(&p.palette);
+        let lut = build_palette_lut(&p.palette, &p.stop_positions, &p.stop_spreads);
         write_texture_region(
             queue,
             &self.palette_tex,
@@ -609,6 +618,8 @@ impl Resources {
             &lut,
         );
         self.palette_cache = p.palette;
+        self.positions_cache = p.stop_positions;
+        self.spreads_cache = p.stop_spreads;
     }
 }
 
@@ -685,16 +696,17 @@ fn make_bind_group(
     })
 }
 
-fn build_palette_lut(palette: &[[f32; 4]; SPECTROGRAM_PALETTE_SIZE]) -> Vec<u8> {
+fn build_palette_lut(
+    palette: &[[f32; 4]; SPECTROGRAM_PALETTE_SIZE],
+    positions: &[f32; SPECTROGRAM_PALETTE_SIZE],
+    spreads: &[f32; SPECTROGRAM_PALETTE_SIZE],
+) -> Vec<u8> {
+    use crate::ui::theme;
     let n = PALETTE_LUT_SIZE as usize;
     (0..n)
         .flat_map(|i| {
-            let t = i as f32 / (n - 1).max(1) as f32 * (SPECTROGRAM_PALETTE_SIZE - 1) as f32;
-            let (lo, hi, f) = (
-                t.floor() as usize,
-                (t.floor() as usize + 1).min(SPECTROGRAM_PALETTE_SIZE - 1),
-                t.fract(),
-            );
+            let t = i as f32 / (n - 1).max(1) as f32;
+            let (lo, hi, f) = theme::find_segment(positions, spreads, t, SPECTROGRAM_PALETTE_SIZE);
             (0..4).map(move |c| f32_to_u8(palette[lo][c] + (palette[hi][c] - palette[lo][c]) * f))
         })
         .collect()

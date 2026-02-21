@@ -479,6 +479,140 @@ pub fn palettes_equal(a: &[Color], b: &[Color]) -> bool {
     a.len() == b.len() && a.iter().zip(b).all(|(x, y)| colors_equal(*x, *y))
 }
 
+pub fn uniform_positions(count: usize) -> Vec<f32> {
+    if count <= 1 {
+        return vec![0.0; count];
+    }
+    (0..count).map(|i| i as f32 / (count - 1) as f32).collect()
+}
+
+pub fn default_spreads(count: usize) -> Vec<f32> {
+    vec![1.0; count]
+}
+
+pub fn sanitize_stop_positions(raw: Option<&[f32]>, count: usize) -> Vec<f32> {
+    if count < 2 {
+        return vec![0.0; count];
+    }
+    let mut out = uniform_positions(count);
+    let Some(raw) = raw else {
+        return out;
+    };
+
+    let end = count - 1;
+    let eps = 1e-4_f32;
+    let internals = count - 2;
+
+    if raw.len() == count {
+        out[1..end].copy_from_slice(&raw[1..end]);
+    } else if raw.len() == internals {
+        for (i, &value) in raw.iter().enumerate() {
+            out[i + 1] = value;
+        }
+    } else {
+        return out;
+    }
+
+    out[0] = 0.0;
+    out[end] = 1.0;
+
+    for i in 1..end {
+        let fallback = i as f32 / end as f32;
+        let value = if out[i].is_finite() { out[i] } else { fallback };
+        let min = (out[i - 1] + eps).min(1.0);
+        let max = (1.0 - eps * (end - i) as f32).max(min);
+        out[i] = value.clamp(min, max);
+    }
+
+    out
+}
+
+pub fn sanitize_stop_spreads(raw: Option<&[f32]>, count: usize) -> Vec<f32> {
+    let mut out = default_spreads(count);
+    let Some(raw) = raw else {
+        return out;
+    };
+    if raw.len() != count {
+        return out;
+    }
+    for (dst, &value) in out.iter_mut().zip(raw.iter()) {
+        *dst = if value.is_finite() {
+            value.clamp(0.2, 5.0)
+        } else {
+            1.0
+        };
+    }
+    out
+}
+
+#[inline]
+fn interpolate_with_spreads(linear: f32, spreads: &[f32], lo: usize, hi: usize) -> f32 {
+    let sl = spreads.get(lo).copied().unwrap_or(1.0);
+    let sr = spreads.get(hi).copied().unwrap_or(1.0);
+    if (sl - 1.0).abs() < 1e-4 && (sr - 1.0).abs() < 1e-4 {
+        linear
+    } else {
+        linear.powf(sl / sr).clamp(0.0, 1.0)
+    }
+}
+
+// Finds the gradient segment for a given `t` and returns (lo, hi, interpolation_factor)
+// with the spread curve applied. Shared between CPU preview and GPU LUT builder.
+pub fn find_segment(
+    positions: &[f32],
+    spreads: &[f32],
+    t: f32,
+    count: usize,
+) -> (usize, usize, f32) {
+    let t = t.clamp(0.0, 1.0);
+    if count < 2 {
+        return (0, 0, 0.0);
+    }
+    if positions.len() < count {
+        let pos = t * (count - 1) as f32;
+        let lo = (pos.floor() as usize).min(count - 2);
+        let hi = lo + 1;
+        let linear = (pos - lo as f32).clamp(0.0, 1.0);
+        return (lo, hi, interpolate_with_spreads(linear, spreads, lo, hi));
+    }
+    for i in 0..count - 1 {
+        if t <= positions[i + 1] || i == count - 2 {
+            let span = (positions[i + 1] - positions[i]).max(f32::EPSILON);
+            let linear = ((t - positions[i]) / span).clamp(0.0, 1.0);
+            return (
+                i,
+                i + 1,
+                interpolate_with_spreads(linear, spreads, i, i + 1),
+            );
+        }
+    }
+    (count - 2, count - 1, 1.0)
+}
+
+// Samples a gradient with non-uniform stop positions using sRGB linear
+// interpolation (matches the GPU palette LUT).
+pub fn sample_gradient_positioned(
+    colors: &[Color],
+    positions: &[f32],
+    spreads: &[f32],
+    t: f32,
+) -> Color {
+    let n = colors.len();
+    if n == 0 {
+        return Color::BLACK;
+    }
+    if n == 1 {
+        return colors[0];
+    }
+    let (lo, hi, f) = find_segment(positions, spreads, t, n);
+    Color {
+        r: colors[lo].r + (colors[hi].r - colors[lo].r) * f,
+        g: colors[lo].g + (colors[hi].g - colors[lo].g) * f,
+        b: colors[lo].b + (colors[hi].b - colors[lo].b) * f,
+        a: colors[lo].a + (colors[hi].a - colors[lo].a) * f,
+    }
+}
+
 // Samples a gradient at position `t` (0.0 to 1.0) using Oklch interpolation.
 #[inline]
 pub fn sample_gradient(palette: &[Color], t: f32) -> Color {

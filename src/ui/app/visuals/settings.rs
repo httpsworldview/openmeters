@@ -4,6 +4,7 @@ macro_rules! settings_pane {
     (
         $pane:ident, $settings_ty:ty, $kind:expr, $palette_mod:path, $variant:ident,
         extra_from_settings($s:ident) { $($field:ident : $ty:ty = $init:expr),* $(,)? }
+        $(init_palette($p:ident) $init_body:block)?
     ) => {
         #[derive(Debug)]
         pub struct $pane {
@@ -15,11 +16,12 @@ macro_rules! settings_pane {
 
         pub fn create(visual_id: super::VisualId, visual_manager: &super::VisualManagerHandle) -> $pane {
             use $palette_mod as pal;
-            let ($s, palette) = super::load_settings_and_palette::<$settings_ty>(
+            let ($s, mut _palette) = super::load_settings_and_palette::<$settings_ty>(
                 visual_manager, $kind, &pal::COLORS, pal::LABELS,
             );
             $(let $field: $ty = $init;)*
-            $pane { visual_id, settings: $s, palette, $($field,)* }
+            $(let $p = &mut _palette; $init_body)?
+            $pane { visual_id, settings: $s, palette: _palette, $($field,)* }
         }
 
         settings_pane!(@impl $pane, $variant, $kind, $palette_mod);
@@ -172,17 +174,19 @@ pub(super) fn load_settings_and_palette<T: DeserializeOwned + Default + HasPalet
         .module_settings(kind)
         .and_then(|stored| stored.parse_config::<T>())
         .unwrap_or_default();
-    let mut palette = Palette::new(defaults, labels);
+    let mut editor = PaletteEditor::new(Palette::new(defaults, labels));
     if let Some(stored) = settings.palette() {
-        palette.set(
+        editor.set_colors(
             &stored
                 .stops
                 .iter()
                 .map(|c| (*c).into())
                 .collect::<Vec<Color>>(),
         );
+        editor.set_positions(stored.stop_positions.as_deref());
+        editor.set_spreads(stored.stop_spreads.as_deref());
     }
-    (settings, PaletteEditor::new(palette))
+    (settings, editor)
 }
 
 pub(super) fn palette_section<'a, M: 'a>(
@@ -201,7 +205,14 @@ pub(super) fn persist_with_palette<T: Clone + Serialize + HasPalette>(
     defaults: &[Color],
 ) -> bool {
     let mut stored = config.clone();
-    stored.set_palette(PaletteSettings::if_differs_from(palette.colors(), defaults));
+    let positions = palette.positions();
+    let spreads = palette.spreads();
+    stored.set_palette(PaletteSettings::from_state(
+        palette.colors(),
+        defaults,
+        positions,
+        spreads,
+    ));
     let applied = visual_manager
         .borrow_mut()
         .apply_module_settings(kind, &ModuleSettings::with_config(&stored));
