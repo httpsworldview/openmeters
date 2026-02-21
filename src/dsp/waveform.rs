@@ -133,12 +133,6 @@ impl FrequencyAnalyzer {
         }
     }
 
-    fn reconfigure(&mut self, sample_rate: f32) {
-        self.bin_hz = sample_rate / self.size as f32;
-        self.smoothed = 0.5;
-        self.sample_history.clear();
-    }
-
     fn analyze(&mut self, samples: &[f32]) -> f32 {
         if samples.is_empty() {
             return self.smoothed;
@@ -232,7 +226,7 @@ pub struct WaveformProcessor {
     sample_accumulators: Vec<Vec<f32>>,
     accumulator_min: Vec<f32>,
     accumulator_max: Vec<f32>,
-    frequency_analyzer: FrequencyAnalyzer,
+    frequency_analyzers: Vec<FrequencyAnalyzer>,
     has_pending_changes: bool,
 }
 
@@ -241,7 +235,7 @@ impl WaveformProcessor {
         let normalized_config = config.normalized();
         let mut processor = Self {
             samples_per_column: normalized_config.samples_per_column(),
-            frequency_analyzer: FrequencyAnalyzer::new(normalized_config.sample_rate),
+            frequency_analyzers: Vec::new(),
             config: normalized_config,
             snapshot: WaveformSnapshot::default(),
             channel_count: 2,
@@ -274,11 +268,13 @@ impl WaveformProcessor {
             .collect();
         self.accumulator_min = vec![f32::MAX; self.channel_count];
         self.accumulator_max = vec![f32::MIN; self.channel_count];
+        self.frequency_analyzers = (0..self.channel_count)
+            .map(|_| FrequencyAnalyzer::new(self.config.sample_rate))
+            .collect();
     }
 
     fn rebuild(&mut self) {
         self.samples_per_column = self.config.samples_per_column();
-        self.frequency_analyzer.reconfigure(self.config.sample_rate);
         self.ring_head = 0;
         self.column_count = 0;
         self.total_columns_written = 0;
@@ -300,9 +296,8 @@ impl WaveformProcessor {
 
             self.min_values[ring_index] = clamped_min;
             self.max_values[ring_index] = clamped_max;
-            self.frequency_values[ring_index] = self
-                .frequency_analyzer
-                .analyze(&self.sample_accumulators[channel]);
+            self.frequency_values[ring_index] =
+                self.frequency_analyzers[channel].analyze(&self.sample_accumulators[channel]);
         }
 
         // Advance ring buffer
