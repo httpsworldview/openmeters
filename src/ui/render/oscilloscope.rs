@@ -2,7 +2,9 @@ use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
 
 use crate::sdf_primitive;
-use crate::ui::render::common::{ClipTransform, SdfVertex, build_aa_line_list, decimate_line};
+use crate::ui::render::common::{
+    ClipTransform, SdfVertex, baseline_segment_vertices, build_aa_line_list, decimate_line,
+};
 
 #[derive(Debug, Clone)]
 pub struct OscilloscopeParams {
@@ -86,16 +88,13 @@ impl OscilloscopePrimitive {
             let fill_color = [color[0], color[1], color[2], self.params.fill_alpha];
             for pair in positions.windows(2) {
                 let ((x0, y0), (x1, y1)) = (pair[0], pair[1]);
-                let (t0, b0) = (y0.min(center), y0.max(center));
-                let (t1, b1) = (y1.min(center), y1.max(center));
-                vertices.extend([
-                    SdfVertex::solid(clip.to_clip(x0, t0), fill_color),
-                    SdfVertex::solid(clip.to_clip(x0, b0), fill_color),
-                    SdfVertex::solid(clip.to_clip(x1, b1), fill_color),
-                    SdfVertex::solid(clip.to_clip(x0, t0), fill_color),
-                    SdfVertex::solid(clip.to_clip(x1, b1), fill_color),
-                    SdfVertex::solid(clip.to_clip(x1, t1), fill_color),
-                ]);
+                vertices.extend(baseline_segment_vertices(
+                    (x0, y0),
+                    (x1, y1),
+                    center,
+                    clip,
+                    [fill_color, fill_color],
+                ));
             }
 
             let line_color = [color[0], color[1], color[2], LINE_ALPHA];

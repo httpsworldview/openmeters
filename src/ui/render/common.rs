@@ -18,7 +18,7 @@ use std::mem::size_of;
 pub struct ClipTransform(f32, f32);
 
 impl ClipTransform {
-    pub fn new(w: f32, h: f32) -> Self {
+    fn new(w: f32, h: f32) -> Self {
         Self(2.0 / w.max(1.0), 2.0 / h.max(1.0))
     }
 
@@ -44,7 +44,7 @@ pub struct SdfVertex {
 }
 
 impl SdfVertex {
-    pub const SOLID_PARAMS: [f32; 4] = [0.0, 0.0, 1000.0, 0.0];
+    const SOLID_PARAMS: [f32; 4] = [0.0, 0.0, 1000.0, 0.0];
 
     pub fn layout() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
@@ -80,7 +80,7 @@ impl SdfVertex {
     }
 
     #[inline]
-    pub fn antialiased(pos: [f32; 2], color: [f32; 4], dist: f32, radius: f32) -> Self {
+    fn antialiased(pos: [f32; 2], color: [f32; 4], dist: f32, radius: f32) -> Self {
         Self {
             position: pos,
             color,
@@ -104,7 +104,7 @@ pub fn quad_vertices(
 }
 
 #[inline]
-pub fn gradient_quad_vertices(
+pub(crate) fn gradient_quad_vertices(
     x0: f32,
     y0: f32,
     x1: f32,
@@ -127,6 +127,28 @@ pub fn gradient_quad_vertices(
         SdfVertex::solid(br, bot),
         SdfVertex::solid(tr, top),
     ]
+}
+
+#[inline]
+pub(crate) fn baseline_segment_vertices(
+    p0: (f32, f32),
+    p1: (f32, f32),
+    baseline: f32,
+    clip: ClipTransform,
+    colors: [[f32; 4]; 2],
+) -> [SdfVertex; 6] {
+    let (t0, b0) = (p0.1.min(baseline), p0.1.max(baseline));
+    let (t1, b1) = (p1.1.min(baseline), p1.1.max(baseline));
+    let [c0, c1] = colors;
+    [
+        (p0.0, t0, c0),
+        (p0.0, b0, c0),
+        (p1.0, b1, c1),
+        (p0.0, t0, c0),
+        (p1.0, b1, c1),
+        (p1.0, t1, c1),
+    ]
+    .map(|(x, y, c)| SdfVertex::solid(clip.to_clip(x, y), c))
 }
 
 #[inline]
@@ -154,30 +176,6 @@ pub fn line_vertices(
         v(p0.0 - ox, p0.1 - oy, c0, -outer),
         v(p1.0 + ox, p1.1 + oy, c1, outer),
         v(p1.0 - ox, p1.1 - oy, c1, -outer),
-    ]
-}
-
-#[inline]
-pub fn dot_vertices(
-    cx: f32,
-    cy: f32,
-    radius: f32,
-    color: [f32; 4],
-    clip: ClipTransform,
-) -> [SdfVertex; 6] {
-    let o = radius + 1.0;
-    let v = |px, py, ox, oy| SdfVertex {
-        position: clip.to_clip(px, py),
-        color,
-        params: [ox, oy, radius, 0.0],
-    };
-    [
-        v(cx - o, cy - o, -o, -o),
-        v(cx - o, cy + o, -o, o),
-        v(cx + o, cy - o, o, -o),
-        v(cx + o, cy - o, o, -o),
-        v(cx - o, cy + o, -o, o),
-        v(cx + o, cy + o, o, o),
     ]
 }
 
@@ -242,17 +240,6 @@ pub fn decimate_line(pts: &[(f32, f32)], max_points: usize) -> Cow<'_, [(f32, f3
         result.push(pts[lo + mn_i.max(mx_i)]);
     }
     Cow::Owned(result)
-}
-
-// Joins triangle strips with degenerate triangles for batched draw calls.
-pub fn append_strip(dest: &mut Vec<SdfVertex>, strip: Vec<SdfVertex>) {
-    if strip.is_empty() {
-        return;
-    }
-    if let Some(&last) = dest.last() {
-        dest.extend([last, last, strip[0], strip[0]]);
-    }
-    dest.extend(strip);
 }
 
 // gpu infra
@@ -338,7 +325,7 @@ pub fn create_shader_module(
     })
 }
 
-pub fn create_sdf_pipeline(
+fn create_sdf_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
     label: &'static str,
@@ -381,45 +368,19 @@ pub fn create_sdf_pipeline(
     })
 }
 
-#[inline]
-pub fn write_texture_region(
-    queue: &wgpu::Queue,
-    texture: &wgpu::Texture,
-    origin: wgpu::Origin3d,
-    extent: wgpu::Extent3d,
-    bytes_per_row: u32,
-    data: &[u8],
-) {
-    queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture,
-            mip_level: 0,
-            origin,
-            aspect: wgpu::TextureAspect::All,
-        },
-        data,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(bytes_per_row),
-            rows_per_image: None,
-        },
-        extent,
-    );
-}
-
 // pipeline cache
 
 #[derive(Debug)]
-pub struct CachedInstance {
-    pub buffer: InstanceBuffer<SdfVertex>,
-    pub last_used: u64,
+struct CachedInstance {
+    buffer: InstanceBuffer<SdfVertex>,
+    last_used: u64,
 }
 
 #[derive(Debug)]
 pub struct SdfPipeline<K> {
     pub pipeline: wgpu::RenderPipeline,
-    pub instances: HashMap<K, CachedInstance>,
-    pub cache: CacheTracker,
+    instances: HashMap<K, CachedInstance>,
+    cache: CacheTracker,
 }
 
 impl<K: std::hash::Hash + Eq + Copy> SdfPipeline<K> {

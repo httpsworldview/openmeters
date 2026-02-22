@@ -4,7 +4,7 @@ use iced::advanced::graphics::Viewport;
 use crate::dsp::stereometer::BandCorrelation;
 use crate::sdf_primitive;
 use crate::ui::render::common::{
-    ClipTransform, SdfVertex, dot_vertices, gradient_quad_vertices, line_vertices, quad_vertices,
+    ClipTransform, SdfVertex, gradient_quad_vertices, line_vertices, quad_vertices,
 };
 use crate::ui::settings::{
     CorrelationMeterMode, CorrelationMeterSide, StereometerMode, StereometerScale,
@@ -29,6 +29,30 @@ const CORR_PAD: f32 = 4.0;
 const CORR_VPAD: f32 = 16.0;
 const CORR_EDGE: f32 = 6.0;
 const BAND_GAP: f32 = 2.0;
+
+#[inline]
+fn dot_vertices(
+    cx: f32,
+    cy: f32,
+    radius: f32,
+    color: [f32; 4],
+    clip: ClipTransform,
+) -> [SdfVertex; 6] {
+    let outer = radius + 1.0;
+    let v = |px, py, ox, oy| SdfVertex {
+        position: clip.to_clip(px, py),
+        color,
+        params: [ox, oy, radius, 0.0],
+    };
+    [
+        v(cx - outer, cy - outer, -outer, -outer),
+        v(cx - outer, cy + outer, -outer, outer),
+        v(cx + outer, cy - outer, outer, -outer),
+        v(cx + outer, cy - outer, outer, -outer),
+        v(cx - outer, cy + outer, -outer, outer),
+        v(cx + outer, cy + outer, outer, outer),
+    ]
+}
 
 #[derive(Debug, Clone)]
 pub struct StereometerParams {
