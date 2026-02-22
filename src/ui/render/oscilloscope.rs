@@ -2,7 +2,7 @@ use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
 
 use crate::sdf_primitive;
-use crate::ui::render::common::{ClipTransform, DEFAULT_FEATHER, SdfVertex, build_aa_line_list};
+use crate::ui::render::common::{ClipTransform, SdfVertex, build_aa_line_list, decimate_line};
 
 #[derive(Debug, Clone)]
 pub struct OscilloscopeParams {
@@ -40,7 +40,7 @@ impl OscilloscopePrimitive {
         const CHANNEL_GAP: f32 = 12.0;
         const AMPLITUDE_SCALE: f32 = 0.9;
         const STROKE_WIDTH: f32 = 1.0;
-        const LINE_ALPHA: f32 = 0.92;
+        const LINE_ALPHA: f32 = 1.0;
 
         let usable_height = (bounds.height
             - VERTICAL_PADDING * 2.0
@@ -49,6 +49,7 @@ impl OscilloscopePrimitive {
         let channel_height = usable_height / channels as f32;
         let amplitude_scale = channel_height * 0.5 * AMPLITUDE_SCALE;
         let step = bounds.width.max(1.0) / (samples_per_channel.saturating_sub(1) as f32).max(1.0);
+        let pixel_width = bounds.width.ceil().max(1.0) as usize;
 
         let mut vertices = Vec::new();
 
@@ -73,13 +74,14 @@ impl OscilloscopePrimitive {
             let positions: Vec<_> = channel_samples
                 .iter()
                 .enumerate()
-                .map(|(i, s)| {
+                .map(|(i, &s)| {
                     (
                         bounds.x + i as f32 * step,
                         center - s.clamp(-1.0, 1.0) * amplitude_scale,
                     )
                 })
                 .collect();
+            let positions = decimate_line(&positions, pixel_width * 2);
 
             let fill_color = [color[0], color[1], color[2], self.params.fill_alpha];
             for pair in positions.windows(2) {
@@ -100,7 +102,6 @@ impl OscilloscopePrimitive {
             vertices.extend(build_aa_line_list(
                 &positions,
                 STROKE_WIDTH,
-                DEFAULT_FEATHER,
                 line_color,
                 &clip,
             ));
