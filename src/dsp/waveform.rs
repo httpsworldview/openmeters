@@ -19,7 +19,8 @@ const MIN_FREQ_HZ: f32 = 20.0;
 const MAX_FREQ_HZ: f32 = 5_000.0;
 
 // EMA coefficient for smoothing the spectral centroid.
-const CENTROID_EMA_ALPHA: f32 = 0.3;
+// lower = more smoothing, higher = more responsive.
+const CENTROID_EMA_ALPHA: f32 = 0.4;
 
 #[derive(Debug, Clone, Copy)]
 pub struct WaveformConfig {
@@ -127,7 +128,7 @@ impl FrequencyAnalyzer {
             output_spectrum: vec![Complex32::default(); size / 2 + 1],
             sample_history: Vec::with_capacity(size),
             bin_hz: sample_rate / size as f32,
-            smoothed: 0.5,
+            smoothed: 0.1,
             size,
             fft,
         }

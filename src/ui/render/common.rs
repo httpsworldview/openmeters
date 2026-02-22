@@ -9,6 +9,7 @@
 use bytemuck::{Pod, Zeroable};
 use iced::advanced::graphics::Viewport;
 use iced_wgpu::wgpu;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::mem::size_of;
 
@@ -43,7 +44,7 @@ pub struct SdfVertex {
 }
 
 impl SdfVertex {
-    pub const SOLID_PARAMS: [f32; 4] = [0.0, 0.0, 1000.0, 1.0];
+    pub const SOLID_PARAMS: [f32; 4] = [0.0, 0.0, 1000.0, 0.0];
 
     pub fn layout() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
@@ -79,18 +80,16 @@ impl SdfVertex {
     }
 
     #[inline]
-    pub fn antialiased(pos: [f32; 2], color: [f32; 4], dist: f32, half: f32, feather: f32) -> Self {
+    pub fn antialiased(pos: [f32; 2], color: [f32; 4], dist: f32, radius: f32) -> Self {
         Self {
             position: pos,
             color,
-            params: [dist, 0.0, half, feather],
+            params: [dist, 0.0, radius, 0.0],
         }
     }
 }
 
 // shapes
-
-pub const DEFAULT_FEATHER: f32 = 1.0;
 
 #[inline]
 pub fn quad_vertices(
@@ -137,17 +136,16 @@ pub fn line_vertices(
     c0: [f32; 4],
     c1: [f32; 4],
     width: f32,
-    feather: f32,
     clip: ClipTransform,
 ) -> [SdfVertex; 6] {
     let (dx, dy) = (p1.0 - p0.0, p1.1 - p0.1);
     let inv = (dx * dx + dy * dy).sqrt().max(1e-6).recip();
-    let (half, outer) = (width * 0.5, width * 0.5 + feather);
+    let (half, outer) = (width * 0.5, width * 0.5 + 1.0);
     let (ox, oy) = (-dy * inv * outer, dx * inv * outer);
     let v = |px, py, c, d| SdfVertex {
         position: clip.to_clip(px, py),
         color: c,
-        params: [d, 0.0, half, feather],
+        params: [d, 0.0, half, 0.0],
     };
     [
         v(p0.0 - ox, p0.1 - oy, c0, -outer),
@@ -164,15 +162,14 @@ pub fn dot_vertices(
     cx: f32,
     cy: f32,
     radius: f32,
-    feather: f32,
     color: [f32; 4],
     clip: ClipTransform,
 ) -> [SdfVertex; 6] {
-    let o = radius + feather;
+    let o = radius + 1.0;
     let v = |px, py, ox, oy| SdfVertex {
         position: clip.to_clip(px, py),
         color,
-        params: [ox, oy, radius, feather],
+        params: [ox, oy, radius, 0.0],
     };
     [
         v(cx - o, cy - o, -o, -o),
@@ -184,18 +181,17 @@ pub fn dot_vertices(
     ]
 }
 
-// Builds an antialiased polyline for `TriangleList` topology.
+// builds aa line with triangle topology
 pub fn build_aa_line_list(
     pts: &[(f32, f32)],
     stroke: f32,
-    feather: f32,
     color: [f32; 4],
     clip: &ClipTransform,
 ) -> Vec<SdfVertex> {
     if pts.len() < 2 {
         return Vec::new();
     }
-    let (half, outer) = (stroke.max(0.1) * 0.5, stroke.max(0.1) * 0.5 + feather);
+    let (half, outer) = (stroke.max(0.1) * 0.5, stroke.max(0.1) * 0.5 + 1.0);
     let mut verts = Vec::with_capacity((pts.len() - 1) * 6);
     for seg in pts.windows(2) {
         let ((x0, y0), (x1, y1)) = (seg[0], seg[1]);
@@ -206,7 +202,7 @@ pub fn build_aa_line_list(
         }
         let inv = len.recip();
         let (ox, oy) = (-dy * inv * outer, dx * inv * outer);
-        let mk = |px, py, d| SdfVertex::antialiased(clip.to_clip(px, py), color, d, half, feather);
+        let mk = |px, py, d| SdfVertex::antialiased(clip.to_clip(px, py), color, d, half);
         verts.extend([
             mk(x0 - ox, y0 - oy, -outer),
             mk(x0 + ox, y0 + oy, outer),
@@ -217,6 +213,35 @@ pub fn build_aa_line_list(
         ]);
     }
     verts
+}
+
+// reduces a polyline to at most `max_points`
+pub fn decimate_line(pts: &[(f32, f32)], max_points: usize) -> Cow<'_, [(f32, f32)]> {
+    if pts.len() <= max_points {
+        return Cow::Borrowed(pts);
+    }
+    let buckets = max_points / 2;
+    let bucket_size = pts.len() as f32 / buckets.max(1) as f32;
+    let mut result = Vec::with_capacity(max_points);
+    for b in 0..buckets {
+        let lo = (b as f32 * bucket_size) as usize;
+        let hi = (((b + 1) as f32 * bucket_size) as usize).min(pts.len());
+        if lo >= hi {
+            continue;
+        }
+        let (mut mn_i, mut mx_i) = (0, 0);
+        for (i, &(_, y)) in pts[lo..hi].iter().enumerate() {
+            if y < pts[lo + mn_i].1 {
+                mn_i = i;
+            }
+            if y > pts[lo + mx_i].1 {
+                mx_i = i;
+            }
+        }
+        result.push(pts[lo + mn_i.min(mx_i)]);
+        result.push(pts[lo + mn_i.max(mx_i)]);
+    }
+    Cow::Owned(result)
 }
 
 // Joins triangle strips with degenerate triangles for batched draw calls.

@@ -1,9 +1,9 @@
-// SDF shader for antialiased rendering.
+// SDF shader - antialiasing via screen-space derivatives.
 //
-// params: [dist_x, dist_y, radius, feather]
-// - Solid: (0, 0, large, 1)
-// - Line: (+-outer, 0, half_width, feather)
-// - Dot: (ox, oy, radius, feather)
+// params: [dist_x, dist_y, radius, _unused]
+// - Solid: (0, 0, large, 0)
+// - Line: (+-outer, 0, half_width, 0)
+// - Dot: (ox, oy, radius, 0)
 
 struct VertexInput {
     @location(0) position: vec2<f32>,
@@ -32,9 +32,10 @@ fn vs_main(input: VertexInput) -> VertexOutput {
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    let dist = length(input.params.xy);
+    let d = input.params.xy;
+    let dist = length(d);
     let radius = input.params.z;
-    let feather = max(input.params.w, 1.0e-4);
-    let coverage = clamp((radius + feather - dist) / feather, 0.0, 1.0);
+    let aa = max(length(vec2<f32>(fwidth(d.x), fwidth(d.y))), 1e-4);
+    let coverage = clamp((radius - dist) / aa + 0.5, 0.0, 1.0);
     return input.color * coverage;
 }

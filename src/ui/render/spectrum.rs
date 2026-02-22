@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::sdf_primitive;
 use crate::ui::render::common::{
-    ClipTransform, DEFAULT_FEATHER, SdfVertex, build_aa_line_list, quad_vertices,
+    ClipTransform, SdfVertex, build_aa_line_list, decimate_line, quad_vertices,
 };
 
 #[derive(Debug, Clone)]
@@ -52,6 +52,7 @@ impl SpectrumPrimitive {
     }
 
     fn build_line_vertices(&self, clip: &ClipTransform, bounds: Rectangle) -> Vec<SdfVertex> {
+        let pixel_budget = bounds.width.ceil().max(1.0) as usize * 2;
         let positions = to_cartesian_positions(bounds, self.params.normalized_points.as_ref());
         if positions.len() < 2 {
             return Vec::new();
@@ -70,21 +71,20 @@ impl SpectrumPrimitive {
             self.params.highlight_threshold,
         );
 
+        let line_positions = decimate_line(&positions, pixel_budget);
         vertices.extend(build_aa_line_list(
-            &positions,
+            &line_positions,
             self.params.line_width,
-            DEFAULT_FEATHER,
             self.params.line_color,
             clip,
         ));
 
         if self.params.show_secondary_line && self.params.secondary_points.len() >= 2 {
-            let overlay_positions =
-                to_cartesian_positions(bounds, self.params.secondary_points.as_ref());
+            let sec_pts = to_cartesian_positions(bounds, self.params.secondary_points.as_ref());
+            let overlay_positions = decimate_line(&sec_pts, pixel_budget);
             vertices.extend(build_aa_line_list(
                 &overlay_positions,
                 self.params.secondary_line_width,
-                DEFAULT_FEATHER,
                 self.params.secondary_line_color,
                 clip,
             ));

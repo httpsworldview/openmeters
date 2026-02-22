@@ -16,8 +16,7 @@ pull request!
 - [x] Bar mode
   - Places the application at the top or bottom of the screen,
     spanning the entire width.
-  - (Relies on the `wlr-layer-shell` protocol; requires a Wayland
-    compositor.)
+  - (requires a Wayland compositor, unavailable on X11 as of now)
 - [x] Per-application capture
 - [x] Per-device capture
 - [x] Pop-out windows for individual visuals
@@ -36,8 +35,8 @@ pull request!
   - [x] True Peak
 - [x] **oscilloscope**
   - [x] Channel selection (L, R, L+R)
-  - [x] Stable mode — follows X cycles of the fundamental.
-  - [x] Free-run mode — scrolls continuously through time, not
+  - [x] Stable mode - follows X cycles of the fundamental.
+  - [x] Free-run mode - scrolls continuously through time, not
         triggered.
 - [x] **spectrogram**
   - [x] Reassignment and synchrosqueezing for sharper frequency and
@@ -136,14 +135,15 @@ yay -S openmeters-git
   guarantees are made. The public API for settings is mostly stable as
   of now, so breaking changes should be infrequent.
 - If you encounter a bug that causes OpenMeters to misbehave, the
-  application settings can be reset by deleting this file.
+  application settings can be reset by deleting this file. Please
+  consider reporting any such bugs you encounter.
 
 ## Credits
 
 Thank *you* for checking out my shitty passion project. If you think
 OpenMeters is useful, please consider starring the repository and
 sharing it with others. I appreciate any and all criticism and
-feedback, so feel free to open issues or reach out to me.
+feedback, so feel free to reach out to me.
 
 ### Inspiration
 

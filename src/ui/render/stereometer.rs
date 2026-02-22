@@ -135,7 +135,6 @@ impl StereometerPrimitive {
         const RINGS: usize = 3;
         const SEGMENTS: usize = 16;
         const WIDTH: f32 = 1.0;
-        const FEATHER: f32 = 1.0;
         const CORNERS: [(f32, f32); 4] = [(1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0)];
 
         let mut v = Vec::new();
@@ -151,9 +150,7 @@ impl StereometerPrimitive {
                     let t1 = (seg + 1) as f32 / SEGMENTS as f32;
                     let p0 = t.project(ax + (bx - ax) * t0, ay + (by - ay) * t0);
                     let p1 = t.project(ax + (bx - ax) * t1, ay + (by - ay) * t1);
-                    v.extend(line_vertices(
-                        p0, p1, grid_color, grid_color, WIDTH, FEATHER, clip,
-                    ));
+                    v.extend(line_vertices(p0, p1, grid_color, grid_color, WIDTH, clip));
                 }
             }
         }
@@ -172,9 +169,7 @@ impl StereometerPrimitive {
                     start.0 + (end.0 - start.0) * t1,
                     start.1 + (end.1 - start.1) * t1,
                 );
-                v.extend(line_vertices(
-                    p0, p1, grid_color, grid_color, WIDTH, FEATHER, clip,
-                ));
+                v.extend(line_vertices(p0, p1, grid_color, grid_color, WIDTH, clip));
             }
         }
 
@@ -228,14 +223,7 @@ impl StereometerPrimitive {
                 let nf = p.points.len() as f32;
                 v.extend(p.points.iter().enumerate().flat_map(|(i, &(l, r))| {
                     let (px, py) = t.apply_rotation(l, r);
-                    dot_vertices(
-                        px,
-                        py,
-                        1.5,
-                        0.75,
-                        [cr, cg, cb, ca * (i + 1) as f32 / nf],
-                        clip,
-                    )
+                    dot_vertices(px, py, 1.5, [cr, cg, cb, ca * (i + 1) as f32 / nf], clip)
                 }));
             }
             StereometerMode::Lissajous if p.points.len() >= 2 => {
@@ -252,7 +240,6 @@ impl StereometerPrimitive {
                         [cr, cg, cb, ca * t0],
                         [cr, cg, cb, ca * t1],
                         1.5,
-                        1.0,
                         clip,
                     )
                 }));
