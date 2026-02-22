@@ -3,7 +3,7 @@ use iced::advanced::graphics::Viewport;
 use std::sync::Arc;
 
 use crate::sdf_primitive;
-use crate::ui::render::common::{ClipTransform, SdfVertex, append_strip};
+use crate::ui::render::common::{ClipTransform, SdfVertex};
 
 #[derive(Debug, Clone, Copy)]
 pub struct PreviewSample {
@@ -45,6 +45,17 @@ fn normalize_sample(min: f32, max: f32) -> (f32, f32) {
 #[inline]
 fn with_alpha(color: [f32; 4], alpha: f32) -> [f32; 4] {
     [color[0], color[1], color[2], alpha]
+}
+
+fn append_strip(dest: &mut Vec<SdfVertex>, strip: impl AsRef<[SdfVertex]>) {
+    let strip = strip.as_ref();
+    if strip.is_empty() {
+        return;
+    }
+    if let Some(&last) = dest.last() {
+        dest.extend([last, last, strip[0], strip[0]]);
+    }
+    dest.extend_from_slice(strip);
 }
 
 #[derive(Debug)]
@@ -102,6 +113,13 @@ impl WaveformPrimitive {
 
             // Build independent pixel columns (discrete quads)
             let mut strip_builder = Vec::with_capacity((columns + 2) * 6);
+            let mut push_quad = |x0: f32, y0: f32, x1: f32, y1: f32, color: [f32; 4]| {
+                append_strip(
+                    &mut strip_builder,
+                    [(x0, y0), (x0, y1), (x1, y0), (x1, y1)]
+                        .map(|(x, y)| SdfVertex::solid(clip.to_clip(x, y), color)),
+                );
+            };
 
             for i in 0..columns {
                 let idx = ch * columns + i;
@@ -121,14 +139,13 @@ impl WaveformPrimitive {
                     params.colors.get(idx).copied().unwrap_or([1.0; 4]),
                     params.fill_alpha,
                 );
-
-                let quad = vec![
-                    SdfVertex::solid(clip.to_clip(x, center_y - max * amp_scale), color),
-                    SdfVertex::solid(clip.to_clip(x, center_y - min * amp_scale), color),
-                    SdfVertex::solid(clip.to_clip(x + w, center_y - max * amp_scale), color),
-                    SdfVertex::solid(clip.to_clip(x + w, center_y - min * amp_scale), color),
-                ];
-                append_strip(&mut strip_builder, quad);
+                push_quad(
+                    x,
+                    center_y - max * amp_scale,
+                    x + w,
+                    center_y - min * amp_scale,
+                    color,
+                );
             }
 
             if params.preview_active() {
@@ -144,14 +161,13 @@ impl WaveformPrimitive {
                 let ps = params.preview_samples[ch];
                 let (min, max) = normalize_sample(ps.min, ps.max);
                 let color = with_alpha(ps.color, params.fill_alpha);
-
-                let quad = vec![
-                    SdfVertex::solid(clip.to_clip(start_x, center_y - max * amp_scale), color),
-                    SdfVertex::solid(clip.to_clip(start_x, center_y - min * amp_scale), color),
-                    SdfVertex::solid(clip.to_clip(end_x, center_y - max * amp_scale), color),
-                    SdfVertex::solid(clip.to_clip(end_x, center_y - min * amp_scale), color),
-                ];
-                append_strip(&mut strip_builder, quad);
+                push_quad(
+                    start_x,
+                    center_y - max * amp_scale,
+                    end_x,
+                    center_y - min * amp_scale,
+                    color,
+                );
             }
             append_strip(&mut vertices, strip_builder);
         }

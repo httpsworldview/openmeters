@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use crate::sdf_primitive;
 use crate::ui::render::common::{
-    ClipTransform, SdfVertex, build_aa_line_list, decimate_line, quad_vertices,
+    ClipTransform, SdfVertex, baseline_segment_vertices, build_aa_line_list, decimate_line,
+    quad_vertices,
 };
 
 #[derive(Debug, Clone)]
@@ -169,14 +170,13 @@ fn push_highlight_columns(
         if c0[3] <= 0.0 && c1[3] <= 0.0 {
             continue;
         }
-        vertices.extend([
-            SdfVertex::solid(clip.to_clip(seg[0].0, seg[0].1), c0),
-            SdfVertex::solid(clip.to_clip(seg[0].0, baseline), c0),
-            SdfVertex::solid(clip.to_clip(seg[1].0, baseline), c1),
-            SdfVertex::solid(clip.to_clip(seg[0].0, seg[0].1), c0),
-            SdfVertex::solid(clip.to_clip(seg[1].0, baseline), c1),
-            SdfVertex::solid(clip.to_clip(seg[1].0, seg[1].1), c1),
-        ]);
+        vertices.extend(baseline_segment_vertices(
+            seg[0],
+            seg[1],
+            baseline,
+            *clip,
+            [c0, c1],
+        ));
     }
 }
 

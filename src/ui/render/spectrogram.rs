@@ -12,7 +12,7 @@ use std::sync::Arc;
 use crate::ui::theme::f32_to_u8;
 
 use crate::ui::render::common::{
-    CacheTracker, ClipTransform, InstanceBuffer, create_shader_module, write_texture_region,
+    CacheTracker, ClipTransform, InstanceBuffer, create_shader_module,
 };
 
 pub const SPECTROGRAM_PALETTE_SIZE: usize = 5;
@@ -29,6 +29,32 @@ const fn extent3d(w: u32, h: u32) -> wgpu::Extent3d {
         height: if h > 0 { h } else { 1 },
         depth_or_array_layers: 1,
     }
+}
+
+#[inline]
+fn write_texture_region(
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    origin: wgpu::Origin3d,
+    extent: wgpu::Extent3d,
+    bytes_per_row: u32,
+    data: &[u8],
+) {
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: 0,
+            origin,
+            aspect: wgpu::TextureAspect::All,
+        },
+        data,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(bytes_per_row),
+            rows_per_image: None,
+        },
+        extent,
+    );
 }
 
 // public API
