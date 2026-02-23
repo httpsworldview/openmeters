@@ -300,7 +300,7 @@ enum Message {
     AudioFrame(Vec<f32>),
     ToggleDrawer,
     TogglePause,
-    PopOutOrDock,
+    PopOutOrDock(window::Id),
     DrawerResizeStart,
     DrawerResizeMove(iced::Point),
     DrawerResizeEnd,
@@ -316,17 +316,21 @@ enum Message {
     Settings(window::Id, SettingsMessage),
 }
 
-fn handle_keyboard_shortcut(event: keyboard::Event) -> Option<Message> {
-    let keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
+fn keyboard_shortcut(
+    event: Event,
+    _status: iced::event::Status,
+    window_id: window::Id,
+) -> Option<Message> {
+    let Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) = event else {
         return None;
     };
     let (ctrl, shift, no_modifiers) =
         (modifiers.control(), modifiers.shift(), modifiers.is_empty());
-    match &key {
+    match key {
         Key::Character(ch) if ctrl && shift && ch.eq_ignore_ascii_case("h") => {
             Some(Message::ToggleDrawer)
         }
-        Key::Named(keyboard::key::Named::Space) if ctrl => Some(Message::PopOutOrDock),
+        Key::Named(keyboard::key::Named::Space) if ctrl => Some(Message::PopOutOrDock(window_id)),
         Key::Character(ch) if no_modifiers && ch.eq_ignore_ascii_case("p") => {
             Some(Message::TogglePause)
         }
@@ -431,7 +435,7 @@ impl UiApp {
                 Some(config_sub),
                 Some(visuals_sub),
                 audio_sub,
-                Some(keyboard::listen().filter_map(handle_keyboard_shortcut)),
+                Some(event::listen_with(keyboard_shortcut)),
                 Some(window::close_events().map(Message::WindowClosed)),
                 Some(window::resize_events().map(|(id, size)| Message::WindowResized(id, size))),
                 Some(focus_sub),
@@ -732,10 +736,8 @@ impl UiApp {
         }
     }
 
-    fn handle_popout_or_dock(&mut self) -> Task<Message> {
-        if let Some(focused) = self.focused_window
-            && let Some(popout) = self.popout_windows.remove(&focused)
-        {
+    fn handle_popout_or_dock(&mut self, source_window: window::Id) -> Task<Message> {
+        if let Some(popout) = self.popout_windows.remove(&source_window) {
             self.visual_manager
                 .borrow_mut()
                 .restore_position(popout.visual_id, popout.original_index);
@@ -744,7 +746,7 @@ impl UiApp {
                 settings
                     .set_visual_order(self.visual_manager.snapshot().slots.iter().map(|s| s.kind))
             });
-            return window::close(focused);
+            return window::close(source_window);
         }
         let Some((id, kind)) = self.visuals_page.hovered_visual() else {
             return Task::none();
@@ -930,7 +932,7 @@ fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
             app.rendering_paused = !app.rendering_paused;
             Task::none()
         }
-        Message::PopOutOrDock => app.handle_popout_or_dock(),
+        Message::PopOutOrDock(window_id) => app.handle_popout_or_dock(window_id),
         Message::DrawerResizeStart => {
             if app.drawer_open {
                 app.drawer_resizing = true;
