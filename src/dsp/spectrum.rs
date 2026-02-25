@@ -2,9 +2,9 @@
 
 use super::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::dsp::spectrogram::{
-    FrequencyScale, WindowKind, PLANCK_BESSEL_DEFAULT_BETA, PLANCK_BESSEL_DEFAULT_EPSILON,
+    FrequencyScale, PLANCK_BESSEL_DEFAULT_BETA, PLANCK_BESSEL_DEFAULT_EPSILON, WindowKind,
 };
-use crate::util::audio::{power_to_db, DB_FLOOR, DEFAULT_SAMPLE_RATE};
+use crate::util::audio::{DB_FLOOR, DEFAULT_SAMPLE_RATE, power_to_db};
 use realfft::{RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex32;
 use serde::{Deserialize, Serialize};

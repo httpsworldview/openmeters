@@ -15,7 +15,7 @@ use iced::advanced::{Layout, Renderer as _, Widget, layout, mouse};
 use iced::{Background, Color, Element, Length, Point, Rectangle, Size};
 use iced_wgpu::primitive::Renderer as _;
 use std::cell::RefCell;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 const EPSILON: f32 = 1e-6;
 const GRID_FREQS: &[(f32, u8)] = &[
@@ -49,6 +49,29 @@ const GRID_FREQS: &[(f32, u8)] = &[
     (10_000.0, 0),
     (16_000.0, 1),
 ];
+
+struct GridLabel {
+    freq: f32,
+    importance: u8,
+    text: String,
+    size: Size,
+}
+
+static GRID_LABELS: LazyLock<Vec<GridLabel>> = LazyLock::new(|| {
+    GRID_FREQS
+        .iter()
+        .map(|&(freq, importance)| {
+            let text = fmt_freq(freq);
+            let size = super::measure_text(&text, 10.0);
+            GridLabel {
+                freq,
+                importance,
+                text,
+                size,
+            }
+        })
+        .collect()
+});
 
 vis_processor!(
     SpectrumProcessor,
@@ -131,7 +154,7 @@ pub(crate) struct SpectrumState {
     unweighted: Arc<[[f32; 2]]>,
     key: u64,
     peak: Option<PeakLabel>,
-    grid: Arc<[(f32, String, u8)]>,
+    grid: Arc<[(f32, String, u8, Size)]>,
     scratch: Vec<f32>,
 }
 
@@ -235,16 +258,16 @@ impl SpectrumState {
 
         self.grid = if self.style.show_grid {
             let mut v = Vec::new();
-            for &(f, imp) in GRID_FREQS {
-                if f < min_f || f > max_f {
+            for gl in GRID_LABELS.iter() {
+                if gl.freq < min_f || gl.freq > max_f {
                     continue;
                 }
-                let mut p = scale.pos_of(self.style.frequency_scale, f);
+                let mut p = scale.pos_of(self.style.frequency_scale, gl.freq);
                 if self.style.reverse_frequency {
                     p = 1.0 - p;
                 }
                 if p.is_finite() {
-                    v.push((p.clamp(0.0, 1.0), fmt_freq(f), imp));
+                    v.push((p.clamp(0.0, 1.0), gl.text.clone(), gl.importance, gl.size));
                 }
             }
             Arc::from(v)
@@ -304,7 +327,7 @@ impl SpectrumState {
         }
     }
 
-    pub fn grid(&self) -> Arc<[(f32, String, u8)]> {
+    pub fn grid(&self) -> Arc<[(f32, String, u8, Size)]> {
         Arc::clone(&self.grid)
     }
 
@@ -520,7 +543,12 @@ fn reindex(pts: &mut [[f32; 2]]) {
     }
 }
 
-fn draw_grid(r: &mut iced::Renderer, th: &iced::Theme, b: Rectangle, lines: &[(f32, String, u8)]) {
+fn draw_grid(
+    r: &mut iced::Renderer,
+    th: &iced::Theme,
+    b: Rectangle,
+    lines: &[(f32, String, u8, Size)],
+) {
     if b.width <= 0.0 || b.height <= 0.0 {
         return;
     }
@@ -531,14 +559,10 @@ fn draw_grid(r: &mut iced::Renderer, th: &iced::Theme, b: Rectangle, lines: &[(f
     );
     let cands: Vec<_> = lines
         .iter()
-        .filter_map(|(pos, lbl, imp)| {
+        .filter_map(|(pos, lbl, imp, sz)| {
             let x = b.x + b.width * pos;
-            (x >= b.x - 1.0 && x <= b.x + b.width + 1.0)
-                .then(|| {
-                    let sz = super::measure_text(lbl, 10.0);
-                    (sz.width > 0.0 && sz.height > 0.0).then_some((x, lbl, *imp, sz))
-                })
-                .flatten()
+            (x >= b.x - 1.0 && x <= b.x + b.width + 1.0 && sz.width > 0.0 && sz.height > 0.0)
+                .then_some((x, lbl, *imp, *sz))
         })
         .collect();
     let mut acc = Vec::with_capacity(cands.len());
