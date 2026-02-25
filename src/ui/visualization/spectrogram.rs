@@ -322,8 +322,6 @@ impl SpectrogramState {
     pub fn set_palette(&mut self, palette: &[Color; SPECTROGRAM_PALETTE_SIZE]) {
         if self.palette != *palette {
             self.palette = *palette;
-            let values = self.buffer.borrow().values.clone();
-            self.buffer.borrow_mut().pending_base = Some(Arc::from(values));
         }
     }
 

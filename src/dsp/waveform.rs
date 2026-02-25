@@ -108,12 +108,14 @@ struct FrequencyAnalyzer {
     sample_history: Vec<f32>,
     bin_hz: f32,
     smoothed: f32,
+    hann_window: Vec<f32>,
 }
 
 impl std::fmt::Debug for FrequencyAnalyzer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FrequencyAnalyzer")
             .field("size", &self.size)
+            .field("window_len", &self.hann_window.len())
             .finish_non_exhaustive()
     }
 }
@@ -129,6 +131,7 @@ impl FrequencyAnalyzer {
             sample_history: Vec::with_capacity(size),
             bin_hz: sample_rate / size as f32,
             smoothed: 0.1,
+            hann_window: Vec::new(),
             size,
             fft,
         }
@@ -163,9 +166,20 @@ impl FrequencyAnalyzer {
     fn apply_hann_window(&mut self) {
         self.input_buffer.fill(0.0);
         let n = self.sample_history.len().min(self.size);
-        let window = WindowKind::Hann.coefficients(n);
-        for (i, (&sample, &w)) in self.sample_history.iter().zip(window.iter()).enumerate() {
+        self.ensure_hann_window(n);
+        for (i, (&sample, &w)) in self
+            .sample_history
+            .iter()
+            .zip(self.hann_window.iter())
+            .enumerate()
+        {
             self.input_buffer[i] = sample * w;
+        }
+    }
+
+    fn ensure_hann_window(&mut self, len: usize) {
+        if self.hann_window.len() != len {
+            self.hann_window = WindowKind::Hann.coefficients(len);
         }
     }
 
