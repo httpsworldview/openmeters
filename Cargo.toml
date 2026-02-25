@@ -35,3 +35,10 @@ codegen-units = 1
 opt-level = 3
 strip = true
 panic = "abort"
+
+[profile.profiling]
+inherits = "release"
+lto = "off"
+codegen-units = 8
+strip = "none"
+debug = 2

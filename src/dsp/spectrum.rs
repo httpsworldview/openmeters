@@ -2,9 +2,9 @@
 
 use super::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::dsp::spectrogram::{
-    FrequencyScale, PLANCK_BESSEL_DEFAULT_BETA, PLANCK_BESSEL_DEFAULT_EPSILON, WindowKind,
+    FrequencyScale, WindowKind, PLANCK_BESSEL_DEFAULT_BETA, PLANCK_BESSEL_DEFAULT_EPSILON,
 };
-use crate::util::audio::{DB_FLOOR, DEFAULT_SAMPLE_RATE, power_to_db};
+use crate::util::audio::{power_to_db, DB_FLOOR, DEFAULT_SAMPLE_RATE};
 use realfft::{RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex32;
 use serde::{Deserialize, Serialize};
@@ -255,13 +255,17 @@ impl SpectrumProcessor {
             crate::util::audio::remove_dc(&mut self.real_buffer);
             crate::util::audio::apply_window(&mut self.real_buffer, &self.window);
 
-            self.fft
+            if self
+                .fft
                 .process_with_scratch(
                     &mut self.real_buffer,
                     &mut self.spectrum_buffer,
                     &mut self.scratch_buffer,
                 )
-                .expect("real FFT forward transform");
+                .is_err()
+            {
+                return produced;
+            }
 
             if self.scratch_magnitudes.len() != bins {
                 self.scratch_magnitudes.resize(bins, DB_FLOOR);
