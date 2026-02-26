@@ -24,7 +24,6 @@ struct MagnitudeParams {
 }
 
 const FLAG_CAPACITY_POW2: u32 = 0x1u;
-const MAX_X_SAMPLES: u32 = 16u;
 
 @group(0) @binding(0)
 var<uniform> uniforms: SpectrogramUniforms;
@@ -71,9 +70,10 @@ fn sample_magnitude(logical: u32, row: u32, params: MagnitudeParams) -> f32 {
     return textureLoad(magnitudes, vec2<i32>(i32(row), i32(physical)), 0).x;
 }
 
-fn max_magnitude_for_column(logical: u32, row_lo: u32, row_hi: u32, params: MagnitudeParams) -> f32 {
+// Max-pool across the bins that map to this pixel's exclusive grid cell
+fn peak_in_range(logical: u32, row_lo: u32, row_hi: u32, params: MagnitudeParams) -> f32 {
     var val = sample_magnitude(logical, row_lo, params);
-    for (var r = row_lo + 1u; r < min(row_hi, row_lo + 64u); r = r + 1u) {
+    for (var r = row_lo + 1u; r < row_hi; r = r + 1u) {
         val = max(val, sample_magnitude(logical, r, params));
     }
     return val;
@@ -97,14 +97,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let latest = min(state.x, capacity - 1u);
 
     let clamped_uv = clamp(input.tex_coords, vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 1.0));
-    let scroll_phase = bitcast<f32>(state.z);
     let screen_width = max(bitcast<f32>(state.w), 1.0);
-
-    let x_pos = clamped_uv.x * f32(count - 1u) + scroll_phase;
-    let x_lo = u32(max(floor(x_pos), 0.0));
-    let x_hi = min(x_lo + 1u, count - 1u);
-    let x_frac = fract(x_pos);
-    let x_center = u32(clamp(floor(x_pos + 0.5), 0.0, f32(count - 1u)));
 
     let is_pow2 = (flags & FLAG_CAPACITY_POW2) != 0u;
     let is_full = count == capacity;
@@ -123,39 +116,32 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let uv_y_min = uniforms.style.y;
     let uv_y_max = uniforms.style.z;
     let screen_height = max(uniforms.style.w, 1.0);
-    let zoomed_y = uv_y_min + clamped_uv.y * (uv_y_max - uv_y_min);
 
     let params = MagnitudeParams(capacity, wrap_mask, oldest, is_pow2, is_full);
 
-    // Max-pool across bins that map to this pixel to preserve peaks when downsampling
-    let bins_per_pixel = f32(height) * (uv_y_max - uv_y_min) / screen_height;
-    let half_span = bins_per_pixel * 0.5;
-    let center_bin = zoomed_y * f32(height - 1u);
-    let row_lo = u32(max(center_bin - half_span, 0.0));
-    let row_hi = min(u32(center_bin + half_span) + 1u, height);
+    let pixel_x = floor(clamped_uv.x * screen_width);
+    let pixel_y = floor(clamped_uv.y * screen_height);
 
-    let columns_per_pixel = f32(count) / screen_width;
-    var center = 0.0;
-    if columns_per_pixel <= 1.0 {
-        let val_lo = max_magnitude_for_column(x_lo, row_lo, row_hi, params);
-        let val_hi = max_magnitude_for_column(x_hi, row_lo, row_hi, params);
-        center = mix(val_lo, val_hi, x_frac);
-    } else {
-        let half_cols = columns_per_pixel * 0.5;
-        let col_lo = u32(max(x_pos - half_cols, 0.0));
-        let col_hi = min(u32(x_pos + half_cols + 1.0), count);
-        let span = max(col_hi - col_lo, 1u);
-        let step = max(span / MAX_X_SAMPLES, 1u);
-        var col = col_lo;
-        for (var i = 0u; i < MAX_X_SAMPLES; i = i + 1u) {
-            if col >= col_hi {
-                break;
-            }
-            center = max(center, max_magnitude_for_column(col, row_lo, row_hi, params));
-            col = col + step;
-        }
+    let y_frac_lo = pixel_y / screen_height;
+    let y_frac_hi = (pixel_y + 1.0) / screen_height;
+    let bin_lo = (uv_y_min + y_frac_lo * (uv_y_max - uv_y_min)) * f32(height - 1u);
+    let bin_hi = (uv_y_min + y_frac_hi * (uv_y_max - uv_y_min)) * f32(height - 1u);
+    let row_lo = u32(max(floor(bin_lo), 0.0));
+    let row_hi = min(u32(ceil(bin_hi)) + 1u, height);
+
+    // column arrivals, then advances by whole columns. mostly eliminates
+    // sub-pixel jitter, but it isn't perfect, and I'm out of ideas for
+    // how to do better.
+    let x_lo_f = pixel_x / screen_width * f32(count);
+    let x_hi_f = (pixel_x + 1.0) / screen_width * f32(count);
+    let col_lo = u32(clamp(floor(x_lo_f), 0.0, f32(count - 1u)));
+    let col_hi = u32(clamp(ceil(x_hi_f), 0.0, f32(count)));
+    let col_end = max(col_hi, col_lo + 1u);
+
+    var magnitude = peak_in_range(col_lo, row_lo, row_hi, params);
+    for (var c = col_lo + 1u; c < col_end; c = c + 1u) {
+        magnitude = max(magnitude, peak_in_range(c, row_lo, row_hi, params));
     }
-    let row = u32(clamp(center_bin + 0.5, 0.0, f32(height - 1u)));
 
-    return sample_palette(center);
+    return sample_palette(magnitude);
 }
