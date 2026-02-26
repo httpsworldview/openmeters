@@ -71,6 +71,18 @@ pull request!
   - [x] Adjustable scroll speed
   - [x] Adjustable color map
 
+## Notes on Performance
+
+OpenMeters is designed to be efficient and lightweight, but real-world
+performance will vary greatly depending on your system and settings.
+Settings within the GUI are intentionally ***very*** flexible and can
+have a ***significant*** impact on performance.  General performance
+notes:
+
+- ~500MB RAM usage with all visuals active and default settings.
+- CPU usage between 0.5-5% on a modern processor.
+- GPU usage between 1-20% on a somewhat modern chip.
+
 ## Installation
 
 ### On Arch Linux (and Arch-based distributions)
