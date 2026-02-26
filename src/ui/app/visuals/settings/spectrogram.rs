@@ -25,9 +25,9 @@ const PIANO_ROLL_OVERLAY_OPTIONS: [PianoRollOverlay; 3] = [
     PianoRollOverlay::Right,
     PianoRollOverlay::Left,
 ];
-const HISTORY_RANGE: SliderRange = SliderRange::new(120.0, 3840.0, 30.0);
+const HISTORY_RANGE: SliderRange = SliderRange::new(120.0, 8192.0, 30.0);
 const FLOOR_DB_RANGE: SliderRange = SliderRange::new(-140.0, -1.0, 1.0);
-const DISPLAY_BINS_RANGE: SliderRange = SliderRange::new(64.0, 4096.0, 64.0);
+const DISPLAY_BINS_RANGE: SliderRange = SliderRange::new(64.0, 8192.0, 64.0);
 const MAX_CORR_HZ_RANGE: SliderRange = SliderRange::new(0.0, 200.0, 1.0);
 const PB_EPSILON_RANGE: SliderRange = SliderRange::new(0.01, 0.5, 0.01);
 const PB_BETA_RANGE: SliderRange = SliderRange::new(0.0, 20.0, 0.25);

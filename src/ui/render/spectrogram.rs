@@ -76,7 +76,6 @@ pub struct SpectrogramParams {
     pub contrast: f32,
     pub uv_y_range: [f32; 2],
     pub screen_height: f32,
-    pub scroll_phase: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -292,7 +291,7 @@ impl Uniforms {
             latest_count: [
                 p.latest_column,
                 p.column_count,
-                p.scroll_phase.to_bits(),
+                0,
                 p.bounds.width.max(1.0).to_bits(),
             ],
             style: [

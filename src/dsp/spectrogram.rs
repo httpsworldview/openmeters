@@ -8,13 +8,7 @@
 //    paper, to match the more common convention.
 // 2. K. Kodera, R. Gendrin & C. de Villedary, "Analysis of time-varying signals
 //    with small BT values", IEEE Trans. ASSP, vol. 26, no. 1, pp. 64-76, Feb 1978.
-// 3. T. Oberlin, S. Meignen, V. Perrier, "Second-order synchrosqueezing transform
-//    or invertible reassignment? Towards ideal time-frequency representations",
-//    IEEE Trans. SP, vol. 63, no. 5, pp. 1335-1344, 2015.
-//    Note: we aren't implementing "true" SST, rather a simpler form of frequency
-//    correction based on second derivatives. *Our spectrogram is not invertible*
-//    by design.
-// 4. F. Auger et al., "Time-Frequency Reassignment and Synchrosqueezing: An
+// 3. F. Auger et al., "Time-Frequency Reassignment and Synchrosqueezing: An
 //    Overview", IEEE Signal Processing Magazine, vol. 30, pp. 32-41, Nov 2013.
 
 use super::{AudioBlock, AudioProcessor, Reconfigurable};
@@ -32,28 +26,13 @@ use std::sync::{Arc, OnceLock};
 use wide::{CmpGe, CmpGt, CmpLe, CmpLt, f32x8};
 pub const PLANCK_BESSEL_DEFAULT_EPSILON: f32 = 0.1;
 pub const PLANCK_BESSEL_DEFAULT_BETA: f32 = 5.5;
-const CONFIDENCE_SNR_RANGE_DB: f32 = 60.0;
-const CONFIDENCE_FLOOR: f32 = 0.01;
-const CHIRP_SAFETY_MARGIN: f32 = 2.0;
+const CONFIDENCE_FLOOR: f32 = 0.05;
 const LN_TO_DB: f32 = 4.342_944_8;
 
-const OPTIMAL_FREQ_CORRECTION_RATIO: f32 = 0.75;
+const OPTIMAL_FREQ_CORRECTION_RATIO: f32 = 1.0;
 const OPTIMAL_TIME_SPREAD: f32 = 3.5;
 const OPTIMAL_TIME_HOPS_MIN: f32 = 2.0;
 const OPTIMAL_TIME_HOPS_MAX: f32 = 8.0;
-
-// sigma=2/3
-const GAUSSIAN_KERNEL_3X3: [[f32; 3]; 3] = {
-    const CENTER: f32 = 1.0;
-    const EDGE: f32 = 0.324_652_5;
-    const CORNER: f32 = 0.105_399_2;
-    const TOTAL: f32 = CENTER + 4.0 * EDGE + 4.0 * CORNER;
-    [
-        [CORNER / TOTAL, EDGE / TOTAL, CORNER / TOTAL],
-        [EDGE / TOTAL, CENTER / TOTAL, EDGE / TOTAL],
-        [CORNER / TOTAL, EDGE / TOTAL, CORNER / TOTAL],
-    ]
-};
 
 // Horner polynomial evaluation: poly!(x; a0, a1, a2) = a0 + x*(a1 + x*a2)
 macro_rules! poly {
@@ -94,7 +73,7 @@ impl Default for SpectrogramConfig {
             use_reassignment: true,
             zero_padding_factor: 2,
             display_bin_count: 4096,
-            reassignment_max_correction_hz: 0.0, // 0.0 = auto (0.75 x bin_hz)
+            reassignment_max_correction_hz: 0.0, // 0.0 = auto (OPTIMAL_FREQ_CORRECTION_RATIO * bin_hz)
             reassignment_max_time_hops: 0.0,     // 0.0 = auto
         }
     }
@@ -304,16 +283,11 @@ fn planck_bessel(len: usize, epsilon: f32, beta: f32) -> Vec<f32> {
 struct ReassignmentBuffers {
     derivative_window: Vec<f32>,
     time_weighted_window: Vec<f32>,
-    second_derivative_window: Vec<f32>,
     derivative_buffer: Vec<f32>,
     time_weighted_buffer: Vec<f32>,
-    second_derivative_buffer: Vec<f32>,
     derivative_spectrum: Vec<Complex32>,
     time_weighted_spectrum: Vec<Complex32>,
-    second_derivative_spectrum: Vec<Complex32>,
     floor_linear: f32,
-    inverse_sigma_t: f32,
-    max_chirp: f32,
 }
 
 impl ReassignmentBuffers {
@@ -326,32 +300,21 @@ impl ReassignmentBuffers {
     ) {
         self.derivative_window = compute_derivative(kind, window);
         self.time_weighted_window = compute_time_weighted(window);
-        self.second_derivative_window = finite_second_diff(window);
-        for buf in [
-            &mut self.derivative_buffer,
-            &mut self.time_weighted_buffer,
-            &mut self.second_derivative_buffer,
-        ] {
+        for buf in [&mut self.derivative_buffer, &mut self.time_weighted_buffer] {
             buf.resize(size, 0.0);
         }
         self.derivative_spectrum = fft.make_output_vec();
         self.time_weighted_spectrum = fft.make_output_vec();
-        self.second_derivative_spectrum = fft.make_output_vec();
         self.floor_linear = db_to_power(DB_FLOOR);
-        let sigma_t = compute_sigma_t(window);
-        self.inverse_sigma_t = 1.0 / sigma_t;
-        self.max_chirp = 0.5 / (sigma_t * sigma_t);
     }
 
     fn apply_to_frame(&mut self, raw_audio: &[f32]) {
         for (i, &sample) in raw_audio.iter().enumerate() {
             self.derivative_buffer[i] = sample * self.derivative_window[i];
             self.time_weighted_buffer[i] = sample * self.time_weighted_window[i];
-            self.second_derivative_buffer[i] = sample * self.second_derivative_window[i];
         }
         self.derivative_buffer[raw_audio.len()..].fill(0.0);
         self.time_weighted_buffer[raw_audio.len()..].fill(0.0);
-        self.second_derivative_buffer[raw_audio.len()..].fill(0.0);
     }
 }
 
@@ -534,53 +497,38 @@ impl Reassignment2DGrid {
             if val <= 0.0 || !val.is_finite() || !freqs[i].is_finite() {
                 continue;
             }
-            let time_col = ((times[i] * inv_hop).clamp(-max_off, max_off) + center).round() as i32;
-            let freq_col = freqs[i].round() as i32;
-            self.apply_kernel(freq_col, time_col, width, height, val);
+            let tc = (times[i] * inv_hop).clamp(-max_off, max_off) + center;
+            self.deposit_bilinear(freqs[i], tc, width, height, val);
         }
     }
 
     #[inline(always)]
-    fn apply_kernel(&mut self, freq_bin: i32, time_col: i32, width: i32, height: i32, val: f32) {
+    fn deposit_bilinear(&mut self, freq: f32, time: f32, width: i32, height: i32, val: f32) {
         let stride = width as usize;
-        if freq_bin >= 1 && freq_bin < width - 1 && time_col >= 1 && time_col < height - 1 {
-            let origin = (time_col as usize - 1) * stride + (freq_bin as usize - 1);
-            for (kf, row) in GAUSSIAN_KERNEL_3X3.iter().enumerate() {
-                for (kt, &weight) in row.iter().enumerate() {
-                    self.grid[origin + kt * stride + kf] += val * weight;
-                }
-            }
-        } else if freq_bin >= 0 && freq_bin < width && time_col >= 0 && time_col < height {
-            for (kf, row) in GAUSSIAN_KERNEL_3X3.iter().enumerate() {
-                for (kt, &weight) in row.iter().enumerate() {
-                    let (ti, fi) = (time_col + kt as i32 - 1, freq_bin + kf as i32 - 1);
-                    if ti >= 0 && ti < height && fi >= 0 && fi < width {
-                        self.grid[ti as usize * stride + fi as usize] += val * weight;
-                    }
-                }
+        let f0 = freq.floor() as i32;
+        let t0 = time.floor() as i32;
+        let ff = freq - f0 as f32;
+        let tf = time - t0 as f32;
+        let weights = [
+            (1.0 - ff) * (1.0 - tf),
+            ff * (1.0 - tf),
+            (1.0 - ff) * tf,
+            ff * tf,
+        ];
+        let cells = [(f0, t0), (f0 + 1, t0), (f0, t0 + 1), (f0 + 1, t0 + 1)];
+        for (&(fi, ti), &w) in cells.iter().zip(&weights) {
+            if fi >= 0 && fi < width && ti >= 0 && ti < height {
+                self.grid[ti as usize * stride + fi as usize] += val * w;
             }
         }
     }
 
-    fn advance(&mut self, energy_scale: &[f32], bin_norm: &[f32]) {
+    fn advance(&mut self) {
         self.output.copy_from_slice(&self.grid[..self.display_bins]);
         self.grid.rotate_left(self.display_bins);
         self.grid[(self.cols - 1) * self.display_bins..].fill(0.0);
-        for (i, (mag, &raw)) in self.magnitudes.iter_mut().zip(&self.output).enumerate() {
-            let energy = energy_scale
-                .get(i)
-                .or(energy_scale.get(1))
-                .copied()
-                .unwrap_or(1.0);
-            let norm = bin_norm.get(i).or(bin_norm.get(1)).copied().unwrap_or(1.0);
-            *mag = power_to_db(
-                if energy > f32::EPSILON {
-                    raw * norm / energy
-                } else {
-                    0.0
-                },
-                DB_FLOOR,
-            );
+        for (mag, &raw) in self.magnitudes.iter_mut().zip(&self.output) {
+            *mag = power_to_db(raw, DB_FLOOR);
         }
     }
 
@@ -762,10 +710,6 @@ impl SpectrogramProcessor {
                         &mut self.reassign.time_weighted_buffer,
                         &mut self.reassign.time_weighted_spectrum,
                     ),
-                    (
-                        &mut self.reassign.second_derivative_buffer,
-                        &mut self.reassign.second_derivative_spectrum,
-                    ),
                 ] {
                     self.fft
                         .process_with_scratch(buf, spec, &mut self.scratch)
@@ -818,20 +762,15 @@ impl SpectrogramProcessor {
         };
         let (min_hz, max_hz) = self.grid.frequency_range();
         let floor_linear = self.reassign.floor_linear;
-        let max_chirp = self.reassign.max_chirp * CHIRP_SAFETY_MARGIN;
         let inv_2pi = sample_rate / core::f32::consts::TAU;
-        let inv_sigma = self.reassign.inverse_sigma_t;
 
         let v_eps = f32x8::splat(f32::MIN_POSITIVE);
         let v_floor = f32x8::splat(floor_linear);
         let v_bin_hz = f32x8::splat(bin_hz);
         let v_inv_2pi = f32x8::splat(inv_2pi);
-        let v_max_chirp = f32x8::splat(max_chirp);
-        let v_inv_sigma = f32x8::splat(inv_sigma);
         let v_max_corr = f32x8::splat(max_corr);
         let v_min_hz = f32x8::splat(min_hz);
         let v_max_hz = f32x8::splat(max_hz);
-        let v_snr_range = f32x8::splat(CONFIDENCE_SNR_RANGE_DB);
 
         for chunk in 0..bin_count.div_ceil(8) {
             let off = chunk * 8;
@@ -840,30 +779,17 @@ impl SpectrogramProcessor {
             let (base_re, base_im) = load_complex_simd(&self.spectrum, off);
             let (d_re, d_im) = load_complex_simd(&self.reassign.derivative_spectrum, off);
             let (t_re, t_im) = load_complex_simd(&self.reassign.time_weighted_spectrum, off);
-            let (d2_re, d2_im) = load_complex_simd(&self.reassign.second_derivative_spectrum, off);
-            let chunk_bin_norm = load_f32_simd(&self.bin_norm, off);
             let energy_scale = load_f32_simd(&self.energy_norm, off);
 
             let pow = base_re * base_re + base_im * base_im;
-            let disp_pow = pow * chunk_bin_norm;
-            let mask = disp_pow.simd_ge(v_floor) & energy_scale.simd_gt(f32x8::splat(0.0));
+            let mask = pow.simd_ge(v_floor) & energy_scale.simd_gt(f32x8::splat(0.0));
             if mask.none() {
                 continue;
             }
 
             let inv_pow = f32x8::splat(1.0) / pow.max(v_eps);
             let d_omega = -(d_im * base_re - d_re * base_im) * inv_pow;
-            let mut f_corr = d_omega * v_inv_2pi;
-
-            let chirp = -(d2_im * base_re - d2_re * base_im) * inv_pow * v_inv_2pi;
-            let t_mag = (t_re * t_re + t_im * t_im).sqrt();
-            let weight = (-(t_mag * v_inv_sigma / pow.sqrt().max(v_eps)))
-                .exp()
-                .min(f32x8::splat(1.0));
-            f_corr = chirp
-                .abs()
-                .simd_lt(v_max_chirp)
-                .blend(f_corr + chirp * weight * f32x8::splat(0.5), f_corr);
+            let f_corr = d_omega * v_inv_2pi;
 
             let freq = k_idx.mul_add(v_bin_hz, f_corr);
 
@@ -876,11 +802,8 @@ impl SpectrogramProcessor {
             }
 
             let d_tau = -(t_re * base_re + t_im * base_im) * inv_pow;
-            let snr = ((disp_pow.ln() - v_floor.ln()) * f32x8::splat(LN_TO_DB))
-                .max(f32x8::splat(0.0))
-                / v_snr_range;
             let coherence = f32x8::splat(1.0) - (f_corr.abs() / v_bin_hz).min(f32x8::splat(1.0));
-            let conf = (snr.min(f32x8::splat(1.0)) * coherence).max(f32x8::splat(CONFIDENCE_FLOOR));
+            let conf = coherence.max(f32x8::splat(CONFIDENCE_FLOOR));
 
             let mask_f32 = final_mask.blend(f32x8::splat(1.0), f32x8::splat(0.0));
             self.grid.accumulate_simd(
@@ -892,7 +815,7 @@ impl SpectrogramProcessor {
             );
         }
 
-        self.grid.advance(&self.energy_norm, &self.bin_norm);
+        self.grid.advance();
     }
 
     fn arc_from_pool(pool: &mut Vec<Arc<[f32]>>, data: &[f32]) -> Arc<[f32]> {
@@ -1031,25 +954,6 @@ fn finite_first_diff(data: &[f32]) -> Vec<f32> {
         .collect()
 }
 
-fn finite_second_diff(data: &[f32]) -> Vec<f32> {
-    let len = data.len();
-    if len == 0 {
-        return vec![];
-    }
-    let get = |i: usize| data.get(i).copied().unwrap_or(data[i.min(len - 1)]);
-    (0..len)
-        .map(|i| {
-            if len > 4 && i >= 2 && i < len - 2 {
-                (-data[i - 2] + 16.0 * data[i - 1] - 30.0 * data[i] + 16.0 * data[i + 1]
-                    - data[i + 2])
-                    / 12.0
-            } else {
-                get(i + 1) - 2.0 * data[i] + get(i.saturating_sub(1))
-            }
-        })
-        .collect()
-}
-
 fn compute_derivative(kind: WindowKind, window: &[f32]) -> Vec<f32> {
     if let WindowKind::PlanckBessel { epsilon, beta } = kind {
         let (len, eps) = (window.len(), epsilon.clamp(1e-6, 0.5 - 1e-6));
@@ -1116,6 +1020,7 @@ fn compute_time_weighted(window: &[f32]) -> Vec<f32> {
         .collect()
 }
 
+#[cfg(test)]
 fn compute_sigma_t(window: &[f32]) -> f32 {
     let center = (window.len().saturating_sub(1)) as f32 * 0.5;
     let (weighted, total) =
@@ -1275,36 +1180,5 @@ mod tests {
                 "{kind:?}: sigma_t ratio = {ratio:.6}, expected ~{expected}"
             );
         }
-    }
-
-    #[test]
-    fn chirp_correction_tracks_linear_fm() {
-        let sample_rate = 48000.0;
-        let cfg = SpectrogramConfig {
-            fft_size: 2048,
-            hop_size: 256,
-            use_reassignment: true,
-            zero_padding_factor: 2,
-            window: WindowKind::Hann,
-            ..Default::default()
-        };
-        let mut processor = SpectrogramProcessor::new(cfg);
-        let (start_freq, sweep_rate) = (1000.0, 2000.0);
-        let chirp_signal: Vec<f32> = (0..2048 * 3)
-            .map(|n| {
-                let t = n as f32 / sample_rate;
-                (core::f32::consts::TAU * (start_freq * t + 0.5 * sweep_rate * t.powi(2))).sin()
-            })
-            .collect();
-        let update = unwrap(processor.process_block(&make_block(chirp_signal, 1, sample_rate)));
-        let bins = update
-            .display_bins_hz
-            .as_ref()
-            .expect("expected display bin freqs");
-        let mid = update.new_columns.len() / 2;
-        let (idx, _) = find_peak(&update.new_columns[mid].magnitudes_db);
-        let peak_hz = *bins.get(idx).expect("bin frequency");
-        let expected = start_freq + sweep_rate * ((256 * mid + 1024) as f32 / sample_rate);
-        assert!((peak_hz - expected).abs() < (expected * 0.02).max(50.0));
     }
 }

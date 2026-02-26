@@ -20,7 +20,6 @@ use iced_wgpu::primitive::Renderer as _;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::time::Instant;
 
 const DB_CEILING: f32 = 0.0;
 const MAX_TEXTURE_BINS: usize = 8_192;
@@ -135,8 +134,6 @@ struct SpectrogramBuffer {
     mapping: BinMapping,
     display_freqs: Arc<[f32]>,
     pool: ColumnBufferPool,
-    last_col_time: Option<Instant>,
-    col_interval_secs: f32,
 }
 
 impl SpectrogramBuffer {
@@ -160,7 +157,6 @@ impl SpectrogramBuffer {
         if self.capacity == 0 || self.height == 0 {
             (self.values, self.write_idx, self.col_count, self.mapping) =
                 (vec![], 0, 0, BinMapping::default());
-            self.last_col_time = None;
             return;
         }
         let passthrough = upd.display_bins_hz.as_ref().is_some_and(|b| {
@@ -169,7 +165,6 @@ impl SpectrogramBuffer {
         self.update_mapping(upd, passthrough);
         self.values = vec![0.0; self.capacity as usize * self.height as usize];
         (self.write_idx, self.col_count) = (0, 0);
-        self.last_col_time = None;
         let h = self.height as usize;
         for col in history {
             if col.magnitudes_db.len() >= h {
@@ -178,7 +173,6 @@ impl SpectrogramBuffer {
         }
         if self.col_count > 0 {
             self.pending_base = Some(Arc::from(self.values.clone()));
-            self.last_col_time = Some(Instant::now());
         }
     }
 
@@ -187,11 +181,6 @@ impl SpectrogramBuffer {
             return;
         }
         let h = self.height as usize;
-        let now = Instant::now();
-        let new_cols = columns
-            .iter()
-            .filter(|c| c.magnitudes_db.len() >= h)
-            .count();
         for col in columns.iter().filter(|c| c.magnitudes_db.len() >= h) {
             let idx = self.push_column(&col.magnitudes_db, style);
             let start = idx as usize * h;
@@ -201,18 +190,6 @@ impl SpectrogramBuffer {
                 column_index: idx,
                 values: Arc::new(ColumnBuffer::new(buf, self.pool.clone())),
             });
-        }
-        if new_cols > 0 {
-            if let Some(last) = self.last_col_time {
-                let elapsed = now.duration_since(last).as_secs_f32();
-                let interval = elapsed / new_cols as f32;
-                self.col_interval_secs = if self.col_interval_secs > 0.0 {
-                    self.col_interval_secs * 0.8 + interval * 0.2
-                } else {
-                    interval
-                };
-            }
-            self.last_col_time = Some(now);
         }
         if self.pending_cols.len() as u32 >= (self.capacity / 2).max(16) {
             self.pending_cols.clear();
@@ -267,17 +244,6 @@ impl SpectrogramBuffer {
         } else {
             (self.write_idx + self.capacity - 1) % self.capacity
         }
-    }
-
-    fn scroll_phase(&self) -> f32 {
-        let Some(last) = self.last_col_time else {
-            return 0.0;
-        };
-        if self.col_interval_secs <= 0.0 {
-            return 0.0;
-        }
-        let phase = Instant::now().duration_since(last).as_secs_f32() / self.col_interval_secs;
-        if phase >= 1.0 { 0.0 } else { phase }
     }
 }
 
@@ -425,7 +391,6 @@ impl SpectrogramState {
             contrast: self.style.contrast,
             uv_y_range: [0.0, 1.0],
             screen_height: bounds.height,
-            scroll_phase: buf.scroll_phase(),
         })
     }
 
