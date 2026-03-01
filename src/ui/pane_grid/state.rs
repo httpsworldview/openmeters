@@ -53,7 +53,7 @@ impl<T> State<T> {
     pub fn iter(&self) -> impl Iterator<Item = (&Pane, &T)> {
         self.order
             .iter()
-            .map(move |pane| (pane, self.panes.get(pane).expect("missing pane state")))
+            .filter_map(move |pane| self.panes.get(pane).map(|state| (pane, state)))
     }
 
     // Inserts a new pane immediately to the right of `pane` and returns its identifier.

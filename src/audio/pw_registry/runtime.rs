@@ -56,7 +56,9 @@ pub fn spawn_registry() -> Result<AudioRegistryHandle> {
             Ok(AudioRegistryHandle { runtime })
         }
         Err(_) => {
-            let runtime = RUNTIME.get().expect("registry runtime initialized");
+            let Some(runtime) = RUNTIME.get() else {
+                anyhow::bail!("registry runtime unavailable after initialization race");
+            };
             Ok(AudioRegistryHandle {
                 runtime: runtime.clone(),
             })
