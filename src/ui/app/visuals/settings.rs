@@ -26,30 +26,8 @@ macro_rules! settings_pane {
 
         settings_pane!(@impl $pane, $variant, $kind, $palette_mod);
     };
-    (
-        $pane:ident, $settings_ty:ty, $kind:expr, $palette_mod:path, $variant:ident,
-        init_palette($s:ident, $p:ident) $init_body:block
-    ) => {
-        #[derive(Debug)]
-        pub struct $pane {
-            visual_id: super::VisualId,
-            settings: $settings_ty,
-            palette: super::palette::PaletteEditor,
-        }
-
-        pub fn create(visual_id: super::VisualId, visual_manager: &super::VisualManagerHandle) -> $pane {
-            use $palette_mod as pal;
-            let ($s, mut $p) = super::load_settings_and_palette::<$settings_ty>(
-                visual_manager, $kind, &pal::COLORS, pal::LABELS,
-            );
-            $init_body
-            $pane { visual_id, settings: $s, palette: $p }
-        }
-
-        settings_pane!(@impl $pane, $variant, $kind, $palette_mod);
-    };
     ($pane:ident, $settings_ty:ty, $kind:expr, $palette_mod:path, $variant:ident) => {
-        settings_pane!($pane, $settings_ty, $kind, $palette_mod, $variant, init_palette(_s, _p) {});
+        settings_pane!($pane, $settings_ty, $kind, $palette_mod, $variant, extra_from_settings(_s) {});
     };
     (@impl $pane:ident, $variant:ident, $kind:expr, $palette_mod:path) => {
         impl super::ModuleSettingsPane for $pane {
@@ -124,42 +102,20 @@ pub trait ModuleSettingsPane: std::fmt::Debug + 'static {
     );
 }
 
-#[derive(Debug)]
-pub struct ActiveSettings {
-    pane: Box<dyn ModuleSettingsPane>,
-}
-
-impl ActiveSettings {
-    pub fn visual_id(&self) -> VisualId {
-        self.pane.visual_id()
-    }
-    pub fn view(&self) -> Element<'_, SettingsMessage> {
-        self.pane.view()
-    }
-    pub fn handle_message(
-        &mut self,
-        message: &SettingsMessage,
-        visual_manager: &VisualManagerHandle,
-        settings_handle: &SettingsHandle,
-    ) {
-        self.pane.handle(message, visual_manager, settings_handle);
-    }
-}
+pub type ActiveSettings = Box<dyn ModuleSettingsPane>;
 
 pub fn create_panel(
     visual_id: VisualId,
     kind: VisualKind,
     visual_manager: &VisualManagerHandle,
 ) -> ActiveSettings {
-    ActiveSettings {
-        pane: match kind {
-            VisualKind::Loudness => Box::new(loudness::create(visual_id, visual_manager)),
-            VisualKind::Oscilloscope => Box::new(oscilloscope::create(visual_id, visual_manager)),
-            VisualKind::Spectrogram => Box::new(spectrogram::create(visual_id, visual_manager)),
-            VisualKind::Spectrum => Box::new(spectrum::create(visual_id, visual_manager)),
-            VisualKind::Stereometer => Box::new(stereometer::create(visual_id, visual_manager)),
-            VisualKind::Waveform => Box::new(waveform::create(visual_id, visual_manager)),
-        },
+    match kind {
+        VisualKind::Loudness => Box::new(loudness::create(visual_id, visual_manager)),
+        VisualKind::Oscilloscope => Box::new(oscilloscope::create(visual_id, visual_manager)),
+        VisualKind::Spectrogram => Box::new(spectrogram::create(visual_id, visual_manager)),
+        VisualKind::Spectrum => Box::new(spectrum::create(visual_id, visual_manager)),
+        VisualKind::Stereometer => Box::new(stereometer::create(visual_id, visual_manager)),
+        VisualKind::Waveform => Box::new(waveform::create(visual_id, visual_manager)),
     }
 }
 

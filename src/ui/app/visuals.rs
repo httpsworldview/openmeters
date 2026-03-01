@@ -8,7 +8,7 @@ pub mod settings;
 pub use settings::{ActiveSettings, SettingsMessage, create_panel as create_settings_panel};
 
 use iced::widget::{container, mouse_area, text};
-use iced::{Element, Length, Subscription, Task};
+use iced::{Element, Length, Task};
 use std::collections::HashMap;
 
 const GRID_SPACING: f32 = 16.0;
@@ -71,10 +71,6 @@ impl VisualsPage {
         };
         page.sync_with_manager();
         page
-    }
-
-    pub fn subscription(&self) -> Subscription<VisualsMessage> {
-        Subscription::none()
     }
 
     pub fn update(&mut self, message: VisualsMessage) -> Task<VisualsMessage> {

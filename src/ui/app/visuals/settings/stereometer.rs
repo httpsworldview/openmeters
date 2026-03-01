@@ -118,6 +118,7 @@ impl StereometerSettingsPane {
         ]
         .spacing(8);
 
+        let corr_active = s.correlation_meter != CorrelationMeterMode::Off;
         let mut corr_picks = row![
             column![labeled_pick_list(
                 "Meter",
@@ -128,7 +129,7 @@ impl StereometerSettingsPane {
             .width(Length::Fill),
         ]
         .spacing(16);
-        if s.correlation_meter != CorrelationMeterMode::Off {
+        if corr_active {
             corr_picks = corr_picks.push(
                 column![labeled_pick_list(
                     "Side",
@@ -141,7 +142,7 @@ impl StereometerSettingsPane {
         }
 
         let mut correlation = column![corr_picks].spacing(8);
-        if s.correlation_meter != CorrelationMeterMode::Off {
+        if corr_active {
             correlation = correlation.push(labeled_slider(
                 "Window",
                 s.correlation_window,
@@ -165,31 +166,30 @@ impl StereometerSettingsPane {
     }
 
     fn handle(&mut self, msg: &Message) -> bool {
+        use Message::*;
         let s = &mut self.settings;
-        match msg {
-            Message::SegmentDuration(v) => {
-                update_f32_range(&mut s.segment_duration, *v, SEGMENT_DURATION_RANGE)
+        match *msg {
+            SegmentDuration(v) => {
+                update_f32_range(&mut s.segment_duration, v, SEGMENT_DURATION_RANGE)
             }
-            Message::TargetSampleCount(v) => {
-                update_usize_from_f32(&mut s.target_sample_count, *v, TARGET_SAMPLE_COUNT_RANGE)
+            TargetSampleCount(v) => {
+                update_usize_from_f32(&mut s.target_sample_count, v, TARGET_SAMPLE_COUNT_RANGE)
             }
-            Message::CorrelationWindow(v) => {
-                update_f32_range(&mut s.correlation_window, *v, CORRELATION_WINDOW_RANGE)
+            CorrelationWindow(v) => {
+                update_f32_range(&mut s.correlation_window, v, CORRELATION_WINDOW_RANGE)
             }
-            Message::Persistence(v) => update_f32_range(&mut s.persistence, *v, PERSISTENCE_RANGE),
-            Message::Rotation(v) => set_if_changed(
+            Persistence(v) => update_f32_range(&mut s.persistence, v, PERSISTENCE_RANGE),
+            Rotation(v) => set_if_changed(
                 &mut s.rotation,
                 (v.round() as i8).clamp(ROTATION_RANGE.min as i8, ROTATION_RANGE.max as i8),
             ),
-            Message::Flip(v) => set_if_changed(&mut s.flip, *v),
-            Message::Mode(m) => set_if_changed(&mut s.mode, *m),
-            Message::Scale(sc) => set_if_changed(&mut s.scale, *sc),
-            Message::ScaleRange(v) => update_f32_range(&mut s.scale_range, *v, SCALE_RANGE),
-            Message::CorrelationMeter(m) => set_if_changed(&mut s.correlation_meter, *m),
-            Message::CorrelationMeterSide(side) => {
-                set_if_changed(&mut s.correlation_meter_side, *side)
-            }
-            Message::Palette(e) => self.palette.update(*e),
+            Flip(v) => set_if_changed(&mut s.flip, v),
+            Mode(m) => set_if_changed(&mut s.mode, m),
+            Scale(sc) => set_if_changed(&mut s.scale, sc),
+            ScaleRange(v) => update_f32_range(&mut s.scale_range, v, SCALE_RANGE),
+            CorrelationMeter(m) => set_if_changed(&mut s.correlation_meter, m),
+            CorrelationMeterSide(side) => set_if_changed(&mut s.correlation_meter_side, side),
+            Palette(e) => self.palette.update(e),
         }
     }
 }

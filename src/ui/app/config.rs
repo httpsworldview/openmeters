@@ -10,7 +10,6 @@ use crate::ui::settings::{BAR_MAX_HEIGHT, BAR_MIN_HEIGHT, BarAlignment};
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualKind, VisualManagerHandle};
 use async_channel::Receiver as AsyncReceiver;
-use iced::alignment;
 use iced::widget::text::Wrapping;
 use iced::widget::{
     Column, Row, Rule, Space, button, container, pick_list, radio, rule, scrollable, slider, text,
@@ -228,17 +227,13 @@ impl ConfigPage {
                     self.settings.update(|s| s.set_background_color(color));
                 }
             }
-            ConfigMessage::DecorationsToggled(enabled) => {
-                self.settings.update(|s| s.set_decorations(enabled));
+            ConfigMessage::DecorationsToggled(v) => self.settings.update(|s| s.set_decorations(v)),
+            ConfigMessage::BarModeToggled(v) => self.settings.update(|s| s.set_bar_enabled(v)),
+            ConfigMessage::BarAlignmentChanged(v) => {
+                self.settings.update(|s| s.set_bar_alignment(v))
             }
-            ConfigMessage::BarModeToggled(enabled) => {
-                self.settings.update(|s| s.set_bar_enabled(enabled));
-            }
-            ConfigMessage::BarAlignmentChanged(alignment) => {
-                self.settings.update(|s| s.set_bar_alignment(alignment));
-            }
-            ConfigMessage::BarHeightChanged(height) => {
-                self.settings.update(|s| s.set_bar_height(height as u32));
+            ConfigMessage::BarHeightChanged(v) => {
+                self.settings.update(|s| s.set_bar_height(v as u32))
             }
         }
 
@@ -272,7 +267,14 @@ impl ConfigPage {
     }
 
     fn render_capture_section(&self) -> Column<'_, ConfigMessage> {
-        let capture_controls = self.render_capture_mode_controls();
+        let capture_controls = radio_row(
+            &[
+                (CaptureMode::Applications, "Applications"),
+                (CaptureMode::Device, "Devices"),
+            ],
+            self.capture_mode,
+            ConfigMessage::CaptureModeChanged,
+        );
         let primary_section: Element<'_, ConfigMessage> = match self.capture_mode {
             CaptureMode::Applications => self.render_applications_section().into(),
             CaptureMode::Device => self.render_device_section().into(),
@@ -287,103 +289,49 @@ impl ConfigPage {
     }
 
     fn render_applications_section(&self) -> Column<'_, ConfigMessage> {
-        let status_suffix = if self.applications.is_empty() {
-            if self.registry_updates.is_some() {
-                if self.registry_ready {
-                    " - none detected".to_string()
-                } else {
-                    " - waiting...".to_string()
-                }
-            } else {
-                " - unavailable".to_string()
-            }
-        } else {
-            format!(" - {} total", self.applications.len())
+        let status_suffix: String = match (
+            self.applications.len(),
+            self.registry_updates.is_some(),
+            self.registry_ready,
+        ) {
+            (0, false, _) => " - unavailable".into(),
+            (0, true, false) => " - waiting...".into(),
+            (0, true, true) => " - none detected".into(),
+            (n, _, _) => format!(" - {n} total"),
         };
 
         let indicator = if self.applications_expanded { "v" } else { ">" };
-        let summary_label = format!("{indicator} Applications{status_suffix}");
-
-        let summary_button = button(
-            container(
-                text(summary_label)
-                    .size(TEXT_SIZE)
-                    .wrapping(Wrapping::None)
-                    .align_x(alignment::Horizontal::Left),
-            )
-            .width(Length::Fill)
-            .clip(true),
-        )
-        .padding(6)
-        .width(Length::Fill)
-        .style({
-            let expanded = self.applications_expanded;
-            move |theme, status| theme::tab_button_style(theme, !expanded, status)
-        })
-        .on_press(ConfigMessage::ToggleApplicationsVisibility);
+        let summary_button = tab_button(
+            format!("{indicator} Applications{status_suffix}"),
+            !self.applications_expanded,
+            ConfigMessage::ToggleApplicationsVisibility,
+        );
 
         let mut section = Column::new().spacing(8).push(summary_button);
-
         if self.applications_expanded {
-            let content = if self.applications.is_empty() {
-                let msg = if self.registry_updates.is_none() {
-                    "Registry unavailable; routing controls disabled."
-                } else if self.registry_ready {
-                    "No audio applications detected. Launch something to see it here."
-                } else {
-                    "Waiting for PipeWire registry snapshots..."
+            let content: Element<'_, _> = if !self.applications.is_empty() {
+                render_toggle_grid(&self.applications, |entry| {
+                    (
+                        entry.display_label(),
+                        entry.enabled,
+                        ConfigMessage::ToggleChanged {
+                            node_id: entry.node_id,
+                            enabled: !entry.enabled,
+                        },
+                    )
+                })
+                .into()
+            } else {
+                let msg = match (self.registry_updates.is_some(), self.registry_ready) {
+                    (false, _) => "Registry unavailable; routing controls disabled.",
+                    (_, true) => "No audio applications detected. Launch something to see it here.",
+                    _ => "Waiting for PipeWire registry snapshots...",
                 };
                 text(msg).size(TEXT_SIZE).into()
-            } else {
-                self.render_applications_grid()
             };
             section = section.push(scrollable(content).height(Length::Shrink));
         }
-
         section
-    }
-
-    fn render_applications_grid(&self) -> Element<'_, ConfigMessage> {
-        render_toggle_grid(&self.applications, |entry| {
-            (
-                format!(
-                    "{} ({})",
-                    entry.display_label(),
-                    if entry.enabled { "enabled" } else { "disabled" }
-                ),
-                entry.enabled,
-                ConfigMessage::ToggleChanged {
-                    node_id: entry.node_id,
-                    enabled: !entry.enabled,
-                },
-            )
-        })
-        .into()
-    }
-
-    fn render_capture_mode_controls(&self) -> Row<'_, ConfigMessage> {
-        Row::new()
-            .spacing(12)
-            .push(
-                radio(
-                    "Applications",
-                    CaptureMode::Applications,
-                    Some(self.capture_mode),
-                    ConfigMessage::CaptureModeChanged,
-                )
-                .size(14)
-                .text_size(TEXT_SIZE),
-            )
-            .push(
-                radio(
-                    "Devices",
-                    CaptureMode::Device,
-                    Some(self.capture_mode),
-                    ConfigMessage::CaptureModeChanged,
-                )
-                .size(14)
-                .text_size(TEXT_SIZE),
-            )
     }
 
     fn render_device_section(&self) -> Column<'_, ConfigMessage> {
@@ -414,23 +362,17 @@ impl ConfigPage {
     }
 
     fn build_device_choices(&self, snapshot: &RegistrySnapshot) -> Vec<DeviceOption> {
-        let mut choices = Vec::new();
-
-        // Use the cached hardware sink label which has fallback to last known value
-        let default_label = format!("Default sink - {}", &self.hardware_sink_label);
-        choices.push(DeviceOption {
-            label: default_label,
+        let mut choices = vec![DeviceOption {
+            label: format!("Default sink - {}", &self.hardware_sink_label),
             token: None,
             selection: DeviceSelection::Default,
-        });
-
+        }];
         let mut nodes: Vec<_> = snapshot
             .nodes
             .iter()
             .filter(|node| Self::is_capture_candidate(node))
             .collect();
         nodes.sort_by_key(|node| node.display_name().to_ascii_lowercase());
-
         for node in nodes {
             let label = node.display_name();
             let token = node
@@ -479,60 +421,35 @@ impl ConfigPage {
     }
 
     fn render_bar_section(&self) -> Column<'_, ConfigMessage> {
-        let bar_settings = self.settings.borrow().settings().bar.clone();
-        let bar_enabled = bar_settings.enabled;
-
-        let bar_toggle = iced::widget::checkbox(bar_enabled)
+        let bar = self.settings.borrow().settings().bar.clone();
+        let bar_toggle = iced::widget::checkbox(bar.enabled)
             .label("Enable Bar Mode")
             .size(14)
             .text_size(TEXT_SIZE)
             .on_toggle(ConfigMessage::BarModeToggled);
-
-        let alignment_controls = Row::new()
-            .spacing(12)
-            .push(
-                radio(
-                    "Top",
-                    BarAlignment::Top,
-                    Some(bar_settings.alignment),
-                    ConfigMessage::BarAlignmentChanged,
-                )
-                .size(14)
-                .text_size(TEXT_SIZE),
-            )
-            .push(
-                radio(
-                    "Bottom",
-                    BarAlignment::Bottom,
-                    Some(bar_settings.alignment),
-                    ConfigMessage::BarAlignmentChanged,
-                )
-                .size(14)
-                .text_size(TEXT_SIZE),
-            );
-
-        let height_range = BAR_MIN_HEIGHT..=BAR_MAX_HEIGHT;
-        let height_slider = slider(
-            height_range,
-            bar_settings.height.clamp(BAR_MIN_HEIGHT, BAR_MAX_HEIGHT),
-            |value| ConfigMessage::BarHeightChanged(value as u16),
-        )
-        .step(1u32)
-        .width(Length::Fill);
-
-        let height_label = text(format!("Height: {} px", bar_settings.height))
-            .size(TEXT_SIZE)
-            .style(theme::weak_text_style);
-
         let mut content = Column::new().spacing(10).push(bar_toggle);
-
-        if bar_enabled {
+        if bar.enabled {
             content = content
-                .push(alignment_controls)
-                .push(height_slider)
-                .push(height_label);
+                .push(radio_row(
+                    &[(BarAlignment::Top, "Top"), (BarAlignment::Bottom, "Bottom")],
+                    bar.alignment,
+                    ConfigMessage::BarAlignmentChanged,
+                ))
+                .push(
+                    slider(
+                        BAR_MIN_HEIGHT..=BAR_MAX_HEIGHT,
+                        bar.height.clamp(BAR_MIN_HEIGHT, BAR_MAX_HEIGHT),
+                        |v| ConfigMessage::BarHeightChanged(v as u16),
+                    )
+                    .step(1u32)
+                    .width(Length::Fill),
+                )
+                .push(
+                    text(format!("Height: {} px", bar.height))
+                        .size(TEXT_SIZE)
+                        .style(theme::weak_text_style),
+                );
         }
-
         self.section_with_divider("Bar Mode", content)
     }
 
@@ -540,20 +457,14 @@ impl ConfigPage {
         &self,
         snapshot: &crate::ui::visualization::visual_manager::VisualSnapshot,
     ) -> Column<'_, ConfigMessage> {
-        let total = snapshot.slots.len();
-        let enabled = snapshot.slots.iter().filter(|slot| slot.enabled).count();
-        let title = format!("Visual Modules ({enabled}/{total})");
-
+        let enabled = snapshot.slots.iter().filter(|s| s.enabled).count();
+        let title = format!("Visual Modules ({enabled}/{})", snapshot.slots.len());
         let content: Element<'_, ConfigMessage> = if snapshot.slots.is_empty() {
             text("No visual modules available.").size(TEXT_SIZE).into()
         } else {
             render_toggle_grid(&snapshot.slots, |slot| {
                 (
-                    format!(
-                        "{} ({})",
-                        slot.metadata.display_name,
-                        if slot.enabled { "enabled" } else { "disabled" }
-                    ),
+                    slot.metadata.display_name.to_string(),
                     slot.enabled,
                     ConfigMessage::VisualToggled {
                         kind: slot.kind,
@@ -563,7 +474,6 @@ impl ConfigPage {
             })
             .into()
         };
-
         self.section_with_divider(title, content)
     }
 
@@ -590,14 +500,15 @@ impl ConfigPage {
 
     fn update_hardware_sink_label(&mut self, snapshot: &RegistrySnapshot) {
         let summary = snapshot.describe_default_target(snapshot.defaults.audio_sink.as_ref());
-
-        if summary.display != "(none)" || summary.raw != "(none)" {
+        let known = summary.display != "(none)" || summary.raw != "(none)";
+        if known {
             self.hardware_sink_last_known = Some(summary.display.clone());
             self.hardware_sink_label = summary.display;
-        } else if let Some(previous) = &self.hardware_sink_last_known {
-            self.hardware_sink_label = previous.clone();
         } else {
-            self.hardware_sink_label = summary.display;
+            self.hardware_sink_label = self
+                .hardware_sink_last_known
+                .clone()
+                .unwrap_or(summary.display);
         }
     }
 
@@ -605,7 +516,6 @@ impl ConfigPage {
         self.update_hardware_sink_label(&snapshot);
         let choices = self.build_device_choices(&snapshot);
         self.resolve_pending_device(&choices);
-
         if !choices
             .iter()
             .any(|opt| opt.selection == self.selected_device)
@@ -616,17 +526,16 @@ impl ConfigPage {
 
         let mut entries = Vec::new();
         let mut seen = HashSet::new();
-
         if let Some(sink) = snapshot.find_node_by_label(VIRTUAL_SINK_NAME) {
             for node in snapshot.route_candidates(sink) {
-                let enabled = self.preferences.get(&node.id).copied().unwrap_or(true);
-                entries.push(ApplicationRow::from_node(node, enabled));
+                entries.push(ApplicationRow::from_node(
+                    node,
+                    self.preferences.get(&node.id).copied().unwrap_or(true),
+                ));
                 seen.insert(node.id);
             }
         }
-
-        self.preferences.retain(|node_id, _| seen.contains(node_id));
-
+        self.preferences.retain(|id, _| seen.contains(id));
         entries.sort_by_key(|a| a.sort_key());
         self.applications = entries;
     }
@@ -647,16 +556,14 @@ impl ConfigPage {
                 .update(|s| s.set_last_device_name(opt.token.clone()));
         }
     }
-}
 
-impl ConfigPage {
     fn dispatch_capture_state(&self, selection: DeviceSelection) {
-        let _ = self
-            .routing_sender
-            .send(RoutingCommand::SetCaptureMode(self.capture_mode));
-        let _ = self
-            .routing_sender
-            .send(RoutingCommand::SelectCaptureDevice(selection));
+        for cmd in [
+            RoutingCommand::SetCaptureMode(self.capture_mode),
+            RoutingCommand::SelectCaptureDevice(selection),
+        ] {
+            let _ = self.routing_sender.send(cmd);
+        }
     }
 
     fn device_token_for(&self, selection: DeviceSelection) -> Option<String> {
@@ -667,20 +574,35 @@ impl ConfigPage {
     }
 }
 
-fn render_toggle_grid<'a, T, F>(items: &[T], mut project: F) -> Column<'a, ConfigMessage>
+fn radio_row<'a, T: Copy + Eq + 'a>(
+    options: &[(T, &str)],
+    selected: T,
+    on_select: fn(T) -> ConfigMessage,
+) -> Row<'a, ConfigMessage> {
+    options
+        .iter()
+        .fold(Row::new().spacing(12), |row, &(val, label)| {
+            row.push(
+                radio(label, val, Some(selected), on_select)
+                    .size(14)
+                    .text_size(TEXT_SIZE),
+            )
+        })
+}
+
+fn render_toggle_grid<'a, T, N, F>(items: &[T], mut project: F) -> Column<'a, ConfigMessage>
 where
-    F: FnMut(&T) -> (String, bool, ConfigMessage),
+    N: std::fmt::Display,
+    F: FnMut(&T) -> (N, bool, ConfigMessage),
 {
     let mut grid = Column::new().spacing(6);
-
     for chunk in items.chunks(GRID_COLUMNS) {
         let mut row = Row::new().spacing(6);
-
         for item in chunk {
-            let (label, enabled, message) = project(item);
+            let (name, enabled, message) = project(item);
+            let label = format!("{name} ({})", if enabled { "enabled" } else { "disabled" });
             row = row.push(toggle_button(label, enabled, message));
         }
-
         for _ in chunk.len()..GRID_COLUMNS {
             row = row.push(
                 Space::new()
@@ -688,10 +610,8 @@ where
                     .height(Length::Shrink),
             );
         }
-
         grid = grid.push(row);
     }
-
     grid
 }
 
@@ -700,13 +620,21 @@ fn toggle_button<'a>(
     enabled: bool,
     message: ConfigMessage,
 ) -> iced::widget::Button<'a, ConfigMessage> {
+    tab_button(label, enabled, message).width(Length::FillPortion(1))
+}
+
+fn tab_button<'a>(
+    label: impl Into<String>,
+    active: bool,
+    message: ConfigMessage,
+) -> iced::widget::Button<'a, ConfigMessage> {
     button(
-        container(text(label).size(TEXT_SIZE).wrapping(Wrapping::None))
+        container(text(label.into()).size(TEXT_SIZE).wrapping(Wrapping::None))
             .width(Length::Fill)
             .clip(true),
     )
     .padding(8)
-    .width(Length::FillPortion(1))
-    .style(move |theme: &iced::Theme, status| theme::tab_button_style(theme, enabled, status))
+    .width(Length::Fill)
+    .style(move |theme: &iced::Theme, status| theme::tab_button_style(theme, active, status))
     .on_press(message)
 }
