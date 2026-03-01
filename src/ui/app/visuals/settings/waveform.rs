@@ -12,8 +12,9 @@ use iced::widget::column;
 
 settings_pane!(
     WaveformSettingsPane, WaveformSettings, VisualKind::Waveform, theme::waveform, Waveform,
-    init_palette(settings, palette) {
-        configure_palette_for_mode(&mut palette, settings.color_mode);
+    extra_from_settings(settings) {}
+    init_palette(palette) {
+        configure_palette_for_mode(palette, settings.color_mode);
     }
 );
 

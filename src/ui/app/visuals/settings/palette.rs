@@ -250,49 +250,12 @@ impl PaletteEditor {
                     .on_press(PaletteEvent::Close),
             );
 
-        let channels = [("R", c.r, 0u8), ("G", c.g, 1), ("B", c.b, 2), ("A", c.a, 3)];
-        let col = channels.into_iter().fold(
-            Column::new().spacing(8.0).push(header),
-            |col, (lbl, val, ch)| {
-                let display = if ch == 3 {
-                    format!("{:>3}%", (val.clamp(0.0, 1.0) * 100.0).round() as u8)
-                } else {
-                    format!("{:>3}", f32_to_u8(val))
-                };
-                col.push(
-                    Row::new()
-                        .spacing(8.0)
-                        .align_y(Vertical::Center)
-                        .push(
-                            container(text(lbl).size(12).wrapping(Wrapping::None))
-                                .width(Length::Fixed(32.0))
-                                .clip(true),
-                        )
-                        .push(
-                            slider::Slider::new(0.0..=1.0, val, move |nv| {
-                                let nv = if ch == 3 && nv < 0.005 { 0.0 } else { nv };
-                                let mut nc = c;
-                                match ch {
-                                    0 => nc.r = nv,
-                                    1 => nc.g = nv,
-                                    2 => nc.b = nv,
-                                    _ => nc.a = nv,
-                                }
-                                PaletteEvent::Adjust {
-                                    index: i,
-                                    color: nc,
-                                }
-                            })
-                            .step(0.01)
-                            .style(theme::slider_style)
-                            .width(Length::Fill),
-                        )
-                        .push(
-                            container(text(display).size(12).wrapping(Wrapping::None)).clip(true),
-                        ),
-                )
-            },
-        );
+        let col = [("R", c.r, 0u8), ("G", c.g, 1), ("B", c.b, 2), ("A", c.a, 3)]
+            .into_iter()
+            .fold(
+                Column::new().spacing(8.0).push(header),
+                |col, (lbl, val, ch)| col.push(channel_slider(lbl, val, ch, i, c)),
+            );
         container(col)
             .padding(12)
             .style(theme::weak_container)
@@ -490,7 +453,7 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for GradientBar<'_> {
         for i in 0..steps {
             let t = i as f32 / (steps - 1).max(1) as f32;
             let c = theme::sample_gradient_positioned(self.colors, self.positions, self.spreads, t);
-            let display = Color {
+            let premul = Color {
                 r: c.r * c.a,
                 g: c.g * c.a,
                 b: c.b * c.a,
@@ -502,7 +465,7 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for GradientBar<'_> {
                     Size::new(step_w + 0.5, GRADIENT_BAR_HEIGHT),
                 ),
                 Default::default(),
-                Background::Color(display),
+                Background::Color(premul),
             );
         }
         paint(
@@ -515,24 +478,20 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for GradientBar<'_> {
         for (i, &pos) in self.positions.iter().enumerate() {
             let x = bounds.x + pos.clamp(0.0, 1.0) * bar_w;
             let c = self.colors.get(i).copied().unwrap_or(Color::WHITE);
-            let is_active = self.active == Some(i);
-            let line_color = if is_active {
-                Color::WHITE
-            } else {
-                Color {
-                    a: 0.5,
-                    ..Color::WHITE
-                }
-            };
+            let active = self.active == Some(i);
+            let line_alpha = if active { 1.0 } else { 0.5 };
             paint(
                 Rectangle::new(
                     Point::new(x - INDICATOR_WIDTH * 0.5, bounds.y),
                     Size::new(INDICATOR_WIDTH, GRADIENT_BAR_HEIGHT),
                 ),
                 Default::default(),
-                Background::Color(line_color),
+                Background::Color(Color {
+                    a: line_alpha,
+                    ..Color::WHITE
+                }),
             );
-            let hw = if is_active {
+            let hw = if active {
                 HANDLE_WIDTH
             } else {
                 HANDLE_WIDTH - 2.0
@@ -543,16 +502,17 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for GradientBar<'_> {
                 b: c.b.max(0.12),
                 a: 1.0,
             };
+            let border = if active {
+                theme::focus_border()
+            } else {
+                theme::sharp_border()
+            };
             paint(
                 Rectangle::new(
                     Point::new(x - hw * 0.5, handle_y),
                     Size::new(hw, MARKER_HEIGHT - 1.0),
                 ),
-                if is_active {
-                    theme::focus_border()
-                } else {
-                    theme::sharp_border()
-                },
+                border,
                 Background::Color(fill),
             );
         }
@@ -565,4 +525,43 @@ fn scroll_delta(delta: mouse::ScrollDelta) -> f32 {
         mouse::ScrollDelta::Lines { y, .. } => y,
         mouse::ScrollDelta::Pixels { y, .. } => y / 50.0,
     }
+}
+
+fn channel_slider<'a>(
+    lbl: &'a str,
+    val: f32,
+    ch: u8,
+    index: usize,
+    base: Color,
+) -> Row<'a, PaletteEvent> {
+    let display = if ch == 3 {
+        format!("{:>3}%", (val.clamp(0.0, 1.0) * 100.0).round() as u8)
+    } else {
+        format!("{:>3}", f32_to_u8(val))
+    };
+    Row::new()
+        .spacing(8.0)
+        .align_y(Vertical::Center)
+        .push(
+            container(text(lbl).size(12).wrapping(Wrapping::None))
+                .width(Length::Fixed(32.0))
+                .clip(true),
+        )
+        .push(
+            slider::Slider::new(0.0..=1.0, val, move |nv| {
+                let nv = if ch == 3 && nv < 0.005 { 0.0 } else { nv };
+                let mut nc = base;
+                match ch {
+                    0 => nc.r = nv,
+                    1 => nc.g = nv,
+                    2 => nc.b = nv,
+                    _ => nc.a = nv,
+                }
+                PaletteEvent::Adjust { index, color: nc }
+            })
+            .step(0.01)
+            .style(theme::slider_style)
+            .width(Length::Fill),
+        )
+        .push(container(text(display).size(12).wrapping(Wrapping::None)).clip(true))
 }
