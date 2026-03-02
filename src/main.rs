@@ -1,10 +1,15 @@
-mod audio;
+mod domain;
 mod dsp;
+mod infra;
+mod persistence;
 mod ui;
 mod util;
-use audio::{pw_registry, pw_virtual_sink, registry_monitor};
+mod visuals;
+use domain::routing::{RoutingCommand, RoutingConfig};
+use infra::pipewire::{monitor, registry, virtual_sink};
+use persistence::settings::SettingsManager;
 use std::sync::{Arc, mpsc};
-use ui::{RoutingCommand, UiConfig};
+use ui::UiConfig;
 use util::telemetry;
 
 use tracing::{error, info};
@@ -14,13 +19,19 @@ fn main() {
     info!("OpenMeters starting up");
 
     let (routing_tx, routing_rx) = mpsc::channel::<RoutingCommand>();
-    let (snapshot_tx, snapshot_rx) = async_channel::bounded::<pw_registry::RegistrySnapshot>(64);
+    let (snapshot_tx, snapshot_rx) = async_channel::bounded::<registry::RegistrySnapshot>(64);
 
-    let registry_thread = registry_monitor::init_registry_monitor(routing_rx, snapshot_tx.clone());
+    let settings = SettingsManager::load_or_default();
+    let routing_config = RoutingConfig {
+        capture_mode: settings.settings().capture_mode,
+        preferred_device: settings.settings().last_device_name.clone(),
+    };
 
-    let _sink_thread = pw_virtual_sink::run();
+    let registry_thread = monitor::init_registry_monitor(routing_rx, snapshot_tx.clone(), routing_config);
 
-    let audio_stream = audio::meter_tap::audio_sample_stream();
+    let _sink_thread = virtual_sink::run();
+
+    let audio_stream = infra::pipewire::meter_tap::audio_sample_stream();
 
     let ui_config =
         UiConfig::new(routing_tx, Some(Arc::new(snapshot_rx))).with_audio_stream(audio_stream);

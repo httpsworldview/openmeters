@@ -1,5 +1,5 @@
-use super::config::ConfigMessage;
-use super::visuals::{SettingsMessage, VisualsMessage};
+use crate::ui::pages::config::ConfigMessage;
+use crate::ui::pages::visuals::{SettingsMessage, VisualsMessage};
 use iced::event::{self, Event};
 use iced::keyboard::{self, Key};
 use iced::{Size, Task, window};
