@@ -1,8 +1,5 @@
 // Main application logic.
 
-pub mod config;
-pub mod visuals;
-
 // Wraps content in a container that expands to fill available space.
 macro_rules! fill {
     ($e:expr) => {
@@ -13,15 +10,17 @@ macro_rules! fill {
 mod message;
 mod windowing;
 
-use crate::audio::pw_registry::RegistrySnapshot;
-use crate::ui::channel_subscription::channel_subscription;
-use crate::ui::settings::{BarAlignment, BarSettings, SettingsHandle, clamp_bar_height};
-use crate::ui::theme;
-use crate::ui::visualization::visual_manager::{
-    VisualId, VisualKind, VisualManager, VisualManagerHandle,
+use crate::domain::routing::RoutingCommand;
+use crate::infra::pipewire::registry::RegistrySnapshot;
+use crate::persistence::settings::{BarAlignment, BarSettings, SettingsHandle, clamp_bar_height};
+use crate::ui::pages::config::{ConfigMessage, ConfigPage};
+use crate::ui::pages::visuals::{
+    ActiveSettings, SettingsMessage, VisualsMessage, VisualsPage, create_settings_panel,
 };
+use crate::ui::theme;
+use crate::ui::widgets::channel_subscription::channel_subscription;
+use crate::visuals::registry::{VisualId, VisualKind, VisualManager, VisualManagerHandle};
 use async_channel::Receiver as AsyncReceiver;
-use config::{ConfigMessage, ConfigPage};
 use iced::alignment::{Horizontal, Vertical};
 use iced::event::{self, Event};
 use iced::widget::{column, container, mouse_area, row, scrollable, stack, text};
@@ -34,15 +33,10 @@ use message::{Message, keyboard_shortcut};
 use rustc_hash::FxHashMap;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
-use visuals::{
-    ActiveSettings, SettingsMessage, VisualsMessage, VisualsPage, create_settings_panel,
-};
 use windowing::{
     BarResizeState, MAIN_WINDOW_INITIAL_SIZE, PopoutWindow, SETTINGS_WINDOW_SIZE, bar_anchor,
     layershell_available, namespace, open_base_window, open_main_window,
 };
-
-pub use config::RoutingCommand;
 
 const TOAST_DISPLAY_DURATION: Duration = Duration::from_secs(2);
 const DEFAULT_DRAWER_RATIO: f32 = 0.20;

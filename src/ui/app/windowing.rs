@@ -1,7 +1,7 @@
 use super::message::{self, Message};
-use super::visuals::VisualsMessage;
-use crate::ui::settings::{BarAlignment, BarSettings, clamp_bar_height};
-use crate::ui::visualization::visual_manager::{
+use crate::persistence::settings::{BarAlignment, BarSettings, clamp_bar_height};
+use crate::ui::pages::visuals::VisualsMessage;
+use crate::visuals::registry::{
     VisualContent, VisualId, VisualKind, VisualMetadata, VisualSnapshot,
 };
 use iced::widget::{container, mouse_area, text};
