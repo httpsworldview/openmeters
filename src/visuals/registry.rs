@@ -151,11 +151,13 @@ visuals! {
             st.set_stop_positions(&resolve_positions(&set.palette, palettes::spectrogram::COLORS.len()));
             st.set_stop_spreads(&resolve_spreads(&set.palette, palettes::spectrogram::COLORS.len()));
             st.piano_roll_overlay = set.piano_roll_overlay;
-            st.set_floor_db(set.floor_db); };
+            st.set_floor_db(set.floor_db);
+            st.set_tilt_db(set.tilt_db); };
         export(p, s) { let st = s.borrow(); let mut out = settings_cfg::SpectrogramSettings::from_config(&p.config());
             out.palette = PaletteSettings::from_state(&st.palette(), &palettes::spectrogram::COLORS, st.stop_positions(), st.stop_spreads());
             out.piano_roll_overlay = st.piano_roll_overlay;
-            out.floor_db = st.floor_db(); out };
+            out.floor_db = st.floor_db();
+            out.tilt_db = st.tilt_db(); out };
 
     Spectrum("Spectrum analyzer", 400.0, 180.0, 400.0) =>
         spectrum::SpectrumProcessor, Shared<spectrum::SpectrumState>;

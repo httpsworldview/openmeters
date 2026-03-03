@@ -116,8 +116,7 @@ fn schedule_persist(path: PathBuf, mut settings: UiSettings) {
                         tracing::warn!("[settings] failed to create config dir: {err}");
                     }
                     let temp_path = dest.with_extension("json.tmp");
-                    match fs::write(&temp_path, &json)
-                        .and_then(|()| fs::rename(&temp_path, &dest))
+                    match fs::write(&temp_path, &json).and_then(|()| fs::rename(&temp_path, &dest))
                     {
                         Ok(()) => last_written = Some(json),
                         Err(err) => tracing::warn!("[settings] failed to write settings: {err}"),

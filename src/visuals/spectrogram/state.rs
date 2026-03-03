@@ -7,11 +7,11 @@ use super::render::{
     SpectrogramParams, SpectrogramPrimitive,
 };
 use crate::persistence::settings::PianoRollOverlay;
-use crate::util::color;
-use crate::visuals::palettes;
 use crate::util::audio::musical::MusicalNote;
 use crate::util::audio::{DB_FLOOR, DEFAULT_SAMPLE_RATE};
+use crate::util::color;
 use crate::vis_processor;
+use crate::visuals::palettes;
 use iced::advanced::renderer::{self, Quad};
 use iced::advanced::text::Renderer as _;
 use iced::advanced::widget::{Tree, tree};
@@ -59,6 +59,7 @@ pub(crate) struct SpectrogramStyle {
     pub ceiling_db: f32,
     pub opacity: f32,
     pub contrast: f32,
+    pub tilt_db: f32,
 }
 
 impl Default for SpectrogramStyle {
@@ -69,6 +70,7 @@ impl Default for SpectrogramStyle {
             ceiling_db: DB_CEILING,
             opacity: 0.95,
             contrast: 1.0,
+            tilt_db: 0.0,
         }
     }
 }
@@ -134,6 +136,7 @@ struct SpectrogramBuffer {
     pending_cols: Vec<SpectrogramColumnUpdate>,
     mapping: BinMapping,
     display_freqs: Arc<[f32]>,
+    tilt_offsets: Vec<f32>,
     pool: ColumnBufferPool,
 }
 
@@ -163,7 +166,7 @@ impl SpectrogramBuffer {
         let passthrough = upd.display_bins_hz.as_ref().is_some_and(|b| {
             !b.is_empty() && history.iter().all(|c| c.magnitudes_db.len() == b.len())
         });
-        self.update_mapping(upd, passthrough);
+        self.update_mapping(upd, passthrough, style.tilt_db);
         self.values = vec![0.0; self.capacity as usize * self.height as usize];
         (self.write_idx, self.col_count) = (0, 0);
         let h = self.height as usize;
@@ -205,7 +208,10 @@ impl SpectrogramBuffer {
         for (i, v) in out.iter_mut().enumerate() {
             let lo = self.mapping.lower[i].min(n - 1);
             let hi = self.mapping.upper[i].min(n - 1);
-            let val = mags[lo] + self.mapping.weight[i] * (mags[hi] - mags[lo]);
+            let mut val = mags[lo] + self.mapping.weight[i] * (mags[hi] - mags[lo]);
+            if let Some(&offset) = self.tilt_offsets.get(i) {
+                val += offset;
+            }
             *v = (val.clamp(style.floor_db, style.ceiling_db) - style.floor_db) * inv;
         }
         if self.col_count < self.capacity {
@@ -215,7 +221,7 @@ impl SpectrogramBuffer {
         col
     }
 
-    fn update_mapping(&mut self, upd: &SpectrogramUpdate, passthrough: bool) {
+    fn update_mapping(&mut self, upd: &SpectrogramUpdate, passthrough: bool, tilt_db: f32) {
         let h = self.height as usize;
         self.display_freqs = upd
             .display_bins_hz
@@ -230,6 +236,33 @@ impl SpectrogramBuffer {
             upd.frequency_scale,
             passthrough,
         );
+        self.recompute_tilt(upd.fft_size, upd.sample_rate, tilt_db);
+    }
+
+    fn recompute_tilt(&mut self, fft_size: usize, sample_rate: f32, tilt_db: f32) {
+        let h = self.height as usize;
+        if h == 0 || tilt_db.abs() < f32::EPSILON {
+            self.tilt_offsets.clear();
+            return;
+        }
+        self.tilt_offsets.resize(h, 0.0);
+        let bin_hz = if fft_size > 0 && sample_rate > 0.0 {
+            sample_rate / fft_size as f32
+        } else {
+            1.0
+        };
+        let has_freqs = !self.display_freqs.is_empty();
+        for (i, offset) in self.tilt_offsets.iter_mut().enumerate() {
+            let freq = if has_freqs {
+                self.display_freqs.get(i).copied().unwrap_or(1.0)
+            } else {
+                let bin = self.mapping.lower[i] as f32
+                    + self.mapping.weight[i]
+                        * (self.mapping.upper[i] as f32 - self.mapping.lower[i] as f32);
+                bin * bin_hz
+            };
+            *offset = tilt_db * (freq / 1000.0).max(1e-6).log10();
+        }
     }
 
     fn needs_rebuild(&self, upd: &SpectrogramUpdate, new_height: Option<u32>) -> bool {
@@ -333,6 +366,18 @@ impl SpectrogramState {
 
     pub fn floor_db(&self) -> f32 {
         self.style.floor_db
+    }
+
+    pub fn set_tilt_db(&mut self, tilt_db: f32) {
+        let tilt = if tilt_db.is_finite() { tilt_db } else { 0.0 };
+        if (self.style.tilt_db - tilt).abs() > f32::EPSILON {
+            self.style.tilt_db = tilt;
+            self.rebuild_buffer();
+        }
+    }
+
+    pub fn tilt_db(&self) -> f32 {
+        self.style.tilt_db
     }
 
     pub fn apply_snapshot(&mut self, snap: &SpectrogramUpdate) {

@@ -194,6 +194,7 @@ visual_settings!(SpectrogramSettings from SpectrogramConfig {
     reassignment_max_correction_hz: f32,
 } extra {
     floor_db: f32 = -96.0,
+    tilt_db: f32 = 0.0,
     piano_roll_overlay: PianoRollOverlay = PianoRollOverlay::default(),
 });
 

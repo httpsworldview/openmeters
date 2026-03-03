@@ -27,7 +27,8 @@ fn main() {
         preferred_device: settings.settings().last_device_name.clone(),
     };
 
-    let registry_thread = monitor::init_registry_monitor(routing_rx, snapshot_tx.clone(), routing_config);
+    let registry_thread =
+        monitor::init_registry_monitor(routing_rx, snapshot_tx.clone(), routing_config);
 
     let _sink_thread = virtual_sink::run();
 
