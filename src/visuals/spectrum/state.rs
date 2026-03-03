@@ -3,11 +3,11 @@ use super::processor::{
 };
 use super::render::{SpectrumParams, SpectrumPrimitive};
 use crate::persistence::settings::{SpectrumDisplayMode, SpectrumSettings, SpectrumWeightingMode};
-use crate::util::color;
-use crate::visuals::palettes;
 use crate::util::audio::musical::MusicalNote;
 use crate::util::audio::{fmt_freq, lerp};
+use crate::util::color;
 use crate::vis_processor;
+use crate::visuals::palettes;
 use crate::visuals::spectrogram::processor::FrequencyScale;
 use iced::advanced::renderer::{self, Quad};
 use iced::advanced::text::Renderer as _;

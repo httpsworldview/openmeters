@@ -8,8 +8,8 @@ use super::processor::{
 use super::render::{LoudnessParams, LoudnessPrimitive, MeterBar};
 use crate::persistence::settings::{LoudnessSettings, MeterMode};
 use crate::util::color;
-use crate::visuals::palettes;
 use crate::vis_processor;
+use crate::visuals::palettes;
 use iced::advanced::Renderer as _;
 use iced::advanced::renderer::{self, Quad};
 use iced::advanced::widget::{Tree, tree};

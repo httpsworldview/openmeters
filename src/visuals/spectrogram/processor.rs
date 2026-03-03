@@ -10,6 +10,15 @@
 //    with small BT values", IEEE Trans. ASSP, vol. 26, no. 1, pp. 64-76, Feb 1978.
 // 3. F. Auger et al., "Time-Frequency Reassignment and Synchrosqueezing: An
 //    Overview", IEEE Signal Processing Magazine, vol. 30, pp. 32-41, Nov 2013.
+// 4. T.J. Gardner and M.O. Magnasco, "Sparse time-frequency representations",
+//    PNAS, vol. 103, no. 16, pp. 6094-6099, Apr 2006.
+// 5. K.R. Fitz and S.A. Fulop, "A Unified Theory of Time-Frequency Reassignment",
+//    arXiv:0903.3080 [cs.SD], Mar 2009.
+// 6. S.A. Fulop and K. Fitz, "Algorithms for computing the time-corrected
+//    instantaneous frequency (reassigned) spectrogram, with applications",
+//    JASA, vol. 119, pp. 360-371, Jan 2006.
+// 7. D.J. Nelson, "Cross-spectral methods for processing speech",
+//    JASA, vol. 110, no. 5, pp. 2575-2592, Nov 2001.
 
 use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::util::audio::{
@@ -26,10 +35,11 @@ use std::sync::{Arc, OnceLock};
 use wide::{CmpGe, CmpGt, CmpLe, CmpLt, f32x8};
 pub const PLANCK_BESSEL_DEFAULT_EPSILON: f32 = 0.1;
 pub const PLANCK_BESSEL_DEFAULT_BETA: f32 = 5.5;
-const CONFIDENCE_FLOOR: f32 = 0.05;
 const LN_TO_DB: f32 = 4.342_944_8;
 
 const OPTIMAL_FREQ_CORRECTION_RATIO: f32 = 1.0;
+
+const CONF_SIGMA: f32 = 0.7;
 const OPTIMAL_TIME_SPREAD: f32 = 3.5;
 const OPTIMAL_TIME_HOPS_MIN: f32 = 2.0;
 const OPTIMAL_TIME_HOPS_MAX: f32 = 8.0;
@@ -419,14 +429,8 @@ impl Reassignment2DGrid {
             (cfg.reassignment_max_time_hops.ceil() as usize).max(1)
         } else {
             let overlap_ratio = cfg.fft_size as f32 / cfg.hop_size.max(1) as f32;
-            let sigma_t_ratio = match cfg.window {
-                WindowKind::Hann => 0.1414,
-                WindowKind::Blackman => 0.1188,
-                WindowKind::BlackmanHarris => 0.1013,
-                WindowKind::Hamming => 0.1540,
-                WindowKind::Rectangular => 0.2887,
-                WindowKind::PlanckBessel { .. } => 0.1472,
-            };
+            let window = WindowCache::get(cfg.window, cfg.fft_size);
+            let sigma_t_ratio = compute_sigma_t(&window) / cfg.fft_size.max(1) as f32;
             let optimal = overlap_ratio * sigma_t_ratio * OPTIMAL_TIME_SPREAD;
             optimal
                 .clamp(OPTIMAL_TIME_HOPS_MIN, OPTIMAL_TIME_HOPS_MAX)
@@ -592,7 +596,6 @@ pub struct SpectrogramProcessor {
     reassign: ReassignmentBuffers,
     grid: Reassignment2DGrid,
     bin_norm: Vec<f32>,
-    energy_norm: Vec<f32>,
     audio_buffer: VecDeque<f32>,
     history: VecDeque<SpectrogramColumn>,
     history_capacity: usize,
@@ -619,7 +622,6 @@ impl SpectrogramProcessor {
             reassign: ReassignmentBuffers::default(),
             grid: Reassignment2DGrid::new(&cfg),
             bin_norm: vec![],
-            energy_norm: vec![],
             audio_buffer: VecDeque::new(),
             history: VecDeque::with_capacity(cfg.history_length),
             history_capacity: cfg.history_length,
@@ -656,7 +658,6 @@ impl SpectrogramProcessor {
             .rebuild(self.config.window, &self.window, &self.fft, self.fft_size);
         self.bin_norm =
             crate::util::audio::compute_fft_bin_normalization(&self.window, self.fft_size);
-        self.energy_norm = compute_energy_norm(&self.window, self.fft_size);
         self.audio_buffer.truncate(self.window_size * 2);
     }
 
@@ -779,7 +780,7 @@ impl SpectrogramProcessor {
             let (base_re, base_im) = load_complex_simd(&self.spectrum, off);
             let (d_re, d_im) = load_complex_simd(&self.reassign.derivative_spectrum, off);
             let (t_re, t_im) = load_complex_simd(&self.reassign.time_weighted_spectrum, off);
-            let energy_scale = load_f32_simd(&self.energy_norm, off);
+            let energy_scale = load_f32_simd(&self.bin_norm, off);
 
             let pow = base_re * base_re + base_im * base_im;
             let mask = pow.simd_ge(v_floor) & energy_scale.simd_gt(f32x8::splat(0.0));
@@ -802,8 +803,9 @@ impl SpectrogramProcessor {
             }
 
             let d_tau = -(t_re * base_re + t_im * base_im) * inv_pow;
-            let coherence = f32x8::splat(1.0) - (f_corr.abs() / v_bin_hz).min(f32x8::splat(1.0));
-            let conf = coherence.max(f32x8::splat(CONFIDENCE_FLOOR));
+            // gaussian confidence (ref [5], [6])
+            let norm_corr = f_corr.abs() / (v_bin_hz * f32x8::splat(CONF_SIGMA));
+            let conf = (-f32x8::splat(0.5) * norm_corr * norm_corr).exp();
 
             let mask_f32 = final_mask.blend(f32x8::splat(1.0), f32x8::splat(0.0));
             self.grid.accumulate_simd(
@@ -1008,7 +1010,24 @@ fn compute_derivative(kind: WindowKind, window: &[f32]) -> Vec<f32> {
                 .collect();
         }
     }
-    finite_first_diff(window)
+    let coeffs: &[f32] = match kind {
+        WindowKind::Hann => &[0.5, -0.5],
+        WindowKind::Hamming => &[25.0 / 46.0, -21.0 / 46.0],
+        WindowKind::Blackman => &[0.42, -0.5, 0.08],
+        WindowKind::BlackmanHarris => &[0.35875, -0.48829, 0.14128, -0.01168],
+        _ => return finite_first_diff(window),
+    };
+    let len = window.len();
+    let step = core::f32::consts::TAU / (len.saturating_sub(1).max(1) as f32);
+    (0..len)
+        .map(|n| {
+            let phi = n as f32 * step;
+            -step
+                * coeffs.iter().enumerate().skip(1).fold(0.0, |sum, (k, &c)| {
+                    sum + k as f32 * c * (phi * k as f32).sin()
+                })
+        })
+        .collect()
 }
 
 fn compute_time_weighted(window: &[f32]) -> Vec<f32> {
@@ -1020,7 +1039,6 @@ fn compute_time_weighted(window: &[f32]) -> Vec<f32> {
         .collect()
 }
 
-#[cfg(test)]
 fn compute_sigma_t(window: &[f32]) -> f32 {
     let center = (window.len().saturating_sub(1)) as f32 * 0.5;
     let (weighted, total) =
@@ -1036,20 +1054,6 @@ fn compute_sigma_t(window: &[f32]) -> f32 {
     } else {
         (weighted / total).sqrt().max(1.0) as f32
     }
-}
-
-fn compute_energy_norm(window: &[f32], size: usize) -> Vec<f32> {
-    let window_energy: f32 = window.iter().map(|coeff| coeff * coeff).sum();
-    let len = size / 2 + 1;
-    (0..len)
-        .map(|i| {
-            if i == 0 || i == len - 1 {
-                1.0 / window_energy
-            } else {
-                2.0 / window_energy
-            }
-        })
-        .collect()
 }
 
 #[inline(always)]

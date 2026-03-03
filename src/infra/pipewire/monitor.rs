@@ -21,9 +21,7 @@ pub fn init_registry_monitor(
     let handle_for_thread = handle.clone();
     let thread_handle = std::thread::Builder::new()
         .name("openmeters-registry-monitor".into())
-        .spawn(move || {
-            run_monitor_loop(handle_for_thread, command_rx, snapshot_tx, routing_config)
-        })
+        .spawn(move || run_monitor_loop(handle_for_thread, command_rx, snapshot_tx, routing_config))
         .inspect_err(|err| {
             tracing::error!("[registry-monitor] failed to spawn monitor thread: {err}")
         })
