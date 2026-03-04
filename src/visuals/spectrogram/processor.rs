@@ -20,8 +20,6 @@
 // 1. F. Auger and P. Flandrin, "Improving the readability of time-frequency and
 //    time-scale representations by the reassignment method", IEEE Trans. SP,
 //    vol. 43, no. 5, pp. 1068-1089, May 1995.
-//    Note: in our delta calculations the signs are inverted compared to the original
-//    paper, to match the more common convention.
 // 2. K. Kodera, R. Gendrin & C. de Villedary, "Analysis of time-varying signals
 //    with small BT values", IEEE Trans. ASSP, vol. 26, no. 1, pp. 64-76, Feb 1978.
 // 3. F. Auger et al., "Time-Frequency Reassignment and Synchrosqueezing: An
@@ -819,7 +817,7 @@ impl SpectrogramProcessor {
                 continue;
             }
 
-            let d_tau = -(t_re * base_re + t_im * base_im) * inv_pow;
+            let d_tau = (t_re * base_re + t_im * base_im) * inv_pow;
             // gaussian confidence (ref [5], [6])
             let norm_corr = f_corr.abs() / (v_bin_hz * f32x8::splat(CONF_SIGMA));
             let conf = (-f32x8::splat(0.5) * norm_corr * norm_corr).exp();
@@ -1005,23 +1003,20 @@ fn compute_derivative(kind: WindowKind, window: &[f32]) -> Vec<f32> {
                             },
                         )
                     };
-                    let (planck_val, planck_der) =
-                        if beta64.abs() > 1e-6 && kaiser_val.abs() > 1e-10 {
-                            (window[i] / kaiser_val, 0.0)
-                        } else {
-                            let logistic_arg = taper / pos - taper / (taper - pos);
-                            let logistic = 1.0 / (logistic_arg.exp() + 1.0);
-                            (
-                                logistic,
-                                if pos <= 0.0 || pos >= taper {
-                                    0.0
-                                } else {
-                                    logistic
-                                        * (1.0 - logistic)
-                                        * (taper / (pos * pos) + taper / ((taper - pos).powi(2)))
-                                },
-                            )
-                        };
+                    let (planck_val, planck_der) = if pos <= 0.0 {
+                        (0.0, 0.0)
+                    } else if pos >= taper {
+                        (1.0, 0.0)
+                    } else {
+                        let logistic_arg = taper / pos - taper / (taper - pos);
+                        let logistic = 1.0 / (logistic_arg.exp() + 1.0);
+                        (
+                            logistic,
+                            logistic
+                                * (1.0 - logistic)
+                                * (taper / (pos * pos) + taper / ((taper - pos).powi(2))),
+                        )
+                    };
                     (planck_der * sign) * kaiser_val + planck_val * kaiser_der
                 })
                 .collect();
