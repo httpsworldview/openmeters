@@ -21,9 +21,8 @@ use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
 use iced_wgpu::primitive::{self, Primitive};
 use iced_wgpu::wgpu;
-use parking_lot::Mutex;
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::util::color::f32_to_u8;
 
@@ -107,7 +106,7 @@ pub struct ColumnBufferPool(Arc<Mutex<Vec<Vec<f32>>>>);
 
 impl ColumnBufferPool {
     pub fn acquire(&self, len: usize) -> Vec<f32> {
-        let mut pool = self.0.lock();
+        let mut pool = self.0.lock().unwrap();
         pool.iter()
             .rposition(|b| b.capacity() >= len)
             .map(|i| {
@@ -122,7 +121,7 @@ impl ColumnBufferPool {
     pub fn release(&self, mut buf: Vec<f32>) {
         if buf.capacity() <= 16_384 {
             buf.clear();
-            let mut pool = self.0.lock();
+            let mut pool = self.0.lock().unwrap();
             if pool.len() < 64 {
                 pool.push(buf);
             }

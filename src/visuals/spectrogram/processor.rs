@@ -40,13 +40,13 @@ use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::util::audio::{
     DB_FLOOR, DEFAULT_SAMPLE_RATE, copy_from_deque, db_to_power, hz_to_mel, mel_to_hz, power_to_db,
 };
-use parking_lot::RwLock;
 use realfft::{RealFftPlanner, RealToComplex};
-use rustc_hash::FxHashMap;
 use rustfft::num_complex::Complex32;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
+use std::sync::RwLock;
 use std::sync::{Arc, OnceLock};
 use wide::{CmpGe, CmpGt, CmpLe, CmpLt, f32x8};
 pub const PLANCK_BESSEL_DEFAULT_EPSILON: f32 = 0.1;
@@ -231,22 +231,23 @@ struct WindowKey {
     len: usize,
 }
 
-struct WindowCache(RwLock<FxHashMap<WindowKey, Arc<[f32]>>>);
+struct WindowCache(RwLock<HashMap<WindowKey, Arc<[f32]>>>);
 
 impl WindowCache {
     fn get(kind: WindowKind, len: usize) -> Arc<[f32]> {
         static INSTANCE: OnceLock<WindowCache> = OnceLock::new();
-        let cache = INSTANCE.get_or_init(|| WindowCache(RwLock::new(FxHashMap::default())));
+        let cache = INSTANCE.get_or_init(|| WindowCache(RwLock::new(HashMap::default())));
         if len == 0 {
             return Arc::from([]);
         }
         let key = WindowKey { kind, len };
-        if let Some(cached) = cache.0.read().get(&key) {
+        if let Some(cached) = cache.0.read().unwrap().get(&key) {
             return cached.clone();
         }
         cache
             .0
             .write()
+            .unwrap()
             .entry(key)
             .or_insert_with(|| Arc::from(kind.coefficients(len)))
             .clone()

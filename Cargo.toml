@@ -7,7 +7,6 @@ license = "GPL-3.0-or-later"
 [dependencies]
 pipewire = "0.9.2"
 anyhow = "1.0.102"
-parking_lot = "0.12.5"
 serde_json = "1.0.149"
 serde = { version = "1.0.228", features = ["derive"] }
 iced = { version = "0.14.0", features = ["advanced", "wgpu"] }
@@ -15,7 +14,6 @@ iced_widget = "0.14.2"
 async-channel = "2.5"
 bytemuck = { version = "1.25.0", features = ["derive"] }
 iced_wgpu = "0.14.0"
-rustc-hash = "2.1.1"
 rustfft = "6.4.1"
 realfft = "3.5"
 tracing = "0.1.44"
