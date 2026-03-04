@@ -19,7 +19,6 @@ use super::types::{
     GraphPort, LinkSpec, NodeInfo, RegistryCommand, RegistrySnapshot, format_target_metadata,
 };
 use anyhow::{Context, Result};
-use parking_lot::RwLock;
 use pipewire as pw;
 use pw::metadata::{Metadata, MetadataListener};
 use pw::properties::properties;
@@ -27,11 +26,10 @@ use pw::registry::{GlobalObject, RegistryRc};
 use pw::spa::utils::dict::DictRef;
 use pw::spa::utils::result::AsyncSeq;
 use pw::types::ObjectType;
-use rustc_hash::{FxHashMap, FxHashSet};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use std::sync::{Arc, OnceLock, mpsc};
+use std::sync::{Arc, OnceLock, RwLock, mpsc};
 use std::thread;
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
@@ -160,11 +158,11 @@ struct RegistryRuntime {
 
 impl RegistryRuntime {
     fn set_command_sender(&self, sender: mpsc::Sender<RegistryCommand>) {
-        *self.commands.write() = Some(sender);
+        *self.commands.write().unwrap() = Some(sender);
     }
 
     fn send_command(&self, command: RegistryCommand) -> bool {
-        match self.commands.read().as_ref() {
+        match self.commands.read().unwrap().as_ref() {
             Some(sender) => sender
                 .send(command)
                 .inspect_err(|_| {
@@ -179,12 +177,12 @@ impl RegistryRuntime {
     }
 
     fn snapshot(&self) -> RegistrySnapshot {
-        self.state.read().snapshot()
+        self.state.read().unwrap().snapshot()
     }
 
     fn subscribe(&self) -> RegistryUpdates {
         let (tx, rx) = mpsc::channel();
-        self.watchers.write().push(tx);
+        self.watchers.write().unwrap().push(tx);
         RegistryUpdates {
             initial: Some(self.snapshot()),
             receiver: rx,
@@ -192,7 +190,7 @@ impl RegistryRuntime {
     }
 
     fn mutate<F: FnOnce(&mut RegistryState) -> bool>(&self, f: F) -> bool {
-        let changed = f(&mut self.state.write());
+        let changed = f(&mut self.state.write().unwrap());
         if changed {
             self.notify_watchers();
         }
@@ -200,9 +198,10 @@ impl RegistryRuntime {
     }
 
     fn notify_watchers(&self) {
-        let snapshot = self.state.read().snapshot();
+        let snapshot = self.state.read().unwrap().snapshot();
         self.watchers
             .write()
+            .unwrap()
             .retain(|tx| tx.send(snapshot.clone()).is_ok());
     }
 }
@@ -334,7 +333,7 @@ fn registry_thread_main(runtime: RegistryRuntime) -> Result<()> {
         thread::sleep(backoff);
     }
 
-    *runtime.commands.write() = None;
+    *runtime.commands.write().unwrap() = None;
     info!("[registry] PipeWire registry loop exited");
 
     drop(registry);
@@ -345,19 +344,19 @@ fn registry_thread_main(runtime: RegistryRuntime) -> Result<()> {
 
 struct LinkState {
     core: pw::core::CoreRc,
-    active_links: FxHashMap<LinkSpec, pw::link::Link>,
+    active_links: HashMap<LinkSpec, pw::link::Link>,
 }
 
 impl LinkState {
     fn new(core: pw::core::CoreRc) -> Self {
         Self {
             core,
-            active_links: FxHashMap::default(),
+            active_links: HashMap::default(),
         }
     }
 
     fn apply_links(&mut self, desired: Vec<LinkSpec>) {
-        let desired_set: FxHashSet<_> = desired.iter().copied().collect();
+        let desired_set: HashSet<_> = desired.iter().copied().collect();
 
         self.active_links.retain(|spec, _| {
             let keep = desired_set.contains(spec);

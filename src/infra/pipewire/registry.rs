@@ -48,7 +48,7 @@ pub fn pair_ports_by_channel(
         && targets.iter().all(|p| valid_channel(p.channel.as_deref()));
 
     let mut pairs = Vec::with_capacity(sources.len().min(targets.len()));
-    let mut used: rustc_hash::FxHashSet<u32> = rustc_hash::FxHashSet::default();
+    let mut used: std::collections::HashSet<u32> = std::collections::HashSet::default();
 
     for src in &sources {
         let target = targets.iter().find(|t| {

@@ -1,6 +1,6 @@
 // Simplified state management for the lightweight `pane_grid` widget.
 
-use rustc_hash::FxHashMap;
+use std::collections::HashMap;
 
 use super::Pane;
 
@@ -8,7 +8,7 @@ use super::Pane;
 #[derive(Debug, Clone)]
 pub struct State<T> {
     order: Vec<Pane>,
-    panes: FxHashMap<Pane, T>,
+    panes: HashMap<Pane, T>,
     next_id: usize,
 }
 
@@ -16,7 +16,7 @@ impl<T> State<T> {
     // Creates a new [`State`] with a single pane using the provided value.
     pub fn new(initial: T) -> (Self, Pane) {
         let pane = Pane(0);
-        let mut panes = FxHashMap::default();
+        let mut panes = HashMap::default();
         panes.insert(pane, initial);
 
         (

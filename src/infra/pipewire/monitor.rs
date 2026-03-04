@@ -17,7 +17,7 @@
 use super::{VIRTUAL_SINK_NAME, registry};
 use crate::domain::routing::{CaptureMode, DeviceSelection, RoutingCommand, RoutingConfig};
 use async_channel::{Sender, TrySendError};
-use rustc_hash::{FxHashMap, FxHashSet};
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
 use tracing::{debug, info, warn};
 
@@ -164,8 +164,8 @@ fn restore_all_routes(routing: &mut RoutingManager, snapshot: Option<&registry::
 struct RoutingManager {
     handle: registry::AudioRegistryHandle,
     commands: mpsc::Receiver<RoutingCommand>,
-    disabled_nodes: FxHashSet<u32>,
-    routed_to: FxHashMap<u32, u32>,
+    disabled_nodes: HashSet<u32>,
+    routed_to: HashMap<u32, u32>,
     capture_mode: CaptureMode,
     preferred_device: Option<String>,
     device_target: DeviceSelection,
@@ -184,8 +184,8 @@ impl RoutingManager {
         Self {
             handle,
             commands,
-            disabled_nodes: FxHashSet::default(),
-            routed_to: FxHashMap::default(),
+            disabled_nodes: HashSet::default(),
+            routed_to: HashMap::default(),
             capture_mode: routing_config.capture_mode,
             preferred_device: routing_config.preferred_device,
             device_target: DeviceSelection::Default,

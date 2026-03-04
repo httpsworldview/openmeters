@@ -17,8 +17,7 @@
 use super::virtual_sink::{self, CaptureBuffer};
 use crate::util::audio::DEFAULT_SAMPLE_RATE;
 use async_channel::{Receiver as AsyncReceiver, Sender as AsyncSender};
-use parking_lot::RwLock;
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, OnceLock, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
@@ -125,7 +124,7 @@ impl SampleBatcher {
 }
 
 pub fn current_format() -> MeterFormat {
-    *FORMAT_STATE.read()
+    *FORMAT_STATE.read().unwrap()
 }
 
 pub fn audio_sample_stream() -> Arc<AsyncReceiver<Vec<f32>>> {
@@ -180,14 +179,19 @@ fn forward_loop(sender: AsyncSender<Vec<f32>>, buffer: Arc<CaptureBuffer>) {
                     packet.sample_rate.max(1) as f32,
                 );
 
-                if !batcher.is_empty() && FORMAT_STATE.read().differs_from(channels, sample_rate) {
+                if !batcher.is_empty()
+                    && FORMAT_STATE
+                        .read()
+                        .unwrap()
+                        .differs_from(channels, sample_rate)
+                {
                     if flush(&mut batcher) {
                         break;
                     }
                     last_flush = Instant::now();
                 }
 
-                *FORMAT_STATE.write() = MeterFormat {
+                *FORMAT_STATE.write().unwrap() = MeterFormat {
                     channels,
                     sample_rate,
                 };

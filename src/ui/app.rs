@@ -46,7 +46,7 @@ use iced::{
 };
 use iced_layershell::settings::{LayerShellSettings, Settings as LayerSettings, StartMode};
 use message::{Message, keyboard_shortcut};
-use rustc_hash::FxHashMap;
+use std::collections::HashMap;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 use windowing::{
@@ -145,7 +145,7 @@ struct UiApp {
     main_window_is_layer: bool,
     use_layershell: bool,
     settings_window: Option<(window::Id, ActiveSettings)>,
-    popout_windows: FxHashMap<window::Id, PopoutWindow>,
+    popout_windows: HashMap<window::Id, PopoutWindow>,
     focused_window: Option<window::Id>,
     exit_warning_until: Option<Instant>,
 }
@@ -200,7 +200,7 @@ impl UiApp {
                 main_window_is_layer: main_is_layer,
                 use_layershell,
                 settings_window: None,
-                popout_windows: FxHashMap::default(),
+                popout_windows: HashMap::default(),
                 focused_window: Some(main_id),
                 exit_warning_until: None,
             },
