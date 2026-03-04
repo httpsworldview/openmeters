@@ -138,6 +138,13 @@ yay -S openmeters-git
   application settings can be reset by deleting this file. Please
   consider reporting any such bugs you encounter.
 
+## Contributing
+
+Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to
+contribute to this project, and how one might get started. No matter
+what you have to offer, I greatly appreciate you and your interest in
+contributing to this project. Every bit helps.
+
 ## Credits
 
 Thank *you* for checking out my shitty passion project. If you think
@@ -169,3 +176,8 @@ feedback, so feel free to reach out to me.
 - **RustFFT** (<https://github.com/ejmahler/RustFFT>)
 - **RealFFT** (<https://github.com/HEnquist/realfft>)
 - **wgpu** (<https://github.com/gfx-rs/wgpu>)
+
+## License
+
+OpenMeters is licensed under the GNU General Public License v3.0. See
+[LICENSE](LICENSE) for more details.
