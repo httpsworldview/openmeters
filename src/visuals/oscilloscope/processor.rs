@@ -22,9 +22,22 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::Arc;
 
+// min & max detectable pitches.
 const PITCH_MIN_HZ: f32 = 20.0;
 const PITCH_MAX_HZ: f32 = 8000.0;
-const PITCH_THRESHOLD: f32 = 0.15;
+
+// YIN cumulative mean normalized difference (CMND) threshold. A lag
+// is accepted as a pitch period when its CMND value drops below
+// this. Lower values reject more ambiguous signals; higher values
+// accept weaker periodicity. 0.20 is used in the original YIN paper
+// and works well in practice.
+const PITCH_THRESHOLD: f32 = 0.20;
+
+// Sample count above which the difference function switches from
+// O(n*tau) direct computation to O(n log n) FFT-based
+// cross-correlation. 512 is the crossover point where FFT overhead is
+// amortized by the larger inner loop savings; below this the direct
+// method is faster due to cache locality and no FFT setup cost.
 const FFT_AUTOCORR_THRESHOLD: usize = 512;
 
 #[inline]
@@ -369,7 +382,7 @@ fn find_trigger(
 ) -> (usize, usize) {
     let cycles = cycles.max(1);
     let len = period.saturating_mul(cycles);
-    let guard = period.saturating_mul(2);
+    let guard = period;
     let window = len.saturating_add(guard);
     let start = available.saturating_sub(window);
 
@@ -392,7 +405,7 @@ fn find_trigger(
 
     for i in (0..=range).step_by(stride) {
         let corr = scratch.correlation(i, len);
-        if corr > best {
+        if corr >= best {
             best = corr;
             pos = i;
         }
@@ -406,7 +419,7 @@ fn find_trigger(
             continue;
         }
         let corr = scratch.correlation(i, len);
-        if corr > best {
+        if corr >= best {
             best = corr;
             pos = i;
         }
@@ -473,7 +486,14 @@ impl AudioProcessor for OscilloscopeProcessor {
 
         // Compute buffer capacity for history
         let detection_frames = (self.config.sample_rate * 0.1) as usize;
-        let capacity = detection_frames.max(base_frames) * channel_count;
+        let trigger_frames = match self.config.trigger_mode {
+            TriggerMode::FreeRun => 0,
+            TriggerMode::Stable { num_cycles } => {
+                let max_period = (self.config.sample_rate / PITCH_MIN_HZ) as usize;
+                max_period * (num_cycles.max(1) + 1)
+            }
+        };
+        let capacity = detection_frames.max(base_frames).max(trigger_frames) * channel_count;
 
         // Update history buffer
         if !self.history.is_empty() && !self.history.len().is_multiple_of(channel_count) {
