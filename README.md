@@ -36,8 +36,8 @@ pull request!
 - [x] **oscilloscope**
   - [x] Channel selection (L, R, L+R)
   - [x] Stable mode - follows X cycles of the fundamental.
-  - [x] Free-run mode - scrolls continuously through time, not
-        triggered.
+  - [x] Free-run mode - scrolls continuously through time with a
+        zero-crossing trigger; a more traditional oscilloscope.
 - [x] **spectrogram**
   - [x] Reassignment and synchrosqueezing for sharper frequency and
         time resolution.
