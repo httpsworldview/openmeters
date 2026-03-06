@@ -312,7 +312,7 @@ impl TriggerScratch {
         self.phase_cosine.clear();
     }
 
-    fn prepare(&mut self, data: &[f32], period: usize) {
+    fn prepare(&mut self, data: &[f32], period: f32) {
         let len = data.len();
 
         self.sine_prefix_sum.clear();
@@ -325,7 +325,7 @@ impl TriggerScratch {
         self.phase_sine.resize(len + 1, 0.0);
         self.phase_cosine.resize(len + 1, 0.0);
 
-        let step = std::f32::consts::TAU / period as f32;
+        let step = std::f32::consts::TAU / period;
         let (step_sine, step_cosine) = step.sin_cos();
 
         let mut sine_value = 0.0_f32;
@@ -341,16 +341,10 @@ impl TriggerScratch {
             let mut next_sine = sine_value * step_cosine + cosine_value * step_sine;
             let mut next_cosine = cosine_value * step_cosine - sine_value * step_sine;
 
-            // Periodically renormalize to prevent floating-point drift
+            // Periodically reset to exact values to prevent phase and magnitude drift
             if (i & 127) == 127 {
-                let magnitude = (next_sine * next_sine + next_cosine * next_cosine).sqrt();
-                if magnitude > f32::EPSILON {
-                    next_sine /= magnitude;
-                    next_cosine /= magnitude;
-                } else {
-                    next_sine = 0.0;
-                    next_cosine = 1.0;
-                }
+                let exact_angle = step * (i + 1) as f32;
+                (next_sine, next_cosine) = exact_angle.sin_cos();
             }
 
             sine_value = next_sine;
@@ -374,20 +368,20 @@ impl TriggerScratch {
 
 #[inline]
 fn find_trigger(
-    period: usize,
+    period: f32,
     cycles: usize,
     available: usize,
     mono: &[f32],
     scratch: &mut TriggerScratch,
 ) -> (usize, usize) {
     let cycles = cycles.max(1);
-    let len = period.saturating_mul(cycles);
-    let guard = period;
+    let len = (period * cycles as f32).round() as usize;
+    let guard = period.ceil() as usize;
     let window = len.saturating_add(guard);
     let start = available.saturating_sub(window);
 
     let data = &mono[start..];
-    if period == 0 || len == 0 {
+    if period < 1.0 || len == 0 {
         return (0, available);
     }
 
@@ -398,7 +392,7 @@ fn find_trigger(
     scratch.prepare(data, period);
 
     let range = data.len() - len;
-    let stride = (period / 4).max(1);
+    let stride = ((period / 4.0) as usize).max(1);
 
     let mut best = f32::NEG_INFINITY;
     let mut pos = 0;
@@ -540,7 +534,7 @@ impl AudioProcessor for OscilloscopeProcessor {
 
                 if let Some(f) = freq {
                     self.last_pitch = Some(f);
-                    let period = (self.config.sample_rate / f).max(1.0) as usize;
+                    let period = (self.config.sample_rate / f).max(1.0);
                     find_trigger(
                         period,
                         num_cycles,
