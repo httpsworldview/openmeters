@@ -422,6 +422,37 @@ fn find_trigger(
     (len, start + pos)
 }
 
+fn find_rising_zero_crossing(
+    interleaved: &[f32],
+    channels: usize,
+    frames: impl Iterator<Item = usize>,
+) -> Option<usize> {
+    let scale = 1.0 / channels.max(1) as f32;
+    let mono = |f: usize| {
+        let b = f * channels;
+        (0..channels).map(|c| interleaved[b + c]).sum::<f32>() * scale
+    };
+    let mut it = frames;
+    let first = it.next()?;
+    let mut prev_val = mono(first);
+    let mut prev_idx = first;
+    for f in it {
+        let cur = mono(f);
+        // Always check in temporal order regardless of iteration direction
+        let (lo_val, hi_idx, hi_val) = if f > prev_idx {
+            (prev_val, f, cur)
+        } else {
+            (cur, prev_idx, prev_val)
+        };
+        if hi_val > 0.0 && lo_val <= 0.0 {
+            return Some(hi_idx);
+        }
+        prev_val = cur;
+        prev_idx = f;
+    }
+    None
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct OscilloscopeSnapshot {
     pub channels: usize,
@@ -480,8 +511,9 @@ impl AudioProcessor for OscilloscopeProcessor {
 
         // Compute buffer capacity for history
         let detection_frames = (self.config.sample_rate * 0.1) as usize;
+        let search_range = (self.config.sample_rate / PITCH_MIN_HZ).ceil() as usize;
         let trigger_frames = match self.config.trigger_mode {
-            TriggerMode::FreeRun => 0,
+            TriggerMode::FreeRun => base_frames + search_range,
             TriggerMode::Stable { num_cycles } => {
                 let max_period = (self.config.sample_rate / PITCH_MIN_HZ) as usize;
                 max_period * (num_cycles.max(1) + 1)
@@ -504,7 +536,19 @@ impl AudioProcessor for OscilloscopeProcessor {
                 if frames == 0 {
                     return None;
                 }
-                (frames, available.saturating_sub(frames))
+
+                let data = self.history.make_contiguous();
+                let end = available.saturating_sub(1);
+                let right_lo = end.saturating_sub(search_range);
+                let right = find_rising_zero_crossing(data, channel_count, (right_lo..=end).rev())
+                    .unwrap_or(available);
+
+                let left_lo = right.saturating_sub(frames);
+                let left_hi = (left_lo + search_range).min(right.saturating_sub(2));
+                let left = find_rising_zero_crossing(data, channel_count, left_lo..=left_hi)
+                    .unwrap_or(left_lo);
+
+                (right.saturating_sub(left).max(1), left)
             }
             TriggerMode::Stable { num_cycles } => {
                 if available < base_frames {
@@ -683,5 +727,45 @@ mod tests {
         let y = |x: f32| (x - 5.3_f32).powi(2);
         let refined = parabolic_refine(y(4.0), y(5.0), y(6.0), 5);
         assert!((refined - 5.3).abs() < 0.001);
+    }
+
+    #[test]
+    fn zero_crossing_both_directions_and_stereo() {
+        let rate = 48_000.0;
+        let mono = sine_samples(440.0, rate, 4800);
+
+        // backward
+        let c = find_rising_zero_crossing(&mono, 1, (0..=3840).rev()).unwrap();
+        assert!(mono[c] > 0.0 && mono[c - 1] <= 0.0);
+
+        // forward
+        let c = find_rising_zero_crossing(&mono, 1, 0..=4799).unwrap();
+        assert!(mono[c] > 0.0 && mono[c - 1] <= 0.0);
+
+        // stereo
+        let stereo: Vec<f32> = mono.iter().flat_map(|&s| [s, s]).collect();
+        let c = find_rising_zero_crossing(&stereo, 2, (0..=3840).rev()).unwrap();
+        let m = (stereo[c * 2] + stereo[c * 2 + 1]) / 2.0;
+        let p = (stereo[(c - 1) * 2] + stereo[(c - 1) * 2 + 1]) / 2.0;
+        assert!(m > 0.0 && p <= 0.0);
+    }
+
+    #[test]
+    fn free_run_both_edges_near_zero() {
+        let config = OscilloscopeConfig {
+            segment_duration: 0.01,
+            trigger_mode: TriggerMode::FreeRun,
+            ..Default::default()
+        };
+        let mut processor = OscilloscopeProcessor::new(config);
+        let rate = config.sample_rate;
+        let samples = sine_samples(440.0, rate, (rate * 0.1) as usize);
+        let snap = processor
+            .process_block(&make_block(&samples, 1, rate))
+            .expect("expected snapshot");
+
+        let n = snap.samples_per_channel;
+        assert!(snap.samples[0] > 0.0 && snap.samples[0] < 0.15, "left edge");
+        assert!(snap.samples[n - 1].abs() < 0.15, "right edge");
     }
 }
