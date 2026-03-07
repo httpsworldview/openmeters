@@ -29,8 +29,7 @@ const PITCH_MAX_HZ: f32 = 8000.0;
 // YIN cumulative mean normalized difference (CMND) threshold. A lag
 // is accepted as a pitch period when its CMND value drops below
 // this. Lower values reject more ambiguous signals; higher values
-// accept weaker periodicity. 0.20 is used in the original YIN paper
-// and works well in practice.
+// accept weaker periodicity.
 const PITCH_THRESHOLD: f32 = 0.15;
 
 // Sample count above which the difference function switches from
