@@ -31,11 +31,11 @@ const PITCH_MAX_HZ: f32 = 8000.0;
 // this. Lower values reject more ambiguous signals; higher values
 // accept weaker periodicity. 0.20 is used in the original YIN paper
 // and works well in practice.
-const PITCH_THRESHOLD: f32 = 0.20;
+const PITCH_THRESHOLD: f32 = 0.15;
 
 // Sample count above which the difference function switches from
 // O(n*tau) direct computation to O(n log n) FFT-based
-// cross-correlation. 512 is the crossover point where FFT overhead is
+// autocorrelation. 512 is the crossover point where FFT overhead is
 // amortized by the larger inner loop savings; below this the direct
 // method is faster due to cache locality and no FFT setup cost.
 const FFT_AUTOCORR_THRESHOLD: usize = 512;
@@ -88,10 +88,8 @@ struct PitchDetector {
     fft_inverse: Option<Arc<dyn realfft::ComplexToReal<f32>>>,
     fft_input: Vec<f32>,
     fft_spectrum: Vec<Complex<f32>>,
-    fft_spectrum_b: Vec<Complex<f32>>,
     fft_output: Vec<f32>,
     fft_scratch: Vec<Complex<f32>>,
-    sq_prefix: Vec<f32>,
 }
 
 impl std::fmt::Debug for PitchDetector {
@@ -115,10 +113,8 @@ impl PitchDetector {
             fft_inverse: None,
             fft_input: Vec::new(),
             fft_spectrum: Vec::new(),
-            fft_spectrum_b: Vec::new(),
             fft_output: Vec::new(),
             fft_scratch: Vec::new(),
-            sq_prefix: Vec::new(),
         }
     }
 
@@ -203,7 +199,6 @@ impl PitchDetector {
     }
 
     fn compute_diff_fft(&mut self, samples: &[f32], max_period: usize) -> bool {
-        let w = samples.len() - max_period;
         let fft_size = (samples.len() * 2).next_power_of_two();
         self.rebuild_fft(fft_size);
 
@@ -214,7 +209,6 @@ impl PitchDetector {
             return false;
         };
 
-        // FFT the full signal to get spectrum B
         self.fft_input[..samples.len()].copy_from_slice(samples);
         self.fft_input[samples.len()..].fill(0.0);
 
@@ -229,28 +223,9 @@ impl PitchDetector {
             return false;
         }
 
-        self.fft_spectrum_b
-            .resize(self.fft_spectrum.len(), Complex::new(0.0, 0.0));
-        self.fft_spectrum_b.copy_from_slice(&self.fft_spectrum);
-
-        // FFT the windowed signal (first W samples) to get spectrum A
-        self.fft_input[..w].copy_from_slice(&samples[..w]);
-        self.fft_input[w..].fill(0.0);
-
-        if forward
-            .process_with_scratch(
-                &mut self.fft_input,
-                &mut self.fft_spectrum,
-                &mut self.fft_scratch,
-            )
-            .is_err()
-        {
-            return false;
-        }
-
-        // gives cross-correlation
-        for (a, b) in self.fft_spectrum.iter_mut().zip(self.fft_spectrum_b.iter()) {
-            *a = a.conj() * b;
+        // Power spectrum: |X(f)|^2 -> IFFT gives autocorrelation
+        for c in &mut self.fft_spectrum {
+            *c = Complex::new(c.norm_sqr(), 0.0);
         }
 
         if inverse
@@ -265,16 +240,11 @@ impl PitchDetector {
         }
 
         let norm = 1.0 / fft_size as f32;
-        self.sq_prefix.resize(samples.len() + 1, 0.0);
-        for (i, &s) in samples.iter().enumerate() {
-            self.sq_prefix[i + 1] = self.sq_prefix[i] + s * s;
-        }
+        let acf_0 = self.fft_output[0] * norm;
 
-        let e_left = self.sq_prefix[w];
         for tau in 0..max_period {
-            let xcorr = self.fft_output[tau] * norm;
-            let e_right = self.sq_prefix[tau + w] - self.sq_prefix[tau];
-            self.difference_function[tau] = e_left + e_right - 2.0 * xcorr;
+            let acf_tau = self.fft_output[tau] * norm;
+            self.difference_function[tau] = 2.0 * (acf_0 - acf_tau);
         }
         true
     }
