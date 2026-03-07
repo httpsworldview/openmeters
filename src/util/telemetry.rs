@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Maika Namuo
 use std::sync::OnceLock;
 use tracing::Level;
 use tracing_subscriber::{EnvFilter, fmt};
