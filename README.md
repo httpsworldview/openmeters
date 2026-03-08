@@ -2,8 +2,8 @@
 
 ![Preview](https://github.com/user-attachments/assets/36f840f1-f898-4290-9f17-11367dce9198)
 
-OpenMeters is a fast and simple audio metering application for Linux,
-built with Rust and PipeWire.
+OpenMeters is a fast and professional audio metering application for
+Linux, built with Rust and PipeWire.
 
 ## Features
 
@@ -35,18 +35,23 @@ pull request!
   - [x] True Peak
 - [x] **oscilloscope**
   - [x] Channel selection (L, R, L+R)
-  - [x] Stable mode - follows X cycles of the fundamental.
-  - [x] Free-run mode - scrolls continuously through time with a
-        zero-crossing trigger; a more traditional oscilloscope.
+  - [x] Stable mode - Estimates the fundamental pitch of a given
+        signal and autocorrelates it against a reference signal to
+        find a stable trigger point.
+    - [x] Ability to select the number of cycles to display (1-4)
+  - [x] Free-run mode - A more traditional oscilloscope with a robust
+        zero-crossing trigger. Suitable for simple signals, but will
+        jitter with complex and rapidly changing material.
 - [x] **spectrogram**
-  - [x] Reassignment and synchrosqueezing for sharper frequency and
-        time resolution.
+  - [x] Spectral reassignment for exceptionally sharp time and
+        frequency resolution.
   - [x] Note & frequency tool tips
   - [x] Piano roll overlay
   - [x] Ability to zoom & pan vertically
   - [x] Mel, log, and linear scales
-  - [x] Adjustable colormap
+  - [x] Adjustable color map
 - [x] **spectrum analyzer**
+  - [x] A-weighting
   - [x] Peak frequency label
   - [x] Averaging modes
     - [x] Exponential
@@ -70,6 +75,9 @@ pull request!
   - [x] Channel selection (L, R, L+R)
   - [x] Adjustable scroll speed
   - [x] Adjustable color map
+    - [x] Based on frequency
+    - [x] Based on Loudness
+    - [x] A single static color.
 
 ## Installation
 
