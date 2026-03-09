@@ -60,7 +60,7 @@ pub(super) fn bar_anchor(alignment: BarAlignment) -> Anchor {
 fn bar_layershell_settings(alignment: BarAlignment, height: u32) -> NewLayerShellSettings {
     NewLayerShellSettings {
         size: Some((0, height)),
-        layer: Layer::Bottom,
+        layer: Layer::Top,
         anchor: bar_anchor(alignment),
         exclusive_zone: Some(height as i32),
         keyboard_interactivity: KeyboardInteractivity::OnDemand,
