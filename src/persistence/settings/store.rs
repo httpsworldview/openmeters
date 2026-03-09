@@ -4,6 +4,7 @@
 use super::{
     bar::{BarAlignment, clamp_bar_height},
     schema::UiSettings,
+    theme::{BUILTIN_THEME, ThemeFile, ThemeStore},
 };
 use crate::domain::routing::CaptureMode;
 use crate::domain::visuals::VisualKind;
@@ -31,11 +32,13 @@ fn config_dir() -> PathBuf {
 pub struct SettingsManager {
     path: PathBuf,
     pub data: UiSettings,
+    theme_store: ThemeStore,
 }
 
 impl SettingsManager {
     pub fn load_or_default() -> Self {
-        let path = config_dir().join("settings.json");
+        let dir = config_dir();
+        let path = dir.join("settings.json");
         let mut data: UiSettings = fs::read_to_string(&path)
             .ok()
             .and_then(|s| {
@@ -46,10 +49,35 @@ impl SettingsManager {
             .unwrap_or_default();
         data.visuals.sanitize();
         data.bar.height = clamp_bar_height(data.bar.height);
-        Self { path, data }
+        let theme_store = ThemeStore::new(&dir);
+        // Populate background color from the active theme (settings.json no longer stores it).
+        if let Some(theme_file) = theme_store.load(data.theme.as_deref().unwrap_or(BUILTIN_THEME))
+            && let Some(bg) = theme_file.background
+        {
+            data.background_color = Some(bg);
+        }
+        Self {
+            path,
+            data,
+            theme_store,
+        }
     }
     pub fn settings(&self) -> &UiSettings {
         &self.data
+    }
+    pub fn theme_store(&self) -> &ThemeStore {
+        &self.theme_store
+    }
+    pub fn active_theme(&self) -> &str {
+        self.data.theme.as_deref().unwrap_or(BUILTIN_THEME)
+    }
+    pub fn update_active_theme(&self, mutate: impl FnOnce(&mut ThemeFile)) {
+        let active = self.active_theme();
+        if active != BUILTIN_THEME
+            && let Err(e) = self.theme_store.update(active, mutate)
+        {
+            warn!("[theme] update failed for {active:?}: {e}");
+        }
     }
     pub fn set_visual_enabled(&mut self, kind: VisualKind, enabled: bool) {
         self.data.visuals.modules.entry(kind).or_default().enabled = Some(enabled);
@@ -86,11 +114,15 @@ impl SettingsManager {
     pub fn set_last_device_name(&mut self, name: Option<String>) {
         self.data.last_device_name = name;
     }
+    pub fn set_theme(&mut self, name: Option<String>) {
+        self.data.theme = name;
+    }
 }
 
 fn schedule_persist(path: PathBuf, mut settings: UiSettings) {
     static SENDER: OnceLock<Option<mpsc::Sender<(PathBuf, UiSettings)>>> = OnceLock::new();
     settings.visuals.sanitize();
+    settings.visuals.strip_all_palettes();
     settings.bar.height = clamp_bar_height(settings.bar.height);
     if let Some(sender) = SENDER.get_or_init(|| {
         let (tx, rx) = mpsc::channel::<(PathBuf, UiSettings)>();

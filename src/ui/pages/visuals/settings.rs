@@ -166,17 +166,21 @@ pub(super) fn persist_with_palette<T: Clone + Serialize + HasPalette>(
     let mut stored = config.clone();
     let positions = palette.positions();
     let spreads = palette.spreads();
-    stored.set_palette(PaletteSettings::from_state(
-        palette.colors(),
-        defaults,
-        positions,
-        spreads,
-    ));
+    let palette_settings =
+        PaletteSettings::from_state(palette.colors(), defaults, positions, spreads);
+    stored.set_palette(palette_settings.clone());
     let applied = visual_manager
         .borrow_mut()
         .apply_module_settings(kind, &ModuleSettings::with_config(&stored));
     if applied {
         settings_handle.update(|s| s.set_module_config(kind, &stored));
+        settings_handle.borrow().update_active_theme(|theme| {
+            if let Some(ps) = palette_settings {
+                theme.palettes.insert(kind, ps);
+            } else {
+                theme.palettes.remove(&kind);
+            }
+        });
     }
     applied
 }

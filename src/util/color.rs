@@ -2,15 +2,21 @@
 // Copyright (C) 2026 Maika Namuo
 
 // Pure color math and gradient utilities.
-//
-// No iced widget types, no UI styling — just numeric operations on Color values.
-// Used by visuals, persistence, and UI layers alike.
 
 use iced::Color;
 
 #[inline]
 pub fn f32_to_u8(v: f32) -> u8 {
     (v.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+pub const fn hex(r: u8, g: u8, b: u8, a: u8) -> Color {
+    Color::from_rgba(
+        r as f32 / 255.0,
+        g as f32 / 255.0,
+        b as f32 / 255.0,
+        a as f32 / 255.0,
+    )
 }
 
 #[inline]

@@ -7,7 +7,7 @@ pub use crate::domain::visuals::VisualKind;
 use crate::{
     infra::pipewire::meter_tap::{self, MeterFormat},
     persistence::settings::{
-        self as settings_cfg, ModuleSettings, PaletteSettings, VisualSettings,
+        self as settings_cfg, ModuleSettings, PaletteSettings, ThemeFile, VisualSettings,
     },
     util::audio::DEFAULT_SAMPLE_RATE,
     util::color,
@@ -391,6 +391,14 @@ impl VisualManager {
         if cur != t {
             let e = self.entries.remove(cur);
             self.entries.insert(t, e);
+        }
+    }
+    pub fn apply_theme(&mut self, theme: &ThemeFile) {
+        for e in &mut self.entries {
+            let mut ms = e.module.export();
+            ms.override_palette(theme.palettes.get(&e.kind));
+            e.module.apply(&ms);
+            e.content = e.module.content();
         }
     }
     pub fn ingest_samples(&mut self, samples: &[f32]) {

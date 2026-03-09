@@ -2471,6 +2471,7 @@ dependencies = [
  "rustfft",
  "serde",
  "serde_json",
+ "tempfile",
  "tracing",
  "tracing-subscriber",
  "wayland-client",

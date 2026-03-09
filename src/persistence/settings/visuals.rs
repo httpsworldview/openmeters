@@ -34,6 +34,13 @@ impl VisualSettings {
             Loudness => LoudnessSettings, Stereometer => StereometerSettings);
         self.modules.retain(valid);
     }
+
+    /// Strips palette data from all module configs (theme owns palettes, not settings.json).
+    pub fn strip_all_palettes(&mut self) {
+        for ms in self.modules.values_mut() {
+            ms.strip_palette();
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -70,6 +77,34 @@ impl ModuleSettings {
                     .ok()
             })
             .unwrap_or_default()
+    }
+    /// Replaces the palette field inside the config JSON without touching other fields.
+    pub fn override_palette(&mut self, palette: Option<&PaletteSettings>) {
+        let obj = self
+            .config
+            .get_or_insert_with(|| Value::Object(Default::default()));
+        if let Value::Object(map) = obj {
+            if let Some(v) = palette.and_then(|p| serde_json::to_value(p).ok()) {
+                map.insert("palette".into(), v);
+            } else {
+                map.remove("palette");
+            }
+        }
+    }
+
+    /// Extracts palette data from the config JSON without consuming it.
+    pub fn extract_palette(&self) -> Option<PaletteSettings> {
+        self.config
+            .as_ref()
+            .and_then(|v| v.get("palette"))
+            .and_then(|pal| serde_json::from_value(pal.clone()).ok())
+    }
+
+    /// Removes palette data from the config JSON (for clean settings.json persistence).
+    pub fn strip_palette(&mut self) {
+        if let Some(Value::Object(map)) = &mut self.config {
+            map.remove("palette");
+        }
     }
 }
 

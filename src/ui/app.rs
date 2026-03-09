@@ -155,6 +155,14 @@ impl UiApp {
         };
         let mut manager = VisualManager::new();
         manager.apply_visual_settings(&visual_settings);
+        // Theme palettes override whatever settings.json had
+        {
+            let guard = settings_handle.borrow();
+            let theme_name = guard.active_theme();
+            if let Some(theme_file) = guard.theme_store().load(theme_name) {
+                manager.apply_theme(&theme_file);
+            }
+        }
         let visual_manager = VisualManagerHandle::new(manager);
         let config_page = ConfigPage::new(
             routing_sender,
@@ -785,7 +793,7 @@ fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
         Message::SizeChange { id, size } => {
             app.handle_main_window_resize(id, Size::new(size.0 as f32, size.1 as f32))
         }
-        // Layer shell infrastructure messages — handled internally by iced_layershell
+        // Layer shell infrastructure messages - handled internally by iced_layershell
         _ => Task::none(),
     }
 }
