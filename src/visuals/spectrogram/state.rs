@@ -294,6 +294,7 @@ pub(crate) struct SpectrogramState {
     history: VecDeque<SpectrogramColumn>,
     key: u64,
     pub(crate) piano_roll_overlay: PianoRollOverlay,
+    rotation: i8,
     sample_rate: f32,
     fft_size: usize,
     freq_scale: FrequencyScale,
@@ -314,6 +315,7 @@ impl SpectrogramState {
             history: VecDeque::new(),
             key: crate::visuals::next_key(),
             piano_roll_overlay: PianoRollOverlay::Off,
+            rotation: 0,
             sample_rate: DEFAULT_SAMPLE_RATE,
             fft_size: 4096,
             freq_scale: FrequencyScale::default(),
@@ -383,6 +385,14 @@ impl SpectrogramState {
         self.style.tilt_db
     }
 
+    pub fn set_rotation(&mut self, rotation: i8) {
+        self.rotation = rotation.clamp(-1, 2);
+    }
+
+    pub fn rotation(&self) -> i8 {
+        self.rotation
+    }
+
     pub fn apply_snapshot(&mut self, snap: &SpectrogramUpdate) {
         if snap.new_columns.is_empty() && !snap.reset {
             return;
@@ -440,14 +450,18 @@ impl SpectrogramState {
             contrast: self.style.contrast,
             uv_y_range: [0.0, 1.0],
             screen_height: bounds.height,
+            rotation: self.rotation,
         })
     }
 
-    fn frequency_at_y_zoomed(&self, y: f32, bounds: Rectangle, uv_range: [f32; 2]) -> Option<f32> {
-        if bounds.height <= 0.0 || y < bounds.y || y > bounds.y + bounds.height {
-            return None;
-        }
-        let tex_uv = uv_range[0] + (y - bounds.y) / bounds.height * (uv_range[1] - uv_range[0]);
+    fn frequency_at_cursor(
+        &self,
+        cursor: Point,
+        bounds: Rectangle,
+        uv_range: [f32; 2],
+    ) -> Option<f32> {
+        let freq_norm = self.freq_axis_norm(cursor, bounds)?;
+        let tex_uv = uv_range[0] + freq_norm * (uv_range[1] - uv_range[0]);
         let buf = self.buffer.borrow();
         if !buf.display_freqs.is_empty() {
             return buf
@@ -465,6 +479,30 @@ impl SpectrogramState {
         );
         let freq = norm_to_freq(1.0 - tex_uv, nyq, min_f, self.freq_scale);
         (freq.is_finite() && freq > 0.0).then_some(freq)
+    }
+
+    // Normalized rotation (0..3) matching the shader's rotate_uv convention
+    fn rotation_index(&self) -> u32 {
+        ((self.rotation as i32 % 4) + 4) as u32 % 4
+    }
+
+    fn freq_axis_is_horizontal(&self) -> bool {
+        matches!(self.rotation_index(), 1 | 3)
+    }
+
+    // Maps a screen point to the frequency-axis UV (0..1), matching
+    // the shader's rotate_uv so CPU-side interactions stay consistent.
+    fn freq_axis_norm(&self, cursor: Point, bounds: Rectangle) -> Option<f32> {
+        if !bounds.contains(cursor) {
+            return None;
+        }
+        let norm = match self.rotation_index() {
+            1 => 1.0 - (cursor.x - bounds.x) / bounds.width,
+            2 => 1.0 - (cursor.y - bounds.y) / bounds.height,
+            3 => (cursor.x - bounds.x) / bounds.width,
+            _ => (cursor.y - bounds.y) / bounds.height,
+        };
+        norm.is_finite().then(|| norm.clamp(0.0, 1.0))
     }
 
     fn clear_pending(&self) {
@@ -506,7 +544,7 @@ const ZOOM_STEP: f32 = 1.15;
 struct InteractionState {
     cursor: Option<Point>,
     modifiers: keyboard::Modifiers,
-    drag: Option<(f32, f32)>, // (origin_y, start_pan)
+    drag: Option<(f32, f32)>, // (freq_axis_origin, start_pan)
 }
 
 impl SpectrogramState {
@@ -546,9 +584,11 @@ impl<'a> Spectrogram<'a> {
         uv_range: [f32; 2],
     ) {
         let state = self.state.borrow();
-        let Some(freq) = state.frequency_at_y_zoomed(cursor.y, bounds, uv_range) else {
+        let Some(freq) = state.frequency_at_cursor(cursor, bounds, uv_range) else {
             return;
         };
+        let horizontal = state.freq_axis_is_horizontal();
+        drop(state);
         let content = MusicalNote::format_with_hz(freq);
 
         let tsz = crate::visuals::measure_text(&content, TOOLTIP_SIZE);
@@ -557,12 +597,25 @@ impl<'a> Spectrogram<'a> {
             tsz.width + TOOLTIP_PAD * 2.0,
             tsz.height + TOOLTIP_PAD * 2.0,
         );
-        let x = if cursor.x + 12.0 + sz.width <= bounds.x + bounds.width {
-            cursor.x + 12.0
+
+        let (x, y) = if horizontal {
+            let x = (cursor.x - sz.width * 0.5).clamp(bounds.x, bounds.x + bounds.width - sz.width);
+            let y = if cursor.y - 12.0 - sz.height >= bounds.y {
+                cursor.y - 12.0 - sz.height
+            } else {
+                (cursor.y + 12.0).min(bounds.y + bounds.height - sz.height)
+            };
+            (x, y)
         } else {
-            (cursor.x - 12.0 - sz.width).max(bounds.x)
+            let x = if cursor.x + 12.0 + sz.width <= bounds.x + bounds.width {
+                cursor.x + 12.0
+            } else {
+                (cursor.x - 12.0 - sz.width).max(bounds.x)
+            };
+            let y =
+                (cursor.y - sz.height * 0.5).clamp(bounds.y, bounds.y + bounds.height - sz.height);
+            (x, y)
         };
-        let y = (cursor.y - sz.height * 0.5).clamp(bounds.y, bounds.y + bounds.height - sz.height);
         let tb = Rectangle::new(Point::new(x, y), sz);
 
         let pal = theme.extended_palette();
@@ -607,12 +660,14 @@ impl<'a> Spectrogram<'a> {
         if state.fft_size == 0 || state.sample_rate <= 0.0 {
             return;
         }
-        let (nyq, min_f, scale) = (
+        let (nyq, min_f, scale, rot) = (
             (state.sample_rate / 2.0).max(1.0),
             (state.sample_rate / state.fft_size as f32).max(20.0),
             state.freq_scale,
+            state.rotation_index(),
         );
         drop(state);
+        let horizontal = matches!(rot, 1 | 3);
 
         let (freq_top, freq_bot) = (
             norm_to_freq(1.0 - uv_range[0], nyq, min_f, scale),
@@ -627,16 +682,23 @@ impl<'a> Spectrogram<'a> {
 
         let pal = theme.extended_palette();
         let (white, black) = (pal.background.weak.color, Color::from_rgb(0.1, 0.1, 0.1));
-        let x = match overlay {
-            PianoRollOverlay::Left => bounds.x,
-            PianoRollOverlay::Right => bounds.x + bounds.width - PIANO_ROLL_WIDTH,
-            PianoRollOverlay::Off => return,
+        let (freq_org, freq_ext, time_org, time_ext) = if horizontal {
+            (bounds.x, bounds.width, bounds.y, bounds.height)
+        } else {
+            (bounds.y, bounds.height, bounds.x, bounds.width)
         };
 
-        let freq_to_y = |f: f32| {
-            let tex_norm = freq_to_norm(f, nyq, min_f, scale);
-            let view_norm = ((1.0 - tex_norm) - uv_range[0]) / (uv_range[1] - uv_range[0]);
-            bounds.y + bounds.height * view_norm.clamp(0.0, 1.0)
+        let freq_to_screen = |f: f32| -> f32 {
+            let norm = freq_to_norm(f, nyq, min_f, scale);
+            let t = (((1.0 - norm) - uv_range[0]) / (uv_range[1] - uv_range[0])).clamp(0.0, 1.0);
+            let t = if matches!(rot, 1 | 2) { 1.0 - t } else { t };
+            freq_org + freq_ext * t
+        };
+
+        let strip_anchor = match overlay {
+            PianoRollOverlay::Left => time_org,
+            PianoRollOverlay::Right => time_org + time_ext - PIANO_ROLL_WIDTH,
+            PianoRollOverlay::Off => return,
         };
 
         let semi = 2.0f32.powf(0.5 / 12.0);
@@ -645,8 +707,9 @@ impl<'a> Spectrogram<'a> {
                 continue;
             };
             let freq = note.to_frequency();
-            let (yt, yb) = (freq_to_y(freq * semi), freq_to_y(freq / semi));
-            if yb < bounds.y || yt > bounds.y + bounds.height {
+            let (a, b) = (freq_to_screen(freq * semi), freq_to_screen(freq / semi));
+            let (lo, hi) = if a < b { (a, b) } else { (b, a) };
+            if hi < freq_org || lo > freq_org + freq_ext {
                 continue;
             }
             let (fill, brd) = if note.is_black() {
@@ -661,12 +724,21 @@ impl<'a> Spectrogram<'a> {
                     },
                 )
             };
+            let key_len = (hi - lo).max(1.0);
+            let key_rect = if horizontal {
+                Rectangle::new(
+                    Point::new(lo, strip_anchor),
+                    Size::new(key_len, PIANO_ROLL_WIDTH),
+                )
+            } else {
+                Rectangle::new(
+                    Point::new(strip_anchor, lo),
+                    Size::new(PIANO_ROLL_WIDTH, key_len),
+                )
+            };
             renderer.fill_quad(
                 Quad {
-                    bounds: Rectangle::new(
-                        Point::new(x, yt),
-                        Size::new(PIANO_ROLL_WIDTH, (yb - yt).max(1.0)),
-                    ),
+                    bounds: key_rect,
                     border: brd,
                     ..Default::default()
                 },
@@ -712,10 +784,18 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
         match event {
             iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
                 st.cursor = b.contains(*position).then_some(*position);
-                if let Some((origin_y, start_pan)) = st.drag {
+                if let Some((origin, start_pan)) = st.drag {
                     let mut state = self.state.borrow_mut();
                     let h = 0.5 / state.zoom;
-                    state.pan = (start_pan - (position.y - origin_y) / b.height / state.zoom)
+                    let horiz = state.freq_axis_is_horizontal();
+                    let extent = if horiz { b.width } else { b.height };
+                    let current = if horiz { position.x } else { position.y };
+                    let sign = if matches!(state.rotation_index(), 1 | 2) {
+                        1.0
+                    } else {
+                        -1.0
+                    };
+                    state.pan = (start_pan + sign * (current - origin) / extent / state.zoom)
                         .clamp(h, 1.0 - h);
                     shell.request_redraw();
                 }
@@ -723,14 +803,15 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
             iced::Event::Mouse(mouse::Event::CursorLeft) => st.cursor = None,
             iced::Event::Keyboard(keyboard::Event::ModifiersChanged(m)) => st.modifiers = *m,
             iced::Event::Mouse(mouse::Event::WheelScrolled { delta }) if st.modifiers.control() => {
-                if let Some(pos) = st.cursor.filter(|p| b.contains(*p) && b.height > 0.0) {
+                if let Some(pos) = st.cursor.filter(|p| b.contains(*p)) {
+                    let freq_norm = self.state.borrow().freq_axis_norm(pos, b).unwrap_or(0.5);
                     let scroll_y = match *delta {
                         mouse::ScrollDelta::Lines { y, .. } => y,
                         mouse::ScrollDelta::Pixels { y, .. } => y / 50.0,
                     };
                     self.state
                         .borrow_mut()
-                        .zoom_at((pos.y - b.y) / b.height, ZOOM_STEP.powf(scroll_y));
+                        .zoom_at(freq_norm, ZOOM_STEP.powf(scroll_y));
                     shell.request_redraw();
                     shell.capture_event();
                 }
@@ -741,7 +822,12 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
                     .cursor
                     .filter(|p| b.contains(*p) && state.zoom > MIN_ZOOM)
                 {
-                    st.drag = Some((pos.y, state.pan));
+                    let origin = if state.freq_axis_is_horizontal() {
+                        pos.x
+                    } else {
+                        pos.y
+                    };
+                    st.drag = Some((origin, state.pan));
                     shell.capture_event();
                 }
             }

@@ -79,6 +79,15 @@ fn peak_in_range(logical: u32, row_lo: u32, row_hi: u32, params: MagnitudeParams
     return val;
 }
 
+fn rotate_uv(uv: vec2<f32>, rot: u32) -> vec2<f32> {
+    switch rot {
+        case 1u: { return vec2<f32>(uv.y, 1.0 - uv.x); }
+        case 2u: { return vec2<f32>(1.0 - uv.x, 1.0 - uv.y); }
+        case 3u: { return vec2<f32>(1.0 - uv.y, uv.x); }
+        default: { return uv; }
+    }
+}
+
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let dims = uniforms.dims_wrap_flags;
@@ -96,8 +105,10 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
     let latest = min(state.x, capacity - 1u);
 
-    let clamped_uv = clamp(input.tex_coords, vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 1.0));
-    let screen_width = max(bitcast<f32>(state.w), 1.0);
+    let rotation = state.z;
+    let raw_uv = clamp(input.tex_coords, vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 1.0));
+    let clamped_uv = rotate_uv(raw_uv, rotation);
+    let screen_width_raw = max(bitcast<f32>(state.w), 1.0);
 
     let is_pow2 = (flags & FLAG_CAPACITY_POW2) != 0u;
     let is_full = count == capacity;
@@ -115,7 +126,11 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
     let uv_y_min = uniforms.style.y;
     let uv_y_max = uniforms.style.z;
-    let screen_height = max(uniforms.style.w, 1.0);
+    let screen_height_raw = max(uniforms.style.w, 1.0);
+
+    let swapped = (rotation == 1u || rotation == 3u);
+    let screen_width = select(screen_width_raw, screen_height_raw, swapped);
+    let screen_height = select(screen_height_raw, screen_width_raw, swapped);
 
     let params = MagnitudeParams(capacity, wrap_mask, oldest, is_pow2, is_full);
 

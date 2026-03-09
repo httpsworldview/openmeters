@@ -78,6 +78,7 @@ pub struct SpectrogramParams {
     pub contrast: f32,
     pub uv_y_range: [f32; 2],
     pub screen_height: f32,
+    pub rotation: i8,
 }
 
 #[derive(Debug, Clone)]
@@ -283,6 +284,7 @@ impl Uniforms {
     fn from_params(p: &SpectrogramParams) -> Self {
         let cap = p.texture_width;
         let pow2 = cap > 0 && cap.is_power_of_two();
+        let rotation = ((p.rotation as i32 % 4) + 4) as u32 % 4;
         Self {
             dims_wrap_flags: [
                 cap as f32,
@@ -293,7 +295,7 @@ impl Uniforms {
             latest_count: [
                 p.latest_column,
                 p.column_count,
-                0,
+                rotation,
                 p.bounds.width.max(1.0).to_bits(),
             ],
             style: [
