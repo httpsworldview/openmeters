@@ -132,7 +132,8 @@ yay -S openmeters-git
 
 ## Configuration
 
-- **Configurations are saved to `~/.config/openmeters/settings.json`.**
+- **Configurations are saved to
+  `~/.config/openmeters/settings.json`.**
 
 - Invalid JSON will be ignored and default settings will be used
   instead. Your configuration file will not be overwritten unless you
@@ -149,9 +150,15 @@ yay -S openmeters-git
 
 ### theming
 
-- **Themes are saved to `~/.config/openmeters/themes/` as separate JSON files.**
+- **Themes are saved to `~/.config/openmeters/themes/` as separate
+  JSON files.**
 
-You can create and switch between themes in the "Theme" tab of the configuration page. Saving a theme will refresh the list of available themes, if any have spawned in the `themes/` directory. The built-in theme is read-only and cannot be overwritten or deleted. Feel free to share your custom themes with others by sharing the corresponding JSON files.
+You can create and switch between themes in the "Theme" tab of the
+configuration page. Saving a theme will refresh the list of available
+themes, if any have spawned in the `themes/` directory. The built-in
+theme is read-only and cannot be overwritten or deleted. Feel free to
+share your custom themes with others by sharing the corresponding JSON
+files.
 
 ## Contributing
 
