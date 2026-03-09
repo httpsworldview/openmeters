@@ -6,10 +6,10 @@
 // Extracted from ui/theme.rs so that visuals and persistence can reference
 // defaults without crossing into the UI layer.
 
-use crate::util::color::palettes_equal;
+use crate::util::color::{hex, palettes_equal};
 use iced::Color;
 
-pub const BG_BASE: Color = Color::from_rgba(0.065, 0.065, 0.065, 1.0);
+pub const BG_BASE: Color = hex(0x11, 0x11, 0x11, 0xFF);
 
 #[derive(Debug, Clone, Default)]
 pub struct Palette {
@@ -68,11 +68,11 @@ impl Palette {
 pub mod spectrogram {
     use super::*;
     pub const COLORS: [Color; 5] = [
-        Color::from_rgba(0.000, 0.000, 0.000, 0.0),
-        Color::from_rgba(0.218, 0.106, 0.332, 1.0),
-        Color::from_rgba(0.609, 0.000, 0.000, 1.0),
-        Color::from_rgba(1.000, 0.737, 0.353, 1.0),
-        Color::from_rgba(1.000, 1.000, 1.000, 1.0),
+        hex(0x00, 0x00, 0x00, 0x00),
+        hex(0x38, 0x1B, 0x55, 0xFF),
+        hex(0x9B, 0x00, 0x00, 0xFF),
+        hex(0xFF, 0xBC, 0x5A, 0xFF),
+        hex(0xFF, 0xFF, 0xFF, 0xFF),
     ];
     pub const LABELS: &[&str] = &["Quietest", "->", "->", "->", "Loud"];
 }
@@ -81,12 +81,12 @@ pub mod spectrogram {
 pub mod spectrum {
     use super::*;
     pub const COLORS: [Color; 6] = [
-        Color::from_rgba(0.000, 0.000, 0.000, 0.0),
-        Color::from_rgba(0.218, 0.106, 0.332, 1.0),
-        Color::from_rgba(0.609, 0.000, 0.000, 1.0),
-        Color::from_rgba(0.906, 0.485, 0.000, 1.0),
-        Color::from_rgba(1.000, 0.737, 0.353, 1.0),
-        Color::from_rgba(1.000, 1.000, 0.000, 1.0),
+        hex(0x00, 0x00, 0x00, 0x00),
+        hex(0x38, 0x1B, 0x55, 0xFF),
+        hex(0x9B, 0x00, 0x00, 0xFF),
+        hex(0xE7, 0x7C, 0x00, 0xFF),
+        hex(0xFF, 0xBC, 0x5A, 0xFF),
+        hex(0xFF, 0xFF, 0x00, 0xFF),
     ];
     pub const LABELS: &[&str] = &["Floor", "Low", "Low-Mid", "Mid", "High", "Peak"];
 }
@@ -95,12 +95,12 @@ pub mod spectrum {
 pub mod waveform {
     use super::*;
     pub const COLORS: [Color; 6] = [
-        Color::from_rgba(0.545, 0.000, 0.000, 1.0),
-        Color::from_rgba(1.000, 0.259, 0.000, 1.0),
-        Color::from_rgba(1.000, 0.412, 0.000, 1.0),
-        Color::from_rgba(0.298, 1.000, 0.180, 1.0),
-        Color::from_rgba(0.196, 0.804, 1.000, 1.0),
-        Color::from_rgba(0.000, 0.000, 1.000, 1.0),
+        hex(0x8B, 0x00, 0x00, 0xFF),
+        hex(0xFF, 0x42, 0x00, 0xFF),
+        hex(0xFF, 0x69, 0x00, 0xFF),
+        hex(0x4C, 0xFF, 0x2E, 0xFF),
+        hex(0x32, 0xCD, 0xFF, 0xFF),
+        hex(0x00, 0x00, 0xFF, 0xFF),
     ];
     pub const LABELS: &[&str] = &["Sub-bass", "->", "->", "->", "->", "Brilliance"];
 }
@@ -108,7 +108,7 @@ pub mod waveform {
 // Oscilloscope trace color (1 stop)
 pub mod oscilloscope {
     use super::*;
-    pub const COLORS: [Color; 1] = [Color::from_rgba(1.000, 1.000, 1.000, 1.0)];
+    pub const COLORS: [Color; 1] = [hex(0xFF, 0xFF, 0xFF, 0xFF)];
     pub const LABELS: &[&str] = &["Trace"];
 }
 
@@ -116,15 +116,15 @@ pub mod oscilloscope {
 pub mod stereometer {
     use super::*;
     pub const COLORS: [Color; 9] = [
-        Color::from_rgba(1.000, 1.000, 1.000, 1.0),
-        Color::from_rgba(0.10, 0.10, 0.10, 1.0),
-        Color::from_rgba(0.50, 0.50, 0.50, 1.0),
-        Color::from_rgba(0.45, 0.65, 0.50, 1.0),
-        Color::from_rgba(0.70, 0.35, 0.35, 1.0),
-        Color::from_rgba(0.55, 0.45, 0.70, 1.0),
-        Color::from_rgba(0.50, 0.60, 0.55, 1.0),
-        Color::from_rgba(0.65, 0.55, 0.45, 1.0),
-        Color::from_rgba(0.50, 0.50, 0.50, 0.25),
+        hex(0xFF, 0xFF, 0xFF, 0xFF),
+        hex(0x1A, 0x1A, 0x1A, 0xFF),
+        hex(0x80, 0x80, 0x80, 0xFF),
+        hex(0x73, 0xA6, 0x80, 0xFF),
+        hex(0xB3, 0x59, 0x59, 0xFF),
+        hex(0x8C, 0x73, 0xB3, 0xFF),
+        hex(0x80, 0x99, 0x8C, 0xFF),
+        hex(0xA6, 0x8C, 0x73, 0xFF),
+        hex(0x80, 0x80, 0x80, 0x40),
     ];
     pub const LABELS: &[&str] = &[
         "Trace",
@@ -143,11 +143,11 @@ pub mod stereometer {
 pub mod loudness {
     use super::*;
     pub const COLORS: [Color; 5] = [
-        Color::from_rgba(0.161, 0.161, 0.161, 1.0),
-        Color::from_rgba(0.626, 0.665, 0.680, 1.0),
-        Color::from_rgba(0.584, 0.618, 0.650, 1.0),
-        Color::from_rgba(0.701, 0.767, 0.735, 1.0),
-        Color::from_rgba(0.735, 0.748, 0.774, 0.88),
+        hex(0x29, 0x29, 0x29, 0xFF),
+        hex(0xA0, 0xAA, 0xAD, 0xFF),
+        hex(0x95, 0x9E, 0xA6, 0xFF),
+        hex(0xB3, 0xC4, 0xBC, 0xFF),
+        hex(0xBB, 0xBF, 0xC5, 0xE0),
     ];
     pub const LABELS: &[&str] = &["Background", "Left 1", "Left 2", "Right", "Guide"];
 }

@@ -130,9 +130,10 @@ yay -S openmeters-git
 - `ctrl+scroll up/down`: Zoom vertically
 - `middle click+drag`: Pan vertically
 
-### Configuration
+## Configuration
 
-- Configurations are saved to `~/.config/openmeters/settings.json`.
+- **Configurations are saved to `~/.config/openmeters/settings.json`.**
+
 - Invalid JSON will be ignored and default settings will be used
   instead. Your configuration file will not be overwritten unless you
   change settings in the GUI.
@@ -143,8 +144,14 @@ yay -S openmeters-git
   guarantees are made. The public API for settings is mostly stable as
   of now, so breaking changes should be infrequent.
 - If you encounter a bug that causes OpenMeters to misbehave, the
-  application settings can be reset by deleting this file. Please
+  application settings can be reset by deleting `settings.json`. Please
   consider reporting any such bugs you encounter.
+
+### theming
+
+- **Themes are saved to `~/.config/openmeters/themes/` as separate JSON files.**
+
+You can create and switch between themes in the "Theme" tab of the configuration page. Saving a theme will refresh the list of available themes, if any have spawned in the `themes/` directory. The built-in theme is read-only and cannot be overwritten or deleted. Feel free to share your custom themes with others by sharing the corresponding JSON files.
 
 ## Contributing
 

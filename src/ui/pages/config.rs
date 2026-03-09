@@ -7,7 +7,9 @@ use crate::domain::routing::{CaptureMode, DeviceSelection, RoutingCommand};
 use crate::infra::pipewire::VIRTUAL_SINK_NAME;
 use crate::infra::pipewire::registry::RegistrySnapshot;
 use crate::persistence::settings::SettingsHandle;
-use crate::persistence::settings::{BAR_MAX_HEIGHT, BAR_MIN_HEIGHT, BarAlignment};
+use crate::persistence::settings::{
+    BAR_MAX_HEIGHT, BAR_MIN_HEIGHT, BUILTIN_THEME, BarAlignment, ThemeChoice, ThemeFile,
+};
 use crate::ui::pages::visuals::settings::palette::{PaletteEditor, PaletteEvent};
 use crate::ui::theme;
 use crate::ui::widgets::application_row::ApplicationRow;
@@ -17,6 +19,7 @@ use async_channel::Receiver as AsyncReceiver;
 use iced::widget::text::Wrapping;
 use iced::widget::{
     Column, Row, Rule, Space, button, container, pick_list, radio, rule, scrollable, slider, text,
+    text_input,
 };
 use iced::{Element, Length, Subscription, Task};
 use std::collections::{HashMap, HashSet};
@@ -78,6 +81,9 @@ pub enum ConfigMessage {
     BarModeToggled(bool),
     BarAlignmentChanged(BarAlignment),
     BarHeightChanged(u16),
+    ThemeChanged(String),
+    SaveTheme(String),
+    ThemeNameInput(String),
 }
 
 #[derive(Debug)]
@@ -98,6 +104,9 @@ pub struct ConfigPage {
     selected_device: DeviceSelection,
     pending_device_name: Option<String>,
     bg_palette: PaletteEditor,
+    active_theme: String,
+    theme_choices: Vec<ThemeChoice>,
+    save_theme_name: String,
 }
 
 impl ConfigPage {
@@ -116,6 +125,8 @@ impl ConfigPage {
             .unwrap_or(theme::BG_BASE);
         let capture_mode = settings_ref.settings().capture_mode;
         let last_device_name = settings_ref.settings().last_device_name.clone();
+        let active_theme = settings_ref.active_theme().to_owned();
+        let theme_choices = settings_ref.theme_store().list();
         drop(settings_ref);
 
         let mut bg_pal = theme::Palette::new(&theme::background::COLORS, theme::background::LABELS);
@@ -139,6 +150,9 @@ impl ConfigPage {
             selected_device: DeviceSelection::Default,
             pending_device_name: last_device_name,
             bg_palette,
+            active_theme,
+            theme_choices,
+            save_theme_name: String::new(),
         }
     }
 
@@ -205,6 +219,9 @@ impl ConfigPage {
                 if self.bg_palette.update(event) {
                     let color = self.bg_palette.colors().first().copied();
                     self.settings.update(|s| s.set_background_color(color));
+                    self.settings.borrow().update_active_theme(|theme| {
+                        theme.background = color.map(Into::into);
+                    });
                 }
             }
             ConfigMessage::DecorationsToggled(v) => self.settings.update(|s| s.set_decorations(v)),
@@ -214,6 +231,20 @@ impl ConfigPage {
             }
             ConfigMessage::BarHeightChanged(v) => {
                 self.settings.update(|s| s.set_bar_height(v as u32))
+            }
+            ConfigMessage::ThemeChanged(name) => {
+                self.apply_theme(&name);
+            }
+            ConfigMessage::SaveTheme(name) => {
+                self.save_current_as_theme(&name);
+                if self.active_theme != name {
+                    self.active_theme = name.clone();
+                    self.settings.update(|s| s.set_theme(Some(name)));
+                }
+                self.save_theme_name.clear();
+            }
+            ConfigMessage::ThemeNameInput(val) => {
+                self.save_theme_name = val;
             }
         }
 
@@ -225,12 +256,14 @@ impl ConfigPage {
 
         let capture_section = self.render_capture_section();
         let visuals_section = self.render_visuals_section(&visuals_snapshot);
+        let theme_section = self.render_theme_section();
         let bg_section = self.render_bg_section();
 
         let content = Column::new()
             .spacing(14)
             .push(capture_section)
             .push(visuals_section)
+            .push(theme_section)
             .push(bg_section);
 
         let content = if self.bar_supported {
@@ -398,6 +431,99 @@ impl ConfigPage {
             .push(decorations_toggle);
 
         self.section_with_divider("Global", content)
+    }
+
+    fn render_theme_section(&self) -> Column<'_, ConfigMessage> {
+        let selected = self
+            .theme_choices
+            .iter()
+            .find(|c| c.name == self.active_theme)
+            .cloned();
+        let is_builtin = selected.as_ref().is_some_and(|c| c.builtin);
+
+        let picker = pick_list(
+            self.theme_choices.clone(),
+            selected,
+            |choice: ThemeChoice| ConfigMessage::ThemeChanged(choice.name),
+        )
+        .text_size(TEXT_SIZE)
+        .width(Length::Fill);
+
+        let mut save_btn = button(text("Save").size(TEXT_SIZE)).padding([4, 8]);
+        if !is_builtin {
+            save_btn = save_btn.on_press(ConfigMessage::SaveTheme(self.active_theme.clone()));
+        }
+
+        let save_as_input = text_input("New theme name...", &self.save_theme_name)
+            .on_input(ConfigMessage::ThemeNameInput)
+            .size(TEXT_SIZE)
+            .width(Length::Fill);
+        let can_save_as =
+            !self.save_theme_name.trim().is_empty() && self.save_theme_name.trim() != BUILTIN_THEME;
+        let mut save_as_btn = button(text("Save as").size(TEXT_SIZE)).padding([4, 8]);
+        if can_save_as {
+            save_as_btn = save_as_btn.on_press(ConfigMessage::SaveTheme(
+                self.save_theme_name.trim().to_owned(),
+            ));
+        }
+
+        let content = Column::new()
+            .spacing(8)
+            .push(Row::new().spacing(8).push(picker).push(save_btn))
+            .push(Row::new().spacing(8).push(save_as_input).push(save_as_btn));
+
+        self.section_with_divider("Theme", content)
+    }
+
+    fn apply_theme(&mut self, name: &str) {
+        let theme_file = self
+            .settings
+            .borrow()
+            .theme_store()
+            .load(name)
+            .unwrap_or_default();
+        self.visual_manager.borrow_mut().apply_theme(&theme_file);
+        let bg = theme_file
+            .background
+            .map(Into::into)
+            .unwrap_or(theme::BG_BASE);
+        self.bg_palette.set_colors(&[bg]);
+        let theme_val = (name != BUILTIN_THEME).then(|| name.to_owned());
+        self.settings.update(|s| {
+            s.set_background_color(Some(bg));
+            s.set_theme(theme_val);
+        });
+        self.active_theme = name.to_owned();
+    }
+
+    fn save_current_as_theme(&mut self, name: &str) {
+        let theme_file = self.export_theme(name);
+        let guard = self.settings.borrow();
+        let store = guard.theme_store();
+        if let Err(e) = store.save(name, &theme_file) {
+            tracing::warn!("[theme] failed to save theme {name:?}: {e}");
+        }
+        self.theme_choices = store.list();
+    }
+
+    fn export_theme(&self, name: &str) -> ThemeFile {
+        let manager = self.visual_manager.borrow();
+        let mut palettes = HashMap::new();
+        for slot in &manager.snapshot().slots {
+            if let Some(ms) = manager.module_settings(slot.kind)
+                && let Some(ps) = ms.extract_palette()
+                && !ps.stops.is_empty()
+            {
+                palettes.insert(slot.kind, ps);
+            }
+        }
+        let bg = self.settings.borrow().settings().background_color;
+        ThemeFile {
+            name: Some(name.to_owned()),
+            author: None,
+            background: bg,
+            palettes,
+        }
     }
 
     fn render_bar_section(&self) -> Column<'_, ConfigMessage> {

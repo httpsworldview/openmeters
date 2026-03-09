@@ -24,6 +24,7 @@ wayland-client = "0.31.12"
 
 [dev-dependencies]
 ebur128 = "0.1.10"
+tempfile = "3.26.0"
 
 [profile.dev]
 opt-level = "z"
