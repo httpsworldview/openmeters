@@ -31,6 +31,7 @@ const PIANO_ROLL_OVERLAY_OPTIONS: [PianoRollOverlay; 3] = [
 const HISTORY_RANGE: SliderRange = SliderRange::new(120.0, 8192.0, 30.0);
 const FLOOR_DB_RANGE: SliderRange = SliderRange::new(-140.0, -1.0, 1.0);
 const TILT_DB_RANGE: SliderRange = SliderRange::new(-6.0, 6.0, 0.5);
+const ROTATION_RANGE: SliderRange = SliderRange::new(-1.0, 2.0, 1.0);
 const DISPLAY_BINS_RANGE: SliderRange = SliderRange::new(64.0, 8192.0, 64.0);
 const MAX_CORR_HZ_RANGE: SliderRange = SliderRange::new(0.0, 200.0, 1.0);
 const PB_EPSILON_RANGE: SliderRange = SliderRange::new(0.01, 0.5, 0.01);
@@ -84,6 +85,7 @@ pub enum Message {
     MaxCorrectionHz(f32),
     FloorDb(f32),
     TiltDb(f32),
+    Rotation(f32),
     ZeroPadding(usize),
     DisplayBinCount(f32),
     PianoRoll(PianoRollOverlay),
@@ -176,6 +178,13 @@ impl SpectrogramSettingsPane {
                 },
                 TILT_DB_RANGE,
                 Message::TiltDb,
+            ))
+            .push(labeled_slider(
+                "Rotation",
+                s.rotation as f32,
+                format!("{}\u{00b0}", s.rotation as i32 * 90),
+                ROTATION_RANGE,
+                Message::Rotation,
             ));
 
         let mut adv = column![labeled_toggler(
@@ -278,6 +287,7 @@ impl SpectrogramSettingsPane {
             }
             Message::FloorDb(v) => changed |= update_f32_range(&mut s.floor_db, v, FLOOR_DB_RANGE),
             Message::TiltDb(v) => changed |= update_f32_range(&mut s.tilt_db, v, TILT_DB_RANGE),
+            Message::Rotation(v) => changed |= set_if_changed(&mut s.rotation, v.round() as i8),
             Message::ZeroPadding(v) => changed |= set_if_changed(&mut s.zero_padding_factor, v),
             Message::DisplayBinCount(v) => {
                 changed |= s.use_reassignment
