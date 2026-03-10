@@ -301,6 +301,25 @@ impl UiApp {
             .map(|s| (s.start_height, s.pending_height))
     }
 
+    fn refresh_settings_panel(&mut self) {
+        let Some((_, panel)) = self.settings_window.as_ref() else {
+            return;
+        };
+        let visual_id = panel.visual_id();
+        let snapshot = self.visual_manager.snapshot();
+        let Some(kind) = snapshot
+            .slots
+            .iter()
+            .find(|s| s.id == visual_id)
+            .map(|s| s.kind)
+        else {
+            return;
+        };
+        if let Some((_, ref mut panel)) = self.settings_window {
+            *panel = create_settings_panel(visual_id, kind, &self.visual_manager);
+        }
+    }
+
     fn open_settings_window(&mut self, visual_id: VisualId, kind: VisualKind) -> Task<Message> {
         let new_panel = create_settings_panel(visual_id, kind, &self.visual_manager);
         let previous = self.settings_window.take();
@@ -714,8 +733,13 @@ fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
                 Task::none()
             };
             let bar_task = app.handle_bar_config_message(&config_msg);
+            let theme_changed = matches!(config_msg, ConfigMessage::ThemeChanged(_));
+            let config_task = app.config_page.update(config_msg).map(Message::Config);
+            if theme_changed {
+                app.refresh_settings_panel();
+            }
             Task::batch([
-                app.config_page.update(config_msg).map(Message::Config),
+                config_task,
                 decoration_task,
                 bar_task,
                 app.sync_all_windows(),
