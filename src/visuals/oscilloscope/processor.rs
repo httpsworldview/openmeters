@@ -69,6 +69,7 @@ impl Default for OscilloscopeConfig {
 struct PitchDetector {
     difference_function: Vec<f32>,
     cumulative_mean_normalized: Vec<f32>,
+    last_cmnd_min: f32,
     fft_size: usize,
     fft_forward: Option<Arc<dyn RealToComplex<f32>>>,
     fft_inverse: Option<Arc<dyn realfft::ComplexToReal<f32>>>,
@@ -83,6 +84,7 @@ impl std::fmt::Debug for PitchDetector {
         f.debug_struct("PitchDetector")
             .field("diff", &self.difference_function.len())
             .field("cmean", &self.cumulative_mean_normalized.len())
+            .field("last_cmnd_min", &self.last_cmnd_min)
             .field("fft_size", &self.fft_size)
             .field("has_fft", &self.fft_forward.is_some())
             .finish()
@@ -94,6 +96,7 @@ impl PitchDetector {
         Self {
             difference_function: Vec::new(),
             cumulative_mean_normalized: Vec::new(),
+            last_cmnd_min: 1.0,
             fft_size: 0,
             fft_forward: None,
             fft_inverse: None,
@@ -159,6 +162,7 @@ impl PitchDetector {
             if self.cumulative_mean_normalized[tau] < PITCH_THRESHOLD
                 && self.cumulative_mean_normalized[tau] < self.cumulative_mean_normalized[tau + 1]
             {
+                self.last_cmnd_min = self.cumulative_mean_normalized[tau];
                 return Some(rate / self.refine_tau(tau, max_period));
             }
         }
@@ -167,7 +171,12 @@ impl PitchDetector {
         let (best_tau, best_val) = (min_period..max_period)
             .map(|t| (t, self.cumulative_mean_normalized[t]))
             .min_by(|a, b| a.1.total_cmp(&b.1))?;
-        (best_val < 0.5).then(|| rate / self.refine_tau(best_tau, max_period))
+        if best_val < 0.6 {
+            self.last_cmnd_min = best_val;
+            Some(rate / self.refine_tau(best_tau, max_period))
+        } else {
+            None
+        }
     }
 
     #[inline]
@@ -322,6 +331,20 @@ impl TriggerScratch {
     }
 }
 
+/// Snaps `new_f` to the octave of `prev_f` when YIN jumps by a
+/// factor of ~2 or ~0.5.
+#[inline]
+fn octave_correct(new_f: f32, prev_f: f32) -> f32 {
+    let ratio = new_f / prev_f;
+    if (1.9..=2.1).contains(&ratio) {
+        new_f * 0.5
+    } else if (0.48..=0.52).contains(&ratio) {
+        new_f * 2.0
+    } else {
+        new_f
+    }
+}
+
 #[inline]
 fn find_trigger(
     period: f32,
@@ -329,7 +352,7 @@ fn find_trigger(
     available: usize,
     mono: &[f32],
     scratch: &mut TriggerScratch,
-) -> (usize, usize) {
+) -> (usize, usize, f32) {
     let cycles = cycles.max(1);
     let len = (period * cycles as f32).round() as usize;
     let guard = period.ceil() as usize;
@@ -338,11 +361,11 @@ fn find_trigger(
 
     let data = &mono[start..];
     if period < 1.0 || len == 0 {
-        return (0, available);
+        return (0, available, 0.0);
     }
 
     if data.len() <= len {
-        return (len, start);
+        return (len, start, 0.0);
     }
 
     scratch.prepare(data, period);
@@ -353,9 +376,12 @@ fn find_trigger(
     let mut best = f32::NEG_INFINITY;
     let mut pos = 0;
 
-    for i in (0..=range).step_by(stride) {
+    // Coarse sweep right-to-left to prioritize newer data
+    let num_steps = range / stride;
+    for step in (0..=num_steps).rev() {
+        let i = step * stride;
         let corr = scratch.correlation(i, len);
-        if corr >= best {
+        if corr > best {
             best = corr;
             pos = i;
         }
@@ -364,18 +390,32 @@ fn find_trigger(
     let refine_start = pos.saturating_sub(stride);
     let refine_end = (pos + stride).min(range);
 
-    for i in refine_start..=refine_end {
+    for i in (refine_start..=refine_end).rev() {
         if i == pos || i % stride == 0 {
             continue;
         }
         let corr = scratch.correlation(i, len);
-        if corr >= best {
+        if corr > best {
             best = corr;
             pos = i;
         }
     }
 
-    (len, start + pos)
+    let frac = if period > 40.0 && pos > 0 && pos < range {
+        let c0 = scratch.correlation(pos - 1, len);
+        let c1 = scratch.correlation(pos, len);
+        let c2 = scratch.correlation(pos + 1, len);
+        let denom = c0 - 2.0 * c1 + c2;
+        if denom.abs() > f32::EPSILON {
+            (0.5 * (c0 - c2) / denom).clamp(-0.5, 0.5)
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    };
+
+    (len, start + pos, frac)
 }
 
 fn find_rising_zero_crossing(
@@ -425,6 +465,7 @@ pub struct OscilloscopeProcessor {
     last_pitch: Option<f32>,
     mono_buffer: Vec<f32>,
     trigger_scratch: TriggerScratch,
+    octave_streak: u32,
 }
 
 impl OscilloscopeProcessor {
@@ -437,11 +478,48 @@ impl OscilloscopeProcessor {
             last_pitch: None,
             mono_buffer: Vec::new(),
             trigger_scratch: TriggerScratch::default(),
+            octave_streak: 0,
         }
     }
 
     pub fn config(&self) -> OscilloscopeConfig {
         self.config
+    }
+
+    fn stabilize_pitch(&mut self, detected: Option<f32>) -> Option<f32> {
+        match (detected, self.last_pitch) {
+            (Some(new_f), Some(prev_f)) => {
+                let corrected = octave_correct(new_f, prev_f);
+                let was_corrected = (corrected - new_f).abs() > f32::EPSILON;
+
+                if was_corrected {
+                    self.octave_streak += 1;
+                } else {
+                    self.octave_streak = 0;
+                }
+
+                // After 3+ consecutive octave corrections the signal
+                // has probably actually changed, so accept it.
+                let pitch = if was_corrected && self.octave_streak >= 3 {
+                    self.octave_streak = 0;
+                    new_f
+                } else {
+                    corrected
+                };
+
+                let ratio = pitch / prev_f;
+                if (0.9..=1.1).contains(&ratio) {
+                    let cmnd = self.pitch_detector.last_cmnd_min;
+                    let confidence = (1.0 - cmnd).clamp(0.0, 1.0);
+                    let alpha = 0.15 + 0.50 * confidence;
+                    Some(prev_f + alpha * (pitch - prev_f))
+                } else {
+                    Some(pitch)
+                }
+            }
+            (Some(f), None) => Some(f),
+            (None, prev) => prev,
+        }
     }
 }
 
@@ -486,7 +564,7 @@ impl AudioProcessor for OscilloscopeProcessor {
 
         let available = self.history.len() / channel_count;
 
-        let (frames, start) = match self.config.trigger_mode {
+        let (frames, start, frac_offset) = match self.config.trigger_mode {
             TriggerMode::FreeRun => {
                 let frames = base_frames.min(available);
                 if frames == 0 {
@@ -504,7 +582,7 @@ impl AudioProcessor for OscilloscopeProcessor {
                 let left = find_rising_zero_crossing(data, channel_count, left_lo..=left_hi)
                     .unwrap_or(left_lo);
 
-                (right.saturating_sub(left).max(1), left)
+                (right.saturating_sub(left).max(1), left, 0.0)
             }
             TriggerMode::Stable { num_cycles } => {
                 if available < base_frames {
@@ -527,10 +605,24 @@ impl AudioProcessor for OscilloscopeProcessor {
                 }
 
                 // Detect pitch and find stable segment
-                let freq = self
+                let detected = self
                     .pitch_detector
-                    .detect_pitch(&self.mono_buffer, self.config.sample_rate)
-                    .or(self.last_pitch);
+                    .detect_pitch(&self.mono_buffer, self.config.sample_rate);
+
+                // Retry on the most recent portion when full-buffer
+                // detection fails (e.g. buffer spans a signal transition).
+                let detected = detected.or_else(|| {
+                    let min_len = (self.config.sample_rate / PITCH_MIN_HZ) as usize * 2;
+                    if self.mono_buffer.len() > min_len {
+                        let start = self.mono_buffer.len() - min_len;
+                        self.pitch_detector
+                            .detect_pitch(&self.mono_buffer[start..], self.config.sample_rate)
+                    } else {
+                        None
+                    }
+                });
+
+                let freq = self.stabilize_pitch(detected);
 
                 if let Some(f) = freq {
                     self.last_pitch = Some(f);
@@ -543,7 +635,7 @@ impl AudioProcessor for OscilloscopeProcessor {
                         &mut self.trigger_scratch,
                     )
                 } else {
-                    (base_frames, available.saturating_sub(base_frames))
+                    (base_frames, available.saturating_sub(base_frames), 0.0)
                 }
             }
         };
@@ -562,6 +654,7 @@ impl AudioProcessor for OscilloscopeProcessor {
             frames.min(extract_len / channel_count),
             channel_count,
             target,
+            frac_offset,
         );
         self.snapshot.channels = channel_count;
         self.snapshot.samples_per_channel = target;
@@ -575,6 +668,7 @@ impl AudioProcessor for OscilloscopeProcessor {
         self.last_pitch = None;
         self.mono_buffer.clear();
         self.trigger_scratch.clear();
+        self.octave_streak = 0;
     }
 }
 
@@ -591,6 +685,7 @@ fn downsample_interleaved(
     frames: usize,
     channel_count: usize,
     target: usize,
+    frac_offset: f32,
 ) {
     if frames == 0 || channel_count == 0 || target == 0 {
         return;
@@ -600,7 +695,7 @@ fn downsample_interleaved(
 
     for channel in 0..channel_count {
         for i in 0..target {
-            let pos = i as f32 * step;
+            let pos = (frac_offset + i as f32 * step).max(0.0);
             let idx = pos as usize;
             let frac = pos - idx as f32;
 
@@ -630,6 +725,29 @@ mod tests {
     fn sine_samples(freq: f32, rate: f32, frames: usize) -> Vec<f32> {
         (0..frames)
             .map(|n| (std::f32::consts::TAU * freq * n as f32 / rate).sin())
+            .collect()
+    }
+
+    fn generate_signal(
+        freq: f32,
+        rate: f32,
+        frames: usize,
+        harmonics: &[(f32, f32)],
+        noise: f32,
+    ) -> Vec<f32> {
+        (0..frames)
+            .map(|n| {
+                let t = n as f32 / rate;
+                let mut s = (std::f32::consts::TAU * freq * t).sin();
+                for &(mult, amp) in harmonics {
+                    s += amp * (std::f32::consts::TAU * freq * mult * t).sin();
+                }
+                if noise > 0.0 {
+                    let pseudo = ((n as f32 * 1.618033) % 1.0) * 2.0 - 1.0;
+                    s += pseudo * noise;
+                }
+                s
+            })
             .collect()
     }
 
@@ -723,5 +841,429 @@ mod tests {
         let n = snap.samples_per_channel;
         assert!(snap.samples[0] > 0.0 && snap.samples[0] < 0.15, "left edge");
         assert!(snap.samples[n - 1].abs() < 0.15, "right edge");
+    }
+
+    /// Measures pitch detection consistency across sequential blocks.
+    #[test]
+    fn pitch_consistency_benchmark() {
+        let rate = 48_000.0;
+        let block_frames = 2048;
+        let num_blocks = 40;
+
+        struct Scenario {
+            name: &'static str,
+            freq: f32,
+            harmonics: &'static [(f32, f32)],
+        }
+
+        let scenarios = [
+            Scenario {
+                name: "440Hz pure",
+                freq: 440.0,
+                harmonics: &[],
+            },
+            Scenario {
+                name: "100Hz pure",
+                freq: 100.0,
+                harmonics: &[],
+            },
+            Scenario {
+                name: "440Hz harmonics",
+                freq: 440.0,
+                harmonics: &[(2.0, 0.5), (3.0, 0.25)],
+            },
+        ];
+
+        for scenario in &scenarios {
+            let config = OscilloscopeConfig {
+                sample_rate: rate,
+                segment_duration: 0.02,
+                trigger_mode: TriggerMode::Stable { num_cycles: 2 },
+            };
+            let mut processor = OscilloscopeProcessor::new(config);
+
+            let total_frames = block_frames * num_blocks;
+            let full_signal =
+                generate_signal(scenario.freq, rate, total_frames, scenario.harmonics, 0.0);
+
+            let mut pitches = Vec::new();
+            for block_idx in 0..num_blocks {
+                let offset = block_idx * block_frames;
+                let block_data = &full_signal[offset..offset + block_frames];
+                processor.process_block(&make_block(block_data, 1, rate));
+
+                if let Some(pitch) = processor.last_pitch {
+                    pitches.push(pitch);
+                }
+            }
+
+            assert!(
+                !pitches.is_empty(),
+                "[{}] no pitches detected",
+                scenario.name
+            );
+
+            let mut octave_errors = 0;
+            for w in pitches.windows(2) {
+                let ratio = w[1] / w[0];
+                if !(0.55..=1.8).contains(&ratio) {
+                    octave_errors += 1;
+                }
+            }
+
+            let mean = pitches.iter().sum::<f32>() / pitches.len() as f32;
+            let variance =
+                pitches.iter().map(|p| (p - mean).powi(2)).sum::<f32>() / pitches.len() as f32;
+            let std_dev = variance.sqrt();
+            let rel_std = std_dev / scenario.freq;
+
+            eprintln!(
+                "[{}] pitches={}, mean={:.2}Hz, stddev={:.4}Hz, rel_std={:.6}, octave_errors={}",
+                scenario.name,
+                pitches.len(),
+                mean,
+                std_dev,
+                rel_std,
+                octave_errors
+            );
+
+            assert_eq!(
+                octave_errors, 0,
+                "[{}] had {} octave errors",
+                scenario.name, octave_errors
+            );
+            assert!(
+                rel_std < 0.05,
+                "[{}] relative stddev {:.4} exceeds 5%",
+                scenario.name,
+                rel_std
+            );
+        }
+    }
+
+    /// Measures trigger stability by feeding sequential blocks of a continuous
+    /// signal and checking how much the first sample varies
+    /// between consecutive snapshots.
+    #[test]
+    fn trigger_stability() {
+        let rate = 48_000.0_f32;
+        let num_blocks = 60;
+        let warmup = 10;
+
+        struct Scenario {
+            name: &'static str,
+            freq: f32,
+            noise: f32,
+            harmonics: &'static [(f32, f32)],
+            block_frames: usize,
+        }
+
+        let scenarios = [
+            Scenario {
+                name: "440Hz clean",
+                freq: 440.0,
+                noise: 0.0,
+                harmonics: &[],
+                block_frames: 1024,
+            },
+            Scenario {
+                name: "100Hz clean",
+                freq: 100.0,
+                noise: 0.0,
+                harmonics: &[],
+                block_frames: 1024,
+            },
+            Scenario {
+                name: "2000Hz clean",
+                freq: 2000.0,
+                noise: 0.0,
+                harmonics: &[],
+                block_frames: 1024,
+            },
+            Scenario {
+                name: "440Hz noisy",
+                freq: 440.0,
+                noise: 0.05,
+                harmonics: &[],
+                block_frames: 1024,
+            },
+            Scenario {
+                name: "440Hz+880Hz harmonics",
+                freq: 440.0,
+                noise: 0.0,
+                harmonics: &[(2.0, 0.5), (3.0, 0.25)],
+                block_frames: 1024,
+            },
+            Scenario {
+                name: "82Hz low E string",
+                freq: 82.41,
+                noise: 0.01,
+                harmonics: &[(2.0, 0.6), (3.0, 0.4), (4.0, 0.2), (5.0, 0.1)],
+                block_frames: 1024,
+            },
+            Scenario {
+                name: "440Hz rich harmonics+noise",
+                freq: 440.0,
+                noise: 0.03,
+                harmonics: &[(2.0, 0.5), (3.0, 0.25), (4.0, 0.12)],
+                block_frames: 1024,
+            },
+            Scenario {
+                name: "440Hz small blocks",
+                freq: 440.0,
+                noise: 0.0,
+                harmonics: &[],
+                block_frames: 256,
+            },
+            Scenario {
+                name: "200Hz sawtooth-like",
+                freq: 200.0,
+                noise: 0.0,
+                harmonics: &[
+                    (2.0, 0.5),
+                    (3.0, 0.33),
+                    (4.0, 0.25),
+                    (5.0, 0.2),
+                    (6.0, 0.167),
+                ],
+                block_frames: 1024,
+            },
+        ];
+
+        for scenario in &scenarios {
+            let config = OscilloscopeConfig {
+                sample_rate: rate,
+                segment_duration: 0.02,
+                trigger_mode: TriggerMode::Stable { num_cycles: 2 },
+            };
+            let mut processor = OscilloscopeProcessor::new(config);
+
+            let total_frames = scenario.block_frames * num_blocks;
+            let full_signal = generate_signal(
+                scenario.freq,
+                rate,
+                total_frames,
+                scenario.harmonics,
+                scenario.noise,
+            );
+
+            let mut first_samples = Vec::new();
+            for block_idx in 0..num_blocks {
+                let offset = block_idx * scenario.block_frames;
+                let block_data = &full_signal[offset..offset + scenario.block_frames];
+                if let Some(snap) = processor.process_block(&make_block(block_data, 1, rate))
+                    && block_idx >= warmup
+                {
+                    first_samples.push(snap.samples[0]);
+                }
+            }
+
+            if first_samples.len() < 5 {
+                eprintln!(
+                    "[{}] too few snapshots ({}), skipping",
+                    scenario.name,
+                    first_samples.len()
+                );
+                continue;
+            }
+
+            let mean = first_samples.iter().sum::<f32>() / first_samples.len() as f32;
+            let variance = first_samples
+                .iter()
+                .map(|v| (v - mean).powi(2))
+                .sum::<f32>()
+                / first_samples.len() as f32;
+            let std_dev = variance.sqrt();
+            let max_jump = first_samples
+                .windows(2)
+                .map(|w| (w[1] - w[0]).abs())
+                .fold(0.0_f32, f32::max);
+
+            eprintln!(
+                "[{}] snapshots={}, phase_stddev={:.6}, max_jump={:.6}, mean_phase={:.4}",
+                scenario.name,
+                first_samples.len(),
+                std_dev,
+                max_jump,
+                mean
+            );
+
+            if scenario.noise < 0.05 {
+                assert!(
+                    std_dev < 0.15,
+                    "[{}] trigger phase too unstable: stddev={:.4}",
+                    scenario.name,
+                    std_dev
+                );
+            }
+        }
+    }
+
+    /// Verifies the oscilloscope locks onto a clean sine quickly and
+    /// adapts when the signal changes frequency (including octave jumps).
+    #[test]
+    fn lock_acquisition_and_frequency_transitions() {
+        let rate = 48_000.0_f32;
+        let block_frames = 1024_usize;
+
+        // lock acquisition on a clean sine
+        {
+            let config = OscilloscopeConfig {
+                sample_rate: rate,
+                segment_duration: 0.02,
+                trigger_mode: TriggerMode::Stable { num_cycles: 2 },
+            };
+            let mut processor = OscilloscopeProcessor::new(config);
+
+            let num_blocks = 20;
+            let signal: Vec<f32> = (0..block_frames * num_blocks)
+                .map(|n| (std::f32::consts::TAU * 440.0 * n as f32 / rate).sin())
+                .collect();
+
+            let mut first_lock_block = None;
+            for block_idx in 0..num_blocks {
+                let offset = block_idx * block_frames;
+                let block_data = &signal[offset..offset + block_frames];
+                processor.process_block(&make_block(block_data, 1, rate));
+
+                if first_lock_block.is_none() && processor.last_pitch.is_some() {
+                    first_lock_block = Some(block_idx);
+                }
+            }
+
+            let lock_block = first_lock_block.expect("should lock on a clean sine");
+            eprintln!("[lock acquisition] locked at block {}", lock_block);
+            assert!(
+                lock_block <= 10,
+                "should lock within 10 blocks, took {}",
+                lock_block
+            );
+        }
+
+        // octave transition 440 -> 880 Hz
+        {
+            let config = OscilloscopeConfig {
+                sample_rate: rate,
+                segment_duration: 0.02,
+                trigger_mode: TriggerMode::Stable { num_cycles: 2 },
+            };
+            let mut processor = OscilloscopeProcessor::new(config);
+
+            let warmup = 20_usize;
+            let after = 20_usize;
+            let switch_sample = warmup * block_frames;
+            let total = (warmup + after) * block_frames;
+
+            let signal: Vec<f32> = (0..total)
+                .map(|n| {
+                    let t = n as f32 / rate;
+                    if n < switch_sample {
+                        (std::f32::consts::TAU * 440.0 * t).sin()
+                    } else {
+                        let t0 = switch_sample as f32 / rate;
+                        let phase0 = std::f32::consts::TAU * 440.0 * t0;
+                        (phase0 + std::f32::consts::TAU * 880.0 * (t - t0)).sin()
+                    }
+                })
+                .collect();
+
+            for block_idx in 0..warmup {
+                let offset = block_idx * block_frames;
+                processor.process_block(&make_block(
+                    &signal[offset..offset + block_frames],
+                    1,
+                    rate,
+                ));
+            }
+            let pre = processor
+                .last_pitch
+                .expect("should have pitch after warmup");
+            assert!(
+                (pre - 440.0).abs() < 20.0,
+                "pre-transition pitch should be ~440Hz, got {:.1}",
+                pre
+            );
+
+            let mut adapted_block = None;
+            for block_idx in 0..after {
+                let offset = (warmup + block_idx) * block_frames;
+                processor.process_block(&make_block(
+                    &signal[offset..offset + block_frames],
+                    1,
+                    rate,
+                ));
+
+                if adapted_block.is_none()
+                    && let Some(p) = processor.last_pitch
+                    && (p - 880.0).abs() < 50.0
+                {
+                    adapted_block = Some(block_idx);
+                }
+            }
+            let b = adapted_block.expect("should adapt to 880Hz");
+            let final_p = processor.last_pitch.unwrap();
+            eprintln!(
+                "[octave transition] adapted at block {}, final pitch: {:.1}Hz",
+                b, final_p
+            );
+            assert!(b <= 10, "should adapt within 10 blocks, took {}", b);
+        }
+
+        // signal onset (silence -> sine)
+        {
+            let config = OscilloscopeConfig {
+                sample_rate: rate,
+                segment_duration: 0.02,
+                trigger_mode: TriggerMode::Stable { num_cycles: 2 },
+            };
+            let mut processor = OscilloscopeProcessor::new(config);
+
+            let silence_blocks = 10_usize;
+            let signal_blocks = 20_usize;
+            let onset_sample = silence_blocks * block_frames;
+            let total = (silence_blocks + signal_blocks) * block_frames;
+
+            let signal: Vec<f32> = (0..total)
+                .map(|n| {
+                    if n < onset_sample {
+                        0.0
+                    } else {
+                        let t = (n - onset_sample) as f32 / rate;
+                        (std::f32::consts::TAU * 440.0 * t).sin()
+                    }
+                })
+                .collect();
+
+            for block_idx in 0..silence_blocks {
+                let offset = block_idx * block_frames;
+                processor.process_block(&make_block(
+                    &signal[offset..offset + block_frames],
+                    1,
+                    rate,
+                ));
+            }
+            assert!(
+                processor.last_pitch.is_none(),
+                "should have no pitch during silence"
+            );
+
+            let mut lock_block = None;
+            for block_idx in 0..signal_blocks {
+                let offset = (silence_blocks + block_idx) * block_frames;
+                processor.process_block(&make_block(
+                    &signal[offset..offset + block_frames],
+                    1,
+                    rate,
+                ));
+
+                if lock_block.is_none() && processor.last_pitch.is_some() {
+                    lock_block = Some(block_idx);
+                }
+            }
+
+            let b = lock_block.expect("should lock after signal onset");
+            eprintln!("[signal onset] locked at block {} after onset", b);
+            assert!(b <= 10, "should lock within 10 blocks of onset, took {}", b);
+        }
     }
 }
