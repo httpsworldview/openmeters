@@ -20,7 +20,7 @@ const POWER_EPSILON: f32 = 1.0e-20;
 const LN_TO_DB: f32 = 4.342_944_8;
 
 // Convert power (magnitude squared) to decibels with a custom floor.
-#[inline(always)]
+#[inline]
 pub fn power_to_db(power: f32, floor: f32) -> f32 {
     if power > POWER_EPSILON {
         (power.ln() * LN_TO_DB).max(floor)
@@ -29,7 +29,7 @@ pub fn power_to_db(power: f32, floor: f32) -> f32 {
     }
 }
 
-#[inline(always)]
+#[inline]
 pub fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
@@ -82,20 +82,20 @@ pub fn remove_dc(buffer: &mut [f32]) {
 }
 
 // Convert dB to linear power: 10^(db/10).
-#[inline(always)]
+#[inline]
 pub fn db_to_power(db: f32) -> f32 {
     const DB_TO_LOG2: f32 = 0.1 * core::f32::consts::LOG2_10;
     (db * DB_TO_LOG2).exp2()
 }
 
 // Convert frequency in Hz to mel scale.
-#[inline(always)]
+#[inline]
 pub fn hz_to_mel(hz: f32) -> f32 {
     2595.0 * (1.0 + hz / 700.0).log10()
 }
 
 // Convert mel scale to frequency in Hz.
-#[inline(always)]
+#[inline]
 pub fn mel_to_hz(mel: f32) -> f32 {
     700.0 * (10.0f32.powf(mel / 2595.0) - 1.0)
 }
