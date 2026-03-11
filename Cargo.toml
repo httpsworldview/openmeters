@@ -19,12 +19,12 @@ realfft = "3.5"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt"] }
 wide = "1.1.1"
-iced_layershell = "0.15.0"
-wayland-client = "0.31.12"
+iced_layershell = "0.15.1"
+wayland-client = "0.31.13"
 
 [dev-dependencies]
 ebur128 = "0.1.10"
-tempfile = "3.26.0"
+tempfile = "3.27.0"
 
 [profile.dev]
 opt-level = "z"
