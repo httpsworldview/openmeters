@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
+use super::UiApp;
 use super::message::{self, Message};
 use crate::persistence::settings::{BarAlignment, BarSettings, clamp_bar_height};
-use crate::ui::pages::visuals::VisualsMessage;
+use crate::ui::pages::config::ConfigMessage;
+use crate::ui::pages::visuals::{VisualsMessage, create_settings_panel};
+use crate::ui::theme;
 use crate::visuals::registry::{
     VisualContent, VisualId, VisualKind, VisualMetadata, VisualSnapshot,
 };
 use iced::widget::{container, mouse_area, text};
-use iced::{Element, Length, Size, Task, window};
+use iced::{Element, Length, Size, Task, exit, window};
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings};
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
 use wayland_client::protocol::wl_registry;
@@ -145,5 +148,325 @@ impl PopoutWindow {
         mouse_area(fill!(content.render(*meta)))
             .on_right_press(msg)
             .into()
+    }
+}
+
+// Window management methods on UiApp.
+impl UiApp {
+    pub(super) fn refresh_settings_panel(&mut self) {
+        let Some((_, panel)) = self.settings_window.as_ref() else {
+            return;
+        };
+        let visual_id = panel.visual_id();
+        let snapshot = self.visual_manager.snapshot();
+        let Some(kind) = snapshot
+            .slots
+            .iter()
+            .find(|s| s.id == visual_id)
+            .map(|s| s.kind)
+        else {
+            return;
+        };
+        if let Some((_, ref mut panel)) = self.settings_window {
+            *panel = create_settings_panel(visual_id, kind, &self.visual_manager);
+        }
+    }
+
+    pub(super) fn open_settings_window(
+        &mut self,
+        visual_id: VisualId,
+        kind: VisualKind,
+    ) -> Task<Message> {
+        let new_panel = create_settings_panel(visual_id, kind, &self.visual_manager);
+        let previous = self.settings_window.take();
+        if previous
+            .as_ref()
+            .is_some_and(|(_, panel)| panel.visual_id() == visual_id)
+        {
+            self.settings_window = previous.map(|(id, _)| (id, new_panel));
+            return Task::none();
+        }
+        let (new_id, open_task) =
+            open_base_window(self.use_layershell, SETTINGS_WINDOW_SIZE, true, false);
+        self.settings_window = Some((new_id, new_panel));
+        match previous {
+            Some((old_id, _)) => Task::batch([window::close(old_id), open_task]),
+            None => open_task,
+        }
+    }
+
+    pub(super) fn open_popout_window(
+        &mut self,
+        visual_id: VisualId,
+        kind: VisualKind,
+    ) -> Task<Message> {
+        if self
+            .popout_windows
+            .values()
+            .any(|popout| popout.visual_id == visual_id)
+        {
+            return Task::none();
+        }
+        let snapshot = self.visual_manager.snapshot();
+        let Some((index, slot)) = snapshot
+            .slots
+            .iter()
+            .enumerate()
+            .find(|(_, s)| s.id == visual_id)
+        else {
+            return Task::none();
+        };
+        let window_size = Size::new(
+            slot.metadata.preferred_width.max(400.0),
+            slot.metadata.preferred_height.max(300.0),
+        );
+        let (new_id, open_task) = open_base_window(self.use_layershell, window_size, true, true);
+        let mut popout = PopoutWindow {
+            visual_id,
+            kind,
+            original_index: index,
+            cached: None,
+        };
+        popout.sync_from_snapshot(&snapshot);
+        self.popout_windows.insert(new_id, popout);
+        open_task
+    }
+
+    pub(super) fn on_window_closed(&mut self, id: window::Id) -> Task<Message> {
+        if id == self.main_window_id {
+            return exit();
+        }
+        if self.settings_window.as_ref().is_some_and(|(w, _)| *w == id) {
+            self.settings_window = None
+        }
+        self.popout_windows.remove(&id);
+        Task::none()
+    }
+
+    pub(super) fn popped_out_ids(&self) -> Vec<VisualId> {
+        self.popout_windows.values().map(|w| w.visual_id).collect()
+    }
+
+    pub(super) fn sync_all_windows(&mut self) -> Task<Message> {
+        let snapshot = self.visual_manager.snapshot();
+        let close_settings_task = self
+            .settings_window
+            .take_if(|(_, panel)| {
+                !snapshot
+                    .slots
+                    .iter()
+                    .any(|slot| slot.id == panel.visual_id() && slot.enabled)
+            })
+            .map(|(id, _)| window::close::<Message>(id));
+        self.popout_windows
+            .values_mut()
+            .for_each(|popout| popout.sync_from_snapshot(&snapshot));
+        let stale_windows: Vec<_> = self
+            .popout_windows
+            .iter()
+            .filter_map(|(id, popout)| popout.cached.is_none().then_some(*id))
+            .collect();
+        self.popout_windows
+            .retain(|_, popout| popout.cached.is_some());
+        self.visuals_page
+            .apply_snapshot_excluding(snapshot, &self.popped_out_ids());
+        Task::batch(
+            close_settings_task
+                .into_iter()
+                .chain(stale_windows.into_iter().map(window::close)),
+        )
+    }
+
+    pub(super) fn title(&self, window_id: window::Id) -> String {
+        if window_id == self.main_window_id {
+            return "OpenMeters".into();
+        }
+        self.settings_window
+            .as_ref()
+            .filter(|(id, _)| *id == window_id)
+            .map(|(_, panel)| (panel.visual_id(), " settings"))
+            .or_else(|| {
+                self.popout_windows
+                    .get(&window_id)
+                    .map(|p| (p.visual_id, ""))
+            })
+            .and_then(|(visual_id, suffix)| {
+                self.visual_manager
+                    .snapshot()
+                    .slots
+                    .iter()
+                    .find(|s| s.id == visual_id)
+                    .map(|s| format!("{}{} - OpenMeters", s.metadata.display_name, suffix))
+            })
+            .unwrap_or_else(|| "OpenMeters".into())
+    }
+
+    pub(super) fn theme(&self, window_id: window::Id) -> iced::Theme {
+        let custom_bg = (window_id == self.main_window_id
+            || self.popout_windows.contains_key(&window_id))
+        .then(|| self.settings_handle.borrow().settings().background_color)
+        .flatten();
+        theme::theme(custom_bg.map(Into::into))
+    }
+
+    pub(super) fn handle_popout_or_dock(&mut self, source_window: window::Id) -> Task<Message> {
+        if let Some(popout) = self.popout_windows.remove(&source_window) {
+            self.visual_manager
+                .borrow_mut()
+                .restore_position(popout.visual_id, popout.original_index);
+            self.sync_visuals_page();
+            self.settings_handle.update(|settings| {
+                settings
+                    .set_visual_order(self.visual_manager.snapshot().slots.iter().map(|s| s.kind))
+            });
+            return window::close(source_window);
+        }
+        let Some((id, kind)) = self.visuals_page.hovered_visual() else {
+            return Task::none();
+        };
+        let task = self.open_popout_window(id, kind);
+        self.sync_visuals_page();
+        task
+    }
+
+    pub(super) fn sync_visuals_page(&mut self) {
+        self.visuals_page
+            .apply_snapshot_excluding(self.visual_manager.snapshot(), &self.popped_out_ids());
+    }
+
+    pub(super) fn apply_bar_layout(
+        &mut self,
+        alignment: BarAlignment,
+        height: u32,
+    ) -> Task<Message> {
+        if !self.main_window_is_layer {
+            return Task::none();
+        }
+        let height = clamp_bar_height(height);
+        self.main_window_size.height = height as f32;
+        Task::batch([
+            Task::done(Message::AnchorSizeChange {
+                id: self.main_window_id,
+                anchor: bar_anchor(alignment),
+                size: (0, height),
+            }),
+            Task::done(Message::ExclusiveZoneChange {
+                id: self.main_window_id,
+                zone_size: height as i32,
+            }),
+        ])
+    }
+
+    pub(super) fn handle_main_window_resize(
+        &mut self,
+        window_id: window::Id,
+        new_size: Size,
+    ) -> Task<Message> {
+        if window_id != self.main_window_id {
+            return Task::none();
+        }
+
+        self.main_window_size = new_size;
+        if self.main_window_is_layer {
+            let height = clamp_bar_height(new_size.height.round().max(1.0) as u32);
+            let current_height = self.settings_handle.borrow().settings().bar.height;
+            if current_height != height {
+                self.settings_handle.update(|s| s.set_bar_height(height));
+            }
+            return Task::done(Message::ExclusiveZoneChange {
+                id: self.main_window_id,
+                zone_size: height as i32,
+            });
+        }
+
+        self.last_base_window_size = new_size;
+        Task::none()
+    }
+
+    pub(super) fn recreate_main_window(
+        &mut self,
+        bar_settings: BarSettings,
+        use_decorations: bool,
+    ) -> Task<Message> {
+        let old_main_id = self.main_window_id;
+        let (new_main_id, open_main, main_is_layer, main_size) = open_main_window(
+            self.use_layershell,
+            bar_settings,
+            self.last_base_window_size,
+            use_decorations,
+        );
+        self.main_window_id = new_main_id;
+        self.main_window_size = main_size;
+        self.main_window_is_layer = main_is_layer;
+        self.focused_window = Some(new_main_id);
+        Task::batch([open_main, window::close(old_main_id)])
+    }
+
+    pub(super) fn handle_bar_config_message(
+        &mut self,
+        config_msg: &ConfigMessage,
+    ) -> Task<Message> {
+        if !self.use_layershell {
+            return Task::none();
+        }
+        let bar = self.settings_handle.borrow().settings().bar.clone();
+        match config_msg {
+            ConfigMessage::BarModeToggled(enabled) if *enabled == self.main_window_is_layer => {
+                if self.main_window_is_layer {
+                    self.apply_bar_layout(bar.alignment, bar.height)
+                } else {
+                    Task::none()
+                }
+            }
+            ConfigMessage::BarModeToggled(enabled) => {
+                let decorations = self.settings_handle.borrow().settings().decorations;
+                self.recreate_main_window(
+                    BarSettings {
+                        enabled: *enabled,
+                        ..bar
+                    },
+                    decorations,
+                )
+            }
+            ConfigMessage::BarAlignmentChanged(alignment) if self.main_window_is_layer => {
+                self.apply_bar_layout(*alignment, bar.height)
+            }
+            ConfigMessage::BarHeightChanged(height) if self.main_window_is_layer => {
+                self.apply_bar_layout(bar.alignment, *height as u32)
+            }
+            _ => Task::none(),
+        }
+    }
+
+    pub(super) fn recreate_settings_window(&mut self) -> Task<Message> {
+        let Some((old_id, panel)) = self.settings_window.take() else {
+            return Task::none();
+        };
+        let visual_id = panel.visual_id();
+        let snapshot = self.visual_manager.snapshot();
+        let Some(slot) = snapshot.slots.iter().find(|s| s.id == visual_id) else {
+            return window::close(old_id);
+        };
+        let (new_id, open_task) =
+            open_base_window(self.use_layershell, SETTINGS_WINDOW_SIZE, true, false);
+        self.settings_window = Some((
+            new_id,
+            create_settings_panel(visual_id, slot.kind, &self.visual_manager),
+        ));
+        Task::batch([open_task, window::close(old_id)])
+    }
+
+    pub(super) fn recreate_windows(&mut self, use_decorations: bool) -> Task<Message> {
+        let old_main_id = self.main_window_id;
+        let (new_main_id, open_main) = open_base_window(
+            self.use_layershell,
+            self.main_window_size,
+            use_decorations,
+            true,
+        );
+        self.main_window_id = new_main_id;
+        self.main_window_is_layer = false;
+        let settings_task = self.recreate_settings_window();
+        Task::batch([open_main, window::close(old_main_id), settings_task])
     }
 }
