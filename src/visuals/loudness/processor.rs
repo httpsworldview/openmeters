@@ -465,7 +465,7 @@ mod tests {
         let (st_delta, rms_delta) = (st_high - st_low, rms_high - rms_low);
         assert!(st_high > st_low && rms_high > rms_low);
         assert!(
-            (5.5..6.5).contains(&st_delta) && (5.5..6.5).contains(&rms_delta),
+            (5.8..6.3).contains(&st_delta) && (5.8..6.3).contains(&rms_delta),
             "st_delta={st_delta:.4}, rms_delta={rms_delta:.4}"
         );
     }

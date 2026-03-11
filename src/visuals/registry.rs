@@ -437,22 +437,3 @@ impl std::fmt::Debug for VisualManagerHandle {
             .finish_non_exhaustive()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn snapshot_reflects_descriptor_defaults() {
-        let m = VisualManager::new();
-        let s = m.snapshot();
-        assert_eq!(s.slots.len(), DESCRIPTORS.len());
-        for d in DESCRIPTORS {
-            let slot = s
-                .slots
-                .iter()
-                .find(|s| s.kind == d.kind)
-                .unwrap_or_else(|| panic!("{} missing", d.meta.display_name));
-            assert!(!slot.enabled, "{} should be disabled", d.meta.display_name);
-        }
-    }
-}

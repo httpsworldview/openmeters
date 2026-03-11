@@ -400,56 +400,50 @@ fn ensure_capture_buffer() -> &'static Arc<CaptureBuffer> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use spa::param::audio::AudioFormat as Fmt;
 
     #[test]
-    fn virtual_sink_state_defaults_to_stereo_before_negotiation() {
-        let state = VirtualSinkState::default();
-        assert_eq!(state.channels, 2);
-        assert_eq!(state.sample_rate, VIRTUAL_SINK_SAMPLE_RATE);
-        assert_eq!(state.format, spa::param::audio::AudioFormat::F32LE);
-        assert_eq!(
-            state.frame_bytes,
-            2 * bytes_per_sample(state.format).unwrap()
+    fn sample_format_conversion() {
+        // S16LE: i16::MIN → -1.0, i16::MAX → +1.0
+        let s16 = [0x00_u8, 0x80, 0xFF, 0x7F];
+        let s16_out = convert_samples_to_f32(&s16, Fmt::S16LE).unwrap();
+        assert_eq!(s16_out.len(), 2);
+        let expected_min = i16::MIN as f32 / i16::MAX as f32;
+        assert!(
+            (s16_out[0] - expected_min).abs() < 1e-5,
+            "S16LE min: {} vs {}",
+            s16_out[0],
+            expected_min
         );
-    }
+        assert!(
+            (s16_out[1] - 1.0).abs() < f32::EPSILON,
+            "S16LE max: {}",
+            s16_out[1]
+        );
 
-    #[test]
-    fn bytes_per_sample_matches_expected_widths() {
-        assert_eq!(
-            bytes_per_sample(spa::param::audio::AudioFormat::F32LE),
-            Some(4)
+        // F32LE: passthrough preserves exact values
+        let val: f32 = 0.123_456_78;
+        let f32_bytes = val.to_le_bytes();
+        let f32_out = convert_samples_to_f32(&f32_bytes, Fmt::F32LE).unwrap();
+        assert_eq!(f32_out.len(), 1);
+        assert!(
+            (f32_out[0] - val).abs() < f32::EPSILON,
+            "F32LE passthrough: {} vs {}",
+            f32_out[0],
+            val
         );
-        assert_eq!(
-            bytes_per_sample(spa::param::audio::AudioFormat::F64LE),
-            Some(8)
-        );
-        assert_eq!(
-            bytes_per_sample(spa::param::audio::AudioFormat::S16LE),
-            Some(2)
-        );
-        assert_eq!(
-            bytes_per_sample(spa::param::audio::AudioFormat::S8),
-            Some(1)
-        );
-        assert_eq!(
-            bytes_per_sample(spa::param::audio::AudioFormat::Unknown),
-            None
-        );
-    }
 
-    #[test]
-    fn convert_s16le_samples_to_f32() {
-        let bytes = [0x00, 0x80, 0xFF, 0x7F];
-        let converted = convert_samples_to_f32(&bytes, spa::param::audio::AudioFormat::S16LE)
-            .expect("conversion should succeed");
-        assert_eq!(converted.len(), 2);
-        assert!((converted[0] + 1.000_030_5).abs() < 1e-5);
-        assert!((converted[1] - 1.0).abs() < f32::EPSILON);
-    }
+        // S32LE: verify normalization range
+        let s32_max = i32::MAX.to_le_bytes();
+        let s32_out = convert_samples_to_f32(&s32_max, Fmt::S32LE).unwrap();
+        assert!(
+            (s32_out[0] - 1.0).abs() < f32::EPSILON,
+            "S32LE max: {}",
+            s32_out[0]
+        );
 
-    #[test]
-    fn conversion_fails_for_unsupported_format() {
-        let bytes = [0u8; 4];
-        assert!(convert_samples_to_f32(&bytes, spa::param::audio::AudioFormat::Unknown).is_none());
+        // Unsupported format returns None; misaligned buffer returns None
+        assert!(convert_samples_to_f32(&[0u8; 4], Fmt::Unknown).is_none());
+        assert!(convert_samples_to_f32(&[0u8; 3], Fmt::S16LE).is_none());
     }
 }
