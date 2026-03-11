@@ -49,7 +49,7 @@ fn resolve_spreads(custom: &Option<PaletteSettings>, count: usize) -> Vec<f32> {
 // dear future me/future maintainers: I'm sorry for this macro.
 macro_rules! visuals {
     (@export_palette $state:expr, $default:expr) => { PaletteSettings::if_differs_from($state, $default) };
-    (@apply_config $proc:ident, $settings:ident) => {{ let mut c = $proc.config(); $settings.apply_to(&mut c); $proc.update_config(c) }};
+    (@apply_config $proc:ident, $settings:ident) => {{ let mut config = $proc.config(); $settings.apply_to(&mut config); $proc.update_config(config) }};
     (@apply_palette $st:expr, $settings:ident, $default:expr) => { $st.set_palette(&resolve_palette(&$settings.palette, $default)) };
     ($($variant:ident($name:expr, $width:expr, $height:expr, $min_w:expr $(, max=$max_w:expr)?) =>
        $module:ident::$processor:ident, Shared<$module2:ident::$state:ident>;
@@ -88,19 +88,19 @@ macro_rules! visuals {
             kind: VisualKind::$variant,
             meta: VisualMetadata { display_name: $name, preferred_width: $width, preferred_height: $height,
                 min_width: $min_w, $( max_width: $max_w, )? ..DEFAULT_METADATA },
-            build: || { let $sr = DEFAULT_SAMPLE_RATE; Box::new(Visual { p: $proc_init, s: shared($state_init) }) },
+            build: || { let $sr = DEFAULT_SAMPLE_RATE; Box::new(Visual { processor: $proc_init, state: shared($state_init) }) },
         }),*];
         $(impl VisualModule for Visual<$module::$processor, Shared<$module2::$state>> {
             fn ingest(&mut self, $samples: &[f32], $fmt: MeterFormat) {
-                let ($p, $s) = (&mut self.p, &mut self.s); $ingest_body
+                let ($p, $s) = (&mut self.processor, &self.state); $ingest_body
             }
-            fn content(&self) -> VisualContent { VisualContent::new(VisualContentInner::$variant(self.s.clone())) }
+            fn content(&self) -> VisualContent { VisualContent::new(VisualContentInner::$variant(self.state.clone())) }
             fn apply(&mut self, module_cfg: &ModuleSettings) {
                 let $aset: $settings_ty = module_cfg.config_or_default();
-                let ($ap, $as) = (&mut self.p, &mut self.s); $apply_body
+                let ($ap, $as) = (&mut self.processor, &self.state); $apply_body
             }
             fn export(&self) -> ModuleSettings {
-                let ($ep, $es) = (&self.p, &self.s);
+                let ($ep, $es) = (&self.processor, &self.state);
                 ModuleSettings::with_config(&{ let out: $settings_ty = $export_body; out })
             }
         })*
@@ -204,8 +204,8 @@ visuals! {
 }
 
 struct Visual<P, S> {
-    p: P,
-    s: S,
+    processor: P,
+    state: S,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -250,26 +250,33 @@ struct Entry {
     enabled: bool,
     meta: VisualMetadata,
     module: Box<dyn VisualModule>,
-    content: VisualContent,
 }
 impl Entry {
-    fn new(id: VisualId, d: &Descriptor) -> Self {
-        let m = (d.build)();
+    fn new(id: VisualId, descriptor: &Descriptor) -> Self {
+        let module = (descriptor.build)();
         Self {
             id,
-            kind: d.kind,
+            kind: descriptor.kind,
             enabled: false,
-            meta: d.meta,
-            content: m.content(),
-            module: m,
+            meta: descriptor.meta,
+            module,
         }
     }
-    fn apply(&mut self, s: &ModuleSettings) {
-        if let Some(e) = s.enabled {
-            self.enabled = e;
+    fn apply_settings(&mut self, settings: &ModuleSettings) {
+        if let Some(enabled) = settings.enabled {
+            self.enabled = enabled;
         }
-        self.module.apply(s);
-        self.content = self.module.content();
+        self.module.apply(settings);
+    }
+
+    fn snapshot(&self) -> VisualSlotSnapshot {
+        VisualSlotSnapshot {
+            id: self.id,
+            kind: self.kind,
+            enabled: self.enabled,
+            metadata: self.meta,
+            content: self.module.content(),
+        }
     }
 }
 
@@ -286,17 +293,6 @@ pub(crate) struct VisualSlotSnapshot {
     pub metadata: VisualMetadata,
     pub content: VisualContent,
 }
-impl From<&Entry> for VisualSlotSnapshot {
-    fn from(e: &Entry) -> Self {
-        Self {
-            id: e.id,
-            kind: e.kind,
-            enabled: e.enabled,
-            metadata: e.meta,
-            content: e.content.clone(),
-        }
-    }
-}
 
 pub(crate) struct VisualManager {
     entries: Vec<Entry>,
@@ -308,53 +304,82 @@ impl VisualManager {
             entries: Vec::with_capacity(DESCRIPTORS.len()),
             next_id: 1,
         };
-        for d in DESCRIPTORS {
+        for descriptor in DESCRIPTORS {
             let id = VisualId(m.next_id);
             m.next_id = m.next_id.saturating_add(1);
-            m.entries.push(Entry::new(id, d));
+            m.entries.push(Entry::new(id, descriptor));
         }
         m
     }
-    fn by_kind(&self, k: VisualKind) -> Option<&Entry> {
-        self.entries.iter().find(|e| e.kind == k)
+    fn by_kind(&self, kind: VisualKind) -> Option<&Entry> {
+        self.entries.iter().find(|entry| entry.kind == kind)
     }
-    fn by_kind_mut(&mut self, k: VisualKind) -> Option<&mut Entry> {
-        self.entries.iter_mut().find(|e| e.kind == k)
+    fn by_kind_mut(&mut self, kind: VisualKind) -> Option<&mut Entry> {
+        self.entries.iter_mut().find(|entry| entry.kind == kind)
+    }
+    fn entry_index(&self, id: VisualId) -> Option<usize> {
+        self.entries.iter().position(|entry| entry.id == id)
+    }
+    fn move_entry_to(&mut self, id: VisualId, target: usize) {
+        let Some(current) = self.entry_index(id) else {
+            return;
+        };
+        let target = target.min(self.entries.len().saturating_sub(1));
+        if current != target {
+            let entry = self.entries.remove(current);
+            self.entries.insert(target, entry);
+        }
+    }
+    fn swap_entries(&mut self, first: VisualId, second: VisualId) {
+        let (Some(first_index), Some(second_index)) =
+            (self.entry_index(first), self.entry_index(second))
+        else {
+            return;
+        };
+        if first_index != second_index {
+            self.entries.swap(first_index, second_index);
+        }
     }
     pub fn snapshot(&self) -> VisualSnapshot {
         VisualSnapshot {
-            slots: self.entries.iter().map(Into::into).collect(),
+            slots: self.entries.iter().map(Entry::snapshot).collect(),
         }
     }
-    pub fn module_settings(&self, k: VisualKind) -> Option<ModuleSettings> {
-        self.by_kind(k).map(|e| {
-            let mut s = e.module.export();
-            s.enabled.get_or_insert(e.enabled);
-            s
+    pub fn module_settings(&self, kind: VisualKind) -> Option<ModuleSettings> {
+        self.by_kind(kind).map(|entry| {
+            let mut settings = entry.module.export();
+            settings.enabled.get_or_insert(entry.enabled);
+            settings
         })
     }
-    pub fn apply_module_settings(&mut self, k: VisualKind, s: &ModuleSettings) -> bool {
-        self.by_kind_mut(k).is_some_and(|e| {
-            e.apply(s);
+    pub fn apply_module_settings(&mut self, kind: VisualKind, settings: &ModuleSettings) -> bool {
+        self.by_kind_mut(kind).is_some_and(|entry| {
+            entry.apply_settings(settings);
             true
         })
     }
-    pub fn set_enabled_by_kind(&mut self, k: VisualKind, enabled: bool) {
-        if let Some(e) = self.by_kind_mut(k)
-            && e.enabled != enabled
+    pub fn set_enabled_by_kind(&mut self, kind: VisualKind, enabled: bool) {
+        if let Some(entry) = self.by_kind_mut(kind)
+            && entry.enabled != enabled
         {
-            e.enabled = enabled;
+            entry.enabled = enabled;
         }
     }
-    pub fn apply_visual_settings(&mut self, s: &VisualSettings) {
-        for e in &mut self.entries {
-            e.apply(s.modules.get(&e.kind).unwrap_or(&ModuleSettings::default()));
+    pub fn apply_visual_settings(&mut self, settings: &VisualSettings) {
+        let default_settings = ModuleSettings::default();
+        for entry in &mut self.entries {
+            entry.apply_settings(
+                settings
+                    .modules
+                    .get(&entry.kind)
+                    .unwrap_or(&default_settings),
+            );
         }
-        if !s.order.is_empty() {
-            let ids: Vec<_> = s
+        if !settings.order.is_empty() {
+            let ids: Vec<_> = settings
                 .order
                 .iter()
-                .filter_map(|k| self.by_kind(*k).map(|e| e.id))
+                .filter_map(|kind| self.by_kind(*kind).map(|entry| entry.id))
                 .collect();
             if !ids.is_empty() {
                 self.reorder(&ids);
@@ -362,54 +387,34 @@ impl VisualManager {
         }
     }
     pub fn reorder(&mut self, order: &[VisualId]) {
-        if let [a, b] = order {
-            let (i, j) = (
-                self.entries.iter().position(|e| e.id == *a),
-                self.entries.iter().position(|e| e.id == *b),
-            );
-            if let (Some(i), Some(j)) = (i, j) {
-                self.entries.swap(i, j);
-            }
+        if let [first, second] = order {
+            self.swap_entries(*first, *second);
             return;
         }
-        for (pos, id) in order.iter().enumerate() {
-            if pos >= self.entries.len() {
-                break;
-            }
-            if let Some(cur) = self.entries.iter().position(|e| e.id == *id)
-                && cur != pos
-            {
-                self.entries.swap(pos, cur);
-            }
+
+        for (position, id) in order.iter().copied().take(self.entries.len()).enumerate() {
+            self.move_entry_to(id, position);
         }
     }
     pub fn restore_position(&mut self, id: VisualId, target: usize) {
-        let Some(cur) = self.entries.iter().position(|e| e.id == id) else {
-            return;
-        };
-        let t = target.min(self.entries.len().saturating_sub(1));
-        if cur != t {
-            let e = self.entries.remove(cur);
-            self.entries.insert(t, e);
-        }
+        self.move_entry_to(id, target);
     }
     pub fn apply_theme(&mut self, theme: &ThemeFile) {
-        for e in &mut self.entries {
-            let mut ms = e.module.export();
-            ms.override_palette(theme.palettes.get(&e.kind));
-            e.module.apply(&ms);
-            e.content = e.module.content();
+        for entry in &mut self.entries {
+            let mut settings = entry.module.export();
+            settings.override_palette(theme.palettes.get(&entry.kind));
+            entry.module.apply(&settings);
         }
     }
     pub fn ingest_samples(&mut self, samples: &[f32]) {
         if samples.is_empty() {
             return;
         }
-        let fmt = meter_tap::current_format();
-        for e in &mut self.entries {
-            if e.enabled {
-                e.module.ingest(samples, fmt);
-                e.content = e.module.content();
+
+        let format = meter_tap::current_format();
+        for entry in &mut self.entries {
+            if entry.enabled {
+                entry.module.ingest(samples, format);
             }
         }
     }
