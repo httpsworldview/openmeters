@@ -363,7 +363,7 @@ impl FreqScaleParams {
         }
     }
 
-    #[inline(always)]
+    #[inline]
     fn hz_to_bin_simd(&self, hz: f32x8, scale: FrequencyScale) -> f32x8 {
         let norm = match scale {
             FrequencyScale::Linear => (hz - self.min) * self.inv_lin,
@@ -482,7 +482,7 @@ impl Reassignment2DGrid {
         Arc::from(freqs)
     }
 
-    #[inline(always)]
+    #[inline]
     fn accumulate_simd(&mut self, freq: f32x8, time: f32x8, pow: f32x8, conf: f32x8, mask: f32x8) {
         let (freqs, times, powers, confs, masks) = (
             freq.to_array(),
@@ -508,7 +508,7 @@ impl Reassignment2DGrid {
         }
     }
 
-    #[inline(always)]
+    #[inline]
     fn deposit_bilinear(&mut self, freq: f32, time: f32, width: i32, height: i32, val: f32) {
         let stride = width as usize;
         let f0 = freq.floor() as i32;
@@ -1055,7 +1055,7 @@ fn compute_sigma_t(window: &[f32]) -> f32 {
     }
 }
 
-#[inline(always)]
+#[inline]
 fn load_f32_simd(data: &[f32], off: usize) -> f32x8 {
     let mut lanes = [0.0; 8];
     let count = (data.len().saturating_sub(off)).min(8);
@@ -1063,7 +1063,7 @@ fn load_f32_simd(data: &[f32], off: usize) -> f32x8 {
     f32x8::new(lanes)
 }
 
-#[inline(always)]
+#[inline]
 fn load_complex_simd(data: &[Complex32], off: usize) -> (f32x8, f32x8) {
     let (mut re, mut im) = ([0.0; 8], [0.0; 8]);
     for (i, c) in data[off..].iter().take(8).enumerate() {
