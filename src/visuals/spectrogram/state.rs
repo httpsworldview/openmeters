@@ -912,14 +912,35 @@ mod tests {
     use super::*;
     #[test]
     fn bin_mapping_log_profile() {
-        let m = BinMapping::new(
-            8,
-            2048,
-            DEFAULT_SAMPLE_RATE,
-            FrequencyScale::Logarithmic,
-            false,
+        let fft = 2048;
+        let rate = DEFAULT_SAMPLE_RATE;
+        let height = 256;
+        let m = BinMapping::new(height, fft, rate, FrequencyScale::Logarithmic, false);
+        assert_eq!(m.lower.len(), height);
+
+        assert!(
+            m.lower[0] > m.lower[height - 1],
+            "top bin {} must exceed bottom bin {}",
+            m.lower[0],
+            m.lower[height - 1]
         );
-        assert_eq!(m.lower.len(), 8);
-        assert!(m.lower[0] as f32 + m.weight[0] > m.lower[7] as f32 + m.weight[7]);
+
+        let mid = height / 2;
+        let top_span = m.lower[0] - m.lower[mid];
+        let bot_span = m.lower[mid] - m.lower[height - 1];
+        assert!(
+            top_span > bot_span * 2,
+            "log scale: top span ({top_span}) should dwarf bottom span ({bot_span})"
+        );
+
+        for i in 1..height {
+            let prev = m.lower[i - 1] as f32 + m.weight[i - 1];
+            let curr = m.lower[i] as f32 + m.weight[i];
+            assert!(
+                prev >= curr,
+                "row {i}: freq {curr:.2} exceeds row {} freq {prev:.2}",
+                i - 1
+            );
+        }
     }
 }

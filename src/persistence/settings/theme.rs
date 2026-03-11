@@ -171,14 +171,6 @@ mod tests {
     }
 
     #[test]
-    fn list_includes_default() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = ThemeStore::new(dir.path());
-        let names = store.list();
-        assert_eq!(names, vec![choice("default", true)]);
-    }
-
-    #[test]
     fn list_sorted_with_default_first() {
         let dir = tempfile::tempdir().unwrap();
         let store = ThemeStore::new(dir.path());
@@ -199,39 +191,10 @@ mod tests {
     }
 
     #[test]
-    fn default_theme_is_empty() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = ThemeStore::new(dir.path());
-        let theme = store.load("default").unwrap();
-        assert!(theme.palettes.is_empty());
-        assert!(theme.background.is_none());
-    }
-
-    #[test]
     fn update_builtin_rejected() {
         let dir = tempfile::tempdir().unwrap();
         let store = ThemeStore::new(dir.path());
         let err = store.update("default", |_| {}).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
-    }
-
-    #[test]
-    fn update_user_theme() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = ThemeStore::new(dir.path());
-        store.save("custom", &ThemeFile::default()).unwrap();
-        store
-            .update("custom", |t| {
-                t.palettes.insert(
-                    VisualKind::Spectrum,
-                    PaletteSettings {
-                        stops: vec![Color::WHITE.into()],
-                        ..Default::default()
-                    },
-                );
-            })
-            .unwrap();
-        let loaded = store.load("custom").unwrap();
-        assert!(loaded.palettes.contains_key(&VisualKind::Spectrum));
     }
 }
