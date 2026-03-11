@@ -48,13 +48,20 @@ fn resolve_spreads(custom: &Option<PaletteSettings>, count: usize) -> Vec<f32> {
 
 // dear future me/future maintainers: I'm sorry for this macro.
 macro_rules! visuals {
-    (@export_palette $state:expr, $default:expr) => { PaletteSettings::if_differs_from($state, $default) };
-    (@apply_config $proc:ident, $settings:ident) => {{ let mut config = $proc.config(); $settings.apply_to(&mut config); $proc.update_config(config) }};
-    (@apply_palette $st:expr, $settings:ident, $default:expr) => { $st.set_palette(&resolve_palette(&$settings.palette, $default)) };
+    (@export_palette $state:expr, $default:expr) => {
+        PaletteSettings::if_differs_from($state, $default)
+    };
+    (@apply_config $proc:ident, $settings:ident) => {{
+        let mut config = $proc.config();
+        $settings.apply_to(&mut config);
+        $proc.update_config(config)
+    }};
+    (@apply_palette $st:expr, $settings:ident, $default:expr) => {
+        $st.set_palette(&resolve_palette(&$settings.palette, $default))
+    };
     ($($variant:ident($name:expr, $width:expr, $height:expr, $min_w:expr $(, max=$max_w:expr)?) =>
-       $module:ident::$processor:ident, Shared<$module2:ident::$state:ident>;
-       init($sr:ident) { $proc_init:expr, $state_init:expr }
-       ingest($p:ident, $s:ident, $samples:ident, $fmt:ident) $ingest_body:expr;
+       $module:ident :: $processor:ident, $state:ident;
+       $(@pre_ingest($pi:ident, $si:ident) $pre_body:expr;)?
        $settings_ty:ty, $default_palette:expr;
        apply($ap:ident, $as:ident, $aset:ident) $apply_body:expr;
        export($ep:ident, $es:ident) $export_body:expr;
@@ -63,42 +70,47 @@ macro_rules! visuals {
         pub struct VisualContent(VisualContentInner);
 
         #[derive(Clone)]
-        enum VisualContentInner { $($variant(Shared<$module2::$state>)),* }
+        enum VisualContentInner { $($variant(Shared<$module::$state>)),* }
 
         impl VisualContent {
-            fn new(inner: VisualContentInner) -> Self {
-                Self(inner)
-            }
-
             pub fn render<M: 'static>(&self, meta: VisualMetadata) -> Element<'_, M> {
-                let elem: Element<'_, M> = match &self.0 { $(VisualContentInner::$variant(s) => $module::widget(s)),* };
-                let (width, height) = (
-                    if meta.fill_horizontal { Length::Fill } else { Length::Fixed(meta.preferred_width) },
-                    if meta.fill_vertical { Length::Fill } else { Length::Fixed(meta.preferred_height) });
-                container(elem).width(width).height(height).center(Length::Fill).into()
+                let elem: Element<'_, M> = match &self.0 {
+                    $(VisualContentInner::$variant(s) => $module::widget(s)),*
+                };
+                meta.wrap(elem)
             }
         }
 
-        impl std::fmt::Debug for VisualContent {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.debug_struct("VisualContent").finish_non_exhaustive()
-            }
-        }
         const DESCRIPTORS: &[Descriptor] = &[$(Descriptor {
             kind: VisualKind::$variant,
-            meta: VisualMetadata { display_name: $name, preferred_width: $width, preferred_height: $height,
-                min_width: $min_w, $( max_width: $max_w, )? ..DEFAULT_METADATA },
-            build: || { let $sr = DEFAULT_SAMPLE_RATE; Box::new(Visual { processor: $proc_init, state: shared($state_init) }) },
+            meta: VisualMetadata {
+                display_name: $name, preferred_width: $width, preferred_height: $height,
+                min_width: $min_w, $( max_width: $max_w, )? ..DEFAULT_METADATA
+            },
+            build: || Box::new(Visual {
+                processor: $module::$processor::new(DEFAULT_SAMPLE_RATE),
+                state: shared($module::$state::new()),
+            }),
         }),*];
-        $(impl VisualModule for Visual<$module::$processor, Shared<$module2::$state>> {
-            fn ingest(&mut self, $samples: &[f32], $fmt: MeterFormat) {
-                let ($p, $s) = (&mut self.processor, &self.state); $ingest_body
+
+        $(impl VisualModule for Visual<$module::$processor, Shared<$module::$state>> {
+            fn ingest(&mut self, samples: &[f32], fmt: MeterFormat) {
+                $({ let ($pi, $si) = (&mut self.processor, &self.state); $pre_body; })?
+                if let Some(snap) = self.processor.ingest(samples, fmt) {
+                    self.state.borrow_mut().apply_snapshot(&snap);
+                }
             }
-            fn content(&self) -> VisualContent { VisualContent::new(VisualContentInner::$variant(self.state.clone())) }
+
+            fn content(&self) -> VisualContent {
+                VisualContent(VisualContentInner::$variant(self.state.clone()))
+            }
+
             fn apply(&mut self, module_cfg: &ModuleSettings) {
                 let $aset: $settings_ty = module_cfg.config_or_default();
-                let ($ap, $as) = (&mut self.processor, &self.state); $apply_body
+                let ($ap, $as) = (&mut self.processor, &self.state);
+                $apply_body
             }
+
             fn export(&self) -> ModuleSettings {
                 let ($ep, $es) = (&self.processor, &self.state);
                 ModuleSettings::with_config(&{ let out: $settings_ty = $export_body; out })
@@ -109,9 +121,7 @@ macro_rules! visuals {
 
 visuals! {
     Loudness("Loudness", 140.0, 300.0, 80.0, max=140.0) =>
-        loudness::LoudnessProcessor, Shared<loudness::LoudnessState>;
-        init(sr) { loudness::LoudnessProcessor::new(sr), loudness::LoudnessState::new() }
-        ingest(p, s, sa, fm) if let Some(snap) = p.ingest(sa, fm) { s.borrow_mut().apply_snapshot(&snap); };
+        loudness::LoudnessProcessor, LoudnessState;
         settings_cfg::LoudnessSettings, &palettes::loudness::COLORS;
         apply(_p, s, set) { let mut st = s.borrow_mut(); st.set_modes(set.left_mode, set.right_mode);
             visuals!(@apply_palette st, set, &palettes::loudness::COLORS); };
@@ -119,9 +129,7 @@ visuals! {
             palette: visuals!(@export_palette st.palette(), &palettes::loudness::COLORS) } };
 
     Oscilloscope("Oscilloscope", 150.0, 160.0, 100.0) =>
-        oscilloscope::OscilloscopeProcessor, Shared<oscilloscope::OscilloscopeState>;
-        init(sr) { oscilloscope::OscilloscopeProcessor::new(sr), oscilloscope::OscilloscopeState::new() }
-        ingest(p, s, samples, fmt) if let Some(snap) = p.ingest(samples, fmt) { s.borrow_mut().apply_snapshot(&snap); };
+        oscilloscope::OscilloscopeProcessor, OscilloscopeState;
         settings_cfg::OscilloscopeSettings, &palettes::oscilloscope::COLORS;
         apply(p, s, set) { visuals!(@apply_config p, set); let mut st = s.borrow_mut();
             st.update_view_settings(set.persistence, set.channel_mode);
@@ -131,10 +139,8 @@ visuals! {
             out.palette = visuals!(@export_palette st.palette(), &palettes::oscilloscope::COLORS); out };
 
     Waveform("Waveform", 220.0, 180.0, 220.0) =>
-        waveform::WaveformProcessor, Shared<waveform::WaveformState>;
-        init(sr) { waveform::WaveformProcessor::new(sr), waveform::WaveformState::new() }
-        ingest(p, s, samples, fmt) { p.sync_capacity(s.borrow().desired_columns());
-            if let Some(snap) = p.ingest(samples, fmt) { s.borrow_mut().apply_snapshot(&snap); } };
+        waveform::WaveformProcessor, WaveformState;
+        @pre_ingest(p, s) p.sync_capacity(s.borrow().desired_columns());
         settings_cfg::WaveformSettings, &palettes::waveform::COLORS;
         apply(p, s, set) { visuals!(@apply_config p, set); p.sync_capacity(s.borrow().desired_columns());
             let mut st = s.borrow_mut(); st.set_channel_mode(set.channel_mode); st.set_color_mode(set.color_mode);
@@ -144,10 +150,7 @@ visuals! {
             out.palette = visuals!(@export_palette st.palette(), &palettes::waveform::COLORS); out };
 
     Spectrogram("Spectrogram", 320.0, 220.0, 300.0) =>
-        spectrogram::SpectrogramProcessor, Shared<spectrogram::SpectrogramState>;
-        init(sr) { spectrogram::SpectrogramProcessor::new(sr), spectrogram::SpectrogramState::new() }
-        ingest(p, s, samples, fmt) if let Some(snap) = p.ingest(samples, fmt) {
-            s.borrow_mut().apply_snapshot(&snap); };
+        spectrogram::SpectrogramProcessor, SpectrogramState;
         settings_cfg::SpectrogramSettings, &palettes::spectrogram::COLORS;
         apply(p, s, set) { visuals!(@apply_config p, set); let mut st = s.borrow_mut();
             visuals!(@apply_palette st, set, &palettes::spectrogram::COLORS);
@@ -165,9 +168,7 @@ visuals! {
             out.rotation = st.rotation(); out };
 
     Spectrum("Spectrum analyzer", 400.0, 180.0, 400.0) =>
-        spectrum::SpectrumProcessor, Shared<spectrum::SpectrumState>;
-        init(sr) { spectrum::SpectrumProcessor::new(sr), spectrum::SpectrumState::new() }
-        ingest(p, s, samples, fmt) if let Some(snap) = p.ingest(samples, fmt) { s.borrow_mut().apply_snapshot(&snap); };
+        spectrum::SpectrumProcessor, SpectrumState;
         settings_cfg::SpectrumSettings, &palettes::spectrum::COLORS;
         apply(p, s, set) { visuals!(@apply_config p, set); let mut st = s.borrow_mut();
             visuals!(@apply_palette st, set, &palettes::spectrum::COLORS);
@@ -189,9 +190,7 @@ visuals! {
             out.bar_count = st.style().bar_count; out.bar_gap = st.style().bar_gap; out };
 
     Stereometer("Stereometer", 150.0, 220.0, 100.0) =>
-        stereometer::StereometerProcessor, Shared<stereometer::StereometerState>;
-        init(sr) { stereometer::StereometerProcessor::new(sr), stereometer::StereometerState::new() }
-        ingest(p, s, samples, fmt) if let Some(snap) = p.ingest(samples, fmt) { s.borrow_mut().apply_snapshot(&snap); };
+        stereometer::StereometerProcessor, StereometerState;
         settings_cfg::StereometerSettings, &palettes::stereometer::COLORS;
         apply(p, s, set) { visuals!(@apply_config p, set); let mut st = s.borrow_mut();
             st.update_view_settings(&set); visuals!(@apply_palette st, set, &palettes::stereometer::COLORS); };
@@ -221,6 +220,7 @@ pub struct VisualMetadata {
     pub min_width: f32,
     pub max_width: f32,
 }
+
 const DEFAULT_METADATA: VisualMetadata = VisualMetadata {
     display_name: "",
     preferred_width: 200.0,
@@ -230,6 +230,32 @@ const DEFAULT_METADATA: VisualMetadata = VisualMetadata {
     min_width: 100.0,
     max_width: f32::INFINITY,
 };
+
+impl VisualMetadata {
+    pub(crate) fn wrap<'a, M: 'static>(&self, elem: Element<'a, M>) -> Element<'a, M> {
+        let width = if self.fill_horizontal {
+            Length::Fill
+        } else {
+            Length::Fixed(self.preferred_width)
+        };
+        let height = if self.fill_vertical {
+            Length::Fill
+        } else {
+            Length::Fixed(self.preferred_height)
+        };
+        container(elem)
+            .width(width)
+            .height(height)
+            .center(Length::Fill)
+            .into()
+    }
+}
+
+impl std::fmt::Debug for VisualContent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("VisualContent").finish_non_exhaustive()
+    }
+}
 
 pub trait VisualModule {
     fn ingest(&mut self, samples: &[f32], format: MeterFormat);
