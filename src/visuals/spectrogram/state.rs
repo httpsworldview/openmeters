@@ -597,13 +597,15 @@ impl<'a> Spectrogram<'a> {
             tsz.width + TOOLTIP_PAD * 2.0,
             tsz.height + TOOLTIP_PAD * 2.0,
         );
+        let max_x = (bounds.x + bounds.width - sz.width).max(bounds.x);
+        let max_y = (bounds.y + bounds.height - sz.height).max(bounds.y);
 
         let (x, y) = if horizontal {
-            let x = (cursor.x - sz.width * 0.5).clamp(bounds.x, bounds.x + bounds.width - sz.width);
+            let x = (cursor.x - sz.width * 0.5).clamp(bounds.x, max_x);
             let y = if cursor.y - 12.0 - sz.height >= bounds.y {
                 cursor.y - 12.0 - sz.height
             } else {
-                (cursor.y + 12.0).min(bounds.y + bounds.height - sz.height)
+                (cursor.y + 12.0).min(max_y)
             };
             (x, y)
         } else {
@@ -612,8 +614,7 @@ impl<'a> Spectrogram<'a> {
             } else {
                 (cursor.x - 12.0 - sz.width).max(bounds.x)
             };
-            let y =
-                (cursor.y - sz.height * 0.5).clamp(bounds.y, bounds.y + bounds.height - sz.height);
+            let y = (cursor.y - sz.height * 0.5).clamp(bounds.y, max_y);
             (x, y)
         };
         let tb = Rectangle::new(Point::new(x, y), sz);
