@@ -11,6 +11,8 @@ use iced::widget::{column, container, pick_list, row, slider, text, toggler};
 use std::borrow::Cow;
 use std::fmt;
 
+pub const HOP_DIVISORS: [usize; 7] = [4, 6, 8, 16, 32, 64, 128];
+
 pub struct SliderRange {
     pub min: f32,
     pub max: f32,
@@ -64,6 +66,23 @@ pub fn update_usize_from_f32(target: &mut usize, value: f32, range: SliderRange)
         "update_usize_from_f32 expects integral slider bounds"
     );
     set_if_changed(target, range.snap(value).round() as usize)
+}
+
+pub fn get_closest_hop_divisor(fft_size: usize, hop_size: usize) -> usize {
+    if fft_size == 0 || hop_size == 0 {
+        return 8;
+    }
+    let ratio = fft_size as f32 / hop_size as f32;
+    HOP_DIVISORS
+        .iter()
+        .copied()
+        .min_by(|&a, &b| {
+            (ratio - a as f32)
+                .abs()
+                .partial_cmp(&(ratio - b as f32).abs())
+                .unwrap()
+        })
+        .unwrap_or(8)
 }
 
 pub fn labeled_slider<'a, M: Clone + 'a>(

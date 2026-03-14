@@ -3,8 +3,8 @@
 
 use super::palette::PaletteEvent;
 use super::widgets::{
-    SliderRange, labeled_pick_list, labeled_slider, labeled_toggler, section_title, set_if_changed,
-    update_f32_range, update_usize_from_f32,
+    HOP_DIVISORS, SliderRange, get_closest_hop_divisor, labeled_pick_list, labeled_slider,
+    labeled_toggler, section_title, set_if_changed, update_f32_range, update_usize_from_f32,
 };
 use crate::persistence::settings::{PianoRollOverlay, SpectrogramSettings};
 use crate::ui::theme;
@@ -17,7 +17,6 @@ use iced::{Element, Length};
 
 const FFT_OPTIONS: [usize; 5] = [1024, 2048, 4096, 8192, 16384];
 const ZERO_PAD_OPTIONS: [usize; 6] = [1, 2, 4, 8, 16, 32];
-const HOP_DIVISORS: [usize; 7] = [4, 6, 8, 16, 32, 64, 128];
 const FREQ_SCALE_OPTIONS: [FrequencyScale; 3] = [
     FrequencyScale::Linear,
     FrequencyScale::Logarithmic,
@@ -36,23 +35,6 @@ const DISPLAY_BINS_RANGE: SliderRange = SliderRange::new(64.0, 8192.0, 64.0);
 const MAX_CORR_HZ_RANGE: SliderRange = SliderRange::new(0.0, 200.0, 1.0);
 const PB_EPSILON_RANGE: SliderRange = SliderRange::new(0.01, 0.5, 0.01);
 const PB_BETA_RANGE: SliderRange = SliderRange::new(0.0, 20.0, 0.25);
-
-fn get_closest_hop_divisor(fft_size: usize, hop_size: usize) -> usize {
-    if fft_size == 0 || hop_size == 0 {
-        return 8;
-    }
-    let ratio = fft_size as f32 / hop_size as f32;
-    HOP_DIVISORS
-        .iter()
-        .copied()
-        .min_by(|&a, &b| {
-            (ratio - a as f32)
-                .abs()
-                .partial_cmp(&(ratio - b as f32).abs())
-                .unwrap()
-        })
-        .unwrap_or(8)
-}
 
 fn extract_planck_bessel(window: WindowKind) -> (f32, f32) {
     match window {

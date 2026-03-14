@@ -3,8 +3,8 @@
 
 use super::palette::PaletteEvent;
 use super::widgets::{
-    SliderRange, labeled_pick_list, labeled_slider, labeled_toggler, section_title, set_f32,
-    set_if_changed, update_usize_from_f32,
+    HOP_DIVISORS, SliderRange, get_closest_hop_divisor, labeled_pick_list, labeled_slider,
+    labeled_toggler, section_title, set_f32, set_if_changed, update_usize_from_f32,
 };
 use crate::persistence::settings::{SpectrumDisplayMode, SpectrumSettings, SpectrumWeightingMode};
 use crate::ui::theme;
@@ -69,6 +69,7 @@ settings_pane!(
 #[derive(Debug, Clone, Copy)]
 pub enum Message {
     FftSize(usize),
+    HopDivisor(usize),
     FrequencyScale(FrequencyScale),
     ReverseFrequency(bool),
     DisplayMode(SpectrumDisplayMode),
@@ -91,6 +92,7 @@ impl SpectrumSettingsPane {
     fn view(&self) -> Element<'_, Message> {
         use Message::*;
         let s = &self.settings;
+        let hop_divisor = get_closest_hop_divisor(s.fft_size, s.hop_size);
         let dir = if s.reverse_frequency {
             "High <- Low"
         } else {
@@ -118,6 +120,7 @@ impl SpectrumSettingsPane {
                 FrequencyScale
             ),
             labeled_pick_list("Averaging", &AVG_MODE, Some(self.avg_mode), Averaging),
+            labeled_pick_list("Hop divisor", &HOP_DIVISORS, Some(hop_divisor), HopDivisor),
         ]
         .spacing(8)
         .width(Length::Fill);
@@ -221,9 +224,13 @@ impl SpectrumSettingsPane {
         let s = &mut self.settings;
 
         match *msg {
-            FftSize(v) => set_if_changed(&mut s.fft_size, v)
-                .then(|| s.hop_size = (v / 4).max(1))
-                .is_some(),
+            FftSize(v) => {
+                let hop_div = get_closest_hop_divisor(s.fft_size, s.hop_size);
+                set_if_changed(&mut s.fft_size, v)
+                    .then(|| s.hop_size = (v / hop_div).max(1))
+                    .is_some()
+            }
+            HopDivisor(v) => set_if_changed(&mut s.hop_size, (s.fft_size / v).max(1)),
             FrequencyScale(v) => set_if_changed(&mut s.frequency_scale, v),
             ReverseFrequency(v) => set_if_changed(&mut s.reverse_frequency, v),
             DisplayMode(v) => set_if_changed(&mut s.display_mode, v),
