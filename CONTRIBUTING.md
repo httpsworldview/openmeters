@@ -10,10 +10,10 @@ hesitate to reach out.
 
 ## Licensing information
 
-OpenMeters is licensed under the GNU General Public License v3.0 or
-later. See the [LICENSE](LICENSE) file for more information, but you
-knew that already. Code contributed to this project is also licensed
-under GPLv3, but the contributor retains copyright to their
+OpenMeters is licensed under the GNU General Public License version
+3.0 or later. See the [LICENSE](LICENSE) file for more information,
+but you knew that already. Code contributed to this project is also
+licensed under GPLv3, but the contributor retains copyright to their
 contributions.
 
 ## Commit message format
@@ -45,14 +45,15 @@ Where:
   to your commit messages (e.g. `git commit -s -m "chore: bump
   dependencies"`).
 
-## Quick start
+## Quick start - GitHub
 
 Setting up a development environment is pretty straightforward. Make
-sure you have Rust installed, clone the repository, and poke around a
-bit. In general, your workflow should look something like this:
+sure you have Rust installed, fork & clone the repository, then poke
+around a bit. In general, your workflow should look something like
+this:
 
 ```bash
-git clone https://github.com/httpsworldview/openmeters.git
+git clone https://github.com/your-username/openmeters.git
 cd openmeters
 git checkout -b my-awesome-thing
 ```
@@ -126,7 +127,7 @@ to review and merge your PR in a timely manner.
 
 The title of your PR should follow the same format as commit messages,
 in fact, feel free to use the same message for both your commit and PR
-title. Use your best judgement.
+title. Use your best judgment.
 
 Ultimately, I decide what gets merged, but I will never reject a PR
 due to grammatical issues or petty semantics alone. I will work with
