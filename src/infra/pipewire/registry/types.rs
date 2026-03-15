@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Maika Namuo
 
 use pipewire as pw;
+use pw::keys::*;
 use pw::registry::GlobalObject;
 use pw::spa::utils::dict::DictRef;
 use std::collections::HashMap;
@@ -49,13 +50,13 @@ impl GraphPort {
 
         Some(Self {
             global_id: global.id,
-            port_id: parse(*pw::keys::PORT_ID, "port.id")?,
-            node_id: parse(*pw::keys::NODE_ID, "node.id")?,
-            direction: get(*pw::keys::PORT_DIRECTION, "port.direction")
+            port_id: parse(*PORT_ID, "port.id")?,
+            node_id: parse(*NODE_ID, "node.id")?,
+            direction: get(*PORT_DIRECTION, "port.direction")
                 .map(|d| PortDirection::from_str(d))
                 .unwrap_or_default(),
-            channel: get(*pw::keys::AUDIO_CHANNEL, "audio.channel").cloned(),
-            is_monitor: get(*pw::keys::PORT_MONITOR, "port.monitor")
+            channel: get(*AUDIO_CHANNEL, "audio.channel").cloned(),
+            is_monitor: get(*PORT_MONITOR, "port.monitor")
                 .is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1"),
         })
     }
@@ -82,7 +83,7 @@ fn derive_node_direction(
     if has("source") || has("input") {
         return NodeDirection::Input;
     }
-    match props.get(*pw::keys::PORT_DIRECTION).map(String::as_str) {
+    match props.get(*PORT_DIRECTION).map(String::as_str) {
         Some(s) if s.eq_ignore_ascii_case("in") => NodeDirection::Input,
         Some(s) if s.eq_ignore_ascii_case("out") => NodeDirection::Output,
         _ => NodeDirection::Unknown,
@@ -236,13 +237,13 @@ pub struct NodeInfo {
 impl NodeInfo {
     pub(crate) fn from_global(global: &GlobalObject<&DictRef>) -> Self {
         let props = dict_to_map(global.props.as_ref().copied());
-        let name = props.get(*pw::keys::NODE_NAME).cloned();
+        let name = props.get(*NODE_NAME).cloned();
         let description = props
-            .get(*pw::keys::NODE_DESCRIPTION)
+            .get(*NODE_DESCRIPTION)
             .or_else(|| props.get("media.name"))
             .or(name.as_ref())
             .cloned();
-        let media_class = props.get(*pw::keys::MEDIA_CLASS).cloned();
+        let media_class = props.get(*MEDIA_CLASS).cloned();
         let is_virtual = props
             .get("node.virtual")
             .map(|v| v == "true")
@@ -269,7 +270,7 @@ impl NodeInfo {
     }
 
     pub fn app_name(&self) -> Option<&str> {
-        self.properties.get(*pw::keys::APP_NAME).map(String::as_str)
+        self.properties.get(*APP_NAME).map(String::as_str)
     }
 
     pub fn object_serial(&self) -> Option<&str> {
