@@ -139,7 +139,7 @@ struct SpectrogramBuffer {
     pending_cols: Vec<SpectrogramColumnUpdate>,
     mapping: BinMapping,
     display_freqs: Arc<[f32]>,
-    tilt_offsets: Vec<f32>,
+    tilt_offsets: Option<Arc<[f32]>>,
     pool: ColumnBufferPool,
 }
 
@@ -175,7 +175,7 @@ impl SpectrogramBuffer {
         let h = self.height as usize;
         for col in history {
             if col.magnitudes_db.len() >= h {
-                self.push_column(&col.magnitudes_db, style);
+                self.push_column(&col.magnitudes_db);
             }
         }
         if self.col_count > 0 {
@@ -183,13 +183,13 @@ impl SpectrogramBuffer {
         }
     }
 
-    fn append(&mut self, columns: &[SpectrogramColumn], style: &SpectrogramStyle) {
+    fn append(&mut self, columns: &[SpectrogramColumn]) {
         if self.capacity == 0 || self.height == 0 {
             return;
         }
         let h = self.height as usize;
         for col in columns.iter().filter(|c| c.magnitudes_db.len() >= h) {
-            let idx = self.push_column(&col.magnitudes_db, style);
+            let idx = self.push_column(&col.magnitudes_db);
             let start = idx as usize * h;
             let mut buf = self.pool.acquire(h);
             buf.copy_from_slice(&self.values[start..start + h]);
@@ -204,18 +204,13 @@ impl SpectrogramBuffer {
         }
     }
 
-    fn push_column(&mut self, mags: &[f32], style: &SpectrogramStyle) -> u32 {
+    fn push_column(&mut self, mags: &[f32]) -> u32 {
         let (h, col, n) = (self.height as usize, self.write_idx, mags.len());
-        let inv = 1.0 / (style.ceiling_db - style.floor_db).max(f32::EPSILON);
         let out = &mut self.values[col as usize * h..(col as usize + 1) * h];
         for (i, v) in out.iter_mut().enumerate() {
             let lo = self.mapping.lower[i].min(n - 1);
             let hi = self.mapping.upper[i].min(n - 1);
-            let mut val = mags[lo] + self.mapping.weight[i] * (mags[hi] - mags[lo]);
-            if let Some(&offset) = self.tilt_offsets.get(i) {
-                val += offset;
-            }
-            *v = (val.clamp(style.floor_db, style.ceiling_db) - style.floor_db) * inv;
+            *v = mags[lo] + self.mapping.weight[i] * (mags[hi] - mags[lo]);
         }
         if self.col_count < self.capacity {
             self.col_count += 1;
@@ -245,17 +240,17 @@ impl SpectrogramBuffer {
     fn recompute_tilt(&mut self, fft_size: usize, sample_rate: f32, tilt_db: f32) {
         let h = self.height as usize;
         if h == 0 || tilt_db.abs() < f32::EPSILON {
-            self.tilt_offsets.clear();
+            self.tilt_offsets = None;
             return;
         }
-        self.tilt_offsets.resize(h, 0.0);
         let bin_hz = if fft_size > 0 && sample_rate > 0.0 {
             sample_rate / fft_size as f32
         } else {
             1.0
         };
         let has_freqs = !self.display_freqs.is_empty();
-        for (i, offset) in self.tilt_offsets.iter_mut().enumerate() {
+        let mut offsets = vec![0.0_f32; h];
+        for (i, offset) in offsets.iter_mut().enumerate() {
             let freq = if has_freqs {
                 self.display_freqs.get(i).copied().unwrap_or(1.0)
             } else {
@@ -266,6 +261,7 @@ impl SpectrogramBuffer {
             };
             *offset = tilt_db * (freq / 1000.0).max(1e-6).log10();
         }
+        self.tilt_offsets = Some(Arc::from(offsets));
     }
 
     fn needs_rebuild(&self, upd: &SpectrogramUpdate, new_height: Option<u32>) -> bool {
@@ -359,10 +355,7 @@ impl SpectrogramState {
         if floor >= self.style.ceiling_db - 1.0 {
             floor = self.style.ceiling_db - 1.0;
         }
-        if (self.style.floor_db - floor).abs() > f32::EPSILON {
-            self.style.floor_db = floor;
-            self.rebuild_buffer();
-        }
+        self.style.floor_db = floor;
     }
 
     pub fn palette(&self) -> [Color; SPECTROGRAM_PALETTE_SIZE] {
@@ -377,7 +370,9 @@ impl SpectrogramState {
         let tilt = if tilt_db.is_finite() { tilt_db } else { 0.0 };
         if (self.style.tilt_db - tilt).abs() > f32::EPSILON {
             self.style.tilt_db = tilt;
-            self.rebuild_buffer();
+            self.buffer
+                .borrow_mut()
+                .recompute_tilt(self.fft_size, self.sample_rate, tilt);
         }
     }
 
@@ -423,7 +418,7 @@ impl SpectrogramState {
         if snap.reset || buf.needs_rebuild(snap, new_h) {
             buf.rebuild(&self.history, snap, &self.style);
         } else if !snap.new_columns.is_empty() {
-            buf.append(&snap.new_columns, &self.style);
+            buf.append(&snap.new_columns);
         }
     }
 
@@ -448,6 +443,9 @@ impl SpectrogramState {
             stop_spreads: self.stop_spreads,
             background: to_rgba(self.style.background),
             contrast: self.style.contrast,
+            floor_db: self.style.floor_db,
+            ceiling_db: self.style.ceiling_db,
+            tilt_offsets: buf.tilt_offsets.clone(),
             uv_y_range: [0.0, 1.0],
             screen_height: bounds.height,
             rotation: self.rotation,
@@ -508,31 +506,6 @@ impl SpectrogramState {
     fn clear_pending(&self) {
         let mut buf = self.buffer.borrow_mut();
         (buf.pending_base, buf.pending_cols) = (None, vec![]);
-    }
-
-    fn rebuild_buffer(&mut self) {
-        let (history_length, display_bins_hz) = {
-            let buf = self.buffer.borrow();
-            (
-                buf.capacity as usize,
-                (!buf.display_freqs.is_empty()).then(|| buf.display_freqs.clone()),
-            )
-        };
-        if self.history.is_empty() || history_length == 0 {
-            return;
-        }
-        let update = SpectrogramUpdate {
-            fft_size: self.fft_size,
-            sample_rate: self.sample_rate,
-            frequency_scale: self.freq_scale,
-            history_length,
-            reset: false,
-            display_bins_hz,
-            new_columns: Vec::new(),
-        };
-        self.buffer
-            .borrow_mut()
-            .rebuild(&self.history, &update, &self.style);
     }
 }
 
