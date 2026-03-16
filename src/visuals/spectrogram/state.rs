@@ -81,7 +81,6 @@ impl Default for SpectrogramStyle {
 #[derive(Clone, Debug, Default)]
 struct BinMapping {
     lower: Vec<usize>,
-    upper: Vec<usize>,
     weight: Vec<f32>,
 }
 
@@ -97,10 +96,8 @@ impl BinMapping {
             return Self::default();
         }
         if passthrough {
-            let idx: Vec<usize> = (0..height).collect();
             return Self {
-                lower: idx.clone(),
-                upper: idx,
+                lower: (0..height).collect(),
                 weight: vec![0.0; height],
             };
         }
@@ -111,7 +108,6 @@ impl BinMapping {
         );
         let mut res = Self {
             lower: Vec::with_capacity(height),
-            upper: Vec::with_capacity(height),
             weight: Vec::with_capacity(height),
         };
         for row in 0..height {
@@ -119,10 +115,8 @@ impl BinMapping {
                 * fft_size as f32)
                 / sample_rate)
                 .clamp(0.0, max_bin);
-            let lo = pos.floor() as usize;
-            res.lower.push(lo);
-            res.upper.push((lo + 1).min(fft_size / 2));
-            res.weight.push(pos - lo as f32);
+            res.lower.push(pos.floor() as usize);
+            res.weight.push(pos - pos.floor());
         }
         res
     }
@@ -209,7 +203,7 @@ impl SpectrogramBuffer {
         let out = &mut self.values[col as usize * h..(col as usize + 1) * h];
         for (i, v) in out.iter_mut().enumerate() {
             let lo = self.mapping.lower[i].min(n - 1);
-            let hi = self.mapping.upper[i].min(n - 1);
+            let hi = (self.mapping.lower[i] + 1).min(n - 1);
             *v = mags[lo] + self.mapping.weight[i] * (mags[hi] - mags[lo]);
         }
         if self.col_count < self.capacity {
@@ -254,10 +248,7 @@ impl SpectrogramBuffer {
             let freq = if has_freqs {
                 self.display_freqs.get(i).copied().unwrap_or(1.0)
             } else {
-                let bin = self.mapping.lower[i] as f32
-                    + self.mapping.weight[i]
-                        * (self.mapping.upper[i] as f32 - self.mapping.lower[i] as f32);
-                bin * bin_hz
+                (self.mapping.lower[i] as f32 + self.mapping.weight[i]) * bin_hz
             };
             *offset = tilt_db * (freq / 1000.0).max(1e-6).log10();
         }
