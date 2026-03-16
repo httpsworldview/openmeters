@@ -76,6 +76,9 @@ pub struct SpectrogramParams {
     pub stop_spreads: [f32; SPECTROGRAM_PALETTE_SIZE],
     pub background: [f32; 4],
     pub contrast: f32,
+    pub floor_db: f32,
+    pub ceiling_db: f32,
+    pub tilt_offsets: Option<Arc<[f32]>>,
     pub uv_y_range: [f32; 2],
     pub screen_height: f32,
     pub rotation: i8,
@@ -278,6 +281,7 @@ struct Uniforms {
     latest_count: [u32; 4],
     style: [f32; 4],
     background: [f32; 4],
+    floor_ceil: [f32; 4],
 }
 
 impl Uniforms {
@@ -305,6 +309,12 @@ impl Uniforms {
                 p.screen_height.max(1.0),
             ],
             background: p.background,
+            floor_ceil: [
+                p.floor_db,
+                p.ceiling_db,
+                if p.tilt_offsets.is_some() { 1.0 } else { 0.0 },
+                0.0,
+            ],
         }
     }
 }
@@ -356,6 +366,14 @@ impl primitive::Pipeline for Pipeline {
                 bgl_entry(
                     3,
                     wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                ),
+                bgl_entry(
+                    4,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D1,
+                        multisampled: false,
+                    },
                 ),
             ],
         });
@@ -490,6 +508,10 @@ struct Resources {
     magnitude_cap: (u32, u32),
     palette_tex: wgpu::Texture,
     palette_view: wgpu::TextureView,
+    tilt_tex: wgpu::Texture,
+    tilt_view: wgpu::TextureView,
+    tilt_cap: u32,
+    tilt_cache: Option<Arc<[f32]>>,
     sampler: wgpu::Sampler,
     bind_group: wgpu::BindGroup,
     uniform_cache: Uniforms,
@@ -508,6 +530,7 @@ impl Resources {
         });
         let (magnitude_tex, magnitude_view, magnitude_cap) = create_magnitude(device, w, h);
         let (palette_tex, palette_view) = create_palette(device);
+        let (tilt_tex, tilt_view) = create_tilt_texture(device, h);
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Spectrogram sampler"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -520,6 +543,7 @@ impl Resources {
             &uniform_buf,
             &magnitude_view,
             &palette_view,
+            &tilt_view,
             &sampler,
         );
 
@@ -530,6 +554,10 @@ impl Resources {
             magnitude_cap,
             palette_tex,
             palette_view,
+            tilt_tex,
+            tilt_view,
+            tilt_cap: h.max(1),
+            tilt_cache: None,
             sampler,
             bind_group,
             uniform_cache: Uniforms {
@@ -537,6 +565,7 @@ impl Resources {
                 latest_count: [0; 4],
                 style: [0.0; 4],
                 background: [0.0; 4],
+                floor_ceil: [0.0; 4],
             },
             palette_cache: [[0.0; 4]; SPECTROGRAM_PALETTE_SIZE],
             positions_cache: [0.0; SPECTROGRAM_PALETTE_SIZE],
@@ -555,6 +584,7 @@ impl Resources {
         self.write_columns(queue, p);
         self.write_uniforms(queue, p);
         self.write_palette(queue, p);
+        self.write_tilt(queue, p);
     }
 
     fn resize_magnitude(
@@ -580,12 +610,18 @@ impl Resources {
         });
         self.magnitude_view = self.magnitude_tex.create_view(&Default::default());
         self.magnitude_cap = (tw, th);
+        if th != self.tilt_cap {
+            (self.tilt_tex, self.tilt_view) = create_tilt_texture(device, th);
+            self.tilt_cap = th;
+            self.tilt_cache = None;
+        }
         self.bind_group = make_bind_group(
             device,
             layout,
             &self.uniform_buf,
             &self.magnitude_view,
             &self.palette_view,
+            &self.tilt_view,
             &self.sampler,
         );
     }
@@ -650,6 +686,31 @@ impl Resources {
         self.positions_cache = p.stop_positions;
         self.spreads_cache = p.stop_spreads;
     }
+
+    fn write_tilt(&mut self, queue: &wgpu::Queue, p: &SpectrogramParams) {
+        let Some(offsets) = &p.tilt_offsets else {
+            return;
+        };
+        if self
+            .tilt_cache
+            .as_ref()
+            .is_some_and(|c| Arc::ptr_eq(c, offsets))
+        {
+            return;
+        }
+        let n = offsets.len().min(self.tilt_cap as usize);
+        if n > 0 {
+            write_texture_region(
+                queue,
+                &self.tilt_tex,
+                wgpu::Origin3d::ZERO,
+                extent3d(n as u32, 1),
+                n as u32 * 4,
+                bytemuck::cast_slice(&offsets[..n]),
+            );
+        }
+        self.tilt_cache = Some(offsets.clone());
+    }
 }
 
 fn create_magnitude(
@@ -672,19 +733,39 @@ fn create_magnitude(
 }
 
 fn create_palette(device: &wgpu::Device) -> (wgpu::Texture, wgpu::TextureView) {
+    create_1d_texture(
+        device,
+        "Spectrogram palette",
+        PALETTE_LUT_SIZE,
+        wgpu::TextureFormat::Rgba8Unorm,
+    )
+}
+
+fn create_tilt_texture(device: &wgpu::Device, height: u32) -> (wgpu::Texture, wgpu::TextureView) {
+    create_1d_texture(
+        device,
+        "Spectrogram tilt",
+        height,
+        wgpu::TextureFormat::R32Float,
+    )
+}
+
+fn create_1d_texture(
+    device: &wgpu::Device,
+    label: &'static str,
+    width: u32,
+    format: wgpu::TextureFormat,
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let view_fmt = [format];
     let tex = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("Spectrogram palette"),
-        size: wgpu::Extent3d {
-            width: PALETTE_LUT_SIZE,
-            height: 1,
-            depth_or_array_layers: 1,
-        },
+        label: Some(label),
+        size: extent3d(width.max(1), 1),
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D1,
-        format: wgpu::TextureFormat::Rgba8Unorm,
+        format,
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[wgpu::TextureFormat::Rgba8Unorm],
+        view_formats: &view_fmt,
     });
     let view = tex.create_view(&wgpu::TextureViewDescriptor {
         dimension: Some(wgpu::TextureViewDimension::D1),
@@ -699,6 +780,7 @@ fn make_bind_group(
     ub: &wgpu::Buffer,
     mag: &wgpu::TextureView,
     pal: &wgpu::TextureView,
+    til: &wgpu::TextureView,
     sam: &wgpu::Sampler,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -720,6 +802,10 @@ fn make_bind_group(
             wgpu::BindGroupEntry {
                 binding: 3,
                 resource: wgpu::BindingResource::Sampler(sam),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::TextureView(til),
             },
         ],
     })

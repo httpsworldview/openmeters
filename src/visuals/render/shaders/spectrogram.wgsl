@@ -13,6 +13,7 @@ struct SpectrogramUniforms {
     latest_and_count: vec4<u32>,
     style: vec4<f32>,
     background: vec4<f32>,
+    floor_ceil: vec4<f32>,
 }
 
 struct MagnitudeParams {
@@ -33,6 +34,8 @@ var magnitudes: texture_2d<f32>;
 var palette_tex: texture_1d<f32>;
 @group(0) @binding(3)
 var palette_sampler: sampler;
+@group(0) @binding(4)
+var tilt_tex: texture_1d<f32>;
 
 // Premultiply alpha to match iced's color pipeline
 fn premultiply(color: vec4<f32>) -> vec4<f32> {
@@ -70,11 +73,14 @@ fn sample_magnitude(logical: u32, row: u32, params: MagnitudeParams) -> f32 {
     return textureLoad(magnitudes, vec2<i32>(i32(row), i32(physical)), 0).x;
 }
 
-// Max-pool across the bins that map to this pixel's exclusive grid cell
+// Max-pool across the bins that map to this pixel's exclusive grid cell.
 fn peak_in_range(logical: u32, row_lo: u32, row_hi: u32, params: MagnitudeParams) -> f32 {
-    var val = sample_magnitude(logical, row_lo, params);
+    let tf = uniforms.floor_ceil.z;
+    var val = sample_magnitude(logical, row_lo, params)
+              + textureLoad(tilt_tex, i32(row_lo), 0).x * tf;
     for (var r = row_lo + 1u; r < row_hi; r = r + 1u) {
-        val = max(val, sample_magnitude(logical, r, params));
+        val = max(val, sample_magnitude(logical, r, params)
+                       + textureLoad(tilt_tex, i32(r), 0).x * tf);
     }
     return val;
 }
@@ -158,5 +164,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
         magnitude = max(magnitude, peak_in_range(c, row_lo, row_hi, params));
     }
 
-    return sample_palette(magnitude);
+    let floor = uniforms.floor_ceil.x;
+    let range = max(uniforms.floor_ceil.y - floor, 0.001);
+    return sample_palette(clamp((magnitude - floor) / range, 0.0, 1.0));
 }
