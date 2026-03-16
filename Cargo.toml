@@ -17,8 +17,8 @@ iced_wgpu = "0.14.0"
 rustfft = "6.4.1"
 realfft = "3.5"
 tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt"] }
-wide = "1.1.1"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+wide = "1.2.0"
 iced_layershell = "0.15.1"
 wayland-client = "0.31.13"
 
