@@ -225,6 +225,8 @@ impl WindowCache {
         if len == 0 {
             return Arc::from([]);
         }
+        // SAFETY: lock cannot be poisoned as panic is set to abort in
+        // cargo.toml.
         let key = WindowKey { kind, len };
         if let Some(cached) = cache.0.read().unwrap().get(&key) {
             return cached.clone();

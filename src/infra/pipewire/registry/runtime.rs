@@ -143,6 +143,7 @@ struct RegistryRuntime {
     commands: Arc<RwLock<Option<mpsc::Sender<RegistryCommand>>>>,
 }
 
+// locks cannot be poisoned as panic is set to abort in cargo.toml.
 impl RegistryRuntime {
     fn set_command_sender(&self, sender: mpsc::Sender<RegistryCommand>) {
         *self.commands.write().unwrap() = Some(sender);

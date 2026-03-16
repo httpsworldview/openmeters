@@ -253,7 +253,7 @@ impl<'a, Message> Widget<Message, Theme, iced::Renderer> for Loudness<'a> {
         let palette = theme.extended_palette();
         let label_color = state.palette[4];
 
-        if params.meter_bounds().is_some() {
+        if let Some((meter_x, bar_width, stride)) = params.meter_bounds() {
             let height = bounds.height;
 
             for &db in &params.guides {
@@ -286,7 +286,6 @@ impl<'a, Message> Widget<Message, Theme, iced::Renderer> for Loudness<'a> {
             let y = bounds.y + height * (1.0 - ratio);
             let label = format!("{:.1} {}", value, unit);
 
-            let (meter_x, bar_width, stride) = params.meter_bounds().unwrap();
             let right_bar_end = meter_x + stride + bar_width;
             let label_x = right_bar_end + 4.0;
             let label_width = 68.0;

@@ -79,8 +79,7 @@ pub fn get_closest_hop_divisor(fft_size: usize, hop_size: usize) -> usize {
         .min_by(|&a, &b| {
             (ratio - a as f32)
                 .abs()
-                .partial_cmp(&(ratio - b as f32).abs())
-                .unwrap()
+                .total_cmp(&(ratio - b as f32).abs())
         })
         .unwrap_or(8)
 }

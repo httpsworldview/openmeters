@@ -471,7 +471,7 @@ fn interp(bins: &[f32], mags: &[f32], t: f32) -> f32 {
     if bins.is_empty() || t <= bins[0] {
         return mags.first().copied().unwrap_or(0.0);
     }
-    if t >= *bins.last().unwrap() {
+    if bins.last().is_some_and(|&last| t >= last) {
         return mags.last().copied().unwrap_or(0.0);
     }
     match bins.binary_search_by(|p| p.partial_cmp(&t).unwrap_or(std::cmp::Ordering::Less)) {
