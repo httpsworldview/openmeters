@@ -80,7 +80,6 @@ pub struct SpectrogramParams {
     pub ceiling_db: f32,
     pub tilt_offsets: Option<Arc<[f32]>>,
     pub uv_y_range: [f32; 2],
-    pub screen_height: f32,
     pub rotation: i8,
 }
 
@@ -306,7 +305,7 @@ impl Uniforms {
                 p.contrast.max(0.01),
                 p.uv_y_range[0],
                 p.uv_y_range[1],
-                p.screen_height.max(1.0),
+                p.bounds.height.max(1.0),
             ],
             background: p.background,
             floor_ceil: [

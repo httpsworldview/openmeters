@@ -413,7 +413,11 @@ impl SpectrogramState {
         }
     }
 
-    pub fn visual_params(&self, bounds: Rectangle) -> Option<SpectrogramParams> {
+    pub fn visual_params(
+        &self,
+        bounds: Rectangle,
+        uv_y_range: [f32; 2],
+    ) -> Option<SpectrogramParams> {
         let buf = self.buffer.borrow();
         if buf.capacity == 0 || buf.height == 0 || buf.col_count == 0 {
             return None;
@@ -437,8 +441,7 @@ impl SpectrogramState {
             floor_db: self.style.floor_db,
             ceiling_db: self.style.ceiling_db,
             tilt_offsets: buf.tilt_offsets.clone(),
-            uv_y_range: [0.0, 1.0],
-            screen_height: bounds.height,
+            uv_y_range,
             rotation: self.rotation,
         })
     }
@@ -826,8 +829,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
             },
             Background::Color(state.style.background),
         );
-        if let Some(mut p) = state.visual_params(bounds) {
-            p.uv_y_range = uv_y_range;
+        if let Some(p) = state.visual_params(bounds, uv_y_range) {
             renderer.draw_primitive(bounds, SpectrogramPrimitive::new(p));
         }
         let piano_roll = state.piano_roll_overlay;
