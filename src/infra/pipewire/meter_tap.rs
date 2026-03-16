@@ -16,6 +16,8 @@ const MAX_BATCH_LATENCY: Duration = Duration::from_millis(25);
 const DROP_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 
 static AUDIO_STREAM: OnceLock<Arc<AsyncReceiver<Vec<f32>>>> = OnceLock::new();
+// this lock cannot be poisoned because panic is set to abort in
+// cargo.toml.
 static FORMAT_STATE: RwLock<MeterFormat> = RwLock::new(MeterFormat::new());
 
 #[derive(Debug, Clone, Copy)]

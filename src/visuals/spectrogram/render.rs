@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPADIX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
 // Spectrogram rendering pipeline for GPU-accelerated time-frequency visualization.
@@ -94,6 +94,8 @@ pub struct SpectrogramColumnUpdate {
 #[derive(Clone, Debug, Default)]
 pub struct ColumnBufferPool(Arc<Mutex<Vec<Vec<f32>>>>);
 
+// SAFETY: mutex cannot be poisoned as panic is set to abort in
+// cargo.toml.
 impl ColumnBufferPool {
     pub fn acquire(&self, len: usize) -> Vec<f32> {
         let mut pool = self.0.lock().unwrap();
