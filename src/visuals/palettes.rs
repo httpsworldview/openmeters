@@ -94,15 +94,31 @@ pub mod spectrum {
 // dark red (low) -> orange -> green -> cyan -> blue (high)
 pub mod waveform {
     use super::*;
-    pub const COLORS: [Color; 6] = [
+    // I know this is hacky, but it works and its standard for this
+    // project.
+    pub const GRADIENT_STOPS: usize = 6;
+    pub const COLORS: [Color; 9] = [
         hex(0x8B, 0x00, 0x00, 0xFF),
         hex(0xFF, 0x42, 0x00, 0xFF),
         hex(0xFF, 0x69, 0x00, 0xFF),
         hex(0x4C, 0xFF, 0x2E, 0xFF),
         hex(0x32, 0xCD, 0xFF, 0xFF),
         hex(0x00, 0x00, 0xFF, 0xFF),
+        hex(0xE0, 0x40, 0xA0, 0xD9),
+        hex(0x33, 0xE6, 0x33, 0xD9),
+        hex(0x33, 0x66, 0xFF, 0xD9),
     ];
-    pub const LABELS: &[&str] = &["Sub-bass", "->", "->", "->", "->", "Brilliance"];
+    pub const LABELS: &[&str] = &[
+        "Sub-bass",
+        "->",
+        "->",
+        "->",
+        "->",
+        "Brilliance",
+        "Low Band",
+        "Mid Band",
+        "High Band",
+    ];
 }
 
 // Oscilloscope trace color (1 stop)

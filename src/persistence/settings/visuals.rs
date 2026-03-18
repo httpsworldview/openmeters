@@ -206,10 +206,11 @@ visual_settings!(OscilloscopeSettings from OscilloscopeConfig {
 });
 
 visual_settings!(WaveformSettings from WaveformConfig {
-    scroll_speed: f32,
+    scroll_speed: f32, band_db_floor: f32,
 } extra {
     channel_mode: ChannelMode = ChannelMode::default(),
     color_mode: WaveformColorMode = WaveformColorMode::default(),
+    show_peak_history: bool = false,
 });
 
 visual_settings!(SpectrumSettings from SpectrumConfig {

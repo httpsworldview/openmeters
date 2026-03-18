@@ -6,7 +6,10 @@ use iced::advanced::graphics::Viewport;
 use std::sync::Arc;
 
 use crate::sdf_primitive;
-use crate::visuals::render::common::{ClipTransform, SdfVertex};
+use crate::visuals::render::common::{
+    ClipTransform, SdfVertex, baseline_segment_vertices, build_aa_line_list, quad_vertices,
+};
+use crate::visuals::waveform::processor::NUM_BANDS;
 
 #[derive(Debug, Clone, Copy)]
 pub struct PreviewSample {
@@ -14,6 +17,9 @@ pub struct PreviewSample {
     pub max: f32,
     pub color: [f32; 4],
 }
+
+const BAND_LINE_WIDTH: f32 = 1.5;
+const BAND_FILL_ALPHA: f32 = 0.15;
 
 #[derive(Debug, Clone)]
 pub struct WaveformParams {
@@ -25,6 +31,10 @@ pub struct WaveformParams {
     pub colors: Arc<[[f32; 4]]>,
     pub preview_samples: Arc<[PreviewSample]>,
     pub preview_progress: f32,
+    /// Band levels for peak history overlay. Layout: `(channel * NUM_BANDS + band) * columns + col`.
+    /// Empty if peak history is disabled.
+    pub band_levels: Arc<[f32]>,
+    pub band_colors: [[f32; 4]; NUM_BANDS],
     pub fill_alpha: f32,
     pub vertical_padding: f32,
     pub channel_gap: f32,
@@ -48,17 +58,6 @@ fn normalize_sample(min: f32, max: f32) -> (f32, f32) {
 #[inline]
 fn with_alpha(color: [f32; 4], alpha: f32) -> [f32; 4] {
     [color[0], color[1], color[2], alpha]
-}
-
-fn append_strip(dest: &mut Vec<SdfVertex>, strip: impl AsRef<[SdfVertex]>) {
-    let strip = strip.as_ref();
-    if strip.is_empty() {
-        return;
-    }
-    if let Some(&last) = dest.last() {
-        dest.extend([last, last, strip[0], strip[0]]);
-    }
-    dest.extend_from_slice(strip);
 }
 
 #[derive(Debug)]
@@ -110,69 +109,91 @@ impl WaveformPrimitive {
             0.0
         };
 
+        let column_x = |i: usize| -> f32 {
+            let dist_steps = (columns - 1 - i) as f32;
+            (right_edge - preview_width - dist_steps * col_width - scroll_offset - col_width)
+                .floor()
+        };
+
         for ch in 0..channels {
             let center_y =
                 params.bounds.y + v_pad + ch as f32 * (ch_height + gap) + ch_height * 0.5;
 
-            // Build independent pixel columns (discrete quads)
-            let mut strip_builder = Vec::with_capacity((columns + 2) * 6);
-            let mut push_quad = |x0: f32, y0: f32, x1: f32, y1: f32, color: [f32; 4]| {
-                append_strip(
-                    &mut strip_builder,
-                    [(x0, y0), (x0, y1), (x1, y0), (x1, y1)]
-                        .map(|(x, y)| SdfVertex::solid(clip.to_clip(x, y), color)),
-                );
-            };
-
             for i in 0..columns {
                 let idx = ch * columns + i;
                 let (min, max) = normalize_sample(params.samples[idx][0], params.samples[idx][1]);
-
-                // Calculate float position for smooth scroll, then floor to snap to pixel grid
-                // i=0 is oldest column (leftmost). i=columns-1 is newest history.
-                // Newest history moves left from `right_edge - preview_width`
-                let dist_steps = (columns - 1 - i) as f32;
-                // Subtract col_width because raw_x represents the LEFT edge of the 1px column
-                let raw_x =
-                    right_edge - preview_width - dist_steps * col_width - scroll_offset - col_width;
-                let x = raw_x.floor();
-                let w = col_width;
+                let x = column_x(i);
 
                 let color = with_alpha(
                     params.colors.get(idx).copied().unwrap_or([1.0; 4]),
                     params.fill_alpha,
                 );
-                push_quad(
+                vertices.extend(quad_vertices(
                     x,
                     center_y - max * amp_scale,
-                    x + w,
+                    x + col_width,
                     center_y - min * amp_scale,
+                    clip,
                     color,
-                );
+                ));
             }
 
             if params.preview_active() {
-                // Preview connects to the right of the newest history column
                 let raw_last_x = right_edge - preview_width - scroll_offset;
-                let last_x = raw_last_x.floor();
-
-                // Start where the last history column ends (visually)
-                let start_x = last_x;
-                // Stretch to component edge to ensure no background leaks through gap
+                let start_x = raw_last_x.floor();
                 let end_x = right_edge;
 
                 let ps = params.preview_samples[ch];
                 let (min, max) = normalize_sample(ps.min, ps.max);
                 let color = with_alpha(ps.color, params.fill_alpha);
-                push_quad(
+                vertices.extend(quad_vertices(
                     start_x,
                     center_y - max * amp_scale,
                     end_x,
                     center_y - min * amp_scale,
+                    clip,
                     color,
-                );
+                ));
             }
-            append_strip(&mut vertices, strip_builder);
+
+            // Peak history overlay -- baseline is the absolute bottom of the visual bounds.
+            let band_expected = params.channels * NUM_BANDS * columns;
+            if !params.band_levels.is_empty()
+                && params.band_levels.len() >= band_expected
+                && columns >= 2
+            {
+                let baseline = params.bounds.y + params.bounds.height;
+                let band_height = baseline - (center_y - ch_height * 0.5);
+                let mut pts = Vec::with_capacity(columns + 1);
+                for band in 0..NUM_BANDS {
+                    let band_base = (ch * NUM_BANDS + band) * columns;
+                    let color = params.band_colors[band];
+                    let fill_color = with_alpha(color, BAND_FILL_ALPHA);
+
+                    pts.clear();
+                    pts.extend((0..columns).map(|i| {
+                        let level = params.band_levels[band_base + i].clamp(0.0, 1.0);
+                        (column_x(i), baseline - level * band_height)
+                    }));
+
+                    // Extend to the right edge so the overlay covers the preview region.
+                    if let Some(&last) = pts.last() {
+                        pts.push((right_edge, last.1));
+                    }
+
+                    for pair in pts.windows(2) {
+                        vertices.extend(baseline_segment_vertices(
+                            pair[0],
+                            pair[1],
+                            baseline,
+                            clip,
+                            [fill_color, fill_color],
+                        ));
+                    }
+
+                    vertices.extend(build_aa_line_list(&pts, BAND_LINE_WIDTH, color, &clip));
+                }
+            }
         }
 
         vertices
@@ -184,6 +205,6 @@ sdf_primitive!(
     Pipeline,
     u64,
     "Waveform",
-    TriangleStrip,
+    TriangleList,
     |self| self.params.key
 );
