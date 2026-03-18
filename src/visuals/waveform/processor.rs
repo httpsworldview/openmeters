@@ -4,7 +4,7 @@
 // Scrolling waveform with peak frequency-based coloring.
 
 use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
-use crate::util::audio::DEFAULT_SAMPLE_RATE;
+use crate::util::audio::{DEFAULT_SAMPLE_RATE, power_to_db};
 use crate::visuals::spectrogram::processor::WindowKind;
 use realfft::{RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex32;
@@ -25,11 +25,19 @@ const MAX_FREQ_HZ: f32 = 5_000.0;
 // lower = more smoothing, higher = more responsive.
 const CENTROID_EMA_ALPHA: f32 = 0.4;
 
+const BAND_EDGES_HZ: [f32; NUM_BANDS + 1] = [20.0, 250.0, 4000.0, 20000.0];
+const BAND_EMA_ALPHA: f32 = 0.35;
+
+pub const NUM_BANDS: usize = 3;
+pub const MIN_BAND_DB_FLOOR: f32 = -96.0;
+pub const MAX_BAND_DB_FLOOR: f32 = -12.0;
+
 #[derive(Debug, Clone, Copy)]
 pub struct WaveformConfig {
     pub sample_rate: f32,
     pub scroll_speed: f32,
     pub max_columns: usize,
+    pub band_db_floor: f32,
 }
 
 impl Default for WaveformConfig {
@@ -38,6 +46,7 @@ impl Default for WaveformConfig {
             sample_rate: DEFAULT_SAMPLE_RATE,
             scroll_speed: 300.0,
             max_columns: DEFAULT_COLUMN_CAPACITY,
+            band_db_floor: -60.0,
         }
     }
 }
@@ -49,6 +58,9 @@ impl WaveformConfig {
         self.max_columns = self
             .max_columns
             .clamp(MIN_COLUMN_CAPACITY, MAX_COLUMN_CAPACITY);
+        self.band_db_floor = self
+            .band_db_floor
+            .clamp(MIN_BAND_DB_FLOOR, MAX_BAND_DB_FLOOR);
         self
     }
     fn samples_per_column(&self) -> usize {
@@ -87,6 +99,7 @@ pub struct WaveformSnapshot {
     pub min_values: Vec<f32>,
     pub max_values: Vec<f32>,
     pub frequency_normalized: Vec<f32>,
+    pub band_levels: Vec<f32>,
     pub column_spacing_seconds: f32,
     pub scroll_position: f32,
     pub preview: WaveformPreview,
@@ -111,6 +124,8 @@ struct FrequencyAnalyzer {
     sample_history: Vec<f32>,
     bin_hz: f32,
     smoothed: f32,
+    smoothed_bands: [f32; NUM_BANDS],
+    band_bin_ranges: [(usize, usize); NUM_BANDS],
     hann_window: Vec<f32>,
 }
 
@@ -127,13 +142,23 @@ impl FrequencyAnalyzer {
     fn new(sample_rate: f32) -> Self {
         let size = FREQUENCY_FFT_SIZE;
         let fft = RealFftPlanner::new().plan_fft_forward(size);
+        let bin_hz = sample_rate / size as f32;
+        let spectrum_len = size / 2 + 1;
+        let mut band_bin_ranges = [(0usize, 0usize); NUM_BANDS];
+        for band in 0..NUM_BANDS {
+            let lo = (BAND_EDGES_HZ[band] / bin_hz).ceil() as usize;
+            let hi = ((BAND_EDGES_HZ[band + 1] / bin_hz).floor() as usize).min(spectrum_len);
+            band_bin_ranges[band] = (lo, hi);
+        }
         Self {
             scratch: vec![Complex32::default(); fft.get_scratch_len()],
             input_buffer: vec![0.0; size],
-            output_spectrum: vec![Complex32::default(); size / 2 + 1],
+            output_spectrum: vec![Complex32::default(); spectrum_len],
             sample_history: Vec::with_capacity(size),
-            bin_hz: sample_rate / size as f32,
+            bin_hz,
             smoothed: 0.1,
+            smoothed_bands: [0.0; NUM_BANDS],
+            band_bin_ranges,
             hann_window: Vec::new(),
             size,
             fft,
@@ -163,7 +188,27 @@ impl FrequencyAnalyzer {
 
         let raw = self.spectral_centroid();
         self.smoothed += CENTROID_EMA_ALPHA * (raw - self.smoothed);
+
+        self.update_band_levels();
+
         self.smoothed
+    }
+
+    fn update_band_levels(&mut self) {
+        let inv_n_sq = 1.0 / (self.size as f32 * self.size as f32);
+        for band in 0..NUM_BANDS {
+            let (lo_bin, hi_bin) = self.band_bin_ranges[band];
+            let rms = if lo_bin < hi_bin {
+                let power: f32 = self.output_spectrum[lo_bin..hi_bin]
+                    .iter()
+                    .map(|c| c.norm_sqr())
+                    .sum();
+                (2.0 * power * inv_n_sq).sqrt()
+            } else {
+                0.0
+            };
+            self.smoothed_bands[band] += BAND_EMA_ALPHA * (rms - self.smoothed_bands[band]);
+        }
     }
 
     fn apply_hann_window(&mut self) {
@@ -238,6 +283,7 @@ pub struct WaveformProcessor {
     min_values: Vec<f32>,
     max_values: Vec<f32>,
     frequency_values: Vec<f32>,
+    band_levels: Vec<f32>,
     ring_head: usize,
     column_count: usize,
     total_columns_written: u64,
@@ -260,6 +306,7 @@ impl WaveformProcessor {
             min_values: Vec::new(),
             max_values: Vec::new(),
             frequency_values: Vec::new(),
+            band_levels: Vec::new(),
             ring_head: 0,
             column_count: 0,
             total_columns_written: 0,
@@ -281,6 +328,10 @@ impl WaveformProcessor {
         self.min_values.resize(capacity, 0.0);
         self.max_values.resize(capacity, 0.0);
         self.frequency_values.resize(capacity, 0.0);
+        self.band_levels.resize(
+            self.channel_count * NUM_BANDS * self.config.max_columns,
+            0.0,
+        );
         self.sample_accumulators = (0..self.channel_count)
             .map(|_| Vec::with_capacity(self.samples_per_column))
             .collect();
@@ -316,6 +367,17 @@ impl WaveformProcessor {
             self.max_values[ring_index] = clamped_max;
             self.frequency_values[ring_index] =
                 self.frequency_analyzers[channel].analyze(&self.sample_accumulators[channel]);
+
+            for (band, &level) in self.frequency_analyzers[channel]
+                .smoothed_bands
+                .iter()
+                .enumerate()
+            {
+                let band_index = (channel * NUM_BANDS + band) * max_columns + self.ring_head;
+                let floor = self.config.band_db_floor;
+                let db = power_to_db(level * level, floor);
+                self.band_levels[band_index] = ((db - floor) / -floor).clamp(0.0, 1.0);
+            }
         }
 
         // Advance ring buffer
@@ -353,10 +415,12 @@ impl WaveformProcessor {
             self.column_count,
         );
         let size = visible_columns * channels;
+        let band_size = channels * NUM_BANDS * visible_columns;
 
         self.snapshot.min_values.resize(size, 0.0);
         self.snapshot.max_values.resize(size, 0.0);
         self.snapshot.frequency_normalized.resize(size, 0.0);
+        self.snapshot.band_levels.resize(band_size, 0.0);
         self.snapshot.channels = channels;
         self.snapshot.columns = visible_columns;
 
@@ -368,11 +432,18 @@ impl WaveformProcessor {
             };
             for channel in 0..channels {
                 for column in 0..visible_columns {
-                    let src = channel * max_columns + (start + column) % max_columns;
+                    let ring_col = (start + column) % max_columns;
+                    let src = channel * max_columns + ring_col;
                     let dst = channel * visible_columns + column;
                     self.snapshot.min_values[dst] = self.min_values[src];
                     self.snapshot.max_values[dst] = self.max_values[src];
                     self.snapshot.frequency_normalized[dst] = self.frequency_values[src];
+
+                    for band in 0..NUM_BANDS {
+                        let band_src = (channel * NUM_BANDS + band) * max_columns + ring_col;
+                        let band_dst = (channel * NUM_BANDS + band) * visible_columns + column;
+                        self.snapshot.band_levels[band_dst] = self.band_levels[band_src];
+                    }
                 }
             }
         }
@@ -450,12 +521,12 @@ impl AudioProcessor for WaveformProcessor {
 impl Reconfigurable<WaveformConfig> for WaveformProcessor {
     fn update_config(&mut self, config: WaveformConfig) {
         let normalized = config.normalized();
-        let changed = self.config.sample_rate != normalized.sample_rate
+        let rebuild = self.config.sample_rate != normalized.sample_rate
             || self.config.scroll_speed != normalized.scroll_speed
             || self.config.max_columns != normalized.max_columns;
 
-        if changed {
-            self.config = normalized;
+        self.config = normalized;
+        if rebuild {
             self.rebuild();
         }
     }
@@ -568,6 +639,7 @@ mod tests {
             sample_rate: 48_000.0,
             scroll_speed: 200.0,
             max_columns: MIN_COLUMN_CAPACITY,
+            ..Default::default()
         };
         let mut processor = WaveformProcessor::new(config);
         for batch in 0..MIN_COLUMN_CAPACITY + 10 {

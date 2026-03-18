@@ -144,9 +144,11 @@ visuals! {
         settings_cfg::WaveformSettings, &palettes::waveform::COLORS;
         apply(p, s, set) { visuals!(@apply_config p, set); p.sync_capacity(s.borrow().desired_columns());
             let mut st = s.borrow_mut(); st.set_channel_mode(set.channel_mode); st.set_color_mode(set.color_mode);
+            st.set_show_peak_history(set.show_peak_history);
             visuals!(@apply_palette st, set, &palettes::waveform::COLORS); };
         export(p, s) { let st = s.borrow(); let mut out = settings_cfg::WaveformSettings::from_config(&p.config());
             out.channel_mode = st.channel_mode(); out.color_mode = st.color_mode();
+            out.show_peak_history = st.show_peak_history();
             out.palette = visuals!(@export_palette st.palette(), &palettes::waveform::COLORS); out };
 
     Spectrogram("Spectrogram", 320.0, 220.0, 300.0) =>

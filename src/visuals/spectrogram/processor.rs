@@ -23,7 +23,8 @@
 
 use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::util::audio::{
-    DB_FLOOR, DEFAULT_SAMPLE_RATE, copy_from_deque, db_to_power, hz_to_mel, mel_to_hz, power_to_db,
+    DB_FLOOR, DEFAULT_SAMPLE_RATE, LN_TO_DB, copy_from_deque, db_to_power, hz_to_mel, mel_to_hz,
+    power_to_db,
 };
 use realfft::{RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex32;
@@ -36,7 +37,6 @@ use std::sync::{Arc, OnceLock};
 use wide::{CmpGe, CmpGt, CmpLe, CmpLt, f32x8};
 pub const PLANCK_BESSEL_DEFAULT_EPSILON: f32 = 0.1;
 pub const PLANCK_BESSEL_DEFAULT_BETA: f32 = 5.5;
-const LN_TO_DB: f32 = 4.342_944_8;
 
 const OPTIMAL_FREQ_CORRECTION_RATIO: f32 = 1.0;
 

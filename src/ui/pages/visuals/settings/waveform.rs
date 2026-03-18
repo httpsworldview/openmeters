@@ -4,12 +4,15 @@
 use super::CHANNEL_OPTIONS;
 use super::palette::{PaletteEditor, PaletteEvent};
 use super::widgets::{
-    SliderRange, labeled_pick_list, labeled_slider, set_if_changed, update_f32_range,
+    SliderRange, labeled_pick_list, labeled_slider, labeled_toggler, set_if_changed,
+    update_f32_range,
 };
 use crate::persistence::settings::{ChannelMode, WaveformColorMode, WaveformSettings};
 use crate::ui::theme;
 use crate::visuals::registry::VisualKind;
-use crate::visuals::waveform::processor::{MAX_SCROLL_SPEED, MIN_SCROLL_SPEED};
+use crate::visuals::waveform::processor::{
+    MAX_BAND_DB_FLOOR, MAX_SCROLL_SPEED, MIN_BAND_DB_FLOOR, MIN_SCROLL_SPEED,
+};
 use iced::Element;
 use iced::widget::column;
 
@@ -22,6 +25,8 @@ settings_pane!(
 );
 
 const SCROLL_SPEED_RANGE: SliderRange = SliderRange::new(MIN_SCROLL_SPEED, MAX_SCROLL_SPEED, 1.0);
+const BAND_DB_FLOOR_RANGE: SliderRange =
+    SliderRange::new(MIN_BAND_DB_FLOOR, MAX_BAND_DB_FLOOR, 1.0);
 const COLOR_MODE_OPTIONS: [WaveformColorMode; 3] = [
     WaveformColorMode::Frequency,
     WaveformColorMode::Loudness,
@@ -48,8 +53,10 @@ fn configure_palette_for_mode(palette: &mut PaletteEditor, mode: WaveformColorMo
 #[derive(Debug, Clone, Copy)]
 pub enum Message {
     ScrollSpeed(f32),
+    BandDbFloor(f32),
     ChannelMode(ChannelMode),
     ColorMode(WaveformColorMode),
+    ShowPeakHistory(bool),
     Palette(PaletteEvent),
 }
 
@@ -75,6 +82,18 @@ impl WaveformSettingsPane {
                 Some(self.settings.color_mode),
                 Message::ColorMode
             ),
+            labeled_toggler(
+                "Peak history",
+                self.settings.show_peak_history,
+                Message::ShowPeakHistory
+            ),
+            labeled_slider(
+                "Peak range",
+                self.settings.band_db_floor,
+                format!("{:.0} dB", self.settings.band_db_floor),
+                BAND_DB_FLOOR_RANGE,
+                Message::BandDbFloor
+            ),
             super::palette_section(&self.palette, Message::Palette)
         ]
         .spacing(16)
@@ -86,6 +105,9 @@ impl WaveformSettingsPane {
             Message::ScrollSpeed(v) => {
                 update_f32_range(&mut self.settings.scroll_speed, v, SCROLL_SPEED_RANGE)
             }
+            Message::BandDbFloor(v) => {
+                update_f32_range(&mut self.settings.band_db_floor, v, BAND_DB_FLOOR_RANGE)
+            }
             Message::ChannelMode(m) => set_if_changed(&mut self.settings.channel_mode, m),
             Message::ColorMode(m) => {
                 let changed = set_if_changed(&mut self.settings.color_mode, m);
@@ -94,6 +116,7 @@ impl WaveformSettingsPane {
                 }
                 changed
             }
+            Message::ShowPeakHistory(v) => set_if_changed(&mut self.settings.show_peak_history, v),
             Message::Palette(e) => self.palette.update(e),
         }
     }

@@ -2,13 +2,14 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::processor::{
-    DEFAULT_COLUMN_CAPACITY, MAX_COLUMN_CAPACITY, MIN_COLUMN_CAPACITY, WaveformConfig,
+    DEFAULT_COLUMN_CAPACITY, MAX_COLUMN_CAPACITY, MIN_COLUMN_CAPACITY, NUM_BANDS, WaveformConfig,
     WaveformPreview, WaveformProcessor as CoreWaveformProcessor, WaveformSnapshot,
 };
 use super::render::{PreviewSample, WaveformParams, WaveformPrimitive};
 use crate::persistence::settings::{ChannelMode, WaveformColorMode, WaveformSettings};
 use crate::util::color;
 use crate::visuals::palettes;
+use crate::visuals::palettes::waveform::GRADIENT_STOPS;
 use crate::visuals::project_channel_data;
 use crate::{vis_processor, visualization_widget};
 use iced::Color;
@@ -45,6 +46,7 @@ pub(crate) struct WaveformState {
     key: u64,
     channel_mode: ChannelMode,
     color_mode: WaveformColorMode,
+    show_peak_history: bool,
 }
 
 impl WaveformState {
@@ -57,6 +59,7 @@ impl WaveformState {
             key: crate::visuals::next_key(),
             channel_mode: defaults.channel_mode,
             color_mode: defaults.color_mode,
+            show_peak_history: defaults.show_peak_history,
         }
     }
 
@@ -83,11 +86,19 @@ impl WaveformState {
         self.color_mode
     }
 
+    pub fn set_show_peak_history(&mut self, show: bool) {
+        self.show_peak_history = show;
+    }
+
+    pub fn show_peak_history(&self) -> bool {
+        self.show_peak_history
+    }
+
     pub fn set_palette(&mut self, palette: &[Color]) {
         self.style.try_update_palette(palette);
     }
 
-    pub fn palette(&self) -> &[Color; 6] {
+    pub fn palette(&self) -> &[Color; 9] {
         &self.style.palette
     }
 
@@ -111,6 +122,12 @@ impl WaveformState {
         let (samples, colors) = self.build_sample_data(channels, total_columns, start, visible);
         let (preview_samples, preview_progress) = self.build_preview(channels);
 
+        let band_levels = if self.show_peak_history {
+            self.build_band_levels(channels, total_columns, start, visible)
+        } else {
+            Arc::from([])
+        };
+
         Some(WaveformParams {
             bounds,
             channels,
@@ -120,6 +137,8 @@ impl WaveformState {
             colors,
             preview_samples,
             preview_progress,
+            band_levels,
+            band_colors: self.style.band_colors(),
             fill_alpha: self.style.fill_alpha,
             vertical_padding: self.style.vertical_padding,
             channel_gap: self.style.channel_gap,
@@ -198,6 +217,29 @@ impl WaveformState {
         (Arc::from(result), preview.progress.clamp(0.0, 1.0))
     }
 
+    fn build_band_levels(
+        &self,
+        channels: usize,
+        total_columns: usize,
+        start: usize,
+        visible: usize,
+    ) -> Arc<[f32]> {
+        let expected = channels * NUM_BANDS * total_columns;
+        if self.snapshot.band_levels.len() < expected {
+            return Arc::from([]);
+        }
+        let mut out = Vec::with_capacity(channels * NUM_BANDS * visible);
+        for channel in 0..channels {
+            for band in 0..NUM_BANDS {
+                let base = (channel * NUM_BANDS + band) * total_columns;
+                out.extend_from_slice(
+                    &self.snapshot.band_levels[base + start..base + start + visible],
+                );
+            }
+        }
+        Arc::from(out)
+    }
+
     fn latest_frequency_for_channel(&self, channel: usize) -> f32 {
         let cols = self.snapshot.columns;
         self.snapshot
@@ -219,9 +261,7 @@ impl WaveformState {
             return WaveformSnapshot::default();
         }
 
-        let remap = |data: &[f32], samples_per_ch| {
-            project_channel_data(mode, data, samples_per_ch, channels)
-        };
+        let remap = |data: &[f32], stride| project_channel_data(mode, data, stride, channels);
 
         let preview = &source.preview;
         let preview_valid =
@@ -233,6 +273,7 @@ impl WaveformState {
             min_values: remap(&source.min_values, columns),
             max_values: remap(&source.max_values, columns),
             frequency_normalized: remap(&source.frequency_normalized, columns),
+            band_levels: remap(&source.band_levels, NUM_BANDS * columns),
             column_spacing_seconds: source.column_spacing_seconds,
             scroll_position: source.scroll_position,
             preview: if preview_valid {
@@ -254,7 +295,7 @@ pub(crate) struct WaveformStyle {
     pub vertical_padding: f32,
     pub channel_gap: f32,
     pub amplitude_scale: f32,
-    pub palette: [Color; 6],
+    pub palette: [Color; 9],
 }
 
 impl Default for WaveformStyle {
@@ -271,11 +312,15 @@ impl Default for WaveformStyle {
 
 impl WaveformStyle {
     fn sample_color(&self, intensity: f32) -> Color {
-        color::sample_gradient(&self.palette, intensity)
+        color::sample_gradient(&self.palette[..GRADIENT_STOPS], intensity)
+    }
+
+    fn band_colors(&self) -> [[f32; 4]; NUM_BANDS] {
+        std::array::from_fn(|i| color::color_to_rgba(self.palette[GRADIENT_STOPS + i]))
     }
 
     fn try_update_palette(&mut self, palette: &[Color]) -> bool {
-        let palette_changed = palette.len() == 6 && !color::palettes_equal(&self.palette, palette);
+        let palette_changed = palette.len() == 9 && !color::palettes_equal(&self.palette, palette);
         if palette_changed {
             self.palette.copy_from_slice(palette);
         }
