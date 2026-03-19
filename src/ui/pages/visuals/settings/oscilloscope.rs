@@ -16,7 +16,7 @@ use iced::widget::column;
 fn extract_num_cycles(mode: TriggerMode) -> usize {
     match mode {
         TriggerMode::Stable { num_cycles } => num_cycles,
-        _ => 1,
+        _ => 2,
     }
 }
 
@@ -39,7 +39,7 @@ const NUM_CYCLES_RANGE: SliderRange = SliderRange::new(1.0, 4.0, 1.0);
 pub enum Message {
     SegmentDuration(f32),
     Persistence(f32),
-    TriggerMode(bool), // true = stable
+    TriggerMode(TriggerPreset),
     NumCycles(usize),
     ChannelMode(ChannelMode),
     Palette(PaletteEvent),
@@ -48,8 +48,8 @@ pub enum Message {
 impl OscilloscopeSettingsPane {
     fn view(&self) -> Element<'_, Message> {
         let mode = self.settings.trigger_mode;
-        let is_stable = matches!(mode, TriggerMode::Stable { .. });
-        let dur_label = if is_stable {
+        let preset = TriggerPreset::from_mode(mode);
+        let dur_label = if preset == TriggerPreset::Stable {
             "Segment duration (fallback)"
         } else {
             "Segment duration"
@@ -58,9 +58,9 @@ impl OscilloscopeSettingsPane {
         let mut content = column![
             labeled_pick_list(
                 "Mode",
-                &["Zero-crossing", "Stable"],
-                Some(if is_stable { "Stable" } else { "Zero-crossing" }),
-                |l| Message::TriggerMode(l == "Stable")
+                &TriggerPreset::ALL,
+                Some(preset),
+                Message::TriggerMode
             ),
             labeled_pick_list(
                 "Channels",
@@ -110,13 +110,12 @@ impl OscilloscopeSettingsPane {
             Message::Persistence(v) => {
                 update_f32_range(&mut self.settings.persistence, v, PERSISTENCE_RANGE)
             }
-            Message::TriggerMode(stable) => {
-                let mode = if stable {
-                    TriggerMode::Stable {
+            Message::TriggerMode(preset) => {
+                let mode = match preset {
+                    TriggerPreset::Stable => TriggerMode::Stable {
                         num_cycles: self.num_cycles,
-                    }
-                } else {
-                    TriggerMode::ZeroCrossing
+                    },
+                    TriggerPreset::ZeroCrossing => TriggerMode::ZeroCrossing,
                 };
                 set_if_changed(&mut self.settings.trigger_mode, mode)
             }
@@ -137,5 +136,31 @@ impl OscilloscopeSettingsPane {
             Message::ChannelMode(m) => set_if_changed(&mut self.settings.channel_mode, m),
             Message::Palette(e) => self.palette.update(e),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TriggerPreset {
+    ZeroCrossing,
+    Stable,
+}
+
+impl TriggerPreset {
+    const ALL: [Self; 2] = [Self::ZeroCrossing, Self::Stable];
+
+    fn from_mode(mode: TriggerMode) -> Self {
+        match mode {
+            TriggerMode::ZeroCrossing => Self::ZeroCrossing,
+            TriggerMode::Stable { .. } => Self::Stable,
+        }
+    }
+}
+
+impl std::fmt::Display for TriggerPreset {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::ZeroCrossing => "Zero-crossing",
+            Self::Stable => "Stable",
+        })
     }
 }
