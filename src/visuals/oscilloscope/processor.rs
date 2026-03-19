@@ -38,7 +38,7 @@ fn parabolic_refine(y_prev: f32, y_curr: f32, y_next: f32, tau: usize) -> f32 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum TriggerMode {
-    FreeRun,
+    ZeroCrossing,
     Stable { num_cycles: usize },
 }
 
@@ -547,7 +547,7 @@ impl AudioProcessor for OscilloscopeProcessor {
         let detection_frames = (self.config.sample_rate * 0.1) as usize;
         let search_range = (self.config.sample_rate / PITCH_MIN_HZ).ceil() as usize;
         let trigger_frames = match self.config.trigger_mode {
-            TriggerMode::FreeRun => base_frames + search_range,
+            TriggerMode::ZeroCrossing => base_frames + search_range,
             TriggerMode::Stable { num_cycles } => {
                 let max_period = (self.config.sample_rate / PITCH_MIN_HZ) as usize;
                 max_period * (num_cycles.max(1) + 1)
@@ -565,7 +565,7 @@ impl AudioProcessor for OscilloscopeProcessor {
         let available = self.history.len() / channel_count;
 
         let (frames, start, frac_offset) = match self.config.trigger_mode {
-            TriggerMode::FreeRun => {
+            TriggerMode::ZeroCrossing => {
                 let frames = base_frames.min(available);
                 if frames == 0 {
                     return None;
@@ -755,7 +755,7 @@ mod tests {
     fn produces_downsampled_snapshot_when_buffer_ready() {
         let config = OscilloscopeConfig {
             segment_duration: 0.01,
-            trigger_mode: TriggerMode::FreeRun,
+            trigger_mode: TriggerMode::ZeroCrossing,
             ..Default::default()
         };
         let mut processor = OscilloscopeProcessor::new(config);
@@ -825,10 +825,10 @@ mod tests {
     }
 
     #[test]
-    fn free_run_both_edges_near_zero() {
+    fn zero_crossing_both_edges_near_zero() {
         let config = OscilloscopeConfig {
             segment_duration: 0.01,
-            trigger_mode: TriggerMode::FreeRun,
+            trigger_mode: TriggerMode::ZeroCrossing,
             ..Default::default()
         };
         let mut processor = OscilloscopeProcessor::new(config);
