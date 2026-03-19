@@ -48,12 +48,12 @@ impl OscilloscopeSettingsPane {
         let mut content = column![
             labeled_pick_list(
                 "Mode",
-                &["Free-run", "Stable"],
-                Some(if is_stable { "Stable" } else { "Free-run" }),
+                &["Zero-crossing", "Stable"],
+                Some(if is_stable { "Stable" } else { "Zero-crossing" }),
                 |l| Message::TriggerMode(if l == "Stable" {
                     TriggerMode::Stable { num_cycles: 1 }
                 } else {
-                    TriggerMode::FreeRun
+                    TriggerMode::ZeroCrossing
                 })
             ),
             labeled_pick_list(
@@ -113,7 +113,7 @@ impl OscilloscopeSettingsPane {
                             .clamp(NUM_CYCLES_RANGE.min as usize, NUM_CYCLES_RANGE.max as usize),
                     },
                 ),
-                TriggerMode::FreeRun => false,
+                TriggerMode::ZeroCrossing => false,
             },
             Message::ChannelMode(m) => set_if_changed(&mut self.settings.channel_mode, m),
             Message::Palette(e) => self.palette.update(e),
