@@ -94,8 +94,10 @@ impl WaveformState {
         self.show_peak_history
     }
 
-    pub fn set_palette(&mut self, palette: &[Color]) {
-        self.style.try_update_palette(palette);
+    pub fn set_palette(&mut self, palette: &[Color; 9]) {
+        if !color::palettes_equal(&self.style.palette, palette) {
+            self.style.palette = *palette;
+        }
     }
 
     pub fn palette(&self) -> &[Color; 9] {
@@ -317,14 +319,6 @@ impl WaveformStyle {
 
     fn band_colors(&self) -> [[f32; 4]; NUM_BANDS] {
         std::array::from_fn(|i| color::color_to_rgba(self.palette[GRADIENT_STOPS + i]))
-    }
-
-    fn try_update_palette(&mut self, palette: &[Color]) -> bool {
-        let palette_changed = palette.len() == 9 && !color::palettes_equal(&self.palette, palette);
-        if palette_changed {
-            self.palette.copy_from_slice(palette);
-        }
-        palette_changed
     }
 }
 

@@ -312,7 +312,7 @@ impl SpectrogramState {
     }
 
     pub fn set_palette(&mut self, palette: &[Color; SPECTROGRAM_PALETTE_SIZE]) {
-        if self.palette != *palette {
+        if !color::palettes_equal(&self.palette, palette) {
             self.palette = *palette;
         }
     }
@@ -349,8 +349,8 @@ impl SpectrogramState {
         self.style.floor_db = floor;
     }
 
-    pub fn palette(&self) -> [Color; SPECTROGRAM_PALETTE_SIZE] {
-        self.palette
+    pub fn palette(&self) -> &[Color; SPECTROGRAM_PALETTE_SIZE] {
+        &self.palette
     }
 
     pub fn floor_db(&self) -> f32 {
@@ -599,7 +599,7 @@ impl<'a> Spectrogram<'a> {
             Quad {
                 bounds: tb,
                 border: iced::Border {
-                    color: Color::from_rgba(0.280, 0.288, 0.304, 1.0),
+                    color: crate::ui::theme::BORDER_SUBTLE,
                     width: 1.0,
                     radius: 0.0.into(),
                 },

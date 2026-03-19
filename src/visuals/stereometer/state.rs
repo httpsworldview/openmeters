@@ -76,14 +76,14 @@ impl StereometerState {
         self.correlation_meter_side = s.correlation_meter_side;
     }
 
-    pub fn set_palette(&mut self, p: &[Color]) {
-        for (dst, src) in self.palette.iter_mut().zip(p) {
-            *dst = *src;
+    pub fn set_palette(&mut self, palette: &[Color; 9]) {
+        if !color::palettes_equal(&self.palette, palette) {
+            self.palette = *palette;
         }
     }
 
-    pub fn palette(&self) -> [Color; 9] {
-        self.palette
+    pub fn palette(&self) -> &[Color; 9] {
+        &self.palette
     }
 
     pub fn export_settings(&self) -> StereometerSettings {

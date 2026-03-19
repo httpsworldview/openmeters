@@ -163,7 +163,7 @@ visuals! {
             st.set_tilt_db(set.tilt_db);
             st.set_rotation(set.rotation); };
         export(p, s) { let st = s.borrow(); let mut out = settings_cfg::SpectrogramSettings::from_config(&p.config());
-            out.palette = PaletteSettings::from_state(&st.palette(), &palettes::spectrogram::COLORS, st.stop_positions(), st.stop_spreads());
+            out.palette = PaletteSettings::from_state(st.palette(), &palettes::spectrogram::COLORS, st.stop_positions(), st.stop_spreads());
             out.piano_roll_overlay = st.piano_roll_overlay;
             out.floor_db = st.floor_db();
             out.tilt_db = st.tilt_db();
@@ -182,7 +182,7 @@ visuals! {
             style.bar_count = set.bar_count; style.bar_gap = set.bar_gap;
             st.update_show_grid(set.show_grid); st.update_show_peak_label(set.show_peak_label); };
         export(p, s) { let st = s.borrow(); let mut out = settings_cfg::SpectrumSettings::from_config(&p.config());
-            out.palette = visuals!(@export_palette &st.palette(), &palettes::spectrum::COLORS);
+            out.palette = visuals!(@export_palette st.palette(), &palettes::spectrum::COLORS);
             out.smoothing_radius = st.style().smoothing_radius;
             out.smoothing_passes = st.style().smoothing_passes;
             out.highlight_threshold = st.style().highlight_threshold;
@@ -201,7 +201,7 @@ visuals! {
             out.segment_duration = cfg.segment_duration;
             out.target_sample_count = cfg.target_sample_count;
             out.correlation_window = cfg.correlation_window;
-            out.palette = visuals!(@export_palette &st.palette(), &palettes::stereometer::COLORS); out };
+            out.palette = visuals!(@export_palette st.palette(), &palettes::stereometer::COLORS); out };
 }
 
 struct Visual<P, S> {

@@ -26,7 +26,7 @@ pub use crate::visuals::palettes::{
 const TEXT_PRIMARY: Color = Color::from_rgba(0.902, 0.910, 0.925, 1.0);
 const TEXT_DARK: Color = Color::from_rgba(0.10, 0.10, 0.10, 1.0);
 
-const BORDER_SUBTLE: Color = Color::from_rgba(0.280, 0.288, 0.304, 1.0);
+pub const BORDER_SUBTLE: Color = Color::from_rgba(0.280, 0.288, 0.304, 1.0);
 const BORDER_FOCUS: Color = Color::from_rgba(0.520, 0.536, 0.560, 1.0);
 
 // Accent colors

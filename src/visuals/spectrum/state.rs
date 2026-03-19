@@ -196,14 +196,14 @@ impl SpectrumState {
         }
     }
 
-    pub fn set_palette(&mut self, palette: &[Color]) {
-        if palette.len() == 6 && !color::palettes_equal(&self.style.spectrum_palette, palette) {
-            self.style.spectrum_palette.copy_from_slice(palette);
+    pub fn set_palette(&mut self, palette: &[Color; 6]) {
+        if !color::palettes_equal(&self.style.spectrum_palette, palette) {
+            self.style.spectrum_palette = *palette;
         }
     }
 
-    pub fn palette(&self) -> [Color; 6] {
-        self.style.spectrum_palette
+    pub fn palette(&self) -> &[Color; 6] {
+        &self.style.spectrum_palette
     }
 
     pub fn apply_snapshot(&mut self, snap: &SpectrumSnapshot) {
@@ -639,7 +639,7 @@ fn draw_peak(r: &mut iced::Renderer, th: &iced::Theme, b: Rectangle, pk: &PeakLa
         Size::new(sz.width + 8.0, sz.height + 8.0),
     );
     let mut bdr = iced::Border {
-        color: Color::from_rgba(0.280, 0.288, 0.304, 1.0),
+        color: crate::ui::theme::BORDER_SUBTLE,
         width: 1.0,
         radius: 0.0.into(),
     };

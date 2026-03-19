@@ -14,6 +14,7 @@ use crate::visuals::project_channel_data;
 use crate::{vis_processor, visualization_widget};
 use iced::Color;
 
+const OSCILLOSCOPE_PALETTE_SIZE: usize = 1;
 const MAX_PERSISTENCE: f32 = 0.98;
 const FILL_ALPHA: f32 = 0.15;
 
@@ -55,12 +56,13 @@ impl OscilloscopeState {
         }
     }
 
-    pub fn set_palette(&mut self, palette: &[Color]) {
-        self.style.colors.clear();
-        self.style.colors.extend_from_slice(palette);
+    pub fn set_palette(&mut self, palette: &[Color; OSCILLOSCOPE_PALETTE_SIZE]) {
+        if !color::palettes_equal(&self.style.colors, palette) {
+            self.style.colors = *palette;
+        }
     }
 
-    pub fn palette(&self) -> &[Color] {
+    pub fn palette(&self) -> &[Color; OSCILLOSCOPE_PALETTE_SIZE] {
         &self.style.colors
     }
 
@@ -137,13 +139,13 @@ impl OscilloscopeState {
 
 #[derive(Debug, Clone)]
 pub(crate) struct OscilloscopeStyle {
-    pub colors: Vec<Color>,
+    pub colors: [Color; OSCILLOSCOPE_PALETTE_SIZE],
 }
 
 impl Default for OscilloscopeStyle {
     fn default() -> Self {
         Self {
-            colors: palettes::oscilloscope::COLORS.to_vec(),
+            colors: palettes::oscilloscope::COLORS,
         }
     }
 }

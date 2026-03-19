@@ -4,6 +4,7 @@
 // Shared widgets and utilities for the settings panes
 
 use crate::ui::theme;
+use crate::visuals::spectrogram::processor::FrequencyScale;
 use iced::Length;
 use iced::alignment::Vertical;
 use iced::widget::text::Wrapping;
@@ -11,7 +12,13 @@ use iced::widget::{column, container, pick_list, row, slider, text, toggler};
 use std::borrow::Cow;
 use std::fmt;
 
+pub const FFT_OPTIONS: [usize; 5] = [1024, 2048, 4096, 8192, 16384];
 pub const HOP_DIVISORS: [usize; 7] = [4, 6, 8, 16, 32, 64, 128];
+pub const FREQ_SCALE_OPTIONS: [FrequencyScale; 3] = [
+    FrequencyScale::Linear,
+    FrequencyScale::Logarithmic,
+    FrequencyScale::Mel,
+];
 
 pub struct SliderRange {
     pub min: f32,

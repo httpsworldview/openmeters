@@ -3,8 +3,9 @@
 
 use super::palette::PaletteEvent;
 use super::widgets::{
-    HOP_DIVISORS, SliderRange, get_closest_hop_divisor, labeled_pick_list, labeled_slider,
-    labeled_toggler, section_title, set_f32, set_if_changed, update_usize_from_f32,
+    FFT_OPTIONS, FREQ_SCALE_OPTIONS, HOP_DIVISORS, SliderRange, get_closest_hop_divisor,
+    labeled_pick_list, labeled_slider, labeled_toggler, section_title, set_f32, set_if_changed,
+    update_usize_from_f32,
 };
 use crate::persistence::settings::{SpectrumDisplayMode, SpectrumSettings, SpectrumWeightingMode};
 use crate::ui::theme;
@@ -17,12 +18,6 @@ use crate::visuals::spectrum::processor::{
 use iced::widget::{column, row};
 use iced::{Element, Length};
 
-const FFT_OPTIONS: [usize; 5] = [1024, 2048, 4096, 8192, 16384];
-const FREQ_SCALE: [FrequencyScale; 3] = [
-    FrequencyScale::Linear,
-    FrequencyScale::Logarithmic,
-    FrequencyScale::Mel,
-];
 const DISPLAY_MODE: [SpectrumDisplayMode; 2] =
     [SpectrumDisplayMode::Line, SpectrumDisplayMode::Bar];
 const WEIGHTING: [SpectrumWeightingMode; 2] =
@@ -115,7 +110,7 @@ impl SpectrumSettingsPane {
         let right = column![
             labeled_pick_list(
                 "Freq scale",
-                &FREQ_SCALE,
+                &FREQ_SCALE_OPTIONS,
                 Some(s.frequency_scale),
                 FrequencyScale
             ),

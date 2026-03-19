@@ -3,8 +3,9 @@
 
 use super::palette::PaletteEvent;
 use super::widgets::{
-    HOP_DIVISORS, SliderRange, get_closest_hop_divisor, labeled_pick_list, labeled_slider,
-    labeled_toggler, section_title, set_if_changed, update_f32_range, update_usize_from_f32,
+    FFT_OPTIONS, FREQ_SCALE_OPTIONS, HOP_DIVISORS, SliderRange, get_closest_hop_divisor,
+    labeled_pick_list, labeled_slider, labeled_toggler, section_title, set_if_changed,
+    update_f32_range, update_usize_from_f32,
 };
 use crate::persistence::settings::{PianoRollOverlay, SpectrogramSettings};
 use crate::ui::theme;
@@ -15,13 +16,7 @@ use crate::visuals::spectrogram::processor::{
 use iced::widget::{column, row};
 use iced::{Element, Length};
 
-const FFT_OPTIONS: [usize; 5] = [1024, 2048, 4096, 8192, 16384];
 const ZERO_PAD_OPTIONS: [usize; 6] = [1, 2, 4, 8, 16, 32];
-const FREQ_SCALE_OPTIONS: [FrequencyScale; 3] = [
-    FrequencyScale::Linear,
-    FrequencyScale::Logarithmic,
-    FrequencyScale::Mel,
-];
 const PIANO_ROLL_OVERLAY_OPTIONS: [PianoRollOverlay; 3] = [
     PianoRollOverlay::Off,
     PianoRollOverlay::Right,
