@@ -26,8 +26,10 @@ wayland-client = "0.31.13"
 ebur128 = "0.1.10"
 tempfile = "3.27.0"
 
+# some level of compiler optimization is needed in dev builds because
+# it's expensive to run ~3k FFTs/second.
 [profile.dev]
-opt-level = "z"
+opt-level = 1
 
 [profile.release]
 lto = "thin"
