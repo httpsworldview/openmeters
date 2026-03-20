@@ -6,7 +6,7 @@ use super::processor::{
     WaveformPreview, WaveformProcessor as CoreWaveformProcessor, WaveformSnapshot,
 };
 use super::render::{PreviewSample, WaveformParams, WaveformPrimitive};
-use crate::persistence::settings::{ChannelMode, WaveformColorMode, WaveformSettings};
+use crate::persistence::settings::{Channel, WaveformColorMode, WaveformSettings};
 use crate::util::color;
 use crate::visuals::palettes;
 use crate::visuals::palettes::waveform::GRADIENT_STOPS;
@@ -44,7 +44,8 @@ pub(crate) struct WaveformState {
     style: WaveformStyle,
     desired_columns: Cell<usize>,
     key: u64,
-    channel_mode: ChannelMode,
+    channel_1: Channel,
+    channel_2: Channel,
     color_mode: WaveformColorMode,
     show_peak_history: bool,
 }
@@ -57,25 +58,31 @@ impl WaveformState {
             style: WaveformStyle::default(),
             desired_columns: Cell::new(DEFAULT_COLUMN_CAPACITY),
             key: crate::visuals::next_key(),
-            channel_mode: defaults.channel_mode,
+            channel_1: defaults.channel_1,
+            channel_2: defaults.channel_2,
             color_mode: defaults.color_mode,
             show_peak_history: defaults.show_peak_history,
         }
     }
 
     pub fn apply_snapshot(&mut self, snapshot: &WaveformSnapshot) {
-        self.snapshot = Self::project(snapshot, self.channel_mode);
+        self.snapshot = Self::project_channels(snapshot, self.channel_1, self.channel_2);
     }
 
-    pub fn set_channel_mode(&mut self, mode: ChannelMode) {
-        if self.channel_mode != mode {
-            self.channel_mode = mode;
-            self.snapshot = Self::project(&self.snapshot, mode);
+    pub fn set_channels(&mut self, channel_1: Channel, channel_2: Channel) {
+        if self.channel_1 != channel_1 || self.channel_2 != channel_2 {
+            self.channel_1 = channel_1;
+            self.channel_2 = channel_2;
+            self.snapshot = Self::project_channels(&self.snapshot, channel_1, channel_2);
         }
     }
 
-    pub fn channel_mode(&self) -> ChannelMode {
-        self.channel_mode
+    pub fn channel_1(&self) -> Channel {
+        self.channel_1
+    }
+
+    pub fn channel_2(&self) -> Channel {
+        self.channel_2
     }
 
     pub fn set_color_mode(&mut self, mode: WaveformColorMode) {
@@ -113,7 +120,7 @@ impl WaveformState {
             return None;
         }
 
-        let channels = self.snapshot.channels.max(1);
+        let channels = self.snapshot.channels;
         let total_columns = self.snapshot.columns;
         let needed =
             ((bounds.width / COLUMN_WIDTH_PIXELS).ceil() as usize).clamp(1, MAX_COLUMN_CAPACITY);
@@ -150,10 +157,10 @@ impl WaveformState {
     }
 
     fn has_renderable_data(&self, width: f32) -> bool {
-        if width <= 0.0 || self.snapshot.columns == 0 {
+        if width <= 0.0 || self.snapshot.columns == 0 || self.snapshot.channels == 0 {
             return false;
         }
-        let expected_len = self.snapshot.columns * self.snapshot.channels.max(1);
+        let expected_len = self.snapshot.columns * self.snapshot.channels;
         self.snapshot.min_values.len() == expected_len
             && self.snapshot.max_values.len() == expected_len
             && self.snapshot.frequency_normalized.len() == expected_len
@@ -251,7 +258,7 @@ impl WaveformState {
             .unwrap_or(0.0)
     }
 
-    fn project(source: &WaveformSnapshot, mode: ChannelMode) -> WaveformSnapshot {
+    fn project_channels(source: &WaveformSnapshot, ch1: Channel, ch2: Channel) -> WaveformSnapshot {
         let (channels, columns) = (source.channels.max(1), source.columns);
         let expected = channels * columns;
         let valid = columns > 0
@@ -263,16 +270,25 @@ impl WaveformState {
             return WaveformSnapshot::default();
         }
 
-        let remap = |data: &[f32], stride| project_channel_data(mode, data, stride, channels);
+        let remap = |data: &[f32], stride: usize| -> Vec<f32> {
+            [ch1, ch2]
+                .into_iter()
+                .filter_map(|c| project_channel_data(c, data, stride, channels))
+                .flatten()
+                .collect()
+        };
+
+        let min_values = remap(&source.min_values, columns);
+        let out_channels = min_values.len() / columns;
 
         let preview = &source.preview;
         let preview_valid =
             preview.min_values.len() >= channels && preview.max_values.len() >= channels;
 
         WaveformSnapshot {
-            channels: mode.output_channels(channels),
+            channels: out_channels,
             columns,
-            min_values: remap(&source.min_values, columns),
+            min_values,
             max_values: remap(&source.max_values, columns),
             frequency_normalized: remap(&source.frequency_normalized, columns),
             band_levels: remap(&source.band_levels, NUM_BANDS * columns),

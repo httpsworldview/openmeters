@@ -132,10 +132,10 @@ visuals! {
         oscilloscope::OscilloscopeProcessor, OscilloscopeState;
         settings_cfg::OscilloscopeSettings, &palettes::oscilloscope::COLORS;
         apply(p, s, set) { visuals!(@apply_config p, set); let mut st = s.borrow_mut();
-            st.update_view_settings(set.persistence, set.channel_mode);
+            st.update_view_settings(set.persistence, set.channel_1, set.channel_2);
             visuals!(@apply_palette st, set, &palettes::oscilloscope::COLORS); };
         export(p, s) { let st = s.borrow(); let mut out = settings_cfg::OscilloscopeSettings::from_config(&p.config());
-            out.persistence = st.persistence(); out.channel_mode = st.channel_mode();
+            out.persistence = st.persistence(); out.channel_1 = st.channel_1(); out.channel_2 = st.channel_2();
             out.palette = visuals!(@export_palette st.palette(), &palettes::oscilloscope::COLORS); out };
 
     Waveform("Waveform", 220.0, 180.0, 220.0) =>
@@ -143,11 +143,11 @@ visuals! {
         @pre_ingest(p, s) p.sync_capacity(s.borrow().desired_columns());
         settings_cfg::WaveformSettings, &palettes::waveform::COLORS;
         apply(p, s, set) { visuals!(@apply_config p, set); p.sync_capacity(s.borrow().desired_columns());
-            let mut st = s.borrow_mut(); st.set_channel_mode(set.channel_mode); st.set_color_mode(set.color_mode);
+            let mut st = s.borrow_mut(); st.set_channels(set.channel_1, set.channel_2); st.set_color_mode(set.color_mode);
             st.set_show_peak_history(set.show_peak_history);
             visuals!(@apply_palette st, set, &palettes::waveform::COLORS); };
         export(p, s) { let st = s.borrow(); let mut out = settings_cfg::WaveformSettings::from_config(&p.config());
-            out.channel_mode = st.channel_mode(); out.color_mode = st.color_mode();
+            out.channel_1 = st.channel_1(); out.channel_2 = st.channel_2(); out.color_mode = st.color_mode();
             out.show_peak_history = st.show_peak_history();
             out.palette = visuals!(@export_palette st.palette(), &palettes::waveform::COLORS); out };
 

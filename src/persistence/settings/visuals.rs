@@ -150,19 +150,23 @@ macro_rules! visual_settings {
     };
 }
 
-settings_enum!(pub enum ChannelMode {
-    Both => "Left + Right", Left => "Left only", Right => "Right only", #[default] Mono => "Mono blend",
+settings_enum!(pub enum Channel {
+    #[default]
+    Left => "Left",
+    Right => "Right",
+    Mid => "Mid",
+    Side => "Side",
+    None => "None",
 });
 
-impl ChannelMode {
-    // Returns output channel count for this mode.
-    #[inline]
-    pub fn output_channels(self, input_channels: usize) -> usize {
-        match self {
-            Self::Both => input_channels,
-            _ => 1,
-        }
-    }
+impl Channel {
+    pub const ALL: &'static [Channel] = &[
+        Channel::Left,
+        Channel::Right,
+        Channel::Mid,
+        Channel::Side,
+        Channel::None,
+    ];
 }
 settings_enum!(pub enum StereometerMode  { Lissajous => "Lissajous", #[default] DotCloud => "Dot Cloud" });
 settings_enum!(pub enum StereometerScale { Linear => "Linear", #[default] Exponential => "Exponential" });
@@ -202,13 +206,13 @@ settings_enum!(pub enum WaveformColorMode { #[default] Frequency => "Frequency",
 visual_settings!(OscilloscopeSettings from OscilloscopeConfig {
     segment_duration: f32, trigger_mode: TriggerMode,
 } extra {
-    persistence: f32 = 0.0, channel_mode: ChannelMode = ChannelMode::default(),
+    persistence: f32 = 0.0, channel_1: Channel = Channel::Mid, channel_2: Channel = Channel::None,
 });
 
 visual_settings!(WaveformSettings from WaveformConfig {
     scroll_speed: f32, band_db_floor: f32,
 } extra {
-    channel_mode: ChannelMode = ChannelMode::default(),
+    channel_1: Channel = Channel::Mid, channel_2: Channel = Channel::None,
     color_mode: WaveformColorMode = WaveformColorMode::default(),
     show_peak_history: bool = false,
 });

@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::CHANNEL_OPTIONS;
 use super::palette::PaletteEvent;
 use super::widgets::{
     SliderRange, labeled_pick_list, labeled_slider, set_if_changed, update_f32_range,
 };
-use crate::persistence::settings::{ChannelMode, OscilloscopeSettings};
+use crate::persistence::settings::{Channel, OscilloscopeSettings};
 use crate::ui::theme;
 use crate::visuals::oscilloscope::processor::TriggerMode;
 use crate::visuals::registry::VisualKind;
@@ -41,7 +40,8 @@ pub enum Message {
     Persistence(f32),
     TriggerMode(TriggerPreset),
     NumCycles(usize),
-    ChannelMode(ChannelMode),
+    Channel1(Channel),
+    Channel2(Channel),
     Palette(PaletteEvent),
 }
 
@@ -63,10 +63,16 @@ impl OscilloscopeSettingsPane {
                 Message::TriggerMode
             ),
             labeled_pick_list(
-                "Channels",
-                &CHANNEL_OPTIONS,
-                Some(self.settings.channel_mode),
-                Message::ChannelMode
+                "Channel 1",
+                Channel::ALL,
+                Some(self.settings.channel_1),
+                Message::Channel1
+            ),
+            labeled_pick_list(
+                "Channel 2",
+                Channel::ALL,
+                Some(self.settings.channel_2),
+                Message::Channel2
             ),
         ]
         .spacing(16);
@@ -133,7 +139,8 @@ impl OscilloscopeSettingsPane {
                 }
                 TriggerMode::ZeroCrossing => false,
             },
-            Message::ChannelMode(m) => set_if_changed(&mut self.settings.channel_mode, m),
+            Message::Channel1(ch) => set_if_changed(&mut self.settings.channel_1, ch),
+            Message::Channel2(ch) => set_if_changed(&mut self.settings.channel_2, ch),
             Message::Palette(e) => self.palette.update(e),
         }
     }

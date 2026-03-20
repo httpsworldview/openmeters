@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::CHANNEL_OPTIONS;
 use super::palette::{PaletteEditor, PaletteEvent};
 use super::widgets::{
     SliderRange, labeled_pick_list, labeled_slider, labeled_toggler, set_if_changed,
     update_f32_range,
 };
-use crate::persistence::settings::{ChannelMode, WaveformColorMode, WaveformSettings};
+use crate::persistence::settings::{Channel, WaveformColorMode, WaveformSettings};
 use crate::ui::theme;
 use crate::visuals::registry::VisualKind;
 use crate::visuals::waveform::processor::{
@@ -54,7 +53,8 @@ fn configure_palette_for_mode(palette: &mut PaletteEditor, mode: WaveformColorMo
 pub enum Message {
     ScrollSpeed(f32),
     BandDbFloor(f32),
-    ChannelMode(ChannelMode),
+    Channel1(Channel),
+    Channel2(Channel),
     ColorMode(WaveformColorMode),
     ShowPeakHistory(bool),
     Palette(PaletteEvent),
@@ -71,10 +71,16 @@ impl WaveformSettingsPane {
                 Message::ScrollSpeed
             ),
             labeled_pick_list(
-                "Channels",
-                &CHANNEL_OPTIONS,
-                Some(self.settings.channel_mode),
-                Message::ChannelMode
+                "Channel 1",
+                Channel::ALL,
+                Some(self.settings.channel_1),
+                Message::Channel1
+            ),
+            labeled_pick_list(
+                "Channel 2",
+                Channel::ALL,
+                Some(self.settings.channel_2),
+                Message::Channel2
             ),
             labeled_pick_list(
                 "Color mode",
@@ -108,7 +114,8 @@ impl WaveformSettingsPane {
             Message::BandDbFloor(v) => {
                 update_f32_range(&mut self.settings.band_db_floor, v, BAND_DB_FLOOR_RANGE)
             }
-            Message::ChannelMode(m) => set_if_changed(&mut self.settings.channel_mode, m),
+            Message::Channel1(ch) => set_if_changed(&mut self.settings.channel_1, ch),
+            Message::Channel2(ch) => set_if_changed(&mut self.settings.channel_2, ch),
             Message::ColorMode(m) => {
                 let changed = set_if_changed(&mut self.settings.color_mode, m);
                 if changed {
