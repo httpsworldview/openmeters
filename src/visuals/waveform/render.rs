@@ -156,14 +156,14 @@ impl WaveformPrimitive {
                 ));
             }
 
-            // Peak history overlay -- baseline is the absolute bottom of the visual bounds.
+            // Peak history overlay -- confined to this channel's vertical region.
             let band_expected = params.channels * NUM_BANDS * columns;
             if !params.band_levels.is_empty()
                 && params.band_levels.len() >= band_expected
                 && columns >= 2
             {
-                let baseline = params.bounds.y + params.bounds.height;
-                let band_height = baseline - (center_y - ch_height * 0.5);
+                let baseline = center_y + ch_height * 0.5;
+                let band_height = ch_height;
                 let mut pts = Vec::with_capacity(columns + 1);
                 for band in 0..NUM_BANDS {
                     let band_base = (ch * NUM_BANDS + band) * columns;

@@ -11,7 +11,7 @@ pub mod spectrum;
 pub mod stereometer;
 pub mod waveform;
 
-use crate::persistence::settings::ChannelMode;
+use crate::persistence::settings::Channel;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_VIS_KEY: AtomicU64 = AtomicU64::new(1);
@@ -20,41 +20,43 @@ pub(crate) fn next_key() -> u64 {
     NEXT_VIS_KEY.fetch_add(1, Ordering::Relaxed)
 }
 
-// Projects channel data according to a channel mode.
+// Projects a single display channel from interleaved input data.
 //
 // Data layout: contiguous channels `[ch0_s0..ch0_sN, ch1_s0..ch1_sN, ...]`
-// - `mode`: channel selection/mixing mode
-// - `data`: samples with `stride` samples per channel
-// - `stride`: number of samples per channel
-// - `channels`: number of channels in the input data
+// Returns `None` for `Channel::None`; callers must validate `stride > 0`.
 #[inline]
 pub(crate) fn project_channel_data(
-    mode: ChannelMode,
+    channel: Channel,
     data: &[f32],
     stride: usize,
     channels: usize,
-) -> Vec<f32> {
-    match mode {
-        ChannelMode::Both => data.to_vec(),
-        ChannelMode::Left => data.get(..stride).map(|s| s.to_vec()).unwrap_or_default(),
-        ChannelMode::Right => {
+) -> Option<Vec<f32>> {
+    match channel {
+        Channel::Left => data.get(..stride).map(|s| s.to_vec()),
+        Channel::Right => {
             let offset = if channels > 1 { stride } else { 0 };
-            data.get(offset..offset + stride)
-                .map(|s| s.to_vec())
-                .unwrap_or_default()
+            data.get(offset..offset + stride).map(|s| s.to_vec())
         }
-        ChannelMode::Mono => {
+        Channel::Mid => {
             let scale = 1.0 / channels.max(1) as f32;
-            (0..stride)
-                .map(|i| {
-                    data.chunks(stride)
-                        .take(channels)
-                        .filter_map(|ch| ch.get(i))
-                        .sum::<f32>()
-                        * scale
-                })
-                .collect()
+            let mut out = vec![0.0f32; stride];
+            for ch in data.chunks(stride).take(channels) {
+                for (o, &s) in out.iter_mut().zip(ch) {
+                    *o += s;
+                }
+            }
+            out.iter_mut().for_each(|v| *v *= scale);
+            Some(out)
         }
+        Channel::Side => {
+            let left = data.get(..stride)?;
+            let right_offset = if channels > 1 { stride } else { 0 };
+            let right = data
+                .get(right_offset..right_offset + stride)
+                .unwrap_or(left);
+            Some(left.iter().zip(right).map(|(l, r)| (l - r) * 0.5).collect())
+        }
+        Channel::None => None,
     }
 }
 

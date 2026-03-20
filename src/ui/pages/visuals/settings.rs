@@ -68,21 +68,12 @@ mod waveform;
 mod widgets;
 
 use self::palette::{PaletteEditor, PaletteEvent};
-use crate::persistence::settings::{
-    ChannelMode, HasPalette, ModuleSettings, PaletteSettings, SettingsHandle,
-};
+use crate::persistence::settings::{HasPalette, ModuleSettings, PaletteSettings, SettingsHandle};
 use crate::ui::theme::Palette;
 use crate::visuals::registry::{VisualId, VisualKind, VisualManagerHandle};
 use iced::widget::column;
 use iced::{Color, Element};
 use serde::{Serialize, de::DeserializeOwned};
-
-pub(super) const CHANNEL_OPTIONS: [ChannelMode; 4] = [
-    ChannelMode::Both,
-    ChannelMode::Left,
-    ChannelMode::Right,
-    ChannelMode::Mono,
-];
 
 #[derive(Debug, Clone)]
 pub enum SettingsMessage {

@@ -7,7 +7,7 @@ use super::processor::{
     OscilloscopeConfig, OscilloscopeProcessor as CoreOscilloscopeProcessor, OscilloscopeSnapshot,
 };
 use super::render::{OscilloscopeParams, OscilloscopePrimitive};
-use crate::persistence::settings::{ChannelMode, OscilloscopeSettings};
+use crate::persistence::settings::{Channel, OscilloscopeSettings};
 use crate::util::color;
 use crate::visuals::palettes;
 use crate::visuals::project_channel_data;
@@ -31,7 +31,8 @@ pub(crate) struct OscilloscopeState {
     snapshot: OscilloscopeSnapshot,
     style: OscilloscopeStyle,
     persistence: f32,
-    channel_mode: ChannelMode,
+    channel_1: Channel,
+    channel_2: Channel,
     key: u64,
 }
 
@@ -42,17 +43,24 @@ impl OscilloscopeState {
             snapshot: OscilloscopeSnapshot::default(),
             style: OscilloscopeStyle::default(),
             persistence: defaults.persistence,
-            channel_mode: defaults.channel_mode,
+            channel_1: defaults.channel_1,
+            channel_2: defaults.channel_2,
             key: crate::visuals::next_key(),
         }
     }
 
-    pub fn update_view_settings(&mut self, persistence: f32, channel_mode: ChannelMode) {
+    pub fn update_view_settings(
+        &mut self,
+        persistence: f32,
+        channel_1: Channel,
+        channel_2: Channel,
+    ) {
         self.persistence = persistence.clamp(0.0, 1.0);
-        let mode_changed = self.channel_mode != channel_mode;
-        self.channel_mode = channel_mode;
-        if mode_changed {
-            self.snapshot = Self::project_channels(&self.snapshot, channel_mode);
+        let changed = self.channel_1 != channel_1 || self.channel_2 != channel_2;
+        self.channel_1 = channel_1;
+        self.channel_2 = channel_2;
+        if changed {
+            self.snapshot = Self::project_channels(&self.snapshot, channel_1, channel_2);
         }
     }
 
@@ -67,7 +75,7 @@ impl OscilloscopeState {
     }
 
     pub fn apply_snapshot(&mut self, snapshot: &OscilloscopeSnapshot) {
-        let projected = Self::project_channels(snapshot, self.channel_mode);
+        let projected = Self::project_channels(snapshot, self.channel_1, self.channel_2);
 
         if !projected.samples.is_empty()
             && !self.snapshot.samples.is_empty()
@@ -87,28 +95,44 @@ impl OscilloscopeState {
         self.snapshot = projected;
     }
 
-    pub fn channel_mode(&self) -> ChannelMode {
-        self.channel_mode
+    pub fn channel_1(&self) -> Channel {
+        self.channel_1
+    }
+
+    pub fn channel_2(&self) -> Channel {
+        self.channel_2
     }
 
     pub fn persistence(&self) -> f32 {
         self.persistence
     }
 
-    fn project_channels(source: &OscilloscopeSnapshot, mode: ChannelMode) -> OscilloscopeSnapshot {
+    fn project_channels(
+        source: &OscilloscopeSnapshot,
+        ch1: Channel,
+        ch2: Channel,
+    ) -> OscilloscopeSnapshot {
         let (ch, spc) = (source.channels.max(1), source.samples_per_channel);
         if spc == 0 || source.samples.len() < ch * spc {
             return OscilloscopeSnapshot::default();
         }
+        let samples: Vec<f32> = [ch1, ch2]
+            .into_iter()
+            .filter_map(|c| project_channel_data(c, &source.samples, spc, ch))
+            .flatten()
+            .collect();
         OscilloscopeSnapshot {
-            channels: mode.output_channels(ch),
+            channels: samples.len() / spc,
             samples_per_channel: spc,
-            samples: project_channel_data(mode, &source.samples, spc, ch),
+            samples,
         }
     }
 
     pub fn visual_params(&self, bounds: iced::Rectangle) -> Option<OscilloscopeParams> {
-        let channels = self.snapshot.channels.max(1);
+        let channels = self.snapshot.channels;
+        if channels == 0 {
+            return None;
+        }
         let samples_per_channel = self.snapshot.samples_per_channel;
         let required = channels.saturating_mul(samples_per_channel);
 
