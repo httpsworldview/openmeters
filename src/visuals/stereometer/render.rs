@@ -21,7 +21,7 @@ pub fn scale_point(scale: StereometerScale, x: f32, y: f32, range: f32) -> (f32,
             if len < f32::EPSILON {
                 return (0.0, 0.0);
             }
-            let k = (len.max((-range).exp2()).log2() + range) / (-range * len);
+            let k = (len.max((-range).exp2()).log2() + range) / (range * len);
             (k * x, k * y)
         }
     }
@@ -167,7 +167,14 @@ impl StereometerPrimitive {
         let mut v = Vec::new();
 
         for ring in 1..=RINGS {
-            let r = ring as f32 / RINGS as f32;
+            let r = match t.scale {
+                StereometerScale::Linear => ring as f32 / RINGS as f32,
+                // invert log scale to place rings at even intervals
+                StereometerScale::Exponential => {
+                    let frac = ring as f32 / RINGS as f32;
+                    (t.scale_range * (frac - 1.0)).exp2()
+                }
+            };
             for edge in 0..4 {
                 let (ax, ay) = (CORNERS[edge].0 * r, CORNERS[edge].1 * r);
                 let next = CORNERS[(edge + 1) % 4];
