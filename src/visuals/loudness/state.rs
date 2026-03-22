@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-// UI wrapper around the loudness DSP processor and renderer.
 // Note: This processor intentionally diverges from project patterns by
 // omitting `config()` and `update_config()` methods. this is because
 // loudness settings are not user-configurable
@@ -44,7 +43,6 @@ vis_processor!(
 
 pub const LOUDNESS_PALETTE_SIZE: usize = 5;
 
-// View-model state consumed by the loudness widget.
 #[derive(Debug, Clone)]
 pub(crate) struct LoudnessState {
     short_term_loudness: f32,
@@ -198,7 +196,6 @@ impl LoudnessState {
     }
 }
 
-// The loudness meter widget.
 #[derive(Debug)]
 pub(crate) struct Loudness<'a> {
     state: &'a RefCell<LoudnessState>,

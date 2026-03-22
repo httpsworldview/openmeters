@@ -5,6 +5,7 @@ use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
 use std::sync::Arc;
 
+use crate::persistence::settings::SpectrumDisplayMode;
 use crate::sdf_primitive;
 use crate::visuals::render::common::{
     ClipTransform, SdfVertex, baseline_segment_vertices, build_aa_line_list, decimate_line,
@@ -23,8 +24,7 @@ pub struct SpectrumParams {
     pub secondary_line_width: f32,
     pub highlight_threshold: f32,
     pub spectrum_palette: Vec<[f32; 4]>,
-    // true = bar mode, false = line mode
-    pub display_mode: bool,
+    pub display_mode: SpectrumDisplayMode,
     pub show_secondary_line: bool,
     pub bar_count: usize,
     pub bar_gap: f32,
@@ -48,7 +48,7 @@ impl SpectrumPrimitive {
             return Vec::new();
         }
 
-        if self.params.display_mode {
+        if self.params.display_mode == SpectrumDisplayMode::Bar {
             self.build_bar_vertices(&clip, bounds)
         } else {
             self.build_line_vertices(&clip, bounds)

@@ -375,7 +375,7 @@ impl SpectrumState {
                 .spectrum_palette
                 .map(color::color_to_rgba)
                 .to_vec(),
-            display_mode: self.style.display_mode == SpectrumDisplayMode::Bar,
+            display_mode: self.style.display_mode,
             show_secondary_line: self.style.show_secondary_line,
             bar_count: self.style.bar_count,
             bar_gap: self.style.bar_gap,
