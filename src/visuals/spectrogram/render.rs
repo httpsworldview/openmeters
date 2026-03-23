@@ -99,15 +99,20 @@ pub struct ColumnBufferPool(Arc<Mutex<Vec<Vec<f32>>>>);
 impl ColumnBufferPool {
     pub fn acquire(&self, len: usize) -> Vec<f32> {
         let mut pool = self.0.lock().unwrap();
-        pool.iter()
-            .rposition(|b| b.capacity() >= len)
-            .map(|i| {
+        let best = pool
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| b.capacity() >= len)
+            .min_by_key(|(_, b)| b.capacity());
+        match best {
+            Some((i, _)) => {
                 let mut b = pool.swap_remove(i);
                 b.clear();
                 b.resize(len, 0.0);
                 b
-            })
-            .unwrap_or_else(|| vec![0.0; len])
+            }
+            None => vec![0.0; len],
+        }
     }
 
     pub fn release(&self, mut buf: Vec<f32>) {

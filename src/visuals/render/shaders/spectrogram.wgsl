@@ -74,13 +74,38 @@ fn sample_magnitude(logical: u32, row: u32, params: MagnitudeParams) -> f32 {
 }
 
 // Max-pool across the bins that map to this pixel's exclusive grid cell.
+// row_hi > row_lo is guaranteed by the caller (bin_hi >= bin_lo from the
+// pixel grid, and the +1u on ceil ensures at least 1 bin per pixel).
+// Stride limits iterations to MAX_PEAK_SAMPLES when many bins collapse into
+// one pixel (e.g. high display_bin_count in a small widget).
+const MAX_PEAK_SAMPLES: u32 = 48u;
+
 fn peak_in_range(logical: u32, row_lo: u32, row_hi: u32, params: MagnitudeParams) -> f32 {
+    let range = row_hi - row_lo;
+    let step = max((range + MAX_PEAK_SAMPLES - 1u) / MAX_PEAK_SAMPLES, 1u);
+    let last = row_hi - 1u;
     let tf = uniforms.floor_ceil.z;
-    var val = sample_magnitude(logical, row_lo, params)
-              + textureLoad(tilt_tex, i32(row_lo), 0).x * tf;
-    for (var r = row_lo + 1u; r < row_hi; r = r + 1u) {
-        val = max(val, sample_magnitude(logical, r, params)
-                       + textureLoad(tilt_tex, i32(r), 0).x * tf);
+
+    if tf != 0.0 {
+        var val = sample_magnitude(logical, row_lo, params)
+                  + textureLoad(tilt_tex, i32(row_lo), 0).x * tf;
+        for (var r = row_lo + step; r < row_hi; r = r + step) {
+            val = max(val, sample_magnitude(logical, r, params)
+                           + textureLoad(tilt_tex, i32(r), 0).x * tf);
+        }
+        if last > row_lo && step > 1u {
+            val = max(val, sample_magnitude(logical, last, params)
+                           + textureLoad(tilt_tex, i32(last), 0).x * tf);
+        }
+        return val;
+    }
+
+    var val = sample_magnitude(logical, row_lo, params);
+    for (var r = row_lo + step; r < row_hi; r = r + step) {
+        val = max(val, sample_magnitude(logical, r, params));
+    }
+    if last > row_lo && step > 1u {
+        val = max(val, sample_magnitude(logical, last, params));
     }
     return val;
 }

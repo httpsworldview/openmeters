@@ -106,7 +106,9 @@ impl FrequencyScale {
             Self::Linear => min + (max - min) * t,
             Self::Logarithmic => {
                 let min = min.max(1e-6);
-                min * (max / min).max(1.0).powf(t)
+                // decomposed from powf so LLVM can hoist the ln when
+                // min/max are loop-invariant
+                min * (t * (max / min).max(1.0).ln()).exp()
             }
             Self::Mel => {
                 let mel_min = hz_to_mel(min);
@@ -486,27 +488,24 @@ impl Reassignment2DGrid {
 
     #[inline]
     fn accumulate_simd(&mut self, freq: f32x8, time: f32x8, pow: f32x8, conf: f32x8, mask: f32x8) {
-        let (freqs, times, powers, confs, masks) = (
-            freq.to_array(),
-            time.to_array(),
-            pow.to_array(),
-            conf.to_array(),
-            mask.to_array(),
-        );
+        let val = pow * conf;
+        let v_max_off = f32x8::splat(self.max_hops as f32);
+        let tc = (time * f32x8::splat(1.0 / self.hop as f32))
+            .max(-v_max_off)
+            .min(v_max_off)
+            + f32x8::splat(self.center as f32);
+
+        let freqs = freq.to_array();
+        let tcs = tc.to_array();
+        let vals = val.to_array();
+        let masks = mask.to_array();
         let (width, height) = (self.display_bins as i32, self.cols as i32);
-        let inv_hop = 1.0 / self.hop as f32;
-        let (center, max_off) = (self.center as f32, self.max_hops as f32);
 
         for i in 0..8 {
-            if masks[i] == 0.0 {
-                continue;
+            let v = vals[i];
+            if masks[i] != 0.0 && v > 0.0 && v.is_finite() && freqs[i].is_finite() {
+                self.deposit_bilinear(freqs[i], tcs[i], width, height, v);
             }
-            let val = powers[i] * confs[i];
-            if val <= 0.0 || !val.is_finite() || !freqs[i].is_finite() {
-                continue;
-            }
-            let tc = (times[i] * inv_hop).clamp(-max_off, max_off) + center;
-            self.deposit_bilinear(freqs[i], tc, width, height, val);
         }
     }
 
@@ -517,6 +516,18 @@ impl Reassignment2DGrid {
         let t0 = time.floor() as i32;
         let ff = freq - f0 as f32;
         let tf = time - t0 as f32;
+
+        if f0 >= 0 && f0 + 1 < width && t0 >= 0 && t0 + 1 < height {
+            let base = t0 as usize * stride + f0 as usize;
+            let ff1 = 1.0 - ff;
+            let tf1 = 1.0 - tf;
+            self.grid[base] += val * ff1 * tf1;
+            self.grid[base + 1] += val * ff * tf1;
+            self.grid[base + stride] += val * ff1 * tf;
+            self.grid[base + stride + 1] += val * ff * tf;
+            return;
+        }
+
         let weights = [
             (1.0 - ff) * (1.0 - tf),
             ff * (1.0 - tf),
@@ -828,13 +839,12 @@ impl SpectrogramProcessor {
         if data.is_empty() {
             return Arc::from([]);
         }
-        let mut arc = pool
+        if let Some(i) = pool
             .iter()
-            .rposition(|a| a.len() == data.len())
-            .map(|i| pool.swap_remove(i))
-            .unwrap_or_else(|| Arc::from(vec![0.0; data.len()]));
-        if let Some(buf) = Arc::get_mut(&mut arc) {
-            buf.copy_from_slice(data);
+            .rposition(|a| a.len() == data.len() && Arc::strong_count(a) == 1)
+        {
+            let mut arc = pool.swap_remove(i);
+            Arc::get_mut(&mut arc).unwrap().copy_from_slice(data);
             arc
         } else {
             Arc::from(data)
