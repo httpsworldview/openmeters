@@ -4,10 +4,9 @@
 // Scrollable wrapper that replaces scrollbars with subtle gradient edge glows,
 // indicating when content overflows above/below or left/right.
 
-use iced::border::Border;
 use iced::gradient;
-use iced::widget::{Space, column, container, row, scrollable, stack};
-use iced::{Background, Color, Element, Length};
+use iced::widget::{Space, column, container, row, scrollable, scrollable::Scrollbar, stack};
+use iced::{Color, Element, Length};
 use std::f32::consts::{FRAC_PI_2, PI};
 
 const GLOW_SIZE: f32 = 24.0;
@@ -33,6 +32,9 @@ impl ScrollGlow {
         on_scroll: impl Fn(Self) -> M + 'a,
     ) -> Element<'a, M> {
         let body = scrollable(content)
+            .direction(scrollable::Direction::Vertical(
+                Scrollbar::new().width(0).scroller_width(0),
+            ))
             .width(Length::Fill)
             .height(Length::Fill)
             .on_scroll(move |vp: scrollable::Viewport| {
@@ -41,8 +43,7 @@ impl ScrollGlow {
                     vp.bounds().height,
                     vp.relative_offset().y,
                 ))
-            })
-            .style(hidden_scrollable);
+            });
         stack![
             body,
             column![
@@ -60,7 +61,9 @@ impl ScrollGlow {
         on_scroll: impl Fn(Self) -> M + 'a,
     ) -> Element<'a, M> {
         let body = scrollable(content)
-            .horizontal()
+            .direction(scrollable::Direction::Horizontal(
+                Scrollbar::new().width(0).scroller_width(0),
+            ))
             .width(Length::Fill)
             .on_scroll(move |vp: scrollable::Viewport| {
                 on_scroll(Self::from_axis(
@@ -68,8 +71,7 @@ impl ScrollGlow {
                     vp.bounds().width,
                     vp.relative_offset().x,
                 ))
-            })
-            .style(hidden_scrollable);
+            });
         stack![
             body,
             row![
@@ -113,27 +115,4 @@ fn glow<'a, M: 'a>(
             ..Default::default()
         }
     })
-}
-
-fn hidden_scrollable(_: &iced::Theme, _: scrollable::Status) -> scrollable::Style {
-    let rail = scrollable::Rail {
-        background: None,
-        border: Border::default(),
-        scroller: scrollable::Scroller {
-            background: Background::Color(Color::TRANSPARENT),
-            border: Border::default(),
-        },
-    };
-    scrollable::Style {
-        container: container::Style::default(),
-        vertical_rail: rail,
-        horizontal_rail: rail,
-        gap: None,
-        auto_scroll: scrollable::AutoScroll {
-            background: Background::Color(Color::TRANSPARENT),
-            border: Border::default(),
-            shadow: iced::Shadow::default(),
-            icon: Color::TRANSPARENT,
-        },
-    }
 }
