@@ -19,7 +19,7 @@ use crate::persistence::settings::{BarAlignment, SettingsHandle, clamp_bar_heigh
 use crate::ui::pages::config::ConfigPage;
 use crate::ui::pages::visuals::{ActiveSettings, VisualsPage};
 use crate::ui::theme;
-use crate::ui::widgets::channel_subscription::channel_subscription;
+use crate::ui::subscription::channel_subscription;
 use crate::ui::widgets::scroll_glow::ScrollGlow;
 use crate::visuals::registry::{VisualManager, VisualManagerHandle};
 use async_channel::Receiver as AsyncReceiver;

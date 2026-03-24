@@ -12,8 +12,10 @@ use crate::persistence::settings::{
 };
 use crate::ui::pages::visuals::settings::palette::{PaletteEditor, PaletteEvent};
 use crate::ui::theme;
-use crate::ui::widgets::application_row::ApplicationRow;
-use crate::ui::widgets::channel_subscription::channel_subscription;
+use crate::ui::subscription::channel_subscription;
+
+mod application_row;
+use application_row::ApplicationRow;
 use crate::ui::widgets::scroll_glow::ScrollGlow;
 use crate::visuals::registry::{VisualKind, VisualManagerHandle};
 use async_channel::Receiver as AsyncReceiver;
