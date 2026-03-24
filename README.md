@@ -160,12 +160,22 @@ theme is read-only and cannot be overwritten or deleted. Feel free to
 share your custom themes with others by sharing the corresponding JSON
 files.
 
-## Contributing
+## Contributing & Referencing
 
 Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to
 contribute to this project, and how one might get started. No matter
 what you have to offer, I greatly appreciate you and your interest in
 contributing to this project. Every bit helps.
+
+If you would like to utilize some part of this project directly in
+your own application I would be more than happy to discuss the use of
+my code over E-mail; just reach out to me at
+<httpworldview@gmail.com>. You are free to draw inspiration from this
+project and the methods used herein (given you do not violate the
+terms of the GPL). It would be unfair to ask for attribution over
+ideas or implementations when this project has only been possible
+thanks to the thousands of researchers and open-source contributors
+who came before me.
 
 ## Credits
 
@@ -174,26 +184,28 @@ OpenMeters is useful, please consider starring the repository and
 sharing it with others. I appreciate any and all criticism and
 feedback, so feel free to reach out to me.
 
-### Inspiration
+### References
 
-- **EasyEffects** (<https://github.com/wwmm/easyeffects>) for being a
-  great source of inspiration and for their excellent work in audio
-  processing. Reading through their codebase taught me a lot about
-  PipeWire.
-- **MiniMeters** (<https://minimeters.app/>) for inspiring this entire
-  project and for doing it better than I ever could. If you can,
-  please support their work!
+- **MiniMeters** (<https://minimeters.app/>) Inspired this entire
+  project and does it better than I ever could. If you can, please
+  support their work!
+- **EasyEffects** (<https://github.com/wwmm/easyeffects>) Has been a
+  great reference from the beginning. I specifically adopted their
+  approach of using a virtual sink to capture audio as I loved the
+  ability to enable and disable processing per-application.
 - **Ardura's Scrolloscope** (<https://github.com/ardura/Scrollscope>)
 - **Tim Strasser's Oszilloskop**
   (<https://github.com/timstr/oszilloskop>)
 - **Audacity** (<https://www.audacityteam.org/>)
+- (Per-module academic references can be found in the headers of some
+  source files, namely our spectrogram.)
 
 ### Libraries used
 
 - **iced_layershell** and related crates
   (<https://github.com/waycrate/exwlshelleventloop>)
   - Special thanks to Decodetalkers for reviewing and merging my
-    patches.
+      patches, and for maintaining such a useful library.
 - **Iced** (<https://github.com/iced-rs/iced>)
 - **RustFFT** (<https://github.com/ejmahler/RustFFT>)
 - **RealFFT** (<https://github.com/HEnquist/realfft>)

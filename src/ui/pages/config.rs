@@ -11,13 +11,13 @@ use crate::persistence::settings::{
     BAR_MAX_HEIGHT, BAR_MIN_HEIGHT, BUILTIN_THEME, BarAlignment, ThemeChoice, ThemeFile,
 };
 use crate::ui::pages::visuals::settings::palette::{PaletteEditor, PaletteEvent};
-use crate::ui::theme;
 use crate::ui::subscription::channel_subscription;
+use crate::ui::theme;
 
 mod application_row;
-use application_row::ApplicationRow;
 use crate::ui::widgets::scroll_glow::ScrollGlow;
 use crate::visuals::registry::{VisualKind, VisualManagerHandle};
+use application_row::ApplicationRow;
 use async_channel::Receiver as AsyncReceiver;
 use iced::widget::text::Wrapping;
 use iced::widget::{
