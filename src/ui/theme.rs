@@ -8,7 +8,7 @@
 
 use iced::border::Border;
 use iced::theme::palette::{self, Extended};
-use iced::widget::{button, container, scrollable, slider, text};
+use iced::widget::{button, container, slider, text};
 use iced::{Background, Color, Theme};
 
 // Re-exports: color math (canonical home: util/color)
@@ -188,31 +188,6 @@ pub fn slider_style(theme: &Theme, status: slider::Status) -> slider::Style {
             background: Background::Color(handle_color),
             border_color,
             border_width,
-        },
-    }
-}
-
-// Transparent scrollable with no visible rails or scrollers.
-pub fn transparent_scrollable(_theme: &Theme, _status: scrollable::Status) -> scrollable::Style {
-    let transparent_scroller = scrollable::Scroller {
-        background: Background::Color(Color::TRANSPARENT),
-        border: Border::default(),
-    };
-    let transparent_rail = scrollable::Rail {
-        background: None,
-        border: Border::default(),
-        scroller: transparent_scroller,
-    };
-    scrollable::Style {
-        container: container::Style::default(),
-        vertical_rail: transparent_rail,
-        horizontal_rail: transparent_rail,
-        gap: None,
-        auto_scroll: scrollable::AutoScroll {
-            background: Background::Color(Color::TRANSPARENT),
-            border: Border::default(),
-            shadow: iced::Shadow::default(),
-            icon: Color::TRANSPARENT,
         },
     }
 }

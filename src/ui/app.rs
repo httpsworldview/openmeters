@@ -20,6 +20,7 @@ use crate::ui::pages::config::ConfigPage;
 use crate::ui::pages::visuals::{ActiveSettings, VisualsPage};
 use crate::ui::theme;
 use crate::ui::widgets::channel_subscription::channel_subscription;
+use crate::ui::widgets::scroll_glow::ScrollGlow;
 use crate::visuals::registry::{VisualManager, VisualManagerHandle};
 use async_channel::Receiver as AsyncReceiver;
 use iced::alignment::{Horizontal, Vertical};
@@ -130,6 +131,7 @@ struct UiApp {
     main_window_is_layer: bool,
     use_layershell: bool,
     settings_window: Option<(window::Id, ActiveSettings)>,
+    settings_scroll: ScrollGlow,
     popout_windows: HashMap<window::Id, PopoutWindow>,
     focused_window: Option<window::Id>,
     exit_warning_until: Option<Instant>,
@@ -193,6 +195,7 @@ impl UiApp {
                 main_window_is_layer: main_is_layer,
                 use_layershell,
                 settings_window: None,
+                settings_scroll: ScrollGlow::default(),
                 popout_windows: HashMap::default(),
                 focused_window: Some(main_id),
                 exit_warning_until: None,

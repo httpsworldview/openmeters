@@ -5,12 +5,13 @@
 
 use crate::ui::theme::f32_to_u8;
 use crate::ui::theme::{self, Palette};
+use crate::ui::widgets::scroll_glow::ScrollGlow;
 use iced::advanced::renderer::{self, Quad};
 use iced::advanced::widget::{Tree, tree};
 use iced::advanced::{Layout, Renderer as _, Widget, layout, mouse};
 use iced::alignment::{Horizontal, Vertical};
 use iced::widget::text::Wrapping;
-use iced::widget::{Button, Column, Row, Space, container, scrollable, slider, text};
+use iced::widget::{Button, Column, Row, Space, container, slider, text};
 use iced::{Background, Color, Element, Length, Point, Rectangle, Size};
 
 const SWATCH_SIZE: (f32, f32) = (56.0, 28.0);
@@ -26,6 +27,7 @@ pub enum PaletteEvent {
     AdjustPosition { index: usize, position: f32 },
     AdjustSpread { index: usize, spread: f32 },
     Reset,
+    HorizontalScroll(ScrollGlow),
 }
 
 #[derive(Debug, Clone)]
@@ -39,6 +41,7 @@ pub struct PaletteEditor {
     visible_indices: Option<Vec<usize>>,
     label_overrides: Vec<(usize, &'static str)>,
     show_ramp: bool,
+    scroll: ScrollGlow,
 }
 
 impl PaletteEditor {
@@ -56,6 +59,7 @@ impl PaletteEditor {
             visible_indices: None,
             label_overrides: Vec::new(),
             show_ramp: false,
+            scroll: ScrollGlow::default(),
         }
     }
 
@@ -157,6 +161,10 @@ impl PaletteEditor {
                 self.spreads[index] = next;
                 true
             }
+            PaletteEvent::HorizontalScroll(g) => {
+                self.scroll = g;
+                false
+            }
             PaletteEvent::Reset => {
                 self.active = None;
                 if self.is_default() {
@@ -198,7 +206,7 @@ impl PaletteEditor {
             let spreads = self.spreads();
             col = col.push(gradient_bar(colors, positions, spreads, self.active));
         }
-        col = col.push(scrollable(row).horizontal().width(Length::Fill));
+        col = col.push(self.scroll.horizontal(row, PaletteEvent::HorizontalScroll));
         if let Some(i) = self.active
             && let Some(&c) = colors.get(i)
         {

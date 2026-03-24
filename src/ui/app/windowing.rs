@@ -188,6 +188,7 @@ impl UiApp {
         }
         let (new_id, open_task) =
             open_base_window(self.use_layershell, SETTINGS_WINDOW_SIZE, true, false);
+        self.settings_scroll = Default::default();
         self.settings_window = Some((new_id, new_panel));
         match previous {
             Some((old_id, _)) => Task::batch([window::close(old_id), open_task]),

@@ -14,12 +14,12 @@ use crate::ui::pages::visuals::settings::palette::{PaletteEditor, PaletteEvent};
 use crate::ui::theme;
 use crate::ui::widgets::application_row::ApplicationRow;
 use crate::ui::widgets::channel_subscription::channel_subscription;
+use crate::ui::widgets::scroll_glow::ScrollGlow;
 use crate::visuals::registry::{VisualKind, VisualManagerHandle};
 use async_channel::Receiver as AsyncReceiver;
 use iced::widget::text::Wrapping;
 use iced::widget::{
-    Column, Row, Rule, Space, button, container, pick_list, radio, rule, scrollable, slider, text,
-    text_input,
+    Column, Row, Rule, Space, button, container, pick_list, radio, rule, slider, text, text_input,
 };
 use iced::{Element, Length, Subscription, Task};
 use std::collections::{HashMap, HashSet};
@@ -84,6 +84,7 @@ pub enum ConfigMessage {
     ThemeChanged(String),
     SaveTheme(String),
     ThemeNameInput(String),
+    Scrolled(ScrollGlow),
 }
 
 #[derive(Debug)]
@@ -104,6 +105,7 @@ pub struct ConfigPage {
     selected_device: DeviceSelection,
     pending_device_name: Option<String>,
     bg_palette: PaletteEditor,
+    scroll: ScrollGlow,
     active_theme: String,
     theme_choices: Vec<ThemeChoice>,
     save_theme_name: String,
@@ -150,6 +152,7 @@ impl ConfigPage {
             selected_device: DeviceSelection::Default,
             pending_device_name: last_device_name,
             bg_palette,
+            scroll: ScrollGlow::default(),
             active_theme,
             theme_choices,
             save_theme_name: String::new(),
@@ -246,6 +249,7 @@ impl ConfigPage {
             ConfigMessage::ThemeNameInput(val) => {
                 self.save_theme_name = val;
             }
+            ConfigMessage::Scrolled(g) => self.scroll = g,
         }
 
         Task::none()
@@ -261,6 +265,7 @@ impl ConfigPage {
 
         let content = Column::new()
             .spacing(14)
+            .padding(8)
             .push(capture_section)
             .push(visuals_section)
             .push(theme_section)
@@ -272,11 +277,7 @@ impl ConfigPage {
             content
         };
 
-        container(scrollable(content).style(theme::transparent_scrollable))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .padding(8)
-            .into()
+        self.scroll.vertical(content, ConfigMessage::Scrolled)
     }
 
     fn render_capture_section(&self) -> Column<'_, ConfigMessage> {
@@ -342,7 +343,7 @@ impl ConfigPage {
                 };
                 text(msg).size(TEXT_SIZE).into()
             };
-            section = section.push(scrollable(content).height(Length::Shrink));
+            section = section.push(content);
         }
         section
     }

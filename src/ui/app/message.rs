@@ -5,9 +5,10 @@ use super::{TOAST_DISPLAY_DURATION, UiApp};
 use crate::ui::pages::config::ConfigMessage;
 use crate::ui::pages::visuals::{SettingsMessage, VisualsMessage};
 use crate::ui::theme;
+use crate::ui::widgets::scroll_glow::ScrollGlow;
 use iced::event::{self, Event};
 use iced::keyboard::{self, Key};
-use iced::widget::{container, scrollable, text};
+use iced::widget::{container, text};
 use iced::{Element, Length, Size, Task, exit, window};
 use iced_layershell::actions::IcedXdgWindowSettings;
 use iced_layershell::reexport::NewLayerShellSettings;
@@ -36,6 +37,7 @@ pub(super) enum Message {
     WindowResized(window::Id, Size),
     WindowFocused(window::Id),
     Settings(window::Id, SettingsMessage),
+    SettingsScrolled(ScrollGlow),
 }
 
 // Forwarding functions for macro-generated private methods on Message,
@@ -184,6 +186,10 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
             }
             Task::none()
         }
+        Message::SettingsScrolled(g) => {
+            app.settings_scroll = g;
+            Task::none()
+        }
         Message::WindowResized(id, size) => app.handle_main_window_resize(id, size),
         Message::SizeChange { id, size } => {
             app.handle_main_window_resize(id, Size::new(size.0 as f32, size.1 as f32))
@@ -202,15 +208,17 @@ pub(super) fn view(app: &UiApp, window_id: window::Id) -> Element<'_, Message> {
         .as_ref()
         .filter(|(id, _)| *id == window_id)
     {
-        let content: Element<'_, SettingsMessage> = fill!(
-            scrollable(panel.view())
-                .width(Length::Fill)
-                .height(Length::Fill)
+        let mapped = panel
+            .view()
+            .map(move |msg| Message::Settings(window_id, msg));
+        let content: Element<'_, Message> = fill!(
+            app.settings_scroll
+                .vertical(mapped, Message::SettingsScrolled)
         )
         .padding(16)
         .style(theme::weak_container)
         .into();
-        return content.map(move |msg| Message::Settings(window_id, msg));
+        return content;
     }
     app.popout_windows
         .get(&window_id)
