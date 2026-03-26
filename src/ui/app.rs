@@ -15,7 +15,7 @@ mod windowing;
 
 use crate::domain::routing::RoutingCommand;
 use crate::infra::pipewire::registry::RegistrySnapshot;
-use crate::persistence::settings::{BarAlignment, SettingsHandle, clamp_bar_height};
+use crate::persistence::settings::{BarAlignment, BarSettings, SettingsHandle, clamp_bar_height};
 use crate::ui::pages::config::ConfigPage;
 use crate::ui::pages::visuals::{ActiveSettings, VisualsPage};
 use crate::ui::subscription::channel_subscription;
@@ -308,6 +308,13 @@ impl UiApp {
         let bar = settings_ref.settings().bar.clone();
         drop(settings_ref);
 
+        let content = self.visuals_with_toasts();
+        let content = self.wrap_drawer(content);
+        let content = self.wrap_bar_resize(content, &bar);
+        self.wrap_window_resize(content, use_decorations, &bar)
+    }
+
+    fn visuals_with_toasts(&self) -> Element<'_, Message> {
         let visuals_view = self
             .visuals_page
             .view(self.drawer_open)
@@ -325,11 +332,11 @@ impl UiApp {
         .flatten()
         .collect();
 
-        let mut visuals_layer = column![fill!(visuals_view)]
+        let mut layer = column![fill!(visuals_view)]
             .width(Length::Fill)
             .height(Length::Fill);
         if !toast_msgs.is_empty() {
-            visuals_layer = visuals_layer.push(
+            layer = layer.push(
                 container(
                     row(toast_msgs
                         .iter()
@@ -341,82 +348,94 @@ impl UiApp {
                 .align_x(Horizontal::Center),
             );
         }
-        let visuals_layer: Element<'_, Message> = visuals_layer.into();
+        layer.into()
+    }
 
-        let content: Element<'_, Message> = if self.drawer_open {
-            let drawer_portion = (self.drawer_width_ratio * 1000.0).round() as u16;
-            let visuals_portion = 1000 - drawer_portion;
-            let drawer: Element<'_, Message> = fill!(self.config_page.view().map(Message::Config))
-                .width(Length::FillPortion(drawer_portion))
-                .style(theme::opaque_container)
-                .into();
-            let resize_handle: Element<'_, Message> = mouse_area(
-                container(text(":").size(12).align_x(Horizontal::Center))
-                    .width(12)
+    fn wrap_drawer<'a>(&'a self, visuals: Element<'a, Message>) -> Element<'a, Message> {
+        if !self.drawer_open {
+            return visuals;
+        }
+        let drawer_portion = (self.drawer_width_ratio * 1000.0).round() as u16;
+        let visuals_portion = 1000 - drawer_portion;
+        let drawer: Element<'_, Message> = fill!(self.config_page.view().map(Message::Config))
+            .width(Length::FillPortion(drawer_portion))
+            .style(theme::opaque_container)
+            .into();
+        let handle: Element<'_, Message> = mouse_area(
+            container(text(":").size(12).align_x(Horizontal::Center))
+                .width(12)
+                .height(Length::Fill)
+                .align_x(Horizontal::Center)
+                .align_y(Vertical::Center)
+                .style(theme::resize_handle_container),
+        )
+        .on_press(Message::DrawerResizeStart)
+        .interaction(iced::mouse::Interaction::ResizingHorizontally)
+        .into();
+        let visuals: Element<'_, Message> = fill!(visuals)
+            .width(Length::FillPortion(visuals_portion))
+            .into();
+        row![drawer, handle, visuals]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
+    }
+
+    fn wrap_bar_resize<'a>(
+        &'a self,
+        content: Element<'a, Message>,
+        bar: &BarSettings,
+    ) -> Element<'a, Message> {
+        if !(self.main_window_is_layer && bar.enabled) {
+            return content;
+        }
+        let handle = mouse_area(
+            container(text(" "))
+                .width(Length::Fill)
+                .height(BAR_RESIZE_HANDLE_THICKNESS),
+        )
+        .on_press(Message::BarResizeStart)
+        .interaction(iced::mouse::Interaction::ResizingVertically);
+        let v_align = match bar.alignment {
+            BarAlignment::Top => Vertical::Bottom,
+            BarAlignment::Bottom => Vertical::Top,
+        };
+        let handle_layer = fill!(handle).align_y(v_align);
+
+        if let Some((current, pending)) = self.pending_bar_resize() {
+            let overlay: Element<'_, Message> =
+                container(text(format!("{current}px -> {pending}px")).size(14))
+                    .width(Length::Fill)
                     .height(Length::Fill)
                     .align_x(Horizontal::Center)
                     .align_y(Vertical::Center)
-                    .style(theme::resize_handle_container),
-            )
-            .on_press(Message::DrawerResizeStart)
-            .interaction(iced::mouse::Interaction::ResizingHorizontally)
-            .into();
-            let visuals: Element<'_, Message> = fill!(visuals_layer)
-                .width(Length::FillPortion(visuals_portion))
-                .into();
-            row![drawer, resize_handle, visuals]
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into()
+                    .style(theme::resize_overlay)
+                    .into();
+            stack![content, overlay, handle_layer].into()
         } else {
-            visuals_layer
-        };
-
-        let content: Element<'_, Message> = if self.main_window_is_layer && bar.enabled {
-            let handle = mouse_area(
-                container(text(" "))
-                    .width(Length::Fill)
-                    .height(BAR_RESIZE_HANDLE_THICKNESS),
-            )
-            .on_press(Message::BarResizeStart)
-            .interaction(iced::mouse::Interaction::ResizingVertically);
-            let v_align = match bar.alignment {
-                BarAlignment::Top => Vertical::Bottom,
-                BarAlignment::Bottom => Vertical::Top,
-            };
-            let handle_layer = fill!(handle).align_y(v_align);
-
-            if let Some((current, pending)) = self.pending_bar_resize() {
-                let overlay: Element<'_, Message> =
-                    container(text(format!("{current}px -> {pending}px")).size(14))
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        .align_x(Horizontal::Center)
-                        .align_y(Vertical::Center)
-                        .style(theme::resize_overlay)
-                        .into();
-                stack![content, overlay, handle_layer].into()
-            } else {
-                stack![content, handle_layer].into()
-            }
-        } else {
-            content
-        };
-
-        if use_decorations || bar.enabled {
-            content
-        } else {
-            let resize_handle = mouse_area(container(text(" ")).width(20).height(20))
-                .on_press(Message::Resize)
-                .interaction(iced::mouse::Interaction::ResizingDiagonallyDown);
-            stack![
-                content,
-                fill!(resize_handle)
-                    .align_x(Horizontal::Right)
-                    .align_y(Vertical::Bottom)
-                    .padding(4)
-            ]
-            .into()
+            stack![content, handle_layer].into()
         }
+    }
+
+    fn wrap_window_resize<'a>(
+        &'a self,
+        content: Element<'a, Message>,
+        use_decorations: bool,
+        bar: &BarSettings,
+    ) -> Element<'a, Message> {
+        if use_decorations || bar.enabled {
+            return content;
+        }
+        let handle = mouse_area(container(text(" ")).width(20).height(20))
+            .on_press(Message::Resize)
+            .interaction(iced::mouse::Interaction::ResizingDiagonallyDown);
+        stack![
+            content,
+            fill!(handle)
+                .align_x(Horizontal::Right)
+                .align_y(Vertical::Bottom)
+                .padding(4)
+        ]
+        .into()
     }
 }

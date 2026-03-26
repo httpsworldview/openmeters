@@ -32,24 +32,15 @@ const TEXT_SIZE: f32 = 12.0;
 const TITLE_SIZE: f32 = 14.0;
 const MAX_DEVICE_NAME_LEN: usize = 48;
 
-fn truncate_label(label: &str, max_len: usize) -> (&str, bool) {
-    if max_len == 0 {
-        return ("", !label.is_empty());
+fn truncate_label(label: &str, max_chars: usize) -> (&str, bool) {
+    if label.chars().count() <= max_chars {
+        return (label, false);
     }
-
-    let mut cutoff = label.len();
-    let trunc_at = max_len.saturating_sub(3);
-
-    for (count, (idx, _)) in label.char_indices().enumerate() {
-        if count == trunc_at {
-            cutoff = idx;
-        }
-        if count == max_len {
-            return (&label[..cutoff], true);
-        }
-    }
-
-    (label, false)
+    let end = label
+        .char_indices()
+        .nth(max_chars.saturating_sub(3))
+        .map_or(label.len(), |(i, _)| i);
+    (&label[..end], true)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -263,7 +254,7 @@ impl ConfigPage {
         let capture_section = self.render_capture_section();
         let visuals_section = self.render_visuals_section(&visuals_snapshot);
         let theme_section = self.render_theme_section();
-        let bg_section = self.render_bg_section();
+        let bg_section = self.render_global_section();
 
         let content = Column::new()
             .spacing(14)
@@ -301,7 +292,7 @@ impl ConfigPage {
             .push(capture_controls)
             .push(primary_section);
 
-        self.section_with_divider("Audio Capture", content)
+        section_with_divider("Audio Capture", content)
     }
 
     fn render_applications_section(&self) -> Column<'_, ConfigMessage> {
@@ -419,7 +410,7 @@ impl ConfigPage {
             || contains(node.description.as_ref(), "monitor")
     }
 
-    fn render_bg_section(&self) -> Column<'_, ConfigMessage> {
+    fn render_global_section(&self) -> Column<'_, ConfigMessage> {
         let decorations_enabled = self.settings.borrow().settings().decorations;
 
         let decorations_toggle = iced::widget::checkbox(decorations_enabled)
@@ -433,7 +424,7 @@ impl ConfigPage {
             .push(self.bg_palette.view().map(ConfigMessage::BgPalette))
             .push(decorations_toggle);
 
-        self.section_with_divider("Global", content)
+        section_with_divider("Global", content)
     }
 
     fn render_theme_section(&self) -> Column<'_, ConfigMessage> {
@@ -475,7 +466,7 @@ impl ConfigPage {
             .push(Row::new().spacing(8).push(picker).push(save_btn))
             .push(Row::new().spacing(8).push(save_as_input).push(save_as_btn));
 
-        self.section_with_divider("Theme", content)
+        section_with_divider("Theme", content)
     }
 
     fn apply_theme(&mut self, name: &str) {
@@ -559,7 +550,7 @@ impl ConfigPage {
                         .style(theme::weak_text_style),
                 );
         }
-        self.section_with_divider("Bar Mode", content)
+        section_with_divider("Bar Mode", content)
     }
 
     fn render_visuals_section(
@@ -583,28 +574,7 @@ impl ConfigPage {
             })
             .into()
         };
-        self.section_with_divider(title, content)
-    }
-
-    fn divider<'a>(&self) -> Rule<'a> {
-        rule::horizontal(1).style(|theme: &iced::Theme| rule::Style {
-            color: theme::with_alpha(theme.extended_palette().secondary.weak.text, 0.2),
-            radius: 0.0.into(),
-            fill_mode: rule::FillMode::Percent(100.0),
-            snap: true,
-        })
-    }
-
-    fn section_with_divider<'a>(
-        &self,
-        title: impl Into<String>,
-        content: impl Into<Element<'a, ConfigMessage>>,
-    ) -> Column<'a, ConfigMessage> {
-        Column::new()
-            .spacing(8)
-            .push(text(title.into()).size(TITLE_SIZE))
-            .push(self.divider())
-            .push(content)
+        section_with_divider(title, content)
     }
 
     fn update_hardware_sink_label(&mut self, snapshot: &RegistrySnapshot) {
@@ -645,7 +615,17 @@ impl ConfigPage {
             }
         }
         self.preferences.retain(|id, _| seen.contains(id));
-        entries.sort_by_key(|a| a.sort_key());
+        entries.sort_unstable_by(|a, b| {
+            a.primary
+                .to_ascii_lowercase()
+                .cmp(&b.primary.to_ascii_lowercase())
+                .then_with(|| {
+                    let a_sec = a.secondary.as_deref().unwrap_or_default();
+                    let b_sec = b.secondary.as_deref().unwrap_or_default();
+                    a_sec.to_ascii_lowercase().cmp(&b_sec.to_ascii_lowercase())
+                })
+                .then_with(|| a.node_id.cmp(&b.node_id))
+        });
         self.applications = entries;
     }
 
@@ -681,6 +661,26 @@ impl ConfigPage {
             .find(|opt| opt.selection == selection)
             .and_then(|opt| opt.token.clone())
     }
+}
+
+fn divider<'a>() -> Rule<'a> {
+    rule::horizontal(1).style(|theme: &iced::Theme| rule::Style {
+        color: theme::with_alpha(theme.extended_palette().secondary.weak.text, 0.2),
+        radius: 0.0.into(),
+        fill_mode: rule::FillMode::Percent(100.0),
+        snap: true,
+    })
+}
+
+fn section_with_divider<'a>(
+    title: impl Into<String>,
+    content: impl Into<Element<'a, ConfigMessage>>,
+) -> Column<'a, ConfigMessage> {
+    Column::new()
+        .spacing(8)
+        .push(text(title.into()).size(TITLE_SIZE))
+        .push(divider())
+        .push(content)
 }
 
 fn radio_row<'a, T: Copy + Eq + 'a>(

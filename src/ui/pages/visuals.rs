@@ -154,11 +154,10 @@ impl VisualsPage {
         snapshot: VisualSnapshot,
         exclude: &[VisualId],
     ) {
-        let exclude_set: std::collections::HashSet<_> = exclude.iter().copied().collect();
         let slots: Vec<_> = snapshot
             .slots
             .iter()
-            .filter(|s| s.enabled && !exclude_set.contains(&s.id))
+            .filter(|s| s.enabled && !exclude.contains(&s.id))
             .collect();
         let new_order: Vec<_> = slots.iter().map(|s| s.id).collect();
 

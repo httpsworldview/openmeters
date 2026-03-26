@@ -186,104 +186,12 @@ where
             max_widths.push(max.max(min));
         }
 
-        let mut total_width: f32 = widths.iter().sum();
+        let total_width: f32 = widths.iter().sum();
 
         if total_width > available_width {
-            let mut shrinkable: Vec<(usize, f32)> = widths
-                .iter()
-                .enumerate()
-                .map(|(index, width)| {
-                    let min = min_widths[index];
-                    (index, (width - min).max(0.0))
-                })
-                .collect();
-
-            let mut deficit = total_width - available_width;
-
-            while deficit > f32::EPSILON {
-                let remaining_capacity: f32 = shrinkable.iter().map(|(_, c)| *c).sum();
-                if remaining_capacity <= f32::EPSILON {
-                    break;
-                }
-
-                for (index, capacity) in shrinkable.iter_mut() {
-                    if *capacity <= f32::EPSILON {
-                        continue;
-                    }
-
-                    let weight = *capacity / remaining_capacity;
-                    let portion = (deficit * weight).min(*capacity);
-                    widths[*index] -= portion;
-                    *capacity -= portion;
-                }
-
-                total_width = widths.iter().sum();
-                deficit = total_width - available_width;
-            }
+            distribute_deficit(&mut widths, &min_widths, total_width - available_width);
         } else if total_width < available_width {
-            let growable: Vec<(usize, f32)> = widths
-                .iter()
-                .enumerate()
-                .map(|(index, width)| {
-                    let max = max_widths[index];
-                    let capacity = if max.is_infinite() {
-                        f32::INFINITY
-                    } else {
-                        (max - width).max(0.0)
-                    };
-                    (index, capacity)
-                })
-                .collect();
-
-            let mut surplus = available_width - total_width;
-
-            // Distribute surplus among infinite-capacity entries first.
-            let infinite_indices: Vec<usize> = growable
-                .iter()
-                .filter_map(|(index, capacity)| {
-                    if capacity.is_infinite() {
-                        Some(*index)
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
-            if !infinite_indices.is_empty() {
-                let share = surplus / infinite_indices.len() as f32;
-                for index in infinite_indices {
-                    widths[index] += share;
-                }
-                surplus = 0.0;
-            }
-
-            if surplus > f32::EPSILON {
-                let mut finite: Vec<(usize, f32)> = growable
-                    .into_iter()
-                    .filter(|(_, capacity)| !capacity.is_infinite() && *capacity > 0.0)
-                    .collect();
-
-                while surplus > f32::EPSILON {
-                    let remaining_capacity: f32 = finite.iter().map(|(_, c)| *c).sum();
-                    if remaining_capacity <= f32::EPSILON {
-                        break;
-                    }
-
-                    for (index, capacity) in finite.iter_mut() {
-                        if *capacity <= f32::EPSILON {
-                            continue;
-                        }
-
-                        let weight = *capacity / remaining_capacity;
-                        let portion = (surplus * weight).min(*capacity);
-                        widths[*index] += portion;
-                        *capacity -= portion;
-                    }
-
-                    total_width = widths.iter().sum();
-                    surplus = available_width - total_width;
-                }
-            }
+            distribute_surplus(&mut widths, &max_widths, available_width - total_width);
         }
 
         let mut position = 0.0;
@@ -537,6 +445,76 @@ where
     ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
         None
     }
+}
+
+fn distribute_proportionally(
+    widths: &mut [f32],
+    entries: &mut [(usize, f32)],
+    target: f32,
+    sign: f32,
+) {
+    loop {
+        let delta = (target - widths.iter().sum::<f32>()) * sign;
+        if delta <= f32::EPSILON {
+            break;
+        }
+        let remaining: f32 = entries.iter().map(|(_, c)| *c).sum();
+        if remaining <= f32::EPSILON {
+            break;
+        }
+        for (i, capacity) in entries.iter_mut() {
+            if *capacity <= f32::EPSILON {
+                continue;
+            }
+            let portion = (delta * (*capacity / remaining)).min(*capacity);
+            widths[*i] += sign * portion;
+            *capacity -= portion;
+        }
+    }
+}
+
+fn distribute_deficit(widths: &mut [f32], min_widths: &[f32], initial_deficit: f32) {
+    let target = widths.iter().sum::<f32>() - initial_deficit;
+    let mut entries: Vec<(usize, f32)> = widths
+        .iter()
+        .enumerate()
+        .map(|(i, w)| (i, (w - min_widths[i]).max(0.0)))
+        .collect();
+    distribute_proportionally(widths, &mut entries, target, -1.0);
+}
+
+fn distribute_surplus(widths: &mut [f32], max_widths: &[f32], initial_surplus: f32) {
+    let target = widths.iter().sum::<f32>() + initial_surplus;
+    let growable: Vec<(usize, f32)> = widths
+        .iter()
+        .enumerate()
+        .map(|(i, w)| {
+            let max = max_widths[i];
+            let capacity = if max.is_infinite() {
+                f32::INFINITY
+            } else {
+                (max - w).max(0.0)
+            };
+            (i, capacity)
+        })
+        .collect();
+
+    // Infinite-capacity entries absorb all surplus first.
+    let infinite_indices: Vec<usize> = growable
+        .iter()
+        .filter_map(|(i, c)| c.is_infinite().then_some(*i))
+        .collect();
+
+    if !infinite_indices.is_empty() {
+        let share = initial_surplus / infinite_indices.len() as f32;
+        for i in infinite_indices {
+            widths[i] += share;
+        }
+        return;
+    }
+
+    let mut finite: Vec<(usize, f32)> = growable.into_iter().filter(|(_, c)| *c > 0.0).collect();
+    distribute_proportionally(widths, &mut finite, target, 1.0);
 }
 
 impl<'a, Message, Theme, Renderer> From<PaneGrid<'a, Message, Theme, Renderer>>

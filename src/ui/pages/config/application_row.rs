@@ -40,13 +40,4 @@ impl ApplicationRow {
             None => self.primary.clone(),
         }
     }
-
-    pub(crate) fn sort_key(&self) -> (String, String, u32) {
-        let secondary = self.secondary.clone().unwrap_or_default();
-        (
-            self.primary.to_ascii_lowercase(),
-            secondary.to_ascii_lowercase(),
-            self.node_id,
-        )
-    }
 }

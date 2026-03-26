@@ -55,7 +55,7 @@ fn palette(custom_bg: Option<Color>) -> palette::Palette {
         text,
         primary: ACCENT_PRIMARY,
         success: ACCENT_SUCCESS,
-        warning: ACCENT_SUCCESS,
+        warning: ACCENT_SUCCESS, // monochrome: no distinct warning color
         danger: ACCENT_DANGER,
     }
 }

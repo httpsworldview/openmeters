@@ -83,9 +83,8 @@ impl<T> State<T> {
 
     // Applies `f` to each pane value in visual order.
     pub fn for_each_mut(&mut self, mut f: impl FnMut(Pane, &mut T)) {
-        let order = self.order.clone();
-
-        for pane in order {
+        for i in 0..self.order.len() {
+            let pane = self.order[i];
             if let Some(value) = self.panes.get_mut(&pane) {
                 f(pane, value);
             }

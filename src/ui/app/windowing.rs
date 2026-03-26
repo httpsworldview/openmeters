@@ -282,23 +282,25 @@ impl UiApp {
         if window_id == self.main_window_id {
             return "OpenMeters".into();
         }
-        self.settings_window
+
+        let (visual_id, suffix) = if let Some((_, panel)) = self
+            .settings_window
             .as_ref()
             .filter(|(id, _)| *id == window_id)
-            .map(|(_, panel)| (panel.visual_id(), " settings"))
-            .or_else(|| {
-                self.popout_windows
-                    .get(&window_id)
-                    .map(|p| (p.visual_id, ""))
-            })
-            .and_then(|(visual_id, suffix)| {
-                self.visual_manager
-                    .snapshot()
-                    .slots
-                    .iter()
-                    .find(|s| s.id == visual_id)
-                    .map(|s| format!("{}{} - OpenMeters", s.metadata.display_name, suffix))
-            })
+        {
+            (panel.visual_id(), " settings")
+        } else if let Some(popout) = self.popout_windows.get(&window_id) {
+            (popout.visual_id, "")
+        } else {
+            return "OpenMeters".into();
+        };
+
+        self.visual_manager
+            .snapshot()
+            .slots
+            .iter()
+            .find(|s| s.id == visual_id)
+            .map(|s| format!("{}{} - OpenMeters", s.metadata.display_name, suffix))
             .unwrap_or_else(|| "OpenMeters".into())
     }
 
@@ -412,12 +414,12 @@ impl UiApp {
         }
         let bar = self.settings_handle.borrow().settings().bar.clone();
         match config_msg {
+            ConfigMessage::BarModeToggled(true) if self.main_window_is_layer => {
+                self.apply_bar_layout(bar.alignment, bar.height)
+            }
+            // Already in the requested state (false/false); no-op.
             ConfigMessage::BarModeToggled(enabled) if *enabled == self.main_window_is_layer => {
-                if self.main_window_is_layer {
-                    self.apply_bar_layout(bar.alignment, bar.height)
-                } else {
-                    Task::none()
-                }
+                Task::none()
             }
             ConfigMessage::BarModeToggled(enabled) => {
                 let decorations = self.settings_handle.borrow().settings().decorations;

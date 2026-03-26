@@ -114,8 +114,10 @@ impl PaletteEditor {
 
     pub fn update(&mut self, event: PaletteEvent) -> bool {
         match event {
-            PaletteEvent::Open(i) if i < self.palette.len() => {
-                self.active = (self.active != Some(i)).then_some(i);
+            PaletteEvent::Open(i) => {
+                if i < self.palette.len() {
+                    self.active = (self.active != Some(i)).then_some(i);
+                }
                 false
             }
             PaletteEvent::Close => {
@@ -176,7 +178,6 @@ impl PaletteEditor {
                     true
                 }
             }
-            _ => false,
         }
     }
 

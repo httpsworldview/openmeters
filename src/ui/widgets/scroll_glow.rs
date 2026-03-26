@@ -89,11 +89,7 @@ fn glow<'a, M: 'a>(
     angle: f32,
     vertical: bool,
 ) -> container::Container<'a, M, iced::Theme> {
-    let size = if show {
-        Length::Fixed(GLOW_SIZE)
-    } else {
-        Length::Fixed(0.0)
-    };
+    let size = Length::Fixed(if show { GLOW_SIZE } else { 0.0 });
     let (w, h) = if vertical {
         (Length::Fill, size)
     } else {
