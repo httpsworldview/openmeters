@@ -12,9 +12,7 @@ use std::sync::Arc;
 
 pub const MIN_SCROLL_SPEED: f32 = 10.0;
 pub const MAX_SCROLL_SPEED: f32 = 1000.0;
-pub const MIN_COLUMN_CAPACITY: usize = 512;
-pub const MAX_COLUMN_CAPACITY: usize = 16_384;
-pub const DEFAULT_COLUMN_CAPACITY: usize = 4_096;
+pub const MAX_COLUMN_CAPACITY: usize = 8_192;
 
 const FREQUENCY_FFT_SIZE: usize = 2048;
 
@@ -45,7 +43,7 @@ impl Default for WaveformConfig {
         Self {
             sample_rate: DEFAULT_SAMPLE_RATE,
             scroll_speed: 300.0,
-            max_columns: DEFAULT_COLUMN_CAPACITY,
+            max_columns: MAX_COLUMN_CAPACITY,
             band_db_floor: -60.0,
         }
     }
@@ -55,9 +53,7 @@ impl WaveformConfig {
     fn normalized(mut self) -> Self {
         self.sample_rate = self.sample_rate.max(1.0);
         self.scroll_speed = self.scroll_speed.clamp(MIN_SCROLL_SPEED, MAX_SCROLL_SPEED);
-        self.max_columns = self
-            .max_columns
-            .clamp(MIN_COLUMN_CAPACITY, MAX_COLUMN_CAPACITY);
+        self.max_columns = self.max_columns.clamp(1, MAX_COLUMN_CAPACITY);
         self.band_db_floor = self
             .band_db_floor
             .clamp(MIN_BAND_DB_FLOOR, MAX_BAND_DB_FLOOR);
@@ -522,8 +518,7 @@ impl Reconfigurable<WaveformConfig> for WaveformProcessor {
     fn update_config(&mut self, config: WaveformConfig) {
         let normalized = config.normalized();
         let rebuild = self.config.sample_rate != normalized.sample_rate
-            || self.config.scroll_speed != normalized.scroll_speed
-            || self.config.max_columns != normalized.max_columns;
+            || self.config.scroll_speed != normalized.scroll_speed;
 
         self.config = normalized;
         if rebuild {
@@ -638,11 +633,11 @@ mod tests {
         let config = WaveformConfig {
             sample_rate: 48_000.0,
             scroll_speed: 200.0,
-            max_columns: MIN_COLUMN_CAPACITY,
+            max_columns: 512,
             ..Default::default()
         };
         let mut processor = WaveformProcessor::new(config);
-        for batch in 0..MIN_COLUMN_CAPACITY + 10 {
+        for batch in 0..512 + 10 {
             processor.process_block(&block(
                 &vec![((batch + 1) as f32 * 0.001).min(1.0); processor.samples_per_column],
                 1,
@@ -650,7 +645,7 @@ mod tests {
             ));
         }
         assert_eq!(
-            processor.snapshot.columns, MIN_COLUMN_CAPACITY,
+            processor.snapshot.columns, 512,
             "ring buffer should cap at max_columns"
         );
     }

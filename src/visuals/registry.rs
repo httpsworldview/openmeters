@@ -61,7 +61,6 @@ macro_rules! visuals {
     };
     ($($variant:ident($name:expr, $width:expr, $height:expr, $min_w:expr $(, max=$max_w:expr)?) =>
        $module:ident :: $processor:ident, $state:ident;
-       $(@pre_ingest($pi:ident, $si:ident) $pre_body:expr;)?
        $settings_ty:ty, $default_palette:expr;
        apply($ap:ident, $as:ident, $aset:ident) $apply_body:expr;
        export($ep:ident, $es:ident) $export_body:expr;
@@ -95,7 +94,6 @@ macro_rules! visuals {
 
         $(impl VisualModule for Visual<$module::$processor, Shared<$module::$state>> {
             fn ingest(&mut self, samples: &[f32], fmt: MeterFormat) {
-                $({ let ($pi, $si) = (&mut self.processor, &self.state); $pre_body; })?
                 if let Some(snap) = self.processor.ingest(samples, fmt) {
                     self.state.borrow_mut().apply_snapshot(&snap);
                 }
@@ -140,9 +138,8 @@ visuals! {
 
     Waveform("Waveform", 220.0, 180.0, 220.0) =>
         waveform::WaveformProcessor, WaveformState;
-        @pre_ingest(p, s) p.sync_capacity(s.borrow().desired_columns());
         settings_cfg::WaveformSettings, &palettes::waveform::COLORS;
-        apply(p, s, set) { visuals!(@apply_config p, set); p.sync_capacity(s.borrow().desired_columns());
+        apply(p, s, set) { visuals!(@apply_config p, set);
             let mut st = s.borrow_mut(); st.set_channels(set.channel_1, set.channel_2); st.set_color_mode(set.color_mode);
             st.set_show_peak_history(set.show_peak_history);
             visuals!(@apply_palette st, set, &palettes::waveform::COLORS); };

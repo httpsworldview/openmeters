@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::processor::{
-    DEFAULT_COLUMN_CAPACITY, MAX_COLUMN_CAPACITY, MIN_COLUMN_CAPACITY, NUM_BANDS, WaveformConfig,
-    WaveformPreview, WaveformProcessor as CoreWaveformProcessor, WaveformSnapshot,
+    MAX_COLUMN_CAPACITY, NUM_BANDS, WaveformConfig, WaveformPreview,
+    WaveformProcessor as CoreWaveformProcessor, WaveformSnapshot,
 };
 use super::render::{PreviewSample, WaveformParams, WaveformPrimitive};
 use crate::persistence::settings::{Channel, WaveformColorMode, WaveformSettings};
@@ -13,7 +13,6 @@ use crate::visuals::palettes::waveform::GRADIENT_STOPS;
 use crate::visuals::project_channel_data;
 use crate::{vis_processor, visualization_widget};
 use iced::Color;
-use std::cell::Cell;
 use std::sync::Arc;
 
 const COLUMN_WIDTH_PIXELS: f32 = 1.0;
@@ -27,22 +26,10 @@ vis_processor!(
     WaveformSnapshot
 );
 
-impl WaveformProcessor {
-    pub fn sync_capacity(&mut self, desired: usize) {
-        let target = desired.clamp(MIN_COLUMN_CAPACITY, MAX_COLUMN_CAPACITY);
-        let mut config = self.config();
-        if config.max_columns != target {
-            config.max_columns = target;
-            self.update_config(config);
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub(crate) struct WaveformState {
     snapshot: WaveformSnapshot,
     style: WaveformStyle,
-    desired_columns: Cell<usize>,
     key: u64,
     channel_1: Channel,
     channel_2: Channel,
@@ -56,7 +43,6 @@ impl WaveformState {
         Self {
             snapshot: WaveformSnapshot::default(),
             style: WaveformStyle::default(),
-            desired_columns: Cell::new(DEFAULT_COLUMN_CAPACITY),
             key: crate::visuals::next_key(),
             channel_1: defaults.channel_1,
             channel_2: defaults.channel_2,
@@ -111,10 +97,6 @@ impl WaveformState {
         &self.style.palette
     }
 
-    pub fn desired_columns(&self) -> usize {
-        self.desired_columns.get()
-    }
-
     pub fn visual_params(&self, bounds: iced::Rectangle) -> Option<WaveformParams> {
         if !self.has_renderable_data(bounds.width) {
             return None;
@@ -124,7 +106,6 @@ impl WaveformState {
         let total_columns = self.snapshot.columns;
         let needed =
             ((bounds.width / COLUMN_WIDTH_PIXELS).ceil() as usize).clamp(1, MAX_COLUMN_CAPACITY);
-        self.desired_columns.set(needed);
 
         let visible = needed.min(total_columns);
         let start = total_columns.saturating_sub(needed);
