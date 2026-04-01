@@ -23,8 +23,7 @@ use std::sync::{Arc, LazyLock};
 
 const EPSILON: f32 = 1e-6;
 const GRID_FREQS: &[(f32, u8)] = &[
-    (10.0, 0),
-    (20.0, 2),
+    (20.0, 0),
     (31.5, 3),
     (40.0, 2),
     (50.0, 2),
@@ -121,7 +120,7 @@ impl Default for SpectrumStyle {
         Self {
             min_db: -120.0,
             max_db: 0.0,
-            min_frequency: 10.0,
+            min_frequency: 20.0,
             max_frequency: 20_000.0,
             resolution: 1024,
             line_thickness: 0.5,
