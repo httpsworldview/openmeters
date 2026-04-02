@@ -30,6 +30,32 @@ const MAX_TEXTURE_BINS: usize = 8_192;
 const TOOLTIP_SIZE: f32 = 14.0;
 const TOOLTIP_PAD: f32 = 8.0;
 const PIANO_ROLL_WIDTH: f32 = 18.0;
+const PIANO_BLACK_KEY_RATIO: f32 = 0.6;
+const PIANO_LABEL_SIZE: f32 = 9.0;
+const PIANO_MIDI_LO: i32 = 21; // A0
+const PIANO_MIDI_HI: i32 = 119; // C8
+
+/// Interpolated position of `f` within a descending slice, normalised to `[0, 1)`.
+fn search_descending(freqs: &[f32], f: f32) -> f32 {
+    let n = freqs.len();
+    if n < 2 {
+        return 0.5;
+    }
+    let i = freqs.partition_point(|&x| x > f);
+    if i == 0 {
+        return 0.0;
+    }
+    if i >= n {
+        return (n - 1) as f32 / n as f32;
+    }
+    let (hi, lo) = (freqs[i - 1], freqs[i]);
+    let t = if (hi - lo).abs() > f32::EPSILON {
+        (hi - f) / (hi - lo)
+    } else {
+        0.5
+    };
+    ((i - 1) as f32 + t) / n as f32
+}
 
 fn spec_freq_min(scale: FrequencyScale, min_freq: f32) -> f32 {
     if matches!(scale, FrequencyScale::Linear) {
@@ -634,6 +660,7 @@ impl<'a> Spectrogram<'a> {
             state.freq_scale,
             state.rotation_index(),
         );
+        let dfreqs = state.buffer.borrow().display_freqs.clone();
         drop(state);
         let horizontal = matches!(rot, 1 | 3);
 
@@ -642,76 +669,129 @@ impl<'a> Spectrogram<'a> {
             norm_to_freq(1.0 - uv_range[1], nyq, min_f, scale),
         );
         let midi_lo = MusicalNote::from_frequency(freq_bot.max(16.0))
-            .map(|n| (n.midi_number - 1).max(0))
-            .unwrap_or(11);
+            .map(|n| (n.midi_number - 1).max(PIANO_MIDI_LO))
+            .unwrap_or(PIANO_MIDI_LO);
         let midi_hi = MusicalNote::from_frequency(freq_top)
-            .map(|n| n.midi_number + 1)
-            .unwrap_or(128);
+            .map(|n| (n.midi_number + 1).min(PIANO_MIDI_HI))
+            .unwrap_or(PIANO_MIDI_HI);
 
         let pal = theme.extended_palette();
-        let (white, black) = (pal.background.weak.color, Color::from_rgb(0.1, 0.1, 0.1));
+        let (white, black) = (
+            color::mix_colors(pal.background.weak.color, Color::WHITE, 0.5),
+            Color::from_rgb(0.1, 0.1, 0.1),
+        );
         let (freq_org, freq_ext, time_org, time_ext) = if horizontal {
             (bounds.x, bounds.width, bounds.y, bounds.height)
         } else {
             (bounds.y, bounds.height, bounds.x, bounds.width)
         };
 
-        let freq_to_screen = |f: f32| -> f32 {
-            let norm = freq_to_norm(f, nyq, min_f, scale);
-            let t = (((1.0 - norm) - uv_range[0]) / (uv_range[1] - uv_range[0])).clamp(0.0, 1.0);
-            let t = if matches!(rot, 1 | 2) { 1.0 - t } else { t };
-            freq_org + freq_ext * t
+        // Must mirror frequency_at_cursor so keys align with the tooltip.
+        let freq_to_px = |f: f32| -> f32 {
+            let uv = if !dfreqs.is_empty() {
+                search_descending(&dfreqs, f)
+            } else {
+                1.0 - freq_to_norm(f, nyq, min_f, scale)
+            };
+            let t = ((uv - uv_range[0]) / (uv_range[1] - uv_range[0])).clamp(0.0, 1.0);
+            freq_org + freq_ext * if matches!(rot, 1 | 2) { 1.0 - t } else { t }
         };
 
-        let strip_anchor = match overlay {
+        let strip = match overlay {
             PianoRollOverlay::Left => time_org,
             PianoRollOverlay::Right => time_org + time_ext - PIANO_ROLL_WIDTH,
             PianoRollOverlay::Off => return,
         };
+        let wborder = iced::Border {
+            color: color::with_alpha(black, 0.4),
+            width: 0.5,
+            radius: 0.0.into(),
+        };
+        let black_key_width = PIANO_ROLL_WIDTH * PIANO_BLACK_KEY_RATIO;
+        let right = matches!(overlay, PianoRollOverlay::Right);
 
         let semi = 2.0f32.powf(0.5 / 12.0);
-        for midi in midi_lo..=midi_hi {
-            let Some(note) = MusicalNote::from_midi(midi) else {
-                continue;
-            };
-            let freq = note.to_frequency();
-            let (a, b) = (freq_to_screen(freq * semi), freq_to_screen(freq / semi));
-            let (lo, hi) = if a < b { (a, b) } else { (b, a) };
-            if hi < freq_org || lo > freq_org + freq_ext {
-                continue;
+        let (inv_s, whole, inv_w) = (1.0 / semi, semi * semi, 1.0 / (semi * semi));
+
+        let orient_rect = |pos: f32, len: f32, cross: f32, cw: f32| -> Rectangle {
+            if horizontal {
+                Rectangle::new(Point::new(pos, cross), Size::new(len, cw))
+            } else {
+                Rectangle::new(Point::new(cross, pos), Size::new(cw, len))
             }
-            let (fill, brd) = if note.is_black() {
-                (black, Default::default())
+        };
+        let orient_point = |fp: f32, tp: f32| -> Point {
+            if horizontal {
+                Point::new(fp, tp)
             } else {
-                (
-                    white,
-                    iced::Border {
-                        color: color::with_alpha(black, 0.4),
-                        width: 0.5,
-                        radius: 0.0.into(),
+                Point::new(tp, fp)
+            }
+        };
+
+        // Key boundaries sit at the midpoint of the intervening black key,
+        // or at the semitone midpoint where no black key exists (E-F, B-C).
+        let key_extent = |midi: i32, freq: f32, is_blk: bool| -> (f32, f32) {
+            let (ml, mh) = if is_blk {
+                (inv_s, semi)
+            } else {
+                match midi % 12 {
+                    0 | 5 => (inv_s, whole),
+                    4 | 11 => (inv_w, semi),
+                    _ => (inv_w, whole),
+                }
+            };
+            let (a, b) = (freq_to_px(freq * mh), freq_to_px(freq * ml));
+            if a < b { (a, b) } else { (b, a) }
+        };
+
+        for pass in 0..2u8 {
+            for midi in midi_lo..=midi_hi {
+                let Some(note) = MusicalNote::from_midi(midi) else {
+                    continue;
+                };
+                let is_blk = note.is_black();
+                if is_blk != (pass == 1) {
+                    continue;
+                }
+                let (lo, hi) = key_extent(midi, note.to_frequency(), is_blk);
+                if hi < freq_org || lo > freq_org + freq_ext {
+                    continue;
+                }
+                let key_len = (hi - lo).max(1.0);
+                let (fill, brd, w) = if is_blk {
+                    (black, Default::default(), black_key_width)
+                } else {
+                    (white, wborder, PIANO_ROLL_WIDTH)
+                };
+                let anchor = if is_blk && right {
+                    strip + PIANO_ROLL_WIDTH - black_key_width
+                } else {
+                    strip
+                };
+                renderer.fill_quad(
+                    Quad {
+                        bounds: orient_rect(lo, key_len, anchor, w),
+                        border: brd,
+                        ..Default::default()
                     },
-                )
-            };
-            let key_len = (hi - lo).max(1.0);
-            let key_rect = if horizontal {
-                Rectangle::new(
-                    Point::new(lo, strip_anchor),
-                    Size::new(key_len, PIANO_ROLL_WIDTH),
-                )
-            } else {
-                Rectangle::new(
-                    Point::new(strip_anchor, lo),
-                    Size::new(PIANO_ROLL_WIDTH, key_len),
-                )
-            };
-            renderer.fill_quad(
-                Quad {
-                    bounds: key_rect,
-                    border: brd,
-                    ..Default::default()
-                },
-                Background::Color(fill),
-            );
+                    Background::Color(fill),
+                );
+                if note.midi_number % 12 == 0 && key_len >= PIANO_LABEL_SIZE {
+                    let s = format!("C{}", note.octave);
+                    let tsz = crate::visuals::measure_text(&s, PIANO_LABEL_SIZE);
+                    let fp = lo + (key_len - if horizontal { tsz.width } else { tsz.height }) * 0.5;
+                    let tp = strip
+                        + (PIANO_ROLL_WIDTH - if horizontal { tsz.height } else { tsz.width })
+                            * 0.5;
+                    let pt = orient_point(fp, tp);
+                    renderer.fill_text(
+                        crate::visuals::make_text(&s, PIANO_LABEL_SIZE, tsz),
+                        pt,
+                        black,
+                        Rectangle::new(pt, tsz),
+                    );
+                }
+            }
         }
     }
 }
