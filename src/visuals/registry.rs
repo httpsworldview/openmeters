@@ -62,6 +62,7 @@ macro_rules! visuals {
     ($($variant:ident($name:expr, $width:expr, $height:expr, $min_w:expr $(, max=$max_w:expr)?) =>
        $module:ident :: $processor:ident, $state:ident;
        $settings_ty:ty, $default_palette:expr;
+       $(pre_ingest($pip:ident, $pis:ident) $pre_ingest_body:expr;)?
        apply($ap:ident, $as:ident, $aset:ident) $apply_body:expr;
        export($ep:ident, $es:ident) $export_body:expr;
     )*) => {
@@ -94,6 +95,10 @@ macro_rules! visuals {
 
         $(impl VisualModule for Visual<$module::$processor, Shared<$module::$state>> {
             fn ingest(&mut self, samples: &[f32], fmt: MeterFormat) {
+                $({
+                    let ($pip, $pis) = (&mut self.processor, &self.state);
+                    $pre_ingest_body
+                })?
                 if let Some(snap) = self.processor.ingest(samples, fmt) {
                     self.state.borrow_mut().apply_snapshot(&snap);
                 }
@@ -151,6 +156,19 @@ visuals! {
     Spectrogram("Spectrogram", 320.0, 220.0, 300.0) =>
         spectrogram::SpectrogramProcessor, SpectrogramState;
         settings_cfg::SpectrogramSettings, &palettes::spectrogram::COLORS;
+        pre_ingest(p, s) {
+            let (vw, vh) = s.borrow().view_dimensions();
+            if vw > 0 && vh > 0 {
+                let mut cfg = p.config();
+                let tw = (vw as usize).min(8192);
+                let th = (vh as usize).min(8192);
+                if cfg.history_length != tw || cfg.display_bin_count != th {
+                    cfg.history_length = tw;
+                    cfg.display_bin_count = th;
+                    p.update_config(cfg);
+                }
+            }
+        };
         apply(p, s, set) { visuals!(@apply_config p, set); let mut st = s.borrow_mut();
             visuals!(@apply_palette st, set, &palettes::spectrogram::COLORS);
             st.set_stop_positions(&resolve_positions(&set.palette, palettes::spectrogram::COLORS.len()));

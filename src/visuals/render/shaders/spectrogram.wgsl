@@ -68,57 +68,6 @@ fn logical_to_physical(logical: u32, params: MagnitudeParams) -> u32 {
     return logical;
 }
 
-fn sample_magnitude(logical: u32, row: u32, params: MagnitudeParams) -> f32 {
-    let physical = logical_to_physical(logical, params);
-    return textureLoad(magnitudes, vec2<i32>(i32(row), i32(physical)), 0).x;
-}
-
-// Max-pool across the bins that map to this pixel's exclusive grid cell.
-// row_hi > row_lo is guaranteed by the caller (bin_hi >= bin_lo from the
-// pixel grid, and the +1u on ceil ensures at least 1 bin per pixel).
-// Stride limits iterations to MAX_PEAK_SAMPLES when many bins collapse into
-// one pixel (e.g. high display_bin_count in a small widget).
-const MAX_PEAK_SAMPLES: u32 = 48u;
-
-fn peak_in_range(logical: u32, row_lo: u32, row_hi: u32, params: MagnitudeParams) -> f32 {
-    let range = row_hi - row_lo;
-    let step = max((range + MAX_PEAK_SAMPLES - 1u) / MAX_PEAK_SAMPLES, 1u);
-    let last = row_hi - 1u;
-    let tf = uniforms.floor_ceil.z;
-
-    if tf != 0.0 {
-        var val = sample_magnitude(logical, row_lo, params)
-                  + textureLoad(tilt_tex, i32(row_lo), 0).x * tf;
-        for (var r = row_lo + step; r < row_hi; r = r + step) {
-            val = max(val, sample_magnitude(logical, r, params)
-                           + textureLoad(tilt_tex, i32(r), 0).x * tf);
-        }
-        if last > row_lo && step > 1u {
-            val = max(val, sample_magnitude(logical, last, params)
-                           + textureLoad(tilt_tex, i32(last), 0).x * tf);
-        }
-        return val;
-    }
-
-    var val = sample_magnitude(logical, row_lo, params);
-    for (var r = row_lo + step; r < row_hi; r = r + step) {
-        val = max(val, sample_magnitude(logical, r, params));
-    }
-    if last > row_lo && step > 1u {
-        val = max(val, sample_magnitude(logical, last, params));
-    }
-    return val;
-}
-
-fn rotate_uv(uv: vec2<f32>, rot: u32) -> vec2<f32> {
-    switch rot {
-        case 1u: { return vec2<f32>(uv.y, 1.0 - uv.x); }
-        case 2u: { return vec2<f32>(1.0 - uv.x, 1.0 - uv.y); }
-        case 3u: { return vec2<f32>(1.0 - uv.y, uv.x); }
-        default: { return uv; }
-    }
-}
-
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let dims = uniforms.dims_wrap_flags;
@@ -135,11 +84,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     }
 
     let latest = min(state.x, capacity - 1u);
-
     let rotation = state.z;
-    let raw_uv = clamp(input.tex_coords, vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 1.0));
-    let clamped_uv = rotate_uv(raw_uv, rotation);
-    let screen_width_raw = max(bitcast<f32>(state.w), 1.0);
 
     let is_pow2 = (flags & FLAG_CAPACITY_POW2) != 0u;
     let is_full = count == capacity;
@@ -157,39 +102,67 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 
     let uv_y_min = uniforms.style.y;
     let uv_y_max = uniforms.style.z;
-    let screen_height_raw = max(uniforms.style.w, 1.0);
-
-    let swapped = (rotation == 1u || rotation == 3u);
-    let screen_width = select(screen_width_raw, screen_height_raw, swapped);
-    let screen_height = select(screen_height_raw, screen_width_raw, swapped);
 
     let params = MagnitudeParams(capacity, wrap_mask, oldest, is_pow2, is_full);
 
-    let pixel_x = floor(clamped_uv.x * screen_width);
-    let pixel_y = floor(clamped_uv.y * screen_height);
+    let origin = vec2<f32>(bitcast<f32>(state.w), uniforms.style.w);
+    let sf = max(uniforms.floor_ceil.w, 1.0);
+    let local = (floor(input.position.xy) - origin) / sf;
 
-    let y_frac_lo = pixel_y / screen_height;
-    let y_frac_hi = (pixel_y + 1.0) / screen_height;
-    let bin_lo = (uv_y_min + y_frac_lo * (uv_y_max - uv_y_min)) * f32(height - 1u);
-    let bin_hi = (uv_y_min + y_frac_hi * (uv_y_max - uv_y_min)) * f32(height - 1u);
-    let row_lo = u32(max(floor(bin_lo), 0.0));
-    let row_hi = min(u32(ceil(bin_hi)) + 1u, height);
-
-    // column arrivals, then advances by whole columns. mostly eliminates
-    // sub-pixel jitter, but it isn't perfect, and I'm out of ideas for
-    // how to do better.
-    let x_lo_f = pixel_x / screen_width * f32(count);
-    let x_hi_f = (pixel_x + 1.0) / screen_width * f32(count);
-    let col_lo = u32(clamp(floor(x_lo_f), 0.0, f32(count - 1u)));
-    let col_hi = u32(clamp(ceil(x_hi_f), 0.0, f32(count)));
-    let col_end = max(col_hi, col_lo + 1u);
-
-    var magnitude = peak_in_range(col_lo, row_lo, row_hi, params);
-    for (var c = col_lo + 1u; c < col_end; c = c + 1u) {
-        magnitude = max(magnitude, peak_in_range(c, row_lo, row_hi, params));
+    var time_f: f32;
+    var freq_f: f32;
+    switch rotation {
+        case 1u: {
+            time_f = local.y;
+            freq_f = f32(height - 1u) - local.x;
+        }
+        case 2u: {
+            time_f = f32(capacity - 1u) - local.x;
+            freq_f = f32(height - 1u) - local.y;
+        }
+        case 3u: {
+            time_f = f32(capacity - 1u) - local.y;
+            freq_f = local.x;
+        }
+        default: {
+            time_f = local.x;
+            freq_f = local.y;
+        }
     }
 
-    let floor = uniforms.floor_ceil.x;
-    let range = max(uniforms.floor_ceil.y - floor, 0.001);
-    return sample_palette(clamp((magnitude - floor) / range, 0.0, 1.0));
+    let time_px = u32(clamp(time_f, 0.0, f32(capacity - 1u)));
+    let freq_px = u32(clamp(freq_f, 0.0, f32(height - 1u)));
+
+    let empty = capacity - count;
+    if !is_full && time_px < empty {
+        return premultiply(uniforms.background);
+    }
+
+    var col: u32;
+    if is_full {
+        col = time_px;
+    } else {
+        col = time_px - empty;
+    }
+
+    var row: u32;
+    if uv_y_min == 0.0 && uv_y_max == 1.0 {
+        row = freq_px;
+    } else {
+        let freq_frac = f32(freq_px) / max(f32(height - 1u), 1.0);
+        let tex_v = uv_y_min + freq_frac * (uv_y_max - uv_y_min);
+        row = u32(clamp(tex_v * f32(height - 1u), 0.0, f32(height - 1u)));
+    }
+
+    let physical = logical_to_physical(col, params);
+    var magnitude = textureLoad(magnitudes, vec2<i32>(i32(row), i32(physical)), 0).x;
+
+    let tf = uniforms.floor_ceil.z;
+    if tf != 0.0 {
+        magnitude = magnitude + textureLoad(tilt_tex, i32(row), 0).x * tf;
+    }
+
+    let floor_db = uniforms.floor_ceil.x;
+    let range = max(uniforms.floor_ceil.y - floor_db, 0.001);
+    return sample_palette(clamp((magnitude - floor_db) / range, 0.0, 1.0));
 }

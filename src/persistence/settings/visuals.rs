@@ -231,9 +231,9 @@ visual_settings!(SpectrumSettings from SpectrumConfig {
 });
 
 visual_settings!(SpectrogramSettings from SpectrogramConfig {
-    fft_size: usize, hop_size: usize, history_length: usize, window: WindowKind, frequency_scale: FrequencyScale,
+    fft_size: usize, hop_size: usize, window: WindowKind, frequency_scale: FrequencyScale,
     use_reassignment: bool,
-    zero_padding_factor: usize, display_bin_count: usize,
+    zero_padding_factor: usize,
     reassignment_max_correction_hz: f32,
 } extra {
     floor_db: f32 = -96.0,

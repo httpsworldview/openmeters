@@ -5,7 +5,7 @@ use super::palette::PaletteEvent;
 use super::widgets::{
     FFT_OPTIONS, FREQ_SCALE_OPTIONS, HOP_DIVISORS, SliderRange, get_closest_hop_divisor,
     labeled_pick_list, labeled_slider, labeled_toggler, section_title, set_if_changed,
-    update_f32_range, update_usize_from_f32,
+    update_f32_range,
 };
 use crate::persistence::settings::{PianoRollOverlay, SpectrogramSettings};
 use crate::ui::theme;
@@ -22,11 +22,9 @@ const PIANO_ROLL_OVERLAY_OPTIONS: [PianoRollOverlay; 3] = [
     PianoRollOverlay::Right,
     PianoRollOverlay::Left,
 ];
-const HISTORY_RANGE: SliderRange = SliderRange::new(120.0, 8192.0, 30.0);
 const FLOOR_DB_RANGE: SliderRange = SliderRange::new(-140.0, -1.0, 1.0);
 const TILT_DB_RANGE: SliderRange = SliderRange::new(-6.0, 6.0, 0.5);
 const ROTATION_RANGE: SliderRange = SliderRange::new(-1.0, 2.0, 1.0);
-const DISPLAY_BINS_RANGE: SliderRange = SliderRange::new(64.0, 8192.0, 64.0);
 const MAX_CORR_HZ_RANGE: SliderRange = SliderRange::new(0.0, 200.0, 1.0);
 const PB_EPSILON_RANGE: SliderRange = SliderRange::new(0.01, 0.5, 0.01);
 const PB_BETA_RANGE: SliderRange = SliderRange::new(0.0, 20.0, 0.25);
@@ -53,7 +51,6 @@ settings_pane!(
 pub enum Message {
     FftSize(usize),
     HopDivisor(usize),
-    HistoryLength(f32),
     Window(WindowPreset),
     PlanckBesselEpsilon(f32),
     PlanckBesselBeta(f32),
@@ -64,7 +61,6 @@ pub enum Message {
     TiltDb(f32),
     Rotation(f32),
     ZeroPadding(usize),
-    DisplayBinCount(f32),
     PianoRoll(PianoRollOverlay),
     Palette(PaletteEvent),
 }
@@ -132,13 +128,6 @@ impl SpectrogramSettingsPane {
         }
         core = core
             .push(labeled_slider(
-                "History length",
-                s.history_length as f32,
-                format!("{} cols", s.history_length),
-                HISTORY_RANGE,
-                Message::HistoryLength,
-            ))
-            .push(labeled_slider(
                 "Floor",
                 s.floor_db,
                 format!("{:.0} dB", s.floor_db),
@@ -173,25 +162,17 @@ impl SpectrogramSettingsPane {
         if s.use_reassignment {
             let corr_is_auto = !s.reassignment_max_correction_hz.is_finite()
                 || s.reassignment_max_correction_hz <= 0.0;
-            adv = adv
-                .push(labeled_slider(
-                    "Display bins",
-                    s.display_bin_count as f32,
-                    format!("{} bins", s.display_bin_count),
-                    DISPLAY_BINS_RANGE,
-                    Message::DisplayBinCount,
-                ))
-                .push(labeled_slider(
-                    "Max correction",
-                    s.reassignment_max_correction_hz,
-                    if corr_is_auto {
-                        "Auto".to_string()
-                    } else {
-                        format!("{:.0} Hz", s.reassignment_max_correction_hz)
-                    },
-                    MAX_CORR_HZ_RANGE,
-                    Message::MaxCorrectionHz,
-                ));
+            adv = adv.push(labeled_slider(
+                "Max correction",
+                s.reassignment_max_correction_hz,
+                if corr_is_auto {
+                    "Auto".to_string()
+                } else {
+                    format!("{:.0} Hz", s.reassignment_max_correction_hz)
+                },
+                MAX_CORR_HZ_RANGE,
+                Message::MaxCorrectionHz,
+            ));
         }
 
         column![
@@ -218,9 +199,6 @@ impl SpectrogramSettingsPane {
             }
             Message::HopDivisor(div) => {
                 changed |= set_if_changed(&mut s.hop_size, (s.fft_size / div).max(1))
-            }
-            Message::HistoryLength(v) => {
-                changed |= update_usize_from_f32(&mut s.history_length, v, HISTORY_RANGE)
             }
             Message::Window(preset) => {
                 if WindowPreset::from_kind(s.window) != preset {
@@ -266,10 +244,6 @@ impl SpectrogramSettingsPane {
             Message::TiltDb(v) => changed |= update_f32_range(&mut s.tilt_db, v, TILT_DB_RANGE),
             Message::Rotation(v) => changed |= set_if_changed(&mut s.rotation, v.round() as i8),
             Message::ZeroPadding(v) => changed |= set_if_changed(&mut s.zero_padding_factor, v),
-            Message::DisplayBinCount(v) => {
-                changed |= s.use_reassignment
-                    && update_usize_from_f32(&mut s.display_bin_count, v, DISPLAY_BINS_RANGE)
-            }
             Message::PianoRoll(opt) => changed |= set_if_changed(&mut s.piano_roll_overlay, opt),
             Message::Palette(e) => changed |= self.palette.update(e),
         }

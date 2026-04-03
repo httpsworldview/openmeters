@@ -80,10 +80,10 @@ impl Default for SpectrogramConfig {
             hop_size: 64,
             window: WindowKind::Blackman,
             frequency_scale: FrequencyScale::default(),
-            history_length: 480,
+            history_length: 0, // immediately set to the width of the visual in logical pixels
             use_reassignment: true,
             zero_padding_factor: 2,
-            display_bin_count: 4096,
+            display_bin_count: 0, // immediately set to the height of the visual in logical pixels
             reassignment_max_correction_hz: 0.0, // 0.0 = auto (OPTIMAL_FREQ_CORRECTION_RATIO * bin_hz)
             reassignment_max_time_hops: 0.0,     // 0.0 = auto
         }
@@ -592,6 +592,7 @@ pub struct SpectrogramUpdate {
     pub sample_rate: f32,
     pub frequency_scale: FrequencyScale,
     pub history_length: usize,
+    pub display_height: usize,
     pub reset: bool,
     pub display_bins_hz: Option<Arc<[f32]>>,
     pub new_columns: Vec<SpectrogramColumn>,
@@ -906,6 +907,7 @@ impl AudioProcessor for SpectrogramProcessor {
                 sample_rate: self.config.sample_rate,
                 frequency_scale: self.config.frequency_scale,
                 history_length: self.config.history_length,
+                display_height: self.config.display_bin_count,
                 reset: std::mem::take(&mut self.reset),
                 display_bins_hz: self.grid.is_enabled().then(|| self.grid.bin_frequencies()),
                 new_columns: cols,
@@ -926,8 +928,8 @@ impl Reconfigurable<SpectrogramConfig> for SpectrogramProcessor {
         self.config = cfg;
 
         let needs_fft = self.needs_fft_rebuild();
-        let dims_changed = prev.display_bin_count != cfg.display_bin_count
-            || prev.use_reassignment != cfg.use_reassignment;
+        let reassignment_toggled = prev.use_reassignment != cfg.use_reassignment;
+        let bins_changed = prev.display_bin_count != cfg.display_bin_count;
         let mapping_changed = prev.hop_size != cfg.hop_size
             || prev.frequency_scale != cfg.frequency_scale
             || (prev.reassignment_max_time_hops - cfg.reassignment_max_time_hops).abs()
@@ -935,9 +937,23 @@ impl Reconfigurable<SpectrogramConfig> for SpectrogramProcessor {
 
         if needs_fft {
             self.rebuild_all();
-        } else if dims_changed {
+        } else if reassignment_toggled || (bins_changed && cfg.use_reassignment) {
+            // Reassignment toggled or grid resolution changed — history is incompatible
             self.reconfigure_grid();
             self.clear_history();
+        } else if bins_changed {
+            // Reassignment off — raw FFT columns are resolution-independent;
+            // BinMapping in state handles display remapping without losing history.
+            self.reconfigure_grid();
+            self.reset = true;
+            if prev.history_length != cfg.history_length {
+                self.history_capacity = cfg.history_length;
+                while self.history.len() > self.history_capacity
+                    && let Some(column) = self.history.pop_front()
+                {
+                    self.recycle(column);
+                }
+            }
         } else if mapping_changed {
             self.reconfigure_grid();
             self.grid.clear_buffers();

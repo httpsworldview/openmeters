@@ -195,7 +195,14 @@ impl Primitive for SpectrogramPrimitive {
     ) {
         let p = &self.params;
         let verts = (p.texture_width > 0 && p.texture_height > 0).then(|| self.build_quad(vp));
-        pipeline.prepare(device, queue, self.key(), verts.as_ref(), p);
+        pipeline.prepare(
+            device,
+            queue,
+            self.key(),
+            verts.as_ref(),
+            p,
+            vp.scale_factor(),
+        );
     }
 
     fn render(
@@ -291,10 +298,11 @@ struct Uniforms {
 }
 
 impl Uniforms {
-    fn from_params(p: &SpectrogramParams) -> Self {
+    fn from_params(p: &SpectrogramParams, scale_factor: f32) -> Self {
         let cap = p.texture_width;
         let pow2 = cap > 0 && cap.is_power_of_two();
         let rotation = ((p.rotation as i32 % 4) + 4) as u32 % 4;
+        let sf = scale_factor.max(1.0);
         Self {
             dims_wrap_flags: [
                 cap as f32,
@@ -306,20 +314,20 @@ impl Uniforms {
                 p.latest_column,
                 p.column_count,
                 rotation,
-                p.bounds.width.max(1.0).to_bits(),
+                (p.bounds.x * sf).floor().to_bits(),
             ],
             style: [
                 p.contrast.max(0.01),
                 p.uv_y_range[0],
                 p.uv_y_range[1],
-                p.bounds.height.max(1.0),
+                (p.bounds.y * sf).floor(),
             ],
             background: p.background,
             floor_ceil: [
                 p.floor_db,
                 p.ceiling_db,
                 if p.tilt_offsets.is_some() { 1.0 } else { 0.0 },
-                0.0,
+                sf,
             ],
         }
     }
@@ -436,6 +444,7 @@ impl Pipeline {
         key: u64,
         verts: Option<&[Vertex; 6]>,
         params: &SpectrogramParams,
+        scale_factor: f32,
     ) {
         let (frame, prune) = self.cache.advance();
         let inst = self
@@ -443,7 +452,7 @@ impl Pipeline {
             .entry(key)
             .or_insert_with(|| Instance::new(device));
         inst.last_used = frame;
-        inst.update(device, queue, &self.layout, verts, params);
+        inst.update(device, queue, &self.layout, verts, params, scale_factor);
         if let Some(t) = prune {
             self.instances.retain(|_, i| i.last_used >= t);
         }
@@ -483,6 +492,7 @@ impl Instance {
         layout: &wgpu::BindGroupLayout,
         verts: Option<&[Vertex; 6]>,
         p: &SpectrogramParams,
+        scale_factor: f32,
     ) {
         match verts {
             Some(v) => {
@@ -501,7 +511,7 @@ impl Instance {
         let res = self.resources.get_or_insert_with(|| {
             Resources::new(device, layout, p.texture_width, p.texture_height)
         });
-        res.sync(device, queue, layout, p);
+        res.sync(device, queue, layout, p, scale_factor);
     }
 }
 
@@ -585,10 +595,11 @@ impl Resources {
         queue: &wgpu::Queue,
         layout: &wgpu::BindGroupLayout,
         p: &SpectrogramParams,
+        scale_factor: f32,
     ) {
         self.resize_magnitude(device, layout, p.texture_width, p.texture_height);
         self.write_columns(queue, p);
-        self.write_uniforms(queue, p);
+        self.write_uniforms(queue, p, scale_factor);
         self.write_palette(queue, p);
         self.write_tilt(queue, p);
     }
@@ -664,8 +675,8 @@ impl Resources {
         );
     }
 
-    fn write_uniforms(&mut self, queue: &wgpu::Queue, p: &SpectrogramParams) {
-        let u = Uniforms::from_params(p);
+    fn write_uniforms(&mut self, queue: &wgpu::Queue, p: &SpectrogramParams, scale_factor: f32) {
+        let u = Uniforms::from_params(p, scale_factor);
         if u != self.uniform_cache {
             queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&u));
             self.uniform_cache = u;

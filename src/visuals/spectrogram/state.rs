@@ -27,6 +27,7 @@ use std::sync::Arc;
 
 const DB_CEILING: f32 = 0.0;
 const MAX_TEXTURE_BINS: usize = 8_192;
+const MAX_TEXTURE_COLS: usize = 8_192;
 const TOOLTIP_SIZE: f32 = 14.0;
 const TOOLTIP_PAD: f32 = 8.0;
 const PIANO_ROLL_WIDTH: f32 = 18.0;
@@ -175,12 +176,8 @@ impl SpectrogramBuffer {
         style: &SpectrogramStyle,
     ) {
         (self.pending_base, self.pending_cols) = (None, Vec::new());
-        self.capacity = upd.history_length as u32;
-        self.height = history
-            .iter()
-            .map(|c| c.magnitudes_db.len().min(MAX_TEXTURE_BINS) as u32)
-            .find(|&h| h > 0)
-            .unwrap_or(0);
+        self.capacity = (upd.history_length as u32).min(MAX_TEXTURE_COLS as u32);
+        self.height = (upd.display_height as u32).min(MAX_TEXTURE_BINS as u32);
         if self.capacity == 0 || self.height == 0 {
             (self.values, self.write_idx, self.col_count, self.mapping) =
                 (vec![], 0, 0, BinMapping::default());
@@ -192,9 +189,8 @@ impl SpectrogramBuffer {
         self.update_mapping(upd, passthrough, style.tilt_db);
         self.values = vec![0.0; self.capacity as usize * self.height as usize];
         (self.write_idx, self.col_count) = (0, 0);
-        let h = self.height as usize;
         for col in history {
-            if col.magnitudes_db.len() >= h {
+            if col.magnitudes_db.len() >= 2 {
                 self.push_column(&col.magnitudes_db);
             }
         }
@@ -208,7 +204,7 @@ impl SpectrogramBuffer {
             return;
         }
         let h = self.height as usize;
-        for col in columns.iter().filter(|c| c.magnitudes_db.len() >= h) {
+        for col in columns.iter().filter(|c| c.magnitudes_db.len() >= 2) {
             let idx = self.push_column(&col.magnitudes_db);
             let start = idx as usize * h;
             let mut buf = self.pool.acquire(h);
@@ -281,11 +277,13 @@ impl SpectrogramBuffer {
         self.tilt_offsets = Some(Arc::from(offsets));
     }
 
-    fn needs_rebuild(&self, upd: &SpectrogramUpdate, new_height: Option<u32>) -> bool {
+    fn needs_rebuild(&self, upd: &SpectrogramUpdate) -> bool {
+        let dw = (upd.history_length as u32).min(MAX_TEXTURE_COLS as u32);
+        let dh = (upd.display_height as u32).min(MAX_TEXTURE_BINS as u32);
         self.capacity == 0
             || self.height == 0
-            || self.capacity != upd.history_length as u32
-            || new_height.is_some_and(|h| h > 0 && h != self.height)
+            || self.capacity != dw
+            || (dh > 0 && dh != self.height)
     }
 
     fn latest_column(&self) -> u32 {
@@ -313,6 +311,8 @@ pub(crate) struct SpectrogramState {
     freq_scale: FrequencyScale,
     zoom: f32,
     pan: f32,
+    view_width: u32,
+    view_height: u32,
 }
 
 impl SpectrogramState {
@@ -334,6 +334,8 @@ impl SpectrogramState {
             freq_scale: FrequencyScale::default(),
             zoom: 1.0,
             pan: 0.5,
+            view_width: 0,
+            view_height: 0,
         }
     }
 
@@ -405,6 +407,10 @@ impl SpectrogramState {
         self.rotation
     }
 
+    pub fn view_dimensions(&self) -> (u32, u32) {
+        (self.view_width, self.view_height)
+    }
+
     pub fn apply_snapshot(&mut self, snap: &SpectrogramUpdate) {
         if snap.new_columns.is_empty() && !snap.reset {
             return;
@@ -418,21 +424,29 @@ impl SpectrogramState {
             self.history
                 .drain(0..self.history.len() - snap.history_length);
         }
-        let new_h = snap
+
+        // Purge history if source column bin count changed (e.g. reassignment toggled,
+        // fft_size changed). Compare new columns against existing history.
+        if let Some(new_len) = snap
             .new_columns
             .iter()
-            .map(|c| c.magnitudes_db.len().min(MAX_TEXTURE_BINS) as u32)
-            .find(|&h| h > 0);
-
-        if let Some(h) = new_h {
-            let buf_h = self.buffer.borrow().height;
-            if buf_h > 0 && h != buf_h {
-                self.history.retain(|c| c.magnitudes_db.len() == h as usize);
+            .map(|c| c.magnitudes_db.len())
+            .find(|&l| l > 0)
+        {
+            let old_len = self
+                .history
+                .iter()
+                .rev()
+                .skip(snap.new_columns.len())
+                .map(|c| c.magnitudes_db.len())
+                .find(|&l| l > 0);
+            if old_len.is_some_and(|ol| ol != new_len) {
+                self.history.retain(|c| c.magnitudes_db.len() == new_len);
             }
         }
 
         let mut buf = self.buffer.borrow_mut();
-        if snap.reset || buf.needs_rebuild(snap, new_h) {
+        if snap.reset || buf.needs_rebuild(snap) {
             buf.rebuild(&self.history, snap, &self.style);
         } else if !snap.new_columns.is_empty() {
             buf.append(&snap.new_columns);
@@ -897,6 +911,20 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
         _: &Rectangle,
     ) {
         let bounds = layout.bounds();
+        {
+            let mut state_mut = self.state.borrow_mut();
+            let (bw, bh) = (
+                bounds.width.round().max(1.0) as u32,
+                bounds.height.round().max(1.0) as u32,
+            );
+            let swapped = matches!(state_mut.rotation_index(), 1 | 3);
+            let (pw, ph) = if swapped { (bh, bw) } else { (bw, bh) };
+            if state_mut.view_width != pw || state_mut.view_height != ph {
+                state_mut.view_width = pw;
+                state_mut.view_height = ph;
+            }
+            drop(state_mut);
+        }
         let interaction = tree.state.downcast_ref::<InteractionState>();
         let state = self.state.borrow();
         let uv_y_range = state.uv_y_range();
