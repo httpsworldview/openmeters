@@ -31,12 +31,10 @@ use rustfft::num_complex::Complex32;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::collections::VecDeque;
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 use std::sync::RwLock;
 use std::sync::{Arc, OnceLock};
 use wide::{CmpGe, CmpGt, CmpLe, CmpLt, f32x8};
-pub const PLANCK_BESSEL_DEFAULT_EPSILON: f32 = 0.1;
-pub const PLANCK_BESSEL_DEFAULT_BETA: f32 = 5.5;
 
 const OPTIMAL_FREQ_CORRECTION_RATIO: f32 = 1.0;
 
@@ -44,18 +42,6 @@ const CONF_SIGMA: f32 = 0.7;
 const OPTIMAL_TIME_SPREAD: f32 = 3.5;
 const OPTIMAL_TIME_HOPS_MIN: f32 = 2.0;
 const OPTIMAL_TIME_HOPS_MAX: f32 = 8.0;
-
-// Horner polynomial evaluation: poly!(x; a0, a1, a2) = a0 + x*(a1 + x*a2)
-macro_rules! poly {
-    ($x:expr; $c0:expr $(, $c:expr)*) => {{
-        let x = $x;
-        poly!(@acc x; $c0 $(, $c)*)
-    }};
-    (@acc $x:ident; $acc:expr, $c:expr $(, $rest:expr)*) => {
-        poly!(@acc $x; $acc + $x * poly!(@acc $x; $c $(, $rest)*))
-    };
-    (@acc $x:ident; $acc:expr) => { $acc };
-}
 
 #[derive(Debug, Clone, Copy)]
 pub struct SpectrogramConfig {
@@ -143,7 +129,7 @@ impl std::fmt::Display for FrequencyScale {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WindowKind {
     Rectangular,
@@ -151,36 +137,6 @@ pub enum WindowKind {
     Hamming,
     Blackman,
     BlackmanHarris,
-    PlanckBessel { epsilon: f32, beta: f32 },
-}
-
-impl PartialEq for WindowKind {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (
-                Self::PlanckBessel {
-                    epsilon: e1,
-                    beta: b1,
-                },
-                Self::PlanckBessel {
-                    epsilon: e2,
-                    beta: b2,
-                },
-            ) => e1.to_bits() == e2.to_bits() && b1.to_bits() == b2.to_bits(),
-            (a, b) => core::mem::discriminant(a) == core::mem::discriminant(b),
-        }
-    }
-}
-impl Eq for WindowKind {}
-
-impl Hash for WindowKind {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        core::mem::discriminant(self).hash(state);
-        if let Self::PlanckBessel { epsilon, beta } = self {
-            epsilon.to_bits().hash(state);
-            beta.to_bits().hash(state);
-        }
-    }
 }
 
 impl WindowKind {
@@ -194,7 +150,6 @@ impl WindowKind {
             Self::Hamming => cosine_window(len, &[25.0 / 46.0, -21.0 / 46.0]),
             Self::Blackman => cosine_window(len, &[0.42, -0.5, 0.08]),
             Self::BlackmanHarris => cosine_window(len, &[0.35875, -0.48829, 0.14128, -0.01168]),
-            Self::PlanckBessel { epsilon, beta } => planck_bessel(len, epsilon, beta),
         }
     }
 }
@@ -241,58 +196,6 @@ impl WindowCache {
             .or_insert_with(|| Arc::from(kind.coefficients(len)))
             .clone()
     }
-}
-
-// Modified Bessel functions I_0 and I_1 using rational polynomial approximations
-fn bessel_i0(x: f64) -> f64 {
-    let ax = x.abs();
-    if ax < 3.75 {
-        poly!((x / 3.75).powi(2); 1.0, 3.5156229, 3.0899424, 1.2067492, 0.2659732, 0.0360768, 0.0045813)
-    } else {
-        poly!(3.75 / ax; 0.39894228, 0.01328592, 0.00225319, -0.00157565, 0.00916281,
-              -0.02057706, 0.02635537, -0.01647633, 0.00392377)
-            * ax.exp()
-            / ax.sqrt()
-    }
-}
-
-fn bessel_i1(x: f64) -> f64 {
-    let ax = x.abs();
-    let result = if ax < 3.75 {
-        ax * poly!((ax / 3.75).powi(2); 0.5, 0.87890594, 0.51498869, 0.15084934, 0.02658733, 0.00301532, 0.00032411)
-    } else {
-        poly!(3.75 / ax; 0.39894228, -0.03988024, -0.00362018, 0.00163801, -0.01031555,
-              0.02282967, -0.02895312, 0.01787654, -0.00420059)
-            * ax.exp()
-            / ax.sqrt()
-    };
-    if x < 0.0 { -result } else { result }
-}
-
-fn planck_bessel(len: usize, epsilon: f32, beta: f32) -> Vec<f32> {
-    let (eps, beta) = (epsilon.clamp(1e-6, 0.5 - 1e-6), beta.max(0.0) as f64);
-    let (bessel_norm, last) = (bessel_i0(beta), (len - 1) as f32);
-    let taper = (eps * last).min(last * 0.5);
-    (0..len)
-        .map(|i| {
-            let x = (i as f32).min(last - i as f32);
-            let planck = if taper <= 0.0 || x >= taper {
-                1.0
-            } else if x <= 0.0 {
-                0.0
-            } else {
-                1.0 / ((taper / x - taper / (taper - x)).exp() + 1.0)
-            };
-            let kaiser = if beta == 0.0 {
-                1.0
-            } else {
-                let normalized = 2.0 * i as f64 / (len - 1) as f64 - 1.0;
-                (bessel_i0(beta * (1.0 - normalized * normalized).max(0.0).sqrt()) / bessel_norm)
-                    as f32
-            };
-            planck * kaiser
-        })
-        .collect()
 }
 
 #[derive(Default)]
@@ -987,62 +890,12 @@ fn finite_first_diff(data: &[f32]) -> Vec<f32> {
 }
 
 fn compute_derivative(kind: WindowKind, window: &[f32]) -> Vec<f32> {
-    if let WindowKind::PlanckBessel { epsilon, beta } = kind {
-        let (len, eps) = (window.len(), epsilon.clamp(1e-6, 0.5 - 1e-6));
-        let (last, beta64) = ((len - 1) as f32, beta.max(0.0) as f64);
-        let taper = (eps * last).min(last * 0.5);
-        if taper > 0.0 {
-            let bessel_norm = bessel_i0(beta64);
-            return (0..len)
-                .map(|i| {
-                    let (pos, sign) = if (i as f32) < last * 0.5 {
-                        (i as f32, 1.0)
-                    } else {
-                        (last - i as f32, -1.0)
-                    };
-                    let (kaiser_val, kaiser_der) = if beta64 == 0.0 {
-                        (1.0, 0.0)
-                    } else {
-                        let normalized = (2.0 * i as f64) / (len - 1) as f64 - 1.0;
-                        let ins = (1.0 - normalized * normalized).max(0.0).sqrt();
-                        let arg = beta64 * ins;
-                        (
-                            (bessel_i0(arg) / bessel_norm) as f32,
-                            if ins <= 1e-10 {
-                                0.0
-                            } else {
-                                (bessel_i1(arg)
-                                    * beta64
-                                    * (-2.0 * normalized / ((len - 1) as f64 * ins))
-                                    / bessel_norm) as f32
-                            },
-                        )
-                    };
-                    let (planck_val, planck_der) = if pos <= 0.0 {
-                        (0.0, 0.0)
-                    } else if pos >= taper {
-                        (1.0, 0.0)
-                    } else {
-                        let logistic_arg = taper / pos - taper / (taper - pos);
-                        let logistic = 1.0 / (logistic_arg.exp() + 1.0);
-                        (
-                            logistic,
-                            logistic
-                                * (1.0 - logistic)
-                                * (taper / (pos * pos) + taper / ((taper - pos).powi(2))),
-                        )
-                    };
-                    (planck_der * sign) * kaiser_val + planck_val * kaiser_der
-                })
-                .collect();
-        }
-    }
     let coeffs: &[f32] = match kind {
         WindowKind::Hann => &[0.5, -0.5],
         WindowKind::Hamming => &[25.0 / 46.0, -21.0 / 46.0],
         WindowKind::Blackman => &[0.42, -0.5, 0.08],
         WindowKind::BlackmanHarris => &[0.35875, -0.48829, 0.14128, -0.01168],
-        _ => return finite_first_diff(window),
+        WindowKind::Rectangular => return finite_first_diff(window),
     };
     let len = window.len();
     let step = core::f32::consts::TAU / (len.saturating_sub(1).max(1) as f32);
@@ -1195,13 +1048,6 @@ mod tests {
             (WindowKind::Hamming, 0.1540),
             (WindowKind::Blackman, 0.1188),
             (WindowKind::BlackmanHarris, 0.1013),
-            (
-                WindowKind::PlanckBessel {
-                    epsilon: PLANCK_BESSEL_DEFAULT_EPSILON,
-                    beta: PLANCK_BESSEL_DEFAULT_BETA,
-                },
-                0.1472,
-            ),
         ];
         for &(kind, expected) in pairs {
             let window = kind.coefficients(size as usize);

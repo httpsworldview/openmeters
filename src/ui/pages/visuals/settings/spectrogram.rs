@@ -10,9 +10,7 @@ use super::widgets::{
 use crate::persistence::settings::{PianoRollOverlay, SpectrogramSettings};
 use crate::ui::theme;
 use crate::visuals::registry::VisualKind;
-use crate::visuals::spectrogram::processor::{
-    FrequencyScale, PLANCK_BESSEL_DEFAULT_BETA, PLANCK_BESSEL_DEFAULT_EPSILON, WindowKind,
-};
+use crate::visuals::spectrogram::processor::{FrequencyScale, WindowKind};
 use iced::widget::{column, row};
 use iced::{Element, Length};
 
@@ -26,22 +24,10 @@ const FLOOR_DB_RANGE: SliderRange = SliderRange::new(-140.0, -1.0, 1.0);
 const TILT_DB_RANGE: SliderRange = SliderRange::new(-6.0, 6.0, 0.5);
 const ROTATION_RANGE: SliderRange = SliderRange::new(-1.0, 2.0, 1.0);
 const MAX_CORR_HZ_RANGE: SliderRange = SliderRange::new(0.0, 200.0, 1.0);
-const PB_EPSILON_RANGE: SliderRange = SliderRange::new(0.01, 0.5, 0.01);
-const PB_BETA_RANGE: SliderRange = SliderRange::new(0.0, 20.0, 0.25);
-
-fn extract_planck_bessel(window: WindowKind) -> (f32, f32) {
-    match window {
-        WindowKind::PlanckBessel { epsilon, beta } => (epsilon, beta),
-        _ => (PLANCK_BESSEL_DEFAULT_EPSILON, PLANCK_BESSEL_DEFAULT_BETA),
-    }
-}
-
 settings_pane!(
     SpectrogramSettingsPane, SpectrogramSettings, VisualKind::Spectrogram,
     theme::spectrogram, Spectrogram,
-    extra_from_settings(settings) {
-        planck_bessel: (f32, f32) = extract_planck_bessel(settings.window),
-    }
+    extra_from_settings(_s) {}
     init_palette(palette) {
         palette.set_show_ramp(true);
     }
@@ -52,8 +38,6 @@ pub enum Message {
     FftSize(usize),
     HopDivisor(usize),
     Window(WindowPreset),
-    PlanckBesselEpsilon(f32),
-    PlanckBesselBeta(f32),
     FrequencyScale(FrequencyScale),
     UseReassignment(bool),
     MaxCorrectionHz(f32),
@@ -109,23 +93,6 @@ impl SpectrogramSettingsPane {
 
         let mut core =
             column![row![left_col, right_col].spacing(10).width(Length::Fill)].spacing(8);
-        if let WindowKind::PlanckBessel { epsilon, beta } = s.window {
-            core = core
-                .push(labeled_slider(
-                    "PB epsilon",
-                    epsilon,
-                    format!("{epsilon:.3}"),
-                    PB_EPSILON_RANGE,
-                    Message::PlanckBesselEpsilon,
-                ))
-                .push(labeled_slider(
-                    "PB beta",
-                    beta,
-                    format!("{beta:.2}"),
-                    PB_BETA_RANGE,
-                    Message::PlanckBesselBeta,
-                ));
-        }
         core = core
             .push(labeled_slider(
                 "Floor",
@@ -202,35 +169,7 @@ impl SpectrogramSettingsPane {
             }
             Message::Window(preset) => {
                 if WindowPreset::from_kind(s.window) != preset {
-                    if let WindowKind::PlanckBessel { epsilon, beta } = s.window {
-                        self.planck_bessel = (epsilon, beta);
-                    }
-                    s.window = if preset == WindowPreset::PlanckBessel {
-                        WindowKind::PlanckBessel {
-                            epsilon: self.planck_bessel.0,
-                            beta: self.planck_bessel.1,
-                        }
-                    } else {
-                        preset.to_window_kind()
-                    };
-                    changed = true;
-                }
-            }
-            Message::PlanckBesselEpsilon(v) => {
-                if let WindowKind::PlanckBessel { mut epsilon, beta } = s.window
-                    && update_f32_range(&mut epsilon, v, PB_EPSILON_RANGE)
-                {
-                    self.planck_bessel.0 = epsilon;
-                    s.window = WindowKind::PlanckBessel { epsilon, beta };
-                    changed = true;
-                }
-            }
-            Message::PlanckBesselBeta(v) => {
-                if let WindowKind::PlanckBessel { epsilon, mut beta } = s.window
-                    && update_f32_range(&mut beta, v, PB_BETA_RANGE)
-                {
-                    self.planck_bessel.1 = beta;
-                    s.window = WindowKind::PlanckBessel { epsilon, beta };
+                    s.window = preset.to_window_kind();
                     changed = true;
                 }
             }
@@ -258,17 +197,15 @@ pub(crate) enum WindowPreset {
     Hamming,
     Blackman,
     BlackmanHarris,
-    PlanckBessel,
 }
 
 impl WindowPreset {
-    const ALL: [Self; 6] = [
+    const ALL: [Self; 5] = [
         Self::Rectangular,
         Self::Hann,
         Self::Hamming,
         Self::Blackman,
         Self::BlackmanHarris,
-        Self::PlanckBessel,
     ];
 
     fn from_kind(kind: WindowKind) -> Self {
@@ -278,7 +215,6 @@ impl WindowPreset {
             WindowKind::Hamming => Self::Hamming,
             WindowKind::Blackman => Self::Blackman,
             WindowKind::BlackmanHarris => Self::BlackmanHarris,
-            WindowKind::PlanckBessel { .. } => Self::PlanckBessel,
         }
     }
 
@@ -289,10 +225,6 @@ impl WindowPreset {
             Self::Hamming => WindowKind::Hamming,
             Self::Blackman => WindowKind::Blackman,
             Self::BlackmanHarris => WindowKind::BlackmanHarris,
-            Self::PlanckBessel => WindowKind::PlanckBessel {
-                epsilon: PLANCK_BESSEL_DEFAULT_EPSILON,
-                beta: PLANCK_BESSEL_DEFAULT_BETA,
-            },
         }
     }
 }
@@ -305,7 +237,6 @@ impl std::fmt::Display for WindowPreset {
             Self::Hamming => "Hamming",
             Self::Blackman => "Blackman",
             Self::BlackmanHarris => "Blackman-Harris",
-            Self::PlanckBessel => "Planck-Bessel",
         })
     }
 }

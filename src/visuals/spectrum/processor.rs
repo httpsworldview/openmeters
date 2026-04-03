@@ -5,9 +5,7 @@
 
 use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::util::audio::{DB_FLOOR, DEFAULT_SAMPLE_RATE, power_to_db};
-use crate::visuals::spectrogram::processor::{
-    FrequencyScale, PLANCK_BESSEL_DEFAULT_BETA, PLANCK_BESSEL_DEFAULT_EPSILON, WindowKind,
-};
+use crate::visuals::spectrogram::processor::{FrequencyScale, WindowKind};
 use realfft::{RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex32;
 use serde::{Deserialize, Serialize};
@@ -65,10 +63,7 @@ impl Default for SpectrumConfig {
             sample_rate: DEFAULT_SAMPLE_RATE,
             fft_size: DEFAULT_SPECTRUM_FFT_SIZE,
             hop_size: DEFAULT_SPECTRUM_FFT_SIZE / DEFAULT_SPECTRUM_HOP_DIVISOR,
-            window: WindowKind::PlanckBessel {
-                epsilon: PLANCK_BESSEL_DEFAULT_EPSILON,
-                beta: PLANCK_BESSEL_DEFAULT_BETA,
-            },
+            window: WindowKind::BlackmanHarris,
             averaging: AveragingMode::Exponential {
                 factor: DEFAULT_SPECTRUM_EXP_FACTOR,
             },
