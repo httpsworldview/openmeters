@@ -346,8 +346,7 @@ impl Reassignment2DGrid {
                 .ceil() as usize
         };
         let cols = 2 * hops + 1;
-        let min = (cfg.sample_rate / cfg.fft_size.max(1) as f32)
-            .min(cfg.sample_rate * 0.5);
+        let min = (cfg.sample_rate / cfg.fft_size.max(1) as f32).min(cfg.sample_rate * 0.5);
         let max = (cfg.sample_rate * 0.5).max(min * 1.001);
 
         if self.display_bins != bins
