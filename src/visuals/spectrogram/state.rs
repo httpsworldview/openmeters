@@ -131,7 +131,7 @@ impl BinMapping {
         let (max_bin, denom) = ((fft_size / 2) as f32, (height - 1).max(1) as f32);
         let (nyq, min_f) = (
             (sample_rate / 2.0).max(1.0),
-            (sample_rate / fft_size as f32).max(20.0),
+            (sample_rate / fft_size as f32),
         );
         let mut res = Self {
             lower: Vec::with_capacity(height),
@@ -507,7 +507,7 @@ impl SpectrogramState {
         }
         let (nyq, min_f) = (
             (self.sample_rate / 2.0).max(1.0),
-            (self.sample_rate / self.fft_size as f32).max(20.0),
+            (self.sample_rate / self.fft_size as f32),
         );
         let freq = norm_to_freq(1.0 - tex_uv, nyq, min_f, self.freq_scale);
         (freq.is_finite() && freq > 0.0).then_some(freq)
@@ -670,7 +670,7 @@ impl<'a> Spectrogram<'a> {
         }
         let (nyq, min_f, scale, rot) = (
             (state.sample_rate / 2.0).max(1.0),
-            (state.sample_rate / state.fft_size as f32).max(20.0),
+            (state.sample_rate / state.fft_size as f32),
             state.freq_scale,
             state.rotation_index(),
         );
