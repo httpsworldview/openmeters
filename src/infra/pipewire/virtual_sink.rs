@@ -404,7 +404,7 @@ mod tests {
 
     #[test]
     fn sample_format_conversion() {
-        // S16LE: i16::MIN → -1.0, i16::MAX → +1.0
+        // S16LE: i16::MIN -> -1.0, i16::MAX -> +1.0
         let s16 = [0x00_u8, 0x80, 0xFF, 0x7F];
         let s16_out = convert_samples_to_f32(&s16, Fmt::S16LE).unwrap();
         assert_eq!(s16_out.len(), 2);

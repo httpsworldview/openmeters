@@ -839,11 +839,11 @@ impl Reconfigurable<SpectrogramConfig> for SpectrogramProcessor {
         if needs_fft {
             self.rebuild_all();
         } else if reassignment_toggled || (bins_changed && cfg.use_reassignment) {
-            // Reassignment toggled or grid resolution changed — history is incompatible
+            // Reassignment toggled or grid resolution changed - history is incompatible
             self.reconfigure_grid();
             self.clear_history();
         } else if bins_changed {
-            // Reassignment off — raw FFT columns are resolution-independent;
+            // Reassignment off - raw FFT columns are resolution-independent;
             // BinMapping in state handles display remapping without losing history.
             self.reconfigure_grid();
             self.reset = true;
