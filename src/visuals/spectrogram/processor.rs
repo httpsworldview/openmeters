@@ -38,7 +38,6 @@ use wide::{CmpGe, CmpGt, CmpLe, CmpLt, f32x8};
 
 const OPTIMAL_FREQ_CORRECTION_RATIO: f32 = 1.0;
 
-const CONF_SIGMA: f32 = 0.7;
 const OPTIMAL_TIME_SPREAD: f32 = 3.5;
 const OPTIMAL_TIME_HOPS_MIN: f32 = 2.0;
 const OPTIMAL_TIME_HOPS_MAX: f32 = 8.0;
@@ -405,8 +404,8 @@ impl Reassignment2DGrid {
     }
 
     #[inline]
-    fn accumulate_simd(&mut self, freq: f32x8, time: f32x8, pow: f32x8, conf: f32x8, mask: f32x8) {
-        let val = pow * conf;
+    fn accumulate_simd(&mut self, freq: f32x8, time: f32x8, pow: f32x8, mask: f32x8) {
+        let val = pow;
         let v_max_off = f32x8::splat(self.max_hops as f32);
         let tc = (time * f32x8::splat(1.0 / self.hop as f32))
             .max(-v_max_off)
@@ -738,16 +737,12 @@ impl SpectrogramProcessor {
             }
 
             let d_tau = (t_re * base_re + t_im * base_im) * inv_pow;
-            // gaussian confidence (ref [5], [6])
-            let norm_corr = f_corr.abs() / (v_bin_hz * f32x8::splat(CONF_SIGMA));
-            let conf = (-f32x8::splat(0.5) * norm_corr * norm_corr).exp();
 
             let mask_f32 = final_mask.blend(f32x8::splat(1.0), f32x8::splat(0.0));
             self.grid.accumulate_simd(
                 self.grid.hz_to_bin_simd(freq),
                 d_tau,
                 pow * energy_scale,
-                conf,
                 mask_f32,
             );
         }
