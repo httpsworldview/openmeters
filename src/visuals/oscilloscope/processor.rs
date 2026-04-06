@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-// min & max detectable pitches.
 const PITCH_MIN_HZ: f32 = 20.0;
 const PITCH_MAX_HZ: f32 = 8000.0;
 
@@ -197,10 +196,8 @@ impl PitchDetector {
         let fft_size = (samples.len() * 2).next_power_of_two();
         self.rebuild_fft(fft_size);
 
-        let Some(ref forward) = self.fft_forward else {
-            return false;
-        };
-        let Some(ref inverse) = self.fft_inverse else {
+        let (Some(forward), Some(inverse)) = (self.fft_forward.as_ref(), self.fft_inverse.as_ref())
+        else {
             return false;
         };
 
@@ -236,10 +233,8 @@ impl PitchDetector {
 
         let norm = 1.0 / fft_size as f32;
         let acf_0 = self.fft_output[0] * norm;
-
         for tau in 0..max_period {
-            let acf_tau = self.fft_output[tau] * norm;
-            self.difference_function[tau] = 2.0 * (acf_0 - acf_tau);
+            self.difference_function[tau] = 2.0 * (acf_0 - self.fft_output[tau] * norm);
         }
         true
     }
@@ -376,7 +371,7 @@ fn find_trigger(
     let mut best = f32::NEG_INFINITY;
     let mut pos = 0;
 
-    // Coarse sweep right-to-left to prioritize newer data
+    // Coarse sweep right-to-left to prioritize newer data.
     let num_steps = range / stride;
     for step in (0..=num_steps).rev() {
         let i = step * stride;
@@ -491,12 +486,11 @@ impl OscilloscopeProcessor {
             (Some(new_f), Some(prev_f)) => {
                 let corrected = octave_correct(new_f, prev_f);
                 let was_corrected = (corrected - new_f).abs() > f32::EPSILON;
-
-                if was_corrected {
-                    self.octave_streak += 1;
+                self.octave_streak = if was_corrected {
+                    self.octave_streak + 1
                 } else {
-                    self.octave_streak = 0;
-                }
+                    0
+                };
 
                 // After 3+ consecutive octave corrections the signal
                 // has probably actually changed, so accept it.
@@ -543,7 +537,6 @@ impl AudioProcessor for OscilloscopeProcessor {
             .round()
             .max(1.0) as usize;
 
-        // Compute buffer capacity for history
         let detection_frames = (self.config.sample_rate * 0.1) as usize;
         let search_range = (self.config.sample_rate / PITCH_MIN_HZ).ceil() as usize;
         let trigger_frames = match self.config.trigger_mode {
@@ -555,7 +548,6 @@ impl AudioProcessor for OscilloscopeProcessor {
         };
         let capacity = detection_frames.max(base_frames).max(trigger_frames) * channel_count;
 
-        // Update history buffer
         if !self.history.is_empty() && !self.history.len().is_multiple_of(channel_count) {
             self.history.clear();
             self.last_pitch = None;
@@ -589,7 +581,6 @@ impl AudioProcessor for OscilloscopeProcessor {
                     return None;
                 }
 
-                // Prepare mono buffer for pitch detection
                 let data = self.history.make_contiguous();
                 self.mono_buffer.clear();
                 self.mono_buffer.reserve(available);
@@ -604,13 +595,12 @@ impl AudioProcessor for OscilloscopeProcessor {
                     }
                 }
 
-                // Detect pitch and find stable segment
                 let detected = self
                     .pitch_detector
                     .detect_pitch(&self.mono_buffer, self.config.sample_rate);
 
-                // Retry on the most recent portion when full-buffer
-                // detection fails (e.g. buffer spans a signal transition).
+                // Retry on the most recent portion when full-buffer detection fails
+                // (e.g. buffer spans a signal transition).
                 let detected = detected.or_else(|| {
                     let min_len = (self.config.sample_rate / PITCH_MIN_HZ) as usize * 2;
                     if self.mono_buffer.len() > min_len {
@@ -640,7 +630,6 @@ impl AudioProcessor for OscilloscopeProcessor {
             }
         };
 
-        // Extract and downsample to snapshot
         const TARGET: usize = 4096;
         let target = TARGET.clamp(1, frames);
         let extract_start = start * channel_count;
@@ -699,12 +688,11 @@ fn downsample_interleaved(
             let idx = pos as usize;
             let frac = pos - idx as f32;
 
+            let base = idx * channel_count + channel;
             let sample = if frac > f32::EPSILON && idx + 1 < frames {
-                let curr = data[idx * channel_count + channel];
-                let next = data[(idx + 1) * channel_count + channel];
-                crate::util::audio::lerp(curr, next, frac)
+                crate::util::audio::lerp(data[base], data[base + channel_count], frac)
             } else {
-                data[idx * channel_count + channel]
+                data[base]
             };
 
             output.push(sample);
@@ -786,12 +774,10 @@ mod tests {
                 .detect_pitch(&samples, rate)
                 .expect("Failed to detect pitch");
             let error = (detected - freq).abs() / freq;
+            let pct = error * 100.0;
             assert!(
                 error < 0.02,
-                "Detected {}Hz, expected {}Hz (error {:.1}%)",
-                detected,
-                freq,
-                error * 100.0
+                "Detected {detected}Hz, expected {freq}Hz (error {pct:.1}%)"
             );
         }
     }
@@ -850,31 +836,14 @@ mod tests {
         let block_frames = 2048;
         let num_blocks = 40;
 
-        struct Scenario {
-            name: &'static str,
-            freq: f32,
-            harmonics: &'static [(f32, f32)],
-        }
-
-        let scenarios = [
-            Scenario {
-                name: "440Hz pure",
-                freq: 440.0,
-                harmonics: &[],
-            },
-            Scenario {
-                name: "100Hz pure",
-                freq: 100.0,
-                harmonics: &[],
-            },
-            Scenario {
-                name: "440Hz harmonics",
-                freq: 440.0,
-                harmonics: &[(2.0, 0.5), (3.0, 0.25)],
-            },
+        type PitchScenario = (&'static str, f32, &'static [(f32, f32)]);
+        let scenarios: &[PitchScenario] = &[
+            ("440Hz pure", 440.0, &[]),
+            ("100Hz pure", 100.0, &[]),
+            ("440Hz harmonics", 440.0, &[(2.0, 0.5), (3.0, 0.25)]),
         ];
 
-        for scenario in &scenarios {
+        for &(name, freq, harmonics) in scenarios {
             let config = OscilloscopeConfig {
                 sample_rate: rate,
                 segment_duration: 0.02,
@@ -883,8 +852,7 @@ mod tests {
             let mut processor = OscilloscopeProcessor::new(config);
 
             let total_frames = block_frames * num_blocks;
-            let full_signal =
-                generate_signal(scenario.freq, rate, total_frames, scenario.harmonics, 0.0);
+            let full_signal = generate_signal(freq, rate, total_frames, harmonics, 0.0);
 
             let mut pitches = Vec::new();
             for block_idx in 0..num_blocks {
@@ -897,46 +865,31 @@ mod tests {
                 }
             }
 
-            assert!(
-                !pitches.is_empty(),
-                "[{}] no pitches detected",
-                scenario.name
-            );
+            assert!(!pitches.is_empty(), "[{name}] no pitches detected");
 
-            let mut octave_errors = 0;
-            for w in pitches.windows(2) {
-                let ratio = w[1] / w[0];
-                if !(0.55..=1.8).contains(&ratio) {
-                    octave_errors += 1;
-                }
-            }
+            let octave_errors = pitches
+                .windows(2)
+                .filter(|w| !(0.55..=1.8).contains(&(w[1] / w[0])))
+                .count();
 
             let mean = pitches.iter().sum::<f32>() / pitches.len() as f32;
             let variance =
                 pitches.iter().map(|p| (p - mean).powi(2)).sum::<f32>() / pitches.len() as f32;
             let std_dev = variance.sqrt();
-            let rel_std = std_dev / scenario.freq;
+            let rel_std = std_dev / freq;
 
             eprintln!(
-                "[{}] pitches={}, mean={:.2}Hz, stddev={:.4}Hz, rel_std={:.6}, octave_errors={}",
-                scenario.name,
-                pitches.len(),
-                mean,
-                std_dev,
-                rel_std,
-                octave_errors
+                "[{name}] pitches={}, mean={mean:.2}Hz, stddev={std_dev:.4}Hz, rel_std={rel_std:.6}, octave_errors={octave_errors}",
+                pitches.len()
             );
 
             assert_eq!(
                 octave_errors, 0,
-                "[{}] had {} octave errors",
-                scenario.name, octave_errors
+                "[{name}] had {octave_errors} octave errors"
             );
             assert!(
                 rel_std < 0.05,
-                "[{}] relative stddev {:.4} exceeds 5%",
-                scenario.name,
-                rel_std
+                "[{name}] relative stddev {rel_std:.4} exceeds 5%"
             );
         }
     }
@@ -950,87 +903,50 @@ mod tests {
         let num_blocks = 60;
         let warmup = 10;
 
-        struct Scenario {
-            name: &'static str,
-            freq: f32,
-            noise: f32,
-            harmonics: &'static [(f32, f32)],
-            block_frames: usize,
-        }
-
-        let scenarios = [
-            Scenario {
-                name: "440Hz clean",
-                freq: 440.0,
-                noise: 0.0,
-                harmonics: &[],
-                block_frames: 1024,
-            },
-            Scenario {
-                name: "100Hz clean",
-                freq: 100.0,
-                noise: 0.0,
-                harmonics: &[],
-                block_frames: 1024,
-            },
-            Scenario {
-                name: "2000Hz clean",
-                freq: 2000.0,
-                noise: 0.0,
-                harmonics: &[],
-                block_frames: 1024,
-            },
-            Scenario {
-                name: "440Hz noisy",
-                freq: 440.0,
-                noise: 0.05,
-                harmonics: &[],
-                block_frames: 1024,
-            },
-            Scenario {
-                name: "440Hz+880Hz harmonics",
-                freq: 440.0,
-                noise: 0.0,
-                harmonics: &[(2.0, 0.5), (3.0, 0.25)],
-                block_frames: 1024,
-            },
-            Scenario {
-                name: "82Hz low E string",
-                freq: 82.41,
-                noise: 0.01,
-                harmonics: &[(2.0, 0.6), (3.0, 0.4), (4.0, 0.2), (5.0, 0.1)],
-                block_frames: 1024,
-            },
-            Scenario {
-                name: "440Hz rich harmonics+noise",
-                freq: 440.0,
-                noise: 0.03,
-                harmonics: &[(2.0, 0.5), (3.0, 0.25), (4.0, 0.12)],
-                block_frames: 1024,
-            },
-            Scenario {
-                name: "440Hz small blocks",
-                freq: 440.0,
-                noise: 0.0,
-                harmonics: &[],
-                block_frames: 256,
-            },
-            Scenario {
-                name: "200Hz sawtooth-like",
-                freq: 200.0,
-                noise: 0.0,
-                harmonics: &[
+        type TriggerScenario = (&'static str, f32, f32, &'static [(f32, f32)], usize);
+        let scenarios: &[TriggerScenario] = &[
+            ("440Hz clean", 440.0, 0.0, &[], 1024),
+            ("100Hz clean", 100.0, 0.0, &[], 1024),
+            ("2000Hz clean", 2000.0, 0.0, &[], 1024),
+            ("440Hz noisy", 440.0, 0.05, &[], 1024),
+            (
+                "440Hz+880Hz harmonics",
+                440.0,
+                0.0,
+                &[(2.0, 0.5), (3.0, 0.25)],
+                1024,
+            ),
+            (
+                "82Hz low E string",
+                82.41,
+                0.01,
+                &[(2.0, 0.6), (3.0, 0.4), (4.0, 0.2), (5.0, 0.1)],
+                1024,
+            ),
+            (
+                "440Hz rich harmonics+noise",
+                440.0,
+                0.03,
+                &[(2.0, 0.5), (3.0, 0.25), (4.0, 0.12)],
+                1024,
+            ),
+            ("440Hz small blocks", 440.0, 0.0, &[], 256),
+            (
+                "200Hz sawtooth-like",
+                200.0,
+                0.0,
+                &[
                     (2.0, 0.5),
                     (3.0, 0.33),
                     (4.0, 0.25),
                     (5.0, 0.2),
                     (6.0, 0.167),
                 ],
-                block_frames: 1024,
-            },
+                1024,
+            ),
         ];
 
-        for scenario in &scenarios {
+        for &(name, freq, noise, harmonics, block_frames) in scenarios {
             let config = OscilloscopeConfig {
                 sample_rate: rate,
                 segment_duration: 0.02,
@@ -1038,19 +954,13 @@ mod tests {
             };
             let mut processor = OscilloscopeProcessor::new(config);
 
-            let total_frames = scenario.block_frames * num_blocks;
-            let full_signal = generate_signal(
-                scenario.freq,
-                rate,
-                total_frames,
-                scenario.harmonics,
-                scenario.noise,
-            );
+            let total_frames = block_frames * num_blocks;
+            let full_signal = generate_signal(freq, rate, total_frames, harmonics, noise);
 
             let mut first_samples = Vec::new();
             for block_idx in 0..num_blocks {
-                let offset = block_idx * scenario.block_frames;
-                let block_data = &full_signal[offset..offset + scenario.block_frames];
+                let offset = block_idx * block_frames;
+                let block_data = &full_signal[offset..offset + block_frames];
                 if let Some(snap) = processor.process_block(&make_block(block_data, 1, rate))
                     && block_idx >= warmup
                 {
@@ -1060,8 +970,7 @@ mod tests {
 
             if first_samples.len() < 5 {
                 eprintln!(
-                    "[{}] too few snapshots ({}), skipping",
-                    scenario.name,
+                    "[{name}] too few snapshots ({}), skipping",
                     first_samples.len()
                 );
                 continue;
@@ -1080,20 +989,14 @@ mod tests {
                 .fold(0.0_f32, f32::max);
 
             eprintln!(
-                "[{}] snapshots={}, phase_stddev={:.6}, max_jump={:.6}, mean_phase={:.4}",
-                scenario.name,
-                first_samples.len(),
-                std_dev,
-                max_jump,
-                mean
+                "[{name}] snapshots={}, phase_stddev={std_dev:.6}, max_jump={max_jump:.6}, mean_phase={mean:.4}",
+                first_samples.len()
             );
 
-            if scenario.noise < 0.05 {
+            if noise < 0.05 {
                 assert!(
                     std_dev < 0.15,
-                    "[{}] trigger phase too unstable: stddev={:.4}",
-                    scenario.name,
-                    std_dev
+                    "[{name}] trigger phase too unstable: stddev={std_dev:.4}"
                 );
             }
         }
@@ -1105,16 +1008,27 @@ mod tests {
     fn lock_acquisition_and_frequency_transitions() {
         let rate = 48_000.0_f32;
         let block_frames = 1024_usize;
+        let stable_config = OscilloscopeConfig {
+            sample_rate: rate,
+            segment_duration: 0.02,
+            trigger_mode: TriggerMode::Stable { num_cycles: 2 },
+        };
+        let feed = |processor: &mut OscilloscopeProcessor,
+                    signal: &[f32],
+                    range: std::ops::Range<usize>| {
+            for i in range {
+                let offset = i * block_frames;
+                processor.process_block(&make_block(
+                    &signal[offset..offset + block_frames],
+                    1,
+                    rate,
+                ));
+            }
+        };
 
         // lock acquisition on a clean sine
         {
-            let config = OscilloscopeConfig {
-                sample_rate: rate,
-                segment_duration: 0.02,
-                trigger_mode: TriggerMode::Stable { num_cycles: 2 },
-            };
-            let mut processor = OscilloscopeProcessor::new(config);
-
+            let mut processor = OscilloscopeProcessor::new(stable_config);
             let num_blocks = 20;
             let signal: Vec<f32> = (0..block_frames * num_blocks)
                 .map(|n| (std::f32::consts::TAU * 440.0 * n as f32 / rate).sin())
@@ -1123,36 +1037,30 @@ mod tests {
             let mut first_lock_block = None;
             for block_idx in 0..num_blocks {
                 let offset = block_idx * block_frames;
-                let block_data = &signal[offset..offset + block_frames];
-                processor.process_block(&make_block(block_data, 1, rate));
-
+                processor.process_block(&make_block(
+                    &signal[offset..offset + block_frames],
+                    1,
+                    rate,
+                ));
                 if first_lock_block.is_none() && processor.last_pitch.is_some() {
                     first_lock_block = Some(block_idx);
                 }
             }
 
             let lock_block = first_lock_block.expect("should lock on a clean sine");
-            eprintln!("[lock acquisition] locked at block {}", lock_block);
+            eprintln!("[lock acquisition] locked at block {lock_block}");
             assert!(
                 lock_block <= 10,
-                "should lock within 10 blocks, took {}",
-                lock_block
+                "should lock within 10 blocks, took {lock_block}"
             );
         }
 
         // octave transition 440 -> 880 Hz
         {
-            let config = OscilloscopeConfig {
-                sample_rate: rate,
-                segment_duration: 0.02,
-                trigger_mode: TriggerMode::Stable { num_cycles: 2 },
-            };
-            let mut processor = OscilloscopeProcessor::new(config);
-
-            let warmup = 20_usize;
-            let after = 20_usize;
-            let switch_sample = warmup * block_frames;
-            let total = (warmup + after) * block_frames;
+            let mut processor = OscilloscopeProcessor::new(stable_config);
+            let (warmup_n, after_n) = (20_usize, 20_usize);
+            let switch_sample = warmup_n * block_frames;
+            let total = (warmup_n + after_n) * block_frames;
 
             let signal: Vec<f32> = (0..total)
                 .map(|n| {
@@ -1167,32 +1075,23 @@ mod tests {
                 })
                 .collect();
 
-            for block_idx in 0..warmup {
-                let offset = block_idx * block_frames;
-                processor.process_block(&make_block(
-                    &signal[offset..offset + block_frames],
-                    1,
-                    rate,
-                ));
-            }
+            feed(&mut processor, &signal, 0..warmup_n);
             let pre = processor
                 .last_pitch
                 .expect("should have pitch after warmup");
             assert!(
                 (pre - 440.0).abs() < 20.0,
-                "pre-transition pitch should be ~440Hz, got {:.1}",
-                pre
+                "pre-transition pitch should be ~440Hz, got {pre:.1}"
             );
 
             let mut adapted_block = None;
-            for block_idx in 0..after {
-                let offset = (warmup + block_idx) * block_frames;
+            for block_idx in 0..after_n {
+                let offset = (warmup_n + block_idx) * block_frames;
                 processor.process_block(&make_block(
                     &signal[offset..offset + block_frames],
                     1,
                     rate,
                 ));
-
                 if adapted_block.is_none()
                     && let Some(p) = processor.last_pitch
                     && (p - 880.0).abs() < 50.0
@@ -1202,26 +1101,16 @@ mod tests {
             }
             let b = adapted_block.expect("should adapt to 880Hz");
             let final_p = processor.last_pitch.unwrap();
-            eprintln!(
-                "[octave transition] adapted at block {}, final pitch: {:.1}Hz",
-                b, final_p
-            );
-            assert!(b <= 10, "should adapt within 10 blocks, took {}", b);
+            eprintln!("[octave transition] adapted at block {b}, final pitch: {final_p:.1}Hz");
+            assert!(b <= 10, "should adapt within 10 blocks, took {b}");
         }
 
         // signal onset (silence -> sine)
         {
-            let config = OscilloscopeConfig {
-                sample_rate: rate,
-                segment_duration: 0.02,
-                trigger_mode: TriggerMode::Stable { num_cycles: 2 },
-            };
-            let mut processor = OscilloscopeProcessor::new(config);
-
-            let silence_blocks = 10_usize;
-            let signal_blocks = 20_usize;
-            let onset_sample = silence_blocks * block_frames;
-            let total = (silence_blocks + signal_blocks) * block_frames;
+            let mut processor = OscilloscopeProcessor::new(stable_config);
+            let (silence_n, signal_n) = (10_usize, 20_usize);
+            let onset_sample = silence_n * block_frames;
+            let total = (silence_n + signal_n) * block_frames;
 
             let signal: Vec<f32> = (0..total)
                 .map(|n| {
@@ -1234,36 +1123,28 @@ mod tests {
                 })
                 .collect();
 
-            for block_idx in 0..silence_blocks {
-                let offset = block_idx * block_frames;
-                processor.process_block(&make_block(
-                    &signal[offset..offset + block_frames],
-                    1,
-                    rate,
-                ));
-            }
+            feed(&mut processor, &signal, 0..silence_n);
             assert!(
                 processor.last_pitch.is_none(),
                 "should have no pitch during silence"
             );
 
             let mut lock_block = None;
-            for block_idx in 0..signal_blocks {
-                let offset = (silence_blocks + block_idx) * block_frames;
+            for block_idx in 0..signal_n {
+                let offset = (silence_n + block_idx) * block_frames;
                 processor.process_block(&make_block(
                     &signal[offset..offset + block_frames],
                     1,
                     rate,
                 ));
-
                 if lock_block.is_none() && processor.last_pitch.is_some() {
                     lock_block = Some(block_idx);
                 }
             }
 
             let b = lock_block.expect("should lock after signal onset");
-            eprintln!("[signal onset] locked at block {} after onset", b);
-            assert!(b <= 10, "should lock within 10 blocks of onset, took {}", b);
+            eprintln!("[signal onset] locked at block {b} after onset");
+            assert!(b <= 10, "should lock within 10 blocks of onset, took {b}");
         }
     }
 }

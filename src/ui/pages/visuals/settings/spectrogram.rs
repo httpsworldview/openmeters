@@ -37,7 +37,7 @@ settings_pane!(
 pub enum Message {
     FftSize(usize),
     HopDivisor(usize),
-    Window(WindowPreset),
+    Window(WindowKind),
     FrequencyScale(FrequencyScale),
     UseReassignment(bool),
     MaxCorrectionHz(f32),
@@ -52,7 +52,6 @@ pub enum Message {
 impl SpectrogramSettingsPane {
     fn view(&self) -> Element<'_, Message> {
         let s = &self.settings;
-        let window = WindowPreset::from_kind(s.window);
         let hop_divisor = get_closest_hop_divisor(s.fft_size, s.hop_size);
 
         let left_col = column![
@@ -74,7 +73,7 @@ impl SpectrogramSettingsPane {
         .width(Length::Fill);
 
         let right_col = column![
-            labeled_pick_list("Window", &WindowPreset::ALL, Some(window), Message::Window),
+            labeled_pick_list("Window", &WindowKind::ALL, Some(s.window), Message::Window),
             labeled_pick_list(
                 "Freq scale",
                 &FREQ_SCALE_OPTIONS,
@@ -155,88 +154,26 @@ impl SpectrogramSettingsPane {
 
     fn handle(&mut self, msg: &Message) -> bool {
         let s = &mut self.settings;
-        let mut changed = false;
         match *msg {
             Message::FftSize(size) => {
                 let hop_div = get_closest_hop_divisor(s.fft_size, s.hop_size);
-                if set_if_changed(&mut s.fft_size, size) {
-                    s.hop_size = (size / hop_div).max(1);
-                    changed = true;
-                }
+                set_if_changed(&mut s.fft_size, size)
+                    .then(|| s.hop_size = (size / hop_div).max(1))
+                    .is_some()
             }
-            Message::HopDivisor(div) => {
-                changed |= set_if_changed(&mut s.hop_size, (s.fft_size / div).max(1))
-            }
-            Message::Window(preset) => {
-                if WindowPreset::from_kind(s.window) != preset {
-                    s.window = preset.to_window_kind();
-                    changed = true;
-                }
-            }
-            Message::FrequencyScale(sc) => changed |= set_if_changed(&mut s.frequency_scale, sc),
-            Message::UseReassignment(v) => changed |= set_if_changed(&mut s.use_reassignment, v),
+            Message::HopDivisor(div) => set_if_changed(&mut s.hop_size, (s.fft_size / div).max(1)),
+            Message::Window(kind) => set_if_changed(&mut s.window, kind),
+            Message::FrequencyScale(sc) => set_if_changed(&mut s.frequency_scale, sc),
+            Message::UseReassignment(v) => set_if_changed(&mut s.use_reassignment, v),
             Message::MaxCorrectionHz(v) => {
-                changed |=
-                    update_f32_range(&mut s.reassignment_max_correction_hz, v, MAX_CORR_HZ_RANGE)
+                update_f32_range(&mut s.reassignment_max_correction_hz, v, MAX_CORR_HZ_RANGE)
             }
-            Message::FloorDb(v) => changed |= update_f32_range(&mut s.floor_db, v, FLOOR_DB_RANGE),
-            Message::TiltDb(v) => changed |= update_f32_range(&mut s.tilt_db, v, TILT_DB_RANGE),
-            Message::Rotation(v) => changed |= set_if_changed(&mut s.rotation, v.round() as i8),
-            Message::ZeroPadding(v) => changed |= set_if_changed(&mut s.zero_padding_factor, v),
-            Message::PianoRoll(opt) => changed |= set_if_changed(&mut s.piano_roll_overlay, opt),
-            Message::Palette(e) => changed |= self.palette.update(e),
+            Message::FloorDb(v) => update_f32_range(&mut s.floor_db, v, FLOOR_DB_RANGE),
+            Message::TiltDb(v) => update_f32_range(&mut s.tilt_db, v, TILT_DB_RANGE),
+            Message::Rotation(v) => set_if_changed(&mut s.rotation, v.round() as i8),
+            Message::ZeroPadding(v) => set_if_changed(&mut s.zero_padding_factor, v),
+            Message::PianoRoll(opt) => set_if_changed(&mut s.piano_roll_overlay, opt),
+            Message::Palette(e) => self.palette.update(e),
         }
-        changed
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum WindowPreset {
-    Rectangular,
-    Hann,
-    Hamming,
-    Blackman,
-    BlackmanHarris,
-}
-
-impl WindowPreset {
-    const ALL: [Self; 5] = [
-        Self::Rectangular,
-        Self::Hann,
-        Self::Hamming,
-        Self::Blackman,
-        Self::BlackmanHarris,
-    ];
-
-    fn from_kind(kind: WindowKind) -> Self {
-        match kind {
-            WindowKind::Rectangular => Self::Rectangular,
-            WindowKind::Hann => Self::Hann,
-            WindowKind::Hamming => Self::Hamming,
-            WindowKind::Blackman => Self::Blackman,
-            WindowKind::BlackmanHarris => Self::BlackmanHarris,
-        }
-    }
-
-    fn to_window_kind(self) -> WindowKind {
-        match self {
-            Self::Rectangular => WindowKind::Rectangular,
-            Self::Hann => WindowKind::Hann,
-            Self::Hamming => WindowKind::Hamming,
-            Self::Blackman => WindowKind::Blackman,
-            Self::BlackmanHarris => WindowKind::BlackmanHarris,
-        }
-    }
-}
-
-impl std::fmt::Display for WindowPreset {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Rectangular => "Rectangular",
-            Self::Hann => "Hann",
-            Self::Hamming => "Hamming",
-            Self::Blackman => "Blackman",
-            Self::BlackmanHarris => "Blackman-Harris",
-        })
     }
 }

@@ -26,21 +26,20 @@ impl MusicalNote {
         // Calculate MIDI note number using 12-TET formula: midi = 69 + 12 * log2(freq / 440)
         let midi_float =
             A440_MIDI as f32 + SEMITONES_PER_OCTAVE as f32 * (freq_hz / A440_HZ).log2();
-        let midi_number = midi_float.round() as i32;
-        Self::from_midi(midi_number)
+        Some(Self::from_midi(midi_float.round() as i32))
     }
 
-    pub fn from_midi(midi_number: i32) -> Option<Self> {
+    pub fn from_midi(midi_number: i32) -> Self {
         // Calculate note index (0-11) with proper negative wrap-around
         let note_index = ((midi_number % SEMITONES_PER_OCTAVE + SEMITONES_PER_OCTAVE)
             % SEMITONES_PER_OCTAVE) as usize;
         let octave = (midi_number / SEMITONES_PER_OCTAVE) - MIDI_OCTAVE_OFFSET;
 
-        Some(Self {
+        Self {
             midi_number,
             name: NOTE_NAMES[note_index],
             octave,
-        })
+        }
     }
 
     pub fn to_frequency(self) -> f32 {
@@ -56,9 +55,9 @@ impl MusicalNote {
     }
 
     pub fn format_with_hz(freq_hz: f32) -> String {
-        match Self::from_frequency(freq_hz) {
-            Some(note) => format!("{:.1} Hz | {}", freq_hz, note.format()),
-            None => format!("{:.1} Hz", freq_hz),
-        }
+        Self::from_frequency(freq_hz).map_or_else(
+            || format!("{freq_hz:.1} Hz"),
+            |note| format!("{:.1} Hz | {}", freq_hz, note.format()),
+        )
     }
 }

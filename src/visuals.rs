@@ -20,9 +20,7 @@ pub(crate) fn next_key() -> u64 {
     NEXT_VIS_KEY.fetch_add(1, Ordering::Relaxed)
 }
 
-// Projects a single display channel from interleaved input data.
-//
-// Data layout: contiguous channels `[ch0_s0..ch0_sN, ch1_s0..ch1_sN, ...]`
+// Data layout: contiguous channels `[ch0_s0..ch0_sN, ch1_s0..ch1_sN, ...]`.
 // Returns `None` for `Channel::None`; callers must validate `stride > 0`.
 #[inline]
 pub(crate) fn project_channel_data(
@@ -32,10 +30,10 @@ pub(crate) fn project_channel_data(
     channels: usize,
 ) -> Option<Vec<f32>> {
     match channel {
-        Channel::Left => data.get(..stride).map(|s| s.to_vec()),
+        Channel::Left => data.get(..stride).map(<[f32]>::to_vec),
         Channel::Right => {
             let offset = if channels > 1 { stride } else { 0 };
-            data.get(offset..offset + stride).map(|s| s.to_vec())
+            data.get(offset..offset + stride).map(<[f32]>::to_vec)
         }
         Channel::Mid => {
             let scale = 1.0 / channels.max(1) as f32;
@@ -100,6 +98,11 @@ pub(crate) fn make_text(
 macro_rules! vis_processor {
     (@struct_new $name:ident, $core:ty, $config:ident) => {
         pub(crate) struct $name { inner: $core }
+        impl std::fmt::Debug for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_struct(stringify!($name)).finish_non_exhaustive()
+            }
+        }
         impl $name {
             pub fn new(sample_rate: f32) -> Self {
                 Self { inner: <$core>::new($config { sample_rate, ..Default::default() }) }
@@ -151,9 +154,7 @@ macro_rules! vis_processor {
     };
 }
 
-// creates a visualization. very simple macro to reduce boilerplate,
-// it is used thrice. spectrum, spectrogram, loudness visualizations do
-// *not* use this macro, as they have more complex requirements.
+// Used by simple visualizations; spectrum/spectrogram/loudness roll their own widgets.
 #[macro_export]
 macro_rules! visualization_widget {
     ($widget:ident, $state:ty, $primitive:ty) => {

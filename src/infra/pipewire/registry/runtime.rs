@@ -41,30 +41,25 @@ pub fn spawn_registry() -> Result<AudioRegistryHandle> {
     }
 
     let runtime = RegistryRuntime::default();
-
-    match RUNTIME.set(runtime.clone()) {
-        Ok(()) => {
-            let thread_runtime = runtime.clone();
-            thread::Builder::new()
-                .name(REGISTRY_THREAD_NAME.into())
-                .spawn(move || {
-                    if let Err(err) = registry_thread_main(thread_runtime) {
-                        error!("[registry] thread terminated: {err:?}");
-                    }
-                })
-                .context("failed to spawn PipeWire registry thread")?;
-
-            Ok(AudioRegistryHandle { runtime })
-        }
-        Err(_) => {
-            let Some(runtime) = RUNTIME.get() else {
-                anyhow::bail!("registry runtime unavailable after initialization race");
-            };
-            Ok(AudioRegistryHandle {
-                runtime: runtime.clone(),
-            })
-        }
+    if RUNTIME.set(runtime.clone()).is_err() {
+        let runtime = RUNTIME
+            .get()
+            .context("registry runtime unavailable after initialization race")?
+            .clone();
+        return Ok(AudioRegistryHandle { runtime });
     }
+
+    let thread_runtime = runtime.clone();
+    thread::Builder::new()
+        .name(REGISTRY_THREAD_NAME.into())
+        .spawn(move || {
+            if let Err(err) = registry_thread_main(thread_runtime) {
+                error!("[registry] thread terminated: {err:?}");
+            }
+        })
+        .context("failed to spawn PipeWire registry thread")?;
+
+    Ok(AudioRegistryHandle { runtime })
 }
 
 #[derive(Clone)]
@@ -102,11 +97,7 @@ impl AudioRegistryHandle {
 
     pub fn sync(&self) -> bool {
         let (tx, rx) = mpsc::channel();
-        if self.send_command(RegistryCommand::Sync(tx)) {
-            rx.recv().is_ok()
-        } else {
-            false
-        }
+        self.send_command(RegistryCommand::Sync(tx)) && rx.recv().is_ok()
     }
 
     pub fn destroy(&self) {
@@ -150,18 +141,14 @@ impl RegistryRuntime {
     }
 
     fn send_command(&self, command: RegistryCommand) -> bool {
-        match self.commands.read().unwrap().as_ref() {
-            Some(sender) => sender
-                .send(command)
-                .inspect_err(|_| {
-                    warn!("[registry] failed to send command; channel closed");
-                })
-                .is_ok(),
-            None => {
-                warn!("[registry] command channel not initialised");
-                false
-            }
-        }
+        let Some(sender) = self.commands.read().unwrap().clone() else {
+            warn!("[registry] command channel not initialised");
+            return false;
+        };
+        sender
+            .send(command)
+            .inspect_err(|_| warn!("[registry] failed to send command; channel closed"))
+            .is_ok()
     }
 
     fn snapshot(&self) -> RegistrySnapshot {
@@ -395,6 +382,25 @@ fn create_passive_audio_link(
     core.create_object::<pw::link::Link>(LINK_FACTORY_NAME, &props)
 }
 
+fn apply_route(
+    routing_metadata: &Rc<RefCell<Option<Metadata>>>,
+    subject: u32,
+    target: Option<(&str, &str)>,
+) {
+    let borrowed = routing_metadata.borrow();
+    let Some(metadata) = borrowed.as_ref() else {
+        warn!("[registry] cannot route node {subject}; no metadata bound");
+        return;
+    };
+    let hint = target.map(|_| "Spa:Id");
+    metadata.set_property(subject, TARGET_OBJECT_KEY, hint, target.map(|(o, _)| o));
+    metadata.set_property(subject, TARGET_NODE_KEY, hint, target.map(|(_, n)| n));
+    match target {
+        Some((o, n)) => debug!("[registry] routed node {subject} -> object={o}, node={n}"),
+        None => debug!("[registry] reset route for node {subject}"),
+    }
+}
+
 fn handle_command(
     command: RegistryCommand,
     link_state: &mut LinkState,
@@ -423,39 +429,15 @@ fn handle_command(
             target_object,
             target_node,
         } => {
-            let borrowed = routing_metadata.borrow();
-            let Some(metadata) = borrowed.as_ref() else {
-                warn!(
-                    "[registry] cannot route node {}; no metadata bound",
-                    subject
-                );
-                return true;
-            };
-            metadata.set_property(
+            apply_route(
+                routing_metadata,
                 subject,
-                TARGET_OBJECT_KEY,
-                Some("Spa:Id"),
-                Some(&target_object),
-            );
-            metadata.set_property(subject, TARGET_NODE_KEY, Some("Spa:Id"), Some(&target_node));
-            debug!(
-                "[registry] routed node {} -> object={}, node={}",
-                subject, target_object, target_node
+                Some((target_object.as_str(), target_node.as_str())),
             );
             true
         }
         RegistryCommand::ResetRoute { subject } => {
-            let borrowed = routing_metadata.borrow();
-            let Some(metadata) = borrowed.as_ref() else {
-                warn!(
-                    "[registry] cannot reset route for node {}; no metadata bound",
-                    subject
-                );
-                return true;
-            };
-            metadata.set_property(subject, TARGET_OBJECT_KEY, None, None);
-            metadata.set_property(subject, TARGET_NODE_KEY, None, None);
-            debug!("[registry] reset route for node {}", subject);
+            apply_route(routing_metadata, subject, None);
             true
         }
         RegistryCommand::Shutdown => {

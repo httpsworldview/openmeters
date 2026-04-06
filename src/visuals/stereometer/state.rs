@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-// Stereometer visualization: vectorscope + correlation meter.
-
 use super::processor::{
     BandCorrelation, StereometerConfig, StereometerProcessor as CoreProcessor, StereometerSnapshot,
 };
@@ -33,7 +31,7 @@ pub(crate) struct StereometerState {
     points: Vec<(f32, f32)>,
     corr_trail: VecDeque<f32>,
     band_trail: VecDeque<BandCorrelation>,
-    palette: [Color; 9],
+    pub(crate) palette: [Color; 9],
     persistence: f32,
     mode: StereometerMode,
     scale: StereometerScale,
@@ -77,13 +75,7 @@ impl StereometerState {
     }
 
     pub fn set_palette(&mut self, palette: &[Color; 9]) {
-        if !color::palettes_equal(&self.palette, palette) {
-            self.palette = *palette;
-        }
-    }
-
-    pub fn palette(&self) -> &[Color; 9] {
-        &self.palette
+        self.palette = *palette;
     }
 
     pub fn export_settings(&self) -> StereometerSettings {
@@ -129,17 +121,15 @@ impl StereometerState {
         let c = self
             .corr_trail
             .front()
-            .map(|&o| sm(o, snap.correlation))
-            .unwrap_or(snap.correlation);
+            .map_or(snap.correlation, |&o| sm(o, snap.correlation));
         let b = self
             .band_trail
             .front()
-            .map(|o| BandCorrelation {
+            .map_or(snap.band_correlation, |o| BandCorrelation {
                 low: sm(o.low, snap.band_correlation.low),
                 mid: sm(o.mid, snap.band_correlation.mid),
                 high: sm(o.high, snap.band_correlation.high),
-            })
-            .unwrap_or(snap.band_correlation);
+            });
 
         self.corr_trail.push_front(c);
         self.band_trail.push_front(b);

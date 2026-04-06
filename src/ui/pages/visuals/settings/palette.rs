@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-// Color palette editor with optional gradient ramp for magnitude-mapped visuals.
-
 use crate::ui::theme::f32_to_u8;
 use crate::ui::theme::{self, Palette};
 use crate::ui::widgets::scroll_glow::ScrollGlow;
@@ -77,7 +75,6 @@ impl PaletteEditor {
         }
     }
 
-    // Sets label overrides for specific indices.
     pub fn set_label_overrides(&mut self, overrides: Vec<(usize, &'static str)>) {
         self.label_overrides = overrides;
     }
@@ -193,11 +190,10 @@ impl PaletteEditor {
 
     pub fn view(&self) -> Element<'_, PaletteEvent> {
         let colors = self.palette.colors();
-        let indices: Vec<usize> = self
-            .visible_indices
-            .as_ref()
-            .map(|v| v.iter().copied().filter(|&i| i < colors.len()).collect())
-            .unwrap_or_else(|| (0..colors.len()).collect());
+        let indices: Vec<usize> = self.visible_indices.as_ref().map_or_else(
+            || (0..colors.len()).collect(),
+            |v| v.iter().copied().filter(|&i| i < colors.len()).collect(),
+        );
         let row = indices.iter().fold(Row::new().spacing(12.0), |r, &i| {
             r.push(self.color_picker(i, colors[i]))
         });

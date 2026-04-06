@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-// Central owner of visual modules and their state.
 use super::{loudness, oscilloscope, palettes, spectrogram, spectrum, stereometer, waveform};
 pub use crate::domain::visuals::VisualKind;
 use crate::{
@@ -19,9 +18,7 @@ use std::{
 };
 
 type Shared<T> = Rc<RefCell<T>>;
-fn shared<T>(val: T) -> Shared<T> {
-    Rc::new(RefCell::new(val))
-}
+
 fn resolve_palette<const N: usize>(
     custom: &Option<PaletteSettings>,
     default: &[Color; N],
@@ -30,20 +27,6 @@ fn resolve_palette<const N: usize>(
         .as_ref()
         .and_then(PaletteSettings::to_array)
         .unwrap_or(*default)
-}
-
-fn resolve_positions(custom: &Option<PaletteSettings>, count: usize) -> Vec<f32> {
-    color::sanitize_stop_positions(
-        custom.as_ref().and_then(|p| p.stop_positions.as_deref()),
-        count,
-    )
-}
-
-fn resolve_spreads(custom: &Option<PaletteSettings>, count: usize) -> Vec<f32> {
-    color::sanitize_stop_spreads(
-        custom.as_ref().and_then(|p| p.stop_spreads.as_deref()),
-        count,
-    )
 }
 
 // dear future me/future maintainers: I'm sorry for this macro.
@@ -66,10 +49,10 @@ macro_rules! visuals {
        apply($ap:ident, $as:ident, $aset:ident) $apply_body:expr;
        export($ep:ident, $es:ident) $export_body:expr;
     )*) => {
-        #[derive(Clone)]
+        #[derive(Debug, Clone)]
         pub struct VisualContent(VisualContentInner);
 
-        #[derive(Clone)]
+        #[derive(Debug, Clone)]
         enum VisualContentInner { $($variant(Shared<$module::$state>)),* }
 
         impl VisualContent {
@@ -89,7 +72,7 @@ macro_rules! visuals {
             },
             build: || Box::new(Visual {
                 processor: $module::$processor::new(DEFAULT_SAMPLE_RATE),
-                state: shared($module::$state::new()),
+                state: Rc::new(RefCell::new($module::$state::new())),
             }),
         }),*];
 
@@ -126,10 +109,11 @@ visuals! {
     Loudness("Loudness", 140.0, 300.0, 80.0, max=140.0) =>
         loudness::LoudnessProcessor, LoudnessState;
         settings_cfg::LoudnessSettings, &palettes::loudness::COLORS;
-        apply(_p, s, set) { let mut st = s.borrow_mut(); st.set_modes(set.left_mode, set.right_mode);
+        apply(_p, s, set) { let mut st = s.borrow_mut();
+            st.left_mode = set.left_mode; st.right_mode = set.right_mode;
             visuals!(@apply_palette st, set, &palettes::loudness::COLORS); };
-        export(_p, s) { let st = s.borrow(); settings_cfg::LoudnessSettings { left_mode: st.left_mode(), right_mode: st.right_mode(),
-            palette: visuals!(@export_palette st.palette(), &palettes::loudness::COLORS) } };
+        export(_p, s) { let st = s.borrow(); settings_cfg::LoudnessSettings { left_mode: st.left_mode, right_mode: st.right_mode,
+            palette: visuals!(@export_palette &st.palette, &palettes::loudness::COLORS) } };
 
     Oscilloscope("Oscilloscope", 150.0, 160.0, 100.0) =>
         oscilloscope::OscilloscopeProcessor, OscilloscopeState;
@@ -138,26 +122,26 @@ visuals! {
             st.update_view_settings(set.persistence, set.channel_1, set.channel_2);
             visuals!(@apply_palette st, set, &palettes::oscilloscope::COLORS); };
         export(p, s) { let st = s.borrow(); let mut out = settings_cfg::OscilloscopeSettings::from_config(&p.config());
-            out.persistence = st.persistence(); out.channel_1 = st.channel_1(); out.channel_2 = st.channel_2();
-            out.palette = visuals!(@export_palette st.palette(), &palettes::oscilloscope::COLORS); out };
+            out.persistence = st.persistence; out.channel_1 = st.channel_1; out.channel_2 = st.channel_2;
+            out.palette = visuals!(@export_palette &st.style.colors, &palettes::oscilloscope::COLORS); out };
 
     Waveform("Waveform", 220.0, 180.0, 220.0) =>
         waveform::WaveformProcessor, WaveformState;
         settings_cfg::WaveformSettings, &palettes::waveform::COLORS;
         apply(p, s, set) { visuals!(@apply_config p, set);
-            let mut st = s.borrow_mut(); st.set_channels(set.channel_1, set.channel_2); st.set_color_mode(set.color_mode);
-            st.set_show_peak_history(set.show_peak_history);
+            let mut st = s.borrow_mut(); st.set_channels(set.channel_1, set.channel_2);
+            st.color_mode = set.color_mode; st.show_peak_history = set.show_peak_history;
             visuals!(@apply_palette st, set, &palettes::waveform::COLORS); };
         export(p, s) { let st = s.borrow(); let mut out = settings_cfg::WaveformSettings::from_config(&p.config());
-            out.channel_1 = st.channel_1(); out.channel_2 = st.channel_2(); out.color_mode = st.color_mode();
-            out.show_peak_history = st.show_peak_history();
-            out.palette = visuals!(@export_palette st.palette(), &palettes::waveform::COLORS); out };
+            out.channel_1 = st.channel_1; out.channel_2 = st.channel_2; out.color_mode = st.color_mode;
+            out.show_peak_history = st.show_peak_history;
+            out.palette = visuals!(@export_palette &st.style.palette, &palettes::waveform::COLORS); out };
 
     Spectrogram("Spectrogram", 320.0, 220.0, 300.0) =>
         spectrogram::SpectrogramProcessor, SpectrogramState;
         settings_cfg::SpectrogramSettings, &palettes::spectrogram::COLORS;
         pre_ingest(p, s) {
-            let (vw, vh) = s.borrow().view_dimensions();
+            let (vw, vh) = { let st = s.borrow(); (st.view_width, st.view_height) };
             if vw > 0 && vh > 0 {
                 let mut cfg = p.config();
                 let tw = (vw as usize).min(8192);
@@ -171,18 +155,21 @@ visuals! {
         };
         apply(p, s, set) { visuals!(@apply_config p, set); let mut st = s.borrow_mut();
             visuals!(@apply_palette st, set, &palettes::spectrogram::COLORS);
-            st.set_stop_positions(&resolve_positions(&set.palette, palettes::spectrogram::COLORS.len()));
-            st.set_stop_spreads(&resolve_spreads(&set.palette, palettes::spectrogram::COLORS.len()));
+            let count = palettes::spectrogram::COLORS.len();
+            st.set_stop_positions(&color::sanitize_stop_positions(
+                set.palette.as_ref().and_then(|p| p.stop_positions.as_deref()), count));
+            st.set_stop_spreads(&color::sanitize_stop_spreads(
+                set.palette.as_ref().and_then(|p| p.stop_spreads.as_deref()), count));
             st.piano_roll_overlay = set.piano_roll_overlay;
             st.set_floor_db(set.floor_db);
             st.set_tilt_db(set.tilt_db);
             st.set_rotation(set.rotation); };
         export(p, s) { let st = s.borrow(); let mut out = settings_cfg::SpectrogramSettings::from_config(&p.config());
-            out.palette = PaletteSettings::from_state(st.palette(), &palettes::spectrogram::COLORS, st.stop_positions(), st.stop_spreads());
+            out.palette = PaletteSettings::from_state(&st.palette, &palettes::spectrogram::COLORS, &st.stop_positions, &st.stop_spreads);
             out.piano_roll_overlay = st.piano_roll_overlay;
-            out.floor_db = st.floor_db();
-            out.tilt_db = st.tilt_db();
-            out.rotation = st.rotation(); out };
+            out.floor_db = st.style.floor_db;
+            out.tilt_db = st.style.tilt_db;
+            out.rotation = st.rotation; out };
 
     Spectrum("Spectrum analyzer", 400.0, 180.0, 400.0) =>
         spectrum::SpectrumProcessor, SpectrumState;
@@ -196,15 +183,16 @@ visuals! {
             style.show_secondary_line = set.show_secondary_line;
             style.bar_count = set.bar_count; style.bar_gap = set.bar_gap;
             st.update_show_grid(set.show_grid); st.update_show_peak_label(set.show_peak_label); };
-        export(p, s) { let st = s.borrow(); let mut out = settings_cfg::SpectrumSettings::from_config(&p.config());
-            out.palette = visuals!(@export_palette st.palette(), &palettes::spectrum::COLORS);
-            out.smoothing_radius = st.style().smoothing_radius;
-            out.smoothing_passes = st.style().smoothing_passes;
-            out.highlight_threshold = st.style().highlight_threshold;
-            out.display_mode = st.style().display_mode;
-            out.weighting_mode = st.style().weighting_mode;
-            out.show_secondary_line = st.style().show_secondary_line;
-            out.bar_count = st.style().bar_count; out.bar_gap = st.style().bar_gap; out };
+        export(p, s) { let st = s.borrow(); let style = st.style();
+            let mut out = settings_cfg::SpectrumSettings::from_config(&p.config());
+            out.palette = visuals!(@export_palette &style.spectrum_palette, &palettes::spectrum::COLORS);
+            out.smoothing_radius = style.smoothing_radius;
+            out.smoothing_passes = style.smoothing_passes;
+            out.highlight_threshold = style.highlight_threshold;
+            out.display_mode = style.display_mode;
+            out.weighting_mode = style.weighting_mode;
+            out.show_secondary_line = style.show_secondary_line;
+            out.bar_count = style.bar_count; out.bar_gap = style.bar_gap; out };
 
     Stereometer("Stereometer", 150.0, 220.0, 100.0) =>
         stereometer::StereometerProcessor, StereometerState;
@@ -216,7 +204,7 @@ visuals! {
             out.segment_duration = cfg.segment_duration;
             out.target_sample_count = cfg.target_sample_count;
             out.correlation_window = cfg.correlation_window;
-            out.palette = visuals!(@export_palette st.palette(), &palettes::stereometer::COLORS); out };
+            out.palette = visuals!(@export_palette &st.palette, &palettes::stereometer::COLORS); out };
 }
 
 struct Visual<P, S> {
@@ -250,27 +238,18 @@ const DEFAULT_METADATA: VisualMetadata = VisualMetadata {
 
 impl VisualMetadata {
     pub(crate) fn wrap<'a, M: 'static>(&self, elem: Element<'a, M>) -> Element<'a, M> {
-        let width = if self.fill_horizontal {
-            Length::Fill
-        } else {
-            Length::Fixed(self.preferred_width)
-        };
-        let height = if self.fill_vertical {
-            Length::Fill
-        } else {
-            Length::Fixed(self.preferred_height)
+        let length = |fill, preferred| {
+            if fill {
+                Length::Fill
+            } else {
+                Length::Fixed(preferred)
+            }
         };
         container(elem)
-            .width(width)
-            .height(height)
+            .width(length(self.fill_horizontal, self.preferred_width))
+            .height(length(self.fill_vertical, self.preferred_height))
             .center(Length::Fill)
             .into()
-    }
-}
-
-impl std::fmt::Debug for VisualContent {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("VisualContent").finish_non_exhaustive()
     }
 }
 

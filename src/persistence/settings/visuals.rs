@@ -64,16 +64,14 @@ impl ModuleSettings {
         self.config = serde_json::to_value(config).ok();
     }
     pub fn parse_config<T: DeserializeOwned>(&self) -> Option<T> {
-        self.config
-            .as_ref()
-            .and_then(|val| T::deserialize(val).ok())
+        self.config.as_ref().and_then(|v| T::deserialize(v).ok())
     }
     pub fn config_or_default<T: DeserializeOwned + Default>(&self) -> T {
         self.config
             .as_ref()
-            .and_then(|val| {
-                T::deserialize(val)
-                    .map_err(|err| warn!("[settings] config parse error: {err}"))
+            .and_then(|v| {
+                T::deserialize(v)
+                    .inspect_err(|e| warn!("[settings] config parse error: {e}"))
                     .ok()
             })
             .unwrap_or_default()

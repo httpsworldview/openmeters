@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-// PipeWire virtual sink integration.
-
 use crate::util::audio::DEFAULT_SAMPLE_RATE;
 use pipewire as pw;
 use pw::{properties::properties, spa};
@@ -25,7 +23,6 @@ const DESIRED_LATENCY_FRAMES: u32 = 256;
 static SINK_THREAD: OnceLock<thread::JoinHandle<()>> = OnceLock::new();
 static CAPTURE_BUFFER: OnceLock<Arc<CaptureBuffer>> = OnceLock::new();
 
-// Audio block captured from PipeWire with associated format metadata.
 #[derive(Debug, Clone)]
 pub struct CapturedAudio {
     pub samples: Vec<f32>,
@@ -142,65 +139,37 @@ fn convert_samples_to_f32(
     let sample_count = bytes.len() / sample_bytes;
     let mut samples = Vec::with_capacity(sample_count);
 
-    // Helper macro to reduce duplication for integer format conversions.
-    macro_rules! convert_int {
-        ($ty:ty, $endian:ident, $divisor:expr, $unsigned_offset:expr) => {{
+    macro_rules! convert {
+        ($ty:ty, $from:ident, $to_f32:expr) => {{
             for chunk in bytes.chunks_exact(std::mem::size_of::<$ty>()) {
-                let raw = <$ty>::$endian(chunk.try_into().unwrap());
-                let normalized = if $unsigned_offset != 0.0 {
-                    (raw as f32 - $unsigned_offset) / $unsigned_offset
-                } else {
-                    raw as f32 / $divisor
-                };
-                samples.push(normalized);
+                samples.push($to_f32(<$ty>::$from(chunk.try_into().unwrap())));
             }
         }};
     }
+    const I16_DIV: f32 = i16::MAX as f32;
+    const I32_DIV: f32 = i32::MAX as f32;
 
     match format {
-        Fmt::F32LE => {
-            for chunk in bytes.chunks_exact(4) {
-                samples.push(f32::from_le_bytes(chunk.try_into().unwrap()));
-            }
-        }
-        Fmt::F32BE => {
-            for chunk in bytes.chunks_exact(4) {
-                samples.push(f32::from_be_bytes(chunk.try_into().unwrap()));
-            }
-        }
-        Fmt::F64LE => {
-            for chunk in bytes.chunks_exact(8) {
-                samples.push(f64::from_le_bytes(chunk.try_into().unwrap()) as f32);
-            }
-        }
-        Fmt::F64BE => {
-            for chunk in bytes.chunks_exact(8) {
-                samples.push(f64::from_be_bytes(chunk.try_into().unwrap()) as f32);
-            }
-        }
-        Fmt::S16LE => convert_int!(i16, from_le_bytes, i16::MAX as f32, 0.0),
-        Fmt::S16BE => convert_int!(i16, from_be_bytes, i16::MAX as f32, 0.0),
-        Fmt::S32LE | Fmt::S24_32LE => convert_int!(i32, from_le_bytes, i32::MAX as f32, 0.0),
-        Fmt::S32BE | Fmt::S24_32BE => convert_int!(i32, from_be_bytes, i32::MAX as f32, 0.0),
-        Fmt::U16LE => convert_int!(u16, from_le_bytes, 32_768.0, 32_768.0),
-        Fmt::U16BE => convert_int!(u16, from_be_bytes, 32_768.0, 32_768.0),
-        Fmt::U8 => {
-            for &byte in bytes {
-                samples.push((byte as f32 - 128.0) / 128.0);
-            }
-        }
-        Fmt::S8 => {
-            for &byte in bytes {
-                samples.push((byte as i8) as f32 / i8::MAX as f32);
-            }
-        }
+        Fmt::F32LE => convert!(f32, from_le_bytes, |v: f32| v),
+        Fmt::F32BE => convert!(f32, from_be_bytes, |v: f32| v),
+        Fmt::F64LE => convert!(f64, from_le_bytes, |v: f64| v as f32),
+        Fmt::F64BE => convert!(f64, from_be_bytes, |v: f64| v as f32),
+        Fmt::S16LE => convert!(i16, from_le_bytes, |v: i16| v as f32 / I16_DIV),
+        Fmt::S16BE => convert!(i16, from_be_bytes, |v: i16| v as f32 / I16_DIV),
+        Fmt::S32LE | Fmt::S24_32LE => convert!(i32, from_le_bytes, |v: i32| v as f32 / I32_DIV),
+        Fmt::S32BE | Fmt::S24_32BE => convert!(i32, from_be_bytes, |v: i32| v as f32 / I32_DIV),
+        Fmt::U16LE => convert!(u16, from_le_bytes, |v: u16| (v as f32 - 32_768.0)
+            / 32_768.0),
+        Fmt::U16BE => convert!(u16, from_be_bytes, |v: u16| (v as f32 - 32_768.0)
+            / 32_768.0),
+        Fmt::U8 => samples.extend(bytes.iter().map(|&b| (b as f32 - 128.0) / 128.0)),
+        Fmt::S8 => samples.extend(bytes.iter().map(|&b| (b as i8) as f32 / i8::MAX as f32)),
         _ => return None,
     }
 
     Some(samples)
 }
 
-// Spawn the virtual sink in a background thread.
 pub fn run() -> Option<std::thread::JoinHandle<()>> {
     ensure_capture_buffer();
 
@@ -223,12 +192,10 @@ pub fn run() -> Option<std::thread::JoinHandle<()>> {
     }
 }
 
-// Accessor for the shared ring buffer that stores captured audio frames.
 pub fn capture_buffer_handle() -> Arc<CaptureBuffer> {
     ensure_capture_buffer().clone()
 }
 
-// Cached parameters describing the negotiated stream format.
 struct VirtualSinkState {
     frame_bytes: usize,
     channels: u32,
@@ -270,7 +237,6 @@ impl VirtualSinkState {
     }
 }
 
-// PipeWire main loop body that registers and services the virtual sink.
 fn run_virtual_sink() -> Result<(), Box<dyn Error + Send + Sync>> {
     pw::init();
 
@@ -329,13 +295,10 @@ fn run_virtual_sink() -> Result<(), Box<dyn Error + Send + Sync>> {
                     continue;
                 }
 
-                let mut captured = None;
-                if let Some(slice) = data.data() {
-                    let len = used.min(slice.len());
-                    captured = convert_samples_to_f32(&slice[..len], state.format);
-                }
-
-                if let Some(samples) = captured {
+                if let Some(slice) = data.data()
+                    && let Some(samples) =
+                        convert_samples_to_f32(&slice[..used.min(slice.len())], state.format)
+                {
                     capture_buffer.try_push(CapturedAudio {
                         samples,
                         channels: state.channels,
@@ -375,7 +338,6 @@ fn run_virtual_sink() -> Result<(), Box<dyn Error + Send + Sync>> {
     Ok(())
 }
 
-// Build format pod specifying sample format and rate; channels negotiated by PipeWire.
 fn build_format_pod(rate: u32) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
     let mut info = spa::param::audio::AudioInfoRaw::new();
     info.set_format(spa::param::audio::AudioFormat::F32LE);
@@ -405,41 +367,33 @@ mod tests {
     #[test]
     fn sample_format_conversion() {
         // S16LE: i16::MIN -> -1.0, i16::MAX -> +1.0
-        let s16 = [0x00_u8, 0x80, 0xFF, 0x7F];
-        let s16_out = convert_samples_to_f32(&s16, Fmt::S16LE).unwrap();
+        let s16_out = convert_samples_to_f32(&[0x00_u8, 0x80, 0xFF, 0x7F], Fmt::S16LE).unwrap();
         assert_eq!(s16_out.len(), 2);
         let expected_min = i16::MIN as f32 / i16::MAX as f32;
+        let s16_min = s16_out[0];
+        let s16_max = s16_out[1];
         assert!(
-            (s16_out[0] - expected_min).abs() < 1e-5,
-            "S16LE min: {} vs {}",
-            s16_out[0],
-            expected_min
+            (s16_min - expected_min).abs() < 1e-5,
+            "S16LE min: {s16_min} vs {expected_min}"
         );
-        assert!(
-            (s16_out[1] - 1.0).abs() < f32::EPSILON,
-            "S16LE max: {}",
-            s16_out[1]
-        );
+        assert!((s16_max - 1.0).abs() < f32::EPSILON, "S16LE max: {s16_max}");
 
         // F32LE: passthrough preserves exact values
         let val: f32 = 0.123_456_78;
-        let f32_bytes = val.to_le_bytes();
-        let f32_out = convert_samples_to_f32(&f32_bytes, Fmt::F32LE).unwrap();
+        let f32_out = convert_samples_to_f32(&val.to_le_bytes(), Fmt::F32LE).unwrap();
         assert_eq!(f32_out.len(), 1);
+        let f32_result = f32_out[0];
         assert!(
-            (f32_out[0] - val).abs() < f32::EPSILON,
-            "F32LE passthrough: {} vs {}",
-            f32_out[0],
-            val
+            (f32_result - val).abs() < f32::EPSILON,
+            "F32LE passthrough: {f32_result} vs {val}"
         );
 
         // S32LE: verify normalization range
-        let s32_max = i32::MAX.to_le_bytes();
-        let s32_out = convert_samples_to_f32(&s32_max, Fmt::S32LE).unwrap();
+        let s32_out = convert_samples_to_f32(&i32::MAX.to_le_bytes(), Fmt::S32LE).unwrap();
+        let s32_result = s32_out[0];
         assert!(
-            (s32_out[0] - 1.0).abs() < f32::EPSILON,
-            "S32LE max: {}",
-            s32_out[0]
+            (s32_result - 1.0).abs() < f32::EPSILON,
+            "S32LE max: {s32_result}"
         );
 
         // Unsupported format returns None; misaligned buffer returns None

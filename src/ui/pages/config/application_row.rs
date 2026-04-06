@@ -20,11 +20,7 @@ impl ApplicationRow {
             .unwrap_or_else(|| node.display_name());
 
         let node_label = node.display_name();
-        let secondary = if primary.eq_ignore_ascii_case(&node_label) {
-            None
-        } else {
-            Some(node_label)
-        };
+        let secondary = (!primary.eq_ignore_ascii_case(&node_label)).then_some(node_label);
 
         Self {
             node_id: node.id,
@@ -35,9 +31,9 @@ impl ApplicationRow {
     }
 
     pub(crate) fn display_label(&self) -> String {
-        match &self.secondary {
-            Some(secondary) => format!("{} ({})", self.primary, secondary),
-            None => self.primary.clone(),
-        }
+        self.secondary.as_ref().map_or_else(
+            || self.primary.clone(),
+            |s| format!("{} ({})", self.primary, s),
+        )
     }
 }

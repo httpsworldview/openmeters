@@ -27,10 +27,10 @@ vis_processor!(
 #[derive(Debug, Clone)]
 pub(crate) struct OscilloscopeState {
     snapshot: OscilloscopeSnapshot,
-    style: OscilloscopeStyle,
-    persistence: f32,
-    channel_1: Channel,
-    channel_2: Channel,
+    pub(crate) style: OscilloscopeStyle,
+    pub(crate) persistence: f32,
+    pub(crate) channel_1: Channel,
+    pub(crate) channel_2: Channel,
     key: u64,
 }
 
@@ -63,13 +63,7 @@ impl OscilloscopeState {
     }
 
     pub fn set_palette(&mut self, palette: &[Color; OSCILLOSCOPE_PALETTE_SIZE]) {
-        if !color::palettes_equal(&self.style.colors, palette) {
-            self.style.colors = *palette;
-        }
-    }
-
-    pub fn palette(&self) -> &[Color; OSCILLOSCOPE_PALETTE_SIZE] {
-        &self.style.colors
+        self.style.colors = *palette;
     }
 
     pub fn apply_snapshot(&mut self, snapshot: &OscilloscopeSnapshot) {
@@ -91,18 +85,6 @@ impl OscilloscopeState {
         }
 
         self.snapshot = projected;
-    }
-
-    pub fn channel_1(&self) -> Channel {
-        self.channel_1
-    }
-
-    pub fn channel_2(&self) -> Channel {
-        self.channel_2
-    }
-
-    pub fn persistence(&self) -> f32 {
-        self.persistence
     }
 
     fn project_channels(
@@ -161,7 +143,7 @@ impl OscilloscopeState {
 
 #[derive(Debug, Clone)]
 pub(crate) struct OscilloscopeStyle {
-    pub colors: [Color; OSCILLOSCOPE_PALETTE_SIZE],
+    pub(crate) colors: [Color; OSCILLOSCOPE_PALETTE_SIZE],
 }
 
 impl Default for OscilloscopeStyle {

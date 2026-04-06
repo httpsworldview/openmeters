@@ -12,13 +12,6 @@ use crate::visuals::registry::VisualKind;
 use iced::Element;
 use iced::widget::column;
 
-fn extract_num_cycles(mode: TriggerMode) -> usize {
-    match mode {
-        TriggerMode::Stable { num_cycles } => num_cycles,
-        _ => 2,
-    }
-}
-
 settings_pane!(
     OscilloscopeSettingsPane,
     OscilloscopeSettings,
@@ -26,7 +19,10 @@ settings_pane!(
     theme::oscilloscope,
     Oscilloscope,
     extra_from_settings(settings) {
-        num_cycles: usize = extract_num_cycles(settings.trigger_mode),
+        num_cycles: usize = match settings.trigger_mode {
+            TriggerMode::Stable { num_cycles } => num_cycles,
+            _ => 2,
+        },
     }
 );
 

@@ -62,15 +62,8 @@ impl StereometerSettingsPane {
         let s = &self.settings;
 
         let picks = row![
-            column![labeled_pick_list("Mode", &MODE_OPTIONS, Some(s.mode), Mode)]
-                .width(Length::Fill),
-            column![labeled_pick_list(
-                "Scale",
-                &SCALE_OPTIONS,
-                Some(s.scale),
-                Scale
-            )]
-            .width(Length::Fill),
+            labeled_pick_list("Mode", &MODE_OPTIONS, Some(s.mode), Mode).width(Length::Fill),
+            labeled_pick_list("Scale", &SCALE_OPTIONS, Some(s.scale), Scale).width(Length::Fill),
         ]
         .spacing(16);
 
@@ -123,23 +116,23 @@ impl StereometerSettingsPane {
 
         let corr_active = s.correlation_meter != CorrelationMeterMode::Off;
         let mut corr_picks = row![
-            column![labeled_pick_list(
+            labeled_pick_list(
                 "Meter",
                 &CORR_METER_OPTIONS,
                 Some(s.correlation_meter),
                 CorrelationMeter
-            )]
+            )
             .width(Length::Fill),
         ]
         .spacing(16);
         if corr_active {
             corr_picks = corr_picks.push(
-                column![labeled_pick_list(
+                labeled_pick_list(
                     "Side",
                     &CORR_SIDE_OPTIONS,
                     Some(s.correlation_meter_side),
-                    CorrelationMeterSide
-                )]
+                    CorrelationMeterSide,
+                )
                 .width(Length::Fill),
             );
         }

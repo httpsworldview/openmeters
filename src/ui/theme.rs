@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-// Monochrome Iced theme.
-//
 // GPU palette colors are defined in sRGB. The sRGB framebuffer format handles
 // gamma correction automatically, so colors are passed through without conversion.
 
@@ -29,7 +27,6 @@ const TEXT_DARK: Color = Color::from_rgba(0.10, 0.10, 0.10, 1.0);
 pub const BORDER_SUBTLE: Color = Color::from_rgba(0.280, 0.288, 0.304, 1.0);
 const BORDER_FOCUS: Color = Color::from_rgba(0.520, 0.536, 0.560, 1.0);
 
-// Accent colors
 const ACCENT_PRIMARY: Color = Color::from_rgba(0.157, 0.157, 0.157, 1.0);
 const ACCENT_SUCCESS: Color = Color::from_rgba(0.478, 0.557, 0.502, 1.0);
 const ACCENT_DANGER: Color = Color::from_rgba(0.557, 0.478, 0.478, 1.0);
@@ -60,9 +57,6 @@ fn palette(custom_bg: Option<Color>) -> palette::Palette {
     }
 }
 
-// styling helpers
-
-// Standard sharp border for buttons and containers.
 pub fn sharp_border() -> Border {
     Border {
         color: BORDER_SUBTLE,

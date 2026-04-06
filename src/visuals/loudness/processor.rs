@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-// ITU-R BS.1770-5 compliant loudness and true peak metering.
-
 use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::util::audio::{DEFAULT_SAMPLE_RATE, power_to_db};
 use std::f64::consts::PI;
@@ -13,7 +11,6 @@ const DEFAULT_FLOOR_DB: f32 = -99.9;
 
 const DEFAULT_WINDOWS: [f32; 4] = [3.0, 0.4, 0.3, 1.0];
 
-// Window indices
 const WIN_SHORT_TERM: usize = 0;
 const WIN_MOMENTARY: usize = 1;
 const WIN_RMS_FAST: usize = 2;
@@ -118,11 +115,10 @@ impl TruePeakMeter {
 
     #[inline]
     fn process(&mut self, sample: f32) {
-        self.write_position = if self.write_position == 0 {
-            TAPS_PER_PHASE - 1
-        } else {
-            self.write_position - 1
-        };
+        self.write_position = self
+            .write_position
+            .checked_sub(1)
+            .unwrap_or(TAPS_PER_PHASE - 1);
         self.delay_buffer[self.write_position] = sample;
         self.delay_buffer[self.write_position + TAPS_PER_PHASE] = sample;
         let mut out = [0.0_f32; PHASES];
@@ -240,17 +236,11 @@ pub const MAX_CHANNELS: usize = 8;
 #[inline]
 fn channel_weight(channel_index: usize, total_channels: usize) -> f64 {
     match total_channels {
-        1 => 1.0,
-        2 => 1.0,
+        1 | 2 => 1.0,
         6 => [1.0, 1.0, 1.0, 0.0, 1.41, 1.41][channel_index.min(5)],
         8 => [1.0, 1.0, 1.0, 0.0, 1.41, 1.41, 1.41, 1.41][channel_index.min(7)],
-        _ => {
-            if channel_index < 3 {
-                1.0
-            } else {
-                1.41
-            }
-        }
+        _ if channel_index < 3 => 1.0,
+        _ => 1.41,
     }
 }
 
@@ -368,28 +358,16 @@ impl AudioProcessor for LoudnessProcessor {
         let mut weighted_short_term = 0.0;
         let mut weighted_momentary = 0.0;
 
+        let window_mean =
+            |ch: &ChannelState, idx: usize| ch.windows[idx].mean().max(MIN_MEAN_SQUARE);
         for (channel_index, channel_state) in self.channels.iter().enumerate() {
             let weight = channel_weight(channel_index, num_channels);
-            let short_term = channel_state.windows[WIN_SHORT_TERM]
-                .mean()
-                .max(MIN_MEAN_SQUARE);
-            let momentary = channel_state.windows[WIN_MOMENTARY]
-                .mean()
-                .max(MIN_MEAN_SQUARE);
-            weighted_short_term += short_term * weight;
-            weighted_momentary += momentary * weight;
-            self.snapshot.rms_fast_db[channel_index] = mean_square_to_lufs(
-                channel_state.windows[WIN_RMS_FAST]
-                    .mean()
-                    .max(MIN_MEAN_SQUARE),
-                floor,
-            );
-            self.snapshot.rms_slow_db[channel_index] = mean_square_to_lufs(
-                channel_state.windows[WIN_RMS_SLOW]
-                    .mean()
-                    .max(MIN_MEAN_SQUARE),
-                floor,
-            );
+            weighted_short_term += window_mean(channel_state, WIN_SHORT_TERM) * weight;
+            weighted_momentary += window_mean(channel_state, WIN_MOMENTARY) * weight;
+            self.snapshot.rms_fast_db[channel_index] =
+                mean_square_to_lufs(window_mean(channel_state, WIN_RMS_FAST), floor);
+            self.snapshot.rms_slow_db[channel_index] =
+                mean_square_to_lufs(window_mean(channel_state, WIN_RMS_SLOW), floor);
         }
 
         for (channel_index, channel_state) in self.channels.iter_mut().enumerate() {
@@ -505,13 +483,9 @@ mod tests {
             sample_rate,
             ..Default::default()
         };
-        let ours = unwrap_snapshot(LoudnessProcessor::new(cfg).process_block(&AudioBlock::new(
-            &stereo,
-            2,
-            sample_rate,
-            Instant::now(),
-        )))
-        .true_peak_db[0] as f64;
+        let block = AudioBlock::new(&stereo, 2, sample_rate, Instant::now());
+        let ours = unwrap_snapshot(LoudnessProcessor::new(cfg).process_block(&block)).true_peak_db
+            [0] as f64;
 
         let mut reference = EbuR128::new(2, sample_rate as u32, Mode::TRUE_PEAK | Mode::S).unwrap();
         reference.add_frames_planar_f32(&[&mono, &mono]).unwrap();
@@ -529,25 +503,16 @@ mod tests {
     #[test]
     fn true_peak_meter_detects_inter_sample_peaks() {
         let mut meter = TruePeakMeter::new();
-
-        // Feed enough samples to fill the filter buffer first
-        // The filter has 12 taps, so we need at least 12 samples
-        // before the output stabilizes
+        // Fill the 12-tap filter buffer before measuring.
         for _ in 0..20 {
             meter.process(0.0);
         }
-
-        // Now feed an alternating sequence that would create inter-sample peaks
-        // At Nyquist frequency, samples alternate +/-
+        // Alternating +/- 0.7 at Nyquist reconstructs to ~1.21x sample amplitude.
         for _ in 0..20 {
             meter.process(0.7);
             meter.process(-0.7);
         }
-
         let peak = meter.take_peak();
-        // Inter-sample peak should be higher than the sample values
-        // For alternating +/- 0.7 (Nyquist), the true peak can theoretically
-        // be up to ~1.21x the sample amplitude due to reconstruction
         assert!(
             peak > 0.7,
             "inter-sample peak {peak:.4} should exceed sample amplitude 0.7"

@@ -9,7 +9,6 @@ pub use state::State;
 use iced_widget::core::event::Event;
 use iced_widget::core::layout;
 use iced_widget::core::mouse;
-use iced_widget::core::overlay;
 use iced_widget::core::renderer;
 use iced_widget::core::renderer::Quad;
 use iced_widget::core::widget::{
@@ -17,8 +16,7 @@ use iced_widget::core::widget::{
     tree::{self, Tree},
 };
 use iced_widget::core::{
-    self, Background, Clipboard, Element, Layout, Length, Point, Rectangle, Shell, Size, Vector,
-    Widget,
+    self, Background, Clipboard, Element, Layout, Length, Point, Rectangle, Shell, Size, Widget,
 };
 
 #[derive(Default)]
@@ -36,7 +34,6 @@ pub enum DragEvent {
     Canceled { pane: Pane },
 }
 
-// Lightweight, horizontal-only pane grid widget.
 #[allow(missing_debug_implementations)]
 pub struct PaneGrid<'a, Message, Theme = iced::Theme, Renderer = iced::Renderer>
 where
@@ -47,7 +44,6 @@ where
     entries: Vec<(Pane, Content<'a, Message, Theme, Renderer>)>,
     width: Length,
     height: Length,
-    spacing: f32,
     on_drag: Option<Box<dyn Fn(DragEvent) -> Message + 'a>>,
     on_context: Option<Box<dyn Fn(Pane) -> Message + 'a>>,
     on_hover: Option<Box<dyn Fn(Option<Pane>) -> Message + 'a>>,
@@ -72,7 +68,6 @@ where
             entries,
             width: Length::Fill,
             height: Length::Fill,
-            spacing: 0.0,
             on_drag: None,
             on_context: None,
             on_hover: None,
@@ -89,11 +84,6 @@ where
         self
     }
 
-    pub fn spacing(mut self, amount: f32) -> Self {
-        self.spacing = amount.max(0.0);
-        self
-    }
-
     pub fn on_drag(mut self, callback: impl Fn(DragEvent) -> Message + 'a) -> Self {
         self.on_drag = Some(Box::new(callback));
         self
@@ -107,10 +97,6 @@ where
     pub fn on_hover(mut self, callback: impl Fn(Option<Pane>) -> Message + 'a) -> Self {
         self.on_hover = Some(Box::new(callback));
         self
-    }
-
-    fn drag_enabled(&self) -> bool {
-        self.on_drag.is_some()
     }
 
     fn pane_at(&self, layout: Layout<'_>, cursor: Point) -> Option<Pane> {
@@ -172,8 +158,7 @@ where
             return layout::Node::new(size);
         }
 
-        let total_spacing = self.spacing * (count.saturating_sub(1) as f32);
-        let available_width = (size.width - total_spacing).max(0.0);
+        let available_width = size.width.max(0.0);
 
         let mut widths: Vec<f32> = Vec::with_capacity(count);
         let mut min_widths: Vec<f32> = Vec::with_capacity(count);
@@ -213,7 +198,7 @@ where
                 .layout(child, renderer, &limits)
                 .move_to(Point::new(position, 0.0));
 
-            position += pane_width + self.spacing;
+            position += pane_width;
             children.push(node);
         }
 
@@ -272,7 +257,7 @@ where
             use mouse::Button;
 
             match mouse_event {
-                mouse::Event::ButtonPressed(Button::Left) if self.drag_enabled() => {
+                mouse::Event::ButtonPressed(Button::Left) if self.on_drag.is_some() => {
                     if let Some(on_drag) = &self.on_drag
                         && let Some(cursor_position) = cursor.position()
                         && let Some(pane) = self.pane_at(layout, cursor_position)
@@ -433,17 +418,6 @@ where
                 );
             }
         }
-    }
-
-    fn overlay<'b>(
-        &'b mut self,
-        _tree: &'b mut Tree,
-        _layout: Layout<'_>,
-        _renderer: &Renderer,
-        _viewport: &Rectangle,
-        _translation: Vector,
-    ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
-        None
     }
 }
 

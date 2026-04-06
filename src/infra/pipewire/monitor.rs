@@ -17,7 +17,7 @@ pub fn init_registry_monitor(
 ) -> Option<(registry::AudioRegistryHandle, std::thread::JoinHandle<()>)> {
     let handle = registry::spawn_registry()
         .inspect_err(|err| {
-            tracing::error!("[registry-monitor] failed to start PipeWire registry: {err:?}")
+            tracing::error!("[registry-monitor] failed to start PipeWire registry: {err:?}");
         })
         .ok()?;
 
@@ -26,7 +26,7 @@ pub fn init_registry_monitor(
         .name("openmeters-registry-monitor".into())
         .spawn(move || run_monitor_loop(handle_for_thread, command_rx, snapshot_tx, routing_config))
         .inspect_err(|err| {
-            tracing::error!("[registry-monitor] failed to spawn monitor thread: {err}")
+            tracing::error!("[registry-monitor] failed to spawn monitor thread: {err}");
         })
         .ok()?;
 
@@ -300,7 +300,7 @@ impl RoutingManager {
         let (source, target) = match self.capture_mode {
             CaptureMode::Applications => (om_sink, self.hw_sink(snapshot)?),
             CaptureMode::Device => match self.device_target {
-                DeviceSelection::Node(id) => (self.find_node(snapshot, id)?, om_sink),
+                DeviceSelection::Node(id) => (snapshot.nodes.iter().find(|n| n.id == id)?, om_sink),
                 DeviceSelection::Default => self.device_source(snapshot, om_sink)?,
             },
         };
@@ -359,14 +359,6 @@ impl RoutingManager {
             .nodes
             .iter()
             .find(|n| n.name.as_deref() == Some(token) || n.matches_label(token))
-    }
-
-    fn find_node<'a>(
-        &self,
-        snapshot: &'a registry::RegistrySnapshot,
-        id: u32,
-    ) -> Option<&'a registry::NodeInfo> {
-        snapshot.nodes.iter().find(|n| n.id == id)
     }
 }
 

@@ -85,11 +85,11 @@ vis_processor!(
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct SpectrogramStyle {
     pub background: Color,
-    pub floor_db: f32,
+    pub(crate) floor_db: f32,
     pub ceiling_db: f32,
     pub opacity: f32,
     pub contrast: f32,
-    pub tilt_db: f32,
+    pub(crate) tilt_db: f32,
 }
 
 impl Default for SpectrogramStyle {
@@ -241,8 +241,7 @@ impl SpectrogramBuffer {
             .display_bins_hz
             .clone()
             .filter(|b| passthrough && b.len() >= h)
-            .map(|b| Arc::from(&b[..h]))
-            .unwrap_or_else(|| Arc::from([]));
+            .map_or_else(|| Arc::from([]), |b| Arc::from(&b[..h]));
         self.mapping = BinMapping::new(
             h,
             upd.fft_size,
@@ -298,21 +297,21 @@ impl SpectrogramBuffer {
 #[derive(Clone, Debug)]
 pub(crate) struct SpectrogramState {
     buffer: RefCell<SpectrogramBuffer>,
-    style: SpectrogramStyle,
-    palette: [Color; SPECTROGRAM_PALETTE_SIZE],
-    stop_positions: [f32; SPECTROGRAM_PALETTE_SIZE],
-    stop_spreads: [f32; SPECTROGRAM_PALETTE_SIZE],
+    pub(crate) style: SpectrogramStyle,
+    pub(crate) palette: [Color; SPECTROGRAM_PALETTE_SIZE],
+    pub(crate) stop_positions: [f32; SPECTROGRAM_PALETTE_SIZE],
+    pub(crate) stop_spreads: [f32; SPECTROGRAM_PALETTE_SIZE],
     history: VecDeque<SpectrogramColumn>,
     key: u64,
     pub(crate) piano_roll_overlay: PianoRollOverlay,
-    rotation: i8,
+    pub(crate) rotation: i8,
     sample_rate: f32,
     fft_size: usize,
     freq_scale: FrequencyScale,
     zoom: f32,
     pan: f32,
-    view_width: u32,
-    view_height: u32,
+    pub(crate) view_width: u32,
+    pub(crate) view_height: u32,
 }
 
 impl SpectrogramState {
@@ -340,9 +339,7 @@ impl SpectrogramState {
     }
 
     pub fn set_palette(&mut self, palette: &[Color; SPECTROGRAM_PALETTE_SIZE]) {
-        if !color::palettes_equal(&self.palette, palette) {
-            self.palette = *palette;
-        }
+        self.palette = *palette;
     }
 
     pub fn set_stop_positions(&mut self, positions: &[f32]) {
@@ -351,18 +348,10 @@ impl SpectrogramState {
         }
     }
 
-    pub fn stop_positions(&self) -> &[f32; SPECTROGRAM_PALETTE_SIZE] {
-        &self.stop_positions
-    }
-
     pub fn set_stop_spreads(&mut self, spreads: &[f32]) {
         if let Ok(arr) = <[f32; SPECTROGRAM_PALETTE_SIZE]>::try_from(spreads) {
             self.stop_spreads = arr;
         }
-    }
-
-    pub fn stop_spreads(&self) -> &[f32; SPECTROGRAM_PALETTE_SIZE] {
-        &self.stop_spreads
     }
 
     pub fn set_floor_db(&mut self, floor_db: f32) {
@@ -377,14 +366,6 @@ impl SpectrogramState {
         self.style.floor_db = floor;
     }
 
-    pub fn palette(&self) -> &[Color; SPECTROGRAM_PALETTE_SIZE] {
-        &self.palette
-    }
-
-    pub fn floor_db(&self) -> f32 {
-        self.style.floor_db
-    }
-
     pub fn set_tilt_db(&mut self, tilt_db: f32) {
         let tilt = if tilt_db.is_finite() { tilt_db } else { 0.0 };
         if (self.style.tilt_db - tilt).abs() > f32::EPSILON {
@@ -395,20 +376,8 @@ impl SpectrogramState {
         }
     }
 
-    pub fn tilt_db(&self) -> f32 {
-        self.style.tilt_db
-    }
-
     pub fn set_rotation(&mut self, rotation: i8) {
         self.rotation = rotation.clamp(-1, 2);
-    }
-
-    pub fn rotation(&self) -> i8 {
-        self.rotation
-    }
-
-    pub fn view_dimensions(&self) -> (u32, u32) {
-        (self.view_width, self.view_height)
     }
 
     pub fn apply_snapshot(&mut self, snap: &SpectrogramUpdate) {
@@ -683,11 +652,9 @@ impl<'a> Spectrogram<'a> {
             norm_to_freq(1.0 - uv_range[1], nyq, min_f, scale),
         );
         let midi_lo = MusicalNote::from_frequency(freq_bot.max(16.0))
-            .map(|n| (n.midi_number - 1).max(PIANO_MIDI_LO))
-            .unwrap_or(PIANO_MIDI_LO);
+            .map_or(PIANO_MIDI_LO, |n| (n.midi_number - 1).max(PIANO_MIDI_LO));
         let midi_hi = MusicalNote::from_frequency(freq_top)
-            .map(|n| (n.midi_number + 1).min(PIANO_MIDI_HI))
-            .unwrap_or(PIANO_MIDI_HI);
+            .map_or(PIANO_MIDI_HI, |n| (n.midi_number + 1).min(PIANO_MIDI_HI));
 
         let pal = theme.extended_palette();
         let (white, black) = (
@@ -760,9 +727,7 @@ impl<'a> Spectrogram<'a> {
 
         for pass in 0..2u8 {
             for midi in midi_lo..=midi_hi {
-                let Some(note) = MusicalNote::from_midi(midi) else {
-                    continue;
-                };
+                let note = MusicalNote::from_midi(midi);
                 let is_blk = note.is_black();
                 if is_blk != (pass == 1) {
                     continue;
@@ -894,7 +859,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
                 }
             }
             iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Middle)) => {
-                st.drag = None
+                st.drag = None;
             }
             _ => {}
         }
@@ -945,14 +910,14 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
         drop(state);
         if piano_roll != PianoRollOverlay::Off {
             renderer.with_layer(bounds, |r| {
-                self.draw_piano_roll(r, theme, bounds, piano_roll, uv_y_range)
+                self.draw_piano_roll(r, theme, bounds, piano_roll, uv_y_range);
             });
         }
         if let Some(c) = interaction.cursor
             && bounds.contains(c)
         {
             renderer.with_layer(bounds, |r| {
-                self.draw_tooltip(r, theme, bounds, c, uv_y_range)
+                self.draw_tooltip(r, theme, bounds, c, uv_y_range);
             });
         }
     }
@@ -993,12 +958,8 @@ mod tests {
         let m = BinMapping::new(height, fft, rate, FrequencyScale::Logarithmic, false);
         assert_eq!(m.lower.len(), height);
 
-        assert!(
-            m.lower[0] > m.lower[height - 1],
-            "top bin {} must exceed bottom bin {}",
-            m.lower[0],
-            m.lower[height - 1]
-        );
+        let (top, bot) = (m.lower[0], m.lower[height - 1]);
+        assert!(top > bot, "top bin {top} must exceed bottom bin {bot}");
 
         let mid = height / 2;
         let top_span = m.lower[0] - m.lower[mid];
@@ -1011,10 +972,10 @@ mod tests {
         for i in 1..height {
             let prev = m.lower[i - 1] as f32 + m.weight[i - 1];
             let curr = m.lower[i] as f32 + m.weight[i];
+            let prev_i = i - 1;
             assert!(
                 prev >= curr,
-                "row {i}: freq {curr:.2} exceeds row {} freq {prev:.2}",
-                i - 1
+                "row {i}: freq {curr:.2} exceeds row {prev_i} freq {prev:.2}"
             );
         }
     }

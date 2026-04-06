@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-// Spectrum analyser DSP.
-
 use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::util::audio::{DB_FLOOR, DEFAULT_SAMPLE_RATE, power_to_db};
 use crate::visuals::spectrogram::processor::{FrequencyScale, WindowKind};
@@ -14,27 +12,23 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Instant;
 
-// configurable and used in the UI.
 pub const MIN_SPECTRUM_EXP_FACTOR: f32 = 0.0;
 pub const MAX_SPECTRUM_EXP_FACTOR: f32 = 0.95;
 pub const MIN_SPECTRUM_PEAK_DECAY: f32 = 0.0;
 pub const MAX_SPECTRUM_PEAK_DECAY: f32 = 120.0;
 
-// non-configurable defaults, used internally only.
 const MIN_SPECTRUM_FFT_SIZE: usize = 128;
 const DEFAULT_SPECTRUM_HOP_DIVISOR: usize = 8;
 const DEFAULT_SPECTRUM_FFT_SIZE: usize = 4096;
 const DEFAULT_SPECTRUM_EXP_FACTOR: f32 = 0.5;
 const DEFAULT_SPECTRUM_PEAK_DECAY: f32 = 12.0;
 
-// Compute frequency bin centers for FFT output.
 fn frequency_bins(sample_rate: f32, fft_size: usize) -> Vec<f32> {
     let bins = fft_size / 2 + 1;
     let bin_hz = sample_rate / fft_size as f32;
     (0..bins).map(|i| i as f32 * bin_hz).collect()
 }
 
-// Output magnitude spectrum.
 #[derive(Debug, Clone, Default)]
 pub struct SpectrumSnapshot {
     pub frequency_bins: Vec<f32>,
@@ -43,7 +37,6 @@ pub struct SpectrumSnapshot {
     pub peak_frequency_hz: Option<f32>,
 }
 
-// Configuration for the spectrum analyser.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct SpectrumConfig {
     pub sample_rate: f32,
@@ -91,11 +84,6 @@ impl SpectrumConfig {
 
         self.averaging = self.averaging.normalized();
     }
-
-    pub fn normalized(mut self) -> Self {
-        self.normalize();
-        self
-    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -111,10 +99,14 @@ impl AveragingMode {
         match self {
             AveragingMode::None => AveragingMode::None,
             AveragingMode::Exponential { factor } => AveragingMode::Exponential {
-                factor: Self::clamp_factor(factor),
+                factor: clamp_finite(factor, MIN_SPECTRUM_EXP_FACTOR, MAX_SPECTRUM_EXP_FACTOR),
             },
             AveragingMode::PeakHold { decay_per_second } => AveragingMode::PeakHold {
-                decay_per_second: Self::clamp_decay(decay_per_second),
+                decay_per_second: clamp_finite(
+                    decay_per_second,
+                    MIN_SPECTRUM_PEAK_DECAY,
+                    MAX_SPECTRUM_PEAK_DECAY,
+                ),
             },
         }
     }
@@ -126,23 +118,13 @@ impl AveragingMode {
     pub const fn default_peak_decay() -> f32 {
         DEFAULT_SPECTRUM_PEAK_DECAY
     }
+}
 
-    pub fn clamp_factor(value: f32) -> f32 {
-        let value = if value.is_finite() {
-            value
-        } else {
-            MIN_SPECTRUM_EXP_FACTOR
-        };
-        value.clamp(MIN_SPECTRUM_EXP_FACTOR, MAX_SPECTRUM_EXP_FACTOR)
-    }
-
-    pub fn clamp_decay(value: f32) -> f32 {
-        let value = if value.is_finite() {
-            value
-        } else {
-            MIN_SPECTRUM_PEAK_DECAY
-        };
-        value.clamp(MIN_SPECTRUM_PEAK_DECAY, MAX_SPECTRUM_PEAK_DECAY)
+fn clamp_finite(value: f32, min: f32, max: f32) -> f32 {
+    if value.is_finite() {
+        value.clamp(min, max)
+    } else {
+        min
     }
 }
 
@@ -265,12 +247,8 @@ impl SpectrumProcessor {
                 return produced;
             }
 
-            if self.scratch_magnitudes.len() != bins {
-                self.scratch_magnitudes.resize(bins, DB_FLOOR);
-            }
-            if self.scratch_unweighted.len() != bins {
-                self.scratch_unweighted.resize(bins, DB_FLOOR);
-            }
+            self.scratch_magnitudes.resize(bins, DB_FLOOR);
+            self.scratch_unweighted.resize(bins, DB_FLOOR);
 
             for (idx, (complex, norm)) in self
                 .spectrum_buffer
@@ -364,8 +342,9 @@ impl AudioProcessor for SpectrumProcessor {
 }
 
 impl Reconfigurable<SpectrumConfig> for SpectrumProcessor {
-    fn update_config(&mut self, config: SpectrumConfig) {
-        self.config = config.normalized();
+    fn update_config(&mut self, mut config: SpectrumConfig) {
+        config.normalize();
+        self.config = config;
         self.rebuild_fft();
     }
 }
@@ -381,7 +360,6 @@ fn averaging_update(
 ) -> Option<usize> {
     let bins = input.len();
 
-    // Resize buffers if needed
     for buf in [&mut *averaged_db, &mut *peak_hold_db, &mut *output] {
         if buf.len() != bins {
             buf.resize(bins, DB_FLOOR);
@@ -396,16 +374,18 @@ fn averaging_update(
 
     let mut peak_index = None;
     let mut peak_value = DB_FLOOR;
+    let mut write = |idx: usize, val: f32| {
+        output[idx] = val;
+        if val > peak_value {
+            peak_value = val;
+            peak_index = Some(idx);
+        }
+    };
 
     match mode {
         AveragingMode::None => {
             for (idx, &value) in input.iter().enumerate() {
-                let val = value.max(DB_FLOOR);
-                output[idx] = val;
-                if val > peak_value {
-                    peak_value = val;
-                    peak_index = Some(idx);
-                }
+                write(idx, value.max(DB_FLOOR));
             }
         }
         AveragingMode::Exponential { factor } => {
@@ -418,12 +398,7 @@ fn averaging_update(
                     previous * alpha + value * (1.0 - alpha)
                 };
                 averaged_db[idx] = smoothed;
-                let val = smoothed.max(DB_FLOOR);
-                output[idx] = val;
-                if val > peak_value {
-                    peak_value = val;
-                    peak_index = Some(idx);
-                }
+                write(idx, smoothed.max(DB_FLOOR));
             }
         }
         AveragingMode::PeakHold { decay_per_second } => {
@@ -431,11 +406,7 @@ fn averaging_update(
             for (idx, &value) in input.iter().enumerate() {
                 let hold = (peak_hold_db[idx] - decay).max(DB_FLOOR).max(value);
                 peak_hold_db[idx] = hold;
-                output[idx] = hold;
-                if hold > peak_value {
-                    peak_value = hold;
-                    peak_index = Some(idx);
-                }
+                write(idx, hold);
             }
         }
     }
@@ -475,8 +446,8 @@ mod tests {
 
     #[test]
     fn a_weight_matches_iec_reference_points() {
+        // (frequency Hz, reference dB)
         let reference_points: &[(f32, f32)] = &[
-            // (frequency Hz, reference dB)
             (31.5, -39.4),
             (63.0, -26.2),
             (100.0, -19.1),

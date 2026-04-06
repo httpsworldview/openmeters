@@ -43,7 +43,7 @@ impl SettingsManager {
             .ok()
             .and_then(|s| {
                 serde_json::from_str(&s)
-                    .map_err(|e| warn!("[settings] parse error {path:?}: {e}"))
+                    .inspect_err(|e| warn!("[settings] parse error {path:?}: {e}"))
                     .ok()
             })
             .unwrap_or_default();

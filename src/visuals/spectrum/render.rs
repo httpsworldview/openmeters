@@ -205,8 +205,7 @@ fn sample_max(pts: &[[f32; 2]], t0: f32, t1: f32) -> f32 {
     let i0 = (t0.clamp(0.0, 1.0) * n as f32) as usize;
     let i1 = ((t1.clamp(0.0, 1.0) * n as f32) as usize + 1).min(pts.len() - 1);
     pts.get(i0..=i1)
-        .map(|s| s.iter().map(|p| p[1]).fold(0.0, f32::max))
-        .unwrap_or(0.0)
+        .map_or(0.0, |s| s.iter().map(|p| p[1]).fold(0.0, f32::max))
 }
 
 fn sample_lerp(pts: &[[f32; 2]], t: f32) -> f32 {
@@ -214,9 +213,9 @@ fn sample_lerp(pts: &[[f32; 2]], t: f32) -> f32 {
     let pos = t.clamp(0.0, 1.0) * n as f32;
     let i = (pos as usize).min(n.saturating_sub(1));
     let f = pos - i as f32;
-    pts.get(i)
-        .map(|a| a[1] * (1.0 - f) + pts.get(i + 1).map_or(a[1], |b| b[1]) * f)
-        .unwrap_or(0.0)
+    pts.get(i).map_or(0.0, |a| {
+        a[1] * (1.0 - f) + pts.get(i + 1).map_or(a[1], |b| b[1]) * f
+    })
 }
 
 sdf_primitive!(

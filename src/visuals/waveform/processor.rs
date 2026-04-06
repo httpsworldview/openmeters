@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-// Scrolling waveform with peak frequency-based coloring.
-
 use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::util::audio::{DEFAULT_SAMPLE_RATE, power_to_db};
 use crate::visuals::spectrogram::processor::WindowKind;
@@ -101,7 +99,6 @@ pub struct WaveformSnapshot {
     pub preview: WaveformPreview,
 }
 
-// Converts sentinel extrema values to zero for display.
 #[inline]
 fn clamp_extrema(min: f32, max: f32) -> (f32, f32) {
     (
@@ -197,7 +194,7 @@ impl FrequencyAnalyzer {
             let rms = if lo_bin < hi_bin {
                 let power: f32 = self.output_spectrum[lo_bin..hi_bin]
                     .iter()
-                    .map(|c| c.norm_sqr())
+                    .map(realfft::num_complex::Complex::norm_sqr)
                     .sum();
                 (2.0 * power * inv_n_sq).sqrt()
             } else {
@@ -376,13 +373,10 @@ impl WaveformProcessor {
             }
         }
 
-        // Advance ring buffer
         self.ring_head = (self.ring_head + 1) % max_columns;
         self.column_count = (self.column_count + 1).min(max_columns);
         self.total_columns_written = self.total_columns_written.saturating_add(1);
         self.has_pending_changes = true;
-
-        // Reset accumulators
         for acc in &mut self.sample_accumulators {
             acc.clear();
         }
@@ -619,11 +613,10 @@ mod tests {
 
         let avg: f32 = results.iter().map(|(_, n)| n).sum::<f32>() / results.len() as f32;
         for (speed, normalized) in &results {
-            let deviation = (normalized - avg).abs() / avg;
+            let dev_pct = (normalized - avg).abs() / avg * 100.0;
             assert!(
-                deviation < 0.001,
-                "scroll_speed {speed} produced {normalized:.6}, deviates {:.3}% from avg {avg:.6}",
-                deviation * 100.0
+                dev_pct < 0.1,
+                "scroll_speed {speed} produced {normalized:.6}, deviates {dev_pct:.3}% from avg {avg:.6}"
             );
         }
     }

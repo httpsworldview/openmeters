@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-// Default palette constants for each visual type.
-//
-// Extracted from ui/theme.rs so that visuals and persistence can reference
-// defaults without crossing into the UI layer.
-
 use crate::util::color::{hex, palettes_equal};
 use iced::Color;
 
@@ -94,8 +89,6 @@ pub mod spectrum {
 // dark red (low) -> orange -> green -> cyan -> blue (high)
 pub mod waveform {
     use super::*;
-    // I know this is hacky, but it works and its standard for this
-    // project.
     pub const GRADIENT_STOPS: usize = 6;
     pub const COLORS: [Color; 9] = [
         hex(0x8B, 0x00, 0x00, 0xFF),

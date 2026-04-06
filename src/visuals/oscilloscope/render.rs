@@ -75,6 +75,7 @@ impl OscilloscopePrimitive {
                 + VERTICAL_PADDING
                 + channel_idx as f32 * (channel_height + CHANNEL_GAP)
                 + channel_height * 0.5;
+            let with_a = |a: f32| [color[0], color[1], color[2], a];
 
             let positions: Vec<_> = channel_samples
                 .iter()
@@ -88,23 +89,21 @@ impl OscilloscopePrimitive {
                 .collect();
             let positions = decimate_line(&positions, pixel_width * 2);
 
-            let fill_color = [color[0], color[1], color[2], self.params.fill_alpha];
+            let fill_color = with_a(self.params.fill_alpha);
             for pair in positions.windows(2) {
-                let ((x0, y0), (x1, y1)) = (pair[0], pair[1]);
                 vertices.extend(baseline_segment_vertices(
-                    (x0, y0),
-                    (x1, y1),
+                    pair[0],
+                    pair[1],
                     center,
                     clip,
                     [fill_color, fill_color],
                 ));
             }
 
-            let line_color = [color[0], color[1], color[2], LINE_ALPHA];
             vertices.extend(build_aa_line_list(
                 &positions,
                 STROKE_WIDTH,
-                line_color,
+                with_a(LINE_ALPHA),
                 &clip,
             ));
         }

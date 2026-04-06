@@ -1,14 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-// Rendering primitives and GPU pipeline infrastructure.
-//
-//   1. Coordinate transform + vertex type
-//   2. Shape builders (quads, lines, dots, polylines)
-//   3. GPU buffer management + pipeline creation
-//   4. Pipeline cache composite
-//   5. sdf_primitive!
-
 use bytemuck::{Pod, Zeroable};
 use iced::advanced::graphics::Viewport;
 use iced_wgpu::wgpu;
@@ -16,7 +8,6 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::mem::size_of;
 
-// Transforms logical screen coordinates to clip space coordinates.
 #[derive(Clone, Copy)]
 pub struct ClipTransform(f32, f32);
 
@@ -35,8 +26,6 @@ impl ClipTransform {
         [x * self.0 - 1.0, 1.0 - y * self.1]
     }
 }
-
-// sdf vertex
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
@@ -91,8 +80,6 @@ impl SdfVertex {
         }
     }
 }
-
-// shapes
 
 #[inline]
 pub fn quad_vertices(
@@ -182,7 +169,6 @@ pub fn line_vertices(
     ]
 }
 
-// builds aa line with triangle topology
 pub fn build_aa_line_list(
     pts: &[(f32, f32)],
     stroke: f32,
@@ -216,7 +202,6 @@ pub fn build_aa_line_list(
     verts
 }
 
-// reduces a polyline to at most `max_points`
 pub fn decimate_line(pts: &[(f32, f32)], max_points: usize) -> Cow<'_, [(f32, f32)]> {
     if pts.len() <= max_points {
         return Cow::Borrowed(pts);
@@ -244,8 +229,6 @@ pub fn decimate_line(pts: &[(f32, f32)], max_points: usize) -> Cow<'_, [(f32, f3
     }
     Cow::Owned(result)
 }
-
-// gpu infra
 
 #[derive(Debug)]
 pub struct InstanceBuffer<V: Pod> {
@@ -370,8 +353,6 @@ fn create_sdf_pipeline(
         cache: None,
     })
 }
-
-// pipeline cache
 
 #[derive(Debug)]
 struct CachedInstance {

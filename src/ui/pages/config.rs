@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-// Configuration page for application and visual settings.
-
 use crate::domain::routing::{CaptureMode, DeviceSelection, RoutingCommand};
 use crate::infra::pipewire::VIRTUAL_SINK_NAME;
 use crate::infra::pipewire::registry::RegistrySnapshot;
@@ -112,17 +110,18 @@ impl ConfigPage {
         settings: SettingsHandle,
         bar_supported: bool,
     ) -> Self {
-        let settings_ref = settings.borrow();
-        let current_bg = settings_ref
-            .settings()
-            .background_color
-            .map(Into::into)
-            .unwrap_or(theme::BG_BASE);
-        let capture_mode = settings_ref.settings().capture_mode;
-        let last_device_name = settings_ref.settings().last_device_name.clone();
-        let active_theme = settings_ref.active_theme().to_owned();
-        let theme_choices = settings_ref.theme_store().list();
-        drop(settings_ref);
+        let (current_bg, capture_mode, last_device_name, active_theme, theme_choices) = {
+            let s = settings.borrow();
+            (
+                s.settings()
+                    .background_color
+                    .map_or(theme::BG_BASE, Into::into),
+                s.settings().capture_mode,
+                s.settings().last_device_name.clone(),
+                s.active_theme().to_owned(),
+                s.theme_store().list(),
+            )
+        };
 
         let mut bg_pal = theme::Palette::new(&theme::background::COLORS, theme::background::LABELS);
         bg_pal.set(&[current_bg]);
@@ -223,10 +222,10 @@ impl ConfigPage {
             ConfigMessage::DecorationsToggled(v) => self.settings.update(|s| s.set_decorations(v)),
             ConfigMessage::BarModeToggled(v) => self.settings.update(|s| s.set_bar_enabled(v)),
             ConfigMessage::BarAlignmentChanged(v) => {
-                self.settings.update(|s| s.set_bar_alignment(v))
+                self.settings.update(|s| s.set_bar_alignment(v));
             }
             ConfigMessage::BarHeightChanged(v) => {
-                self.settings.update(|s| s.set_bar_height(v as u32))
+                self.settings.update(|s| s.set_bar_height(v as u32));
             }
             ConfigMessage::ThemeChanged(name) => {
                 self.apply_theme(&name);
@@ -250,19 +249,13 @@ impl ConfigPage {
 
     pub fn view(&self) -> Element<'_, ConfigMessage> {
         let visuals_snapshot = self.visual_manager.snapshot();
-
-        let capture_section = self.render_capture_section();
-        let visuals_section = self.render_visuals_section(&visuals_snapshot);
-        let theme_section = self.render_theme_section();
-        let bg_section = self.render_global_section();
-
         let content = Column::new()
             .spacing(14)
             .padding(8)
-            .push(capture_section)
-            .push(visuals_section)
-            .push(theme_section)
-            .push(bg_section);
+            .push(self.render_capture_section())
+            .push(self.render_visuals_section(&visuals_snapshot))
+            .push(self.render_theme_section())
+            .push(self.render_global_section());
 
         let content = if self.bar_supported {
             content.push(self.render_bar_section())
@@ -443,23 +436,23 @@ impl ConfigPage {
         .text_size(TEXT_SIZE)
         .width(Length::Fill);
 
-        let mut save_btn = button(text("Save").size(TEXT_SIZE)).padding([4, 8]);
-        if !is_builtin {
-            save_btn = save_btn.on_press(ConfigMessage::SaveTheme(self.active_theme.clone()));
-        }
+        let save_btn = button(text("Save").size(TEXT_SIZE))
+            .padding([4, 8])
+            .on_press_maybe(
+                (!is_builtin).then(|| ConfigMessage::SaveTheme(self.active_theme.clone())),
+            );
 
         let save_as_input = text_input("New theme name...", &self.save_theme_name)
             .on_input(ConfigMessage::ThemeNameInput)
             .size(TEXT_SIZE)
             .width(Length::Fill);
-        let can_save_as =
-            !self.save_theme_name.trim().is_empty() && self.save_theme_name.trim() != BUILTIN_THEME;
-        let mut save_as_btn = button(text("Save as").size(TEXT_SIZE)).padding([4, 8]);
-        if can_save_as {
-            save_as_btn = save_as_btn.on_press(ConfigMessage::SaveTheme(
-                self.save_theme_name.trim().to_owned(),
-            ));
-        }
+        let trimmed = self.save_theme_name.trim();
+        let save_as_btn = button(text("Save as").size(TEXT_SIZE))
+            .padding([4, 8])
+            .on_press_maybe(
+                (!trimmed.is_empty() && trimmed != BUILTIN_THEME)
+                    .then(|| ConfigMessage::SaveTheme(trimmed.to_owned())),
+            );
 
         let content = Column::new()
             .spacing(8)
@@ -477,10 +470,7 @@ impl ConfigPage {
             .load(name)
             .unwrap_or_default();
         self.visual_manager.borrow_mut().apply_theme(&theme_file);
-        let bg = theme_file
-            .background
-            .map(Into::into)
-            .unwrap_or(theme::BG_BASE);
+        let bg = theme_file.background.map_or(theme::BG_BASE, Into::into);
         self.bg_palette.set_colors(&[bg]);
         let theme_val = (name != BUILTIN_THEME).then(|| name.to_owned());
         self.settings.update(|s| {

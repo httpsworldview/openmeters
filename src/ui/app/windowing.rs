@@ -151,10 +151,9 @@ impl PopoutWindow {
     }
 }
 
-// Window management methods on UiApp.
 impl UiApp {
     pub(super) fn refresh_settings_panel(&mut self) {
-        let Some((_, panel)) = self.settings_window.as_ref() else {
+        let Some((_, panel)) = self.settings_window.as_mut() else {
             return;
         };
         let visual_id = panel.visual_id();
@@ -167,9 +166,7 @@ impl UiApp {
         else {
             return;
         };
-        if let Some((_, ref mut panel)) = self.settings_window {
-            *panel = create_settings_panel(visual_id, kind, &self.visual_manager);
-        }
+        *panel = create_settings_panel(visual_id, kind, &self.visual_manager);
     }
 
     pub(super) fn open_settings_window(
@@ -238,7 +235,7 @@ impl UiApp {
             return exit();
         }
         if self.settings_window.as_ref().is_some_and(|(w, _)| *w == id) {
-            self.settings_window = None
+            self.settings_window = None;
         }
         self.popout_windows.remove(&id);
         Task::none()
@@ -300,8 +297,10 @@ impl UiApp {
             .slots
             .iter()
             .find(|s| s.id == visual_id)
-            .map(|s| format!("{}{} - OpenMeters", s.metadata.display_name, suffix))
-            .unwrap_or_else(|| "OpenMeters".into())
+            .map_or_else(
+                || "OpenMeters".into(),
+                |s| format!("{}{} - OpenMeters", s.metadata.display_name, suffix),
+            )
     }
 
     pub(super) fn theme(&self, window_id: window::Id) -> iced::Theme {
@@ -320,7 +319,7 @@ impl UiApp {
             self.sync_visuals_page();
             self.settings_handle.update(|settings| {
                 settings
-                    .set_visual_order(self.visual_manager.snapshot().slots.iter().map(|s| s.kind))
+                    .set_visual_order(self.visual_manager.snapshot().slots.iter().map(|s| s.kind));
             });
             return window::close(source_window);
         }

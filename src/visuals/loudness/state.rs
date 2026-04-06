@@ -52,9 +52,9 @@ pub(crate) struct LoudnessState {
     true_peak_db: [f32; MAX_CHANNELS],
     channel_count: usize,
     range: (f32, f32),
-    left_mode: MeterMode,
-    right_mode: MeterMode,
-    palette: [Color; LOUDNESS_PALETTE_SIZE],
+    pub(crate) left_mode: MeterMode,
+    pub(crate) right_mode: MeterMode,
+    pub(crate) palette: [Color; LOUDNESS_PALETTE_SIZE],
     key: u64,
 }
 
@@ -87,25 +87,8 @@ impl LoudnessState {
         }
     }
 
-    pub fn set_modes(&mut self, left: MeterMode, right: MeterMode) {
-        self.left_mode = left;
-        self.right_mode = right;
-    }
-
-    pub fn left_mode(&self) -> MeterMode {
-        self.left_mode
-    }
-
-    pub fn right_mode(&self) -> MeterMode {
-        self.right_mode
-    }
-
     pub fn set_palette(&mut self, palette: &[Color; LOUDNESS_PALETTE_SIZE]) {
         self.palette = *palette;
-    }
-
-    pub fn palette(&self) -> &[Color; LOUDNESS_PALETTE_SIZE] {
-        &self.palette
     }
 
     #[cfg(test)]
@@ -114,28 +97,18 @@ impl LoudnessState {
     }
 
     fn get_value(&self, mode: MeterMode, channel: usize) -> f32 {
+        let per_channel =
+            |buf: &[f32; MAX_CHANNELS]| buf.get(channel).copied().unwrap_or(self.range.0);
         match mode {
             MeterMode::LufsShortTerm => self.short_term_loudness,
             MeterMode::LufsMomentary => self.momentary_loudness,
-            MeterMode::RmsFast => self
-                .rms_fast_db
-                .get(channel)
-                .copied()
-                .unwrap_or(self.range.0),
-            MeterMode::RmsSlow => self
-                .rms_slow_db
-                .get(channel)
-                .copied()
-                .unwrap_or(self.range.0),
-            MeterMode::TruePeak => self
-                .true_peak_db
-                .get(channel)
-                .copied()
-                .unwrap_or(self.range.0),
+            MeterMode::RmsFast => per_channel(&self.rms_fast_db),
+            MeterMode::RmsSlow => per_channel(&self.rms_slow_db),
+            MeterMode::TruePeak => per_channel(&self.true_peak_db),
         }
     }
 
-    fn visual_params(&self, bounds: Rectangle) -> Option<LoudnessParams> {
+    fn visual_params(&self, bounds: Rectangle) -> LoudnessParams {
         let (min, max) = self.range;
         let guide_color = color::color_to_rgba(self.palette[4]);
         let mut bg = self.palette[0];
@@ -146,7 +119,7 @@ impl LoudnessState {
         let left_value = self.aggregate_channels(self.left_mode, LEFT_CHANNEL_INDICES);
         let right_value = self.aggregate_channels(self.left_mode, RIGHT_CHANNEL_INDICES);
 
-        Some(LoudnessParams {
+        LoudnessParams {
             key: self.key,
             bounds,
             min_db: min,
@@ -176,7 +149,7 @@ impl LoudnessState {
             threshold_db: Some(0.0),
             left_padding: LEFT_PADDING,
             right_padding: RIGHT_PADDING,
-        })
+        }
     }
 
     fn aggregate_channels(&self, mode: MeterMode, indices: &[usize]) -> f32 {
@@ -241,9 +214,7 @@ impl<'a, Message> Widget<Message, Theme, iced::Renderer> for Loudness<'a> {
     ) {
         let bounds = layout.bounds();
         let state = self.state.borrow();
-        let Some(params) = state.visual_params(bounds) else {
-            return;
-        };
+        let params = state.visual_params(bounds);
 
         renderer.draw_primitive(bounds, LoudnessPrimitive::new(params.clone()));
 
@@ -281,16 +252,14 @@ impl<'a, Message> Widget<Message, Theme, iced::Renderer> for Loudness<'a> {
             let unit = state.right_mode.unit_label();
             let ratio = params.db_to_ratio(value);
             let y = bounds.y + height * (1.0 - ratio);
-            let label = format!("{:.1} {}", value, unit);
+            let label = format!("{value:.1} {unit}");
 
-            let right_bar_end = meter_x + stride + bar_width;
-            let label_x = right_bar_end + 4.0;
-            let label_width = 68.0;
+            let label_x = meter_x + stride + bar_width + 4.0;
             let clamp_max = (bounds.y + bounds.height - 20.0).max(bounds.y);
             let label_rect = Rectangle {
                 x: label_x,
                 y: (y - 10.0).clamp(bounds.y, clamp_max),
-                width: label_width,
+                width: 68.0,
                 height: 20.0,
             };
 
@@ -367,9 +336,7 @@ mod tests {
         assert_eq!(state.true_peak_db[0], -1.0);
         assert_eq!(state.true_peak_db[1], -3.0);
 
-        let params = state
-            .visual_params(Rectangle::new(Point::ORIGIN, Size::new(200.0, 100.0)))
-            .unwrap();
+        let params = state.visual_params(Rectangle::new(Point::ORIGIN, Size::new(200.0, 100.0)));
         assert_eq!(params.bars.len(), 2);
         assert_eq!(params.bars[0].fills.len(), 2);
         assert_eq!(params.bars[1].fills.len(), 1);

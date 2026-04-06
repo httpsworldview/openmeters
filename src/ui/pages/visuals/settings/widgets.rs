@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-// Shared widgets and utilities for the settings panes
-
 use crate::ui::theme;
 use crate::visuals::spectrogram::processor::FrequencyScale;
 use iced::Length;

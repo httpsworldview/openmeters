@@ -3,23 +3,17 @@
 
 pub mod musical;
 
-// Default sample rate (Hz) used throughout the audio pipeline.
-// we automatically detect and apply actual rates, this exists
-// mainly as a default during init and a fallback.
+// Fallback rate during init; actual rate is detected from the audio stream.
 pub const DEFAULT_SAMPLE_RATE: f32 = 48_000.0;
 
-// decibel conversion constants/utils
-
-// Floor value (dB) below which magnitudes are clamped.
 pub const DB_FLOOR: f32 = -140.0;
 
-// Minimum power value to avoid log(0) in dB conversions.
+// Avoids log(0) in dB conversions.
 const POWER_EPSILON: f32 = 1.0e-20;
 
-// Natural log to decibel conversion factor: 10 / ln(10) ~= 4.342944819.
+// 10 / ln(10) ~= 4.342944819.
 pub const LN_TO_DB: f32 = 4.342_944_8;
 
-// Convert power (magnitude squared) to decibels with a custom floor.
 #[inline]
 pub fn power_to_db(power: f32, floor: f32) -> f32 {
     if power > POWER_EPSILON {
@@ -81,26 +75,22 @@ pub fn remove_dc(buffer: &mut [f32]) {
     }
 }
 
-// Convert dB to linear power: 10^(db/10).
 #[inline]
 pub fn db_to_power(db: f32) -> f32 {
     const DB_TO_LOG2: f32 = 0.1 * core::f32::consts::LOG2_10;
     (db * DB_TO_LOG2).exp2()
 }
 
-// Convert frequency in Hz to mel scale.
 #[inline]
 pub fn hz_to_mel(hz: f32) -> f32 {
     2595.0 * (1.0 + hz / 700.0).log10()
 }
 
-// Convert mel scale to frequency in Hz.
 #[inline]
 pub fn mel_to_hz(mel: f32) -> f32 {
     700.0 * (10.0f32.powf(mel / 2595.0) - 1.0)
 }
 
-// Copy from VecDeque to a contiguous slice, handling wraparound.
 #[inline]
 pub fn copy_from_deque(dst: &mut [f32], src: &std::collections::VecDeque<f32>) {
     let len = dst.len().min(src.len());
@@ -143,9 +133,9 @@ pub fn fmt_freq(f: f32) -> String {
     match f {
         f if f >= 10_000.0 => format!("{:.0} kHz", f / 1000.0),
         f if f >= 1_000.0 => format!("{:.1} kHz", f / 1000.0),
-        f if f >= 100.0 => format!("{:.0} Hz", f),
-        f if f >= 10.0 => format!("{:.1} Hz", f),
-        _ => format!("{:.2} Hz", f),
+        f if f >= 100.0 => format!("{f:.0} Hz"),
+        f if f >= 10.0 => format!("{f:.1} Hz"),
+        _ => format!("{f:.2} Hz"),
     }
 }
 

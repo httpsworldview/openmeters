@@ -48,7 +48,6 @@ impl WaveformParams {
     }
 }
 
-// Normalize and clamp a min/max pair, ensuring min <= max.
 #[inline]
 fn normalize_sample(min: f32, max: f32) -> (f32, f32) {
     let (lo, hi) = if min <= max { (min, max) } else { (max, min) };
@@ -75,7 +74,6 @@ impl WaveformPrimitive {
         let (channels, columns) = (params.channels.max(1), params.columns);
         let total = channels * columns;
 
-        // Validate data
         let valid = (columns == 0
             || (params.samples.len() >= total && params.colors.len() >= total))
             && (columns > 0 || params.preview_active());
@@ -92,7 +90,6 @@ impl WaveformPrimitive {
         };
         let right_edge = params.bounds.x + params.bounds.width;
 
-        // Channel layout calculations
         let v_pad = params.vertical_padding.max(0.0);
         let gap = params.channel_gap.max(0.0);
         let usable_h =

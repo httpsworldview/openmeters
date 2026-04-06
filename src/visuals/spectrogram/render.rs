@@ -1,7 +1,5 @@
-// SPADIX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
-
-// Spectrogram rendering pipeline for GPU-accelerated time-frequency visualization.
 
 use bytemuck::{Pod, Zeroable};
 use iced::Rectangle;
@@ -545,8 +543,14 @@ impl Resources {
             mapped_at_creation: false,
         });
         let (magnitude_tex, magnitude_view, magnitude_cap) = create_magnitude(device, w, h);
-        let (palette_tex, palette_view) = create_palette(device);
-        let (tilt_tex, tilt_view) = create_tilt_texture(device, h);
+        let (palette_tex, palette_view) = create_1d_texture(
+            device,
+            "Spectrogram palette",
+            PALETTE_LUT_SIZE,
+            wgpu::TextureFormat::Rgba8Unorm,
+        );
+        let (tilt_tex, tilt_view) =
+            create_1d_texture(device, "Spectrogram tilt", h, wgpu::TextureFormat::R32Float);
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("Spectrogram sampler"),
             mag_filter: wgpu::FilterMode::Linear,
@@ -628,7 +632,12 @@ impl Resources {
         self.magnitude_view = self.magnitude_tex.create_view(&Default::default());
         self.magnitude_cap = (tw, th);
         if th != self.tilt_cap {
-            (self.tilt_tex, self.tilt_view) = create_tilt_texture(device, th);
+            (self.tilt_tex, self.tilt_view) = create_1d_texture(
+                device,
+                "Spectrogram tilt",
+                th,
+                wgpu::TextureFormat::R32Float,
+            );
             self.tilt_cap = th;
             self.tilt_cache = None;
         }
@@ -747,24 +756,6 @@ fn create_magnitude(
     });
     let view = tex.create_view(&Default::default());
     (tex, view, (w.max(1), h.max(1)))
-}
-
-fn create_palette(device: &wgpu::Device) -> (wgpu::Texture, wgpu::TextureView) {
-    create_1d_texture(
-        device,
-        "Spectrogram palette",
-        PALETTE_LUT_SIZE,
-        wgpu::TextureFormat::Rgba8Unorm,
-    )
-}
-
-fn create_tilt_texture(device: &wgpu::Device, height: u32) -> (wgpu::Texture, wgpu::TextureView) {
-    create_1d_texture(
-        device,
-        "Spectrogram tilt",
-        height,
-        wgpu::TextureFormat::R32Float,
-    )
 }
 
 fn create_1d_texture(

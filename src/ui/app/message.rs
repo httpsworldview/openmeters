@@ -172,7 +172,6 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
             app.visual_manager.borrow_mut().ingest_samples(&samples);
             app.sync_all_windows()
         }
-        Message::AudioFrame(_) | Message::WindowOpened => Task::none(),
         Message::WindowClosed(window_id) => app.on_window_closed(window_id),
         Message::WindowFocused(id) => {
             app.focused_window = Some(id);
@@ -182,7 +181,7 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
             if let Some((wid, panel)) = app.settings_window.as_mut()
                 && *wid == window_id
             {
-                panel.handle(&settings_msg, &app.visual_manager, &app.settings_handle)
+                panel.handle(&settings_msg, &app.visual_manager, &app.settings_handle);
             }
             Task::none()
         }
@@ -220,8 +219,8 @@ pub(super) fn view(app: &UiApp, window_id: window::Id) -> Element<'_, Message> {
         .into();
         return content;
     }
-    app.popout_windows
-        .get(&window_id)
-        .map(|popout| popout.view().map(Message::Visuals))
-        .unwrap_or_else(|| fill!(text("")).into())
+    app.popout_windows.get(&window_id).map_or_else(
+        || fill!(text("")).into(),
+        |popout| popout.view().map(Message::Visuals),
+    )
 }

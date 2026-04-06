@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-// Pure color math and gradient utilities.
-
 use iced::Color;
 
 #[inline]
@@ -60,7 +58,6 @@ pub fn color_to_rgba(color: Color) -> [f32; 4] {
     [color.r, color.g, color.b, color.a]
 }
 
-// Samples a gradient at position `t` (0.0 to 1.0) using Oklch interpolation.
 #[inline]
 pub fn sample_gradient(palette: &[Color], t: f32) -> Color {
     let n = palette.len();

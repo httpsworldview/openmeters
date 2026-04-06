@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-// Main application logic.
-
-// Wraps content in a container that expands to fill available space.
 macro_rules! fill {
     ($e:expr) => {
         container($e).width(Length::Fill).height(Length::Fill)
@@ -340,8 +337,7 @@ impl UiApp {
                 container(
                     row(toast_msgs
                         .iter()
-                        .map(|m| container(text(*m).size(11)).padding([2, 6]).into())
-                        .collect::<Vec<_>>())
+                        .map(|m| container(text(*m).size(11)).padding([2, 6]).into()))
                     .spacing(12),
                 )
                 .width(Length::Fill)

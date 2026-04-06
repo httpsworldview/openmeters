@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-// Rendering code for the loudness meters.
-
 use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
 

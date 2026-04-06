@@ -22,16 +22,6 @@ pub enum PortDirection {
     Unknown,
 }
 
-impl PortDirection {
-    fn from_str(value: &str) -> Self {
-        match value {
-            s if s.eq_ignore_ascii_case("in") => Self::Input,
-            s if s.eq_ignore_ascii_case("out") => Self::Output,
-            _ => Self::Unknown,
-        }
-    }
-}
-
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct GraphPort {
     pub global_id: u32,
@@ -52,9 +42,11 @@ impl GraphPort {
             global_id: global.id,
             port_id: parse(*PORT_ID, "port.id")?,
             node_id: parse(*NODE_ID, "node.id")?,
-            direction: get(*PORT_DIRECTION, "port.direction")
-                .map(|d| PortDirection::from_str(d))
-                .unwrap_or_default(),
+            direction: match get(*PORT_DIRECTION, "port.direction").map(String::as_str) {
+                Some(s) if s.eq_ignore_ascii_case("in") => PortDirection::Input,
+                Some(s) if s.eq_ignore_ascii_case("out") => PortDirection::Output,
+                _ => PortDirection::Unknown,
+            },
             channel: get(*AUDIO_CHANNEL, "audio.channel").cloned(),
             is_monitor: get(*PORT_MONITOR, "port.monitor")
                 .is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1"),
@@ -74,7 +66,7 @@ fn derive_node_direction(
     media_class: Option<&str>,
     props: &HashMap<String, String>,
 ) -> NodeDirection {
-    let class = media_class.map(|c| c.to_ascii_lowercase());
+    let class = media_class.map(str::to_ascii_lowercase);
     let has = |needle| class.as_ref().is_some_and(|c| c.contains(needle));
 
     if has("sink") || has("output") {
@@ -194,7 +186,7 @@ impl RegistrySnapshot {
         let raw = target.and_then(|t| t.name.as_deref()).unwrap_or("(none)");
         let display = target
             .and_then(|t| self.resolve_default_target(t))
-            .map_or_else(|| raw.to_string(), |n| n.display_name());
+            .map_or_else(|| raw.to_string(), NodeInfo::display_name);
         TargetDescription {
             display,
             raw: raw.to_string(),
@@ -244,10 +236,10 @@ impl NodeInfo {
             .or(name.as_ref())
             .cloned();
         let media_class = props.get(*MEDIA_CLASS).cloned();
-        let is_virtual = props
-            .get("node.virtual")
-            .map(|v| v == "true")
-            .unwrap_or_else(|| name.as_deref() == Some("openmeters.sink"));
+        let is_virtual = props.get("node.virtual").map_or_else(
+            || name.as_deref() == Some("openmeters.sink"),
+            |v| v == "true",
+        );
 
         Self {
             id: global.id,

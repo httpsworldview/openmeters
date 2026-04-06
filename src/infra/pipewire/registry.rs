@@ -18,18 +18,10 @@ pub fn pair_ports_by_channel(
     sources.sort_by_key(|p| p.port_id);
     targets.sort_by_key(|p| p.port_id);
 
-    let is_known_channel = |c: &str| {
-        c.eq_ignore_ascii_case("FL")
-            || c.eq_ignore_ascii_case("FR")
-            || c.eq_ignore_ascii_case("FC")
-            || c.eq_ignore_ascii_case("LFE")
-            || c.eq_ignore_ascii_case("RL")
-            || c.eq_ignore_ascii_case("RR")
-            || c.eq_ignore_ascii_case("SL")
-            || c.eq_ignore_ascii_case("SR")
-            || c.eq_ignore_ascii_case("MONO")
+    const KNOWN_CHANNELS: [&str; 9] = ["FL", "FR", "FC", "LFE", "RL", "RR", "SL", "SR", "MONO"];
+    let valid_channel = |ch: Option<&str>| {
+        ch.is_some_and(|c| KNOWN_CHANNELS.iter().any(|k| c.eq_ignore_ascii_case(k)))
     };
-    let valid_channel = |ch: Option<&str>| ch.is_some_and(is_known_channel);
 
     let use_channel = sources.iter().all(|p| valid_channel(p.channel.as_deref()))
         && targets.iter().all(|p| valid_channel(p.channel.as_deref()));

@@ -98,10 +98,9 @@ impl PaletteSettings {
         let count = defaults.len();
         let colors_differ = colors_differ(colors, defaults);
         let sanitized_positions = color::sanitize_stop_positions(Some(positions), count);
-        let uniform = color::uniform_positions(count);
         let positions_differ = sanitized_positions
             .iter()
-            .zip(uniform.iter())
+            .zip(color::uniform_positions(count).iter())
             .any(|(a, b)| (a - b).abs() > 1e-4);
         let sanitized_spreads = color::sanitize_stop_spreads(Some(spreads), count);
         let spreads_differ = sanitized_spreads.iter().any(|s| (*s - 1.0).abs() > 1e-4);
@@ -111,17 +110,11 @@ impl PaletteSettings {
         } else {
             Vec::new()
         };
-        let stop_positions = if positions_differ && count > 2 {
-            Some(sanitized_positions[1..count - 1].to_vec())
-        } else {
-            None
-        };
-        let stop_spreads = spreads_differ.then_some(sanitized_spreads);
-
         (colors_differ || positions_differ || spreads_differ).then_some(Self {
             stops,
-            stop_positions,
-            stop_spreads,
+            stop_positions: (positions_differ && count > 2)
+                .then(|| sanitized_positions[1..count - 1].to_vec()),
+            stop_spreads: spreads_differ.then_some(sanitized_spreads),
         })
     }
 }

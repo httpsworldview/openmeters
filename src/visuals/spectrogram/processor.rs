@@ -125,7 +125,7 @@ impl FrequencyScale {
 
 impl std::fmt::Display for FrequencyScale {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
+        write!(f, "{self:?}")
     }
 }
 
@@ -140,6 +140,14 @@ pub enum WindowKind {
 }
 
 impl WindowKind {
+    pub const ALL: [Self; 5] = [
+        Self::Rectangular,
+        Self::Hann,
+        Self::Hamming,
+        Self::Blackman,
+        Self::BlackmanHarris,
+    ];
+
     pub(crate) fn coefficients(self, len: usize) -> Vec<f32> {
         if len <= 1 {
             return vec![1.0; len];
@@ -151,6 +159,18 @@ impl WindowKind {
             Self::Blackman => cosine_window(len, &[0.42, -0.5, 0.08]),
             Self::BlackmanHarris => cosine_window(len, &[0.35875, -0.48829, 0.14128, -0.01168]),
         }
+    }
+}
+
+impl std::fmt::Display for WindowKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Rectangular => "Rectangular",
+            Self::Hann => "Hann",
+            Self::Hamming => "Hamming",
+            Self::Blackman => "Blackman",
+            Self::BlackmanHarris => "Blackman-Harris",
+        })
     }
 }
 
@@ -254,6 +274,7 @@ impl FreqScaleParams {
         if bins == 0 || max <= min {
             return Self::default();
         }
+        let span = max - min;
         Self {
             min,
             max,
@@ -261,11 +282,7 @@ impl FreqScaleParams {
             inv_log: 1.0 / (max.ln() - min.ln()).max(1e-9),
             mel_min: hz_to_mel(min),
             inv_mel: 1.0 / (hz_to_mel(max) - hz_to_mel(min)).max(1e-9),
-            inv_lin: if max - min > f32::EPSILON {
-                1.0 / (max - min)
-            } else {
-                0.0
-            },
+            inv_lin: if span > f32::EPSILON { 1.0 / span } else { 0.0 },
             last_bin: (bins - 1) as f32,
         }
     }
@@ -673,8 +690,9 @@ impl SpectrogramProcessor {
 
     fn compute_reassigned(&mut self, sample_rate: f32, bin_count: usize) {
         let bin_hz = sample_rate / self.fft_size as f32;
-        let max_corr = if self.config.reassignment_max_correction_hz > 0.0 {
-            self.config.reassignment_max_correction_hz
+        let configured = self.config.reassignment_max_correction_hz;
+        let max_corr = if configured > 0.0 {
+            configured
         } else {
             bin_hz * OPTIMAL_FREQ_CORRECTION_RATIO
         };
@@ -777,6 +795,15 @@ impl SpectrogramProcessor {
         }
         self.reset = true;
     }
+
+    fn trim_history_to(&mut self, capacity: usize) {
+        self.history_capacity = capacity;
+        while self.history.len() > capacity
+            && let Some(column) = self.history.pop_front()
+        {
+            self.recycle(column);
+        }
+    }
 }
 
 impl AudioProcessor for SpectrogramProcessor {
@@ -848,24 +875,14 @@ impl Reconfigurable<SpectrogramConfig> for SpectrogramProcessor {
             self.reconfigure_grid();
             self.reset = true;
             if prev.history_length != cfg.history_length {
-                self.history_capacity = cfg.history_length;
-                while self.history.len() > self.history_capacity
-                    && let Some(column) = self.history.pop_front()
-                {
-                    self.recycle(column);
-                }
+                self.trim_history_to(cfg.history_length);
             }
         } else if mapping_changed {
             self.reconfigure_grid();
             self.grid.clear_buffers();
             self.reset = true;
         } else if prev.history_length != cfg.history_length {
-            self.history_capacity = cfg.history_length;
-            while self.history.len() > self.history_capacity
-                && let Some(column) = self.history.pop_front()
-            {
-                self.recycle(column);
-            }
+            self.trim_history_to(cfg.history_length);
         }
     }
 }
@@ -1019,6 +1036,7 @@ mod tests {
             history_length: 4,
             use_reassignment: true,
             zero_padding_factor: 1,
+            display_bin_count: 4096,
             ..Default::default()
         };
         let mut processor = SpectrogramProcessor::new(cfg);

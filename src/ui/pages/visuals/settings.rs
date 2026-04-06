@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-// Contains the settings panes for visual modules.
-
 macro_rules! settings_pane {
     (
         $pane:ident, $settings_ty:ty, $kind:expr, $palette_mod:path, $variant:ident,
@@ -126,13 +124,8 @@ pub(super) fn load_settings_and_palette<T: DeserializeOwned + Default + HasPalet
         .unwrap_or_default();
     let mut editor = PaletteEditor::new(Palette::new(defaults, labels));
     if let Some(stored) = settings.palette() {
-        editor.set_colors(
-            &stored
-                .stops
-                .iter()
-                .map(|c| (*c).into())
-                .collect::<Vec<Color>>(),
-        );
+        let stops: Vec<Color> = stored.stops.iter().copied().map(Into::into).collect();
+        editor.set_colors(&stops);
         editor.set_positions(stored.stop_positions.as_deref());
         editor.set_spreads(stored.stop_spreads.as_deref());
     }

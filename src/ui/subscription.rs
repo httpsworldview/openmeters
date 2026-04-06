@@ -9,7 +9,6 @@ use std::fmt;
 use std::hash::Hasher as _;
 use std::sync::Arc;
 
-// Build an `iced` subscription that forwards every value produced by the given async channel.
 pub fn channel_subscription<T>(receiver: Arc<AsyncReceiver<T>>) -> Subscription<T>
 where
     T: Send + 'static,
@@ -36,10 +35,7 @@ where
     fn stream(self: Box<Self>, _input: EventStream) -> futures::stream::BoxStream<'static, T> {
         let receiver = Arc::clone(&self.receiver);
         futures::stream::unfold(receiver, |receiver| async move {
-            match receiver.recv().await {
-                Ok(value) => Some((value, receiver)),
-                Err(_) => None,
-            }
+            receiver.recv().await.ok().map(|value| (value, receiver))
         })
         .boxed()
     }

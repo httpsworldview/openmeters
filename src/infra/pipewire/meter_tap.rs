@@ -81,7 +81,7 @@ impl SampleBatcher {
             return self.chunks.pop();
         }
 
-        let total_samples = self.chunks.iter().map(|c| c.len()).sum();
+        let total_samples = self.chunks.iter().map(std::vec::Vec::len).sum();
         let mut batch = self.reuse_buffer(total_samples);
 
         for chunk in self.chunks.drain(..) {
@@ -93,15 +93,14 @@ impl SampleBatcher {
     }
 
     fn reuse_buffer(&mut self, needed: usize) -> Vec<f32> {
-        if let Some(mut recycled) = self.recycle.pop() {
-            recycled.clear();
-            if recycled.capacity() < needed {
-                recycled.reserve(needed - recycled.capacity());
-            }
-            recycled
-        } else {
-            Vec::with_capacity(needed)
-        }
+        self.recycle.pop().map_or_else(
+            || Vec::with_capacity(needed),
+            |mut recycled| {
+                recycled.clear();
+                recycled.reserve(needed.saturating_sub(recycled.capacity()));
+                recycled
+            },
+        )
     }
 
     fn stash_recycle(recycle: &mut Vec<Vec<f32>>, mut chunk: Vec<f32>) {

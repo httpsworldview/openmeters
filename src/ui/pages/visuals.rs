@@ -90,10 +90,9 @@ impl VisualsPage {
             }
             VisualsMessage::PaneDragged(pane_grid::DragEvent::Dropped { .. }) => {
                 self.settings.update(|s| {
-                    s.set_visual_order(self.visual_manager.snapshot().slots.iter().map(|s| s.kind))
+                    s.set_visual_order(self.visual_manager.snapshot().slots.iter().map(|s| s.kind));
                 });
             }
-            VisualsMessage::PaneDragged(_) => {}
             VisualsMessage::PaneContextRequested(pane) => {
                 if let Some(p) = self.panes.as_ref().and_then(|ps| ps.get(pane)) {
                     return Task::done(VisualsMessage::SettingsRequested {
@@ -103,7 +102,9 @@ impl VisualsPage {
                 }
             }
             VisualsMessage::PaneHovered(pane) => self.hovered_pane = pane,
-            VisualsMessage::SettingsRequested { .. } | VisualsMessage::WindowDragRequested => {}
+            VisualsMessage::PaneDragged(_)
+            | VisualsMessage::SettingsRequested { .. }
+            | VisualsMessage::WindowDragRequested => {}
         }
         Task::none()
     }

@@ -29,12 +29,12 @@ vis_processor!(
 #[derive(Debug, Clone)]
 pub(crate) struct WaveformState {
     snapshot: WaveformSnapshot,
-    style: WaveformStyle,
+    pub(crate) style: WaveformStyle,
     key: u64,
-    channel_1: Channel,
-    channel_2: Channel,
-    color_mode: WaveformColorMode,
-    show_peak_history: bool,
+    pub(crate) channel_1: Channel,
+    pub(crate) channel_2: Channel,
+    pub(crate) color_mode: WaveformColorMode,
+    pub(crate) show_peak_history: bool,
 }
 
 impl WaveformState {
@@ -63,38 +63,8 @@ impl WaveformState {
         }
     }
 
-    pub fn channel_1(&self) -> Channel {
-        self.channel_1
-    }
-
-    pub fn channel_2(&self) -> Channel {
-        self.channel_2
-    }
-
-    pub fn set_color_mode(&mut self, mode: WaveformColorMode) {
-        self.color_mode = mode;
-    }
-
-    pub fn color_mode(&self) -> WaveformColorMode {
-        self.color_mode
-    }
-
-    pub fn set_show_peak_history(&mut self, show: bool) {
-        self.show_peak_history = show;
-    }
-
-    pub fn show_peak_history(&self) -> bool {
-        self.show_peak_history
-    }
-
     pub fn set_palette(&mut self, palette: &[Color; 9]) {
-        if !color::palettes_equal(&self.style.palette, palette) {
-            self.style.palette = *palette;
-        }
-    }
-
-    pub fn palette(&self) -> &[Color; 9] {
-        &self.style.palette
+        self.style.palette = *palette;
     }
 
     pub fn visual_params(&self, bounds: iced::Rectangle) -> Option<WaveformParams> {
@@ -294,7 +264,7 @@ pub(crate) struct WaveformStyle {
     pub vertical_padding: f32,
     pub channel_gap: f32,
     pub amplitude_scale: f32,
-    pub palette: [Color; 9],
+    pub(crate) palette: [Color; 9],
 }
 
 impl Default for WaveformStyle {

@@ -84,12 +84,6 @@ vis_processor!(
     sync_rate
 );
 
-impl std::fmt::Debug for SpectrumProcessor {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SpectrumProcessor").finish_non_exhaustive()
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SpectrumStyle {
     pub min_db: f32,
@@ -196,13 +190,7 @@ impl SpectrumState {
     }
 
     pub fn set_palette(&mut self, palette: &[Color; 6]) {
-        if !color::palettes_equal(&self.style.spectrum_palette, palette) {
-            self.style.spectrum_palette = *palette;
-        }
-    }
-
-    pub fn palette(&self) -> &[Color; 6] {
-        &self.style.spectrum_palette
+        self.style.spectrum_palette = *palette;
     }
 
     pub fn apply_snapshot(&mut self, snap: &SpectrumSnapshot) {
@@ -236,44 +224,33 @@ impl SpectrumState {
         build_points(&self.style, &mut w, &mut u, res, &scale, snap);
 
         if self.style.smoothing_radius > 0 && self.style.smoothing_passes > 0 {
-            smooth(
-                &mut w[..],
-                self.style.smoothing_radius,
-                self.style.smoothing_passes,
-                &mut self.scratch,
-            );
-            smooth(
-                &mut u[..],
-                self.style.smoothing_radius,
-                self.style.smoothing_passes,
-                &mut self.scratch,
-            );
+            let (r, p) = (self.style.smoothing_radius, self.style.smoothing_passes);
+            smooth(&mut w, r, p, &mut self.scratch);
+            smooth(&mut u, r, p, &mut self.scratch);
         }
         if self.style.reverse_frequency {
-            w.reverse();
-            u.reverse();
-            reindex(&mut w[..]);
-            reindex(&mut u[..]);
+            for buf in [&mut w, &mut u] {
+                buf.reverse();
+                reindex(&mut buf[..]);
+            }
         }
 
         self.weighted = Arc::from(w);
         self.unweighted = Arc::from(u);
 
         self.grid = if self.style.show_grid {
-            let mut v = Vec::new();
-            for gl in GRID_LABELS.iter() {
-                if gl.freq < min_f || gl.freq > max_f {
-                    continue;
-                }
-                let mut p = scale.pos_of(self.style.frequency_scale, gl.freq);
-                if self.style.reverse_frequency {
-                    p = 1.0 - p;
-                }
-                if p.is_finite() {
-                    v.push((p.clamp(0.0, 1.0), gl.text.clone(), gl.importance, gl.size));
-                }
-            }
-            Arc::from(v)
+            GRID_LABELS
+                .iter()
+                .filter(|gl| gl.freq >= min_f && gl.freq <= max_f)
+                .filter_map(|gl| {
+                    let mut p = scale.pos_of(self.style.frequency_scale, gl.freq);
+                    if self.style.reverse_frequency {
+                        p = 1.0 - p;
+                    }
+                    p.is_finite()
+                        .then(|| (p.clamp(0.0, 1.0), gl.text.clone(), gl.importance, gl.size))
+                })
+                .collect()
         } else {
             Arc::from([])
         };
@@ -312,16 +289,12 @@ impl SpectrumState {
     fn fade_peak(&mut self, incoming: Option<PeakLabel>) {
         match (incoming, &mut self.peak) {
             (Some(new), Some(p)) => {
-                p.text = new.text;
-                p.x = new.x;
-                p.y = new.y;
-                p.opacity = (p.opacity + (1.0 - p.opacity) * 0.35).min(1.0);
+                (p.text, p.x, p.y) = (new.text, new.x, new.y);
+                p.opacity = (0.65 * p.opacity + 0.35).min(1.0);
             }
-            (Some(new), None) => {
-                self.peak = Some(new);
-            }
+            (Some(new), None) => self.peak = Some(new),
             (None, Some(p)) => {
-                p.opacity += (0.0 - p.opacity) * 0.12;
+                p.opacity *= 0.88;
                 if p.opacity < 0.01 {
                     self.peak = None;
                 }
@@ -335,10 +308,7 @@ impl SpectrumState {
     }
 
     pub fn peak(&self) -> Option<&PeakLabel> {
-        self.style
-            .show_peak_label
-            .then_some(self.peak.as_ref())
-            .flatten()
+        self.peak.as_ref().filter(|_| self.style.show_peak_label)
     }
 
     fn visual_params(&self, bounds: Rectangle, theme: &iced::Theme) -> Option<SpectrumParams> {
@@ -560,36 +530,34 @@ fn draw_grid(
         color::with_alpha(pal.background.base.text, 0.25),
         color::with_alpha(pal.background.base.text, 0.75),
     );
+    let label_x = |x: f32, sz_width: f32| -> f32 {
+        (x - sz_width * 0.5).clamp(b.x + 6.0, (b.x + b.width - 6.0 - sz_width).max(b.x + 6.0))
+    };
     let cands: Vec<_> = lines
         .iter()
         .filter_map(|(pos, lbl, imp, sz)| {
             let x = b.x + b.width * pos;
             (x >= b.x - 1.0 && x <= b.x + b.width + 1.0 && sz.width > 0.0 && sz.height > 0.0)
-                .then_some((x, lbl, *imp, *sz))
+                .then_some((x, lbl, *imp, *sz, label_x(x, sz.width)))
         })
         .collect();
-    let mut acc = Vec::with_capacity(cands.len());
+
+    // Select non-overlapping labels in importance order.
+    let mut acc: Vec<usize> = Vec::with_capacity(cands.len());
     let mut indices: Vec<usize> = (0..cands.len()).collect();
     indices.sort_by_key(|&i| cands[i].2);
-
-    let bounds = |i| {
-        let (x, _, _, sz): (f32, &String, u8, Size) = cands[i];
-        let l =
-            (x - sz.width * 0.5).clamp(b.x + 6.0, (b.x + b.width - 6.0 - sz.width).max(b.x + 6.0));
-        (l, l + sz.width + 6.0)
-    };
-
     for i in indices {
-        let (l, r) = bounds(i);
-        if !acc.iter().any(|&j| {
-            let (ol, or) = bounds(j);
-            l < or && r > ol
-        }) {
+        let (l, r) = (cands[i].4, cands[i].4 + cands[i].3.width + 6.0);
+        let overlaps = acc
+            .iter()
+            .any(|&j| l < cands[j].4 + cands[j].3.width + 6.0 && r > cands[j].4);
+        if !overlaps {
             acc.push(i);
         }
     }
+
     for &i in &acc {
-        let (x, lbl, _, sz) = &cands[i];
+        let (x, lbl, _, sz, tx) = &cands[i];
         let (ty, lt) = (b.y + 6.0, b.y + 6.0 + sz.height + 6.0);
         let lh = (b.y + b.height - lt).max(0.0);
         if lh > 0.0 {
@@ -606,13 +574,12 @@ fn draw_grid(
                 Background::Color(lc),
             );
         }
-        let tx =
-            (x - sz.width * 0.5).clamp(b.x + 6.0, (b.x + b.width - 6.0 - sz.width).max(b.x + 6.0));
+        let pt = Point::new(*tx, ty);
         r.fill_text(
             crate::visuals::make_text(lbl, 10.0, *sz),
-            Point::new(tx, ty),
+            pt,
             tc,
-            Rectangle::new(Point::new(tx, ty), *sz),
+            Rectangle::new(pt, *sz),
         );
     }
 }
@@ -637,12 +604,11 @@ fn draw_peak(r: &mut iced::Renderer, th: &iced::Theme, b: Rectangle, pk: &PeakLa
         Point::new(tx - 4.0, ty - 4.0),
         Size::new(sz.width + 8.0, sz.height + 8.0),
     );
-    let mut bdr = iced::Border {
-        color: crate::ui::theme::BORDER_SUBTLE,
+    let bdr = iced::Border {
+        color: color::with_alpha(crate::ui::theme::BORDER_SUBTLE, pk.opacity),
         width: 1.0,
         radius: 0.0.into(),
     };
-    bdr.color = color::with_alpha(bdr.color, pk.opacity);
     let pal = th.extended_palette();
     r.fill_quad(
         Quad {

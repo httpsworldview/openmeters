@@ -142,12 +142,6 @@ impl VecTransform {
     }
 }
 
-impl From<StereometerParams> for StereometerPrimitive {
-    fn from(p: StereometerParams) -> Self {
-        Self(p)
-    }
-}
-
 impl StereometerPrimitive {
     pub fn new(params: StereometerParams) -> Self {
         Self(params)
@@ -163,8 +157,19 @@ impl StereometerPrimitive {
         const SEGMENTS: usize = 16;
         const WIDTH: f32 = 1.0;
         const CORNERS: [(f32, f32); 4] = [(1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0)];
+        const AXES: [((f32, f32), (f32, f32)); 2] =
+            [((1.0, 1.0), (-1.0, -1.0)), ((1.0, -1.0), (-1.0, 1.0))];
 
         let mut v = Vec::new();
+        let mut draw_line = |(ax, ay): (f32, f32), (bx, by): (f32, f32)| {
+            for seg in 0..SEGMENTS {
+                let t0 = seg as f32 / SEGMENTS as f32;
+                let t1 = (seg + 1) as f32 / SEGMENTS as f32;
+                let p0 = t.project(ax + (bx - ax) * t0, ay + (by - ay) * t0);
+                let p1 = t.project(ax + (bx - ax) * t1, ay + (by - ay) * t1);
+                v.extend(line_vertices(p0, p1, grid_color, grid_color, WIDTH, clip));
+            }
+        };
 
         for ring in 1..=RINGS {
             let r = match t.scale {
@@ -176,35 +181,15 @@ impl StereometerPrimitive {
                 }
             };
             for edge in 0..4 {
-                let (ax, ay) = (CORNERS[edge].0 * r, CORNERS[edge].1 * r);
                 let next = CORNERS[(edge + 1) % 4];
-                let (bx, by) = (next.0 * r, next.1 * r);
-                for seg in 0..SEGMENTS {
-                    let t0 = seg as f32 / SEGMENTS as f32;
-                    let t1 = (seg + 1) as f32 / SEGMENTS as f32;
-                    let p0 = t.project(ax + (bx - ax) * t0, ay + (by - ay) * t0);
-                    let p1 = t.project(ax + (bx - ax) * t1, ay + (by - ay) * t1);
-                    v.extend(line_vertices(p0, p1, grid_color, grid_color, WIDTH, clip));
-                }
+                draw_line(
+                    (CORNERS[edge].0 * r, CORNERS[edge].1 * r),
+                    (next.0 * r, next.1 * r),
+                );
             }
         }
-
-        const AXES: [((f32, f32), (f32, f32)); 2] =
-            [((1.0, 1.0), (-1.0, -1.0)), ((1.0, -1.0), (-1.0, 1.0))];
         for (start, end) in AXES {
-            for seg in 0..SEGMENTS {
-                let t0 = seg as f32 / SEGMENTS as f32;
-                let t1 = (seg + 1) as f32 / SEGMENTS as f32;
-                let p0 = t.project(
-                    start.0 + (end.0 - start.0) * t0,
-                    start.1 + (end.1 - start.1) * t0,
-                );
-                let p1 = t.project(
-                    start.0 + (end.0 - start.0) * t1,
-                    start.1 + (end.1 - start.1) * t1,
-                );
-                v.extend(line_vertices(p0, p1, grid_color, grid_color, WIDTH, clip));
-            }
+            draw_line(start, end);
         }
 
         v
@@ -305,7 +290,7 @@ impl StereometerPrimitive {
             if is_single {
                 p.corr_trail.get(i).copied().unwrap_or(0.0)
             } else {
-                p.band_trail.get(i).map(|b| b[band]).unwrap_or(0.0)
+                p.band_trail.get(i).map_or(0.0, |b| b[band])
             }
         };
         let color_for = |band: usize, value: f32| {

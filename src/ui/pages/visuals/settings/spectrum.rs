@@ -129,7 +129,7 @@ impl SpectrumSettingsPane {
                     format!("{:.2}", self.avg_factor),
                     EXP_R,
                     AvgFactor,
-                ))
+                ));
             }
             AvgMode::PeakHold => {
                 avg_ctrl = avg_ctrl.push(labeled_slider(
@@ -138,7 +138,7 @@ impl SpectrumSettingsPane {
                     format!("{:.1} dB/s", self.peak_decay),
                     DECAY_R,
                     PeakDecay,
-                ))
+                ));
             }
             AvgMode::None => {}
         }

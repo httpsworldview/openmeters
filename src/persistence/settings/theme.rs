@@ -97,10 +97,10 @@ impl ThemeStore {
         }
         let path = self.theme_path(name);
         let content = fs::read_to_string(&path)
-            .map_err(|e| warn!("[theme] failed to read {path:?}: {e}"))
+            .inspect_err(|e| warn!("[theme] failed to read {path:?}: {e}"))
             .ok()?;
         serde_json::from_str(&content)
-            .map_err(|e| warn!("[theme] parse error in {path:?}: {e}"))
+            .inspect_err(|e| warn!("[theme] parse error in {path:?}: {e}"))
             .ok()
     }
 
@@ -163,13 +163,6 @@ mod tests {
         assert!(!loaded.palettes.contains_key(&VisualKind::Oscilloscope));
     }
 
-    fn choice(name: &str, builtin: bool) -> ThemeChoice {
-        ThemeChoice {
-            name: name.to_owned(),
-            builtin,
-        }
-    }
-
     #[test]
     fn list_sorted_with_default_first() {
         let dir = tempfile::tempdir().unwrap();
@@ -180,13 +173,13 @@ mod tests {
         fs::write(themes_dir.join("alpha.json"), "{}").unwrap();
 
         let names = store.list();
+        let mk = |n: &str, b| ThemeChoice {
+            name: n.to_owned(),
+            builtin: b,
+        };
         assert_eq!(
             names,
-            vec![
-                choice("default", true),
-                choice("alpha", false),
-                choice("zebra", false)
-            ]
+            vec![mk("default", true), mk("alpha", false), mk("zebra", false)]
         );
     }
 

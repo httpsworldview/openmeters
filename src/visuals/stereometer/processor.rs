@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-// Stereometer (vectorscope & correlation meter) DSP.
-
 use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::util::audio::{DEFAULT_SAMPLE_RATE, extend_interleaved_history};
 use std::collections::VecDeque;
@@ -54,17 +52,6 @@ pub struct StereometerSnapshot {
     pub band_correlation: BandCorrelation,
 }
 
-impl StereometerSnapshot {
-    fn prepare_xy_points(&mut self, capacity: usize) {
-        self.xy_points.clear();
-        self.xy_points.reserve(capacity);
-    }
-
-    fn push_xy_point(&mut self, left: f32, right: f32) {
-        self.xy_points.push((left, right));
-    }
-}
-
 // Linkwitz-Riley 4th-order crossover (two cascaded 2nd-order Butterworth).
 #[derive(Debug, Clone, Copy, Default)]
 struct LR4 {
@@ -103,7 +90,6 @@ impl LR4 {
     }
 }
 
-// EMA-based stereo correlation with continuous update.
 #[derive(Debug, Clone, Copy, Default)]
 struct Correlator {
     cross: f64,
@@ -146,17 +132,13 @@ pub struct StereometerProcessor {
 
 impl StereometerProcessor {
     pub fn new(config: StereometerConfig) -> Self {
-        let alpha = ema_alpha(config.sample_rate, config.correlation_window);
         Self {
-            config,
             snapshot: StereometerSnapshot::default(),
             history: VecDeque::new(),
             history_channels: 0,
             crossovers: Self::build_crossovers(config.sample_rate),
-            correlators: [Correlator {
-                alpha,
-                ..Default::default()
-            }; 4],
+            correlators: Self::fresh_correlators(config),
+            config,
         }
     }
 
@@ -167,6 +149,14 @@ impl StereometerProcessor {
             LR4::lowpass(sample_rate, MID_HIGH_HZ),
             LR4::lowpass(sample_rate, MID_HIGH_HZ),
         ]
+    }
+
+    fn fresh_correlators(config: StereometerConfig) -> [Correlator; 4] {
+        let alpha = ema_alpha(config.sample_rate, config.correlation_window);
+        [Correlator {
+            alpha,
+            ..Default::default()
+        }; 4]
     }
 
     pub fn config(&self) -> StereometerConfig {
@@ -214,7 +204,6 @@ impl AudioProcessor for StereometerProcessor {
             self.correlators[3].update(high_l, high_r);
         }
 
-        // Manage history buffer for XY display
         let frames = (self.config.sample_rate * self.config.segment_duration)
             .round()
             .max(1.0) as usize;
@@ -226,13 +215,13 @@ impl AudioProcessor for StereometerProcessor {
             return None;
         }
 
-        // Downsample to target point count
         let data = self.history.make_contiguous();
         let target = self.config.target_sample_count.clamp(1, frames);
-        self.snapshot.prepare_xy_points(target);
+        self.snapshot.xy_points.clear();
+        self.snapshot.xy_points.reserve(target);
         for i in 0..target {
             let idx = (i * frames / target) * channel_count;
-            self.snapshot.push_xy_point(data[idx], data[idx + 1]);
+            self.snapshot.xy_points.push((data[idx], data[idx + 1]));
         }
 
         self.snapshot.correlation = self.correlators[0].value();
@@ -246,15 +235,11 @@ impl AudioProcessor for StereometerProcessor {
     }
 
     fn reset(&mut self) {
-        let alpha = ema_alpha(self.config.sample_rate, self.config.correlation_window);
         self.snapshot = StereometerSnapshot::default();
         self.history.clear();
         self.history_channels = 0;
         self.crossovers = Self::build_crossovers(self.config.sample_rate);
-        self.correlators = [Correlator {
-            alpha,
-            ..Default::default()
-        }; 4];
+        self.correlators = Self::fresh_correlators(self.config);
     }
 }
 
