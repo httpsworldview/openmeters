@@ -124,7 +124,6 @@ impl SpectrogramSettingsPane {
         )]
         .spacing(8);
 
-
         column![
             section_title("Core controls"),
             core,

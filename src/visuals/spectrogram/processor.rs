@@ -693,9 +693,7 @@ impl SpectrogramProcessor {
 
             let freq = k_idx.mul_add(v_bin_hz, f_corr);
 
-            let final_mask = mask
-                & freq.simd_ge(v_min_hz)
-                & freq.simd_lt(v_max_hz);
+            let final_mask = mask & freq.simd_ge(v_min_hz) & freq.simd_lt(v_max_hz);
             if final_mask.none() {
                 continue;
             }
