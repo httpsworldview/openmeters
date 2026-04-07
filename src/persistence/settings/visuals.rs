@@ -232,7 +232,6 @@ visual_settings!(SpectrogramSettings from SpectrogramConfig {
     fft_size: usize, hop_size: usize, window: WindowKind, frequency_scale: FrequencyScale,
     use_reassignment: bool,
     zero_padding_factor: usize,
-    reassignment_max_correction_hz: f32,
 } extra {
     floor_db: f32 = -96.0,
     tilt_db: f32 = 0.0,

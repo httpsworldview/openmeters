@@ -34,9 +34,7 @@ use std::collections::VecDeque;
 use std::hash::Hash;
 use std::sync::RwLock;
 use std::sync::{Arc, OnceLock};
-use wide::{CmpGe, CmpGt, CmpLe, CmpLt, f32x8};
-
-const OPTIMAL_FREQ_CORRECTION_RATIO: f32 = 1.0;
+use wide::{CmpGe, CmpGt, CmpLt, f32x8};
 
 const OPTIMAL_TIME_SPREAD: f32 = 3.5;
 const OPTIMAL_TIME_HOPS_MIN: f32 = 2.0;
@@ -53,7 +51,6 @@ pub struct SpectrogramConfig {
     pub use_reassignment: bool,
     pub zero_padding_factor: usize,
     pub display_bin_count: usize,
-    pub reassignment_max_correction_hz: f32,
     pub reassignment_max_time_hops: f32,
 }
 
@@ -69,8 +66,7 @@ impl Default for SpectrogramConfig {
             use_reassignment: true,
             zero_padding_factor: 2,
             display_bin_count: 0, // immediately set to the height of the visual in logical pixels
-            reassignment_max_correction_hz: 0.0, // 0.0 = auto (OPTIMAL_FREQ_CORRECTION_RATIO * bin_hz)
-            reassignment_max_time_hops: 0.0,     // 0.0 = auto
+            reassignment_max_time_hops: 0.0, // 0.0 = auto
         }
     }
 }
@@ -421,41 +417,17 @@ impl Reassignment2DGrid {
         for i in 0..8 {
             let v = vals[i];
             if masks[i] != 0.0 && v > 0.0 && v.is_finite() && freqs[i].is_finite() {
-                self.deposit_bilinear(freqs[i], tcs[i], width, height, v);
+                self.deposit_nearest(freqs[i], tcs[i], width, height, v);
             }
         }
     }
 
     #[inline]
-    fn deposit_bilinear(&mut self, freq: f32, time: f32, width: i32, height: i32, val: f32) {
-        let stride = width as usize;
-        let f0 = freq.floor() as i32;
-        let t0 = time.floor() as i32;
-        let ff = freq - f0 as f32;
-        let tf = time - t0 as f32;
-
-        if f0 >= 0 && f0 + 1 < width && t0 >= 0 && t0 + 1 < height {
-            let base = t0 as usize * stride + f0 as usize;
-            let ff1 = 1.0 - ff;
-            let tf1 = 1.0 - tf;
-            self.grid[base] += val * ff1 * tf1;
-            self.grid[base + 1] += val * ff * tf1;
-            self.grid[base + stride] += val * ff1 * tf;
-            self.grid[base + stride + 1] += val * ff * tf;
-            return;
-        }
-
-        let weights = [
-            (1.0 - ff) * (1.0 - tf),
-            ff * (1.0 - tf),
-            (1.0 - ff) * tf,
-            ff * tf,
-        ];
-        let cells = [(f0, t0), (f0 + 1, t0), (f0, t0 + 1), (f0 + 1, t0 + 1)];
-        for (&(fi, ti), &w) in cells.iter().zip(&weights) {
-            if fi >= 0 && fi < width && ti >= 0 && ti < height {
-                self.grid[ti as usize * stride + fi as usize] += val * w;
-            }
+    fn deposit_nearest(&mut self, freq: f32, time: f32, width: i32, height: i32, val: f32) {
+        let fi = freq.round() as i32;
+        let ti = time.round() as i32;
+        if fi >= 0 && fi < width && ti >= 0 && ti < height {
+            self.grid[ti as usize * width as usize + fi as usize] += val;
         }
     }
 
@@ -689,12 +661,6 @@ impl SpectrogramProcessor {
 
     fn compute_reassigned(&mut self, sample_rate: f32, bin_count: usize) {
         let bin_hz = sample_rate / self.fft_size as f32;
-        let configured = self.config.reassignment_max_correction_hz;
-        let max_corr = if configured > 0.0 {
-            configured
-        } else {
-            bin_hz * OPTIMAL_FREQ_CORRECTION_RATIO
-        };
         let (min_hz, max_hz) = self.grid.frequency_range();
         let floor_linear = self.reassign.floor_linear;
         let inv_2pi = sample_rate / core::f32::consts::TAU;
@@ -703,7 +669,6 @@ impl SpectrogramProcessor {
         let v_floor = f32x8::splat(floor_linear);
         let v_bin_hz = f32x8::splat(bin_hz);
         let v_inv_2pi = f32x8::splat(inv_2pi);
-        let v_max_corr = f32x8::splat(max_corr);
         let v_min_hz = f32x8::splat(min_hz);
         let v_max_hz = f32x8::splat(max_hz);
 
@@ -729,7 +694,6 @@ impl SpectrogramProcessor {
             let freq = k_idx.mul_add(v_bin_hz, f_corr);
 
             let final_mask = mask
-                & f_corr.abs().simd_le(v_max_corr)
                 & freq.simd_ge(v_min_hz)
                 & freq.simd_lt(v_max_hz);
             if final_mask.none() {

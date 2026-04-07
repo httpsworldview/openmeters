@@ -23,7 +23,6 @@ const PIANO_ROLL_OVERLAY_OPTIONS: [PianoRollOverlay; 3] = [
 const FLOOR_DB_RANGE: SliderRange = SliderRange::new(-140.0, -1.0, 1.0);
 const TILT_DB_RANGE: SliderRange = SliderRange::new(-6.0, 6.0, 0.5);
 const ROTATION_RANGE: SliderRange = SliderRange::new(-1.0, 2.0, 1.0);
-const MAX_CORR_HZ_RANGE: SliderRange = SliderRange::new(0.0, 200.0, 1.0);
 settings_pane!(
     SpectrogramSettingsPane, SpectrogramSettings, VisualKind::Spectrogram,
     theme::spectrogram, Spectrogram,
@@ -40,7 +39,6 @@ pub enum Message {
     Window(WindowKind),
     FrequencyScale(FrequencyScale),
     UseReassignment(bool),
-    MaxCorrectionHz(f32),
     FloorDb(f32),
     TiltDb(f32),
     Rotation(f32),
@@ -119,27 +117,13 @@ impl SpectrogramSettingsPane {
                 Message::Rotation,
             ));
 
-        let mut adv = column![labeled_toggler(
+        let adv = column![labeled_toggler(
             "Time-frequency reassignment",
             s.use_reassignment,
             Message::UseReassignment
         )]
         .spacing(8);
-        if s.use_reassignment {
-            let corr_is_auto = !s.reassignment_max_correction_hz.is_finite()
-                || s.reassignment_max_correction_hz <= 0.0;
-            adv = adv.push(labeled_slider(
-                "Max correction",
-                s.reassignment_max_correction_hz,
-                if corr_is_auto {
-                    "Auto".to_string()
-                } else {
-                    format!("{:.0} Hz", s.reassignment_max_correction_hz)
-                },
-                MAX_CORR_HZ_RANGE,
-                Message::MaxCorrectionHz,
-            ));
-        }
+
 
         column![
             section_title("Core controls"),
@@ -165,9 +149,6 @@ impl SpectrogramSettingsPane {
             Message::Window(kind) => set_if_changed(&mut s.window, kind),
             Message::FrequencyScale(sc) => set_if_changed(&mut s.frequency_scale, sc),
             Message::UseReassignment(v) => set_if_changed(&mut s.use_reassignment, v),
-            Message::MaxCorrectionHz(v) => {
-                update_f32_range(&mut s.reassignment_max_correction_hz, v, MAX_CORR_HZ_RANGE)
-            }
             Message::FloorDb(v) => update_f32_range(&mut s.floor_db, v, FLOOR_DB_RANGE),
             Message::TiltDb(v) => update_f32_range(&mut s.tilt_db, v, TILT_DB_RANGE),
             Message::Rotation(v) => set_if_changed(&mut s.rotation, v.round() as i8),
