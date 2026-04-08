@@ -39,12 +39,13 @@ pull request!
         signal and autocorrelates it against a reference signal to
         find a stable trigger point.
     - [x] Ability to select the number of cycles to display (1-4)
-  - [x] Free-run mode - A more traditional oscilloscope with a robust
+  - [x] Zero-crossing - A more traditional oscilloscope with a robust
         zero-crossing trigger. Suitable for simple signals, but will
         jitter with complex and rapidly changing material.
 - [x] **spectrogram**
   - [x] Spectral reassignment for exceptionally sharp time and
         frequency resolution.
+	- [ ] Point-primitive rendering
   - [x] Note & frequency tool tips
   - [x] Piano roll overlay
   - [x] Ability to zoom & pan vertically
