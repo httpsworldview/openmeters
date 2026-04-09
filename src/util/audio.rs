@@ -82,13 +82,13 @@ pub fn db_to_power(db: f32) -> f32 {
 }
 
 #[inline]
-pub fn hz_to_mel(hz: f32) -> f32 {
-    2595.0 * (1.0 + hz / 700.0).log10()
+pub fn hz_to_erb_rate(hz: f32) -> f32 {
+    21.4 * (1.0 + hz / 228.8).log10()
 }
 
 #[inline]
-pub fn mel_to_hz(mel: f32) -> f32 {
-    700.0 * (10.0f32.powf(mel / 2595.0) - 1.0)
+pub fn erb_rate_to_hz(erb: f32) -> f32 {
+    228.8 * (10.0f32.powf(erb / 21.4) - 1.0)
 }
 
 #[inline]

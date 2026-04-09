@@ -141,14 +141,12 @@ visuals! {
         spectrogram::SpectrogramProcessor, SpectrogramState;
         settings_cfg::SpectrogramSettings, &palettes::spectrogram::COLORS;
         pre_ingest(p, s) {
-            let (vw, vh) = { let st = s.borrow(); (st.view_width, st.view_height) };
-            if vw > 0 && vh > 0 {
+            let vw = { s.borrow().view_width };
+            if vw > 0 {
                 let mut cfg = p.config();
                 let tw = (vw as usize).min(8192);
-                let th = (vh as usize).min(8192);
-                if cfg.history_length != tw || cfg.display_bin_count != th {
+                if cfg.history_length != tw {
                     cfg.history_length = tw;
-                    cfg.display_bin_count = th;
                     p.update_config(cfg);
                 }
             }

@@ -15,7 +15,7 @@ pub const HOP_DIVISORS: [usize; 7] = [4, 6, 8, 16, 32, 64, 128];
 pub const FREQ_SCALE_OPTIONS: [FrequencyScale; 3] = [
     FrequencyScale::Linear,
     FrequencyScale::Logarithmic,
-    FrequencyScale::Mel,
+    FrequencyScale::Erb,
 ];
 
 pub struct SliderRange {

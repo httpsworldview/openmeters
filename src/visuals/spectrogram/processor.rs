@@ -23,9 +23,10 @@
 
 use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::util::audio::{
-    DB_FLOOR, DEFAULT_SAMPLE_RATE, LN_TO_DB, copy_from_deque, db_to_power, hz_to_mel, mel_to_hz,
-    power_to_db,
+    DB_FLOOR, DEFAULT_SAMPLE_RATE, LN_TO_DB, copy_from_deque, db_to_power, erb_rate_to_hz,
+    hz_to_erb_rate,
 };
+use bytemuck::{Pod, Zeroable};
 use rustfft::num_complex::Complex32;
 use rustfft::{Fft, FftPlanner};
 use serde::{Deserialize, Serialize};
@@ -34,11 +35,23 @@ use std::collections::VecDeque;
 use std::hash::Hash;
 use std::sync::RwLock;
 use std::sync::{Arc, OnceLock};
-use wide::{CmpGe, CmpGt, CmpLt, f32x8};
+use wide::{CmpGe, CmpGt, f32x8};
 
-const OPTIMAL_TIME_SPREAD: f32 = 3.5;
-const OPTIMAL_TIME_HOPS_MIN: f32 = 2.0;
-const OPTIMAL_TIME_HOPS_MAX: f32 = 8.0;
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq)]
+pub struct SpectrogramPoint {
+    pub time_offset: f32,
+    pub freq_hz: f32,
+    pub magnitude_db: f32,
+}
+
+impl SpectrogramPoint {
+    pub const SENTINEL: Self = Self {
+        time_offset: 0.0,
+        freq_hz: 0.0,
+        magnitude_db: f32::NEG_INFINITY,
+    };
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct SpectrogramConfig {
@@ -50,8 +63,6 @@ pub struct SpectrogramConfig {
     pub history_length: usize,
     pub use_reassignment: bool,
     pub zero_padding_factor: usize,
-    pub display_bin_count: usize,
-    pub reassignment_max_time_hops: f32,
 }
 
 impl Default for SpectrogramConfig {
@@ -62,11 +73,9 @@ impl Default for SpectrogramConfig {
             hop_size: 64,
             window: WindowKind::Blackman,
             frequency_scale: FrequencyScale::default(),
-            history_length: 0, // immediately set to the width of the visual in logical pixels
+            history_length: 0,
             use_reassignment: true,
             zero_padding_factor: 2,
-            display_bin_count: 0, // immediately set to the height of the visual in logical pixels
-            reassignment_max_time_hops: 0.0, // 0.0 = auto
         }
     }
 }
@@ -77,7 +86,8 @@ pub enum FrequencyScale {
     Linear,
     #[default]
     Logarithmic,
-    Mel,
+    #[serde(alias = "mel")]
+    Erb,
 }
 
 impl FrequencyScale {
@@ -91,9 +101,9 @@ impl FrequencyScale {
                 // min/max are loop-invariant
                 min * (t * (max / min).max(1.0).ln()).exp()
             }
-            Self::Mel => {
-                let mel_min = hz_to_mel(min);
-                mel_to_hz(mel_min + (hz_to_mel(max) - mel_min) * t)
+            Self::Erb => {
+                let erb_min = hz_to_erb_rate(min);
+                erb_rate_to_hz(erb_min + (hz_to_erb_rate(max) - erb_min) * t)
             }
         }
     }
@@ -110,9 +120,9 @@ impl FrequencyScale {
                 }
                 (freq / min).ln() / ratio.ln()
             }
-            Self::Mel => {
-                let mel_min = hz_to_mel(min);
-                (hz_to_mel(freq) - mel_min) / (hz_to_mel(max) - mel_min).max(1e-6)
+            Self::Erb => {
+                let erb_min = hz_to_erb_rate(min);
+                (hz_to_erb_rate(freq) - erb_min) / (hz_to_erb_rate(max) - erb_min).max(1e-6)
             }
         }
     }
@@ -232,222 +242,9 @@ impl ReassignmentBuffers {
     }
 }
 
-#[derive(Clone, Copy, Default)]
-struct FreqScaleParams {
-    min: f32,
-    max: f32,
-    log_min: f32,
-    inv_log: f32,
-    mel_min: f32,
-    inv_mel: f32,
-    inv_lin: f32,
-    last_bin: f32,
-}
-
-impl FreqScaleParams {
-    fn compute(min: f32, max: f32, bins: usize) -> Self {
-        if bins == 0 || max <= min {
-            return Self::default();
-        }
-        let span = max - min;
-        Self {
-            min,
-            max,
-            log_min: min.ln(),
-            inv_log: 1.0 / (max.ln() - min.ln()).max(1e-9),
-            mel_min: hz_to_mel(min),
-            inv_mel: 1.0 / (hz_to_mel(max) - hz_to_mel(min)).max(1e-9),
-            inv_lin: if span > f32::EPSILON { 1.0 / span } else { 0.0 },
-            last_bin: (bins - 1) as f32,
-        }
-    }
-
-    #[inline]
-    fn hz_to_bin_simd(&self, hz: f32x8, scale: FrequencyScale) -> f32x8 {
-        let norm = match scale {
-            FrequencyScale::Linear => (hz - self.min) * self.inv_lin,
-            FrequencyScale::Logarithmic => (hz.ln() - self.log_min) * self.inv_log,
-            FrequencyScale::Mel => {
-                let mel = f32x8::splat(2595.0)
-                    * ((f32x8::splat(1.0) + hz / f32x8::splat(700.0)).ln()
-                        * f32x8::splat(core::f32::consts::LOG10_E));
-                (mel - self.mel_min) * self.inv_mel
-            }
-        };
-        (f32x8::splat(1.0) - norm) * self.last_bin
-    }
-}
-
-struct Reassignment2DGrid {
-    display_bins: usize,
-    max_hops: usize,
-    hop: usize,
-    cols: usize,
-    center: usize,
-    grid: Vec<f32>,
-    magnitudes: Vec<f32>,
-    scale: FrequencyScale,
-    params: FreqScaleParams,
-    bin_freqs: Arc<[f32]>,
-    min_hz: f32,
-    max_hz: f32,
-    enabled: bool,
-}
-
-impl Reassignment2DGrid {
-    fn new(cfg: &SpectrogramConfig) -> Self {
-        let mut grid = Self {
-            display_bins: 0,
-            max_hops: 1,
-            hop: cfg.hop_size,
-            cols: 3,
-            center: 1,
-            grid: vec![],
-            magnitudes: vec![],
-            scale: cfg.frequency_scale,
-            params: Default::default(),
-            bin_freqs: Arc::from([]),
-            min_hz: 0.0,
-            max_hz: 0.0,
-            enabled: false,
-        };
-        grid.reconfigure(cfg);
-        grid
-    }
-
-    fn reconfigure(&mut self, cfg: &SpectrogramConfig) {
-        let is_enabled = cfg.use_reassignment && cfg.display_bin_count > 0 && cfg.sample_rate > 0.0;
-        if !is_enabled {
-            self.enabled = false;
-            self.grid.clear();
-            return;
-        }
-
-        let bins = cfg.display_bin_count.max(2);
-        let hops = if cfg.reassignment_max_time_hops > 0.0 {
-            (cfg.reassignment_max_time_hops.ceil() as usize).max(1)
-        } else {
-            let overlap_ratio = cfg.fft_size as f32 / cfg.hop_size.max(1) as f32;
-            let window = WindowCache::get(cfg.window, cfg.fft_size);
-            let sigma_t_ratio = compute_sigma_t(&window) / cfg.fft_size.max(1) as f32;
-            let optimal = overlap_ratio * sigma_t_ratio * OPTIMAL_TIME_SPREAD;
-            optimal
-                .clamp(OPTIMAL_TIME_HOPS_MIN, OPTIMAL_TIME_HOPS_MAX)
-                .ceil() as usize
-        };
-        let cols = 2 * hops + 1;
-        let min = (cfg.sample_rate / cfg.fft_size.max(1) as f32).min(cfg.sample_rate * 0.5);
-        let max = (cfg.sample_rate * 0.5).max(min * 1.001);
-
-        if self.display_bins != bins
-            || self.scale != cfg.frequency_scale
-            || (self.min_hz - min).abs() > f32::EPSILON
-            || (self.max_hz - max).abs() > f32::EPSILON
-        {
-            self.params = FreqScaleParams::compute(min, max, bins);
-            self.bin_freqs = Self::compute_freqs(cfg.frequency_scale, bins, &self.params);
-        }
-        if self.display_bins != bins || self.cols != cols || self.grid.len() != bins * cols {
-            self.grid = vec![0.0; bins * cols];
-            self.magnitudes = vec![DB_FLOOR; bins];
-        }
-        self.display_bins = bins;
-        self.max_hops = hops;
-        self.hop = cfg.hop_size.max(1);
-        self.cols = cols;
-        self.center = hops;
-        self.scale = cfg.frequency_scale;
-        self.min_hz = min;
-        self.max_hz = max;
-        self.enabled = true;
-    }
-
-    fn compute_freqs(scale: FrequencyScale, bins: usize, params: &FreqScaleParams) -> Arc<[f32]> {
-        if bins == 0 {
-            return Arc::from([]);
-        }
-        let mut freqs: Vec<_> = (0..bins)
-            .map(|i| {
-                let t = i as f32 / (bins as f32 - 1.0);
-                scale.freq_at(params.min, params.max, t)
-            })
-            .collect();
-        freqs.reverse();
-        Arc::from(freqs)
-    }
-
-    #[inline]
-    fn accumulate_simd(&mut self, freq: f32x8, time: f32x8, pow: f32x8, mask: f32x8) {
-        let v_max_off = f32x8::splat(self.max_hops as f32);
-        let tc = (time * f32x8::splat(1.0 / self.hop as f32))
-            .max(-v_max_off)
-            .min(v_max_off)
-            + f32x8::splat(self.center as f32);
-
-        let freqs = freq.to_array();
-        let tcs = tc.to_array();
-        let pows = pow.to_array();
-        let masks = mask.to_array();
-        let (width, height) = (self.display_bins as i32, self.cols as i32);
-
-        for i in 0..8 {
-            let v = pows[i];
-            if masks[i] != 0.0 && v > 0.0 && v.is_finite() && freqs[i].is_finite() {
-                self.deposit_nearest(freqs[i], tcs[i], width, height, v);
-            }
-        }
-    }
-
-    #[inline]
-    fn deposit_nearest(&mut self, freq: f32, time: f32, width: i32, height: i32, val: f32) {
-        let fi = freq.round() as i32;
-        let ti = time.round() as i32;
-        if fi >= 0 && fi < width && ti >= 0 && ti < height {
-            self.grid[ti as usize * width as usize + fi as usize] += val;
-        }
-    }
-
-    fn advance(&mut self) {
-        for (mag, &raw) in self.magnitudes.iter_mut().zip(&self.grid) {
-            *mag = power_to_db(raw, DB_FLOOR);
-        }
-        self.grid.rotate_left(self.display_bins);
-        self.grid[(self.cols - 1) * self.display_bins..].fill(0.0);
-    }
-
-    fn is_enabled(&self) -> bool {
-        self.enabled
-    }
-
-    fn output_bin_count(&self) -> usize {
-        self.display_bins
-    }
-
-    fn magnitudes(&self) -> &[f32] {
-        &self.magnitudes
-    }
-
-    fn bin_frequencies(&self) -> Arc<[f32]> {
-        self.bin_freqs.clone()
-    }
-
-    fn frequency_range(&self) -> (f32, f32) {
-        (self.min_hz, self.max_hz)
-    }
-
-    fn hz_to_bin_simd(&self, hz: f32x8) -> f32x8 {
-        self.params.hz_to_bin_simd(hz, self.scale)
-    }
-
-    fn clear_buffers(&mut self) {
-        self.grid.fill(0.0);
-        self.magnitudes.fill(DB_FLOOR);
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct SpectrogramColumn {
-    pub magnitudes_db: Arc<[f32]>,
+    pub points: Vec<SpectrogramPoint>,
 }
 
 #[derive(Debug, Clone)]
@@ -456,9 +253,8 @@ pub struct SpectrogramUpdate {
     pub sample_rate: f32,
     pub frequency_scale: FrequencyScale,
     pub history_length: usize,
-    pub display_height: usize,
     pub reset: bool,
-    pub display_bins_hz: Option<Arc<[f32]>>,
+    pub points_per_column: usize,
     pub new_columns: Vec<SpectrogramColumn>,
 }
 
@@ -477,12 +273,10 @@ pub struct SpectrogramProcessor {
     scratch: Vec<Complex32>,
     magnitudes: Vec<f32>,
     reassign: ReassignmentBuffers,
-    grid: Reassignment2DGrid,
     bin_norm: Vec<f32>,
     audio_buffer: VecDeque<f32>,
-    history: VecDeque<SpectrogramColumn>,
-    history_capacity: usize,
-    pool: Vec<Arc<[f32]>>,
+    points_buf: Vec<SpectrogramPoint>,
+    bin_hz: f32,
     reset: bool,
 }
 
@@ -506,16 +300,13 @@ impl SpectrogramProcessor {
             scratch: vec![],
             magnitudes: vec![],
             reassign: ReassignmentBuffers::default(),
-            grid: Reassignment2DGrid::new(&cfg),
             bin_norm: vec![],
             audio_buffer: VecDeque::new(),
-            history: VecDeque::with_capacity(cfg.history_length),
-            history_capacity: cfg.history_length,
-            pool: vec![],
+            points_buf: vec![],
+            bin_hz: 0.0,
             reset: true,
         };
         processor.rebuild_fft();
-        processor.reconfigure_grid();
         processor
     }
 
@@ -552,22 +343,9 @@ impl SpectrogramProcessor {
         self.bin_norm =
             crate::util::audio::compute_fft_bin_normalization(&self.window, self.fft_size);
         self.audio_buffer.truncate(self.window_size * 2);
-    }
-
-    fn reconfigure_grid(&mut self) {
-        self.grid.reconfigure(&self.config);
-        let out_bins = if self.grid.is_enabled() {
-            self.grid.output_bin_count()
-        } else {
-            self.fft_size / 2 + 1
-        };
-        self.pool.retain(|b| b.len() == out_bins);
-    }
-
-    fn rebuild_all(&mut self) {
-        self.rebuild_fft();
-        self.reconfigure_grid();
-        self.clear_history();
+        self.bin_hz = self.config.sample_rate / self.fft_size.max(1) as f32;
+        self.points_buf
+            .resize(bin_count, SpectrogramPoint::SENTINEL);
     }
 
     fn process_ready_windows(&mut self) -> Vec<SpectrogramColumn> {
@@ -575,8 +353,7 @@ impl SpectrogramProcessor {
             return vec![];
         }
         let (hop_size, sample_rate) = (self.config.hop_size, self.config.sample_rate);
-        let reassignment_enabled =
-            self.config.use_reassignment && sample_rate > f32::EPSILON && self.grid.is_enabled();
+        let reassignment_enabled = self.config.use_reassignment && sample_rate > f32::EPSILON;
         let bin_count = self.fft_size / 2 + 1;
         let mut output = Vec::new();
 
@@ -584,7 +361,7 @@ impl SpectrogramProcessor {
             copy_from_deque(&mut self.real[..self.window_size], &self.audio_buffer);
             crate::util::audio::remove_dc(&mut self.real[..self.window_size]);
 
-            let mags = if reassignment_enabled {
+            if reassignment_enabled {
                 hilbert_transform(
                     &self.real[..self.window_size],
                     &mut self.analytic,
@@ -616,8 +393,7 @@ impl SpectrogramProcessor {
                     &*self.fft,
                     &mut self.scratch,
                 );
-                self.compute_reassigned(sample_rate, bin_count);
-                Self::arc_from_pool(&mut self.pool, self.grid.magnitudes())
+                self.emit_reassigned_points(sample_rate, hop_size, bin_count);
             } else {
                 for (c, (&r, &w)) in self
                     .complex_buf
@@ -632,15 +408,18 @@ impl SpectrogramProcessor {
                 self.spectrum
                     .copy_from_slice(&self.complex_buf[..bin_count]);
                 self.compute_standard_magnitudes(bin_count);
-                Self::arc_from_pool(&mut self.pool, &self.magnitudes)
+                let bin_hz = self.bin_hz;
+                for (k, pt) in self.points_buf.iter_mut().enumerate() {
+                    *pt = SpectrogramPoint {
+                        time_offset: 0.0,
+                        freq_hz: k as f32 * bin_hz,
+                        magnitude_db: self.magnitudes[k],
+                    };
+                }
             };
 
-            let col = SpectrogramColumn {
-                magnitudes_db: mags.clone(),
-            };
-            self.push_history(col);
             output.push(SpectrogramColumn {
-                magnitudes_db: mags,
+                points: self.points_buf.clone(),
             });
             self.audio_buffer
                 .drain(..hop_size.min(self.audio_buffer.len()));
@@ -666,11 +445,13 @@ impl SpectrogramProcessor {
         }
     }
 
-    fn compute_reassigned(&mut self, sample_rate: f32, bin_count: usize) {
-        let bin_hz = sample_rate / self.fft_size as f32;
-        let (min_hz, max_hz) = self.grid.frequency_range();
+    fn emit_reassigned_points(&mut self, sample_rate: f32, hop_size: usize, bin_count: usize) {
+        let bin_hz = self.bin_hz;
+        let min_hz = bin_hz;
+        let max_hz = sample_rate * 0.5;
         let floor_linear = self.reassign.floor_linear;
         let inv_2pi = sample_rate / core::f32::consts::TAU;
+        let inv_hop = 1.0 / hop_size.max(1) as f32;
 
         let v_eps = f32x8::splat(f32::MIN_POSITIVE);
         let v_floor = f32x8::splat(floor_linear);
@@ -678,6 +459,9 @@ impl SpectrogramProcessor {
         let v_inv_2pi = f32x8::splat(inv_2pi);
         let v_min_hz = f32x8::splat(min_hz);
         let v_max_hz = f32x8::splat(max_hz);
+        let v_inv_hop = f32x8::splat(inv_hop);
+        let v_db_floor = f32x8::splat(DB_FLOOR);
+        let v_ln_to_db = f32x8::splat(LN_TO_DB);
 
         for chunk in 0..bin_count.div_ceil(8) {
             let off = chunk * 8;
@@ -690,9 +474,6 @@ impl SpectrogramProcessor {
 
             let pow = base_re * base_re + base_im * base_im;
             let mask = pow.simd_ge(v_floor) & energy_scale.simd_gt(f32x8::splat(0.0));
-            if mask.none() {
-                continue;
-            }
 
             let inv_pow = f32x8::splat(1.0) / pow.max(v_eps);
             let d_omega = -(d_im * base_re - d_re * base_im) * inv_pow;
@@ -700,72 +481,34 @@ impl SpectrogramProcessor {
 
             let freq = k_idx.mul_add(v_bin_hz, f_corr);
 
-            let final_mask = mask & freq.simd_ge(v_min_hz) & freq.simd_lt(v_max_hz);
-            if final_mask.none() {
-                continue;
-            }
+            let final_mask =
+                mask & freq.simd_ge(v_min_hz) & (v_max_hz - freq).simd_gt(f32x8::splat(0.0));
 
             let d_tau = (t_re * base_re + t_im * base_im) * inv_pow;
 
-            let mask_f32 = final_mask.blend(f32x8::splat(1.0), f32x8::splat(0.0));
-            self.grid.accumulate_simd(
-                self.grid.hz_to_bin_simd(freq),
-                d_tau,
-                pow * energy_scale,
-                mask_f32,
-            );
-        }
+            let time_offset = d_tau * v_inv_hop;
+            let mag_db = (pow.max(v_eps) * energy_scale.max(v_eps)).ln() * v_ln_to_db;
+            let mag_db = mag_db.max(v_db_floor);
 
-        self.grid.advance();
-    }
+            let freqs = freq.to_array();
+            let times = time_offset.to_array();
+            let mags = mag_db.to_array();
+            let masks = final_mask
+                .blend(f32x8::splat(1.0), f32x8::splat(0.0))
+                .to_array();
 
-    fn arc_from_pool(pool: &mut Vec<Arc<[f32]>>, data: &[f32]) -> Arc<[f32]> {
-        if data.is_empty() {
-            return Arc::from([]);
-        }
-        if let Some(i) = pool
-            .iter()
-            .rposition(|a| a.len() == data.len() && Arc::strong_count(a) == 1)
-        {
-            let mut arc = pool.swap_remove(i);
-            Arc::get_mut(&mut arc).unwrap().copy_from_slice(data);
-            arc
-        } else {
-            Arc::from(data)
-        }
-    }
-
-    fn recycle(&mut self, col: SpectrogramColumn) {
-        if Arc::strong_count(&col.magnitudes_db) == 1 {
-            self.pool.push(col.magnitudes_db);
-        }
-    }
-
-    fn push_history(&mut self, col: SpectrogramColumn) {
-        if self.history_capacity == 0 {
-            return;
-        }
-        if self.history.len() == self.history_capacity
-            && let Some(evicted) = self.history.pop_front()
-        {
-            self.recycle(evicted);
-        }
-        self.history.push_back(col);
-    }
-
-    fn clear_history(&mut self) {
-        while let Some(column) = self.history.pop_front() {
-            self.recycle(column);
-        }
-        self.reset = true;
-    }
-
-    fn trim_history_to(&mut self, capacity: usize) {
-        self.history_capacity = capacity;
-        while self.history.len() > capacity
-            && let Some(column) = self.history.pop_front()
-        {
-            self.recycle(column);
+            let count = (bin_count.saturating_sub(off)).min(8);
+            for i in 0..count {
+                self.points_buf[off + i] = if masks[i] != 0.0 {
+                    SpectrogramPoint {
+                        time_offset: times[i],
+                        freq_hz: freqs[i],
+                        magnitude_db: mags[i],
+                    }
+                } else {
+                    SpectrogramPoint::SENTINEL
+                };
+            }
         }
     }
 }
@@ -781,9 +524,11 @@ impl AudioProcessor for SpectrogramProcessor {
             || (self.config.sample_rate - block.sample_rate).abs() > f32::EPSILON
         {
             self.config.sample_rate = block.sample_rate;
-            self.rebuild_all();
+            self.rebuild_fft();
+            self.reset = true;
         } else if self.needs_fft_rebuild() {
-            self.rebuild_all();
+            self.rebuild_fft();
+            self.reset = true;
         }
         crate::util::audio::mixdown_into_deque(
             &mut self.audio_buffer,
@@ -791,6 +536,7 @@ impl AudioProcessor for SpectrogramProcessor {
             block.channels,
         );
         let cols = self.process_ready_windows();
+        let bin_count = self.fft_size / 2 + 1;
         if cols.is_empty() {
             None
         } else {
@@ -799,18 +545,16 @@ impl AudioProcessor for SpectrogramProcessor {
                 sample_rate: self.config.sample_rate,
                 frequency_scale: self.config.frequency_scale,
                 history_length: self.config.history_length,
-                display_height: self.config.display_bin_count,
                 reset: std::mem::take(&mut self.reset),
-                display_bins_hz: self.grid.is_enabled().then(|| self.grid.bin_frequencies()),
+                points_per_column: bin_count,
                 new_columns: cols,
             })
         }
     }
 
     fn reset(&mut self) {
-        self.clear_history();
         self.audio_buffer.clear();
-        self.grid.clear_buffers();
+        self.reset = true;
     }
 }
 
@@ -819,34 +563,11 @@ impl Reconfigurable<SpectrogramConfig> for SpectrogramProcessor {
         let prev = self.config;
         self.config = cfg;
 
-        let needs_fft = self.needs_fft_rebuild();
-        let reassignment_toggled = prev.use_reassignment != cfg.use_reassignment;
-        let bins_changed = prev.display_bin_count != cfg.display_bin_count;
-        let mapping_changed = prev.hop_size != cfg.hop_size
-            || prev.frequency_scale != cfg.frequency_scale
-            || (prev.reassignment_max_time_hops - cfg.reassignment_max_time_hops).abs()
-                > f32::EPSILON;
-
-        if needs_fft {
-            self.rebuild_all();
-        } else if reassignment_toggled || (bins_changed && cfg.use_reassignment) {
-            // Reassignment toggled or grid resolution changed - history is incompatible
-            self.reconfigure_grid();
-            self.clear_history();
-        } else if bins_changed {
-            // Reassignment off - raw FFT columns are resolution-independent;
-            // BinMapping in state handles display remapping without losing history.
-            self.reconfigure_grid();
+        if self.needs_fft_rebuild() {
+            self.rebuild_fft();
             self.reset = true;
-            if prev.history_length != cfg.history_length {
-                self.trim_history_to(cfg.history_length);
-            }
-        } else if mapping_changed {
-            self.reconfigure_grid();
-            self.grid.clear_buffers();
+        } else if prev.use_reassignment != cfg.use_reassignment {
             self.reset = true;
-        } else if prev.history_length != cfg.history_length {
-            self.trim_history_to(cfg.history_length);
         }
     }
 }
@@ -933,6 +654,7 @@ fn compute_time_weighted(window: &[f32]) -> Vec<f32> {
         .collect()
 }
 
+#[cfg(test)]
 fn compute_sigma_t(window: &[f32]) -> f32 {
     let center = (window.len().saturating_sub(1)) as f32 * 0.5;
     let (weighted, total) =
@@ -991,12 +713,12 @@ mod tests {
         result.expect("expected snapshot")
     }
 
-    fn find_peak(magnitudes: &[f32]) -> (usize, f32) {
-        magnitudes
+    fn find_peak(points: &[SpectrogramPoint]) -> (usize, f32) {
+        points
             .iter()
             .enumerate()
-            .max_by(|a, b| a.1.total_cmp(b.1))
-            .map(|(i, &v)| (i, v))
+            .max_by(|a, b| a.1.magnitude_db.total_cmp(&b.1.magnitude_db))
+            .map(|(i, p)| (i, p.magnitude_db))
             .unwrap()
     }
 
@@ -1015,15 +737,16 @@ mod tests {
         let freq = 200.0 * cfg.sample_rate / 1024.0;
         let block = make_block(sine(freq, cfg.sample_rate, 2048), 1, cfg.sample_rate);
         let update = unwrap(processor.process_block(&block));
-        let (idx, db) = find_peak(&update.new_columns.last().unwrap().magnitudes_db);
+        let col = update.new_columns.last().unwrap();
+        let (idx, db) = find_peak(&col.points);
         assert_eq!(idx, 200);
         assert!(db > -0.01 && db < 0.01, "peak dB = {db:.6}, expected ~0.0");
     }
 
     #[test]
-    fn mel_conversions_are_invertible() {
-        for &h in &[20.0, 100.0, 440.0, 1000.0, 4000.0, 10000.0] {
-            assert!((h - mel_to_hz(hz_to_mel(h))).abs() < 0.002);
+    fn erb_conversions_are_invertible() {
+        for &h in &[20.0f32, 100.0, 440.0, 1000.0, 4000.0, 10000.0] {
+            assert!((h - erb_rate_to_hz(hz_to_erb_rate(h))).abs() < 0.002);
         }
     }
 
@@ -1035,22 +758,28 @@ mod tests {
             history_length: 4,
             use_reassignment: true,
             zero_padding_factor: 1,
-            display_bin_count: 4096,
             ..Default::default()
         };
         let mut processor = SpectrogramProcessor::new(cfg);
         let freq = 50.3 * cfg.sample_rate / 2048.0;
         let block = make_block(sine(freq, cfg.sample_rate, 4096), 1, cfg.sample_rate);
         let update = unwrap(processor.process_block(&block));
-        let bins = update
-            .display_bins_hz
-            .as_ref()
-            .expect("expected display bin freqs");
-        let (idx, _) = find_peak(&update.new_columns.last().unwrap().magnitudes_db);
-        let peak_freq = *bins.get(idx).expect("bin frequency");
+        let col = update.new_columns.last().unwrap();
+        let (_, peak_db) = find_peak(&col.points);
+        let peak_pt = col
+            .points
+            .iter()
+            .filter(|p| p.magnitude_db > DB_FLOOR)
+            .max_by(|a, b| a.magnitude_db.total_cmp(&b.magnitude_db))
+            .expect("expected non-sentinel point");
         assert!(
-            (peak_freq - freq).abs() < 2.0,
-            "reassigned freq {peak_freq:.4} vs expected {freq:.4}"
+            (peak_pt.freq_hz - freq).abs() < 2.0,
+            "reassigned freq {:.4} vs expected {freq:.4}",
+            peak_pt.freq_hz
+        );
+        assert!(
+            peak_db > DB_FLOOR,
+            "peak dB = {peak_db:.6}, expected above floor"
         );
     }
 
@@ -1072,5 +801,55 @@ mod tests {
                 "{kind:?}: sigma_t ratio = {ratio:.6}, expected ~{expected}"
             );
         }
+    }
+
+    #[test]
+    fn points_per_column_matches_bin_count() {
+        let cfg = SpectrogramConfig {
+            fft_size: 512,
+            hop_size: 256,
+            history_length: 4,
+            use_reassignment: false,
+            zero_padding_factor: 1,
+            ..Default::default()
+        };
+        let mut processor = SpectrogramProcessor::new(cfg);
+        let block = make_block(sine(440.0, cfg.sample_rate, 1024), 1, cfg.sample_rate);
+        let update = unwrap(processor.process_block(&block));
+        let expected_bins = cfg.fft_size / 2 + 1;
+        assert_eq!(update.points_per_column, expected_bins);
+        for col in &update.new_columns {
+            assert_eq!(col.points.len(), expected_bins);
+        }
+    }
+
+    #[test]
+    fn reassigned_sentinels_for_filtered_bins() {
+        let cfg = SpectrogramConfig {
+            fft_size: 1024,
+            hop_size: 512,
+            history_length: 4,
+            use_reassignment: true,
+            zero_padding_factor: 1,
+            ..Default::default()
+        };
+        let mut processor = SpectrogramProcessor::new(cfg);
+        let block = make_block(sine(1000.0, cfg.sample_rate, 2048), 1, cfg.sample_rate);
+        let update = unwrap(processor.process_block(&block));
+        let col = update.new_columns.last().unwrap();
+        let sentinel_count = col
+            .points
+            .iter()
+            .filter(|p| *p == &SpectrogramPoint::SENTINEL)
+            .count();
+        assert!(
+            sentinel_count > 0,
+            "expected some sentinel points for bins outside frequency range or below floor"
+        );
+        let non_sentinel_count = col.points.len() - sentinel_count;
+        assert!(
+            non_sentinel_count > 0,
+            "expected some non-sentinel points for a 1kHz sine"
+        );
     }
 }
