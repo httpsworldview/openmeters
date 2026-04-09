@@ -45,11 +45,10 @@ pull request!
 - [x] **spectrogram**
   - [x] Spectral reassignment for exceptionally sharp time and
         frequency resolution.
-	- [ ] Point-primitive rendering
   - [x] Note & frequency tool tips
   - [x] Piano roll overlay
   - [x] Ability to zoom & pan vertically
-  - [x] Mel, log, and linear scales
+  - [x] ERB, log, and linear scales
   - [x] Adjustable color map
 - [x] **spectrum analyzer**
   - [x] A-weighting
@@ -58,7 +57,7 @@ pull request!
     - [x] Exponential
     - [x] Peak hold
     - [x] None
-  - [x] Mel, log, and linear scales
+  - [x] ERB, log, and linear scales
   - [x] Bar mode
   - [x] Adjustable color map
 - [x] **stereometer** (X/Y vector scope, M/S goniometer)
