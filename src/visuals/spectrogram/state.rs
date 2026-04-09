@@ -165,10 +165,6 @@ struct SpectrogramBuffer {
 }
 
 impl SpectrogramBuffer {
-    fn new() -> Self {
-        Self::default()
-    }
-
     fn rebuild(
         &mut self,
         history: &VecDeque<SpectrogramColumn>,
@@ -317,7 +313,7 @@ pub(crate) struct SpectrogramState {
 impl SpectrogramState {
     pub fn new() -> Self {
         Self {
-            buffer: RefCell::new(SpectrogramBuffer::new()),
+            buffer: RefCell::new(SpectrogramBuffer::default()),
             style: SpectrogramStyle::default(),
             palette: palettes::spectrogram::COLORS,
             stop_positions: std::array::from_fn(|i| {

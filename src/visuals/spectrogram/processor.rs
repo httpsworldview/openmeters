@@ -26,8 +26,8 @@ use crate::util::audio::{
     DB_FLOOR, DEFAULT_SAMPLE_RATE, LN_TO_DB, copy_from_deque, db_to_power, hz_to_mel, mel_to_hz,
     power_to_db,
 };
-use realfft::{RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex32;
+use rustfft::{Fft, FftPlanner};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::collections::VecDeque;
@@ -217,38 +217,18 @@ impl WindowCache {
 struct ReassignmentBuffers {
     derivative_window: Vec<f32>,
     time_weighted_window: Vec<f32>,
-    derivative_buffer: Vec<f32>,
-    time_weighted_buffer: Vec<f32>,
     derivative_spectrum: Vec<Complex32>,
     time_weighted_spectrum: Vec<Complex32>,
     floor_linear: f32,
 }
 
 impl ReassignmentBuffers {
-    fn rebuild(
-        &mut self,
-        kind: WindowKind,
-        window: &[f32],
-        fft: &Arc<dyn RealToComplex<f32>>,
-        size: usize,
-    ) {
-        self.derivative_window = compute_derivative(kind, window);
+    fn rebuild(&mut self, window: &[f32], bin_count: usize) {
+        self.derivative_window = compute_derivative_spectral(window);
         self.time_weighted_window = compute_time_weighted(window);
-        for buf in [&mut self.derivative_buffer, &mut self.time_weighted_buffer] {
-            buf.resize(size, 0.0);
-        }
-        self.derivative_spectrum = fft.make_output_vec();
-        self.time_weighted_spectrum = fft.make_output_vec();
+        self.derivative_spectrum = vec![Complex32::ZERO; bin_count];
+        self.time_weighted_spectrum = vec![Complex32::ZERO; bin_count];
         self.floor_linear = db_to_power(DB_FLOOR);
-    }
-
-    fn apply_to_frame(&mut self, raw_audio: &[f32]) {
-        for (i, &sample) in raw_audio.iter().enumerate() {
-            self.derivative_buffer[i] = sample * self.derivative_window[i];
-            self.time_weighted_buffer[i] = sample * self.time_weighted_window[i];
-        }
-        self.derivative_buffer[raw_audio.len()..].fill(0.0);
-        self.time_weighted_buffer[raw_audio.len()..].fill(0.0);
     }
 }
 
@@ -305,7 +285,6 @@ struct Reassignment2DGrid {
     cols: usize,
     center: usize,
     grid: Vec<f32>,
-    output: Vec<f32>,
     magnitudes: Vec<f32>,
     scale: FrequencyScale,
     params: FreqScaleParams,
@@ -324,7 +303,6 @@ impl Reassignment2DGrid {
             cols: 3,
             center: 1,
             grid: vec![],
-            output: vec![],
             magnitudes: vec![],
             scale: cfg.frequency_scale,
             params: Default::default(),
@@ -371,7 +349,6 @@ impl Reassignment2DGrid {
         }
         if self.display_bins != bins || self.cols != cols || self.grid.len() != bins * cols {
             self.grid = vec![0.0; bins * cols];
-            self.output = vec![0.0; bins];
             self.magnitudes = vec![DB_FLOOR; bins];
         }
         self.display_bins = bins;
@@ -401,7 +378,6 @@ impl Reassignment2DGrid {
 
     #[inline]
     fn accumulate_simd(&mut self, freq: f32x8, time: f32x8, pow: f32x8, mask: f32x8) {
-        let val = pow;
         let v_max_off = f32x8::splat(self.max_hops as f32);
         let tc = (time * f32x8::splat(1.0 / self.hop as f32))
             .max(-v_max_off)
@@ -410,12 +386,12 @@ impl Reassignment2DGrid {
 
         let freqs = freq.to_array();
         let tcs = tc.to_array();
-        let vals = val.to_array();
+        let pows = pow.to_array();
         let masks = mask.to_array();
         let (width, height) = (self.display_bins as i32, self.cols as i32);
 
         for i in 0..8 {
-            let v = vals[i];
+            let v = pows[i];
             if masks[i] != 0.0 && v > 0.0 && v.is_finite() && freqs[i].is_finite() {
                 self.deposit_nearest(freqs[i], tcs[i], width, height, v);
             }
@@ -432,12 +408,11 @@ impl Reassignment2DGrid {
     }
 
     fn advance(&mut self) {
-        self.output.copy_from_slice(&self.grid[..self.display_bins]);
-        self.grid.rotate_left(self.display_bins);
-        self.grid[(self.cols - 1) * self.display_bins..].fill(0.0);
-        for (mag, &raw) in self.magnitudes.iter_mut().zip(&self.output) {
+        for (mag, &raw) in self.magnitudes.iter_mut().zip(&self.grid) {
             *mag = power_to_db(raw, DB_FLOOR);
         }
+        self.grid.rotate_left(self.display_bins);
+        self.grid[(self.cols - 1) * self.display_bins..].fill(0.0);
     }
 
     fn is_enabled(&self) -> bool {
@@ -489,12 +464,15 @@ pub struct SpectrogramUpdate {
 
 pub struct SpectrogramProcessor {
     config: SpectrogramConfig,
-    planner: RealFftPlanner<f32>,
-    fft: Arc<dyn RealToComplex<f32>>,
+    planner: FftPlanner<f32>,
+    fft: Arc<dyn Fft<f32>>,
+    ifft: Arc<dyn Fft<f32>>,
     window_size: usize,
     fft_size: usize,
     window: Arc<[f32]>,
     real: Vec<f32>,
+    analytic: Vec<Complex32>,
+    complex_buf: Vec<Complex32>,
     spectrum: Vec<Complex32>,
     scratch: Vec<Complex32>,
     magnitudes: Vec<f32>,
@@ -506,21 +484,24 @@ pub struct SpectrogramProcessor {
     history_capacity: usize,
     pool: Vec<Arc<[f32]>>,
     reset: bool,
-    output_buffer: Vec<SpectrogramColumn>,
 }
 
 impl SpectrogramProcessor {
     pub fn new(cfg: SpectrogramConfig) -> Self {
-        let mut planner = RealFftPlanner::new();
+        let mut planner = FftPlanner::new();
         let placeholder_fft = planner.plan_fft_forward(1024);
+        let placeholder_ifft = planner.plan_fft_inverse(1024);
         let mut processor = Self {
             config: cfg,
             planner,
             fft: placeholder_fft,
+            ifft: placeholder_ifft,
             window_size: 0,
             fft_size: 0,
             window: Arc::from([]),
             real: vec![],
+            analytic: vec![],
+            complex_buf: vec![],
             spectrum: vec![],
             scratch: vec![],
             magnitudes: vec![],
@@ -532,7 +513,6 @@ impl SpectrogramProcessor {
             history_capacity: cfg.history_length,
             pool: vec![],
             reset: true,
-            output_buffer: vec![],
         };
         processor.rebuild_fft();
         processor.reconfigure_grid();
@@ -554,13 +534,21 @@ impl SpectrogramProcessor {
         self.window_size = self.config.fft_size;
         self.fft_size = self.window_size * self.config.zero_padding_factor.max(1);
         self.fft = self.planner.plan_fft_forward(self.fft_size);
+        self.ifft = self.planner.plan_fft_inverse(self.fft_size);
         self.window = WindowCache::get(self.config.window, self.window_size);
         self.real.resize(self.fft_size, 0.0);
-        self.spectrum = self.fft.make_output_vec();
-        self.scratch = self.fft.make_scratch_vec();
-        self.magnitudes.resize(self.fft_size / 2 + 1, 0.0);
-        self.reassign
-            .rebuild(self.config.window, &self.window, &self.fft, self.fft_size);
+        self.analytic.resize(self.fft_size, Complex32::ZERO);
+        self.complex_buf.resize(self.fft_size, Complex32::ZERO);
+        let bin_count = self.fft_size / 2 + 1;
+        self.spectrum.resize(bin_count, Complex32::ZERO);
+        self.scratch.resize(
+            self.fft
+                .get_inplace_scratch_len()
+                .max(self.ifft.get_inplace_scratch_len()),
+            Complex32::ZERO,
+        );
+        self.magnitudes.resize(bin_count, 0.0);
+        self.reassign.rebuild(&self.window, bin_count);
         self.bin_norm =
             crate::util::audio::compute_fft_bin_normalization(&self.window, self.fft_size);
         self.audio_buffer.truncate(self.window_size * 2);
@@ -583,7 +571,6 @@ impl SpectrogramProcessor {
     }
 
     fn process_ready_windows(&mut self) -> Vec<SpectrogramColumn> {
-        self.output_buffer.clear();
         if self.window_size == 0 {
             return vec![];
         }
@@ -591,39 +578,59 @@ impl SpectrogramProcessor {
         let reassignment_enabled =
             self.config.use_reassignment && sample_rate > f32::EPSILON && self.grid.is_enabled();
         let bin_count = self.fft_size / 2 + 1;
+        let mut output = Vec::new();
 
         while self.audio_buffer.len() >= self.window_size {
             copy_from_deque(&mut self.real[..self.window_size], &self.audio_buffer);
             crate::util::audio::remove_dc(&mut self.real[..self.window_size]);
 
-            if reassignment_enabled {
-                self.reassign.apply_to_frame(&self.real[..self.window_size]);
-            }
-
-            crate::util::audio::apply_window(&mut self.real[..self.window_size], &self.window);
-            self.real[self.window_size..].fill(0.0);
-            self.fft
-                .process_with_scratch(&mut self.real, &mut self.spectrum, &mut self.scratch)
-                .ok();
-
             let mags = if reassignment_enabled {
-                for (buf, spec) in [
-                    (
-                        &mut self.reassign.derivative_buffer,
-                        &mut self.reassign.derivative_spectrum,
-                    ),
-                    (
-                        &mut self.reassign.time_weighted_buffer,
-                        &mut self.reassign.time_weighted_spectrum,
-                    ),
-                ] {
-                    self.fft
-                        .process_with_scratch(buf, spec, &mut self.scratch)
-                        .ok();
-                }
+                hilbert_transform(
+                    &self.real[..self.window_size],
+                    &mut self.analytic,
+                    &*self.fft,
+                    &*self.ifft,
+                    &mut self.scratch,
+                );
+                fft_windowed(
+                    &self.analytic,
+                    &self.window,
+                    &mut self.complex_buf,
+                    &mut self.spectrum,
+                    &*self.fft,
+                    &mut self.scratch,
+                );
+                fft_windowed(
+                    &self.analytic,
+                    &self.reassign.derivative_window,
+                    &mut self.complex_buf,
+                    &mut self.reassign.derivative_spectrum,
+                    &*self.fft,
+                    &mut self.scratch,
+                );
+                fft_windowed(
+                    &self.analytic,
+                    &self.reassign.time_weighted_window,
+                    &mut self.complex_buf,
+                    &mut self.reassign.time_weighted_spectrum,
+                    &*self.fft,
+                    &mut self.scratch,
+                );
                 self.compute_reassigned(sample_rate, bin_count);
                 Self::arc_from_pool(&mut self.pool, self.grid.magnitudes())
             } else {
+                for (c, (&r, &w)) in self
+                    .complex_buf
+                    .iter_mut()
+                    .zip(self.real.iter().zip(self.window.iter()))
+                {
+                    *c = Complex32::new(r * w, 0.0);
+                }
+                self.complex_buf[self.window_size..].fill(Complex32::ZERO);
+                self.fft
+                    .process_with_scratch(&mut self.complex_buf, &mut self.scratch);
+                self.spectrum
+                    .copy_from_slice(&self.complex_buf[..bin_count]);
                 self.compute_standard_magnitudes(bin_count);
                 Self::arc_from_pool(&mut self.pool, &self.magnitudes)
             };
@@ -632,13 +639,13 @@ impl SpectrogramProcessor {
                 magnitudes_db: mags.clone(),
             };
             self.push_history(col);
-            self.output_buffer.push(SpectrogramColumn {
+            output.push(SpectrogramColumn {
                 magnitudes_db: mags,
             });
             self.audio_buffer
                 .drain(..hop_size.min(self.audio_buffer.len()));
         }
-        std::mem::take(&mut self.output_buffer)
+        output
     }
 
     fn compute_standard_magnitudes(&mut self, bin_count: usize) {
@@ -844,42 +851,77 @@ impl Reconfigurable<SpectrogramConfig> for SpectrogramProcessor {
     }
 }
 
-fn finite_first_diff(data: &[f32]) -> Vec<f32> {
-    let len = data.len();
-    if len == 0 {
-        return vec![];
+fn hilbert_transform(
+    real: &[f32],
+    analytic: &mut [Complex32],
+    fft: &dyn Fft<f32>,
+    ifft: &dyn Fft<f32>,
+    scratch: &mut [Complex32],
+) {
+    let n = analytic.len();
+    for (c, &r) in analytic.iter_mut().zip(real.iter()) {
+        *c = Complex32::new(r, 0.0);
     }
-    let get = |i: usize| data.get(i).copied().unwrap_or(data[i.min(len - 1)]);
-    (0..len)
-        .map(|i| {
-            if len > 4 && i >= 2 && i < len - 2 {
-                (data[i - 2] - 8.0 * data[i - 1] + 8.0 * data[i + 1] - data[i + 2]) / 12.0
-            } else {
-                0.5 * (get(i + 1) - get(i.saturating_sub(1)))
-            }
-        })
-        .collect()
+    analytic[real.len()..].fill(Complex32::ZERO);
+
+    fft.process_with_scratch(analytic, scratch);
+    analytic[n / 2 + 1..].fill(Complex32::ZERO);
+    ifft.process_with_scratch(analytic, scratch);
+
+    let inv_n = 1.0 / n as f32;
+    for c in analytic.iter_mut() {
+        *c *= inv_n;
+    }
 }
 
-fn compute_derivative(kind: WindowKind, window: &[f32]) -> Vec<f32> {
-    let coeffs: &[f32] = match kind {
-        WindowKind::Hann => &[0.5, -0.5],
-        WindowKind::Hamming => &[25.0 / 46.0, -21.0 / 46.0],
-        WindowKind::Blackman => &[0.42, -0.5, 0.08],
-        WindowKind::BlackmanHarris => &[0.35875, -0.48829, 0.14128, -0.01168],
-        WindowKind::Rectangular => return finite_first_diff(window),
-    };
-    let len = window.len();
-    let step = core::f32::consts::TAU / (len.saturating_sub(1).max(1) as f32);
-    (0..len)
-        .map(|n| {
-            let phi = n as f32 * step;
-            -step
-                * coeffs.iter().enumerate().skip(1).fold(0.0, |sum, (k, &c)| {
-                    sum + k as f32 * c * (phi * k as f32).sin()
-                })
-        })
-        .collect()
+fn fft_windowed(
+    analytic: &[Complex32],
+    window: &[f32],
+    complex_buf: &mut [Complex32],
+    output: &mut [Complex32],
+    fft: &dyn Fft<f32>,
+    scratch: &mut [Complex32],
+) {
+    for (c, (&a, &w)) in complex_buf
+        .iter_mut()
+        .zip(analytic.iter().zip(window.iter()))
+    {
+        *c = a * w;
+    }
+    complex_buf[window.len()..].fill(Complex32::ZERO);
+    fft.process_with_scratch(complex_buf, scratch);
+    output.copy_from_slice(&complex_buf[..output.len()]);
+}
+
+fn compute_derivative_spectral(window: &[f32]) -> Vec<f32> {
+    let n = window.len();
+    if n <= 1 {
+        return vec![0.0; n];
+    }
+    let mut planner = FftPlanner::<f32>::new();
+    let fwd = planner.plan_fft_forward(n);
+    let inv = planner.plan_fft_inverse(n);
+
+    let mut buf: Vec<Complex32> = window.iter().map(|&r| Complex32::new(r, 0.0)).collect();
+    let mut scratch = vec![Complex32::ZERO; fwd.get_inplace_scratch_len()];
+    fwd.process_with_scratch(&mut buf, &mut scratch);
+
+    let scale = core::f32::consts::TAU / n as f32;
+    let half = n / 2;
+    buf[0] = Complex32::ZERO;
+    if n.is_multiple_of(2) {
+        buf[half] = Complex32::ZERO;
+    }
+    for (k, bin) in buf.iter_mut().enumerate().skip(1) {
+        let omega = scale * (k as f32 - if k > half { n as f32 } else { 0.0 });
+        *bin = Complex32::new(-omega * bin.im, omega * bin.re);
+    }
+
+    scratch.resize(inv.get_inplace_scratch_len(), Complex32::ZERO);
+    inv.process_with_scratch(&mut buf, &mut scratch);
+
+    let inv_n = 1.0 / n as f32;
+    buf.iter().map(|c| c.re * inv_n).collect()
 }
 
 fn compute_time_weighted(window: &[f32]) -> Vec<f32> {
