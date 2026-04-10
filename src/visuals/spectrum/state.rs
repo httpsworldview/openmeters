@@ -19,62 +19,9 @@ use iced::advanced::{Layout, Renderer as _, Widget, layout, mouse};
 use iced::{Background, Color, Element, Length, Point, Rectangle, Size};
 use iced_wgpu::primitive::Renderer as _;
 use std::cell::RefCell;
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
 const EPSILON: f32 = 1e-6;
-const GRID_FREQS: &[(f32, u8)] = &[
-    (20.0, 0),
-    (31.5, 3),
-    (40.0, 2),
-    (50.0, 2),
-    (63.0, 3),
-    (80.0, 2),
-    (100.0, 1),
-    (125.0, 2),
-    (160.0, 2),
-    (200.0, 1),
-    (250.0, 2),
-    (315.0, 3),
-    (400.0, 2),
-    (500.0, 1),
-    (630.0, 2),
-    (800.0, 2),
-    (1_000.0, 0),
-    (1_250.0, 2),
-    (1_600.0, 2),
-    (2_000.0, 1),
-    (2_500.0, 2),
-    (3_150.0, 3),
-    (4_000.0, 1),
-    (5_000.0, 2),
-    (6_300.0, 3),
-    (8_000.0, 1),
-    (10_000.0, 0),
-    (16_000.0, 1),
-];
-
-struct GridLabel {
-    freq: f32,
-    importance: u8,
-    text: String,
-    size: Size,
-}
-
-static GRID_LABELS: LazyLock<Vec<GridLabel>> = LazyLock::new(|| {
-    GRID_FREQS
-        .iter()
-        .map(|&(freq, importance)| {
-            let text = fmt_freq(freq);
-            let size = crate::visuals::measure_text(&text, 10.0);
-            GridLabel {
-                freq,
-                importance,
-                text,
-                size,
-            }
-        })
-        .collect()
-});
 
 vis_processor!(
     SpectrumProcessor,
@@ -151,7 +98,8 @@ pub(crate) struct SpectrumState {
     unweighted: Arc<[[f32; 2]]>,
     key: u64,
     peak: Option<PeakLabel>,
-    grid: Arc<[(f32, String, u8, Size)]>,
+    grid: Arc<[(f32, String, Size, bool)]>,
+    minor_grid: Arc<[f32]>,
     scratch: Vec<f32>,
 }
 
@@ -164,6 +112,7 @@ impl SpectrumState {
             key: crate::visuals::next_key(),
             peak: None,
             grid: Arc::from([]),
+            minor_grid: Arc::from([]),
             scratch: Vec::new(),
         }
     }
@@ -179,6 +128,7 @@ impl SpectrumState {
         self.style.show_grid = show;
         if !show {
             self.grid = Arc::from([]);
+            self.minor_grid = Arc::from([]);
         }
     }
 
@@ -238,22 +188,12 @@ impl SpectrumState {
         self.weighted = Arc::from(w);
         self.unweighted = Arc::from(u);
 
-        self.grid = if self.style.show_grid {
-            GRID_LABELS
-                .iter()
-                .filter(|gl| gl.freq >= min_f && gl.freq <= max_f)
-                .filter_map(|gl| {
-                    let mut p = scale.pos_of(self.style.frequency_scale, gl.freq);
-                    if self.style.reverse_frequency {
-                        p = 1.0 - p;
-                    }
-                    p.is_finite()
-                        .then(|| (p.clamp(0.0, 1.0), gl.text.clone(), gl.importance, gl.size))
-                })
-                .collect()
+        if self.style.show_grid {
+            (self.grid, self.minor_grid) = build_grid(min_f, max_f, &scale, &self.style);
         } else {
-            Arc::from([])
-        };
+            self.grid = Arc::from([]);
+            self.minor_grid = Arc::from([]);
+        }
 
         let pk = self
             .style
@@ -303,8 +243,12 @@ impl SpectrumState {
         }
     }
 
-    pub fn grid(&self) -> Arc<[(f32, String, u8, Size)]> {
+    pub fn grid(&self) -> Arc<[(f32, String, Size, bool)]> {
         Arc::clone(&self.grid)
+    }
+
+    pub fn minor_grid(&self) -> Arc<[f32]> {
+        Arc::clone(&self.minor_grid)
     }
 
     pub fn peak(&self) -> Option<&PeakLabel> {
@@ -339,11 +283,7 @@ impl SpectrumState {
             )),
             secondary_line_width: self.style.secondary_line_thickness,
             highlight_threshold: self.style.highlight_threshold,
-            spectrum_palette: self
-                .style
-                .spectrum_palette
-                .map(color::color_to_rgba)
-                .to_vec(),
+            spectrum_palette: self.style.spectrum_palette.map(color::color_to_rgba),
             display_mode: self.style.display_mode,
             show_secondary_line: self.style.show_secondary_line,
             bar_count: self.style.bar_count,
@@ -402,8 +342,9 @@ impl<'a, M> Widget<M, iced::Theme, iced::Renderer> for Spectrum<'a> {
             return;
         };
         let grid = state.grid();
-        if !grid.is_empty() {
-            r.with_layer(b, |r| draw_grid(r, th, b, &grid));
+        let minor = state.minor_grid();
+        if !grid.is_empty() || !minor.is_empty() {
+            r.with_layer(b, |r| draw_grid(r, th, b, &grid, &minor));
         }
         r.draw_primitive(b, SpectrumPrimitive::new(params));
         if let Some(pk) = state.peak() {
@@ -516,48 +457,92 @@ fn reindex(pts: &mut [[f32; 2]]) {
     }
 }
 
+fn build_grid(
+    min_f: f32,
+    max_f: f32,
+    scale: &Scale,
+    style: &SpectrumStyle,
+) -> (Arc<[(f32, String, Size, bool)]>, Arc<[f32]>) {
+    let start_exp = (min_f.max(1.0).log10().floor()) as i32;
+    let end_exp = (max_f.log10().ceil()) as i32;
+    let mut labeled = Vec::new();
+    let mut minor = Vec::new();
+
+    for exp in start_exp..=end_exp {
+        let base = 10f32.powi(exp);
+        for mult in 1..=9u32 {
+            let f = base * mult as f32;
+            if f < min_f || f > max_f {
+                continue;
+            }
+            let mut p = scale.pos_of(style.frequency_scale, f);
+            if style.reverse_frequency {
+                p = 1.0 - p;
+            }
+            if !p.is_finite() {
+                continue;
+            }
+            match mult {
+                1 | 2 | 5 => {
+                    let text = fmt_freq(f);
+                    let size = crate::visuals::measure_text(&text, 10.0);
+                    labeled.push((p, text, size, mult == 1));
+                }
+                _ => minor.push(p),
+            }
+        }
+    }
+
+    labeled.sort_by(|a, b| a.0.total_cmp(&b.0));
+    (Arc::from(labeled), Arc::from(minor))
+}
+
 fn draw_grid(
     r: &mut iced::Renderer,
     th: &iced::Theme,
     b: Rectangle,
-    lines: &[(f32, String, u8, Size)],
+    lines: &[(f32, String, Size, bool)],
+    minor_lines: &[f32],
 ) {
     if b.width <= 0.0 || b.height <= 0.0 {
         return;
     }
     let pal = th.extended_palette();
-    let (lc, tc) = (
-        color::with_alpha(pal.background.base.text, 0.25),
-        color::with_alpha(pal.background.base.text, 0.75),
-    );
-    let label_x = |x: f32, sz_width: f32| -> f32 {
-        (x - sz_width * 0.5).clamp(b.x + 6.0, (b.x + b.width - 6.0 - sz_width).max(b.x + 6.0))
-    };
-    let cands: Vec<_> = lines
-        .iter()
-        .filter_map(|(pos, lbl, imp, sz)| {
-            let x = b.x + b.width * pos;
-            (x >= b.x - 1.0 && x <= b.x + b.width + 1.0 && sz.width > 0.0 && sz.height > 0.0)
-                .then_some((x, lbl, *imp, *sz, label_x(x, sz.width)))
-        })
-        .collect();
-
-    // Select non-overlapping labels in importance order.
-    let mut acc: Vec<usize> = Vec::with_capacity(cands.len());
-    let mut indices: Vec<usize> = (0..cands.len()).collect();
-    indices.sort_by_key(|&i| cands[i].2);
-    for i in indices {
-        let (l, r) = (cands[i].4, cands[i].4 + cands[i].3.width + 6.0);
-        let overlaps = acc
-            .iter()
-            .any(|&j| l < cands[j].4 + cands[j].3.width + 6.0 && r > cands[j].4);
-        if !overlaps {
-            acc.push(i);
-        }
+    let mc = color::with_alpha(pal.background.base.text, 0.10);
+    for &pos in minor_lines {
+        let x = (b.x + b.width * pos - 0.5).clamp(b.x, b.x + b.width - 1.0);
+        r.fill_quad(
+            Quad {
+                bounds: Rectangle::new(Point::new(x, b.y), Size::new(1.0, b.height)),
+                border: Default::default(),
+                shadow: Default::default(),
+                snap: true,
+            },
+            Background::Color(mc),
+        );
     }
-
-    for &i in &acc {
-        let (x, lbl, _, sz, tx) = &cands[i];
+    let txt = pal.background.base.text;
+    let (major_lc, major_tc) = (color::with_alpha(txt, 0.25), color::with_alpha(txt, 0.75));
+    let (minor_lc, minor_tc) = (mc, color::with_alpha(txt, 0.20));
+    let label_x = |x: f32, w: f32| -> f32 {
+        (x - w * 0.5).clamp(b.x + 6.0, (b.x + b.width - 6.0 - w).max(b.x + 6.0))
+    };
+    let mut last_right = f32::NEG_INFINITY;
+    for (pos, lbl, sz, is_major) in lines {
+        let x = b.x + b.width * pos;
+        if x < b.x - 1.0 || x > b.x + b.width + 1.0 || sz.width <= 0.0 || sz.height <= 0.0 {
+            continue;
+        }
+        let tx = label_x(x, sz.width);
+        if tx < last_right {
+            continue;
+        }
+        last_right = tx + sz.width + 6.0;
+        let (lc, tc) = if *is_major {
+            (major_lc, major_tc)
+        } else {
+            (minor_lc, minor_tc)
+        };
         let (ty, lt) = (b.y + 6.0, b.y + 6.0 + sz.height + 6.0);
         let lh = (b.y + b.height - lt).max(0.0);
         if lh > 0.0 {
@@ -574,7 +559,7 @@ fn draw_grid(
                 Background::Color(lc),
             );
         }
-        let pt = Point::new(*tx, ty);
+        let pt = Point::new(tx, ty);
         r.fill_text(
             crate::visuals::make_text(lbl, 10.0, *sz),
             pt,

@@ -23,7 +23,7 @@ pub struct SpectrumParams {
     pub secondary_line_color: [f32; 4],
     pub secondary_line_width: f32,
     pub highlight_threshold: f32,
-    pub spectrum_palette: Vec<[f32; 4]>,
+    pub spectrum_palette: [[f32; 4]; 6],
     pub display_mode: SpectrumDisplayMode,
     pub show_secondary_line: bool,
     pub bar_count: usize,
