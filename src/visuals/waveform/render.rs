@@ -6,6 +6,7 @@ use iced::advanced::graphics::Viewport;
 use std::sync::Arc;
 
 use crate::sdf_primitive;
+use crate::util::color::rgba_with_alpha;
 use crate::visuals::render::common::{
     ClipTransform, SdfVertex, baseline_segment_vertices, build_aa_line_list, quad_vertices,
 };
@@ -52,11 +53,6 @@ impl WaveformParams {
 fn normalize_sample(min: f32, max: f32) -> (f32, f32) {
     let (lo, hi) = if min <= max { (min, max) } else { (max, min) };
     (lo.clamp(-1.0, 1.0), hi.clamp(-1.0, 1.0))
-}
-
-#[inline]
-fn with_alpha(color: [f32; 4], alpha: f32) -> [f32; 4] {
-    [color[0], color[1], color[2], alpha]
 }
 
 #[derive(Debug)]
@@ -121,7 +117,7 @@ impl WaveformPrimitive {
                 let (min, max) = normalize_sample(params.samples[idx][0], params.samples[idx][1]);
                 let x = column_x(i);
 
-                let color = with_alpha(
+                let color = rgba_with_alpha(
                     params.colors.get(idx).copied().unwrap_or([1.0; 4]),
                     params.fill_alpha,
                 );
@@ -142,7 +138,7 @@ impl WaveformPrimitive {
 
                 let ps = params.preview_samples[ch];
                 let (min, max) = normalize_sample(ps.min, ps.max);
-                let color = with_alpha(ps.color, params.fill_alpha);
+                let color = rgba_with_alpha(ps.color, params.fill_alpha);
                 vertices.extend(quad_vertices(
                     start_x,
                     center_y - max * amp_scale,
@@ -165,7 +161,7 @@ impl WaveformPrimitive {
                 for band in 0..NUM_BANDS {
                     let band_base = (ch * NUM_BANDS + band) * columns;
                     let color = params.band_colors[band];
-                    let fill_color = with_alpha(color, BAND_FILL_ALPHA);
+                    let fill_color = rgba_with_alpha(color, BAND_FILL_ALPHA);
 
                     pts.clear();
                     pts.extend((0..columns).map(|i| {

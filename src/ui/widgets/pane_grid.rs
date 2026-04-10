@@ -14,6 +14,8 @@ use iced::advanced::widget::{
 use iced::advanced::{self as core, Clipboard, Layout, Shell, Widget, layout, mouse};
 use iced::{Background, Element, Event, Length, Point, Rectangle, Size};
 
+use crate::util::color::with_alpha;
+
 #[derive(Default)]
 struct Interaction {
     dragging: Option<(Pane, Point)>,
@@ -404,12 +406,12 @@ where
                         border: iced::Border {
                             radius: Default::default(),
                             width: 2.0,
-                            color: crate::ui::theme::with_alpha(accent, 0.9),
+                            color: with_alpha(accent, 0.9),
                         },
                         shadow: Default::default(),
                         snap: true,
                     },
-                    Background::Color(crate::ui::theme::with_alpha(accent, 0.4)),
+                    Background::Color(with_alpha(accent, 0.4)),
                 );
             }
         }

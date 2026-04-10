@@ -9,7 +9,7 @@ use crate::{
         self as settings_cfg, ModuleSettings, PaletteSettings, ThemeFile, VisualSettings,
     },
     util::audio::DEFAULT_SAMPLE_RATE,
-    util::color,
+    util::color::{sanitize_stop_positions, sanitize_stop_spreads},
 };
 use iced::{Color, Element, Length, widget::container};
 use std::{
@@ -154,9 +154,9 @@ visuals! {
         apply(p, s, set) { visuals!(@apply_config p, set); let mut st = s.borrow_mut();
             visuals!(@apply_palette st, set, &palettes::spectrogram::COLORS);
             let count = palettes::spectrogram::COLORS.len();
-            st.set_stop_positions(&color::sanitize_stop_positions(
+            st.set_stop_positions(&sanitize_stop_positions(
                 set.palette.as_ref().and_then(|p| p.stop_positions.as_deref()), count));
-            st.set_stop_spreads(&color::sanitize_stop_spreads(
+            st.set_stop_spreads(&sanitize_stop_spreads(
                 set.palette.as_ref().and_then(|p| p.stop_spreads.as_deref()), count));
             st.piano_roll_overlay = set.piano_roll_overlay;
             st.set_floor_db(set.floor_db);

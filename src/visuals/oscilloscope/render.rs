@@ -5,6 +5,7 @@ use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
 
 use crate::sdf_primitive;
+use crate::util::color::rgba_with_alpha;
 use crate::visuals::render::common::{
     ClipTransform, SdfVertex, baseline_segment_vertices, build_aa_line_list, decimate_line,
 };
@@ -75,7 +76,6 @@ impl OscilloscopePrimitive {
                 + VERTICAL_PADDING
                 + channel_idx as f32 * (channel_height + CHANNEL_GAP)
                 + channel_height * 0.5;
-            let with_a = |a: f32| [color[0], color[1], color[2], a];
 
             let positions: Vec<_> = channel_samples
                 .iter()
@@ -89,7 +89,7 @@ impl OscilloscopePrimitive {
                 .collect();
             let positions = decimate_line(&positions, pixel_width * 2);
 
-            let fill_color = with_a(self.params.fill_alpha);
+            let fill_color = rgba_with_alpha(color, self.params.fill_alpha);
             for pair in positions.windows(2) {
                 vertices.extend(baseline_segment_vertices(
                     pair[0],
@@ -103,7 +103,7 @@ impl OscilloscopePrimitive {
             vertices.extend(build_aa_line_list(
                 &positions,
                 STROKE_WIDTH,
-                with_a(LINE_ALPHA),
+                rgba_with_alpha(color, LINE_ALPHA),
                 &clip,
             ));
         }

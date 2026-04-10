@@ -7,7 +7,7 @@ use super::processor::{
 };
 use super::render::{PreviewSample, WaveformParams, WaveformPrimitive};
 use crate::persistence::settings::{Channel, WaveformColorMode, WaveformSettings};
-use crate::util::color;
+use crate::util::color::{color_to_rgba, sample_gradient};
 use crate::visuals::palettes;
 use crate::visuals::palettes::waveform::GRADIENT_STOPS;
 use crate::visuals::project_channel_data;
@@ -144,7 +144,7 @@ impl WaveformState {
                 let intensity = self.color_intensity(min, max, freq);
 
                 samples.push([min.min(max), min.max(max)]);
-                colors.push(color::color_to_rgba(self.style.sample_color(intensity)));
+                colors.push(color_to_rgba(self.style.sample_color(intensity)));
             }
         }
         (Arc::from(samples), Arc::from(colors))
@@ -169,7 +169,7 @@ impl WaveformState {
                 PreviewSample {
                     min: min.min(max).clamp(-1.0, 1.0),
                     max: min.max(max).clamp(-1.0, 1.0),
-                    color: color::color_to_rgba(self.style.sample_color(intensity)),
+                    color: color_to_rgba(self.style.sample_color(intensity)),
                 }
             })
             .collect();
@@ -281,11 +281,11 @@ impl Default for WaveformStyle {
 
 impl WaveformStyle {
     fn sample_color(&self, intensity: f32) -> Color {
-        color::sample_gradient(&self.palette[..GRADIENT_STOPS], intensity)
+        sample_gradient(&self.palette[..GRADIENT_STOPS], intensity)
     }
 
     fn band_colors(&self) -> [[f32; 4]; NUM_BANDS] {
-        std::array::from_fn(|i| color::color_to_rgba(self.palette[GRADIENT_STOPS + i]))
+        std::array::from_fn(|i| color_to_rgba(self.palette[GRADIENT_STOPS + i]))
     }
 }
 

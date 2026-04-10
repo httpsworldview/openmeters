@@ -9,10 +9,7 @@ use iced::theme::palette::{self, Extended};
 use iced::widget::{button, container, slider, text};
 use iced::{Background, Color, Theme};
 
-pub use crate::util::color::{
-    colors_equal, default_spreads, f32_to_u8, find_segment, lerp_color, sanitize_stop_positions,
-    sanitize_stop_spreads, uniform_positions, with_alpha,
-};
+use crate::util::color::{lerp_color, with_alpha};
 
 pub use crate::visuals::palettes::{
     BG_BASE, Palette, background, loudness, oscilloscope, spectrogram, spectrum, stereometer,
@@ -96,13 +93,12 @@ pub fn button_style(theme: &Theme, base: Color, status: button::Status) -> butto
 
 pub fn tab_button_style(theme: &Theme, active: bool, status: button::Status) -> button::Style {
     let palette = theme.extended_palette();
-    let mut base = if active {
+    let base = if active {
         palette.primary.base.color
     } else {
         lerp_color(palette.background.base.color, Color::WHITE, 0.2)
     };
-    base.a = 1.0;
-    button_style(theme, base, status)
+    button_style(theme, with_alpha(base, 1.0), status)
 }
 
 pub fn weak_container(theme: &Theme) -> container::Style {
@@ -122,9 +118,7 @@ pub fn weak_text_style(theme: &Theme) -> text::Style {
 }
 
 pub fn opaque_container(theme: &Theme) -> container::Style {
-    let palette = theme.extended_palette();
-    let mut bg = palette.background.base.color;
-    bg.a = 1.0;
+    let bg = with_alpha(theme.extended_palette().background.base.color, 1.0);
     container::Style {
         background: Some(Background::Color(bg)),
         ..Default::default()

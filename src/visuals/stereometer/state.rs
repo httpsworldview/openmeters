@@ -9,7 +9,7 @@ use crate::persistence::settings::{
     CorrelationMeterMode, CorrelationMeterSide, StereometerMode, StereometerScale,
     StereometerSettings,
 };
-use crate::util::color;
+use crate::util::color::color_to_rgba;
 use crate::visuals::palettes;
 use crate::{vis_processor, visualization_widget};
 use iced::Color;
@@ -142,7 +142,7 @@ impl StereometerState {
             key: self.key,
             bounds,
             points: self.points.clone(),
-            palette: self.palette.map(color::color_to_rgba),
+            palette: self.palette.map(color_to_rgba),
             mode: self.mode,
             scale: self.scale,
             scale_range: self.scale_range,

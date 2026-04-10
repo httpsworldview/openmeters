@@ -608,11 +608,8 @@ impl Resources {
             return;
         }
         let mut bytes = [0u8; SPECTROGRAM_PALETTE_SIZE * 4];
-        for (i, rgba) in p.palette.iter().enumerate() {
-            bytes[i * 4] = f32_to_u8(rgba[0]);
-            bytes[i * 4 + 1] = f32_to_u8(rgba[1]);
-            bytes[i * 4 + 2] = f32_to_u8(rgba[2]);
-            bytes[i * 4 + 3] = f32_to_u8(rgba[3]);
+        for (dst, rgba) in bytes.chunks_exact_mut(4).zip(p.palette.iter()) {
+            dst.copy_from_slice(&rgba.map(f32_to_u8));
         }
         write_texture_region(
             queue,

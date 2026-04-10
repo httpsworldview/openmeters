@@ -12,7 +12,7 @@ use crate::persistence::settings::PianoRollOverlay;
 use crate::ui::theme::BORDER_SUBTLE;
 use crate::util::audio::musical::{MusicalNote, NoteInfo};
 use crate::util::audio::{DB_FLOOR, DEFAULT_SAMPLE_RATE, fmt_duration, fmt_freq};
-use crate::util::color;
+use crate::util::color::{color_to_rgba, lerp_color, rgba_with_alpha, with_alpha};
 use crate::vis_processor;
 use crate::visuals::palettes;
 use iced::advanced::renderer::{self, Quad};
@@ -73,7 +73,7 @@ pub(crate) struct SpectrogramStyle {
 impl Default for SpectrogramStyle {
     fn default() -> Self {
         Self {
-            background: color::with_alpha(palettes::BG_BASE, 0.0),
+            background: with_alpha(palettes::BG_BASE, 0.0),
             floor_db: DB_FLOOR,
             ceiling_db: DB_CEILING,
             opacity: 0.95,
@@ -221,7 +221,7 @@ impl SpectrogramState {
             return None;
         }
         let op = self.style.opacity.clamp(0.0, 1.0);
-        let to_rgba = |c: Color| [c.r, c.g, c.b, c.a * op];
+        let to_rgba = |c: Color| rgba_with_alpha(color_to_rgba(c), c.a * op);
         let min_hz = if self.fft_size > 0 && self.sample_rate > 0.0 {
             self.sample_rate / self.fft_size as f32
         } else {
@@ -437,16 +437,13 @@ impl<'a> Spectrogram<'a> {
             Quad {
                 bounds: tb,
                 border: iced::Border {
-                    color: color::with_alpha(crate::ui::theme::BORDER_SUBTLE, TOOLTIP_BORDER_ALPHA),
+                    color: with_alpha(crate::ui::theme::BORDER_SUBTLE, TOOLTIP_BORDER_ALPHA),
                     width: 1.0,
                     radius: 0.0.into(),
                 },
                 ..Default::default()
             },
-            Background::Color(color::with_alpha(
-                pal.background.strong.color,
-                TOOLTIP_BG_ALPHA,
-            )),
+            Background::Color(with_alpha(pal.background.strong.color, TOOLTIP_BG_ALPHA)),
         );
 
         let text_color = pal.background.base.text;
@@ -496,7 +493,7 @@ impl<'a> Spectrogram<'a> {
 
         let pal = theme.extended_palette();
         let (white, black) = (
-            color::lerp_color(pal.background.weak.color, Color::WHITE, 0.5),
+            lerp_color(pal.background.weak.color, Color::WHITE, 0.5),
             Color::from_rgb(0.1, 0.1, 0.1),
         );
         let (freq_org, freq_ext, time_org, time_ext) = if horizontal {
@@ -518,7 +515,7 @@ impl<'a> Spectrogram<'a> {
             PianoRollOverlay::Off => return,
         };
         let wborder = iced::Border {
-            color: color::with_alpha(black, 0.4),
+            color: with_alpha(black, 0.4),
             width: 0.5,
             radius: 0.0.into(),
         };

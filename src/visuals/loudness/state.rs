@@ -9,7 +9,7 @@ use super::processor::{
 };
 use super::render::{LoudnessParams, LoudnessPrimitive, MeterBar};
 use crate::persistence::settings::{LoudnessSettings, MeterMode};
-use crate::util::color;
+use crate::util::color::{color_to_rgba, with_alpha};
 use crate::vis_processor;
 use crate::visuals::palettes;
 use iced::advanced::Renderer as _;
@@ -110,10 +110,8 @@ impl LoudnessState {
 
     fn visual_params(&self, bounds: Rectangle) -> LoudnessParams {
         let (min, max) = self.range;
-        let guide_color = color::color_to_rgba(self.palette[4]);
-        let mut bg = self.palette[0];
-        bg.a = 1.0;
-        let bg_color = color::color_to_rgba(bg);
+        let guide_color = color_to_rgba(self.palette[4]);
+        let bg_color = color_to_rgba(with_alpha(self.palette[0], 1.0));
 
         // Stereo L/R display with surround aggregation (ITU-R BS.775 layout)
         let left_value = self.aggregate_channels(self.left_mode, LEFT_CHANNEL_INDICES);
@@ -128,15 +126,15 @@ impl LoudnessState {
                 MeterBar {
                     bg_color,
                     fills: vec![
-                        (left_value, color::color_to_rgba(self.palette[1])),
-                        (right_value, color::color_to_rgba(self.palette[2])),
+                        (left_value, color_to_rgba(self.palette[1])),
+                        (right_value, color_to_rgba(self.palette[2])),
                     ],
                 },
                 MeterBar {
                     bg_color,
                     fills: vec![(
                         self.get_value(self.right_mode, 0),
-                        color::color_to_rgba(self.palette[3]),
+                        color_to_rgba(self.palette[3]),
                     )],
                 },
             ],
@@ -270,10 +268,7 @@ impl<'a, Message> Widget<Message, Theme, iced::Renderer> for Loudness<'a> {
                     shadow: Default::default(),
                     snap: true,
                 },
-                Background::Color(Color {
-                    a: 1.0,
-                    ..state.palette[0]
-                }),
+                Background::Color(with_alpha(state.palette[0], 1.0)),
             );
 
             text::Renderer::fill_text(

@@ -3,6 +3,8 @@
 
 use iced::Color;
 
+pub const EPSILON: f32 = 1e-4;
+
 #[inline]
 pub fn f32_to_u8(v: f32) -> u8 {
     (v.clamp(0.0, 1.0) * 255.0).round() as u8
@@ -19,7 +21,6 @@ pub const fn hex(r: u8, g: u8, b: u8, a: u8) -> Color {
 
 #[inline]
 pub fn colors_equal(a: Color, b: Color) -> bool {
-    const EPSILON: f32 = 1e-4;
     (a.r - b.r).abs() <= EPSILON
         && (a.g - b.g).abs() <= EPSILON
         && (a.b - b.b).abs() <= EPSILON
@@ -59,6 +60,11 @@ pub fn with_alpha(color: Color, alpha: f32) -> Color {
 }
 
 #[inline]
+pub fn rgba_with_alpha(color: [f32; 4], alpha: f32) -> [f32; 4] {
+    [color[0], color[1], color[2], alpha]
+}
+
+#[inline]
 pub fn sample_gradient(palette: &[Color], t: f32) -> Color {
     let n = palette.len();
     match n {
@@ -70,6 +76,18 @@ pub fn sample_gradient(palette: &[Color], t: f32) -> Color {
             lerp_color(palette[i], palette[i + 1], pos - i as f32)
         }
     }
+}
+
+#[inline]
+pub fn sample_rgba_gradient(palette: &[[f32; 4]], t: f32) -> [f32; 4] {
+    let n = palette.len();
+    if n < 2 {
+        return palette.first().copied().unwrap_or([0.0; 4]);
+    }
+    let pos = t.clamp(0.0, 1.0) * (n - 1) as f32;
+    let i = (pos as usize).min(n - 2);
+    let f = pos - i as f32;
+    std::array::from_fn(|c| palette[i][c] + (palette[i + 1][c] - palette[i][c]) * f)
 }
 
 pub fn uniform_positions(count: usize) -> Vec<f32> {
@@ -93,7 +111,6 @@ pub fn sanitize_stop_positions(raw: Option<&[f32]>, count: usize) -> Vec<f32> {
     };
 
     let end = count - 1;
-    let eps = 1e-4_f32;
     let internals = count - 2;
 
     if raw.len() == count {
@@ -112,8 +129,8 @@ pub fn sanitize_stop_positions(raw: Option<&[f32]>, count: usize) -> Vec<f32> {
     for i in 1..end {
         let fallback = i as f32 / end as f32;
         let value = if out[i].is_finite() { out[i] } else { fallback };
-        let min = (out[i - 1] + eps).min(1.0);
-        let max = (1.0 - eps * (end - i) as f32).max(min);
+        let min = (out[i - 1] + EPSILON).min(1.0);
+        let max = (1.0 - EPSILON * (end - i) as f32).max(min);
         out[i] = value.clamp(min, max);
     }
 
@@ -174,7 +191,7 @@ pub fn find_segment(
 fn interpolate_with_spreads(linear: f32, spreads: &[f32], lo: usize, hi: usize) -> f32 {
     let sl = spreads.get(lo).copied().unwrap_or(1.0);
     let sr = spreads.get(hi).copied().unwrap_or(1.0);
-    if (sl - 1.0).abs() < 1e-4 && (sr - 1.0).abs() < 1e-4 {
+    if (sl - 1.0).abs() < EPSILON && (sr - 1.0).abs() < EPSILON {
         linear
     } else {
         linear.powf(sl / sr).clamp(0.0, 1.0)

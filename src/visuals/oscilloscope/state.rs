@@ -6,7 +6,7 @@ use super::processor::{
 };
 use super::render::{OscilloscopeParams, OscilloscopePrimitive};
 use crate::persistence::settings::{Channel, OscilloscopeSettings};
-use crate::util::color;
+use crate::util::color::color_to_rgba;
 use crate::visuals::palettes;
 use crate::visuals::project_channel_data;
 use crate::{vis_processor, visualization_widget};
@@ -127,7 +127,7 @@ impl OscilloscopeState {
             .copied()
             .cycle()
             .take(channels)
-            .map(color::color_to_rgba)
+            .map(color_to_rgba)
             .collect();
 
         Some(OscilloscopeParams {

@@ -4,9 +4,10 @@
 // Scrollable wrapper that replaces scrollbars with subtle gradient edge glows,
 // indicating when content overflows above/below or left/right.
 
+use crate::util::color::with_alpha;
 use iced::gradient;
 use iced::widget::{Space, column, container, row, scrollable, scrollable::Scrollbar, stack};
-use iced::{Color, Element, Length};
+use iced::{Element, Length};
 use std::f32::consts::{FRAC_PI_2, PI};
 
 const GLOW_SIZE: f32 = 24.0;
@@ -105,7 +106,7 @@ fn glow<'a, M: 'a>(
             background: Some(
                 gradient::Linear::new(angle)
                     .add_stop(0.0, bg)
-                    .add_stop(1.0, Color { a: 0.0, ..bg })
+                    .add_stop(1.0, with_alpha(bg, 0.0))
                     .into(),
             ),
             ..Default::default()

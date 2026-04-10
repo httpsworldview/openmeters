@@ -11,6 +11,7 @@ use crate::persistence::settings::{
 use crate::ui::pages::visuals::settings::palette::{PaletteEditor, PaletteEvent};
 use crate::ui::subscription::channel_subscription;
 use crate::ui::theme;
+use crate::util::color::with_alpha;
 
 mod application_row;
 use crate::ui::widgets::scroll_glow::ScrollGlow;
@@ -655,7 +656,7 @@ impl ConfigPage {
 
 fn divider<'a>() -> Rule<'a> {
     rule::horizontal(1).style(|theme: &iced::Theme| rule::Style {
-        color: theme::with_alpha(theme.extended_palette().secondary.weak.text, 0.2),
+        color: with_alpha(theme.extended_palette().secondary.weak.text, 0.2),
         radius: 0.0.into(),
         fill_mode: rule::FillMode::Percent(100.0),
         snap: true,

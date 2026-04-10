@@ -1,9 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::ui::theme::f32_to_u8;
 use crate::ui::theme::{self, Palette};
 use crate::ui::widgets::scroll_glow::ScrollGlow;
+use crate::util::color::{
+    EPSILON, colors_equal, default_spreads, f32_to_u8, find_segment, lerp_color,
+    sanitize_stop_positions, sanitize_stop_spreads, uniform_positions, with_alpha,
+};
 use iced::advanced::renderer::{self, Quad};
 use iced::advanced::widget::{Tree, tree};
 use iced::advanced::{Layout, Renderer as _, Widget, layout, mouse};
@@ -45,8 +48,8 @@ pub struct PaletteEditor {
 impl PaletteEditor {
     pub fn new(palette: Palette) -> Self {
         let count = palette.len();
-        let default_positions = theme::uniform_positions(count);
-        let default_spreads = theme::default_spreads(count);
+        let default_positions = uniform_positions(count);
+        let default_spreads = default_spreads(count);
         Self {
             palette,
             positions: default_positions.clone(),
@@ -98,11 +101,11 @@ impl PaletteEditor {
     }
 
     pub fn set_positions(&mut self, positions: Option<&[f32]>) {
-        self.positions = theme::sanitize_stop_positions(positions, self.palette.len());
+        self.positions = sanitize_stop_positions(positions, self.palette.len());
     }
 
     pub fn set_spreads(&mut self, spreads: Option<&[f32]>) {
-        self.spreads = theme::sanitize_stop_spreads(spreads, self.palette.len());
+        self.spreads = sanitize_stop_spreads(spreads, self.palette.len());
     }
 
     pub fn set_colors(&mut self, colors: &[Color]) {
@@ -123,7 +126,7 @@ impl PaletteEditor {
             }
             PaletteEvent::Adjust { index, color } => {
                 let colors = self.palette.colors();
-                if index < colors.len() && !theme::colors_equal(colors[index], color) {
+                if index < colors.len() && !colors_equal(colors[index], color) {
                     let mut c = colors.to_vec();
                     c[index] = color;
                     self.palette.set(&c);
@@ -143,7 +146,7 @@ impl PaletteEditor {
                     return false;
                 }
                 let next = position.clamp(lo, hi);
-                if (self.positions[index] - next).abs() < 1e-4 {
+                if (self.positions[index] - next).abs() < EPSILON {
                     return false;
                 }
                 self.positions[index] = next;
@@ -154,7 +157,7 @@ impl PaletteEditor {
                     return false;
                 }
                 let next = spread.clamp(0.2, 5.0);
-                if (self.spreads[index] - next).abs() < 1e-4 {
+                if (self.spreads[index] - next).abs() < EPSILON {
                     return false;
                 }
                 self.spreads[index] = next;
@@ -461,8 +464,8 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for GradientBar<'_> {
         let stop_count = self.colors.len();
         for i in 0..steps {
             let t = i as f32 / (steps - 1).max(1) as f32;
-            let (lo, hi, f) = theme::find_segment(self.positions, self.spreads, t, stop_count);
-            let c = theme::lerp_color(self.colors[lo], self.colors[hi], f);
+            let (lo, hi, f) = find_segment(self.positions, self.spreads, t, stop_count);
+            let c = lerp_color(self.colors[lo], self.colors[hi], f);
             let premul = Color {
                 r: c.r * c.a,
                 g: c.g * c.a,
@@ -496,10 +499,7 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for GradientBar<'_> {
                     Size::new(INDICATOR_WIDTH, GRADIENT_BAR_HEIGHT),
                 ),
                 Default::default(),
-                Background::Color(Color {
-                    a: line_alpha,
-                    ..Color::WHITE
-                }),
+                Background::Color(with_alpha(Color::WHITE, line_alpha)),
             );
             let hw = if active {
                 HANDLE_WIDTH

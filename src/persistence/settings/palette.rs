@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::util::color;
+use crate::util::color::{
+    EPSILON, colors_equal, sanitize_stop_positions, sanitize_stop_spreads, uniform_positions,
+};
 use iced::Color;
 use serde::de::{self, Deserializer};
 use serde::ser::Serializer;
@@ -97,13 +99,13 @@ impl PaletteSettings {
     ) -> Option<Self> {
         let count = defaults.len();
         let colors_differ = colors_differ(colors, defaults);
-        let sanitized_positions = color::sanitize_stop_positions(Some(positions), count);
+        let sanitized_positions = sanitize_stop_positions(Some(positions), count);
         let positions_differ = sanitized_positions
             .iter()
-            .zip(color::uniform_positions(count).iter())
-            .any(|(a, b)| (a - b).abs() > 1e-4);
-        let sanitized_spreads = color::sanitize_stop_spreads(Some(spreads), count);
-        let spreads_differ = sanitized_spreads.iter().any(|s| (*s - 1.0).abs() > 1e-4);
+            .zip(uniform_positions(count).iter())
+            .any(|(a, b)| (a - b).abs() > EPSILON);
+        let sanitized_spreads = sanitize_stop_spreads(Some(spreads), count);
+        let spreads_differ = sanitized_spreads.iter().any(|s| (*s - 1.0).abs() > EPSILON);
 
         let stops = if colors_differ {
             colors.iter().copied().map(Into::into).collect()
@@ -124,7 +126,7 @@ fn colors_differ(colors: &[Color], defaults: &[Color]) -> bool {
         && colors
             .iter()
             .zip(defaults)
-            .any(|(c, d)| !color::colors_equal(*c, *d))
+            .any(|(c, d)| !colors_equal(*c, *d))
 }
 
 pub trait HasPalette {

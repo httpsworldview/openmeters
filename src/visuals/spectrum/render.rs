@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use crate::persistence::settings::SpectrumDisplayMode;
 use crate::sdf_primitive;
+use crate::util::color::sample_rgba_gradient;
 use crate::visuals::render::common::{
     ClipTransform, SdfVertex, baseline_segment_vertices, build_aa_line_list, decimate_line,
     quad_vertices,
@@ -183,21 +184,10 @@ fn push_highlight_columns(
     }
 }
 
-fn lerp_palette(palette: &[[f32; 4]], t: f32) -> [f32; 4] {
-    let n = palette.len();
-    if n < 2 {
-        return palette.first().copied().unwrap_or([0.0; 4]);
-    }
-    let pos = t.clamp(0.0, 1.0) * (n - 1) as f32;
-    let i = (pos as usize).min(n - 2);
-    let f = pos - i as f32;
-    std::array::from_fn(|c| palette[i][c] + (palette[i + 1][c] - palette[i][c]) * f)
-}
-
 #[inline]
 fn palette_color(palette: &[[f32; 4]], amp: f32, threshold: f32) -> [f32; 4] {
     let intensity = (amp - threshold) / (1.0 - threshold).max(1e-6);
-    lerp_palette(palette, intensity.clamp(0.0, 1.0))
+    sample_rgba_gradient(palette, intensity.clamp(0.0, 1.0))
 }
 
 fn sample_max(pts: &[[f32; 2]], t0: f32, t1: f32) -> f32 {

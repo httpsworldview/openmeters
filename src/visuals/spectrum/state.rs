@@ -8,7 +8,7 @@ use super::render::{SpectrumParams, SpectrumPrimitive};
 use crate::persistence::settings::{SpectrumDisplayMode, SpectrumSettings, SpectrumWeightingMode};
 use crate::util::audio::musical::NoteInfo;
 use crate::util::audio::{fmt_freq, lerp};
-use crate::util::color;
+use crate::util::color::{color_to_rgba, lerp_color, with_alpha};
 use crate::vis_processor;
 use crate::visuals::palettes;
 use crate::visuals::spectrogram::processor::FrequencyScale;
@@ -268,19 +268,16 @@ impl SpectrumState {
             normalized_points: Arc::clone(primary),
             secondary_points: Arc::clone(secondary),
             key: self.key,
-            line_color: color::color_to_rgba(color::lerp_color(
+            line_color: color_to_rgba(lerp_color(
                 pal.primary.base.color,
                 pal.background.base.text,
                 0.35,
             )),
             line_width: self.style.line_thickness,
-            secondary_line_color: color::color_to_rgba(color::with_alpha(
-                pal.secondary.weak.text,
-                0.3,
-            )),
+            secondary_line_color: color_to_rgba(with_alpha(pal.secondary.weak.text, 0.3)),
             secondary_line_width: self.style.secondary_line_thickness,
             highlight_threshold: self.style.highlight_threshold,
-            spectrum_palette: self.style.spectrum_palette.map(color::color_to_rgba),
+            spectrum_palette: self.style.spectrum_palette.map(color_to_rgba),
             display_mode: self.style.display_mode,
             show_secondary_line: self.style.show_secondary_line,
             bar_count: self.style.bar_count,
@@ -475,8 +472,8 @@ fn draw_grid(
     let reverse = style.reverse_frequency;
     let pal = th.extended_palette();
     let txt = pal.background.base.text;
-    let (major_lc, major_tc) = (color::with_alpha(txt, 0.25), color::with_alpha(txt, 0.75));
-    let (minor_lc, minor_tc) = (color::with_alpha(txt, 0.10), color::with_alpha(txt, 0.20));
+    let (major_lc, major_tc) = (with_alpha(txt, 0.25), with_alpha(txt, 0.75));
+    let (minor_lc, minor_tc) = (with_alpha(txt, 0.10), with_alpha(txt, 0.20));
 
     // Walk decades in whichever direction produces ascending screen-x, so the
     // collision check in pass 2 is a single forward sweep.
@@ -590,7 +587,7 @@ fn draw_peak(r: &mut iced::Renderer, th: &iced::Theme, b: Rectangle, pk: &PeakLa
         Size::new(sz.width + 8.0, sz.height + 8.0),
     );
     let bdr = iced::Border {
-        color: color::with_alpha(crate::ui::theme::BORDER_SUBTLE, pk.opacity),
+        color: with_alpha(crate::ui::theme::BORDER_SUBTLE, pk.opacity),
         width: 1.0,
         radius: 0.0.into(),
     };
@@ -602,12 +599,12 @@ fn draw_peak(r: &mut iced::Renderer, th: &iced::Theme, b: Rectangle, pk: &PeakLa
             shadow: Default::default(),
             snap: true,
         },
-        Background::Color(color::with_alpha(pal.background.strong.color, pk.opacity)),
+        Background::Color(with_alpha(pal.background.strong.color, pk.opacity)),
     );
     r.fill_text(
         crate::visuals::make_text(&pk.text, 12.0, sz),
         Point::new(tx, ty),
-        color::with_alpha(pal.background.base.text, pk.opacity),
+        with_alpha(pal.background.base.text, pk.opacity),
         Rectangle::new(Point::new(tx, ty), sz),
     );
 }
