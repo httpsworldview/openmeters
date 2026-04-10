@@ -17,24 +17,23 @@ pub struct MusicalNote {
     pub octave: i32,
 }
 
+fn freq_to_midi(freq_hz: f32) -> Option<f32> {
+    if freq_hz <= 0.0 || !freq_hz.is_finite() {
+        return None;
+    }
+    let m = A440_MIDI as f32 + SEMITONES_PER_OCTAVE as f32 * (freq_hz / A440_HZ).log2();
+    m.is_finite().then_some(m)
+}
+
 impl MusicalNote {
     pub fn from_frequency(freq_hz: f32) -> Option<Self> {
-        if freq_hz <= 0.0 || !freq_hz.is_finite() {
-            return None;
-        }
-
-        // Calculate MIDI note number using 12-TET formula: midi = 69 + 12 * log2(freq / 440)
-        let midi_float =
-            A440_MIDI as f32 + SEMITONES_PER_OCTAVE as f32 * (freq_hz / A440_HZ).log2();
-        Some(Self::from_midi(midi_float.round() as i32))
+        freq_to_midi(freq_hz).map(|m| Self::from_midi(m.round() as i32))
     }
 
     pub fn from_midi(midi_number: i32) -> Self {
-        // Calculate note index (0-11) with proper negative wrap-around
         let note_index = ((midi_number % SEMITONES_PER_OCTAVE + SEMITONES_PER_OCTAVE)
             % SEMITONES_PER_OCTAVE) as usize;
         let octave = (midi_number / SEMITONES_PER_OCTAVE) - MIDI_OCTAVE_OFFSET;
-
         Self {
             midi_number,
             name: NOTE_NAMES[note_index],
@@ -53,11 +52,30 @@ impl MusicalNote {
     pub fn format(&self) -> String {
         format!("{}{}", self.name, self.octave)
     }
+}
 
-    pub fn format_with_hz(freq_hz: f32) -> String {
-        Self::from_frequency(freq_hz).map_or_else(
-            || format!("{freq_hz:.1} Hz"),
-            |note| format!("{:.1} Hz | {}", freq_hz, note.format()),
-        )
+/// Nearest note and cents deviation for a frequency.
+#[derive(Debug, Clone, Copy)]
+pub struct NoteInfo {
+    pub note: MusicalNote,
+    pub cents: i32,
+}
+
+impl NoteInfo {
+    pub fn from_frequency(freq_hz: f32) -> Option<Self> {
+        freq_to_midi(freq_hz).map(|midi| {
+            let rounded = midi.round() as i32;
+            let cents = ((midi - rounded as f32) * 100.0).round() as i32;
+            Self {
+                note: MusicalNote::from_midi(rounded),
+                cents,
+            }
+        })
+    }
+
+    /// `"F4  + 42 Cents"`
+    pub fn fmt_note_cents(&self) -> String {
+        let sign = if self.cents >= 0 { '+' } else { '-' };
+        format!("{:<4}{sign} {} Cents", self.note.format(), self.cents.abs())
     }
 }

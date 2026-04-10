@@ -9,8 +9,9 @@ use super::render::{
     PendingUpload, SPECTROGRAM_PALETTE_SIZE, SpectrogramParams, SpectrogramPrimitive,
 };
 use crate::persistence::settings::PianoRollOverlay;
-use crate::util::audio::musical::MusicalNote;
-use crate::util::audio::{DB_FLOOR, DEFAULT_SAMPLE_RATE};
+use crate::ui::theme::BORDER_SUBTLE;
+use crate::util::audio::musical::{MusicalNote, NoteInfo};
+use crate::util::audio::{DB_FLOOR, DEFAULT_SAMPLE_RATE, fmt_duration, fmt_freq};
 use crate::util::color;
 use crate::vis_processor;
 use crate::visuals::palettes;
@@ -25,6 +26,10 @@ use std::cell::RefCell;
 const DB_CEILING: f32 = 0.0;
 const TOOLTIP_SIZE: f32 = 14.0;
 const TOOLTIP_PAD: f32 = 8.0;
+const TOOLTIP_GAP: f32 = 2.0;
+const TOOLTIP_OFFSET: f32 = 12.0;
+const TOOLTIP_BG_ALPHA: f32 = 0.85;
+const TOOLTIP_BORDER_ALPHA: f32 = 0.4;
 const PIANO_ROLL_WIDTH: f32 = 18.0;
 const PIANO_BLACK_KEY_RATIO: f32 = 0.6;
 const PIANO_LABEL_SIZE: f32 = 9.0;
@@ -89,6 +94,7 @@ pub(crate) struct SpectrogramState {
     pub(crate) rotation: i8,
     sample_rate: f32,
     fft_size: usize,
+    hop_size: usize,
     freq_scale: FrequencyScale,
     zoom: f32,
     pan: f32,
@@ -116,6 +122,7 @@ impl SpectrogramState {
             rotation: 0,
             sample_rate: DEFAULT_SAMPLE_RATE,
             fft_size: 4096,
+            hop_size: 1024,
             freq_scale: FrequencyScale::default(),
             zoom: 1.0,
             pan: 0.5,
@@ -172,6 +179,7 @@ impl SpectrogramState {
         }
         self.sample_rate = snap.sample_rate;
         self.fft_size = snap.fft_size;
+        self.hop_size = snap.hop_size;
         self.freq_scale = snap.frequency_scale;
 
         let capacity = (snap.history_length as u32).clamp(1, 8192);
@@ -285,6 +293,29 @@ impl SpectrogramState {
         };
         norm.is_finite().then(|| norm.clamp(0.0, 1.0))
     }
+
+    // 1 column = 1 logical pixel on the time axis, matching the shader.
+    fn time_ago_at_cursor(&self, cursor: Point, bounds: Rectangle) -> Option<f32> {
+        if !bounds.contains(cursor)
+            || self.col_count == 0
+            || self.hop_size == 0
+            || self.sample_rate <= 0.0
+        {
+            return None;
+        }
+        let age = match self.rotation_index() {
+            0 => bounds.x + bounds.width - cursor.x,
+            1 => bounds.y + bounds.height - cursor.y,
+            2 => cursor.x - bounds.x,
+            3 => cursor.y - bounds.y,
+            _ => return None,
+        };
+        if age < 0.0 || age >= self.col_count as f32 {
+            return None;
+        }
+        let secs = age * (self.hop_size as f32 / self.sample_rate);
+        secs.is_finite().then_some(secs)
+    }
 }
 
 const MIN_ZOOM: f32 = 1.0;
@@ -296,6 +327,7 @@ struct InteractionState {
     cursor: Option<Point>,
     modifiers: keyboard::Modifiers,
     drag: Option<(f32, f32)>, // (freq_axis_origin, start_pan)
+    left_held: bool,
 }
 
 impl SpectrogramState {
@@ -321,9 +353,53 @@ pub(crate) struct Spectrogram<'a> {
     state: &'a RefCell<SpectrogramState>,
 }
 
+// Places the tooltip adjacent to the cursor on the side opposite the freq
+// axis, flipping when it would clip the widget bounds.
+fn place_tooltip(bounds: Rectangle, cursor: Point, sz: Size, horizontal: bool) -> Rectangle {
+    let max_x = (bounds.x + bounds.width - sz.width).max(bounds.x);
+    let max_y = (bounds.y + bounds.height - sz.height).max(bounds.y);
+    let (x, y) = if horizontal {
+        let x = (cursor.x - sz.width * 0.5).clamp(bounds.x, max_x);
+        let y = if cursor.y - TOOLTIP_OFFSET - sz.height >= bounds.y {
+            cursor.y - TOOLTIP_OFFSET - sz.height
+        } else {
+            (cursor.y + TOOLTIP_OFFSET).min(max_y)
+        };
+        (x, y)
+    } else {
+        let x = if cursor.x + TOOLTIP_OFFSET + sz.width <= bounds.x + bounds.width {
+            cursor.x + TOOLTIP_OFFSET
+        } else {
+            (cursor.x - TOOLTIP_OFFSET - sz.width).max(bounds.x)
+        };
+        let y = (cursor.y - sz.height * 0.5).clamp(bounds.y, max_y);
+        (x, y)
+    };
+    Rectangle::new(Point::new(x, y), sz)
+}
+
 impl<'a> Spectrogram<'a> {
     pub fn new(state: &'a RefCell<SpectrogramState>) -> Self {
         Self { state }
+    }
+
+    fn draw_crosshair(&self, renderer: &mut iced::Renderer, bounds: Rectangle, cursor: Point) {
+        let c = BORDER_SUBTLE;
+        for rect in [
+            Rectangle::new(
+                Point::new(cursor.x, bounds.y),
+                Size::new(1.0, bounds.height),
+            ),
+            Rectangle::new(Point::new(bounds.x, cursor.y), Size::new(bounds.width, 1.0)),
+        ] {
+            renderer.fill_quad(
+                Quad {
+                    bounds: rect,
+                    ..Default::default()
+                },
+                c,
+            );
+        }
     }
 
     fn draw_tooltip(
@@ -339,65 +415,50 @@ impl<'a> Spectrogram<'a> {
             return;
         };
         let horizontal = state.freq_axis_is_horizontal();
+        let time_ago = state.time_ago_at_cursor(cursor, bounds);
         drop(state);
-        let content = MusicalNote::format_with_hz(freq);
 
-        let tsz = crate::visuals::measure_text(&content, TOOLTIP_SIZE);
+        let freq_text = fmt_freq(freq);
+        let note_text = NoteInfo::from_frequency(freq)
+            .map_or_else(|| String::from("--"), |ni| ni.fmt_note_cents());
+        let time_text = time_ago.map_or_else(|| String::from("--"), fmt_duration);
 
-        let sz = Size::new(
-            tsz.width + TOOLTIP_PAD * 2.0,
-            tsz.height + TOOLTIP_PAD * 2.0,
-        );
-        let max_x = (bounds.x + bounds.width - sz.width).max(bounds.x);
-        let max_y = (bounds.y + bounds.height - sz.height).max(bounds.y);
-
-        let (x, y) = if horizontal {
-            let x = (cursor.x - sz.width * 0.5).clamp(bounds.x, max_x);
-            let y = if cursor.y - 12.0 - sz.height >= bounds.y {
-                cursor.y - 12.0 - sz.height
-            } else {
-                (cursor.y + 12.0).min(max_y)
-            };
-            (x, y)
-        } else {
-            let x = if cursor.x + 12.0 + sz.width <= bounds.x + bounds.width {
-                cursor.x + 12.0
-            } else {
-                (cursor.x - 12.0 - sz.width).max(bounds.x)
-            };
-            let y = (cursor.y - sz.height * 0.5).clamp(bounds.y, max_y);
-            (x, y)
-        };
-        let tb = Rectangle::new(Point::new(x, y), sz);
+        let fsz = crate::visuals::measure_text(&freq_text, TOOLTIP_SIZE);
+        let nsz = crate::visuals::measure_text(&note_text, TOOLTIP_SIZE);
+        let tsz = crate::visuals::measure_text(&time_text, TOOLTIP_SIZE);
+        let line_h = fsz.height;
+        let content_w = fsz.width.max(nsz.width).max(tsz.width);
+        let content_h = line_h * 3.0 + TOOLTIP_GAP * 2.0;
+        let sz = Size::new(content_w + TOOLTIP_PAD * 2.0, content_h + TOOLTIP_PAD * 2.0);
+        let tb = place_tooltip(bounds, cursor, sz, horizontal);
 
         let pal = theme.extended_palette();
         renderer.fill_quad(
             Quad {
-                bounds: Rectangle::new(Point::new(tb.x + 1.0, tb.y + 1.0), sz),
-                border: Default::default(),
-                ..Default::default()
-            },
-            Background::Color(color::with_alpha(pal.background.base.color, 0.3)),
-        );
-        renderer.fill_quad(
-            Quad {
                 bounds: tb,
                 border: iced::Border {
-                    color: crate::ui::theme::BORDER_SUBTLE,
+                    color: color::with_alpha(crate::ui::theme::BORDER_SUBTLE, TOOLTIP_BORDER_ALPHA),
                     width: 1.0,
                     radius: 0.0.into(),
                 },
                 ..Default::default()
             },
-            Background::Color(pal.background.strong.color),
+            Background::Color(color::with_alpha(pal.background.strong.color, TOOLTIP_BG_ALPHA)),
         );
 
-        renderer.fill_text(
-            crate::visuals::make_text(&content, TOOLTIP_SIZE, tsz),
-            Point::new(tb.x + TOOLTIP_PAD, tb.y + TOOLTIP_PAD),
-            pal.background.base.text,
-            Rectangle::new(Point::new(tb.x + TOOLTIP_PAD, tb.y + TOOLTIP_PAD), tsz),
-        );
+        let text_color = pal.background.base.text;
+        let tx = tb.x + TOOLTIP_PAD;
+        let mut ty = tb.y + TOOLTIP_PAD;
+        for (text, sz) in [(&freq_text, fsz), (&note_text, nsz), (&time_text, tsz)] {
+            let pt = Point::new(tx, ty);
+            renderer.fill_text(
+                crate::visuals::make_text(text, TOOLTIP_SIZE, sz),
+                pt,
+                text_color,
+                Rectangle::new(pt, sz),
+            );
+            ty += line_h + TOOLTIP_GAP;
+        }
     }
 
     fn draw_piano_roll(
@@ -631,6 +692,18 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
             iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Middle)) => {
                 st.drag = None;
             }
+            iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+                if st.cursor.is_some_and(|p| b.contains(p)) {
+                    st.left_held = true;
+                    shell.request_redraw();
+                }
+            }
+            iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+                if st.left_held {
+                    st.left_held = false;
+                    shell.request_redraw();
+                }
+            }
             _ => {}
         }
     }
@@ -680,10 +753,12 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
                 self.draw_piano_roll(r, theme, bounds, piano_roll, uv_y_range);
             });
         }
-        if let Some(c) = interaction.cursor
+        if interaction.left_held
+            && let Some(c) = interaction.cursor
             && bounds.contains(c)
         {
             renderer.with_layer(bounds, |r| {
+                self.draw_crosshair(r, bounds, c);
                 self.draw_tooltip(r, theme, bounds, c, uv_y_range);
             });
         }

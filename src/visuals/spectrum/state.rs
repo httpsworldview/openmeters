@@ -6,7 +6,7 @@ use super::processor::{
 };
 use super::render::{SpectrumParams, SpectrumPrimitive};
 use crate::persistence::settings::{SpectrumDisplayMode, SpectrumSettings, SpectrumWeightingMode};
-use crate::util::audio::musical::MusicalNote;
+use crate::util::audio::musical::NoteInfo;
 use crate::util::audio::{fmt_freq, lerp};
 use crate::util::color;
 use crate::vis_processor;
@@ -217,7 +217,10 @@ impl SpectrumState {
         if y < 0.08 {
             return None;
         }
-        let text = MusicalNote::format_with_hz(f);
+        let text = NoteInfo::from_frequency(f).map_or_else(
+            || fmt_freq(f),
+            |ni| format!("{} | {}", fmt_freq(f), ni.fmt_note_cents()),
+        );
         Some(PeakLabel {
             text,
             x: x.clamp(0.0, 1.0),
