@@ -31,19 +31,24 @@ pub fn palettes_equal(a: &[Color], b: &[Color]) -> bool {
     a.len() == b.len() && a.iter().zip(b).all(|(x, y)| colors_equal(*x, *y))
 }
 
-// Interpolates colors in Oklch space along the hue circle for perceptually
-// smooth transitions (e.g., orange -> green passes through yellow).
-pub fn mix_colors(a: Color, b: Color, factor: f32) -> Color {
-    let t = factor.clamp(0.0, 1.0);
-    let (l1, c1, h1) = srgb_to_oklch(a.r, a.g, a.b);
-    let (l2, c2, h2) = srgb_to_oklch(b.r, b.g, b.b);
+// Packs `iced::Color` to `[f32; 4]` for GPU upload. Delegates to iced's `pack`
+// so the `web-colors` feature flag controls linearization.
+#[inline]
+pub fn color_to_rgba(color: Color) -> [f32; 4] {
+    iced_wgpu::graphics::color::pack(color).components()
+}
 
-    let l = l1 + (l2 - l1) * t;
-    let c = c1 + (c2 - c1) * t;
-    let h = interpolate_hue(h1, c1, h2, c2, t);
-
-    let (r, g, b_out) = oklch_to_srgb(l, c, h);
-    Color::from_rgba(r, g, b_out, a.a + (b.a - a.a) * t)
+// sRGB-space lerp. Only correct for inputs close in value (theme tweens, track
+// fills); distant-hue interpolation belongs on the GPU palette pipeline.
+#[inline]
+pub fn lerp_color(a: Color, b: Color, t: f32) -> Color {
+    let t = t.clamp(0.0, 1.0);
+    Color::from_rgba(
+        a.r + (b.r - a.r) * t,
+        a.g + (b.g - a.g) * t,
+        a.b + (b.b - a.b) * t,
+        a.a + (b.a - a.a) * t,
+    )
 }
 
 pub fn with_alpha(color: Color, alpha: f32) -> Color {
@@ -51,11 +56,6 @@ pub fn with_alpha(color: Color, alpha: f32) -> Color {
         a: alpha.clamp(0.0, 1.0),
         ..color
     }
-}
-
-#[inline]
-pub fn color_to_rgba(color: Color) -> [f32; 4] {
-    [color.r, color.g, color.b, color.a]
 }
 
 #[inline]
@@ -67,32 +67,8 @@ pub fn sample_gradient(palette: &[Color], t: f32) -> Color {
         _ => {
             let pos = t.clamp(0.0, 1.0) * (n - 1) as f32;
             let i = (pos as usize).min(n - 2);
-            mix_colors(palette[i], palette[i + 1], pos - i as f32)
+            lerp_color(palette[i], palette[i + 1], pos - i as f32)
         }
-    }
-}
-
-// Samples a gradient with non-uniform stop positions using sRGB linear
-// interpolation (matches the GPU palette LUT).
-pub fn sample_gradient_positioned(
-    colors: &[Color],
-    positions: &[f32],
-    spreads: &[f32],
-    t: f32,
-) -> Color {
-    let n = colors.len();
-    if n == 0 {
-        return Color::BLACK;
-    }
-    if n == 1 {
-        return colors[0];
-    }
-    let (lo, hi, f) = find_segment(positions, spreads, t, n);
-    Color {
-        r: colors[lo].r + (colors[hi].r - colors[lo].r) * f,
-        g: colors[lo].g + (colors[hi].g - colors[lo].g) * f,
-        b: colors[lo].b + (colors[hi].b - colors[lo].b) * f,
-        a: colors[lo].a + (colors[hi].a - colors[lo].a) * f,
     }
 }
 
@@ -162,8 +138,7 @@ pub fn sanitize_stop_spreads(raw: Option<&[f32]>, count: usize) -> Vec<f32> {
     out
 }
 
-// Finds the gradient segment for a given `t` and returns (lo, hi, interpolation_factor)
-// with the spread curve applied. Shared between CPU preview and GPU LUT builder.
+// Returns (lo, hi, spread-adjusted factor) for the gradient segment containing `t`.
 pub fn find_segment(
     positions: &[f32],
     spreads: &[f32],
@@ -193,91 +168,6 @@ pub fn find_segment(
         }
     }
     (count - 2, count - 1, 1.0)
-}
-
-// --- private helpers ---
-
-// Interpolates hue along the shorter arc, handling achromatic colors.
-fn interpolate_hue(h1: f32, c1: f32, h2: f32, c2: f32, t: f32) -> f32 {
-    const EPSILON: f32 = 1e-6;
-    if c1 < EPSILON {
-        return h2;
-    }
-    if c2 < EPSILON {
-        return h1;
-    }
-    let mut delta = h2 - h1;
-    if delta > std::f32::consts::PI {
-        delta -= std::f32::consts::TAU;
-    } else if delta < -std::f32::consts::PI {
-        delta += std::f32::consts::TAU;
-    }
-    h1 + delta * t
-}
-
-#[inline]
-fn srgb_to_oklch(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
-    let r_lin = srgb_to_linear(r);
-    let g_lin = srgb_to_linear(g);
-    let b_lin = srgb_to_linear(b);
-
-    let l = 0.412_221_46 * r_lin + 0.536_332_55 * g_lin + 0.051_445_995 * b_lin;
-    let m = 0.211_903_5 * r_lin + 0.680_699_5 * g_lin + 0.107_396_96 * b_lin;
-    let s = 0.088_302_46 * r_lin + 0.281_718_84 * g_lin + 0.629_978_7 * b_lin;
-
-    let l_cbrt = l.max(0.0).cbrt();
-    let m_cbrt = m.max(0.0).cbrt();
-    let s_cbrt = s.max(0.0).cbrt();
-
-    let ok_l = 0.210_454_26 * l_cbrt + 0.793_617_8 * m_cbrt - 0.004_072_047 * s_cbrt;
-    let ok_a = 1.977_998_5 * l_cbrt - 2.428_592_2 * m_cbrt + 0.450_593_7 * s_cbrt;
-    let ok_b = 0.025_904_037 * l_cbrt + 0.782_771_77 * m_cbrt - 0.808_675_77 * s_cbrt;
-
-    let chroma = (ok_a * ok_a + ok_b * ok_b).sqrt();
-    let hue = ok_b.atan2(ok_a);
-    (ok_l, chroma, hue)
-}
-
-#[inline]
-fn oklch_to_srgb(l: f32, c: f32, h: f32) -> (f32, f32, f32) {
-    let ok_a = c * h.cos();
-    let ok_b = c * h.sin();
-
-    let l_cubed = l + 0.396_337_78 * ok_a + 0.215_803_76 * ok_b;
-    let m_cubed = l - 0.105_561_346 * ok_a - 0.063_854_17 * ok_b;
-    let s_cubed = l - 0.089_484_18 * ok_a - 1.291_485_5 * ok_b;
-
-    let l_lin = l_cubed * l_cubed * l_cubed;
-    let m_lin = m_cubed * m_cubed * m_cubed;
-    let s_lin = s_cubed * s_cubed * s_cubed;
-
-    let r_lin = 4.076_741_7 * l_lin - 3.307_711_6 * m_lin + 0.230_969_94 * s_lin;
-    let g_lin = -1.268_438 * l_lin + 2.609_757_4 * m_lin - 0.341_319_4 * s_lin;
-    let b_lin = -0.004_196_086 * l_lin - 0.703_418_6 * m_lin + 1.707_614_7 * s_lin;
-
-    (
-        linear_to_srgb(r_lin).clamp(0.0, 1.0),
-        linear_to_srgb(g_lin).clamp(0.0, 1.0),
-        linear_to_srgb(b_lin).clamp(0.0, 1.0),
-    )
-}
-
-#[inline]
-fn srgb_to_linear(c: f32) -> f32 {
-    if c <= 0.04045 {
-        c / 12.92
-    } else {
-        ((c + 0.055) / 1.055).powf(2.4)
-    }
-}
-
-#[inline]
-fn linear_to_srgb(c: f32) -> f32 {
-    if c <= 0.0031308 {
-        c * 12.92
-    } else {
-        1.055 * c.powf(1.0 / 2.4) - 0.055
-    }
 }
 
 #[inline]

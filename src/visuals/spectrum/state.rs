@@ -268,7 +268,7 @@ impl SpectrumState {
             normalized_points: Arc::clone(primary),
             secondary_points: Arc::clone(secondary),
             key: self.key,
-            line_color: color::color_to_rgba(color::mix_colors(
+            line_color: color::color_to_rgba(color::lerp_color(
                 pal.primary.base.color,
                 pal.background.base.text,
                 0.35,
@@ -480,7 +480,13 @@ fn draw_grid(
 
     // Walk decades in whichever direction produces ascending screen-x, so the
     // collision check in pass 2 is a single forward sweep.
-    let exp_of = |di: i32| if reverse { end_exp - di } else { start_exp + di };
+    let exp_of = |di: i32| {
+        if reverse {
+            end_exp - di
+        } else {
+            start_exp + di
+        }
+    };
     let tick_x = |f: f32| -> Option<f32> {
         if !(min_f..=max_f).contains(&f) {
             return None;

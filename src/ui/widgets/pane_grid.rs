@@ -6,18 +6,13 @@ pub use content::Content;
 pub use pane::Pane;
 pub use state::State;
 
-use iced_widget::core::event::Event;
-use iced_widget::core::layout;
-use iced_widget::core::mouse;
-use iced_widget::core::renderer;
-use iced_widget::core::renderer::Quad;
-use iced_widget::core::widget::{
+use iced::advanced::renderer::{self, Quad};
+use iced::advanced::widget::{
     self,
     tree::{self, Tree},
 };
-use iced_widget::core::{
-    self, Background, Clipboard, Element, Layout, Length, Point, Rectangle, Shell, Size, Widget,
-};
+use iced::advanced::{self as core, Clipboard, Layout, Shell, Widget, layout, mouse};
+use iced::{Background, Element, Event, Length, Point, Rectangle, Size};
 
 #[derive(Default)]
 struct Interaction {
@@ -406,7 +401,7 @@ where
                 renderer.fill_quad(
                     Quad {
                         bounds: child_layout.bounds(),
-                        border: iced_widget::core::Border {
+                        border: iced::Border {
                             radius: Default::default(),
                             width: 2.0,
                             color: crate::ui::theme::with_alpha(accent, 0.9),

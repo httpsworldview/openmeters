@@ -1,21 +1,19 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-// GPU palette colors are defined in sRGB. The sRGB framebuffer format handles
-// gamma correction automatically, so colors are passed through without conversion.
+// Theme colors are sRGB CSS floats. Under iced `web-colors` no gamma
+// conversion happens anywhere: sRGB flows raw to a non-sRGB framebuffer.
 
 use iced::border::Border;
 use iced::theme::palette::{self, Extended};
 use iced::widget::{button, container, slider, text};
 use iced::{Background, Color, Theme};
 
-// Re-exports: color math (canonical home: util/color)
 pub use crate::util::color::{
-    colors_equal, default_spreads, f32_to_u8, mix_colors, sample_gradient_positioned,
-    sanitize_stop_positions, sanitize_stop_spreads, uniform_positions, with_alpha,
+    colors_equal, default_spreads, f32_to_u8, find_segment, lerp_color, sanitize_stop_positions,
+    sanitize_stop_spreads, uniform_positions, with_alpha,
 };
 
-// Re-exports: palette data (canonical home: visuals/palettes)
 pub use crate::visuals::palettes::{
     BG_BASE, Palette, background, loudness, oscilloscope, spectrogram, spectrum, stereometer,
     waveform,
@@ -101,7 +99,7 @@ pub fn tab_button_style(theme: &Theme, active: bool, status: button::Status) -> 
     let mut base = if active {
         palette.primary.base.color
     } else {
-        mix_colors(palette.background.base.color, Color::WHITE, 0.2)
+        lerp_color(palette.background.base.color, Color::WHITE, 0.2)
     };
     base.a = 1.0;
     button_style(theme, base, status)
@@ -163,8 +161,8 @@ pub fn accent_primary() -> Color {
 pub fn slider_style(theme: &Theme, status: slider::Status) -> slider::Style {
     let palette = theme.extended_palette();
 
-    let track = mix_colors(palette.background.base.color, Color::WHITE, 0.16);
-    let filled = mix_colors(palette.primary.base.color, Color::WHITE, 0.10);
+    let track = lerp_color(palette.background.base.color, Color::WHITE, 0.16);
+    let filled = lerp_color(palette.primary.base.color, Color::WHITE, 0.10);
 
     let (handle_color, border_color, border_width) = match status {
         slider::Status::Hovered | slider::Status::Dragged => (filled, BORDER_FOCUS, 1.0),

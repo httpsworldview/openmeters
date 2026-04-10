@@ -15,7 +15,6 @@ use crate::visuals::render::common::{CacheTracker, create_shader_module};
 use super::processor::{FrequencyScale, SpectrogramPoint};
 
 pub const SPECTROGRAM_PALETTE_SIZE: usize = 5;
-pub const PALETTE_LUT_SIZE: u32 = 256;
 
 const fn extent3d(w: u32, h: u32) -> wgpu::Extent3d {
     wgpu::Extent3d {
@@ -230,9 +229,19 @@ struct Uniforms {
     contrast: f32,
     tilt_db: f32,
     _pad: [f32; 3],
+    stop_positions: [[f32; 4]; 2],
+    stop_spreads: [[f32; 4]; 2],
 }
 
 impl Uniforms {
+    fn pack_stops(stops: &[f32; SPECTROGRAM_PALETTE_SIZE]) -> [[f32; 4]; 2] {
+        let mut out = [[0.0f32; 4]; 2];
+        for (i, &v) in stops.iter().enumerate() {
+            out[i / 4][i % 4] = v;
+        }
+        out
+    }
+
     fn from_params(p: &SpectrogramParams, viewport: [f32; 2], scale_factor: f32) -> Self {
         let freq_scale = match p.freq_scale {
             FrequencyScale::Linear => 0u32,
@@ -266,6 +275,8 @@ impl Uniforms {
             contrast: p.contrast.max(0.01),
             tilt_db: p.tilt_db,
             _pad: [0.0; 3],
+            stop_positions: Self::pack_stops(&p.stop_positions),
+            stop_spreads: Self::pack_stops(&p.stop_spreads),
         }
     }
 }
@@ -301,14 +312,10 @@ impl primitive::Pipeline for Pipeline {
                 bgl_entry(
                     1,
                     wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
                         view_dimension: wgpu::TextureViewDimension::D1,
                         multisampled: false,
                     },
-                ),
-                bgl_entry(
-                    2,
-                    wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 ),
             ],
         });
@@ -441,8 +448,6 @@ struct Resources {
     bind_group: wgpu::BindGroup,
     uniform_cache: Uniforms,
     palette_cache: [[f32; 4]; SPECTROGRAM_PALETTE_SIZE],
-    positions_cache: [f32; SPECTROGRAM_PALETTE_SIZE],
-    spreads_cache: [f32; SPECTROGRAM_PALETTE_SIZE],
     quad_written: bool,
 }
 
@@ -474,16 +479,11 @@ impl Resources {
         let (palette_tex, palette_view) = create_1d_texture(
             device,
             "Spectrogram palette",
-            PALETTE_LUT_SIZE,
+            SPECTROGRAM_PALETTE_SIZE as u32,
+            // Raw sRGB bytes pass through unchanged under web-colors mode.
             wgpu::TextureFormat::Rgba8Unorm,
         );
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("Spectrogram sampler"),
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
-        let bind_group = make_bind_group(device, layout, &uniform_buf, &palette_view, &sampler);
+        let bind_group = make_bind_group(device, layout, &uniform_buf, &palette_view);
 
         Self {
             uniform_buf,
@@ -494,8 +494,6 @@ impl Resources {
             bind_group,
             uniform_cache: Uniforms::zeroed(),
             palette_cache: [[0.0; 4]; SPECTROGRAM_PALETTE_SIZE],
-            positions_cache: [0.0; SPECTROGRAM_PALETTE_SIZE],
-            spreads_cache: [0.0; SPECTROGRAM_PALETTE_SIZE],
             quad_written: false,
         }
     }
@@ -544,7 +542,7 @@ impl Resources {
             let mut encoder =
                 device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
             if let Some(old_ws) = p.linearize_old_write_slot {
-                // Ring was full and wrapped — linearize: reorder so oldest
+                // Ring was full and wrapped; linearize: reorder so oldest
                 // data is at slot 0 and newest at slot col_count-1.
                 let ws = old_ws as u64;
                 let oldest_offset = ws * stride;
@@ -606,24 +604,25 @@ impl Resources {
     }
 
     fn write_palette(&mut self, queue: &wgpu::Queue, p: &SpectrogramParams) {
-        if p.palette == self.palette_cache
-            && p.stop_positions == self.positions_cache
-            && p.stop_spreads == self.spreads_cache
-        {
+        if p.palette == self.palette_cache {
             return;
         }
-        let lut = build_palette_lut(&p.palette, &p.stop_positions, &p.stop_spreads);
+        let mut bytes = [0u8; SPECTROGRAM_PALETTE_SIZE * 4];
+        for (i, rgba) in p.palette.iter().enumerate() {
+            bytes[i * 4] = f32_to_u8(rgba[0]);
+            bytes[i * 4 + 1] = f32_to_u8(rgba[1]);
+            bytes[i * 4 + 2] = f32_to_u8(rgba[2]);
+            bytes[i * 4 + 3] = f32_to_u8(rgba[3]);
+        }
         write_texture_region(
             queue,
             &self.palette_tex,
             wgpu::Origin3d::ZERO,
-            extent3d(PALETTE_LUT_SIZE, 1),
-            PALETTE_LUT_SIZE * 4,
-            &lut,
+            extent3d(SPECTROGRAM_PALETTE_SIZE as u32, 1),
+            (SPECTROGRAM_PALETTE_SIZE * 4) as u32,
+            &bytes,
         );
         self.palette_cache = p.palette;
-        self.positions_cache = p.stop_positions;
-        self.spreads_cache = p.stop_spreads;
     }
 }
 
@@ -656,7 +655,6 @@ fn make_bind_group(
     layout: &wgpu::BindGroupLayout,
     ub: &wgpu::Buffer,
     pal: &wgpu::TextureView,
-    sam: &wgpu::Sampler,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Spectrogram BG"),
@@ -670,28 +668,8 @@ fn make_bind_group(
                 binding: 1,
                 resource: wgpu::BindingResource::TextureView(pal),
             },
-            wgpu::BindGroupEntry {
-                binding: 2,
-                resource: wgpu::BindingResource::Sampler(sam),
-            },
         ],
     })
-}
-
-fn build_palette_lut(
-    palette: &[[f32; 4]; SPECTROGRAM_PALETTE_SIZE],
-    positions: &[f32; SPECTROGRAM_PALETTE_SIZE],
-    spreads: &[f32; SPECTROGRAM_PALETTE_SIZE],
-) -> Vec<u8> {
-    use crate::util::color::find_segment;
-    let n = PALETTE_LUT_SIZE as usize;
-    (0..n)
-        .flat_map(|i| {
-            let t = i as f32 / (n - 1).max(1) as f32;
-            let (lo, hi, f) = find_segment(positions, spreads, t, SPECTROGRAM_PALETTE_SIZE);
-            (0..4).map(move |c| f32_to_u8(palette[lo][c] + (palette[hi][c] - palette[lo][c]) * f))
-        })
-        .collect()
 }
 
 impl std::fmt::Debug for SpectrogramParams {

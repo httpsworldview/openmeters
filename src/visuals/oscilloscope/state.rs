@@ -124,9 +124,10 @@ impl OscilloscopeState {
             .style
             .colors
             .iter()
+            .copied()
             .cycle()
             .take(channels)
-            .map(|c| color::color_to_rgba(*c))
+            .map(color::color_to_rgba)
             .collect();
 
         Some(OscilloscopeParams {

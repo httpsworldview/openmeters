@@ -129,7 +129,7 @@ pub fn extend_interleaved_history(
     history.extend(samples);
 }
 
-// 3–4 significant figures, no space before unit. Unified across tooltips,
+// 3-4 significant figures, no space before unit. Unified across tooltips,
 // readouts, and axis labels.
 pub fn fmt_freq(f: f32) -> String {
     match f {

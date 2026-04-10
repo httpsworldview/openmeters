@@ -458,9 +458,11 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for GradientBar<'_> {
 
         let steps = (bar_w as usize).clamp(1, 512);
         let step_w = bar_w / steps as f32;
+        let stop_count = self.colors.len();
         for i in 0..steps {
             let t = i as f32 / (steps - 1).max(1) as f32;
-            let c = theme::sample_gradient_positioned(self.colors, self.positions, self.spreads, t);
+            let (lo, hi, f) = theme::find_segment(self.positions, self.spreads, t, stop_count);
+            let c = theme::lerp_color(self.colors[lo], self.colors[hi], f);
             let premul = Color {
                 r: c.r * c.a,
                 g: c.g * c.a,

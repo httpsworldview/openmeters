@@ -8,26 +8,39 @@ license = "GPL-3.0-or-later"
 pipewire = "0.9.2"
 anyhow = "1.0.102"
 serde_json = "1.0.149"
-serde = { version = "1.0.228", features = ["derive"] }
-iced = { version = "0.14.0", features = ["advanced", "wgpu"] }
-iced_widget = "0.14.2"
 async-channel = "2.5"
-bytemuck = { version = "1.25.0", features = ["derive"] }
 iced_wgpu = "0.14.0"
 rustfft = "6.4.1"
 realfft = "3.5"
 tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 wide = "1.2.0"
-iced_layershell = "0.17.1"
 wayland-client = "0.31.13"
+
+  [dependencies.serde]
+  version = "1.0.228"
+  features = [ "derive" ]
+
+  [dependencies.iced]
+  version = "0.14.0"
+  default-features = false
+  features = [ "advanced", "wgpu", "wayland", "thread-pool", "web-colors" ]
+
+  [dependencies.bytemuck]
+  version = "1.25.0"
+  features = [ "derive" ]
+
+  [dependencies.tracing-subscriber]
+  version = "0.3.23"
+  features = [ "env-filter", "fmt" ]
+
+  [dependencies.iced_layershell]
+  version = "0.17.1"
+  default-features = false
 
 [dev-dependencies]
 ebur128 = "0.1.10"
 tempfile = "3.27.0"
 
-# some level of compiler optimization is needed in dev builds because
-# it's expensive to run ~3k FFTs/second.
 [profile.dev]
 opt-level = 1
 

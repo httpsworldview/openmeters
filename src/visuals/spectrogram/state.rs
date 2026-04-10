@@ -443,7 +443,10 @@ impl<'a> Spectrogram<'a> {
                 },
                 ..Default::default()
             },
-            Background::Color(color::with_alpha(pal.background.strong.color, TOOLTIP_BG_ALPHA)),
+            Background::Color(color::with_alpha(
+                pal.background.strong.color,
+                TOOLTIP_BG_ALPHA,
+            )),
         );
 
         let text_color = pal.background.base.text;
@@ -493,7 +496,7 @@ impl<'a> Spectrogram<'a> {
 
         let pal = theme.extended_palette();
         let (white, black) = (
-            color::mix_colors(pal.background.weak.color, Color::WHITE, 0.5),
+            color::lerp_color(pal.background.weak.color, Color::WHITE, 0.5),
             Color::from_rgb(0.1, 0.1, 0.1),
         );
         let (freq_org, freq_ext, time_org, time_ext) = if horizontal {

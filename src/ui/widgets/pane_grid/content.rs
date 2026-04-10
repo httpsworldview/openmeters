@@ -1,9 +1,7 @@
-use iced_widget::core::event::Event;
-use iced_widget::core::layout;
-use iced_widget::core::mouse;
-use iced_widget::core::renderer;
-use iced_widget::core::widget::{self, Tree};
-use iced_widget::core::{self, Clipboard, Element, Layout, Rectangle, Shell};
+use iced::advanced::renderer;
+use iced::advanced::widget::{self, Tree};
+use iced::advanced::{self as core, Clipboard, Layout, Shell, layout, mouse};
+use iced::{Element, Event, Rectangle};
 
 #[allow(missing_debug_implementations)]
 pub struct Content<'a, Message, Theme = iced::Theme, Renderer = iced::Renderer>

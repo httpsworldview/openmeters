@@ -23,6 +23,10 @@ struct Uniforms {
     _pad0: f32,
     _pad1: f32,
     _pad2: f32,
+
+    // 5 palette stops packed across 2 vec4s each (indices 0-4 used, rest ignored).
+    stop_positions: array<vec4<f32>, 2>,
+    stop_spreads: array<vec4<f32>, 2>,
 }
 
 struct VertexOutput {
@@ -33,7 +37,6 @@ struct VertexOutput {
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var palette_tex: texture_1d<f32>;
-@group(0) @binding(2) var palette_sampler: sampler;
 
 // ERB-rate: 21.4 * log10(1 + f/228.8)  (Glasberg & Moore 1990)
 fn erb(f: f32) -> f32 {
@@ -59,6 +62,49 @@ fn freq_to_norm(hz: f32) -> f32 {
             return (hz - lo) / max(hi - lo, 1e-12);
         }
     }
+}
+
+const PALETTE_STOP_COUNT: i32 = 5;
+
+fn stop_position(i: i32) -> f32 {
+    return u.stop_positions[i / 4][i % 4];
+}
+
+fn stop_spread(i: i32) -> f32 {
+    return u.stop_spreads[i / 4][i % 4];
+}
+
+struct PaletteSegment {
+    lo: i32,
+    hi: i32,
+    f: f32,
+}
+
+fn find_segment(t: f32) -> PaletteSegment {
+    let tc = clamp(t, 0.0, 1.0);
+    var lo: i32 = PALETTE_STOP_COUNT - 2;
+    var hi: i32 = PALETTE_STOP_COUNT - 1;
+    var linear_t: f32 = 1.0;
+    for (var i: i32 = 0; i < PALETTE_STOP_COUNT - 1; i = i + 1) {
+        let p_hi = stop_position(i + 1);
+        if (tc <= p_hi) {
+            let p_lo = stop_position(i);
+            let span = max(p_hi - p_lo, 1e-6);
+            lo = i;
+            hi = i + 1;
+            linear_t = clamp((tc - p_lo) / span, 0.0, 1.0);
+            break;
+        }
+    }
+    let sl = stop_spread(lo);
+    let sr = stop_spread(hi);
+    var f: f32;
+    if (abs(sl - 1.0) < 1e-4 && abs(sr - 1.0) < 1e-4) {
+        f = linear_t;
+    } else {
+        f = clamp(pow(linear_t, sl / sr), 0.0, 1.0);
+    }
+    return PaletteSegment(lo, hi, f);
 }
 
 @vertex
@@ -160,8 +206,13 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let range = max(u.ceiling_db - u.floor_db, 0.001);
     let normalized = clamp((mag - u.floor_db) / range, 0.0, 1.0);
     let adjusted = pow(normalized, max(u.contrast, 0.01));
-    let color = textureSampleLevel(palette_tex, palette_sampler, adjusted, 0.0);
 
-    // Premultiplied alpha required by iced
+    // Rgba8Unorm palette: raw sRGB stops, mix in sRGB space (web-colors pipeline).
+    let seg = find_segment(adjusted);
+    let stop_lo = textureLoad(palette_tex, seg.lo, 0);
+    let stop_hi = textureLoad(palette_tex, seg.hi, 0);
+    let color = mix(stop_lo, stop_hi, seg.f);
+
+    // iced expects premultiplied alpha
     return vec4<f32>(color.rgb * color.a, color.a);
 }
