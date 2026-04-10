@@ -14,7 +14,7 @@ rustfft = "6.4.1"
 realfft = "3.5"
 tracing = "0.1.44"
 wide = "1.2.0"
-wayland-client = "0.31.13"
+wayland-client = "0.31.14"
 
   [dependencies.serde]
   version = "1.0.228"
