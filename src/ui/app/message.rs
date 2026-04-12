@@ -74,7 +74,7 @@ pub(super) fn bar_drag_events(evt: Event, _: event::Status, _: window::Id) -> Op
 
 pub(super) fn keyboard_shortcut(
     event: Event,
-    _status: event::Status,
+    status: event::Status,
     window_id: window::Id,
 ) -> Option<Message> {
     let Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) = event else {
@@ -87,10 +87,20 @@ pub(super) fn keyboard_shortcut(
             Some(Message::ToggleDrawer)
         }
         Key::Named(keyboard::key::Named::Space) if ctrl => Some(Message::PopOutOrDock(window_id)),
-        Key::Character(ch) if no_modifiers && ch.eq_ignore_ascii_case("p") => {
+        Key::Character(ch)
+            if no_modifiers
+                && status != event::Status::Captured
+                && ch.eq_ignore_ascii_case("p") =>
+        {
             Some(Message::TogglePause)
         }
-        Key::Character(ch) if no_modifiers && ch.eq_ignore_ascii_case("q") => Some(Message::Quit),
+        Key::Character(ch)
+            if no_modifiers
+                && status != event::Status::Captured
+                && ch.eq_ignore_ascii_case("q") =>
+        {
+            Some(Message::Quit)
+        }
         _ => None,
     }
 }

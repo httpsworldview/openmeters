@@ -33,7 +33,7 @@ impl MusicalNote {
     pub fn from_midi(midi_number: i32) -> Self {
         let note_index = ((midi_number % SEMITONES_PER_OCTAVE + SEMITONES_PER_OCTAVE)
             % SEMITONES_PER_OCTAVE) as usize;
-        let octave = (midi_number / SEMITONES_PER_OCTAVE) - MIDI_OCTAVE_OFFSET;
+        let octave = midi_number.div_euclid(SEMITONES_PER_OCTAVE) - MIDI_OCTAVE_OFFSET;
         Self {
             midi_number,
             name: NOTE_NAMES[note_index],

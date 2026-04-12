@@ -350,7 +350,7 @@ impl VisualManager {
             self.entries.insert(target, entry);
         }
     }
-    fn swap_entries(&mut self, first: VisualId, second: VisualId) {
+    pub fn swap_entries(&mut self, first: VisualId, second: VisualId) {
         let (Some(first_index), Some(second_index)) =
             (self.entry_index(first), self.entry_index(second))
         else {
@@ -407,11 +407,6 @@ impl VisualManager {
         }
     }
     pub fn reorder(&mut self, order: &[VisualId]) {
-        if let [first, second] = order {
-            self.swap_entries(*first, *second);
-            return;
-        }
-
         for (position, id) in order.iter().copied().take(self.entries.len()).enumerate() {
             self.move_entry_to(id, position);
         }

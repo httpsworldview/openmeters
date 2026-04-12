@@ -501,7 +501,7 @@ impl Instance {
             return;
         }
         let res = match &mut self.resources {
-            Some(r) if r.ring.kind == p.col_kind => r,
+            Some(r) if r.ring.kind == p.col_kind && self.points_per_col == p.points_per_column => r,
             slot => slot.insert(Resources::new(device, bgls, p)),
         };
         res.sync(device, queue, bgls, p, viewport, scale_factor);
@@ -512,7 +512,7 @@ impl Instance {
 
 // gpu resources
 
-// Fixed [dB] storage domain — must match the shader constants in spectrogram.wgsl.
+// Fixed [dB] storage domain -- must match the shader constants in spectrogram.wgsl.
 // u16 unorm over this range gives ~0.0024 dB/step, decoupled from the live
 // floor/ceiling window so history recolors cleanly on slider drags.
 const DB_STORE_LO: f32 = -144.0;

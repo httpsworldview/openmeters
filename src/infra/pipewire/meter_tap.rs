@@ -126,10 +126,12 @@ pub fn audio_sample_stream() -> Arc<AsyncReceiver<Vec<f32>>> {
 }
 
 fn spawn_forwarder(sender: AsyncSender<Vec<f32>>, buffer: Arc<CaptureBuffer>) {
-    thread::Builder::new()
+    if let Err(err) = thread::Builder::new()
         .name("openmeters-audio-meter-tap".into())
         .spawn(move || forward_loop(sender, buffer))
-        .expect("failed to spawn audio meter tap thread");
+    {
+        tracing::error!("[meter-tap] failed to spawn forwarder thread: {err}");
+    }
 }
 
 fn forward_loop(sender: AsyncSender<Vec<f32>>, buffer: Arc<CaptureBuffer>) {

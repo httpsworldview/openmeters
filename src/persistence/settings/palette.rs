@@ -67,7 +67,6 @@ impl From<ColorSetting> for Color {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
-#[serde(deny_unknown_fields)]
 pub struct PaletteSettings {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stops: Vec<ColorSetting>,

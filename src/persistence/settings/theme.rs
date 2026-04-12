@@ -36,7 +36,7 @@ impl std::fmt::Display for ThemeChoice {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default)]
 pub struct ThemeFile {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,

@@ -26,7 +26,7 @@ impl VisualSettings {
     pub fn sanitize(&mut self) {
         macro_rules! check {
             ($($k:ident => $t:ty),+) => {|k: &VisualKind, m: &mut ModuleSettings| match k {
-                $(VisualKind::$k => m.config.as_ref().is_none_or(|v| serde_json::from_value::<$t>(v.clone()).is_ok())),+
+                $(VisualKind::$k => m.config.as_ref().is_none_or(|v| <$t>::deserialize(v).is_ok())),+
             }};
         }
         let valid = check!(Spectrogram => SpectrogramSettings, Spectrum => SpectrumSettings,

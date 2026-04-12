@@ -121,7 +121,6 @@ impl SettingsManager {
 
 fn schedule_persist(path: PathBuf, mut settings: UiSettings) {
     static SENDER: OnceLock<Option<mpsc::Sender<(PathBuf, UiSettings)>>> = OnceLock::new();
-    settings.visuals.sanitize();
     settings.visuals.strip_all_palettes();
     settings.bar.height = clamp_bar_height(settings.bar.height);
     if let Some(sender) = SENDER.get_or_init(|| {
@@ -157,6 +156,10 @@ fn schedule_persist(path: PathBuf, mut settings: UiSettings) {
                         Err(err) => tracing::warn!("[settings] failed to write settings: {err}"),
                     }
                 }
+            })
+            .map_err(|err| {
+                tracing::error!("[settings] failed to spawn saver thread: {err}");
+                err
             })
             .ok()
             .map(|_| tx)

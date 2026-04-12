@@ -162,6 +162,16 @@ fn convert_samples_to_f32(
             / 32_768.0),
         Fmt::U16BE => convert!(u16, from_be_bytes, |v: u16| (v as f32 - 32_768.0)
             / 32_768.0),
+        Fmt::U32LE => convert!(
+            u32,
+            from_le_bytes,
+            |v: u32| (v as f64 / u32::MAX as f64 * 2.0 - 1.0) as f32
+        ),
+        Fmt::U32BE => convert!(
+            u32,
+            from_be_bytes,
+            |v: u32| (v as f64 / u32::MAX as f64 * 2.0 - 1.0) as f32
+        ),
         Fmt::U8 => samples.extend(bytes.iter().map(|&b| (b as f32 - 128.0) / 128.0)),
         Fmt::S8 => samples.extend(bytes.iter().map(|&b| (b as i8) as f32 / i8::MAX as f32)),
         _ => return None,
@@ -184,7 +194,10 @@ pub fn run() -> Option<std::thread::JoinHandle<()>> {
                 error!("[virtual-sink] stopped: {err}");
             }
         }) {
-        Ok(handle) => Some(handle),
+        Ok(handle) => {
+            let _ = SINK_THREAD.set(handle);
+            None
+        }
         Err(err) => {
             error!("[virtual-sink] failed to start PipeWire thread: {err}");
             None

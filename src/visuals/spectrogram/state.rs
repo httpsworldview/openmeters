@@ -37,12 +37,8 @@ const PIANO_LABEL_SIZE: f32 = 9.0;
 const PIANO_MIDI_LO: i32 = 21; // A0
 const PIANO_MIDI_HI: i32 = 119; // C8
 
-fn spec_freq_min(scale: FrequencyScale, min_freq: f32) -> f32 {
-    if matches!(scale, FrequencyScale::Linear) {
-        0.0
-    } else {
-        min_freq
-    }
+fn spec_freq_min(_scale: FrequencyScale, min_freq: f32) -> f32 {
+    min_freq
 }
 
 fn norm_to_freq(inv: f32, nyquist: f32, min_freq: f32, scale: FrequencyScale) -> f32 {
@@ -186,6 +182,9 @@ impl SpectrogramState {
         self.freq_scale = snap.frequency_scale;
 
         let ppc = snap.points_per_column;
+        if ppc == 0 {
+            return;
+        }
         let new_kind = match snap.new_columns.first() {
             Some(SpectrogramColumn::Reassigned(_)) => ColumnKind::Reassigned,
             Some(SpectrogramColumn::Classic(_)) => ColumnKind::Classic,

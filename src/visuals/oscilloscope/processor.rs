@@ -632,9 +632,9 @@ impl AudioProcessor for OscilloscopeProcessor {
 
         const TARGET: usize = 4096;
         let target = TARGET.clamp(1, frames);
-        let extract_start = start * channel_count;
         let data = self.history.make_contiguous();
-        let extract_len = (frames * channel_count).min(data.len() - extract_start);
+        let extract_start = (start * channel_count).min(data.len());
+        let extract_len = (frames * channel_count).min(data.len().saturating_sub(extract_start));
 
         self.snapshot.samples.clear();
         downsample_interleaved(
@@ -685,7 +685,7 @@ fn downsample_interleaved(
     for channel in 0..channel_count {
         for i in 0..target {
             let pos = (frac_offset + i as f32 * step).max(0.0);
-            let idx = pos as usize;
+            let idx = (pos as usize).min(frames - 1);
             let frac = pos - idx as f32;
 
             let base = idx * channel_count + channel;

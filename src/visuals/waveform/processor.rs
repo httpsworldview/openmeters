@@ -58,7 +58,7 @@ impl WaveformConfig {
         self
     }
     fn samples_per_column(&self) -> usize {
-        (self.sample_rate / self.scroll_speed).round() as usize
+        ((self.sample_rate / self.scroll_speed).round() as usize).max(1)
     }
 }
 

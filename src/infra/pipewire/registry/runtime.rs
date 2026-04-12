@@ -251,10 +251,15 @@ fn registry_thread_main(runtime: RegistryRuntime) -> Result<()> {
 
     let loop_ref = mainloop.loop_();
     let mut commands_disconnected = false;
+    let mut shutdown_requested = false;
     let mut consecutive_errors = 0u32;
     const MAX_CONSECUTIVE_ERRORS: u32 = 10;
 
     loop {
+        if shutdown_requested {
+            break;
+        }
+
         if !commands_disconnected {
             loop {
                 match command_rx.try_recv() {
@@ -266,6 +271,7 @@ fn registry_thread_main(runtime: RegistryRuntime) -> Result<()> {
                             &mainloop,
                             &pending_syncs,
                         ) {
+                            shutdown_requested = true;
                             break;
                         }
                     }
@@ -276,6 +282,10 @@ fn registry_thread_main(runtime: RegistryRuntime) -> Result<()> {
                     }
                 }
             }
+        }
+
+        if shutdown_requested {
+            break;
         }
 
         let result = loop_ref.iterate(Duration::from_millis(50));
@@ -460,8 +470,9 @@ fn handle_global_added(
             runtime.mutate(|s| s.upsert_node(NodeInfo::from_global(global)));
         }
         ObjectType::Device => {
+            let id = global.id;
             runtime.mutate(|s| {
-                s.add_device();
+                s.add_device(id);
                 true
             });
         }
@@ -486,7 +497,7 @@ fn handle_global_removed(
     runtime: &RegistryRuntime,
     metadata_bindings: &Rc<RefCell<HashMap<u32, MetadataBinding>>>,
 ) {
-    if runtime.mutate(|s| s.remove_port(id) || s.remove_node(id)) {
+    if runtime.mutate(|s| s.remove_port(id) || s.remove_node(id) || s.remove_device(id)) {
         return;
     }
     if metadata_bindings.borrow_mut().remove(&id).is_some() {

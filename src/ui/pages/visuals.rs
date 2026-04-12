@@ -80,12 +80,10 @@ impl VisualsPage {
                 if let Some(panes) = self.panes.as_mut()
                     && panes.move_to(pane, target)
                 {
-                    let ids: Vec<_> = [pane, target]
-                        .iter()
-                        .filter_map(|p| panes.get(*p).map(|v| v.id))
-                        .collect();
+                    if let (Some(a), Some(b)) = (panes.get(pane), panes.get(target)) {
+                        self.visual_manager.borrow_mut().swap_entries(a.id, b.id);
+                    }
                     self.order = panes.iter().map(|(_, p)| p.id).collect();
-                    self.visual_manager.borrow_mut().reorder(&ids);
                 }
             }
             VisualsMessage::PaneDragged(pane_grid::DragEvent::Dropped { .. }) => {

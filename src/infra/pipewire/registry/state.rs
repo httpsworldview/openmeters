@@ -2,13 +2,13 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::types::{GraphPort, MetadataDefaults, NodeInfo, RegistrySnapshot};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Default)]
 pub(crate) struct RegistryState {
     serial: u64,
     nodes: HashMap<u32, NodeInfo>,
-    device_count: usize,
+    device_ids: HashSet<u32>,
     port_index: HashMap<u32, (u32, u32)>,
     metadata_defaults: MetadataDefaults,
 }
@@ -21,7 +21,7 @@ impl RegistryState {
         RegistrySnapshot {
             serial: self.serial,
             nodes,
-            device_count: self.device_count,
+            device_count: self.device_ids.len(),
             defaults: self.metadata_defaults.clone(),
         }
     }
@@ -49,9 +49,19 @@ impl RegistryState {
         }
     }
 
-    pub(crate) fn add_device(&mut self) {
-        self.device_count += 1;
-        self.bump_serial();
+    pub(crate) fn add_device(&mut self, id: u32) {
+        if self.device_ids.insert(id) {
+            self.bump_serial();
+        }
+    }
+
+    pub(crate) fn remove_device(&mut self, id: u32) -> bool {
+        if self.device_ids.remove(&id) {
+            self.bump_serial();
+            true
+        } else {
+            false
+        }
     }
 
     pub(crate) fn upsert_port(&mut self, port: GraphPort) -> bool {

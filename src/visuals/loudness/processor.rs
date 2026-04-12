@@ -365,9 +365,9 @@ impl AudioProcessor for LoudnessProcessor {
             weighted_short_term += window_mean(channel_state, WIN_SHORT_TERM) * weight;
             weighted_momentary += window_mean(channel_state, WIN_MOMENTARY) * weight;
             self.snapshot.rms_fast_db[channel_index] =
-                mean_square_to_lufs(window_mean(channel_state, WIN_RMS_FAST), floor);
+                power_to_db(window_mean(channel_state, WIN_RMS_FAST) as f32, floor);
             self.snapshot.rms_slow_db[channel_index] =
-                mean_square_to_lufs(window_mean(channel_state, WIN_RMS_SLOW), floor);
+                power_to_db(window_mean(channel_state, WIN_RMS_SLOW) as f32, floor);
         }
 
         for (channel_index, channel_state) in self.channels.iter_mut().enumerate() {

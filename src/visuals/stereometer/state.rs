@@ -138,6 +138,9 @@ impl StereometerState {
     }
 
     pub fn visual_params(&self, bounds: iced::Rectangle) -> Option<StereometerParams> {
+        if self.points.is_empty() {
+            return None;
+        }
         Some(StereometerParams {
             key: self.key,
             bounds,

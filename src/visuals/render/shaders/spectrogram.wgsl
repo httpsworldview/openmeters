@@ -1,6 +1,6 @@
 const LOG10_E: f32 = 0.4342944819;
 
-// Classic storage domain — keep in sync with render.rs DB_STORE_*.
+// Classic storage domain -- keep in sync with render.rs DB_STORE_*.
 const DB_STORE_LO: f32 = -144.0;
 const DB_STORE_HI: f32 = 12.0;
 const DB_STORE_RANGE: f32 = DB_STORE_HI - DB_STORE_LO;
