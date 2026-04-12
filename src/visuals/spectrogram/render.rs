@@ -521,7 +521,7 @@ const DB_STORE_RANGE: f32 = DB_STORE_HI - DB_STORE_LO;
 
 // Column stride in bytes for the active storage kind. Packed rounds u16 pairs
 // up to a full u32 so pack/unpack2x16 never straddles a word boundary.
-fn col_byte_stride(kind: ColumnKind, points_per_col: u32) -> u64 {
+pub(super) fn col_byte_stride(kind: ColumnKind, points_per_col: u32) -> u64 {
     match kind {
         ColumnKind::Reassigned => {
             points_per_col as u64 * std::mem::size_of::<SpectrogramPoint>() as u64
@@ -595,16 +595,14 @@ impl Resources {
         viewport: [f32; 2],
         scale_factor: f32,
     ) {
-        self.grow_ring(device, queue, bgls, p);
+        self.resize_ring(device, queue, bgls, p);
         self.upload_pending(queue, p);
         self.write_uniforms(queue, p, viewport, scale_factor);
         self.write_palette(queue, p);
     }
 
-    // Grow the ring in place, preserving history via copy_buffer_to_buffer.
-    // On a ring-full wrap the caller signals `linearize_old_write_slot`; we
-    // reorder so slot 0 becomes the oldest column in the new, bigger ring.
-    fn grow_ring(
+    // Grow or shrink the ring, preserving the newest `col_count` columns.
+    fn resize_ring(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -613,30 +611,43 @@ impl Resources {
     ) {
         let stride = col_byte_stride(p.col_kind, p.points_per_column);
         let needed = p.ring_capacity as u64 * stride;
-        if needed <= self.ring.capacity {
+        if needed == self.ring.capacity {
             return;
         }
         let new_ring = create_ring(device, bgls, &self.uniform_buf, &self.palette_view, p);
         if p.col_count > 0 {
             let old_cap_cols = self.ring.capacity / stride;
+            let cols_to_copy = (p.col_count as u64).min(old_cap_cols);
             let mut encoder =
                 device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-            if let Some(old_ws) = p.linearize_old_write_slot {
-                let ws = old_ws as u64;
-                let tail = (old_cap_cols - ws) * stride;
-                encoder.copy_buffer_to_buffer(&self.ring.buf, ws * stride, &new_ring.buf, 0, tail);
-                if ws > 0 {
+            if let Some(start) = p.linearize_old_write_slot {
+                let start = start as u64;
+                let tail = (old_cap_cols - start).min(cols_to_copy);
+                encoder.copy_buffer_to_buffer(
+                    &self.ring.buf,
+                    start * stride,
+                    &new_ring.buf,
+                    0,
+                    tail * stride,
+                );
+                let head = cols_to_copy - tail;
+                if head > 0 {
                     encoder.copy_buffer_to_buffer(
                         &self.ring.buf,
                         0,
                         &new_ring.buf,
-                        tail,
-                        ws * stride,
+                        tail * stride,
+                        head * stride,
                     );
                 }
             } else {
-                let copy = (p.col_count as u64 * stride).min(self.ring.capacity);
-                encoder.copy_buffer_to_buffer(&self.ring.buf, 0, &new_ring.buf, 0, copy);
+                encoder.copy_buffer_to_buffer(
+                    &self.ring.buf,
+                    0,
+                    &new_ring.buf,
+                    0,
+                    cols_to_copy * stride,
+                );
             }
             queue.submit(std::iter::once(encoder.finish()));
         }

@@ -7,6 +7,7 @@ use super::processor::{
 };
 use super::render::{
     ColumnKind, PendingUpload, SPECTROGRAM_PALETTE_SIZE, SpectrogramParams, SpectrogramPrimitive,
+    col_byte_stride,
 };
 use crate::persistence::settings::PianoRollOverlay;
 use crate::ui::theme::BORDER_SUBTLE;
@@ -184,13 +185,16 @@ impl SpectrogramState {
         self.hop_size = snap.hop_size;
         self.freq_scale = snap.frequency_scale;
 
-        let capacity = (snap.history_length as u32).clamp(1, 8192);
         let ppc = snap.points_per_column;
         let new_kind = match snap.new_columns.first() {
             Some(SpectrogramColumn::Reassigned(_)) => ColumnKind::Reassigned,
             Some(SpectrogramColumn::Classic(_)) => ColumnKind::Classic,
             None => self.col_kind,
         };
+        const GPU_MAX_BUFFER: u64 = 256 * 1024 * 1024; // wgpu guaranteed minimum
+        let stride = col_byte_stride(new_kind, ppc as u32);
+        let max_cols = (GPU_MAX_BUFFER / stride) as u32;
+        let capacity = (snap.history_length as u32).clamp(1, 8192).min(max_cols);
 
         if snap.reset || self.points_per_column != ppc || new_kind != self.col_kind {
             self.points_per_column = ppc;
@@ -204,6 +208,15 @@ impl SpectrogramState {
             if self.col_count >= self.ring_capacity {
                 self.linearize_from = (self.write_slot != 0).then_some(self.write_slot);
                 self.write_slot = self.col_count % capacity;
+            }
+            self.ring_capacity = capacity;
+        } else if capacity < self.ring_capacity {
+            if self.col_count >= capacity {
+                let oldest_kept =
+                    (self.write_slot + self.ring_capacity - capacity) % self.ring_capacity;
+                self.linearize_from = (oldest_kept != 0).then_some(oldest_kept);
+                self.col_count = capacity;
+                self.write_slot = 0;
             }
             self.ring_capacity = capacity;
         }
