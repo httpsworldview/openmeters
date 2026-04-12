@@ -1,8 +1,14 @@
 const LOG10_E: f32 = 0.4342944819;
 
+// Classic storage domain — keep in sync with render.rs DB_STORE_*.
+const DB_STORE_LO: f32 = -144.0;
+const DB_STORE_HI: f32 = 12.0;
+const DB_STORE_RANGE: f32 = DB_STORE_HI - DB_STORE_LO;
+
 // Must match Rust-side Uniforms layout exactly.
+// freq_min_max.x doubles as FFT bin spacing (sample_rate / fft_size).
 struct Uniforms {
-    freq_min_max: vec2<f32>,        // (min_hz, max_hz)
+    freq_min_max: vec2<f32>,        // (bin_hz, max_hz)
     freq_scale: u32,                // 0=linear, 1=log, 2=erb
     points_per_col: u32,
 
@@ -20,13 +26,15 @@ struct Uniforms {
     ceiling_db: f32,
     contrast: f32,
     tilt_db: f32,
-    _pad0: f32,
-    _pad1: f32,
-    _pad2: f32,
 
-    // 5 palette stops packed across 2 vec4s each (indices 0-4 used, rest ignored).
-    stop_positions: array<vec4<f32>, 2>,
-    stop_spreads: array<vec4<f32>, 2>,
+    // Precomputed CPU-side; also fills the 12 B of pad before the stops block.
+    newest_col: u32,
+    inv_uv_range: f32,
+    col_stride_u16: u32,
+
+    // (pos1, pos2, pos3, spread0), (spread1, spread2, spread3, spread4).
+    // Stops 0 and 4 are constant 0.0 / 1.0
+    stops: array<vec4<f32>, 2>,
 }
 
 struct VertexOutput {
@@ -37,8 +45,9 @@ struct VertexOutput {
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var palette_tex: texture_1d<f32>;
+@group(0) @binding(2) var<storage, read> mags: array<u32>;
 
-// ERB-rate: 21.4 * log10(1 + f/228.8)  (Glasberg & Moore 1990)
+// (Glasberg & Moore 1990)
 fn erb(f: f32) -> f32 {
     return 21.4 * log(1.0 + f / 228.8) * LOG10_E;
 }
@@ -64,16 +73,6 @@ fn freq_to_norm(hz: f32) -> f32 {
     }
 }
 
-const PALETTE_STOP_COUNT: i32 = 5;
-
-fn stop_position(i: i32) -> f32 {
-    return u.stop_positions[i / 4][i % 4];
-}
-
-fn stop_spread(i: i32) -> f32 {
-    return u.stop_spreads[i / 4][i % 4];
-}
-
 struct PaletteSegment {
     lo: i32,
     hi: i32,
@@ -82,13 +81,15 @@ struct PaletteSegment {
 
 fn find_segment(t: f32) -> PaletteSegment {
     let tc = clamp(t, 0.0, 1.0);
-    var lo: i32 = PALETTE_STOP_COUNT - 2;
-    var hi: i32 = PALETTE_STOP_COUNT - 1;
+    let positions = array<f32, 5>(0.0, u.stops[0].x, u.stops[0].y, u.stops[0].z, 1.0);
+    let spreads = array<f32, 5>(u.stops[0].w, u.stops[1].x, u.stops[1].y, u.stops[1].z, u.stops[1].w);
+    var lo: i32 = 3;
+    var hi: i32 = 4;
     var linear_t: f32 = 1.0;
-    for (var i: i32 = 0; i < PALETTE_STOP_COUNT - 1; i = i + 1) {
-        let p_hi = stop_position(i + 1);
+    for (var i: i32 = 0; i < 4; i = i + 1) {
+        let p_hi = positions[i + 1];
         if (tc <= p_hi) {
-            let p_lo = stop_position(i);
+            let p_lo = positions[i];
             let span = max(p_hi - p_lo, 1e-6);
             lo = i;
             hi = i + 1;
@@ -96,8 +97,8 @@ fn find_segment(t: f32) -> PaletteSegment {
             break;
         }
     }
-    let sl = stop_spread(lo);
-    let sr = stop_spread(hi);
+    let sl = spreads[lo];
+    let sr = spreads[hi];
     var f: f32;
     if (abs(sl - 1.0) < 1e-4 && abs(sr - 1.0) < 1e-4) {
         f = linear_t;
@@ -107,91 +108,92 @@ fn find_segment(t: f32) -> PaletteSegment {
     return PaletteSegment(lo, hi, f);
 }
 
+// 0 = newest. Single formula handles both partial and full rings via newest_col.
+fn compute_age(slot: u32) -> u32 {
+    let hl = max(u.history_length, 1u);
+    return (u.newest_col + hl - slot) % hl;
+}
+
+fn extents() -> vec2<f32> {
+    let swapped = u.rotation == 1u || u.rotation == 3u;
+    return vec2<f32>(
+        select(u.bounds.z, u.bounds.w, swapped),
+        select(u.bounds.w, u.bounds.z, swapped),
+    );
+}
+
+// Pre-rotation (time, freq) pos -> clip-space NDC under u.rotation, u.bounds.
+fn place(pos: vec2<f32>, ext: vec2<f32>) -> vec4<f32> {
+    var rotated: vec2<f32>;
+    switch u.rotation {
+        case 1u: { rotated = vec2<f32>(ext.y - pos.y, pos.x); }
+        case 2u: { rotated = vec2<f32>(ext.x - pos.x, ext.y - pos.y); }
+        case 3u: { rotated = vec2<f32>(pos.y, ext.x - pos.x); }
+        default: { rotated = pos; }
+    }
+    rotated += u.bounds.xy;
+    return vec4<f32>(rotated.x * u.clip_scale.x - 1.0, 1.0 - rotated.y * u.clip_scale.y, 0.0, 1.0);
+}
+
+// `col_stride_u16` rounds ppc up to even so u16 pairs never straddle u32 words.
+fn unpack_mag(slot: u32, bin_in_col: u32) -> f32 {
+    let idx = slot * u.col_stride_u16 + bin_in_col;
+    let pair = unpack2x16unorm(mags[idx / 2u]);
+    return select(pair.y, pair.x, (idx & 1u) == 0u) * DB_STORE_RANGE + DB_STORE_LO;
+}
+
+const CULL_POS: vec4<f32> = vec4<f32>(0.0, 0.0, 2.0, 1.0);
+
 @vertex
-fn vs_main(
+fn vs_splat(
     @location(0) corner: vec2<f32>,
     @location(1) time_offset: f32,
     @location(2) freq_hz: f32,
     @location(3) magnitude_db: f32,
     @builtin(instance_index) inst: u32,
 ) -> VertexOutput {
-    var out: VertexOutput;
+    let zoomed = (freq_to_norm(freq_hz) - u.uv_y_range.x) * u.inv_uv_range;
+    if magnitude_db < -900.0 || zoomed < -0.01 || zoomed > 1.01 {
+        return VertexOutput(CULL_POS, magnitude_db, freq_hz);
+    }
+    let ext = extents();
+    let age = compute_age(inst / max(u.points_per_col, 1u));
+    let pos = vec2<f32>(ext.x - (f32(age) - time_offset) * u.scale_factor, (1.0 - zoomed) * ext.y)
+        + corner * u.scale_factor;
+    return VertexOutput(place(pos, ext), magnitude_db, freq_hz);
+}
 
-    // Sentinel culling - degenerate vertex behind clip volume
-    if magnitude_db < -900.0 {
-        out.position = vec4<f32>(0.0, 0.0, 2.0, 1.0);
-        out.magnitude_db = magnitude_db;
-        out.freq_hz = freq_hz;
-        return out;
+@vertex
+fn vs_strip(
+    @location(0) corner: vec2<f32>,
+    @builtin(instance_index) inst: u32,
+) -> VertexOutput {
+    // Instance count = col_count * (points_per_col - 1); instance i encodes
+    // (slot, bin_in_col) where bin_in_col is the lower of the two segment bins.
+    let segs_per_col = max(u.points_per_col, 1u) - 1u;
+    let slot = inst / max(segs_per_col, 1u);
+    let bin_in_col = inst % max(segs_per_col, 1u);
+
+    // Compute both endpoint freq positions so cull decisions are uniform across quad
+    let bin_hz = u.freq_min_max.x;
+    let zoomed_lo = (freq_to_norm(f32(bin_in_col) * bin_hz) - u.uv_y_range.x) * u.inv_uv_range;
+    let zoomed_hi = (freq_to_norm(f32(bin_in_col + 1u) * bin_hz) - u.uv_y_range.x) * u.inv_uv_range;
+    if max(zoomed_lo, zoomed_hi) < -0.01 || min(zoomed_lo, zoomed_hi) > 1.01 {
+        return VertexOutput(CULL_POS, u.floor_db, 0.0);
     }
 
-    let slot = inst / max(u.points_per_col, 1u);
-
-    var age: u32; // 0 = newest
-    if u.col_count == u.history_length {
-        let newest = (u.write_slot + u.history_length - 1u) % max(u.history_length, 1u);
-        age = (newest - slot + u.history_length) % max(u.history_length, 1u);
-    } else {
-        age = u.col_count - 1u - slot;
-    }
-
-    // Rotations 1/3 swap time and freq screen axes
-    let swapped = u.rotation == 1u || u.rotation == 3u;
-    let time_extent = select(u.bounds.z, u.bounds.w, swapped);
-    let freq_extent = select(u.bounds.w, u.bounds.z, swapped);
-
-    // Newest column at right edge
-    let time_logical = time_extent - (f32(age) - time_offset) * u.scale_factor;
-
-    let norm = freq_to_norm(freq_hz);
-
-    let uv_range = max(u.uv_y_range.y - u.uv_y_range.x, 1e-12);
-    let zoomed = (norm - u.uv_y_range.x) / uv_range;
-
-    if zoomed < -0.01 || zoomed > 1.01 {
-        out.position = vec4<f32>(0.0, 0.0, 2.0, 1.0);
-        out.magnitude_db = magnitude_db;
-        out.freq_hz = freq_hz;
-        return out;
-    }
-
-    // High frequencies at top
-    let freq_logical = (1.0 - zoomed) * freq_extent;
-
-    var pos = vec2<f32>(time_logical, freq_logical) + corner * u.scale_factor;
-
-    // pos.x = time axis, pos.y = freq axis (pre-rotation)
-    // 0: time L->R, freq bottom->top
-    // 1: time T->B, freq R->L
-    // 2: time R->L, freq T->B
-    // 3: time B->T, freq L->R
-    var rotated: vec2<f32>;
-    switch u.rotation {
-        case 1u: {
-            rotated = vec2<f32>(freq_extent - pos.y, pos.x) + u.bounds.xy;
-        }
-        case 2u: {
-            rotated = vec2<f32>(time_extent - pos.x, freq_extent - pos.y) + u.bounds.xy;
-        }
-        case 3u: {
-            rotated = vec2<f32>(pos.y, time_extent - pos.x) + u.bounds.xy;
-        }
-        default: {
-            rotated = vec2<f32>(pos.x, pos.y) + u.bounds.xy;
-        }
-    }
-
-    // Logical pixels -> NDC; y flipped because screen y points down
-    out.position = vec4<f32>(
-        rotated.x * u.clip_scale.x - 1.0,
-        1.0 - rotated.y * u.clip_scale.y,
-        0.0,
-        1.0,
-    );
-    out.magnitude_db = magnitude_db;
-    out.freq_hz = freq_hz;
-
-    return out;
+    // corner.y > 0 -> lower-freq edge
+    // note: not exact. off by a fraction of a dB
+    let use_lo = corner.y > 0.0;
+    let bin_idx = select(bin_in_col + 1u, bin_in_col, use_lo);
+    let mag_db = unpack_mag(slot, bin_idx);
+    let freq_hz = f32(bin_idx) * bin_hz;
+    let ext = extents();
+    let zoomed = select(zoomed_hi, zoomed_lo, use_lo);
+    // corner padding: 1 px time + 1 px freq so subpixel bins stay visible at high freq.
+    let pos = vec2<f32>(ext.x - f32(compute_age(slot)) * u.scale_factor, (1.0 - zoomed) * ext.y)
+        + corner * u.scale_factor;
+    return VertexOutput(place(pos, ext), mag_db, freq_hz);
 }
 
 @fragment

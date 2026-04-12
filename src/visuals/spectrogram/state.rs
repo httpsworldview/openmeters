@@ -2,11 +2,11 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::processor::{
-    FrequencyScale, SpectrogramConfig, SpectrogramProcessor as CoreSpectrogramProcessor,
-    SpectrogramUpdate,
+    FrequencyScale, SpectrogramColumn, SpectrogramConfig,
+    SpectrogramProcessor as CoreSpectrogramProcessor, SpectrogramUpdate,
 };
 use super::render::{
-    PendingUpload, SPECTROGRAM_PALETTE_SIZE, SpectrogramParams, SpectrogramPrimitive,
+    ColumnKind, PendingUpload, SPECTROGRAM_PALETTE_SIZE, SpectrogramParams, SpectrogramPrimitive,
 };
 use crate::persistence::settings::PianoRollOverlay;
 use crate::ui::theme::BORDER_SUBTLE;
@@ -96,6 +96,7 @@ pub(crate) struct SpectrogramState {
     fft_size: usize,
     hop_size: usize,
     freq_scale: FrequencyScale,
+    col_kind: ColumnKind,
     zoom: f32,
     pan: f32,
     pub(crate) view_width: u32,
@@ -124,6 +125,7 @@ impl SpectrogramState {
             fft_size: 4096,
             hop_size: 1024,
             freq_scale: FrequencyScale::default(),
+            col_kind: ColumnKind::Reassigned,
             zoom: 1.0,
             pan: 0.5,
             view_width: 0,
@@ -173,7 +175,7 @@ impl SpectrogramState {
         self.rotation = rotation.clamp(-1, 2);
     }
 
-    pub fn apply_snapshot(&mut self, snap: &SpectrogramUpdate) {
+    pub fn apply_snapshot(&mut self, snap: SpectrogramUpdate) {
         if snap.new_columns.is_empty() && !snap.reset {
             return;
         }
@@ -184,10 +186,16 @@ impl SpectrogramState {
 
         let capacity = (snap.history_length as u32).clamp(1, 8192);
         let ppc = snap.points_per_column;
+        let new_kind = match snap.new_columns.first() {
+            Some(SpectrogramColumn::Reassigned(_)) => ColumnKind::Reassigned,
+            Some(SpectrogramColumn::Classic(_)) => ColumnKind::Classic,
+            None => self.col_kind,
+        };
 
-        if snap.reset || self.points_per_column != ppc {
+        if snap.reset || self.points_per_column != ppc || new_kind != self.col_kind {
             self.points_per_column = ppc;
             self.ring_capacity = capacity;
+            self.col_kind = new_kind;
             self.write_slot = 0;
             self.col_count = 0;
             self.linearize_from = None;
@@ -200,11 +208,18 @@ impl SpectrogramState {
             self.ring_capacity = capacity;
         }
 
-        for col in &snap.new_columns {
-            self.pending.push(PendingUpload {
-                slot: self.write_slot,
-                points: col.points.clone(),
-            });
+        for col in snap.new_columns {
+            let upload = match col {
+                SpectrogramColumn::Reassigned(points) => PendingUpload::Reassigned {
+                    slot: self.write_slot,
+                    points,
+                },
+                SpectrogramColumn::Classic(mags) => PendingUpload::Classic {
+                    slot: self.write_slot,
+                    mags,
+                },
+            };
+            self.pending.push(upload);
             self.write_slot = (self.write_slot + 1) % self.ring_capacity;
             if self.col_count < self.ring_capacity {
                 self.col_count += 1;
@@ -222,12 +237,8 @@ impl SpectrogramState {
         }
         let op = self.style.opacity.clamp(0.0, 1.0);
         let to_rgba = |c: Color| rgba_with_alpha(color_to_rgba(c), c.a * op);
-        let min_hz = if self.fft_size > 0 && self.sample_rate > 0.0 {
-            self.sample_rate / self.fft_size as f32
-        } else {
-            20.0
-        };
-        let max_hz = (self.sample_rate / 2.0).max(min_hz + 1.0);
+        let freq_min = self.sample_rate / (self.fft_size.max(1) as f32);
+        let freq_max = (self.sample_rate / 2.0).max(freq_min + 1.0);
 
         Some(SpectrogramParams {
             key: self.key,
@@ -237,8 +248,9 @@ impl SpectrogramState {
             col_count: self.col_count,
             write_slot: self.write_slot,
             pending_uploads: std::mem::take(&mut self.pending),
-            freq_min: min_hz,
-            freq_max: max_hz,
+            col_kind: self.col_kind,
+            freq_min,
+            freq_max,
             freq_scale: self.freq_scale,
             palette: self.palette.map(to_rgba),
             stop_positions: self.stop_positions,

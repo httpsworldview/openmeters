@@ -51,8 +51,8 @@ impl WaveformState {
         }
     }
 
-    pub fn apply_snapshot(&mut self, snapshot: &WaveformSnapshot) {
-        self.snapshot = Self::project_channels(snapshot, self.channel_1, self.channel_2);
+    pub fn apply_snapshot(&mut self, snapshot: WaveformSnapshot) {
+        self.snapshot = Self::project_channels(&snapshot, self.channel_1, self.channel_2);
     }
 
     pub fn set_channels(&mut self, channel_1: Channel, channel_2: Channel) {

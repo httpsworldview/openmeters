@@ -83,7 +83,7 @@ macro_rules! visuals {
                     $pre_ingest_body
                 })?
                 if let Some(snap) = self.processor.ingest(samples, fmt) {
-                    self.state.borrow_mut().apply_snapshot(&snap);
+                    self.state.borrow_mut().apply_snapshot(snap);
                 }
             }
 

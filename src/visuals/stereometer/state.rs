@@ -92,7 +92,7 @@ impl StereometerState {
         }
     }
 
-    pub fn apply_snapshot(&mut self, snap: &StereometerSnapshot) {
+    pub fn apply_snapshot(&mut self, snap: StereometerSnapshot) {
         if snap.xy_points.is_empty() {
             self.points.clear();
             self.corr_trail.clear();

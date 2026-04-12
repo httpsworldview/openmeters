@@ -66,8 +66,8 @@ impl OscilloscopeState {
         self.style.colors = *palette;
     }
 
-    pub fn apply_snapshot(&mut self, snapshot: &OscilloscopeSnapshot) {
-        let projected = Self::project_channels(snapshot, self.channel_1, self.channel_2);
+    pub fn apply_snapshot(&mut self, snapshot: OscilloscopeSnapshot) {
+        let projected = Self::project_channels(&snapshot, self.channel_1, self.channel_2);
 
         if !projected.samples.is_empty()
             && !self.snapshot.samples.is_empty()

@@ -242,9 +242,13 @@ impl ReassignmentBuffers {
     }
 }
 
+// Reassigned ships fractional (t, f, mag) per bin for splat rendering.
+// Classic ships only dB per bin; freq is implicit (k * bin_hz) and the
+// renderer fills between adjacent bins.
 #[derive(Debug, Clone)]
-pub struct SpectrogramColumn {
-    pub points: Vec<SpectrogramPoint>,
+pub enum SpectrogramColumn {
+    Reassigned(Vec<SpectrogramPoint>),
+    Classic(Vec<f32>),
 }
 
 #[derive(Debug, Clone)]
@@ -362,7 +366,7 @@ impl SpectrogramProcessor {
             copy_from_deque(&mut self.real[..self.window_size], &self.audio_buffer);
             crate::util::audio::remove_dc(&mut self.real[..self.window_size]);
 
-            if reassignment_enabled {
+            let col = if reassignment_enabled {
                 hilbert_transform(
                     &self.real[..self.window_size],
                     &mut self.analytic,
@@ -395,6 +399,7 @@ impl SpectrogramProcessor {
                     &mut self.scratch,
                 );
                 self.emit_reassigned_points(sample_rate, hop_size, bin_count);
+                SpectrogramColumn::Reassigned(self.points_buf.clone())
             } else {
                 for (c, (&r, &w)) in self
                     .complex_buf
@@ -409,19 +414,10 @@ impl SpectrogramProcessor {
                 self.spectrum
                     .copy_from_slice(&self.complex_buf[..bin_count]);
                 self.compute_standard_magnitudes(bin_count);
-                let bin_hz = self.bin_hz;
-                for (k, pt) in self.points_buf.iter_mut().enumerate() {
-                    *pt = SpectrogramPoint {
-                        time_offset: 0.0,
-                        freq_hz: k as f32 * bin_hz,
-                        magnitude_db: self.magnitudes[k],
-                    };
-                }
+                SpectrogramColumn::Classic(self.magnitudes[..bin_count].to_vec())
             };
 
-            output.push(SpectrogramColumn {
-                points: self.points_buf.clone(),
-            });
+            output.push(col);
             self.audio_buffer
                 .drain(..hop_size.min(self.audio_buffer.len()));
         }
@@ -715,13 +711,35 @@ mod tests {
         result.expect("expected snapshot")
     }
 
-    fn find_peak(points: &[SpectrogramPoint]) -> (usize, f32) {
+    fn find_peak_db(mags: &[f32]) -> (usize, f32) {
+        mags.iter()
+            .enumerate()
+            .max_by(|a, b| a.1.total_cmp(b.1))
+            .map(|(i, &db)| (i, db))
+            .unwrap()
+    }
+
+    fn find_peak_point(points: &[SpectrogramPoint]) -> (usize, f32) {
         points
             .iter()
             .enumerate()
             .max_by(|a, b| a.1.magnitude_db.total_cmp(&b.1.magnitude_db))
             .map(|(i, p)| (i, p.magnitude_db))
             .unwrap()
+    }
+
+    fn classic_mags(col: &SpectrogramColumn) -> &[f32] {
+        match col {
+            SpectrogramColumn::Classic(v) => v,
+            _ => panic!("expected classic column"),
+        }
+    }
+
+    fn reassigned_points(col: &SpectrogramColumn) -> &[SpectrogramPoint] {
+        match col {
+            SpectrogramColumn::Reassigned(v) => v,
+            _ => panic!("expected reassigned column"),
+        }
     }
 
     #[test]
@@ -740,7 +758,7 @@ mod tests {
         let block = make_block(sine(freq, cfg.sample_rate, 2048), 1, cfg.sample_rate);
         let update = unwrap(processor.process_block(&block));
         let col = update.new_columns.last().unwrap();
-        let (idx, db) = find_peak(&col.points);
+        let (idx, db) = find_peak_db(classic_mags(col));
         assert_eq!(idx, 200);
         assert!(db > -0.01 && db < 0.01, "peak dB = {db:.6}, expected ~0.0");
     }
@@ -767,9 +785,9 @@ mod tests {
         let block = make_block(sine(freq, cfg.sample_rate, 4096), 1, cfg.sample_rate);
         let update = unwrap(processor.process_block(&block));
         let col = update.new_columns.last().unwrap();
-        let (_, peak_db) = find_peak(&col.points);
-        let peak_pt = col
-            .points
+        let pts = reassigned_points(col);
+        let (_, peak_db) = find_peak_point(pts);
+        let peak_pt = pts
             .iter()
             .filter(|p| p.magnitude_db > DB_FLOOR)
             .max_by(|a, b| a.magnitude_db.total_cmp(&b.magnitude_db))
@@ -821,7 +839,7 @@ mod tests {
         let expected_bins = cfg.fft_size / 2 + 1;
         assert_eq!(update.points_per_column, expected_bins);
         for col in &update.new_columns {
-            assert_eq!(col.points.len(), expected_bins);
+            assert_eq!(classic_mags(col).len(), expected_bins);
         }
     }
 
@@ -839,8 +857,8 @@ mod tests {
         let block = make_block(sine(1000.0, cfg.sample_rate, 2048), 1, cfg.sample_rate);
         let update = unwrap(processor.process_block(&block));
         let col = update.new_columns.last().unwrap();
-        let sentinel_count = col
-            .points
+        let pts = reassigned_points(col);
+        let sentinel_count = pts
             .iter()
             .filter(|p| *p == &SpectrogramPoint::SENTINEL)
             .count();
@@ -848,7 +866,7 @@ mod tests {
             sentinel_count > 0,
             "expected some sentinel points for bins outside frequency range or below floor"
         );
-        let non_sentinel_count = col.points.len() - sentinel_count;
+        let non_sentinel_count = pts.len() - sentinel_count;
         assert!(
             non_sentinel_count > 0,
             "expected some non-sentinel points for a 1kHz sine"

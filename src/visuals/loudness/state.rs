@@ -76,7 +76,7 @@ impl LoudnessState {
         }
     }
 
-    pub fn apply_snapshot(&mut self, snapshot: &LoudnessSnapshot) {
+    pub fn apply_snapshot(&mut self, snapshot: LoudnessSnapshot) {
         self.short_term_loudness = snapshot.short_term_loudness;
         self.momentary_loudness = snapshot.momentary_loudness;
         self.channel_count = snapshot.channel_count.max(1);
@@ -318,7 +318,7 @@ mod tests {
     #[test]
     fn state_aggregates_channels() {
         let mut state = LoudnessState::new();
-        state.apply_snapshot(&LoudnessSnapshot {
+        state.apply_snapshot(LoudnessSnapshot {
             short_term_loudness: -9.0,
             momentary_loudness: -7.5,
             rms_fast_db: [-15.0, -9.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],

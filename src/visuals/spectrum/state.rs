@@ -149,7 +149,7 @@ impl SpectrumState {
         self.style.spectrum_palette = *palette;
     }
 
-    pub fn apply_snapshot(&mut self, snap: &SpectrumSnapshot) {
+    pub fn apply_snapshot(&mut self, snap: SpectrumSnapshot) {
         if snap.frequency_bins.is_empty()
             || snap.magnitudes_db.is_empty()
             || snap.frequency_bins.len() != snap.magnitudes_db.len()
@@ -179,7 +179,7 @@ impl SpectrumState {
         let scale = Scale::new(min_f, max_f);
         let res = self.style.resolution.max(32);
         let (mut w, mut u) = (Vec::new(), Vec::new());
-        build_points(&self.style, &mut w, &mut u, res, &scale, snap);
+        build_points(&self.style, &mut w, &mut u, res, &scale, &snap);
 
         if self.style.smoothing_radius > 0 && self.style.smoothing_passes > 0 {
             let (r, p) = (self.style.smoothing_radius, self.style.smoothing_passes);
@@ -200,7 +200,7 @@ impl SpectrumState {
         let pk = self
             .style
             .show_peak_label
-            .then(|| self.build_peak(snap, &scale))
+            .then(|| self.build_peak(&snap, &scale))
             .flatten();
         self.fade_peak(pk);
     }
