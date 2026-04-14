@@ -4,7 +4,6 @@
 use super::palette::PaletteEvent;
 use super::widgets::{labeled_pick_list, set_if_changed};
 use crate::persistence::settings::{LoudnessSettings, MeterMode};
-use crate::ui::theme;
 use crate::visuals::registry::VisualKind;
 use iced::{Element, widget::column};
 
@@ -12,7 +11,6 @@ settings_pane!(
     LoudnessSettingsPane,
     LoudnessSettings,
     VisualKind::Loudness,
-    theme::loudness,
     Loudness
 );
 

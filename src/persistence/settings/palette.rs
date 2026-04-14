@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::util::color::{
-    EPSILON, colors_equal, sanitize_stop_positions, sanitize_stop_spreads, uniform_positions,
-};
+use crate::util::color::{EPSILON, colors_equal, sanitize_stop_spreads};
 use iced::Color;
 use serde::de::{self, Deserializer};
 use serde::ser::Serializer;
@@ -94,14 +92,15 @@ impl PaletteSettings {
         colors: &[Color],
         defaults: &[Color],
         positions: &[f32],
+        default_positions: &[f32],
         spreads: &[f32],
     ) -> Option<Self> {
         let count = defaults.len();
+        debug_assert_eq!(positions.len(), default_positions.len());
         let colors_differ = colors_differ(colors, defaults);
-        let sanitized_positions = sanitize_stop_positions(Some(positions), count);
-        let positions_differ = sanitized_positions
+        let positions_differ = positions
             .iter()
-            .zip(uniform_positions(count).iter())
+            .zip(default_positions.iter())
             .any(|(a, b)| (a - b).abs() > EPSILON);
         let sanitized_spreads = sanitize_stop_spreads(Some(spreads), count);
         let spreads_differ = sanitized_spreads.iter().any(|s| (*s - 1.0).abs() > EPSILON);
@@ -114,7 +113,7 @@ impl PaletteSettings {
         (colors_differ || positions_differ || spreads_differ).then_some(Self {
             stops,
             stop_positions: (positions_differ && count > 2)
-                .then(|| sanitized_positions[1..count - 1].to_vec()),
+                .then(|| positions[1..count - 1].to_vec()),
             stop_spreads: spreads_differ.then_some(sanitized_spreads),
         })
     }

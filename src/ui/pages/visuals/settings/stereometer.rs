@@ -10,7 +10,6 @@ use crate::persistence::settings::{
     CorrelationMeterMode, CorrelationMeterSide, StereometerMode, StereometerScale,
     StereometerSettings,
 };
-use crate::ui::theme;
 use crate::visuals::registry::VisualKind;
 use iced::widget::{column, row};
 use iced::{Element, Length};
@@ -40,7 +39,6 @@ settings_pane!(
     StereometerSettingsPane,
     StereometerSettings,
     VisualKind::Stereometer,
-    theme::stereometer,
     Stereometer
 );
 

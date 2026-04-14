@@ -8,7 +8,6 @@ use super::widgets::{
     update_usize_from_f32,
 };
 use crate::persistence::settings::{SpectrumDisplayMode, SpectrumSettings, SpectrumWeightingMode};
-use crate::ui::theme;
 use crate::visuals::registry::VisualKind;
 use crate::visuals::spectrogram::processor::FrequencyScale;
 use crate::visuals::spectrum::processor::{
@@ -52,8 +51,7 @@ impl std::fmt::Display for AvgMode {
 }
 
 settings_pane!(
-    SpectrumSettingsPane, SpectrumSettings, VisualKind::Spectrum,
-    theme::spectrum, Spectrum,
+    SpectrumSettingsPane, SpectrumSettings, VisualKind::Spectrum, Spectrum,
     extra_from_settings(settings) {
         avg_mode: AvgMode = split_averaging(settings.averaging).0,
         avg_factor: f32 = split_averaging(settings.averaging).1,

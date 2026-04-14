@@ -5,7 +5,7 @@ use crate::ui::theme::{self, Palette};
 use crate::ui::widgets::scroll_glow::ScrollGlow;
 use crate::util::color::{
     EPSILON, colors_equal, default_spreads, f32_to_u8, find_segment, lerp_color,
-    sanitize_stop_positions, sanitize_stop_spreads, uniform_positions, with_alpha,
+    sanitize_stop_positions, sanitize_stop_spreads, with_alpha,
 };
 use iced::advanced::renderer::{self, Quad};
 use iced::advanced::widget::{Tree, tree};
@@ -36,7 +36,6 @@ pub struct PaletteEditor {
     palette: Palette,
     positions: Vec<f32>,
     spreads: Vec<f32>,
-    default_positions: Vec<f32>,
     default_spreads: Vec<f32>,
     active: Option<usize>,
     visible_indices: Option<Vec<usize>>,
@@ -47,14 +46,11 @@ pub struct PaletteEditor {
 
 impl PaletteEditor {
     pub fn new(palette: Palette) -> Self {
-        let count = palette.len();
-        let default_positions = uniform_positions(count);
-        let default_spreads = default_spreads(count);
+        let default_spreads = default_spreads(palette.len());
         Self {
-            palette,
-            positions: default_positions.clone(),
+            positions: palette.default_positions.to_vec(),
             spreads: default_spreads.clone(),
-            default_positions,
+            palette,
             default_spreads,
             active: None,
             visible_indices: None,
@@ -101,7 +97,15 @@ impl PaletteEditor {
     }
 
     pub fn set_positions(&mut self, positions: Option<&[f32]>) {
-        self.positions = sanitize_stop_positions(positions, self.palette.len());
+        self.positions = sanitize_stop_positions(positions, self.palette.default_positions);
+    }
+
+    pub fn default_positions(&self) -> &'static [f32] {
+        self.palette.default_positions
+    }
+
+    pub fn defaults(&self) -> &'static [Color] {
+        self.palette.defaults
     }
 
     pub fn set_spreads(&mut self, spreads: Option<&[f32]>) {
@@ -173,7 +177,7 @@ impl PaletteEditor {
                     false
                 } else {
                     self.palette.reset();
-                    self.positions.clone_from(&self.default_positions);
+                    self.positions = self.palette.default_positions.to_vec();
                     self.spreads.clone_from(&self.default_spreads);
                     true
                 }
@@ -187,7 +191,7 @@ impl PaletteEditor {
 
     pub fn is_default(&self) -> bool {
         self.palette.is_default()
-            && self.positions == self.default_positions
+            && self.positions == self.palette.default_positions
             && self.spreads == self.default_spreads
     }
 

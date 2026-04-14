@@ -3,7 +3,7 @@
 
 macro_rules! settings_pane {
     (
-        $pane:ident, $settings_ty:ty, $kind:expr, $palette_mod:path, $variant:ident,
+        $pane:ident, $settings_ty:ty, $kind:expr, $variant:ident,
         extra_from_settings($s:ident) { $($field:ident : $ty:ty = $init:expr),* $(,)? }
         $(init_palette($p:ident) $init_body:block)?
     ) => {
@@ -16,21 +16,14 @@ macro_rules! settings_pane {
         }
 
         pub fn create(visual_id: super::VisualId, visual_manager: &super::VisualManagerHandle) -> $pane {
-            use $palette_mod as pal;
             let ($s, mut _palette) = super::load_settings_and_palette::<$settings_ty>(
-                visual_manager, $kind, &pal::COLORS, pal::LABELS,
+                visual_manager, $kind,
             );
             $(let $field: $ty = $init;)*
             $(let $p = &mut _palette; $init_body)?
             $pane { visual_id, settings: $s, palette: _palette, $($field,)* }
         }
 
-        settings_pane!(@impl $pane, $variant, $kind, $palette_mod);
-    };
-    ($pane:ident, $settings_ty:ty, $kind:expr, $palette_mod:path, $variant:ident) => {
-        settings_pane!($pane, $settings_ty, $kind, $palette_mod, $variant, extra_from_settings(_s) {});
-    };
-    (@impl $pane:ident, $variant:ident, $kind:expr, $palette_mod:path) => {
         impl super::ModuleSettingsPane for $pane {
             fn visual_id(&self) -> super::VisualId { self.visual_id }
             fn view(&self) -> iced::Element<'_, super::SettingsMessage> {
@@ -42,17 +35,18 @@ macro_rules! settings_pane {
                 visual_manager: &super::VisualManagerHandle,
                 settings_handle: &crate::persistence::settings::SettingsHandle,
             ) {
-                if let super::SettingsMessage::$variant(msg) = message {
-                    if $pane::handle(self, msg) {
-                        use $palette_mod as pal;
-                        super::persist_with_palette(
-                            visual_manager, settings_handle, $kind,
-                            &self.settings, &self.palette, &pal::COLORS,
-                        );
-                    }
+                if let super::SettingsMessage::$variant(msg) = message
+                    && $pane::handle(self, msg)
+                {
+                    super::persist_with_palette(
+                        visual_manager, settings_handle, $kind, &self.settings, &self.palette,
+                    );
                 }
             }
         }
+    };
+    ($pane:ident, $settings_ty:ty, $kind:expr, $variant:ident) => {
+        settings_pane!($pane, $settings_ty, $kind, $variant, extra_from_settings(_s) {});
     };
 }
 
@@ -114,15 +108,13 @@ pub fn create_panel(
 pub(super) fn load_settings_and_palette<T: DeserializeOwned + Default + HasPalette>(
     visual_manager: &VisualManagerHandle,
     kind: VisualKind,
-    defaults: &'static [Color],
-    labels: &'static [&'static str],
 ) -> (T, PaletteEditor) {
     let settings: T = visual_manager
         .borrow()
         .module_settings(kind)
         .and_then(|stored| stored.parse_config::<T>())
         .unwrap_or_default();
-    let mut editor = PaletteEditor::new(Palette::new(defaults, labels));
+    let mut editor = PaletteEditor::new(Palette::for_kind(kind));
     if let Some(stored) = settings.palette() {
         let stops: Vec<Color> = stored.stops.iter().copied().map(Into::into).collect();
         editor.set_colors(&stops);
@@ -145,13 +137,17 @@ pub(super) fn persist_with_palette<T: Clone + Serialize + HasPalette>(
     kind: VisualKind,
     config: &T,
     palette: &PaletteEditor,
-    defaults: &[Color],
 ) -> bool {
     let mut stored = config.clone();
     let positions = palette.positions();
     let spreads = palette.spreads();
-    let palette_settings =
-        PaletteSettings::from_state(palette.colors(), defaults, positions, spreads);
+    let palette_settings = PaletteSettings::from_state(
+        palette.colors(),
+        palette.defaults(),
+        positions,
+        palette.default_positions(),
+        spreads,
+    );
     stored.set_palette(palette_settings.clone());
     let applied = visual_manager
         .borrow_mut()

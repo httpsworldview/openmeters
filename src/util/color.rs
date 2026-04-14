@@ -90,45 +90,35 @@ pub fn sample_rgba_gradient(palette: &[[f32; 4]], t: f32) -> [f32; 4] {
     std::array::from_fn(|c| palette[i][c] + (palette[i + 1][c] - palette[i][c]) * f)
 }
 
-pub fn uniform_positions(count: usize) -> Vec<f32> {
-    if count <= 1 {
-        return vec![0.0; count];
-    }
-    (0..count).map(|i| i as f32 / (count - 1) as f32).collect()
-}
-
 pub fn default_spreads(count: usize) -> Vec<f32> {
     vec![1.0; count]
 }
 
-pub fn sanitize_stop_positions(raw: Option<&[f32]>, count: usize) -> Vec<f32> {
+pub fn sanitize_stop_positions(raw: Option<&[f32]>, defaults: &[f32]) -> Vec<f32> {
+    let count = defaults.len();
     if count < 2 {
         return vec![0.0; count];
     }
-    let mut out = uniform_positions(count);
-    let Some(raw) = raw else {
-        return out;
-    };
-
+    let mut out = defaults.to_vec();
     let end = count - 1;
     let internals = count - 2;
 
-    if raw.len() == count {
-        out[1..end].copy_from_slice(&raw[1..end]);
-    } else if raw.len() == internals {
-        for (i, &value) in raw.iter().enumerate() {
-            out[i + 1] = value;
-        }
-    } else {
-        return out;
+    // Accept either the full row (endpoints included, discarded here) or just
+    // the interior stops. Anything else falls back to defaults.
+    if let Some(raw) = raw.filter(|r| r.len() == count || r.len() == internals) {
+        let start = if raw.len() == count { 1 } else { 0 };
+        out[1..end].copy_from_slice(&raw[start..start + internals]);
     }
 
     out[0] = 0.0;
     out[end] = 1.0;
 
     for i in 1..end {
-        let fallback = i as f32 / end as f32;
-        let value = if out[i].is_finite() { out[i] } else { fallback };
+        let value = if out[i].is_finite() {
+            out[i]
+        } else {
+            defaults[i]
+        };
         let min = (out[i - 1] + EPSILON).min(1.0);
         let max = (1.0 - EPSILON * (end - i) as f32).max(min);
         out[i] = value.clamp(min, max);

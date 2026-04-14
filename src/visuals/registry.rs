@@ -153,17 +153,18 @@ visuals! {
         };
         apply(p, s, set) { visuals!(@apply_config p, set); let mut st = s.borrow_mut();
             visuals!(@apply_palette st, set, &palettes::spectrogram::COLORS);
-            let count = palettes::spectrogram::COLORS.len();
             st.set_stop_positions(&sanitize_stop_positions(
-                set.palette.as_ref().and_then(|p| p.stop_positions.as_deref()), count));
+                set.palette.as_ref().and_then(|p| p.stop_positions.as_deref()),
+                &palettes::spectrogram::DEFAULT_POSITIONS));
             st.set_stop_spreads(&sanitize_stop_spreads(
-                set.palette.as_ref().and_then(|p| p.stop_spreads.as_deref()), count));
+                set.palette.as_ref().and_then(|p| p.stop_spreads.as_deref()),
+                palettes::spectrogram::COLORS.len()));
             st.piano_roll_overlay = set.piano_roll_overlay;
             st.set_floor_db(set.floor_db);
             st.set_tilt_db(set.tilt_db);
             st.set_rotation(set.rotation); };
         export(p, s) { let st = s.borrow(); let mut out = settings_cfg::SpectrogramSettings::from_config(&p.config());
-            out.palette = PaletteSettings::from_state(&st.palette, &palettes::spectrogram::COLORS, &st.stop_positions, &st.stop_spreads);
+            out.palette = PaletteSettings::from_state(&st.palette, &palettes::spectrogram::COLORS, &st.stop_positions, &palettes::spectrogram::DEFAULT_POSITIONS, &st.stop_spreads);
             out.piano_roll_overlay = st.piano_roll_overlay;
             out.floor_db = st.style.floor_db;
             out.tilt_db = st.style.tilt_db;

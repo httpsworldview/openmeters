@@ -124,7 +124,8 @@ impl ConfigPage {
             )
         };
 
-        let mut bg_pal = theme::Palette::new(&theme::background::COLORS, theme::background::LABELS);
+        use theme::background as bg;
+        let mut bg_pal = theme::Palette::new(&bg::COLORS, &bg::DEFAULT_POSITIONS, bg::LABELS);
         bg_pal.set(&[current_bg]);
         let bg_palette = PaletteEditor::new(bg_pal);
 

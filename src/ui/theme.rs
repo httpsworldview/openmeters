@@ -11,10 +11,7 @@ use iced::{Background, Color, Theme};
 
 use crate::util::color::{lerp_color, with_alpha};
 
-pub use crate::visuals::palettes::{
-    BG_BASE, Palette, background, loudness, oscilloscope, spectrogram, spectrum, stereometer,
-    waveform,
-};
+pub use crate::visuals::palettes::{BG_BASE, Palette, background};
 
 const TEXT_PRIMARY: Color = Color::from_rgba(0.902, 0.910, 0.925, 1.0);
 const TEXT_DARK: Color = Color::from_rgba(0.10, 0.10, 0.10, 1.0);

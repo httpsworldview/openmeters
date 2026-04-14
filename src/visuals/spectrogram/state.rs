@@ -111,9 +111,7 @@ impl SpectrogramState {
         Self {
             style: SpectrogramStyle::default(),
             palette: palettes::spectrogram::COLORS,
-            stop_positions: std::array::from_fn(|i| {
-                i as f32 / (SPECTROGRAM_PALETTE_SIZE - 1) as f32
-            }),
+            stop_positions: palettes::spectrogram::DEFAULT_POSITIONS,
             stop_spreads: [1.0; SPECTROGRAM_PALETTE_SIZE],
             key: crate::visuals::next_key(),
             piano_roll_overlay: PianoRollOverlay::Off,

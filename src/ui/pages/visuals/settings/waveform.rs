@@ -7,7 +7,6 @@ use super::widgets::{
     update_f32_range,
 };
 use crate::persistence::settings::{Channel, WaveformColorMode, WaveformSettings};
-use crate::ui::theme;
 use crate::visuals::registry::VisualKind;
 use crate::visuals::waveform::processor::{
     MAX_BAND_DB_FLOOR, MAX_SCROLL_SPEED, MIN_BAND_DB_FLOOR, MIN_SCROLL_SPEED,
@@ -16,7 +15,7 @@ use iced::Element;
 use iced::widget::column;
 
 settings_pane!(
-    WaveformSettingsPane, WaveformSettings, VisualKind::Waveform, theme::waveform, Waveform,
+    WaveformSettingsPane, WaveformSettings, VisualKind::Waveform, Waveform,
     extra_from_settings(settings) {}
     init_palette(palette) {
         configure_palette_for_mode(palette, settings.color_mode);

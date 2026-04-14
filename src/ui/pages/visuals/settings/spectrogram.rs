@@ -8,7 +8,6 @@ use super::widgets::{
     update_f32_range,
 };
 use crate::persistence::settings::{PianoRollOverlay, SpectrogramSettings};
-use crate::ui::theme;
 use crate::visuals::registry::VisualKind;
 use crate::visuals::spectrogram::processor::{FrequencyScale, WindowKind};
 use iced::widget::{column, row};
@@ -24,8 +23,7 @@ const FLOOR_DB_RANGE: SliderRange = SliderRange::new(-140.0, -1.0, 1.0);
 const TILT_DB_RANGE: SliderRange = SliderRange::new(-6.0, 6.0, 0.5);
 const ROTATION_RANGE: SliderRange = SliderRange::new(-1.0, 2.0, 1.0);
 settings_pane!(
-    SpectrogramSettingsPane, SpectrogramSettings, VisualKind::Spectrogram,
-    theme::spectrogram, Spectrogram,
+    SpectrogramSettingsPane, SpectrogramSettings, VisualKind::Spectrogram, Spectrogram,
     extra_from_settings(_s) {}
     init_palette(palette) {
         palette.set_show_ramp(true);

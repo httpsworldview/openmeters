@@ -6,18 +6,13 @@ use super::widgets::{
     SliderRange, labeled_pick_list, labeled_slider, set_if_changed, update_f32_range,
 };
 use crate::persistence::settings::{Channel, OscilloscopeSettings};
-use crate::ui::theme;
 use crate::visuals::oscilloscope::processor::TriggerMode;
 use crate::visuals::registry::VisualKind;
 use iced::Element;
 use iced::widget::column;
 
 settings_pane!(
-    OscilloscopeSettingsPane,
-    OscilloscopeSettings,
-    VisualKind::Oscilloscope,
-    theme::oscilloscope,
-    Oscilloscope,
+    OscilloscopeSettingsPane, OscilloscopeSettings, VisualKind::Oscilloscope, Oscilloscope,
     extra_from_settings(settings) {
         num_cycles: usize = match settings.trigger_mode {
             TriggerMode::Stable { num_cycles } => num_cycles,
