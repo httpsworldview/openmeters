@@ -69,36 +69,29 @@ pub fn focus_border() -> Border {
 }
 
 pub fn button_style(theme: &Theme, base: Color, status: button::Status) -> button::Style {
-    let palette = theme.extended_palette();
-    let mut style = button::Style {
-        background: Some(Background::Color(base)),
-        text_color: palette.background.base.text,
-        border: sharp_border(),
-        ..Default::default()
+    use button::Status::{Hovered, Pressed};
+    let bg = if status == Hovered {
+        palette::deviate(base, 0.05)
+    } else {
+        base
     };
-
-    match status {
-        button::Status::Hovered => {
-            let hover = palette::deviate(base, 0.05);
-            style.background = Some(Background::Color(hover));
-        }
-        button::Status::Pressed => {
-            style.border = focus_border();
-        }
-        _ => {}
+    let border = if status == Pressed {
+        focus_border()
+    } else {
+        sharp_border()
+    };
+    button::Style {
+        background: Some(Background::Color(bg)),
+        text_color: theme.extended_palette().background.base.text,
+        border,
+        ..Default::default()
     }
-
-    style
 }
 
 pub fn tab_button_style(theme: &Theme, active: bool, status: button::Status) -> button::Style {
-    let palette = theme.extended_palette();
-    let base = if active {
-        palette.primary.base.color
-    } else {
-        lerp_color(palette.background.base.color, Color::WHITE, 0.2)
-    };
-    button_style(theme, with_alpha(base, 1.0), status)
+    let pal = theme.extended_palette();
+    let base = [pal.background.weak.color, pal.primary.base.color][active as usize];
+    button_style(theme, base, status)
 }
 
 pub fn weak_container(theme: &Theme) -> container::Style {

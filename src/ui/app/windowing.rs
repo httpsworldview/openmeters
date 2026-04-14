@@ -304,11 +304,23 @@ impl UiApp {
     }
 
     pub(super) fn theme(&self, window_id: window::Id) -> iced::Theme {
-        let custom_bg = (window_id == self.main_window_id
+        let is_settings = matches!(&self.settings_window, Some((w, _)) if *w == window_id);
+        // Settings window forces opaque alpha: it has no wgpu visual backdrop, so a
+        // translucent user background would let the desktop bleed through the chrome.
+        let custom_bg = (is_settings
+            || window_id == self.main_window_id
             || self.popout_windows.contains_key(&window_id))
         .then(|| self.settings_handle.borrow().settings().background_color)
-        .flatten();
-        theme::theme(custom_bg.map(Into::into))
+        .flatten()
+        .map(|c| {
+            let c: iced::Color = c.into();
+            if is_settings {
+                iced::Color { a: 1.0, ..c }
+            } else {
+                c
+            }
+        });
+        theme::theme(custom_bg)
     }
 
     pub(super) fn handle_popout_or_dock(&mut self, source_window: window::Id) -> Task<Message> {

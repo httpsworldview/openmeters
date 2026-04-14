@@ -439,6 +439,7 @@ impl ConfigPage {
 
         let save_btn = button(text("Save").size(TEXT_SIZE))
             .padding([4, 8])
+            .style(|t, s| theme::tab_button_style(t, false, s))
             .on_press_maybe(
                 (!is_builtin).then(|| ConfigMessage::SaveTheme(self.active_theme.clone())),
             );
@@ -450,6 +451,7 @@ impl ConfigPage {
         let trimmed = self.save_theme_name.trim();
         let save_as_btn = button(text("Save as").size(TEXT_SIZE))
             .padding([4, 8])
+            .style(|t, s| theme::tab_button_style(t, false, s))
             .on_press_maybe(
                 (!trimmed.is_empty() && trimmed != BUILTIN_THEME)
                     .then(|| ConfigMessage::SaveTheme(trimmed.to_owned())),
@@ -735,6 +737,6 @@ fn tab_button<'a>(
     )
     .padding(8)
     .width(Length::Fill)
-    .style(move |theme: &iced::Theme, status| theme::tab_button_style(theme, active, status))
+    .style(move |theme, status| theme::tab_button_style(theme, active, status))
     .on_press(message)
 }
