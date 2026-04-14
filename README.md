@@ -64,9 +64,11 @@ pull request!
   - [x] Correlation meter
     - [x] Single or multi-band
     - [x] Adjustable time window
-  - [x] Two visual modes:
-    - [x] Lissajous (draws lines between samples)
-    - [x] Dot cloud (plots samples as points)
+  - [x] Three visual modes:
+    - [x] Lissajous - draws lines between samples
+    - [x] Dot Cloud - plots samples as points
+    - [x] Dot Cloud (Bands) - same as above, but colors dots based on
+          frequency band
   - [x] Ability to flip L/R channels (for M/S monitoring)
   - [x] Adjustable scale (linear/exponential)
   - [x] Adjustable rotation
@@ -74,6 +76,7 @@ pull request!
 - [x] **waveform**
   - [x] Channel selection (L, R, L+R)
   - [x] Adjustable scroll speed
+  - [x] Peak history overlay
   - [x] Adjustable color map
     - [x] Based on frequency
     - [x] Based on Loudness
