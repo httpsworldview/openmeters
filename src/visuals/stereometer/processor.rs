@@ -7,6 +7,11 @@ use std::collections::VecDeque;
 
 const LOW_MID_HZ: f32 = 250.0;
 const MID_HIGH_HZ: f32 = 4000.0;
+// Band histories store interleaved L/R only, independent of input channel count.
+const BAND_CHANNELS: usize = 2;
+// LR4 passbands can transiently exceed the input envelope; scale a
+// tad to prevent.
+const BAND_DISPLAY_GAIN: f32 = 0.8;
 
 #[derive(Debug, Clone, Copy)]
 pub struct StereometerConfig {
@@ -14,6 +19,7 @@ pub struct StereometerConfig {
     pub segment_duration: f32,
     pub target_sample_count: usize,
     pub correlation_window: f32,
+    pub emit_band_points: bool,
 }
 
 impl Default for StereometerConfig {
@@ -23,6 +29,7 @@ impl Default for StereometerConfig {
             segment_duration: 0.02,
             target_sample_count: 2_000,
             correlation_window: 0.05,
+            emit_band_points: false,
         }
     }
 }
@@ -50,6 +57,7 @@ pub struct StereometerSnapshot {
     pub xy_points: Vec<(f32, f32)>,
     pub correlation: f32,
     pub band_correlation: BandCorrelation,
+    pub band_points: [Vec<(f32, f32)>; 3],
 }
 
 // Linkwitz-Riley 4th-order crossover (two cascaded 2nd-order Butterworth).
@@ -123,6 +131,7 @@ pub struct StereometerProcessor {
     config: StereometerConfig,
     snapshot: StereometerSnapshot,
     history: VecDeque<f32>,
+    band_history: [VecDeque<f32>; 3],
     history_channels: usize,
     // [left low/mid, right low/mid, left mid/high, right mid/high]
     crossovers: [LR4; 4],
@@ -135,6 +144,7 @@ impl StereometerProcessor {
         Self {
             snapshot: StereometerSnapshot::default(),
             history: VecDeque::new(),
+            band_history: Default::default(),
             history_channels: 0,
             crossovers: Self::build_crossovers(config.sample_rate),
             correlators: Self::fresh_correlators(config),
@@ -202,6 +212,12 @@ impl AudioProcessor for StereometerProcessor {
             self.correlators[1].update(low_l, low_r);
             self.correlators[2].update(mid_l, mid_r);
             self.correlators[3].update(high_l, high_r);
+
+            if self.config.emit_band_points {
+                self.band_history[0].extend([low_l, low_r]);
+                self.band_history[1].extend([mid_l, mid_r]);
+                self.band_history[2].extend([high_l, high_r]);
+            }
         }
 
         let frames = (self.config.sample_rate * self.config.segment_duration)
@@ -211,17 +227,49 @@ impl AudioProcessor for StereometerProcessor {
 
         extend_interleaved_history(&mut self.history, block.samples, capacity, channel_count);
 
+        let band_capacity = frames * BAND_CHANNELS;
+        if self.config.emit_band_points {
+            for bh in &mut self.band_history {
+                let drop = bh.len().saturating_sub(band_capacity);
+                bh.drain(..drop);
+            }
+        }
+
         if self.history.len() < capacity {
             return None;
         }
 
-        let data = self.history.make_contiguous();
         let target = self.config.target_sample_count.clamp(1, frames);
-        self.snapshot.xy_points.clear();
-        self.snapshot.xy_points.reserve(target);
-        for i in 0..target {
-            let idx = (i * frames / target) * channel_count;
-            self.snapshot.xy_points.push((data[idx], data[idx + 1]));
+        {
+            let data = self.history.make_contiguous();
+            self.snapshot.xy_points.clear();
+            self.snapshot.xy_points.reserve(target);
+            for i in 0..target {
+                let idx = (i * frames / target) * channel_count;
+                self.snapshot.xy_points.push((data[idx], data[idx + 1]));
+            }
+        }
+
+        if self.config.emit_band_points {
+            for (bh, buf) in self
+                .band_history
+                .iter_mut()
+                .zip(&mut self.snapshot.band_points)
+            {
+                buf.clear();
+                if bh.len() < band_capacity {
+                    continue;
+                }
+                let data = bh.make_contiguous();
+                buf.reserve(target);
+                for i in 0..target {
+                    let idx = (i * frames / target) * BAND_CHANNELS;
+                    buf.push((
+                        data[idx] * BAND_DISPLAY_GAIN,
+                        data[idx + 1] * BAND_DISPLAY_GAIN,
+                    ));
+                }
+            }
         }
 
         self.snapshot.correlation = self.correlators[0].value();
@@ -237,6 +285,7 @@ impl AudioProcessor for StereometerProcessor {
     fn reset(&mut self) {
         self.snapshot = StereometerSnapshot::default();
         self.history.clear();
+        self.band_history.iter_mut().for_each(VecDeque::clear);
         self.history_channels = 0;
         self.crossovers = Self::build_crossovers(self.config.sample_rate);
         self.correlators = Self::fresh_correlators(self.config);
@@ -249,6 +298,7 @@ impl Reconfigurable<StereometerConfig> for StereometerProcessor {
             (self.config.sample_rate - config.sample_rate).abs() > f32::EPSILON;
         let window_changed =
             (self.config.correlation_window - config.correlation_window).abs() > f32::EPSILON;
+        let emit_turned_off = self.config.emit_band_points && !config.emit_band_points;
         self.config = config;
 
         if sample_rate_changed {
@@ -256,6 +306,11 @@ impl Reconfigurable<StereometerConfig> for StereometerProcessor {
         } else if window_changed {
             let alpha = ema_alpha(config.sample_rate, config.correlation_window);
             self.correlators.iter_mut().for_each(|c| c.alpha = alpha);
+        }
+
+        if emit_turned_off {
+            self.band_history.iter_mut().for_each(VecDeque::clear);
+            self.snapshot.band_points.iter_mut().for_each(Vec::clear);
         }
     }
 }

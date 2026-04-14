@@ -166,7 +166,11 @@ impl Channel {
         Channel::None,
     ];
 }
-settings_enum!(pub enum StereometerMode  { Lissajous => "Lissajous", #[default] DotCloud => "Dot Cloud" });
+settings_enum!(pub enum StereometerMode  {
+    Lissajous => "Lissajous",
+    #[default] DotCloud => "Dot Cloud",
+    DotCloudBands => "Dot Cloud (Bands)",
+});
 settings_enum!(pub enum StereometerScale { Linear => "Linear", #[default] Exponential => "Exponential" });
 settings_enum!(pub enum CorrelationMeterMode { Off => "Off", SingleBand => "Single Band", #[default] MultiBand => "Multi Band" });
 settings_enum!(pub enum CorrelationMeterSide { Left => "Left", #[default] Right => "Right" });

@@ -195,8 +195,15 @@ visuals! {
     Stereometer("Stereometer", 150.0, 220.0, 100.0) =>
         stereometer::StereometerProcessor, StereometerState;
         settings_cfg::StereometerSettings, &palettes::stereometer::COLORS;
-        apply(p, s, set) { visuals!(@apply_config p, set); let mut st = s.borrow_mut();
-            st.update_view_settings(&set); visuals!(@apply_palette st, set, &palettes::stereometer::COLORS); };
+        apply(p, s, set) {
+            let mut cfg = p.config();
+            set.apply_to(&mut cfg);
+            cfg.emit_band_points = set.mode == settings_cfg::StereometerMode::DotCloudBands;
+            p.update_config(cfg);
+            let mut st = s.borrow_mut();
+            st.update_view_settings(&set);
+            visuals!(@apply_palette st, set, &palettes::stereometer::COLORS);
+        };
         export(p, s) { let st = s.borrow(); let cfg = p.config();
             let mut out = st.export_settings();
             out.segment_duration = cfg.segment_duration;

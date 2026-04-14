@@ -15,7 +15,11 @@ use crate::visuals::registry::VisualKind;
 use iced::widget::{column, row};
 use iced::{Element, Length};
 
-const MODE_OPTIONS: [StereometerMode; 2] = [StereometerMode::Lissajous, StereometerMode::DotCloud];
+const MODE_OPTIONS: [StereometerMode; 3] = [
+    StereometerMode::Lissajous,
+    StereometerMode::DotCloud,
+    StereometerMode::DotCloudBands,
+];
 const SCALE_OPTIONS: [StereometerScale; 2] =
     [StereometerScale::Linear, StereometerScale::Exponential];
 const CORR_METER_OPTIONS: [CorrelationMeterMode; 3] = [

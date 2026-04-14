@@ -40,12 +40,14 @@ fn dot_vertices(
     radius: f32,
     color: [f32; 4],
     clip: ClipTransform,
+    additive: bool,
 ) -> [SdfVertex; 6] {
     let outer = radius + 1.0;
+    let flag = if additive { 1.0 } else { 0.0 };
     let v = |px, py, ox, oy| SdfVertex {
         position: clip.to_clip(px, py),
         color,
-        params: [ox, oy, radius, 0.0],
+        params: [ox, oy, radius, flag],
     };
     [
         v(cx - outer, cy - outer, -outer, -outer),
@@ -62,6 +64,7 @@ pub struct StereometerParams {
     pub key: u64,
     pub bounds: Rectangle,
     pub points: Vec<(f32, f32)>,
+    pub band_points: [Vec<(f32, f32)>; 3],
     pub palette: [[f32; 4]; 9],
     pub mode: StereometerMode,
     pub scale: StereometerScale,
@@ -242,7 +245,14 @@ impl StereometerPrimitive {
                 let nf = p.points.len() as f32;
                 v.extend(p.points.iter().enumerate().flat_map(|(i, &(l, r))| {
                     let (px, py) = t.apply_rotation(l, r);
-                    dot_vertices(px, py, 1.5, [cr, cg, cb, ca * (i + 1) as f32 / nf], clip)
+                    dot_vertices(
+                        px,
+                        py,
+                        1.5,
+                        [cr, cg, cb, ca * (i + 1) as f32 / nf],
+                        clip,
+                        false,
+                    )
                 }));
             }
             StereometerMode::Lissajous if p.points.len() >= 2 => {
@@ -262,6 +272,21 @@ impl StereometerPrimitive {
                         clip,
                     )
                 }));
+            }
+            StereometerMode::DotCloudBands => {
+                for band in 0..3 {
+                    let pts = &p.band_points[band];
+                    if pts.is_empty() {
+                        continue;
+                    }
+                    let nf = pts.len() as f32;
+                    let [cr, cg, cb, ca] = p.palette[5 + band];
+                    v.extend(pts.iter().enumerate().flat_map(|(i, &(l, r))| {
+                        let (px, py) = t.apply_rotation(l, r);
+                        let f = ca * (i + 1) as f32 / nf;
+                        dot_vertices(px, py, 1.5, [cr * f, cg * f, cb * f, 0.0], clip, true)
+                    }));
+                }
             }
             _ => {}
         }
@@ -361,6 +386,7 @@ impl StereometerPrimitive {
                 ));
             }
         }
+
         v
     }
 }

@@ -25,7 +25,9 @@ fn premultiply(color: vec4<f32>) -> vec4<f32> {
 fn vs_main(input: VertexInput) -> VertexOutput {
     var output: VertexOutput;
     output.position = vec4<f32>(input.position, 0.0, 1.0);
-    output.color = premultiply(input.color);
+    // params.w > 0.5 marks additive dots: caller has pre-scaled the color with
+    // alpha=0 so that premultiplied-alpha blending reduces to dst += src.
+    output.color = select(premultiply(input.color), input.color, input.params.w > 0.5);
     output.params = input.params;
     return output;
 }

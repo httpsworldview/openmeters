@@ -29,6 +29,7 @@ vis_processor!(
 #[derive(Debug, Clone)]
 pub(crate) struct StereometerState {
     points: Vec<(f32, f32)>,
+    band_points: [Vec<(f32, f32)>; 3],
     corr_trail: VecDeque<f32>,
     band_trail: VecDeque<BandCorrelation>,
     pub(crate) palette: [Color; 9],
@@ -43,11 +44,29 @@ pub(crate) struct StereometerState {
     key: u64,
 }
 
+fn blend_points<F: Fn(f32, f32) -> (f32, f32)>(
+    dst: &mut Vec<(f32, f32)>,
+    src: &[(f32, f32)],
+    scale: F,
+    persistence: f32,
+) {
+    dst.resize(src.len(), (0.0, 0.0));
+    let fresh = 1.0 - persistence;
+    for (d, s) in dst.iter_mut().zip(src) {
+        let sp = scale(s.0, s.1);
+        *d = (
+            d.0 * persistence + sp.0 * fresh,
+            d.1 * persistence + sp.1 * fresh,
+        );
+    }
+}
+
 impl StereometerState {
     pub fn new() -> Self {
         let defaults = StereometerSettings::default();
         Self {
             points: Vec::new(),
+            band_points: Default::default(),
             corr_trail: VecDeque::with_capacity(TRAIL_LEN),
             band_trail: VecDeque::with_capacity(TRAIL_LEN),
             palette: palettes::stereometer::COLORS,
@@ -95,25 +114,21 @@ impl StereometerState {
     pub fn apply_snapshot(&mut self, snap: StereometerSnapshot) {
         if snap.xy_points.is_empty() {
             self.points.clear();
+            self.band_points.iter_mut().for_each(Vec::clear);
             self.corr_trail.clear();
             self.band_trail.clear();
             return;
         }
 
-        let scale = |x: f32, y: f32| scale_point(self.scale, x, y, self.scale_range);
-
-        self.points.resize(snap.xy_points.len(), (0.0, 0.0));
-        let fresh = 1.0 - self.persistence;
-        for (dst, src) in self.points.iter_mut().zip(&snap.xy_points) {
-            let s = scale(src.0, src.1);
-            *dst = if self.persistence <= f32::EPSILON {
-                s
-            } else {
-                (
-                    dst.0 * self.persistence + s.0 * fresh,
-                    dst.1 * self.persistence + s.1 * fresh,
-                )
-            };
+        let scale_fn = |x: f32, y: f32| scale_point(self.scale, x, y, self.scale_range);
+        blend_points(
+            &mut self.points,
+            &snap.xy_points,
+            scale_fn,
+            self.persistence,
+        );
+        for (dst, src) in self.band_points.iter_mut().zip(&snap.band_points) {
+            blend_points(dst, src, scale_fn, self.persistence);
         }
 
         let sm =
@@ -145,6 +160,7 @@ impl StereometerState {
             key: self.key,
             bounds,
             points: self.points.clone(),
+            band_points: self.band_points.clone(),
             palette: self.palette.map(color_to_rgba),
             mode: self.mode,
             scale: self.scale,
