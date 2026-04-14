@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Maika Namuo
 
 use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
-use crate::util::audio::{DEFAULT_SAMPLE_RATE, power_to_db};
+use crate::util::audio::{BAND_SPLITS_HZ, DEFAULT_SAMPLE_RATE, power_to_db};
 use crate::visuals::spectrogram::processor::WindowKind;
 use realfft::{RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex32;
@@ -21,7 +21,6 @@ const MAX_FREQ_HZ: f32 = 5_000.0;
 // lower = more smoothing, higher = more responsive.
 const CENTROID_EMA_ALPHA: f32 = 0.4;
 
-const BAND_EDGES_HZ: [f32; NUM_BANDS + 1] = [20.0, 250.0, 4000.0, 20000.0];
 const BAND_EMA_ALPHA: f32 = 0.35;
 
 pub const NUM_BANDS: usize = 3;
@@ -137,12 +136,8 @@ impl FrequencyAnalyzer {
         let fft = RealFftPlanner::new().plan_fft_forward(size);
         let bin_hz = sample_rate / size as f32;
         let spectrum_len = size / 2 + 1;
-        let mut band_bin_ranges = [(0usize, 0usize); NUM_BANDS];
-        for band in 0..NUM_BANDS {
-            let lo = (BAND_EDGES_HZ[band] / bin_hz).ceil() as usize;
-            let hi = ((BAND_EDGES_HZ[band + 1] / bin_hz).floor() as usize).min(spectrum_len);
-            band_bin_ranges[band] = (lo, hi);
-        }
+        let [s0, s1] = BAND_SPLITS_HZ.map(|hz| ((hz / bin_hz).round() as usize).min(spectrum_len));
+        let band_bin_ranges: [(usize, usize); NUM_BANDS] = [(0, s0), (s0, s1), (s1, spectrum_len)];
         Self {
             scratch: vec![Complex32::default(); fft.get_scratch_len()],
             input_buffer: vec![0.0; size],

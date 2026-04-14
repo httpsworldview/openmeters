@@ -2,11 +2,9 @@
 // Copyright (C) 2026 Maika Namuo
 
 use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
-use crate::util::audio::{DEFAULT_SAMPLE_RATE, extend_interleaved_history};
+use crate::util::audio::{BAND_SPLITS_HZ, DEFAULT_SAMPLE_RATE, extend_interleaved_history};
 use std::collections::VecDeque;
 
-const LOW_MID_HZ: f32 = 250.0;
-const MID_HIGH_HZ: f32 = 4000.0;
 // Band histories store interleaved L/R only, independent of input channel count.
 const BAND_CHANNELS: usize = 2;
 // LR4 passbands can transiently exceed the input envelope; scale a
@@ -153,11 +151,12 @@ impl StereometerProcessor {
     }
 
     fn build_crossovers(sample_rate: f32) -> [LR4; 4] {
+        let [low_mid, mid_high] = BAND_SPLITS_HZ;
         [
-            LR4::lowpass(sample_rate, LOW_MID_HZ),
-            LR4::lowpass(sample_rate, LOW_MID_HZ),
-            LR4::lowpass(sample_rate, MID_HIGH_HZ),
-            LR4::lowpass(sample_rate, MID_HIGH_HZ),
+            LR4::lowpass(sample_rate, low_mid),
+            LR4::lowpass(sample_rate, low_mid),
+            LR4::lowpass(sample_rate, mid_high),
+            LR4::lowpass(sample_rate, mid_high),
         ]
     }
 
@@ -202,7 +201,6 @@ impl AudioProcessor for StereometerProcessor {
             let (left, right) = (frame[0], frame[1]);
             self.correlators[0].update(left, right);
 
-            // 3-band split: low < 250Hz, mid 250-4000Hz, high > 4000Hz
             let low_l = self.crossovers[0].process(left);
             let low_r = self.crossovers[1].process(right);
             let mid_l = self.crossovers[2].process(left - low_l);

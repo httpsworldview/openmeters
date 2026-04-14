@@ -8,6 +8,9 @@ pub const DEFAULT_SAMPLE_RATE: f32 = 48_000.0;
 
 pub const DB_FLOOR: f32 = -140.0;
 
+// Crossover stops shared across multi-band visuals (waveform, stereometer).
+pub const BAND_SPLITS_HZ: [f32; 2] = [250.0, 4000.0];
+
 // Avoids log(0) in dB conversions.
 const POWER_EPSILON: f32 = 1.0e-20;
 
