@@ -23,6 +23,7 @@ use iced::advanced::{Layout, Renderer as _, Widget, layout, mouse};
 use iced::{Background, Color, Element, Length, Point, Rectangle, Size, keyboard};
 use iced_wgpu::primitive::Renderer as _;
 use std::cell::RefCell;
+use std::collections::VecDeque;
 
 const DB_CEILING: f32 = 0.0;
 const TOOLTIP_SIZE: f32 = 14.0;
@@ -102,7 +103,9 @@ pub(crate) struct SpectrogramState {
     ring_capacity: u32,
     write_slot: u32,
     col_count: u32,
-    pending: Vec<PendingUpload>,
+    // keeps pending from growing when draw() stops firing
+    // (e.g. spectrogram on another workspace or occluded)
+    pending: VecDeque<PendingUpload>,
     linearize_from: Option<u32>,
 }
 
@@ -129,7 +132,7 @@ impl SpectrogramState {
             ring_capacity: 0,
             write_slot: 0,
             col_count: 0,
-            pending: Vec::new(),
+            pending: VecDeque::new(),
             linearize_from: None,
         }
     }
@@ -229,7 +232,10 @@ impl SpectrogramState {
                     mags,
                 },
             };
-            self.pending.push(upload);
+            if self.pending.len() as u32 >= self.ring_capacity {
+                self.pending.pop_front();
+            }
+            self.pending.push_back(upload);
             self.write_slot = (self.write_slot + 1) % self.ring_capacity;
             if self.col_count < self.ring_capacity {
                 self.col_count += 1;
@@ -257,7 +263,7 @@ impl SpectrogramState {
             points_per_column: self.points_per_column as u32,
             col_count: self.col_count,
             write_slot: self.write_slot,
-            pending_uploads: std::mem::take(&mut self.pending),
+            pending_uploads: Vec::from(std::mem::take(&mut self.pending)),
             col_kind: self.col_kind,
             freq_min,
             freq_max,
