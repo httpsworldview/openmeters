@@ -1,4 +1,5 @@
 const LOG10_E: f32 = 0.4342944819;
+const LOG_KNEE_HZ: f32 = 20.0;
 
 // Classic storage domain -- keep in sync with render.rs DB_STORE_*.
 const DB_STORE_LO: f32 = -144.0;
@@ -6,9 +7,8 @@ const DB_STORE_HI: f32 = 12.0;
 const DB_STORE_RANGE: f32 = DB_STORE_HI - DB_STORE_LO;
 
 // Must match Rust-side Uniforms layout exactly.
-// freq_min_max.x doubles as FFT bin spacing (sample_rate / fft_size).
 struct Uniforms {
-    freq_min_max: vec2<f32>,        // (bin_hz, max_hz)
+    freq_min_max: vec2<f32>,        // (freq_min, freq_max) display axis bounds
     freq_scale: u32,                // 0=linear, 1=log, 2=erb
     points_per_col: u32,
 
@@ -27,10 +27,15 @@ struct Uniforms {
     contrast: f32,
     tilt_db: f32,
 
-    // Precomputed CPU-side; also fills the 12 B of pad before the stops block.
     newest_col: u32,
     inv_uv_range: f32,
     col_stride_u16: u32,
+    // FFT bin spacing (sample_rate / fft_size); only used by vs_strip.
+    bin_hz: f32,
+    // Three u32 pads (vec3 would align to 16 B and desync the Rust layout).
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 
     // (pos1, pos2, pos3, spread0), (spread1, spread2, spread3, spread4).
     // Stops 0 and 4 are constant 0.0 / 1.0
@@ -58,9 +63,9 @@ fn freq_to_norm(hz: f32) -> f32 {
 
     switch u.freq_scale {
         case 1u: {
-            let ln_lo = log(max(lo, 1e-6));
-            let ln_hi = log(max(hi, 1e-6));
-            return (log(max(hz, 1e-6)) - ln_lo) / max(ln_hi - ln_lo, 1e-12);
+            let a_lo = asinh(lo / LOG_KNEE_HZ);
+            let a_hi = asinh(hi / LOG_KNEE_HZ);
+            return (asinh(hz / LOG_KNEE_HZ) - a_lo) / max(a_hi - a_lo, 1e-12);
         }
         case 2u: {
             let erb_lo = erb(lo);
@@ -175,9 +180,8 @@ fn vs_strip(
     let bin_in_col = inst % max(segs_per_col, 1u);
 
     // Compute both endpoint freq positions so cull decisions are uniform across quad
-    let bin_hz = u.freq_min_max.x;
-    let zoomed_lo = (freq_to_norm(f32(bin_in_col) * bin_hz) - u.uv_y_range.x) * u.inv_uv_range;
-    let zoomed_hi = (freq_to_norm(f32(bin_in_col + 1u) * bin_hz) - u.uv_y_range.x) * u.inv_uv_range;
+    let zoomed_lo = (freq_to_norm(f32(bin_in_col) * u.bin_hz) - u.uv_y_range.x) * u.inv_uv_range;
+    let zoomed_hi = (freq_to_norm(f32(bin_in_col + 1u) * u.bin_hz) - u.uv_y_range.x) * u.inv_uv_range;
     if max(zoomed_lo, zoomed_hi) < -0.01 || min(zoomed_lo, zoomed_hi) > 1.01 {
         return VertexOutput(CULL_POS, u.floor_db, 0.0);
     }
@@ -187,7 +191,7 @@ fn vs_strip(
     let use_lo = corner.y > 0.0;
     let bin_idx = select(bin_in_col + 1u, bin_in_col, use_lo);
     let mag_db = unpack_mag(slot, bin_idx);
-    let freq_hz = f32(bin_idx) * bin_hz;
+    let freq_hz = f32(bin_idx) * u.bin_hz;
     let ext = extents();
     let zoomed = select(zoomed_hi, zoomed_lo, use_lo);
     // corner padding: 1 px time + 1 px freq so subpixel bins stay visible at high freq.

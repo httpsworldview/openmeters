@@ -80,10 +80,9 @@ pub struct SpectrogramParams {
     pub pending_uploads: Vec<PendingUpload>,
     pub linearize_old_write_slot: Option<u32>,
     pub col_kind: ColumnKind,
-    // Bottom of the displayable frequency axis, also the FFT bin spacing
-    // (sample_rate / fft_size). Same value, both semantics.
     pub freq_min: f32,
     pub freq_max: f32,
+    pub bin_hz: f32,
     pub freq_scale: FrequencyScale,
     pub palette: [[f32; 4]; SPECTROGRAM_PALETTE_SIZE],
     pub stop_positions: [f32; SPECTROGRAM_PALETTE_SIZE],
@@ -238,7 +237,7 @@ fn point_instance_layout() -> wgpu::VertexBufferLayout<'static> {
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, PartialEq)]
 struct Uniforms {
-    freq_min_max: [f32; 2], // (bin_hz, max_hz)
+    freq_min_max: [f32; 2], // display axis bounds
     freq_scale: u32,
     points_per_col: u32,
     history_length: u32,
@@ -253,14 +252,21 @@ struct Uniforms {
     ceiling_db: f32,
     contrast: f32,
     tilt_db: f32,
-    // Precomputed scalars; also fill the 12 B of pad before the stops block.
     newest_col: u32,
     inv_uv_range: f32,
     col_stride_u16: u32,
+    bin_hz: f32,
+    // 12 B pad so `stops` lands on a 16-byte boundary (array<vec4> align).
+    _pad: [u32; 3],
     // (pos1, pos2, pos3, spread0), (spread1, spread2, spread3, spread4).
     // Stops 0 and 4 are constant 0.0 / 1.0 and live in the shader.
     stops: [[f32; 4]; 2],
 }
+
+// Locks layout to what the WGSL Uniforms struct expects. Stops must land at
+// offset 112 (16-aligned for array<vec4>), total 144 bytes.
+const _: () = assert!(std::mem::size_of::<Uniforms>() == 144);
+const _: () = assert!(std::mem::offset_of!(Uniforms, stops) == 112);
 
 impl Uniforms {
     fn from_params(p: &SpectrogramParams, viewport: [f32; 2], scale_factor: f32) -> Self {
@@ -302,6 +308,8 @@ impl Uniforms {
             newest_col,
             inv_uv_range,
             col_stride_u16,
+            bin_hz: p.bin_hz,
+            _pad: [0; 3],
             stops: [
                 [
                     p.stop_positions[1],

@@ -131,6 +131,7 @@ fn clamp_finite(value: f32, min: f32, max: f32) -> f32 {
 pub struct SpectrumProcessor {
     config: SpectrumConfig,
     snapshot: SpectrumSnapshot,
+    planner: RealFftPlanner<f32>,
     fft: Arc<dyn RealToComplex<f32>>,
     window: Vec<f32>,
     real_buffer: Vec<f32>,
@@ -152,10 +153,13 @@ impl SpectrumProcessor {
     pub fn new(mut config: SpectrumConfig) -> Self {
         config.normalize();
         let fft_size = config.fft_size;
+        let mut planner = RealFftPlanner::<f32>::new();
+        let fft = planner.plan_fft_forward(fft_size);
         let mut processor = Self {
             config,
             snapshot: SpectrumSnapshot::default(),
-            fft: RealFftPlanner::<f32>::new().plan_fft_forward(fft_size),
+            planner,
+            fft,
             window: Vec::new(),
             real_buffer: Vec::new(),
             spectrum_buffer: Vec::new(),
@@ -182,8 +186,7 @@ impl SpectrumProcessor {
     fn rebuild_fft(&mut self) {
         self.config.normalize();
         let fft_size = self.config.fft_size;
-        let mut planner = RealFftPlanner::<f32>::new();
-        self.fft = planner.plan_fft_forward(fft_size);
+        self.fft = self.planner.plan_fft_forward(fft_size);
         self.window = self.config.window.coefficients(fft_size);
         self.real_buffer.resize(fft_size, 0.0);
         self.spectrum_buffer = self.fft.make_output_vec();

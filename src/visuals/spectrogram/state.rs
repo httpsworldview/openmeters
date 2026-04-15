@@ -38,16 +38,23 @@ const PIANO_LABEL_SIZE: f32 = 9.0;
 const PIANO_MIDI_LO: i32 = 21; // A0
 const PIANO_MIDI_HI: i32 = 119; // C8
 
-fn spec_freq_min(_scale: FrequencyScale, min_freq: f32) -> f32 {
-    min_freq
+// Display floor for the frequency axis. Reassignment can localize energy far
+// below the FFT bin spacing, so this is intentionally decoupled from fft_size.
+// 1 Hz is about as low as the log axis stays useful before stretching swallows
+// the whole display; ERB and linear scales handle it cleanly either way.
+const DISPLAY_MIN_HZ: f32 = 1.0;
+
+fn display_axis(sample_rate: f32) -> (f32, f32) {
+    let nyq = (sample_rate / 2.0).max(1.0);
+    (DISPLAY_MIN_HZ.min(nyq * 0.5), nyq)
 }
 
 fn norm_to_freq(inv: f32, nyquist: f32, min_freq: f32, scale: FrequencyScale) -> f32 {
-    scale.freq_at(spec_freq_min(scale, min_freq), nyquist, inv)
+    scale.freq_at(min_freq, nyquist, inv)
 }
 
 fn freq_to_norm(freq: f32, nyquist: f32, min_freq: f32, scale: FrequencyScale) -> f32 {
-    scale.pos_of(spec_freq_min(scale, min_freq), nyquist, freq)
+    scale.pos_of(min_freq, nyquist, freq)
 }
 
 vis_processor!(
@@ -253,8 +260,8 @@ impl SpectrogramState {
         }
         let op = self.style.opacity.clamp(0.0, 1.0);
         let to_rgba = |c: Color| rgba_with_alpha(color_to_rgba(c), c.a * op);
-        let freq_min = self.sample_rate / (self.fft_size.max(1) as f32);
-        let freq_max = (self.sample_rate / 2.0).max(freq_min + 1.0);
+        let bin_hz = self.sample_rate / (self.fft_size.max(1) as f32);
+        let (freq_min, freq_max) = display_axis(self.sample_rate);
 
         Some(SpectrogramParams {
             key: self.key,
@@ -267,6 +274,7 @@ impl SpectrogramState {
             col_kind: self.col_kind,
             freq_min,
             freq_max,
+            bin_hz,
             freq_scale: self.freq_scale,
             palette: self.palette.map(to_rgba),
             stop_positions: self.stop_positions,
@@ -292,8 +300,7 @@ impl SpectrogramState {
         if self.fft_size == 0 || self.sample_rate <= 0.0 {
             return None;
         }
-        let nyq = (self.sample_rate / 2.0).max(1.0);
-        let min_f = self.sample_rate / self.fft_size as f32;
+        let (min_f, nyq) = display_axis(self.sample_rate);
         let freq = norm_to_freq(tex_uv, nyq, min_f, self.freq_scale);
         (freq.is_finite() && freq > 0.0).then_some(freq)
     }
@@ -501,12 +508,8 @@ impl<'a> Spectrogram<'a> {
         if state.fft_size == 0 || state.sample_rate <= 0.0 {
             return;
         }
-        let (nyq, min_f, scale, rot) = (
-            (state.sample_rate / 2.0).max(1.0),
-            (state.sample_rate / state.fft_size as f32),
-            state.freq_scale,
-            state.rotation_index(),
-        );
+        let (min_f, nyq) = display_axis(state.sample_rate);
+        let (scale, rot) = (state.freq_scale, state.rotation_index());
         drop(state);
         let horizontal = matches!(rot, 1 | 3);
 

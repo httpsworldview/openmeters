@@ -90,16 +90,18 @@ pub enum FrequencyScale {
     Erb,
 }
 
+// Knee frequency for the asinh-based "log" axis. Mirrored in spectrogram.wgsl.
+const LOG_KNEE_HZ: f32 = 20.0;
+
 impl FrequencyScale {
     #[inline]
     pub fn freq_at(self, min: f32, max: f32, t: f32) -> f32 {
         match self {
             Self::Linear => min + (max - min) * t,
             Self::Logarithmic => {
-                let min = min.max(1e-6);
-                // decomposed from powf so LLVM can hoist the ln when
-                // min/max are loop-invariant
-                min * (t * (max / min).max(1.0).ln()).exp()
+                let lo = (min / LOG_KNEE_HZ).asinh();
+                let hi = (max / LOG_KNEE_HZ).asinh();
+                LOG_KNEE_HZ * (lo + (hi - lo) * t).sinh()
             }
             Self::Erb => {
                 let erb_min = hz_to_erb_rate(min);
@@ -113,12 +115,9 @@ impl FrequencyScale {
         match self {
             Self::Linear => (freq - min) / (max - min).max(1e-6),
             Self::Logarithmic => {
-                let min = min.max(1e-6);
-                let ratio = max / min;
-                if ratio <= 1.0 {
-                    return 0.0;
-                }
-                (freq / min).ln() / ratio.ln()
+                let lo = (min / LOG_KNEE_HZ).asinh();
+                let hi = (max / LOG_KNEE_HZ).asinh();
+                ((freq / LOG_KNEE_HZ).asinh() - lo) / (hi - lo).max(1e-6)
             }
             Self::Erb => {
                 let erb_min = hz_to_erb_rate(min);
@@ -233,8 +232,8 @@ struct ReassignmentBuffers {
 }
 
 impl ReassignmentBuffers {
-    fn rebuild(&mut self, window: &[f32], bin_count: usize) {
-        self.derivative_window = compute_derivative_spectral(window);
+    fn rebuild(&mut self, planner: &mut FftPlanner<f32>, window: &[f32], bin_count: usize) {
+        self.derivative_window = compute_derivative_spectral(planner, window);
         self.time_weighted_window = compute_time_weighted(window);
         self.derivative_spectrum = vec![Complex32::ZERO; bin_count];
         self.time_weighted_spectrum = vec![Complex32::ZERO; bin_count];
@@ -268,11 +267,13 @@ pub struct SpectrogramProcessor {
     planner: FftPlanner<f32>,
     fft: Arc<dyn Fft<f32>>,
     ifft: Arc<dyn Fft<f32>>,
+    hilbert_fft: Arc<dyn Fft<f32>>,
+    hilbert_ifft: Arc<dyn Fft<f32>>,
+    hilbert_buf: Vec<Complex32>,
     window_size: usize,
     fft_size: usize,
     window: Arc<[f32]>,
     real: Vec<f32>,
-    analytic: Vec<Complex32>,
     complex_buf: Vec<Complex32>,
     spectrum: Vec<Complex32>,
     scratch: Vec<Complex32>,
@@ -293,13 +294,15 @@ impl SpectrogramProcessor {
         let mut processor = Self {
             config: cfg,
             planner,
-            fft: placeholder_fft,
-            ifft: placeholder_ifft,
+            fft: placeholder_fft.clone(),
+            ifft: placeholder_ifft.clone(),
+            hilbert_fft: placeholder_fft,
+            hilbert_ifft: placeholder_ifft,
+            hilbert_buf: vec![],
             window_size: 0,
             fft_size: 0,
             window: Arc::from([]),
             real: vec![],
-            analytic: vec![],
             complex_buf: vec![],
             spectrum: vec![],
             scratch: vec![],
@@ -319,6 +322,10 @@ impl SpectrogramProcessor {
         self.config
     }
 
+    fn hilbert_len_for(window_size: usize) -> usize {
+        (window_size * 2).next_power_of_two().max(2)
+    }
+
     fn needs_fft_rebuild(&self) -> bool {
         self.window_size != self.config.fft_size
             || self.fft_size != self.config.fft_size * self.config.zero_padding_factor.max(1)
@@ -329,25 +336,31 @@ impl SpectrogramProcessor {
     fn rebuild_fft(&mut self) {
         self.window_size = self.config.fft_size;
         self.fft_size = self.window_size * self.config.zero_padding_factor.max(1);
+        let hilbert_len = Self::hilbert_len_for(self.window_size);
         self.fft = self.planner.plan_fft_forward(self.fft_size);
         self.ifft = self.planner.plan_fft_inverse(self.fft_size);
+        self.hilbert_fft = self.planner.plan_fft_forward(hilbert_len);
+        self.hilbert_ifft = self.planner.plan_fft_inverse(hilbert_len);
         self.window = WindowCache::get(self.config.window, self.window_size);
-        self.real.resize(self.fft_size, 0.0);
-        self.analytic.resize(self.fft_size, Complex32::ZERO);
+        self.real.resize(hilbert_len, 0.0);
         self.complex_buf.resize(self.fft_size, Complex32::ZERO);
+        self.hilbert_buf.resize(hilbert_len, Complex32::ZERO);
         let bin_count = self.fft_size / 2 + 1;
         self.spectrum.resize(bin_count, Complex32::ZERO);
         self.scratch.resize(
             self.fft
                 .get_inplace_scratch_len()
-                .max(self.ifft.get_inplace_scratch_len()),
+                .max(self.ifft.get_inplace_scratch_len())
+                .max(self.hilbert_fft.get_inplace_scratch_len())
+                .max(self.hilbert_ifft.get_inplace_scratch_len()),
             Complex32::ZERO,
         );
         self.magnitudes.resize(bin_count, 0.0);
-        self.reassign.rebuild(&self.window, bin_count);
+        self.reassign
+            .rebuild(&mut self.planner, &self.window, bin_count);
         self.bin_norm =
             crate::util::audio::compute_fft_bin_normalization(&self.window, self.fft_size);
-        self.audio_buffer.truncate(self.window_size * 2);
+        self.audio_buffer.truncate(hilbert_len * 2);
         self.bin_hz = self.config.sample_rate / self.fft_size.max(1) as f32;
         self.points_buf
             .resize(bin_count, SpectrogramPoint::SENTINEL);
@@ -362,20 +375,32 @@ impl SpectrogramProcessor {
         let bin_count = self.fft_size / 2 + 1;
         let mut output = Vec::new();
 
-        while self.audio_buffer.len() >= self.window_size {
-            copy_from_deque(&mut self.real[..self.window_size], &self.audio_buffer);
-            crate::util::audio::remove_dc(&mut self.real[..self.window_size]);
+        // Don't pay the extra hilbert_len - window_size latency for
+        // classic just because the buffers are allocated for both.
+        let (read_len, center_offset) = if reassignment_enabled {
+            let hilbert_len = Self::hilbert_len_for(self.window_size);
+            (hilbert_len, (hilbert_len - self.window_size) / 2)
+        } else {
+            (self.window_size, 0)
+        };
+
+        while self.audio_buffer.len() >= read_len {
+            copy_from_deque(&mut self.real[..read_len], &self.audio_buffer);
+            crate::util::audio::remove_dc(&mut self.real[..read_len]);
+
+            let center = &self.real[center_offset..center_offset + self.window_size];
 
             let col = if reassignment_enabled {
                 hilbert_transform(
-                    &self.real[..self.window_size],
-                    &mut self.analytic,
-                    &*self.fft,
-                    &*self.ifft,
+                    &self.real[..read_len],
+                    &mut self.hilbert_buf,
+                    &*self.hilbert_fft,
+                    &*self.hilbert_ifft,
                     &mut self.scratch,
                 );
+                let analytic = &self.hilbert_buf[center_offset..center_offset + self.window_size];
                 fft_windowed(
-                    &self.analytic,
+                    analytic,
                     &self.window,
                     &mut self.complex_buf,
                     &mut self.spectrum,
@@ -383,7 +408,7 @@ impl SpectrogramProcessor {
                     &mut self.scratch,
                 );
                 fft_windowed(
-                    &self.analytic,
+                    analytic,
                     &self.reassign.derivative_window,
                     &mut self.complex_buf,
                     &mut self.reassign.derivative_spectrum,
@@ -391,7 +416,7 @@ impl SpectrogramProcessor {
                     &mut self.scratch,
                 );
                 fft_windowed(
-                    &self.analytic,
+                    analytic,
                     &self.reassign.time_weighted_window,
                     &mut self.complex_buf,
                     &mut self.reassign.time_weighted_spectrum,
@@ -404,7 +429,7 @@ impl SpectrogramProcessor {
                 for (c, (&r, &w)) in self
                     .complex_buf
                     .iter_mut()
-                    .zip(self.real.iter().zip(self.window.iter()))
+                    .zip(center.iter().zip(self.window.iter()))
                 {
                     *c = Complex32::new(r * w, 0.0);
                 }
@@ -444,7 +469,6 @@ impl SpectrogramProcessor {
 
     fn emit_reassigned_points(&mut self, sample_rate: f32, hop_size: usize, bin_count: usize) {
         let bin_hz = self.bin_hz;
-        let min_hz = bin_hz;
         let max_hz = sample_rate * 0.5;
         let floor_linear = self.reassign.floor_linear;
         let inv_2pi = sample_rate / core::f32::consts::TAU;
@@ -454,11 +478,11 @@ impl SpectrogramProcessor {
         let v_floor = f32x8::splat(floor_linear);
         let v_bin_hz = f32x8::splat(bin_hz);
         let v_inv_2pi = f32x8::splat(inv_2pi);
-        let v_min_hz = f32x8::splat(min_hz);
         let v_max_hz = f32x8::splat(max_hz);
         let v_inv_hop = f32x8::splat(inv_hop);
         let v_db_floor = f32x8::splat(DB_FLOOR);
         let v_ln_to_db = f32x8::splat(LN_TO_DB);
+        let v_zero = f32x8::splat(0.0);
 
         for chunk in 0..bin_count.div_ceil(8) {
             let off = chunk * 8;
@@ -470,16 +494,16 @@ impl SpectrogramProcessor {
             let energy_scale = load_f32_simd(&self.bin_norm, off);
 
             let pow = base_re * base_re + base_im * base_im;
-            let mask = pow.simd_ge(v_floor) & energy_scale.simd_gt(f32x8::splat(0.0));
+            let mask = pow.simd_ge(v_floor) & energy_scale.simd_gt(v_zero);
 
             let inv_pow = f32x8::splat(1.0) / pow.max(v_eps);
             let d_omega = -(d_im * base_re - d_re * base_im) * inv_pow;
             let f_corr = d_omega * v_inv_2pi;
 
             let freq = k_idx.mul_add(v_bin_hz, f_corr);
-
-            let final_mask =
-                mask & freq.simd_ge(v_min_hz) & (v_max_hz - freq).simd_gt(f32x8::splat(0.0));
+            // the point of reassignment is to resolve below the bin
+            // grid, so no artificial floor.
+            let final_mask = mask & freq.simd_gt(v_zero) & (v_max_hz - freq).simd_gt(v_zero);
 
             let d_tau = (t_re * base_re + t_im * base_im) * inv_pow;
 
@@ -490,9 +514,7 @@ impl SpectrogramProcessor {
             let freqs = freq.to_array();
             let times = time_offset.to_array();
             let mags = mag_db.to_array();
-            let masks = final_mask
-                .blend(f32x8::splat(1.0), f32x8::splat(0.0))
-                .to_array();
+            let masks = final_mask.blend(f32x8::splat(1.0), v_zero).to_array();
 
             let count = (bin_count.saturating_sub(off)).min(8);
             for i in 0..count {
@@ -612,12 +634,11 @@ fn fft_windowed(
     output.copy_from_slice(&complex_buf[..output.len()]);
 }
 
-fn compute_derivative_spectral(window: &[f32]) -> Vec<f32> {
+fn compute_derivative_spectral(planner: &mut FftPlanner<f32>, window: &[f32]) -> Vec<f32> {
     let n = window.len();
     if n <= 1 {
         return vec![0.0; n];
     }
-    let mut planner = FftPlanner::<f32>::new();
     let fwd = planner.plan_fft_forward(n);
     let inv = planner.plan_fft_inverse(n);
 
