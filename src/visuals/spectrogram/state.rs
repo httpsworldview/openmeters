@@ -673,6 +673,9 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
         match event {
             iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
                 st.cursor = b.contains(*position).then_some(*position);
+                if st.left_held || st.drag.is_some() {
+                    shell.request_redraw();
+                }
                 if let Some((origin, start_pan)) = st.drag {
                     let mut state = self.state.borrow_mut();
                     let h = 0.5 / state.zoom;
@@ -686,7 +689,6 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
                     };
                     state.pan = (start_pan + sign * (current - origin) / extent / state.zoom)
                         .clamp(h, 1.0 - h);
-                    shell.request_redraw();
                 }
             }
             iced::Event::Mouse(mouse::Event::CursorLeft) => st.cursor = None,
