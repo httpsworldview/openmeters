@@ -13,7 +13,7 @@ iced_wgpu = "0.14.0"
 rustfft = "6.4.1"
 realfft = "3.5"
 tracing = "0.1.44"
-wide = "1.2.0"
+wide = "1.3.0"
 wayland-client = "0.31.14"
 
   [dependencies.serde]

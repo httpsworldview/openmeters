@@ -18,7 +18,7 @@ use iced::advanced::widget::{Tree, tree};
 use iced::advanced::{Layout, Renderer as _, Widget, layout, mouse};
 use iced::{Background, Color, Element, Length, Point, Rectangle, Size};
 use iced_wgpu::primitive::Renderer as _;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::sync::{Arc, LazyLock};
 
 const EPSILON: f32 = 1e-6;
@@ -101,6 +101,7 @@ pub(crate) struct PeakLabel {
     x: f32,
     y: f32,
     opacity: f32,
+    flipped: Cell<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -228,13 +229,16 @@ impl SpectrumState {
             x: x.clamp(0.0, 1.0),
             y,
             opacity: 0.0,
+            flipped: Cell::new(false),
         })
     }
 
     fn fade_peak(&mut self, incoming: Option<PeakLabel>) {
         match (incoming, &mut self.peak) {
             (Some(new), Some(p)) => {
-                (p.text, p.x, p.y) = (new.text, new.x, new.y);
+                p.text = new.text;
+                p.x = 0.80 * p.x + 0.20 * new.x;
+                p.y = 0.80 * p.y + 0.20 * new.y;
                 p.opacity = (0.65 * p.opacity + 0.35).min(1.0);
             }
             (Some(new), None) => self.peak = Some(new),
@@ -578,14 +582,21 @@ fn draw_peak(r: &mut iced::Renderer, th: &iced::Theme, b: Rectangle, pk: &PeakLa
         b.x + b.width * pk.x.clamp(0.0, 1.0),
         b.y + b.height * (1.0 - pk.y.clamp(0.0, 1.0)),
     );
-    let tx =
-        (ax - sz.width * 0.5).clamp(b.x + 4.0, (b.x + b.width - 4.0 - sz.width).max(b.x + 4.0));
-    let ty =
-        (ay - 8.0 - sz.height).clamp(b.y + 4.0, (b.y + b.height - 4.0 - sz.height).max(b.y + 4.0));
-    let bg = Rectangle::new(
-        Point::new(tx - 4.0, ty - 4.0),
-        Size::new(sz.width + 8.0, sz.height + 8.0),
-    );
+    let (box_w, box_h) = (sz.width + 8.0, sz.height + 8.0);
+    let right_edge = b.x + b.width;
+    let hyst = box_w * 0.5;
+    let flip_right = if pk.flipped.get() {
+        ax + box_w > right_edge - hyst
+    } else {
+        ax + box_w > right_edge
+    };
+    pk.flipped.set(flip_right);
+    let box_x = if flip_right { ax - box_w } else { ax };
+    let box_y = ay - box_h;
+    let box_x = box_x.clamp(b.x, (b.x + b.width - box_w).max(b.x));
+    let box_y = box_y.clamp(b.y, (b.y + b.height - box_h).max(b.y));
+    let (tx, ty) = (box_x + 4.0, box_y + 4.0);
+    let bg = Rectangle::new(Point::new(box_x, box_y), Size::new(box_w, box_h));
     let bdr = iced::Border {
         color: with_alpha(crate::ui::theme::BORDER_SUBTLE, pk.opacity),
         width: 1.0,
