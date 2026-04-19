@@ -18,7 +18,7 @@ use iced::advanced::widget::{Tree, tree};
 use iced::advanced::{Layout, Renderer as _, Widget, layout, mouse};
 use iced::{Background, Color, Element, Length, Point, Rectangle, Size};
 use iced_wgpu::primitive::Renderer as _;
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::sync::{Arc, LazyLock};
 
 const EPSILON: f32 = 1e-6;
@@ -101,7 +101,6 @@ pub(crate) struct PeakLabel {
     x: f32,
     y: f32,
     opacity: f32,
-    flipped: Cell<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -229,7 +228,6 @@ impl SpectrumState {
             x: x.clamp(0.0, 1.0),
             y,
             opacity: 0.0,
-            flipped: Cell::new(false),
         })
     }
 
@@ -583,14 +581,7 @@ fn draw_peak(r: &mut iced::Renderer, th: &iced::Theme, b: Rectangle, pk: &PeakLa
         b.y + b.height * (1.0 - pk.y.clamp(0.0, 1.0)),
     );
     let (box_w, box_h) = (sz.width + 8.0, sz.height + 8.0);
-    let right_edge = b.x + b.width;
-    let hyst = box_w * 0.5;
-    let flip_right = if pk.flipped.get() {
-        ax + box_w > right_edge - hyst
-    } else {
-        ax + box_w > right_edge
-    };
-    pk.flipped.set(flip_right);
+    let flip_right = ax + box_w > b.x + b.width;
     let box_x = if flip_right { ax - box_w } else { ax };
     let box_y = ay - box_h;
     let box_x = box_x.clamp(b.x, (b.x + b.width - box_w).max(b.x));
