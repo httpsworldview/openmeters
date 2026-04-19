@@ -274,16 +274,12 @@ impl TriggerScratch {
 
     fn prepare(&mut self, data: &[f32], period: f32) {
         let len = data.len();
-
-        self.sine_prefix_sum.clear();
-        self.cosine_prefix_sum.clear();
-        self.phase_sine.clear();
-        self.phase_cosine.clear();
-
-        self.sine_prefix_sum.resize(len + 1, 0.0);
-        self.cosine_prefix_sum.resize(len + 1, 0.0);
-        self.phase_sine.resize(len + 1, 0.0);
-        self.phase_cosine.resize(len + 1, 0.0);
+        let n = len + 1;
+        self.clear();
+        self.sine_prefix_sum.resize(n, 0.0);
+        self.cosine_prefix_sum.resize(n, 0.0);
+        self.phase_sine.resize(n, 0.0);
+        self.phase_cosine.resize(n, 0.0);
 
         let step = std::f32::consts::TAU / period;
         let (step_sine, step_cosine) = step.sin_cos();

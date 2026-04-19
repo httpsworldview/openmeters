@@ -106,9 +106,13 @@ impl ModuleSettings {
     }
 }
 
+// Emits a serde-tagged unit enum with Debug/Clone/Copy/Eq + Display from labels.
+// Default is on by default; prefix with `no_default` to skip. Extra derives go
+// via `#[derive(...)]` before the enum (e.g. `#[derive(Hash)]`).
+#[macro_export]
 macro_rules! settings_enum {
-    ($(#[$attr:meta])* $vis:vis enum $name:ident { $($(#[$var_attr:meta])* $variant:ident => $label:expr),+ $(,)? }) => {
-        #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+    (@build [$($default:ident)?] $(#[$attr:meta])* $vis:vis enum $name:ident { $($(#[$var_attr:meta])* $variant:ident => $label:expr),+ $(,)? }) => {
+        #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq $(, $default)?)]
         #[serde(rename_all = "snake_case")] $(#[$attr])*
         $vis enum $name { $($(#[$var_attr])* $variant,)+ }
         impl std::fmt::Display for $name {
@@ -117,6 +121,8 @@ macro_rules! settings_enum {
             }
         }
     };
+    (no_default $($rest:tt)+) => { $crate::settings_enum!(@build [] $($rest)+); };
+    ($($rest:tt)+) => { $crate::settings_enum!(@build [Default] $($rest)+); };
 }
 
 macro_rules! visual_settings {

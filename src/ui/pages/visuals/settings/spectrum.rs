@@ -4,8 +4,8 @@
 use super::palette::PaletteEvent;
 use super::widgets::{
     FFT_OPTIONS, FREQ_SCALE_OPTIONS, HOP_DIVISORS, SliderRange, get_closest_hop_divisor,
-    labeled_pick_list, labeled_slider, labeled_toggler, section_title, set_f32, set_if_changed,
-    update_usize_from_f32,
+    labeled_pick_list, labeled_slider, labeled_toggler, section_title, set_if_changed,
+    update_f32_range, update_fft_size, update_hop_divisor, update_usize_from_f32,
 };
 use crate::persistence::settings::{SpectrumDisplayMode, SpectrumSettings, SpectrumWeightingMode};
 use crate::visuals::registry::VisualKind;
@@ -32,23 +32,11 @@ const BARS_R: SliderRange = SliderRange::new(8.0, 128.0, 1.0);
 const GAP_R: SliderRange = SliderRange::new(0.0, 0.8, 0.05);
 const HIGH_R: SliderRange = SliderRange::new(0.0, 0.9, 0.01);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum AvgMode {
-    None,
-    #[default]
-    Exponential,
-    PeakHold,
-}
-
-impl std::fmt::Display for AvgMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::None => "None",
-            Self::Exponential => "Exponential",
-            Self::PeakHold => "Peak hold",
-        })
-    }
-}
+crate::settings_enum!(pub(crate) enum AvgMode {
+    None => "None",
+    #[default] Exponential => "Exponential",
+    PeakHold => "Peak hold",
+});
 
 settings_pane!(
     SpectrumSettingsPane, SpectrumSettings, VisualKind::Spectrum, Spectrum,
@@ -217,13 +205,8 @@ impl SpectrumSettingsPane {
         let s = &mut self.settings;
 
         match *msg {
-            FftSize(v) => {
-                let hop_div = get_closest_hop_divisor(s.fft_size, s.hop_size);
-                set_if_changed(&mut s.fft_size, v)
-                    .then(|| s.hop_size = (v / hop_div).max(1))
-                    .is_some()
-            }
-            HopDivisor(v) => set_if_changed(&mut s.hop_size, (s.fft_size / v).max(1)),
+            FftSize(v) => update_fft_size(&mut s.fft_size, &mut s.hop_size, v),
+            HopDivisor(v) => update_hop_divisor(s.fft_size, &mut s.hop_size, v),
             FrequencyScale(v) => set_if_changed(&mut s.frequency_scale, v),
             ReverseFrequency(v) => set_if_changed(&mut s.reverse_frequency, v),
             DisplayMode(v) => set_if_changed(&mut s.display_mode, v),
@@ -234,17 +217,17 @@ impl SpectrumSettingsPane {
             Averaging(m) => set_if_changed(&mut self.avg_mode, m)
                 .then(|| self.sync_avg())
                 .is_some(),
-            AvgFactor(v) => set_f32(&mut self.avg_factor, EXP_R.snap(v))
+            AvgFactor(v) => update_f32_range(&mut self.avg_factor, v, EXP_R)
                 .then(|| self.sync_avg())
                 .is_some(),
-            PeakDecay(v) => set_f32(&mut self.peak_decay, DECAY_R.snap(v))
+            PeakDecay(v) => update_f32_range(&mut self.peak_decay, v, DECAY_R)
                 .then(|| self.sync_avg())
                 .is_some(),
             SmoothRadius(v) => update_usize_from_f32(&mut s.smoothing_radius, v, SRAD_R),
             SmoothPasses(v) => update_usize_from_f32(&mut s.smoothing_passes, v, SPAS_R),
             BarCount(v) => update_usize_from_f32(&mut s.bar_count, v, BARS_R),
-            BarGap(v) => set_f32(&mut s.bar_gap, GAP_R.snap(v)),
-            Highlight(v) => set_f32(&mut s.highlight_threshold, HIGH_R.snap(v)),
+            BarGap(v) => update_f32_range(&mut s.bar_gap, v, GAP_R),
+            Highlight(v) => update_f32_range(&mut s.highlight_threshold, v, HIGH_R),
             Palette(e) => self.palette.update(e),
         }
     }

@@ -154,11 +154,7 @@ pub fn line_vertices(
     let inv = (dx * dx + dy * dy).sqrt().max(1e-6).recip();
     let (half, outer) = (width * 0.5, width * 0.5 + 1.0);
     let (ox, oy) = (-dy * inv * outer, dx * inv * outer);
-    let v = |px, py, c, d| SdfVertex {
-        position: clip.to_clip(px, py),
-        color: c,
-        params: [d, 0.0, half, 0.0],
-    };
+    let v = |px, py, c, d| SdfVertex::antialiased(clip.to_clip(px, py), c, d, half);
     [
         v(p0.0 - ox, p0.1 - oy, c0, -outer),
         v(p0.0 + ox, p0.1 + oy, c0, outer),
@@ -178,26 +174,14 @@ pub fn build_aa_line_list(
     if pts.len() < 2 {
         return Vec::new();
     }
-    let (half, outer) = (stroke.max(0.1) * 0.5, stroke.max(0.1) * 0.5 + 1.0);
+    let width = stroke.max(0.1);
     let mut verts = Vec::with_capacity((pts.len() - 1) * 6);
     for seg in pts.windows(2) {
-        let ((x0, y0), (x1, y1)) = (seg[0], seg[1]);
-        let (dx, dy) = (x1 - x0, y1 - y0);
-        let len = (dx * dx + dy * dy).sqrt();
-        if len < 1e-4 {
+        let (dx, dy) = (seg[1].0 - seg[0].0, seg[1].1 - seg[0].1);
+        if (dx * dx + dy * dy) < 1e-8 {
             continue;
         }
-        let inv = len.recip();
-        let (ox, oy) = (-dy * inv * outer, dx * inv * outer);
-        let mk = |px, py, d| SdfVertex::antialiased(clip.to_clip(px, py), color, d, half);
-        verts.extend([
-            mk(x0 - ox, y0 - oy, -outer),
-            mk(x0 + ox, y0 + oy, outer),
-            mk(x1 + ox, y1 + oy, outer),
-            mk(x0 - ox, y0 - oy, -outer),
-            mk(x1 + ox, y1 + oy, outer),
-            mk(x1 - ox, y1 - oy, -outer),
-        ]);
+        verts.extend(line_vertices(seg[0], seg[1], color, color, width, *clip));
     }
     verts
 }

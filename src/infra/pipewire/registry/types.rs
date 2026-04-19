@@ -14,13 +14,11 @@ pub(crate) fn dict_to_map(dict: Option<&DictRef>) -> HashMap<String, String> {
         .collect()
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub enum PortDirection {
-    Input,
-    Output,
-    #[default]
-    Unknown,
-}
+crate::settings_enum!(pub enum PortDirection {
+    Input => "Input",
+    Output => "Output",
+    #[default] Unknown => "Unknown",
+});
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct GraphPort {
@@ -54,13 +52,11 @@ impl GraphPort {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum NodeDirection {
-    Input,
-    Output,
-    #[default]
-    Unknown,
-}
+crate::settings_enum!(pub enum NodeDirection {
+    Input => "Input",
+    Output => "Output",
+    #[default] Unknown => "Unknown",
+});
 
 fn derive_node_direction(
     media_class: Option<&str>,

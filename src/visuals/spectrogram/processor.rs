@@ -29,7 +29,6 @@ use crate::util::audio::{
 use bytemuck::{Pod, Zeroable};
 use rustfft::num_complex::Complex32;
 use rustfft::{Fft, FftPlanner};
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::hash::Hash;
@@ -80,15 +79,11 @@ impl Default for SpectrogramConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum FrequencyScale {
-    Linear,
-    #[default]
-    Logarithmic,
-    #[serde(alias = "mel")]
-    Erb,
-}
+crate::settings_enum!(pub enum FrequencyScale {
+    Linear => "Linear",
+    #[default] Logarithmic => "Logarithmic",
+    #[serde(alias = "mel")] Erb => "Erb",
+});
 
 // Knee frequency for the asinh-based "log" axis. Mirrored in spectrogram.wgsl.
 const LOG_KNEE_HZ: f32 = 20.0;
@@ -127,21 +122,16 @@ impl FrequencyScale {
     }
 }
 
-impl std::fmt::Display for FrequencyScale {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{self:?}")
+crate::settings_enum!(no_default
+    #[derive(Hash)]
+    pub enum WindowKind {
+        Rectangular => "Rectangular",
+        Hann => "Hann",
+        Hamming => "Hamming",
+        Blackman => "Blackman",
+        BlackmanHarris => "Blackman-Harris",
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WindowKind {
-    Rectangular,
-    Hann,
-    Hamming,
-    Blackman,
-    BlackmanHarris,
-}
+);
 
 impl WindowKind {
     pub const ALL: [Self; 5] = [
@@ -163,18 +153,6 @@ impl WindowKind {
             Self::Blackman => cosine_window(len, &[0.42, -0.5, 0.08]),
             Self::BlackmanHarris => cosine_window(len, &[0.35875, -0.48829, 0.14128, -0.01168]),
         }
-    }
-}
-
-impl std::fmt::Display for WindowKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Rectangular => "Rectangular",
-            Self::Hann => "Hann",
-            Self::Hamming => "Hamming",
-            Self::Blackman => "Blackman",
-            Self::BlackmanHarris => "Blackman-Harris",
-        })
     }
 }
 
@@ -399,30 +377,23 @@ impl SpectrogramProcessor {
                     &mut self.scratch,
                 );
                 let analytic = &self.hilbert_buf[center_offset..center_offset + self.window_size];
-                fft_windowed(
-                    analytic,
-                    &self.window,
-                    &mut self.complex_buf,
-                    &mut self.spectrum,
-                    &*self.fft,
-                    &mut self.scratch,
-                );
-                fft_windowed(
-                    analytic,
-                    &self.reassign.derivative_window,
-                    &mut self.complex_buf,
-                    &mut self.reassign.derivative_spectrum,
-                    &*self.fft,
-                    &mut self.scratch,
-                );
-                fft_windowed(
-                    analytic,
-                    &self.reassign.time_weighted_window,
-                    &mut self.complex_buf,
-                    &mut self.reassign.time_weighted_spectrum,
-                    &*self.fft,
-                    &mut self.scratch,
-                );
+                let fft = &*self.fft;
+                let r = &mut self.reassign;
+                let stages: [(&[f32], &mut [Complex32]); 3] = [
+                    (&self.window, &mut self.spectrum),
+                    (&r.derivative_window, &mut r.derivative_spectrum),
+                    (&r.time_weighted_window, &mut r.time_weighted_spectrum),
+                ];
+                for (window, out) in stages {
+                    fft_windowed(
+                        analytic,
+                        window,
+                        &mut self.complex_buf,
+                        out,
+                        fft,
+                        &mut self.scratch,
+                    );
+                }
                 self.emit_reassigned_points(sample_rate, hop_size, bin_count);
                 SpectrogramColumn::Reassigned(self.points_buf.clone())
             } else {

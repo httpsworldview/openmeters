@@ -360,7 +360,7 @@ impl AudioProcessor for LoudnessProcessor {
 
         let window_mean =
             |ch: &ChannelState, idx: usize| ch.windows[idx].mean().max(MIN_MEAN_SQUARE);
-        for (channel_index, channel_state) in self.channels.iter().enumerate() {
+        for (channel_index, channel_state) in self.channels.iter_mut().enumerate() {
             let weight = channel_weight(channel_index, num_channels);
             weighted_short_term += window_mean(channel_state, WIN_SHORT_TERM) * weight;
             weighted_momentary += window_mean(channel_state, WIN_MOMENTARY) * weight;
@@ -368,9 +368,6 @@ impl AudioProcessor for LoudnessProcessor {
                 power_to_db(window_mean(channel_state, WIN_RMS_FAST) as f32, floor);
             self.snapshot.rms_slow_db[channel_index] =
                 power_to_db(window_mean(channel_state, WIN_RMS_SLOW) as f32, floor);
-        }
-
-        for (channel_index, channel_state) in self.channels.iter_mut().enumerate() {
             let peak = channel_state.true_peak.take_peak();
             self.snapshot.true_peak_db[channel_index] = power_to_db(peak * peak, floor);
         }

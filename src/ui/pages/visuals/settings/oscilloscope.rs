@@ -137,11 +137,10 @@ impl OscilloscopeSettingsPane {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TriggerPreset {
-    ZeroCrossing,
-    Stable,
-}
+crate::settings_enum!(no_default pub(crate) enum TriggerPreset {
+    ZeroCrossing => "Zero-crossing",
+    Stable => "Stable",
+});
 
 impl TriggerPreset {
     const ALL: [Self; 2] = [Self::ZeroCrossing, Self::Stable];
@@ -151,14 +150,5 @@ impl TriggerPreset {
             TriggerMode::ZeroCrossing => Self::ZeroCrossing,
             TriggerMode::Stable { .. } => Self::Stable,
         }
-    }
-}
-
-impl std::fmt::Display for TriggerPreset {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::ZeroCrossing => "Zero-crossing",
-            Self::Stable => "Stable",
-        })
     }
 }

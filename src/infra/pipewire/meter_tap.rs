@@ -140,10 +140,13 @@ fn forward_loop(sender: AsyncSender<Vec<f32>>, buffer: Arc<CaptureBuffer>) {
     let mut last_drop_check = Instant::now();
     let mut drop_baseline = buffer.dropped_frames();
 
-    let flush = |batcher: &mut SampleBatcher| {
-        batcher
+    // Returns true when the downstream channel is closed (caller should stop).
+    let flush = |batcher: &mut SampleBatcher, last_flush: &mut Instant| -> bool {
+        let closed = batcher
             .take()
-            .is_some_and(|b| sender.send_blocking(b).is_err())
+            .is_some_and(|b| sender.send_blocking(b).is_err());
+        *last_flush = Instant::now();
+        closed
     };
 
     loop {
@@ -174,11 +177,9 @@ fn forward_loop(sender: AsyncSender<Vec<f32>>, buffer: Arc<CaptureBuffer>) {
                         .read()
                         .unwrap()
                         .differs_from(channels, sample_rate)
+                    && flush(&mut batcher, &mut last_flush)
                 {
-                    if flush(&mut batcher) {
-                        break;
-                    }
-                    last_flush = Instant::now();
+                    break;
                 }
 
                 *FORMAT_STATE.write().unwrap() = MeterFormat {
@@ -190,19 +191,17 @@ fn forward_loop(sender: AsyncSender<Vec<f32>>, buffer: Arc<CaptureBuffer>) {
                     batcher.push(packet.samples);
                 }
 
-                if batcher.should_flush() || should_time_flush {
-                    if flush(&mut batcher) {
-                        break;
-                    }
-                    last_flush = Instant::now();
+                if (batcher.should_flush() || should_time_flush)
+                    && flush(&mut batcher, &mut last_flush)
+                {
+                    break;
                 }
             }
             Ok(None) if sender.is_closed() => break,
             Ok(None) if should_time_flush => {
-                if flush(&mut batcher) {
+                if flush(&mut batcher, &mut last_flush) {
                     break;
                 }
-                last_flush = Instant::now();
             }
             Ok(None) => {}
             Err(_) => {

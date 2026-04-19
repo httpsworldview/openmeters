@@ -5,7 +5,7 @@ use super::palette::PaletteEvent;
 use super::widgets::{
     FFT_OPTIONS, FREQ_SCALE_OPTIONS, HOP_DIVISORS, SliderRange, get_closest_hop_divisor,
     labeled_pick_list, labeled_slider, labeled_toggler, section_title, set_if_changed,
-    update_f32_range,
+    update_f32_range, update_fft_size, update_hop_divisor,
 };
 use crate::persistence::settings::{PianoRollOverlay, SpectrogramSettings};
 use crate::visuals::registry::VisualKind;
@@ -136,13 +136,8 @@ impl SpectrogramSettingsPane {
     fn handle(&mut self, msg: &Message) -> bool {
         let s = &mut self.settings;
         match *msg {
-            Message::FftSize(size) => {
-                let hop_div = get_closest_hop_divisor(s.fft_size, s.hop_size);
-                set_if_changed(&mut s.fft_size, size)
-                    .then(|| s.hop_size = (size / hop_div).max(1))
-                    .is_some()
-            }
-            Message::HopDivisor(div) => set_if_changed(&mut s.hop_size, (s.fft_size / div).max(1)),
+            Message::FftSize(size) => update_fft_size(&mut s.fft_size, &mut s.hop_size, size),
+            Message::HopDivisor(div) => update_hop_divisor(s.fft_size, &mut s.hop_size, div),
             Message::Window(kind) => set_if_changed(&mut s.window, kind),
             Message::FrequencyScale(sc) => set_if_changed(&mut s.frequency_scale, sc),
             Message::UseReassignment(v) => set_if_changed(&mut s.use_reassignment, v),

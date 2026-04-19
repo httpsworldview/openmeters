@@ -33,35 +33,43 @@ pub fn init_registry_monitor(
     Some((handle, thread_handle))
 }
 
+// Returns true when the channel closed and the loop should stop.
+fn try_send_or_queue(
+    tx: &Sender<registry::RegistrySnapshot>,
+    snapshot: registry::RegistrySnapshot,
+    pending: &mut Option<registry::RegistrySnapshot>,
+) -> bool {
+    match tx.try_send(snapshot) {
+        Ok(()) => false,
+        Err(TrySendError::Full(s)) => {
+            *pending = Some(s);
+            false
+        }
+        Err(TrySendError::Closed(_)) => true,
+    }
+}
+
 fn run_monitor_loop(
     handle: registry::AudioRegistryHandle,
     command_rx: mpsc::Receiver<RoutingCommand>,
     snapshot_tx: Sender<registry::RegistrySnapshot>,
     routing_config: RoutingConfig,
 ) {
+    const CLOSED_MSG: &str = "[registry-monitor] UI channel closed; stopping";
     let mut updates = handle.subscribe();
     let mut routing = RoutingManager::new(handle, command_rx, routing_config);
     let mut last_snapshot: Option<registry::RegistrySnapshot> = None;
     let mut pending_ui_snapshot: Option<registry::RegistrySnapshot> = None;
 
-    let flush_pending_ui_snapshot = |pending: &mut Option<registry::RegistrySnapshot>| {
-        let Some(snapshot) = pending.take() else {
-            return Ok(());
-        };
-
-        match snapshot_tx.try_send(snapshot) {
-            Ok(()) => Ok(()),
-            Err(TrySendError::Full(snapshot)) => {
-                *pending = Some(snapshot);
-                Ok(())
-            }
-            Err(TrySendError::Closed(_)) => Err(()),
-        }
+    let flush_pending = |pending: &mut Option<registry::RegistrySnapshot>| -> bool {
+        pending
+            .take()
+            .is_some_and(|s| try_send_or_queue(&snapshot_tx, s, pending))
     };
 
     loop {
         if snapshot_tx.is_closed() {
-            info!("[registry-monitor] UI channel closed; stopping");
+            info!("{CLOSED_MSG}");
             break;
         }
 
@@ -71,8 +79,8 @@ fn run_monitor_loop(
             routing.apply(snapshot);
         }
 
-        if flush_pending_ui_snapshot(&mut pending_ui_snapshot).is_err() {
-            info!("[registry-monitor] UI channel closed; stopping");
+        if flush_pending(&mut pending_ui_snapshot) {
+            info!("{CLOSED_MSG}");
             break;
         }
 
@@ -80,23 +88,15 @@ fn run_monitor_loop(
             Ok(Some(snapshot)) => {
                 log_registry_snapshot(&snapshot);
                 routing.apply(&snapshot);
-
                 last_snapshot = Some(snapshot.clone());
-
-                match snapshot_tx.try_send(snapshot) {
-                    Ok(()) => {}
-                    Err(TrySendError::Full(snapshot)) => {
-                        pending_ui_snapshot = Some(snapshot);
-                    }
-                    Err(TrySendError::Closed(_)) => {
-                        info!("[registry-monitor] UI channel closed; stopping");
-                        break;
-                    }
+                if try_send_or_queue(&snapshot_tx, snapshot, &mut pending_ui_snapshot) {
+                    info!("{CLOSED_MSG}");
+                    break;
                 }
             }
             Ok(None) | Err(mpsc::RecvTimeoutError::Timeout) => {
-                if flush_pending_ui_snapshot(&mut pending_ui_snapshot).is_err() {
-                    info!("[registry-monitor] UI channel closed; stopping");
+                if flush_pending(&mut pending_ui_snapshot) {
+                    info!("{CLOSED_MSG}");
                     break;
                 }
             }
