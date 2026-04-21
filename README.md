@@ -84,7 +84,7 @@ pull request!
 
 ## Installation
 
-### On Arch Linux (and Arch-based distributions)
+### Arch Linux
 
 Install the `openmeters-git` package via the AUR.
 
@@ -92,10 +92,30 @@ Install the `openmeters-git` package via the AUR.
 yay -S openmeters-git
 ```
 
-### Building from source (Other distributions)
+### Debian
 
-1. **You'll need a graphical Linux system with PipeWire installed and
-   running.**
+Download the latest `.deb` package from
+[GitHub](https://github.com/httpsworldview/openmeters/releases), or
+build one from source (see below).
+
+### Fedora
+
+Download the latest `.rpm` package from
+[GitHub](https://github.com/httpsworldview/openmeters/releases), or
+build one from source (see below).
+
+### Other Distributions
+
+Tarballs are available under tagged releases, or you can build
+OpenMeters yourself from source. I cannot guarantee OpenMeters will
+work on every distribution, although it is quite likely. If you have
+trouble getting things working, open an issue and I'll try to help.
+
+### Building from source
+
+1. You'll need a graphical Linux system with PipeWire installed and
+   running, plus PipeWire's development package for your particular
+   distribution.
 2. Ensure you have a working Rust toolchain. The recommended way is
    via [rustup](https://rustup.rs/).
 3. Clone the repository:
@@ -117,6 +137,11 @@ yay -S openmeters-git
    ```bash
    cargo run -r
    ```
+
+#### Packaging
+
+See [`packaging/`](./packaging/) for instructions on how to build
+packages for Debian or Fedora.
 
 ## Usage & key binds
 
