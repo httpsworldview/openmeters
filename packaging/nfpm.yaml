@@ -1,0 +1,63 @@
+name: openmeters
+arch: amd64
+platform: linux
+version: ${VERSION}
+version_schema: semver
+release: ${RELEASE}
+section: sound
+priority: optional
+maintainer: Maika Namuo <httpworldview@gmail.com>
+description: |
+  Fast and professional audio metering application for Linux.
+  LUFS/RMS/true-peak loudness, spectrogram with spectral reassignment,
+  spectrum analyzer, oscilloscope, stereometer, and waveform views.
+vendor: httpsworldview
+homepage: https://github.com/httpsworldview/openmeters
+license: GPL-3.0-or-later
+
+# Debian family
+depends:
+  - libpipewire-0.3-0
+  - libwayland-client0
+  - libvulkan1
+  - libxkbcommon0
+
+recommends:
+  - hicolor-icon-theme
+  - desktop-file-utils
+
+overrides:
+  rpm:
+    depends:
+      - pipewire-libs
+      - libwayland-client
+      - vulkan-loader
+      - libxkbcommon
+    recommends:
+      - hicolor-icon-theme
+      - desktop-file-utils
+
+rpm:
+  summary: Fast audio metering for Linux
+  compression: zstd
+
+contents:
+  - src: ../target/release/openmeters
+    dst: /usr/bin/openmeters
+    file_info:
+      mode: 0755
+
+  - src: ../misc/openmeters.desktop
+    dst: /usr/share/applications/openmeters.desktop
+    file_info:
+      mode: 0644
+
+  - src: ../misc/openmeters.svg
+    dst: /usr/share/icons/hicolor/scalable/apps/openmeters.svg
+    file_info:
+      mode: 0644
+
+  - src: ../LICENSE
+    dst: /usr/share/licenses/openmeters/LICENSE
+    file_info:
+      mode: 0644
