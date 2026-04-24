@@ -95,21 +95,20 @@ yay -S openmeters-git
 ### Debian
 
 Download the latest `.deb` package from
-[GitHub](https://github.com/httpsworldview/openmeters/releases), or
-build one from source (see below).
+[GitHub](https://github.com/httpsworldview/openmeters/releases)
 
 ### Fedora
 
 Download the latest `.rpm` package from
-[GitHub](https://github.com/httpsworldview/openmeters/releases), or
-build one from source (see below).
+[GitHub](https://github.com/httpsworldview/openmeters/releases)
 
 ### Other Distributions
 
 Tarballs are available under tagged releases, or you can build
 OpenMeters yourself from source. I cannot guarantee OpenMeters will
-work on every distribution, although it is quite likely. If you have
-trouble getting things working, open an issue and I'll try to help.
+work on every distribution, although it is quite distro-agnostic. If
+you have trouble getting things working, open an issue and I'll try to
+help.
 
 ### Building from source
 
