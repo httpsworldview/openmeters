@@ -6,6 +6,10 @@ const DB_STORE_LO: f32 = -144.0;
 const DB_STORE_HI: f32 = 12.0;
 const DB_STORE_RANGE: f32 = DB_STORE_HI - DB_STORE_LO;
 
+// Analysis floor -- keep in sync with util::audio::DB_FLOOR.
+const DB_ANALYSIS_FLOOR: f32 = -140.0;
+const DB_FLOOR_EPS: f32 = 0.01;
+
 // Must match Rust-side Uniforms layout exactly.
 struct Uniforms {
     freq_min_max: vec2<f32>,        // (freq_min, freq_max) display axis bounds
@@ -204,9 +208,14 @@ fn vs_strip(
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var mag = in.magnitude_db;
 
-    // dB/decade tilt relative to 1 kHz
-    if u.tilt_db != 0.0 && in.freq_hz > 0.0 {
-        mag += u.tilt_db * log(in.freq_hz / 1000.0) * LOG10_E;
+    // dB/decade tilt relative to 1 kHz. Do not lift sentinels/floor bins.
+    if u.tilt_db != 0.0 {
+        if !(mag > DB_ANALYSIS_FLOOR + DB_FLOOR_EPS) {
+            return vec4<f32>(0.0);
+        }
+        if in.freq_hz > 0.0 {
+            mag += u.tilt_db * log(in.freq_hz / 1000.0) * LOG10_E;
+        }
     }
 
     let range = max(u.ceiling_db - u.floor_db, 0.001);
