@@ -16,6 +16,9 @@ pub const MIN_SPECTRUM_EXP_FACTOR: f32 = 0.0;
 pub const MAX_SPECTRUM_EXP_FACTOR: f32 = 0.95;
 pub const MIN_SPECTRUM_PEAK_DECAY: f32 = 0.0;
 pub const MAX_SPECTRUM_PEAK_DECAY: f32 = 120.0;
+pub const MIN_SPECTRUM_DB_FLOOR: f32 = DB_FLOOR;
+pub const MAX_SPECTRUM_DB_FLOOR: f32 = -1.0;
+pub const DEFAULT_SPECTRUM_DB_FLOOR: f32 = -80.0;
 
 const MIN_SPECTRUM_FFT_SIZE: usize = 128;
 const DEFAULT_SPECTRUM_HOP_DIVISOR: usize = 8;
@@ -48,6 +51,7 @@ pub struct SpectrumConfig {
     pub reverse_frequency: bool,
     pub show_grid: bool,
     pub show_peak_label: bool,
+    pub floor_db: f32,
 }
 
 impl Default for SpectrumConfig {
@@ -64,6 +68,7 @@ impl Default for SpectrumConfig {
             reverse_frequency: false,
             show_grid: true,
             show_peak_label: true,
+            floor_db: DEFAULT_SPECTRUM_DB_FLOOR,
         }
     }
 }
@@ -83,6 +88,7 @@ impl SpectrumConfig {
         };
 
         self.averaging = self.averaging.normalized();
+        self.floor_db = clamp_finite(self.floor_db, MIN_SPECTRUM_DB_FLOOR, MAX_SPECTRUM_DB_FLOOR);
     }
 }
 
@@ -194,16 +200,17 @@ impl SpectrumProcessor {
         self.bin_normalization =
             crate::util::audio::compute_fft_bin_normalization(&self.window, fft_size);
         let bins = fft_size / 2 + 1;
+        let floor = self.config.floor_db;
         self.snapshot.frequency_bins = frequency_bins(self.config.sample_rate, fft_size);
-        self.snapshot.magnitudes_db = vec![DB_FLOOR; bins];
-        self.snapshot.magnitudes_unweighted_db = vec![DB_FLOOR; bins];
+        self.snapshot.magnitudes_db = vec![floor; bins];
+        self.snapshot.magnitudes_unweighted_db = vec![floor; bins];
         self.snapshot.peak_frequency_hz = None;
-        self.averaged_db = vec![DB_FLOOR; bins];
-        self.peak_hold_db = vec![DB_FLOOR; bins];
-        self.scratch_magnitudes = vec![DB_FLOOR; bins];
-        self.averaged_unweighted_db = vec![DB_FLOOR; bins];
-        self.peak_hold_unweighted_db = vec![DB_FLOOR; bins];
-        self.scratch_unweighted = vec![DB_FLOOR; bins];
+        self.averaged_db = vec![floor; bins];
+        self.peak_hold_db = vec![floor; bins];
+        self.scratch_magnitudes = vec![floor; bins];
+        self.averaged_unweighted_db = vec![floor; bins];
+        self.peak_hold_unweighted_db = vec![floor; bins];
+        self.scratch_unweighted = vec![floor; bins];
         self.a_weighting_db = self
             .snapshot
             .frequency_bins
@@ -227,6 +234,7 @@ impl SpectrumProcessor {
         let fft_size = self.config.fft_size;
         let hop = self.config.hop_size.max(1);
         let bins = fft_size / 2 + 1;
+        let floor = self.config.floor_db;
         let mut produced = false;
 
         while self.pcm_buffer.len() >= fft_size {
@@ -250,8 +258,8 @@ impl SpectrumProcessor {
                 return produced;
             }
 
-            self.scratch_magnitudes.resize(bins, DB_FLOOR);
-            self.scratch_unweighted.resize(bins, DB_FLOOR);
+            self.scratch_magnitudes.resize(bins, floor);
+            self.scratch_unweighted.resize(bins, floor);
 
             for (idx, (complex, norm)) in self
                 .spectrum_buffer
@@ -260,22 +268,28 @@ impl SpectrumProcessor {
                 .take(bins)
                 .enumerate()
             {
-                let raw_magnitude = power_to_db(complex.norm_sqr() * *norm, DB_FLOOR);
+                let raw_magnitude = power_to_db(complex.norm_sqr() * *norm, floor);
                 self.scratch_unweighted[idx] = raw_magnitude;
                 let weight = self.a_weighting_db.get(idx).copied().unwrap_or_else(|| {
                     a_weight(*self.snapshot.frequency_bins.get(idx).unwrap_or(&0.0))
                 });
-                self.scratch_magnitudes[idx] = (raw_magnitude + weight).max(DB_FLOOR);
+                let weight = if raw_magnitude > floor { weight } else { 0.0 };
+                self.scratch_magnitudes[idx] = (raw_magnitude + weight).max(floor);
             }
 
+            let dt_seconds = self
+                .last_update_at
+                .map(|last| timestamp.saturating_duration_since(last))
+                .unwrap_or_default()
+                .as_secs_f32();
             let peak_index = averaging_update(
                 &self.config.averaging,
                 &mut self.averaged_db,
                 &mut self.peak_hold_db,
                 &mut self.snapshot.magnitudes_db,
                 &self.scratch_magnitudes,
-                self.last_update_at,
-                timestamp,
+                dt_seconds,
+                floor,
             );
 
             averaging_update(
@@ -284,8 +298,8 @@ impl SpectrumProcessor {
                 &mut self.peak_hold_unweighted_db,
                 &mut self.snapshot.magnitudes_unweighted_db,
                 &self.scratch_unweighted,
-                self.last_update_at,
-                timestamp,
+                dt_seconds,
+                floor,
             );
 
             self.snapshot.peak_frequency_hz =
@@ -358,25 +372,19 @@ fn averaging_update(
     peak_hold_db: &mut Vec<f32>,
     output: &mut Vec<f32>,
     input: &[f32],
-    last_timestamp: Option<Instant>,
-    current_timestamp: Instant,
+    dt_seconds: f32,
+    floor: f32,
 ) -> Option<usize> {
     let bins = input.len();
 
     for buf in [&mut *averaged_db, &mut *peak_hold_db, &mut *output] {
         if buf.len() != bins {
-            buf.resize(bins, DB_FLOOR);
+            buf.resize(bins, floor);
         }
     }
 
-    let dt_seconds = last_timestamp
-        .map(|last| current_timestamp.saturating_duration_since(last))
-        .unwrap_or_default()
-        .as_secs_f32()
-        .max(0.0);
-
     let mut peak_index = None;
-    let mut peak_value = DB_FLOOR;
+    let mut peak_value = floor;
     let mut write = |idx: usize, val: f32| {
         output[idx] = val;
         if val > peak_value {
@@ -388,26 +396,26 @@ fn averaging_update(
     match mode {
         AveragingMode::None => {
             for (idx, &value) in input.iter().enumerate() {
-                write(idx, value.max(DB_FLOOR));
+                write(idx, value.max(floor));
             }
         }
         AveragingMode::Exponential { factor } => {
             let alpha = factor.clamp(0.0, 0.9999);
             for (idx, &value) in input.iter().enumerate() {
                 let previous = averaged_db[idx];
-                let smoothed = if previous <= DB_FLOOR + f32::EPSILON {
+                let smoothed = if previous <= floor + f32::EPSILON {
                     value
                 } else {
                     previous * alpha + value * (1.0 - alpha)
                 };
                 averaged_db[idx] = smoothed;
-                write(idx, smoothed.max(DB_FLOOR));
+                write(idx, smoothed.max(floor));
             }
         }
         AveragingMode::PeakHold { decay_per_second } => {
             let decay = decay_per_second.max(0.0) * dt_seconds;
             for (idx, &value) in input.iter().enumerate() {
-                let hold = (peak_hold_db[idx] - decay).max(DB_FLOOR).max(value);
+                let hold = (peak_hold_db[idx] - decay).max(floor).max(value);
                 peak_hold_db[idx] = hold;
                 write(idx, hold);
             }

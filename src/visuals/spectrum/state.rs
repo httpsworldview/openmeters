@@ -71,7 +71,7 @@ impl Default for SpectrumStyle {
     fn default() -> Self {
         let defaults = SpectrumSettings::default();
         Self {
-            min_db: -120.0,
+            min_db: defaults.floor_db,
             max_db: 0.0,
             min_frequency: 20.0,
             max_frequency: 20_000.0,

@@ -228,6 +228,7 @@ visual_settings!(WaveformSettings from WaveformConfig {
 visual_settings!(SpectrumSettings from SpectrumConfig {
     fft_size: usize, hop_size: usize, window: WindowKind, averaging: AveragingMode,
     frequency_scale: FrequencyScale, reverse_frequency: bool, show_grid: bool, show_peak_label: bool,
+    floor_db: f32,
 } extra {
     smoothing_radius: usize = 0, smoothing_passes: usize = 0,
     display_mode: SpectrumDisplayMode = SpectrumDisplayMode::default(),

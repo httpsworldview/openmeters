@@ -173,17 +173,17 @@ visuals! {
     Spectrum("Spectrum analyzer", 400.0, 180.0, 400.0) =>
         spectrum::SpectrumProcessor, SpectrumState;
         settings_cfg::SpectrumSettings, &palettes::spectrum::COLORS;
-        apply(p, s, set) { visuals!(@apply_config p, set); let mut st = s.borrow_mut();
+        apply(p, s, set) { visuals!(@apply_config p, set); let cfg = p.config(); let mut st = s.borrow_mut();
             visuals!(@apply_palette st, set, &palettes::spectrum::COLORS);
             let style = st.style_mut(); style.frequency_scale = set.frequency_scale;
             style.reverse_frequency = set.reverse_frequency; style.smoothing_radius = set.smoothing_radius;
             style.smoothing_passes = set.smoothing_passes; style.highlight_threshold = set.highlight_threshold;
             style.display_mode = set.display_mode; style.weighting_mode = set.weighting_mode;
-            style.show_secondary_line = set.show_secondary_line;
+            style.min_db = cfg.floor_db; style.show_secondary_line = set.show_secondary_line;
             style.bar_count = set.bar_count; style.bar_gap = set.bar_gap;
             st.update_show_grid(set.show_grid); st.update_show_peak_label(set.show_peak_label); };
-        export(p, s) { let st = s.borrow(); let style = st.style();
-            let mut out = settings_cfg::SpectrumSettings::from_config(&p.config());
+        export(p, s) { let st = s.borrow(); let style = st.style(); let cfg = p.config();
+            let mut out = settings_cfg::SpectrumSettings::from_config(&cfg);
             out.palette = visuals!(@export_palette &style.spectrum_palette, &palettes::spectrum::COLORS);
             out.smoothing_radius = style.smoothing_radius;
             out.smoothing_passes = style.smoothing_passes;

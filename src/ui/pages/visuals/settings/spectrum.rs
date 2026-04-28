@@ -11,8 +11,8 @@ use crate::persistence::settings::{SpectrumDisplayMode, SpectrumSettings, Spectr
 use crate::visuals::registry::VisualKind;
 use crate::visuals::spectrogram::processor::FrequencyScale;
 use crate::visuals::spectrum::processor::{
-    AveragingMode, MAX_SPECTRUM_EXP_FACTOR, MAX_SPECTRUM_PEAK_DECAY, MIN_SPECTRUM_EXP_FACTOR,
-    MIN_SPECTRUM_PEAK_DECAY,
+    AveragingMode, MAX_SPECTRUM_DB_FLOOR, MAX_SPECTRUM_EXP_FACTOR, MAX_SPECTRUM_PEAK_DECAY,
+    MIN_SPECTRUM_DB_FLOOR, MIN_SPECTRUM_EXP_FACTOR, MIN_SPECTRUM_PEAK_DECAY,
 };
 use iced::widget::{column, row};
 use iced::{Element, Length};
@@ -31,6 +31,7 @@ const SPAS_R: SliderRange = SliderRange::new(0.0, 5.0, 1.0);
 const BARS_R: SliderRange = SliderRange::new(8.0, 128.0, 1.0);
 const GAP_R: SliderRange = SliderRange::new(0.0, 0.8, 0.05);
 const HIGH_R: SliderRange = SliderRange::new(0.0, 0.9, 0.01);
+const FLOOR_R: SliderRange = SliderRange::new(MIN_SPECTRUM_DB_FLOOR, MAX_SPECTRUM_DB_FLOOR, 1.0);
 
 crate::settings_enum!(pub(crate) enum AvgMode {
     None => "None",
@@ -63,6 +64,7 @@ pub enum Message {
     SmoothPasses(f32),
     ShowGrid(bool),
     ShowPeakLabel(bool),
+    FloorDb(f32),
     BarCount(f32),
     BarGap(f32),
     Highlight(f32),
@@ -144,6 +146,13 @@ impl SpectrumSettingsPane {
                 SPAS_R,
                 SmoothPasses
             ),
+            labeled_slider(
+                "Noise floor",
+                s.floor_db,
+                format!("{:.0} dB", s.floor_db),
+                FLOOR_R,
+                FloorDb
+            ),
         ]
         .spacing(8);
         if s.display_mode == SpectrumDisplayMode::Bar {
@@ -214,6 +223,7 @@ impl SpectrumSettingsPane {
             ShowSecondary(v) => set_if_changed(&mut s.show_secondary_line, v),
             ShowGrid(v) => set_if_changed(&mut s.show_grid, v),
             ShowPeakLabel(v) => set_if_changed(&mut s.show_peak_label, v),
+            FloorDb(v) => update_f32_range(&mut s.floor_db, v, FLOOR_R),
             Averaging(m) => set_if_changed(&mut self.avg_mode, m)
                 .then(|| self.sync_avg())
                 .is_some(),
