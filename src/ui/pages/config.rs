@@ -23,6 +23,7 @@ use iced::widget::{
     Column, Row, Rule, Space, button, container, pick_list, radio, rule, slider, text, text_input,
 };
 use iced::{Element, Length, Subscription, Task};
+use iced_layershell::actions::OutputSnapshot;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, mpsc};
 
@@ -73,6 +74,7 @@ pub enum ConfigMessage {
     BarModeToggled(bool),
     BarAlignmentChanged(BarAlignment),
     BarHeightChanged(u16),
+    BarMonitorChanged(String),
     ThemeChanged(String),
     SaveTheme(String),
     ThemeNameInput(String),
@@ -86,6 +88,7 @@ pub struct ConfigPage {
     visual_manager: VisualManagerHandle,
     settings: SettingsHandle,
     bar_supported: bool,
+    bar_monitors: Vec<String>,
     preferences: HashMap<u32, bool>,
     applications: Vec<ApplicationRow>,
     hardware_sink_label: String,
@@ -135,6 +138,7 @@ impl ConfigPage {
             visual_manager,
             settings,
             bar_supported,
+            bar_monitors: Vec::new(),
             preferences: HashMap::new(),
             applications: Vec::new(),
             hardware_sink_label: String::from("(detecting hardware sink...)"),
@@ -229,6 +233,7 @@ impl ConfigPage {
             ConfigMessage::BarHeightChanged(v) => {
                 self.settings.update(|s| s.set_bar_height(v as u32));
             }
+            ConfigMessage::BarMonitorChanged(v) => self.settings.update(|s| s.set_bar_monitor(v)),
             ConfigMessage::ThemeChanged(name) => {
                 self.apply_theme(&name);
             }
@@ -514,6 +519,15 @@ impl ConfigPage {
         }
     }
 
+    pub(crate) fn sync_bar_outputs(&mut self, snapshot: OutputSnapshot) {
+        self.bar_monitors = snapshot.outputs;
+        if let Some(monitor) = snapshot.current
+            && self.settings.borrow().settings().bar.monitor.as_ref() != Some(&monitor)
+        {
+            self.settings.update(|s| s.set_bar_monitor(monitor));
+        }
+    }
+
     fn render_bar_section(&self) -> Column<'_, ConfigMessage> {
         let bar = self.settings.borrow().settings().bar.clone();
         let bar_toggle = iced::widget::checkbox(bar.enabled)
@@ -524,6 +538,16 @@ impl ConfigPage {
         let mut content = Column::new().spacing(10).push(bar_toggle);
         if bar.enabled {
             content = content
+                .push(
+                    pick_list(
+                        self.bar_monitors.clone(),
+                        bar.monitor.clone(),
+                        ConfigMessage::BarMonitorChanged,
+                    )
+                    .placeholder("Detecting monitor...")
+                    .text_size(TEXT_SIZE)
+                    .width(Length::Fill),
+                )
                 .push(radio_row(
                     &[(BarAlignment::Top, "Top"), (BarAlignment::Bottom, "Bottom")],
                     bar.alignment,

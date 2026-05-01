@@ -1206,9 +1206,8 @@ dependencies = [
 
 [[package]]
 name = "iced_exdevtools"
-version = "0.17.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ebaacc2aec75f830d8a9f74baceb24653f3c495f6b99547c310344ee70b10d5"
+version = "0.18.0"
+source = "git+https://github.com/httpsworldview/exwlshelleventloop?branch=output-snapshot#5083f9581a32f14ec29b147def4f23610e5bdc69"
 dependencies = [
  "iced_debug",
  "iced_devtools",
@@ -1252,9 +1251,8 @@ dependencies = [
 
 [[package]]
 name = "iced_layershell"
-version = "0.17.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b629288e1381245534c30d0841ea19137782010906d1150d003efe1d006736e0"
+version = "0.18.0"
+source = "git+https://github.com/httpsworldview/exwlshelleventloop?branch=output-snapshot#5083f9581a32f14ec29b147def4f23610e5bdc69"
 dependencies = [
  "enumflags2",
  "futures",
@@ -1278,9 +1276,8 @@ dependencies = [
 
 [[package]]
 name = "iced_layershell_macros"
-version = "0.17.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13df0adbff33e30e56c0aa8603a653425ef1b11ddcad042233730abb85548d87"
+version = "0.18.0"
+source = "git+https://github.com/httpsworldview/exwlshelleventloop?branch=output-snapshot#5083f9581a32f14ec29b147def4f23610e5bdc69"
 dependencies = [
  "darling",
  "manyhow",
@@ -1552,14 +1549,14 @@ dependencies = [
 
 [[package]]
 name = "layershellev"
-version = "0.17.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "faa42859f072bea324343a6495368ec7a78d4aed5705b33b6d3d0096d618b3ae"
+version = "0.18.0"
+source = "git+https://github.com/httpsworldview/exwlshelleventloop?branch=output-snapshot#5083f9581a32f14ec29b147def4f23610e5bdc69"
 dependencies = [
  "calloop 0.14.4",
  "calloop-wayland-source 0.4.1",
  "log",
  "raw-window-handle",
+ "smithay-client-toolkit 0.20.0",
  "tempfile",
  "thiserror 2.0.18",
  "waycrate_xkbkeycode",
@@ -2879,12 +2876,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0512da38f5e2b31201a93524adb8d3136276fa4fe4aafab4e1f727a82b534cc0"
 dependencies = [
  "bitflags 2.11.1",
+ "bytemuck",
  "calloop 0.14.4",
  "calloop-wayland-source 0.4.1",
  "cursor-icon",
  "libc",
  "log",
  "memmap2",
+ "pkg-config",
  "rustix 1.1.4",
  "thiserror 2.0.18",
  "wayland-backend",
@@ -2896,6 +2895,7 @@ dependencies = [
  "wayland-protocols-misc",
  "wayland-protocols-wlr",
  "wayland-scanner",
+ "xkbcommon",
  "xkeysym",
 ]
 
@@ -3482,14 +3482,12 @@ dependencies = [
 
 [[package]]
 name = "waycrate_xkbkeycode"
-version = "0.17.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9967bea119d19cb19112a4d25b5d6fea7d8252193d37864492e4c6777ab44474"
+version = "0.18.0"
+source = "git+https://github.com/httpsworldview/exwlshelleventloop?branch=output-snapshot#5083f9581a32f14ec29b147def4f23610e5bdc69"
 dependencies = [
  "calloop 0.14.4",
  "log",
  "memmap2",
- "smol_str 0.2.2",
  "wayland-backend",
  "wayland-client",
  "winit-common",
@@ -4200,6 +4198,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bec9e4a500ca8864c5b47b8b482a73d62e4237670e5b5f1d6b9e3cae50f28f2b"
 
 [[package]]
+name = "xkbcommon"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8d66ca9352cbd4eecbbc40871d8a11b4ac8107cfc528a6e14d7c19c69d0e1ac9"
+dependencies = [
+ "libc",
+ "memmap2",
+ "xkeysym",
+]
+
+[[package]]
 name = "xkbcommon-dl"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4217,6 +4226,9 @@ name = "xkeysym"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
+dependencies = [
+ "bytemuck",
+]
 
 [[package]]
 name = "xml-rs"

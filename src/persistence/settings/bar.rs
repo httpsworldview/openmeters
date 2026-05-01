@@ -19,6 +19,17 @@ pub struct BarSettings {
     pub enabled: bool,
     pub alignment: BarAlignment,
     pub height: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub monitor: Option<String>,
+}
+
+impl BarSettings {
+    pub fn sanitize(&mut self) {
+        self.height = clamp_bar_height(self.height);
+        if !self.enabled {
+            self.monitor = None;
+        }
+    }
 }
 
 impl Default for BarSettings {
@@ -27,6 +38,7 @@ impl Default for BarSettings {
             enabled: false,
             alignment: BarAlignment::default(),
             height: BAR_DEFAULT_HEIGHT,
+            monitor: None,
         }
     }
 }

@@ -48,7 +48,7 @@ impl SettingsManager {
             })
             .unwrap_or_default();
         data.visuals.sanitize();
-        data.bar.height = clamp_bar_height(data.bar.height);
+        data.bar.sanitize();
         let theme_store = ThemeStore::new(&dir);
         // Populate background color from the active theme (settings.json no longer stores it).
         if let Some(theme_file) = theme_store.load(data.theme.as_deref().unwrap_or(BUILTIN_THEME))
@@ -108,6 +108,9 @@ impl SettingsManager {
     pub fn set_bar_height(&mut self, height: u32) {
         self.data.bar.height = clamp_bar_height(height);
     }
+    pub fn set_bar_monitor(&mut self, monitor: String) {
+        self.data.bar.monitor = Some(monitor);
+    }
     pub fn set_capture_mode(&mut self, m: CaptureMode) {
         self.data.capture_mode = m;
     }
@@ -122,7 +125,7 @@ impl SettingsManager {
 fn schedule_persist(path: PathBuf, mut settings: UiSettings) {
     static SENDER: OnceLock<Option<mpsc::Sender<(PathBuf, UiSettings)>>> = OnceLock::new();
     settings.visuals.strip_all_palettes();
-    settings.bar.height = clamp_bar_height(settings.bar.height);
+    settings.bar.sanitize();
     if let Some(sender) = SENDER.get_or_init(|| {
         let (tx, rx) = mpsc::channel::<(PathBuf, UiSettings)>();
         std::thread::Builder::new()
@@ -182,6 +185,7 @@ impl SettingsHandle {
         let mut manager = self.0.borrow_mut();
         let result = mutate(&mut manager);
         manager.data.visuals.sanitize();
+        manager.data.bar.sanitize();
         schedule_persist(manager.path.clone(), manager.data.clone());
         result
     }

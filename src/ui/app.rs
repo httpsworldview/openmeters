@@ -207,9 +207,12 @@ impl UiApp {
             event::listen_with(keyboard_shortcut),
             window::close_events().map(Message::WindowClosed),
             window::resize_events().map(|(id, size)| Message::WindowResized(id, size)),
-            event::listen_with(|evt, _, wid| {
-                matches!(evt, Event::Window(window::Event::Focused))
-                    .then_some(Message::WindowFocused(wid))
+            event::listen_with(|evt, _, wid| match evt {
+                Event::Window(window::Event::Focused) => Some(Message::WindowFocused(wid)),
+                Event::Window(window::Event::Opened { size, .. }) => {
+                    Some(Message::WindowResized(wid, size))
+                }
+                _ => None,
             }),
         ];
         if let Some(rx) = &self.audio_frames {

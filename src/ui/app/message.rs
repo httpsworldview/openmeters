@@ -10,7 +10,7 @@ use iced::event::{self, Event};
 use iced::keyboard::{self, Key};
 use iced::widget::{container, text};
 use iced::{Element, Length, Size, Task, exit, window};
-use iced_layershell::actions::IcedXdgWindowSettings;
+use iced_layershell::actions::{IcedXdgWindowSettings, OutputSnapshot};
 use iced_layershell::reexport::NewLayerShellSettings;
 use iced_layershell::to_layer_message;
 use std::time::Instant;
@@ -21,6 +21,7 @@ pub(super) enum Message {
     Config(ConfigMessage),
     Visuals(VisualsMessage),
     AudioFrame(Vec<f32>),
+    BarOutputResolved(window::Id, Option<OutputSnapshot>),
     ToggleDrawer,
     TogglePause,
     PopOutOrDock(window::Id),
@@ -181,6 +182,12 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
         Message::AudioFrame(samples) if !app.rendering_paused => {
             app.visual_manager.borrow_mut().ingest_samples(&samples);
             app.sync_all_windows()
+        }
+        Message::BarOutputResolved(id, Some(snapshot))
+            if app.main_window_is_layer && id == app.main_window_id =>
+        {
+            app.config_page.sync_bar_outputs(snapshot);
+            Task::none()
         }
         Message::WindowClosed(window_id) => app.on_window_closed(window_id),
         Message::WindowFocused(id) => {

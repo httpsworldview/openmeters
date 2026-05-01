@@ -34,7 +34,8 @@ wayland-client = "0.31.14"
   features = [ "env-filter", "fmt" ]
 
   [dependencies.iced_layershell]
-  version = "0.17.1"
+  git = "https://github.com/httpsworldview/exwlshelleventloop"
+  branch = "output-snapshot"
   default-features = false
 
 [dev-dependencies]

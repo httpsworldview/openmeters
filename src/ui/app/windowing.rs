@@ -12,7 +12,10 @@ use crate::visuals::registry::{
 };
 use iced::widget::{container, mouse_area, text};
 use iced::{Element, Length, Size, Task, exit, window};
-use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings};
+use iced_layershell::actions::OutputSnapshotCallback;
+use iced_layershell::reexport::{
+    Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings, OutputOption,
+};
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
 use wayland_client::protocol::wl_registry;
 use wayland_client::{Connection, Dispatch, QueueHandle};
@@ -60,13 +63,18 @@ pub(super) fn bar_anchor(alignment: BarAlignment) -> Anchor {
     }
 }
 
-fn bar_layershell_settings(alignment: BarAlignment, height: u32) -> NewLayerShellSettings {
+fn bar_layershell_settings(bar: &BarSettings, height: u32) -> NewLayerShellSettings {
     NewLayerShellSettings {
         size: Some((0, height)),
         layer: Layer::Top,
-        anchor: bar_anchor(alignment),
+        anchor: bar_anchor(bar.alignment),
         exclusive_zone: Some(height as i32),
         keyboard_interactivity: KeyboardInteractivity::OnDemand,
+        output_option: bar
+            .monitor
+            .clone()
+            .map(OutputOption::OutputName)
+            .unwrap_or_default(),
         ..Default::default()
     }
 }
@@ -80,6 +88,7 @@ pub(super) fn open_base_window(
     if use_layershell {
         let settings = iced_layershell::actions::IcedXdgWindowSettings {
             size: Some((size.width.round() as u32, size.height.round() as u32)),
+            ..Default::default()
         };
         message::base_window_open(settings)
     } else {
@@ -103,7 +112,7 @@ pub(super) fn open_main_window(
 ) -> (window::Id, Task<Message>, bool, Size) {
     if use_layershell && bar_settings.enabled {
         let height = clamp_bar_height(bar_settings.height);
-        let settings = bar_layershell_settings(bar_settings.alignment, height);
+        let settings = bar_layershell_settings(&bar_settings, height);
         let (id, task) = message::layershell_open(settings);
         let new_size = Size::new(base_size.width, height as f32);
         return (id, task, true, new_size);
@@ -387,10 +396,13 @@ impl UiApp {
             if current_height != height {
                 self.settings_handle.update(|s| s.set_bar_height(height));
             }
-            return Task::done(Message::ExclusiveZoneChange {
-                id: self.main_window_id,
-                zone_size: height as i32,
-            });
+            return Task::batch([
+                Task::done(Message::ExclusiveZoneChange {
+                    id: self.main_window_id,
+                    zone_size: height as i32,
+                }),
+                self.request_main_output_snapshot(),
+            ]);
         }
 
         self.last_base_window_size = new_size;
@@ -414,6 +426,25 @@ impl UiApp {
         self.main_window_is_layer = main_is_layer;
         self.focused_window = Some(new_main_id);
         Task::batch([open_main, window::close(old_main_id)])
+    }
+
+    pub(super) fn request_main_output_snapshot(&self) -> Task<Message> {
+        if !self.main_window_is_layer {
+            return Task::none();
+        }
+        let id = self.main_window_id;
+        let (sender, receiver) = async_channel::bounded(1);
+        Task::batch([
+            Task::done(Message::OutputSnapshotRequest {
+                id,
+                callback: OutputSnapshotCallback::new(move |snapshot| {
+                    let _ = sender.try_send(snapshot);
+                }),
+            }),
+            Task::perform(async move { receiver.recv().await.ok() }, move |snapshot| {
+                Message::BarOutputResolved(id, snapshot)
+            }),
+        ])
     }
 
     pub(super) fn handle_bar_config_message(
@@ -447,6 +478,15 @@ impl UiApp {
             }
             ConfigMessage::BarHeightChanged(height) if self.main_window_is_layer => {
                 self.apply_bar_layout(bar.alignment, *height as u32)
+            }
+            ConfigMessage::BarMonitorChanged(monitor) if self.main_window_is_layer => {
+                let monitor = Some(monitor.clone());
+                if bar.monitor == monitor {
+                    Task::none()
+                } else {
+                    let decorations = self.settings_handle.borrow().settings().decorations;
+                    self.recreate_main_window(BarSettings { monitor, ..bar }, decorations)
+                }
             }
             _ => Task::none(),
         }
