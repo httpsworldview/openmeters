@@ -88,6 +88,7 @@ pub(super) fn open_base_window(
     if use_layershell {
         let settings = iced_layershell::actions::IcedXdgWindowSettings {
             size: Some((size.width.round() as u32, size.height.round() as u32)),
+            client_side_decorations: !with_decorations,
             ..Default::default()
         };
         message::base_window_open(settings)
