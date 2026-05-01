@@ -89,7 +89,6 @@ pub(super) fn open_base_window(
         let settings = iced_layershell::actions::IcedXdgWindowSettings {
             size: Some((size.width.round() as u32, size.height.round() as u32)),
             client_side_decorations: !with_decorations,
-            ..Default::default()
         };
         message::base_window_open(settings)
     } else {
@@ -228,7 +227,9 @@ impl UiApp {
             slot.metadata.preferred_width.max(400.0),
             slot.metadata.preferred_height.max(300.0),
         );
-        let (new_id, open_task) = open_base_window(self.use_layershell, window_size, true, true);
+        let use_decorations = self.settings_handle.borrow().settings().decorations;
+        let (new_id, open_task) =
+            open_base_window(self.use_layershell, window_size, use_decorations, true);
         let mut popout = PopoutWindow {
             visual_id,
             kind,
@@ -511,6 +512,26 @@ impl UiApp {
         Task::batch([open_task, window::close(old_id)])
     }
 
+    pub(super) fn recreate_popout_windows(&mut self, use_decorations: bool) -> Task<Message> {
+        let old_popouts = std::mem::take(&mut self.popout_windows);
+        let mut tasks = Vec::with_capacity(old_popouts.len() * 2);
+        for (old_id, popout) in old_popouts {
+            let window_size = match &popout.cached {
+                Some((metadata, _)) => Size::new(
+                    metadata.preferred_width.max(400.0),
+                    metadata.preferred_height.max(300.0),
+                ),
+                None => Size::new(400.0, 300.0),
+            };
+            let (new_id, open_task) =
+                open_base_window(self.use_layershell, window_size, use_decorations, true);
+            self.popout_windows.insert(new_id, popout);
+            tasks.push(open_task);
+            tasks.push(window::close(old_id));
+        }
+        Task::batch(tasks)
+    }
+
     pub(super) fn recreate_windows(&mut self, use_decorations: bool) -> Task<Message> {
         let old_main_id = self.main_window_id;
         let (new_main_id, open_main) = open_base_window(
@@ -522,6 +543,11 @@ impl UiApp {
         self.main_window_id = new_main_id;
         self.main_window_is_layer = false;
         let settings_task = self.recreate_settings_window();
-        Task::batch([open_main, window::close(old_main_id), settings_task])
+        Task::batch([
+            open_main,
+            window::close(old_main_id),
+            settings_task,
+            self.recreate_popout_windows(use_decorations),
+        ])
     }
 }

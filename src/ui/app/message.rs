@@ -109,12 +109,12 @@ pub(super) fn keyboard_shortcut(
 pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
     match msg {
         Message::Config(config_msg) => {
-            let decoration_task = if let ConfigMessage::DecorationsToggled(enabled) = &config_msg
-                && !app.main_window_is_layer
-            {
-                app.recreate_windows(*enabled)
-            } else {
-                Task::none()
+            let decoration_task = match &config_msg {
+                ConfigMessage::DecorationsToggled(enabled) if app.main_window_is_layer => {
+                    app.recreate_popout_windows(*enabled)
+                }
+                ConfigMessage::DecorationsToggled(enabled) => app.recreate_windows(*enabled),
+                _ => Task::none(),
             };
             let bar_task = app.handle_bar_config_message(&config_msg);
             let theme_changed = matches!(config_msg, ConfigMessage::ThemeChanged(_));
