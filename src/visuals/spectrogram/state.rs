@@ -354,7 +354,7 @@ impl SpectrogramState {
 }
 
 const MIN_ZOOM: f32 = 1.0;
-const MAX_ZOOM: f32 = 32.0;
+const MAX_ZOOM: f32 = f32::MAX;
 const ZOOM_STEP: f32 = 1.15;
 
 #[derive(Default)]
