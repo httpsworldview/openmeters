@@ -36,12 +36,10 @@ pull request!
 - [x] **oscilloscope**
   - [x] Channel selection (L, R, L+R)
   - [x] Stable mode - Estimates the fundamental pitch of a given
-        signal and autocorrelates it against a reference signal to
-        find a stable trigger point.
+        signal and autocorrelates it against reference sine and cosine
+        waves to find a stable trigger point.
     - [x] Ability to select the number of cycles to display (1-4)
-  - [x] Zero-crossing - A more traditional oscilloscope with a robust
-        zero-crossing trigger. Suitable for simple signals, but will
-        jitter with complex and rapidly changing material.
+  - [x] Zero-crossing - A more traditional zero-crossing trigger.
 - [x] **spectrogram**
   - [x] Spectral reassignment for exceptionally sharp time and
         frequency resolution.
