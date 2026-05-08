@@ -37,7 +37,6 @@ pub struct SpectrumSnapshot {
     pub frequency_bins: Vec<f32>,
     pub magnitudes_db: Vec<f32>,
     pub magnitudes_unweighted_db: Vec<f32>,
-    pub peak_frequency_hz: Option<f32>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -199,25 +198,38 @@ impl SpectrumProcessor {
         self.scratch_buffer = self.fft.make_scratch_vec();
         self.bin_normalization =
             crate::util::audio::compute_fft_bin_normalization(&self.window, fft_size);
-        let bins = fft_size / 2 + 1;
-        let floor = self.config.floor_db;
-        self.snapshot.frequency_bins = frequency_bins(self.config.sample_rate, fft_size);
-        self.snapshot.magnitudes_db = vec![floor; bins];
-        self.snapshot.magnitudes_unweighted_db = vec![floor; bins];
-        self.snapshot.peak_frequency_hz = None;
-        self.averaged_db = vec![floor; bins];
-        self.peak_hold_db = vec![floor; bins];
-        self.scratch_magnitudes = vec![floor; bins];
-        self.averaged_unweighted_db = vec![floor; bins];
-        self.peak_hold_unweighted_db = vec![floor; bins];
-        self.scratch_unweighted = vec![floor; bins];
+        self.reset_buffers();
+    }
+
+    fn reset_buffers(&mut self) {
+        self.snapshot.frequency_bins =
+            frequency_bins(self.config.sample_rate, self.config.fft_size);
         self.a_weighting_db = self
             .snapshot
             .frequency_bins
             .iter()
             .map(|&f| a_weight(f))
             .collect();
+        self.reset_level_buffers();
         self.pcm_buffer.clear();
+    }
+
+    fn reset_level_buffers(&mut self) {
+        let bins = self.config.fft_size / 2 + 1;
+        let floor = self.config.floor_db;
+        for buf in [
+            &mut self.snapshot.magnitudes_db,
+            &mut self.snapshot.magnitudes_unweighted_db,
+            &mut self.averaged_db,
+            &mut self.peak_hold_db,
+            &mut self.scratch_magnitudes,
+            &mut self.averaged_unweighted_db,
+            &mut self.peak_hold_unweighted_db,
+            &mut self.scratch_unweighted,
+        ] {
+            buf.clear();
+            buf.resize(bins, floor);
+        }
     }
 
     fn ensure_fft(&mut self) {
@@ -282,7 +294,7 @@ impl SpectrumProcessor {
                 .map(|last| timestamp.saturating_duration_since(last))
                 .unwrap_or_default()
                 .as_secs_f32();
-            let peak_index = averaging_update(
+            averaging_update(
                 &self.config.averaging,
                 &mut self.averaged_db,
                 &mut self.peak_hold_db,
@@ -302,8 +314,6 @@ impl SpectrumProcessor {
                 floor,
             );
 
-            self.snapshot.peak_frequency_hz =
-                peak_index.and_then(|idx| self.snapshot.frequency_bins.get(idx).copied());
             self.last_update_at = Some(timestamp);
 
             self.pcm_buffer.drain(..hop);
@@ -333,7 +343,7 @@ impl AudioProcessor for SpectrumProcessor {
 
         if (block.sample_rate - self.config.sample_rate).abs() > f32::EPSILON {
             self.config.sample_rate = block.sample_rate;
-            self.rebuild_fft();
+            self.reset_buffers();
         }
 
         self.ensure_fft();
@@ -347,22 +357,23 @@ impl AudioProcessor for SpectrumProcessor {
     }
 
     fn reset(&mut self) {
-        self.snapshot = SpectrumSnapshot::default();
-        self.pcm_buffer.clear();
-        self.averaged_db.clear();
-        self.peak_hold_db.clear();
-        self.averaged_unweighted_db.clear();
-        self.peak_hold_unweighted_db.clear();
-        self.scratch_unweighted.clear();
+        self.reset_buffers();
         self.last_update_at = None;
     }
 }
 
 impl Reconfigurable<SpectrumConfig> for SpectrumProcessor {
     fn update_config(&mut self, mut config: SpectrumConfig) {
+        let old = self.config;
         config.normalize();
         self.config = config;
-        self.rebuild_fft();
+        if old.fft_size != config.fft_size || old.window != config.window {
+            self.rebuild_fft();
+        } else if (old.sample_rate - config.sample_rate).abs() > f32::EPSILON {
+            self.reset_buffers();
+        } else if (old.floor_db - config.floor_db).abs() > f32::EPSILON {
+            self.reset_level_buffers();
+        }
     }
 }
 
@@ -374,7 +385,7 @@ fn averaging_update(
     input: &[f32],
     dt_seconds: f32,
     floor: f32,
-) -> Option<usize> {
+) {
     let bins = input.len();
 
     for buf in [&mut *averaged_db, &mut *peak_hold_db, &mut *output] {
@@ -383,46 +394,31 @@ fn averaging_update(
         }
     }
 
-    let mut peak_index = None;
-    let mut peak_value = floor;
-    let mut write = |idx: usize, val: f32| {
-        output[idx] = val;
-        if val > peak_value {
-            peak_value = val;
-            peak_index = Some(idx);
-        }
-    };
-
     match mode {
         AveragingMode::None => {
-            for (idx, &value) in input.iter().enumerate() {
-                write(idx, value.max(floor));
+            for (out, &value) in output.iter_mut().zip(input) {
+                *out = value.max(floor);
             }
         }
         AveragingMode::Exponential { factor } => {
             let alpha = factor.clamp(0.0, 0.9999);
-            for (idx, &value) in input.iter().enumerate() {
-                let previous = averaged_db[idx];
-                let smoothed = if previous <= floor + f32::EPSILON {
+            for ((avg, out), &value) in averaged_db.iter_mut().zip(output).zip(input) {
+                *avg = if *avg <= floor + f32::EPSILON {
                     value
                 } else {
-                    previous * alpha + value * (1.0 - alpha)
+                    *avg * alpha + value * (1.0 - alpha)
                 };
-                averaged_db[idx] = smoothed;
-                write(idx, smoothed.max(floor));
+                *out = (*avg).max(floor);
             }
         }
         AveragingMode::PeakHold { decay_per_second } => {
             let decay = decay_per_second.max(0.0) * dt_seconds;
-            for (idx, &value) in input.iter().enumerate() {
-                let hold = (peak_hold_db[idx] - decay).max(floor).max(value);
-                peak_hold_db[idx] = hold;
-                write(idx, hold);
+            for ((hold, out), &value) in peak_hold_db.iter_mut().zip(output).zip(input) {
+                *hold = (*hold - decay).max(floor).max(value);
+                *out = *hold;
             }
         }
     }
-
-    peak_index
 }
 
 fn a_weight(freq_hz: f32) -> f32 {
@@ -453,11 +449,37 @@ fn a_weight(freq_hz: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::a_weight;
+    use super::{SpectrumConfig, SpectrumProcessor, a_weight};
+    use crate::dsp::{AudioProcessor, Reconfigurable};
+
+    #[test]
+    fn reset_keeps_frequency_axis_initialized() {
+        let mut p = SpectrumProcessor::new(SpectrumConfig::default());
+        p.reset();
+
+        let bins = p.snapshot.frequency_bins.len();
+        assert!(bins > 0);
+        assert_eq!(p.snapshot.magnitudes_db.len(), bins);
+        assert_eq!(p.snapshot.magnitudes_unweighted_db.len(), bins);
+    }
+
+    #[test]
+    fn floor_change_reseeds_state_buffers_without_clearing_pending_audio() {
+        let mut p = SpectrumProcessor::new(SpectrumConfig::default());
+        p.pcm_buffer.extend([0.25, -0.25]);
+        let mut cfg = p.config();
+        cfg.floor_db = -96.0;
+
+        p.update_config(cfg);
+
+        assert_eq!(p.pcm_buffer.len(), 2);
+        assert!(p.snapshot.magnitudes_db.iter().all(|&v| v == cfg.floor_db));
+        assert!(p.averaged_db.iter().all(|&v| v == cfg.floor_db));
+        assert!(p.peak_hold_db.iter().all(|&v| v == cfg.floor_db));
+    }
 
     #[test]
     fn a_weight_matches_iec_reference_points() {
-        // (frequency Hz, reference dB)
         let reference_points: &[(f32, f32)] = &[
             (31.5, -39.4),
             (63.0, -26.2),

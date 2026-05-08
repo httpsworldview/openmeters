@@ -1,9 +1,9 @@
 // SDF shader - antialiasing via screen-space derivatives.
 //
-// params: [dist_x, dist_y, radius, _unused]
+// params: [dist_x, dist_y, radius, additive]
 // - Solid: (0, 0, large, 0)
 // - Line: (+-outer, 0, half_width, 0)
-// - Dot: (ox, oy, radius, 0)
+// - Dot: (ox, oy, radius, additive)
 
 struct VertexInput {
     @location(0) position: vec2<f32>,

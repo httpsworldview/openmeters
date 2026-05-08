@@ -10,7 +10,7 @@ use crate::persistence::settings::{
 };
 use crate::sdf_primitive;
 use crate::visuals::render::common::{
-    ClipTransform, SdfVertex, gradient_quad_vertices, line_vertices, quad_vertices,
+    ClipTransform, SdfVertex, dot_vertices, gradient_quad_vertices, line_vertices, quad_vertices,
 };
 
 pub fn scale_point(scale: StereometerScale, x: f32, y: f32, range: f32) -> (f32, f32) {
@@ -32,32 +32,6 @@ const CORR_PAD: f32 = 4.0;
 const CORR_VPAD: f32 = 16.0;
 const CORR_EDGE: f32 = 6.0;
 const BAND_GAP: f32 = 2.0;
-
-#[inline]
-fn dot_vertices(
-    cx: f32,
-    cy: f32,
-    radius: f32,
-    color: [f32; 4],
-    clip: ClipTransform,
-    additive: bool,
-) -> [SdfVertex; 6] {
-    let outer = radius + 1.0;
-    let flag = if additive { 1.0 } else { 0.0 };
-    let v = |px, py, ox, oy| SdfVertex {
-        position: clip.to_clip(px, py),
-        color,
-        params: [ox, oy, radius, flag],
-    };
-    [
-        v(cx - outer, cy - outer, -outer, -outer),
-        v(cx - outer, cy + outer, -outer, outer),
-        v(cx + outer, cy - outer, outer, -outer),
-        v(cx + outer, cy - outer, outer, -outer),
-        v(cx - outer, cy + outer, -outer, outer),
-        v(cx + outer, cy + outer, outer, outer),
-    ]
-}
 
 #[derive(Debug, Clone)]
 pub struct StereometerParams {

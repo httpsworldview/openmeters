@@ -7,11 +7,21 @@ use std::sync::Arc;
 
 use crate::persistence::settings::SpectrumDisplayMode;
 use crate::sdf_primitive;
-use crate::util::color::sample_rgba_gradient;
+use crate::util::color::{rgba_with_alpha, sample_rgba_gradient};
 use crate::visuals::render::common::{
     ClipTransform, SdfVertex, baseline_segment_vertices, build_aa_line_list, decimate_line,
-    quad_vertices,
+    dot_vertices, gradient_quad_vertices, line_vertices, quad_vertices,
 };
+
+pub(crate) const MIN_BAR_COUNT: usize = 4;
+
+#[derive(Debug, Clone, Copy)]
+pub struct SpectrumPeakParams {
+    pub marker: [f32; 2],
+    pub marker_color: [f32; 4],
+    pub leader_anchor: Option<[f32; 2]>,
+    pub leader_color: [f32; 4],
+}
 
 #[derive(Debug, Clone)]
 pub struct SpectrumParams {
@@ -29,6 +39,7 @@ pub struct SpectrumParams {
     pub show_secondary_line: bool,
     pub bar_count: usize,
     pub bar_gap: f32,
+    pub peak: Option<SpectrumPeakParams>,
 }
 
 #[derive(Debug)]
@@ -49,11 +60,26 @@ impl SpectrumPrimitive {
             return Vec::new();
         }
 
-        if self.params.display_mode == SpectrumDisplayMode::Bar {
+        let mut vertices = if self.params.display_mode == SpectrumDisplayMode::Bar {
             self.build_bar_vertices(&clip, bounds)
         } else {
             self.build_line_vertices(&clip, bounds)
+        };
+        if let Some(peak) = self.params.peak {
+            if let Some(anchor) = peak.leader_anchor {
+                vertices.extend(line_vertices(
+                    normalized_to_cartesian(bounds, anchor),
+                    normalized_to_cartesian(bounds, peak.marker),
+                    peak.leader_color,
+                    peak.leader_color,
+                    1.0,
+                    clip,
+                ));
+            }
+            let (x, y) = normalized_to_cartesian(bounds, peak.marker);
+            vertices.extend(dot_vertices(x, y, 3.0, peak.marker_color, clip, false));
         }
+        vertices
     }
 
     fn build_line_vertices(&self, clip: &ClipTransform, bounds: Rectangle) -> Vec<SdfVertex> {
@@ -76,14 +102,6 @@ impl SpectrumPrimitive {
             self.params.highlight_threshold,
         );
 
-        let line_positions = decimate_line(&positions, pixel_budget);
-        vertices.extend(build_aa_line_list(
-            &line_positions,
-            self.params.line_width,
-            self.params.line_color,
-            clip,
-        ));
-
         if self.params.show_secondary_line && self.params.secondary_points.len() >= 2 {
             let sec_pts = to_cartesian_positions(bounds, self.params.secondary_points.as_ref());
             let overlay_positions = decimate_line(&sec_pts, pixel_budget);
@@ -95,19 +113,29 @@ impl SpectrumPrimitive {
             ));
         }
 
+        let line_positions = decimate_line(&positions, pixel_budget);
+        vertices.extend(build_aa_line_list(
+            &line_positions,
+            self.params.line_width,
+            self.params.line_color,
+            clip,
+        ));
+
         vertices
     }
 
     fn build_bar_vertices(&self, clip: &ClipTransform, bounds: Rectangle) -> Vec<SdfVertex> {
         let p = &self.params;
-        let bar_count = p.bar_count.max(4);
+        let bar_count = p.bar_count.max(MIN_BAR_COUNT);
         let gap = p.bar_gap.clamp(0.0, 0.8);
         let unit = bounds.width / bar_count as f32;
         let (bar_w, offset) = (unit * (1.0 - gap), unit * gap * 0.5);
         let baseline = bounds.y + bounds.height;
         let y_at = |amp: f32| bounds.y + bounds.height * (1.0 - amp);
+        let secondary = (p.show_secondary_line && p.secondary_points.len() >= 2)
+            .then_some(p.secondary_points.as_ref());
 
-        let mut verts = Vec::with_capacity(bar_count * 12);
+        let mut verts = Vec::with_capacity(bar_count * if secondary.is_some() { 12 } else { 6 });
         for i in 0..bar_count {
             let (t0, t1) = (
                 i as f32 / bar_count as f32,
@@ -118,23 +146,26 @@ impl SpectrumPrimitive {
                 continue;
             }
             let x0 = bounds.x + i as f32 * unit + offset;
+            let x1 = x0 + bar_w;
+            let y = y_at(amp);
             let color = palette_color(&p.spectrum_palette, amp, p.highlight_threshold);
-            verts.extend_from_slice(&quad_vertices(
+            verts.extend_from_slice(&gradient_quad_vertices(
                 x0,
-                y_at(amp),
-                x0 + bar_w,
+                y,
+                x1,
                 baseline,
                 *clip,
-                color,
+                rgba_with_alpha(color, color[3] * 0.82),
+                rgba_with_alpha(color, color[3] * 0.22),
             ));
 
-            if p.show_secondary_line && p.secondary_points.len() >= 2 {
-                let sec_y = y_at(sample_lerp(&p.secondary_points, (t0 + t1) * 0.5));
+            if let Some(secondary) = secondary {
+                let sec_y = y_at(sample_lerp(secondary, (t0 + t1) * 0.5));
                 let h = p.secondary_line_width.max(1.0) * 0.5;
                 verts.extend_from_slice(&quad_vertices(
                     x0,
                     sec_y - h,
-                    x0 + bar_w,
+                    x1,
                     sec_y + h,
                     *clip,
                     p.secondary_line_color,
@@ -145,14 +176,13 @@ impl SpectrumPrimitive {
     }
 }
 
+fn normalized_to_cartesian(b: Rectangle, [x, y]: [f32; 2]) -> (f32, f32) {
+    (b.x + b.width * x, b.y + b.height * (1.0 - y))
+}
+
 fn to_cartesian_positions(bounds: Rectangle, pts: &[[f32; 2]]) -> Vec<(f32, f32)> {
     pts.iter()
-        .map(|p| {
-            (
-                bounds.x + bounds.width * p[0],
-                bounds.y + bounds.height * (1.0 - p[1]),
-            )
-        })
+        .map(|&p| normalized_to_cartesian(bounds, p))
         .collect()
 }
 
@@ -165,9 +195,6 @@ fn push_highlight_columns(
     palette: &[[f32; 4]],
     threshold: f32,
 ) {
-    if palette.is_empty() {
-        return;
-    }
     for (seg, pts) in positions.windows(2).zip(normalized_points.windows(2)) {
         let c0 = palette_color(palette, pts[0][1], threshold);
         let c1 = palette_color(palette, pts[1][1], threshold);
@@ -190,10 +217,13 @@ fn palette_color(palette: &[[f32; 4]], amp: f32, threshold: f32) -> [f32; 4] {
     sample_rgba_gradient(palette, intensity.clamp(0.0, 1.0))
 }
 
-fn sample_max(pts: &[[f32; 2]], t0: f32, t1: f32) -> f32 {
-    let n = pts.len().saturating_sub(1).max(1);
+pub(crate) fn sample_max(pts: &[[f32; 2]], t0: f32, t1: f32) -> f32 {
+    let n = pts.len().saturating_sub(1);
+    if n == 0 {
+        return pts.first().map_or(0.0, |p| p[1]);
+    }
     let i0 = (t0.clamp(0.0, 1.0) * n as f32) as usize;
-    let i1 = ((t1.clamp(0.0, 1.0) * n as f32) as usize + 1).min(pts.len() - 1);
+    let i1 = ((t1.clamp(0.0, 1.0) * n as f32) as usize + 1).min(n);
     pts.get(i0..=i1)
         .map_or(0.0, |s| s.iter().map(|p| p[1]).fold(0.0, f32::max))
 }

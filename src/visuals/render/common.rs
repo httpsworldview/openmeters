@@ -165,6 +165,32 @@ pub fn line_vertices(
     ]
 }
 
+#[inline]
+pub fn dot_vertices(
+    cx: f32,
+    cy: f32,
+    radius: f32,
+    color: [f32; 4],
+    clip: ClipTransform,
+    additive: bool,
+) -> [SdfVertex; 6] {
+    let outer = radius + 1.0;
+    let flag = if additive { 1.0 } else { 0.0 };
+    [
+        (-outer, -outer),
+        (-outer, outer),
+        (outer, -outer),
+        (outer, -outer),
+        (-outer, outer),
+        (outer, outer),
+    ]
+    .map(|(ox, oy)| SdfVertex {
+        position: clip.to_clip(cx + ox, cy + oy),
+        color,
+        params: [ox, oy, radius, flag],
+    })
+}
+
 pub fn build_aa_line_list(
     pts: &[(f32, f32)],
     stroke: f32,

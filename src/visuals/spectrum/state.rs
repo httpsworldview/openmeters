@@ -4,11 +4,11 @@
 use super::processor::{
     SpectrumConfig, SpectrumProcessor as CoreSpectrumProcessor, SpectrumSnapshot,
 };
-use super::render::{SpectrumParams, SpectrumPrimitive};
+use super::render::{MIN_BAR_COUNT, SpectrumParams, SpectrumPeakParams, SpectrumPrimitive};
 use crate::persistence::settings::{SpectrumDisplayMode, SpectrumSettings, SpectrumWeightingMode};
 use crate::util::audio::musical::NoteInfo;
 use crate::util::audio::{fmt_freq, lerp};
-use crate::util::color::{color_to_rgba, lerp_color, with_alpha};
+use crate::util::color::{color_to_rgba, with_alpha};
 use crate::vis_processor;
 use crate::visuals::palettes;
 use crate::visuals::spectrogram::processor::FrequencyScale;
@@ -25,7 +25,6 @@ const EPSILON: f32 = 1e-6;
 const GRID_LABEL_SIZE: f32 = 10.0;
 const GRID_LABEL_GAP: f32 = 6.0;
 
-// Process-wide max label extent, letting `draw_grid` skip per-label shaping.
 static GRID_LABEL_SLOT: LazyLock<Size> = LazyLock::new(|| {
     ["20.00Hz", "100.0Hz", "1.00kHz", "10.0kHz"]
         .iter()
@@ -76,8 +75,8 @@ impl Default for SpectrumStyle {
             min_frequency: 20.0,
             max_frequency: 20_000.0,
             resolution: 1024,
-            line_thickness: 0.5,
-            secondary_line_thickness: 0.5,
+            line_thickness: 1.0,
+            secondary_line_thickness: 0.75,
             smoothing_radius: defaults.smoothing_radius,
             smoothing_passes: defaults.smoothing_passes,
             highlight_threshold: defaults.highlight_threshold,
@@ -97,9 +96,9 @@ impl Default for SpectrumStyle {
 
 #[derive(Debug, Clone)]
 pub(crate) struct PeakLabel {
-    text: String,
-    x: f32,
-    y: f32,
+    text: [String; 2],
+    label_pos: [f32; 2],
+    marker_pos: [f32; 2],
     opacity: f32,
 }
 
@@ -118,8 +117,8 @@ impl SpectrumState {
     pub fn new() -> Self {
         Self {
             style: SpectrumStyle::default(),
-            weighted: Arc::from([]),
-            unweighted: Arc::from([]),
+            weighted: Arc::default(),
+            unweighted: Arc::default(),
             key: crate::visuals::next_key(),
             peak: None,
             effective_range: None,
@@ -150,19 +149,15 @@ impl SpectrumState {
     }
 
     pub fn apply_snapshot(&mut self, snap: SpectrumSnapshot) {
-        if snap.frequency_bins.is_empty()
-            || snap.magnitudes_db.is_empty()
-            || snap.frequency_bins.len() != snap.magnitudes_db.len()
+        let bins = snap.frequency_bins.len();
+        if bins == 0
+            || snap.magnitudes_db.len() != bins
+            || snap.magnitudes_unweighted_db.len() != bins
         {
-            self.effective_range = None;
-            self.fade_peak(None);
+            self.clear_visuals();
             return;
         }
-        let nyq = snap
-            .frequency_bins
-            .last()
-            .copied()
-            .unwrap_or(self.style.max_frequency);
+        let nyq = snap.frequency_bins[bins - 1];
         let (min_f, mut max_f) = (
             self.style.min_frequency.max(EPSILON),
             self.style.max_frequency.min(nyq),
@@ -171,15 +166,12 @@ impl SpectrumState {
             max_f = nyq.max(min_f * 1.02);
         }
         if max_f <= min_f {
-            self.effective_range = None;
-            self.fade_peak(None);
+            self.clear_visuals();
             return;
         }
 
-        let scale = Scale::new(min_f, max_f);
         let res = self.style.resolution.max(32);
-        let (mut w, mut u) = (Vec::new(), Vec::new());
-        build_points(&self.style, &mut w, &mut u, res, &scale, &snap);
+        let (mut w, mut u) = build_points(&self.style, res, min_f, max_f, &snap);
 
         if self.style.smoothing_radius > 0 && self.style.smoothing_passes > 0 {
             let (r, p) = (self.style.smoothing_radius, self.style.smoothing_passes);
@@ -193,41 +185,56 @@ impl SpectrumState {
             }
         }
 
-        self.weighted = Arc::from(w);
-        self.unweighted = Arc::from(u);
-        self.effective_range = Some((min_f, max_f));
-
+        let primary = match self.style.weighting_mode {
+            SpectrumWeightingMode::AWeighted => w.as_slice(),
+            SpectrumWeightingMode::Raw => u.as_slice(),
+        };
         let pk = self
             .style
             .show_peak_label
-            .then(|| self.build_peak(&snap, &scale))
+            .then(|| self.build_peak(primary, min_f, max_f))
             .flatten();
+
+        self.weighted = Arc::from(w);
+        self.unweighted = Arc::from(u);
+        self.effective_range = Some((min_f, max_f));
         self.fade_peak(pk);
     }
 
-    fn build_peak(&self, snap: &SpectrumSnapshot, sc: &Scale) -> Option<PeakLabel> {
-        let f = snap
-            .peak_frequency_hz
-            .filter(|&f| f.is_finite() && f > 0.0)?;
-        let mut x = sc.pos_of(self.style.frequency_scale, f);
-        if self.style.reverse_frequency {
-            x = 1.0 - x;
+    fn clear_visuals(&mut self) {
+        (self.weighted, self.unweighted) = (Arc::default(), Arc::default());
+        self.effective_range = None;
+        self.peak = None;
+    }
+
+    fn build_peak(&self, pts: &[[f32; 2]], min_f: f32, max_f: f32) -> Option<PeakLabel> {
+        let [x, y] = visible_peak(pts, &self.style).filter(|p| p[1] >= 0.08)?;
+        let t = if self.style.reverse_frequency {
+            1.0 - x
+        } else {
+            x
         }
-        let m = interp(&snap.frequency_bins, &snap.magnitudes_db, f);
-        let y = ((m - self.style.min_db) / (self.style.max_db - self.style.min_db).max(EPSILON))
-            .clamp(0.0, 1.0);
-        if y < 0.08 {
+        .clamp(0.0, 1.0);
+        let f = self.style.frequency_scale.freq_at(min_f, max_f, t);
+        if !f.is_finite() {
             return None;
         }
+        let pos = [x.clamp(0.0, 1.0), y.clamp(0.0, 1.0)];
+        let m = lerp(self.style.min_db, self.style.max_db, pos[1]);
+        let unit = match self.style.weighting_mode {
+            SpectrumWeightingMode::AWeighted => "dBFS(A)",
+            SpectrumWeightingMode::Raw => "dBFS",
+        };
+        let freq = fmt_freq(f);
         let text = NoteInfo::from_frequency(f).map_or_else(
-            || fmt_freq(f),
-            |ni| format!("{} | {}", fmt_freq(f), ni.fmt_note_cents()),
+            || [freq.clone(), format!("{:.1} {unit}", m)],
+            |ni| [ni.fmt_note_cents(), format!("{freq}   {:.1} {unit}", m)],
         );
         Some(PeakLabel {
             text,
-            x: x.clamp(0.0, 1.0),
-            y,
-            opacity: 0.0,
+            label_pos: pos,
+            marker_pos: pos,
+            opacity: 1.0,
         })
     }
 
@@ -235,8 +242,8 @@ impl SpectrumState {
         match (incoming, &mut self.peak) {
             (Some(new), Some(p)) => {
                 p.text = new.text;
-                p.x = 0.80 * p.x + 0.20 * new.x;
-                p.y = 0.80 * p.y + 0.20 * new.y;
+                p.label_pos = std::array::from_fn(|i| lerp(p.label_pos[i], new.label_pos[i], 0.20));
+                p.marker_pos = new.marker_pos;
                 p.opacity = (0.65 * p.opacity + 0.35).min(1.0);
             }
             (Some(new), None) => self.peak = Some(new),
@@ -254,7 +261,12 @@ impl SpectrumState {
         self.peak.as_ref().filter(|_| self.style.show_peak_label)
     }
 
-    fn visual_params(&self, bounds: Rectangle, theme: &iced::Theme) -> Option<SpectrumParams> {
+    fn visual_params(
+        &self,
+        bounds: Rectangle,
+        theme: &iced::Theme,
+        peak_layout: Option<PeakLayout>,
+    ) -> Option<SpectrumParams> {
         if self.weighted.len() < 2 {
             return None;
         }
@@ -264,19 +276,17 @@ impl SpectrumState {
             SpectrumWeightingMode::AWeighted => (&self.weighted, &self.unweighted),
             SpectrumWeightingMode::Raw => (&self.unweighted, &self.weighted),
         };
+        let peak = self.peak();
+        let accent = self.style.spectrum_palette[5];
 
         Some(SpectrumParams {
             bounds,
             normalized_points: Arc::clone(primary),
             secondary_points: Arc::clone(secondary),
             key: self.key,
-            line_color: color_to_rgba(lerp_color(
-                pal.primary.base.color,
-                pal.background.base.text,
-                0.35,
-            )),
+            line_color: color_to_rgba(with_alpha(pal.background.base.text, 0.92)),
             line_width: self.style.line_thickness,
-            secondary_line_color: color_to_rgba(with_alpha(pal.secondary.weak.text, 0.3)),
+            secondary_line_color: color_to_rgba(with_alpha(pal.secondary.weak.text, 0.32)),
             secondary_line_width: self.style.secondary_line_thickness,
             highlight_threshold: self.style.highlight_threshold,
             spectrum_palette: self.style.spectrum_palette.map(color_to_rgba),
@@ -284,6 +294,12 @@ impl SpectrumState {
             show_secondary_line: self.style.show_secondary_line,
             bar_count: self.style.bar_count,
             bar_gap: self.style.bar_gap,
+            peak: peak.map(|p| SpectrumPeakParams {
+                marker: p.marker_pos,
+                marker_color: color_to_rgba(with_alpha(accent, p.opacity * 0.95)),
+                leader_anchor: peak_layout.map(|l| point_to_normalized(bounds, l.leader_anchor)),
+                leader_color: color_to_rgba(with_alpha(accent, p.opacity * 0.32)),
+            }),
         })
     }
 }
@@ -325,26 +341,19 @@ impl<'a, M> Widget<M, iced::Theme, iced::Renderer> for Spectrum<'a> {
     ) {
         let b = lay.bounds();
         let state = self.0.borrow();
-        let Some(params) = state.visual_params(b, th) else {
-            r.fill_quad(
-                Quad {
-                    bounds: b,
-                    border: Default::default(),
-                    shadow: Default::default(),
-                    snap: true,
-                },
-                Background::Color(th.extended_palette().background.base.color),
-            );
+        let peak = state.peak();
+        let peak_layout = peak.and_then(|p| peak_label_layout(b, p));
+        let Some(params) = state.visual_params(b, th, peak_layout) else {
+            fill_rect(r, b, th.extended_palette().background.base.color);
             return;
         };
-        if state.style.show_grid
-            && let Some((min_f, max_f)) = state.effective_range
-        {
+        if let Some((min_f, max_f)) = state.effective_range.filter(|_| state.style.show_grid) {
             r.with_layer(b, |r| draw_grid(r, th, b, min_f, max_f, &state.style));
         }
         r.draw_primitive(b, SpectrumPrimitive::new(params));
-        if let Some(pk) = state.peak() {
-            r.with_layer(b, |r| draw_peak(r, th, b, pk));
+        if let Some((pk, layout)) = peak.zip(peak_layout) {
+            let accent = state.style.spectrum_palette[5];
+            r.with_layer(b, |r| draw_peak(r, th, pk, layout, accent));
         }
     }
 }
@@ -353,71 +362,65 @@ pub(crate) fn widget<'a, M: 'a>(state: &'a RefCell<SpectrumState>) -> Element<'a
     Element::new(Spectrum::new(state))
 }
 
-// --- Helpers ---
-
-#[derive(Clone, Copy)]
-struct Scale {
-    min: f32,
-    max: f32,
-}
-
-impl Scale {
-    fn new(min: f32, max: f32) -> Self {
-        Self { min, max }
-    }
-    fn freq_at(&self, s: FrequencyScale, t: f32) -> f32 {
-        s.freq_at(self.min, self.max, t)
-    }
-    fn pos_of(&self, s: FrequencyScale, f: f32) -> f32 {
-        s.pos_of(self.min, self.max, f).clamp(0.0, 1.0)
-    }
-}
-
 fn interp(bins: &[f32], mags: &[f32], t: f32) -> f32 {
-    if bins.is_empty() || t <= bins[0] {
+    let i = bins.partition_point(|&f| f < t);
+    if i == 0 {
         return mags.first().copied().unwrap_or(0.0);
     }
-    if bins.last().is_some_and(|&last| t >= last) {
+    if i >= bins.len() {
         return mags.last().copied().unwrap_or(0.0);
     }
-    match bins.binary_search_by(|p| p.partial_cmp(&t).unwrap_or(std::cmp::Ordering::Less)) {
-        Ok(i) => mags.get(i).copied().unwrap_or(0.0),
-        Err(i) => {
-            let (lo, hi) = (i.saturating_sub(1), i.min(bins.len() - 1));
-            lerp(
-                mags.get(lo).copied().unwrap_or(0.0),
-                mags.get(hi).copied().unwrap_or(0.0),
-                (t - bins[lo]) / (bins[hi] - bins[lo]).max(EPSILON),
-            )
+    lerp(
+        mags.get(i - 1).copied().unwrap_or(0.0),
+        mags.get(i).copied().unwrap_or(0.0),
+        (t - bins[i - 1]) / (bins[i] - bins[i - 1]).max(EPSILON),
+    )
+}
+
+fn visible_peak(pts: &[[f32; 2]], style: &SpectrumStyle) -> Option<[f32; 2]> {
+    match style.display_mode {
+        SpectrumDisplayMode::Line => max_finite_point(pts.iter().copied()),
+        SpectrumDisplayMode::Bar => {
+            let bars = style.bar_count.max(MIN_BAR_COUNT);
+            max_finite_point((0..bars).map(|i| {
+                let t0 = i as f32 / bars as f32;
+                let t1 = (i + 1) as f32 / bars as f32;
+                [(t0 + t1) * 0.5, super::render::sample_max(pts, t0, t1)]
+            }))
         }
     }
 }
 
+fn max_finite_point(points: impl Iterator<Item = [f32; 2]>) -> Option<[f32; 2]> {
+    points
+        .filter(|p| p[0].is_finite() && p[1].is_finite())
+        .max_by(|a, b| a[1].total_cmp(&b[1]))
+}
+
 fn build_points(
     style: &SpectrumStyle,
-    w: &mut Vec<[f32; 2]>,
-    u: &mut Vec<[f32; 2]>,
     res: usize,
-    sc: &Scale,
+    min_f: f32,
+    max_f: f32,
     snap: &SpectrumSnapshot,
-) {
-    w.clear();
-    u.clear();
-    w.reserve(res);
-    u.reserve(res);
+) -> (Vec<[f32; 2]>, Vec<[f32; 2]>) {
+    let (bins, db, raw) = (
+        snap.frequency_bins.as_slice(),
+        snap.magnitudes_db.as_slice(),
+        snap.magnitudes_unweighted_db.as_slice(),
+    );
     let dr = (style.max_db - style.min_db).max(EPSILON);
-    for i in 0..res {
-        let t = if res > 1 {
-            i as f32 / (res - 1) as f32
-        } else {
-            0.0
-        };
-        let f = sc.freq_at(style.frequency_scale, t);
-        let mw = interp(&snap.frequency_bins, &snap.magnitudes_db, f);
-        let mu = interp(&snap.frequency_bins, &snap.magnitudes_unweighted_db, f);
-        w.push([t, ((mw - style.min_db) / dr).clamp(0.0, 1.0)]);
-        u.push([t, ((mu - style.min_db) / dr).clamp(0.0, 1.0)]);
-    }
+    let denom = res.saturating_sub(1).max(1) as f32;
+    let y = |m: f32| ((m - style.min_db) / dr).clamp(0.0, 1.0);
+    (0..res)
+        .map(|i| {
+            let t = i as f32 / denom;
+            let f = style.frequency_scale.freq_at(min_f, max_f, t);
+            let mw = y(interp(bins, db, f));
+            let mu = y(interp(bins, raw, f));
+            ([t, mw], [t, mu])
+        })
+        .unzip()
 }
 
 fn smooth(pts: &mut [[f32; 2]], r: usize, passes: usize, scratch: &mut Vec<f32>) {
@@ -443,14 +446,21 @@ fn smooth(pts: &mut [[f32; 2]], r: usize, passes: usize, scratch: &mut Vec<f32>)
 }
 
 fn reindex(pts: &mut [[f32; 2]]) {
-    let n = pts.len();
+    let denom = pts.len().saturating_sub(1).max(1) as f32;
     for (i, p) in pts.iter_mut().enumerate() {
-        p[0] = if n > 1 {
-            i as f32 / (n - 1) as f32
-        } else {
-            0.0
-        };
+        p[0] = i as f32 / denom;
     }
+}
+
+fn fill_rect(r: &mut iced::Renderer, bounds: Rectangle, color: Color) {
+    r.fill_quad(
+        Quad {
+            bounds,
+            snap: true,
+            ..Default::default()
+        },
+        Background::Color(color),
+    );
 }
 
 fn draw_grid(
@@ -470,16 +480,13 @@ fn draw_grid(
         return;
     }
 
-    let scale = Scale::new(min_f, max_f);
     let reverse = style.reverse_frequency;
     let pal = th.extended_palette();
     let txt = pal.background.base.text;
     let (major_lc, major_tc) = (with_alpha(txt, 0.25), with_alpha(txt, 0.75));
     let (minor_lc, minor_tc) = (with_alpha(txt, 0.10), with_alpha(txt, 0.20));
 
-    // Walk decades in whichever direction produces ascending screen-x, so the
-    // collision check in pass 2 is a single forward sweep.
-    let exp_of = |di: i32| {
+    let exp_of = |di| {
         if reverse {
             end_exp - di
         } else {
@@ -490,24 +497,18 @@ fn draw_grid(
         if !(min_f..=max_f).contains(&f) {
             return None;
         }
-        let pos = scale.pos_of(style.frequency_scale, f);
+        let pos = style
+            .frequency_scale
+            .pos_of(min_f, max_f, f)
+            .clamp(0.0, 1.0);
         pos.is_finite()
             .then_some(b.x + b.width * if reverse { 1.0 - pos } else { pos })
     };
     let vline = |r: &mut iced::Renderer, x: f32, top: f32, h: f32, c: Color| {
-        let sx = (x - 0.5).clamp(b.x, b.x + b.width - 1.0);
-        r.fill_quad(
-            Quad {
-                bounds: Rectangle::new(Point::new(sx, top), Size::new(1.0, h)),
-                border: Default::default(),
-                shadow: Default::default(),
-                snap: true,
-            },
-            Background::Color(c),
-        );
+        let sx = (x - 0.5).clamp(b.x, (b.x + b.width - 1.0).max(b.x));
+        fill_rect(r, Rectangle::new(Point::new(sx, top), Size::new(1.0, h)), c);
     };
 
-    // Pass 1: minor lines.
     for di in 0..=(end_exp - start_exp) {
         let base = 10f32.powi(exp_of(di));
         for &mult in &[3u32, 4, 6, 7, 8, 9] {
@@ -517,8 +518,6 @@ fn draw_grid(
         }
     }
 
-    // Pass 2: labeled ticks. Lines always span the full height so culled
-    // labels still leave their tick visible.
     let slot = *GRID_LABEL_SLOT;
     let ty = b.y + GRID_LABEL_GAP;
     let clamp_lo = b.x + GRID_LABEL_GAP;
@@ -537,7 +536,6 @@ fn draw_grid(
                 (minor_lc, minor_tc)
             };
 
-            // Line draws unconditionally; collision only gates the text.
             vline(r, x, b.y, b.height, lc);
 
             let tx = (x - slot.width * 0.5).clamp(clamp_lo, clamp_hi);
@@ -546,8 +544,6 @@ fn draw_grid(
             }
             last_right = tx + slot.width + GRID_LABEL_GAP;
 
-            // `make_text` hardcodes Left alignment; inline the struct to get
-            // Center so short labels still sit exactly on the tick.
             r.fill_text(
                 iced::advanced::text::Text {
                     content: fmt_freq(f),
@@ -568,45 +564,75 @@ fn draw_grid(
     }
 }
 
-fn draw_peak(r: &mut iced::Renderer, th: &iced::Theme, b: Rectangle, pk: &PeakLabel) {
+#[derive(Clone, Copy)]
+struct PeakLayout {
+    rect: Rectangle,
+    title: Size,
+    detail: Size,
+    text: Point,
+    leader_anchor: Point,
+}
+
+fn point_to_normalized(b: Rectangle, p: Point) -> [f32; 2] {
+    [(p.x - b.x) / b.width, 1.0 - (p.y - b.y) / b.height]
+}
+
+fn peak_label_layout(b: Rectangle, pk: &PeakLabel) -> Option<PeakLayout> {
     if pk.opacity < 0.01 || b.width < 8.0 || b.height < 8.0 {
-        return;
+        return None;
     }
-    let sz = crate::visuals::measure_text(&pk.text, 12.0);
-    if sz.width <= 0.0 || sz.height <= 0.0 {
-        return;
-    }
-    let (ax, ay) = (
-        b.x + b.width * pk.x.clamp(0.0, 1.0),
-        b.y + b.height * (1.0 - pk.y.clamp(0.0, 1.0)),
+    let title = crate::visuals::measure_text(&pk.text[0], 12.0);
+    let detail = crate::visuals::measure_text(&pk.text[1], 10.0);
+    let [px, py] = pk.label_pos;
+    let p = Point::new(b.x + b.width * px, b.y + b.height * (1.0 - py));
+    let (w, h) = (
+        title.width.max(detail.width) + 14.0,
+        title.height + detail.height + 13.0,
     );
-    let (box_w, box_h) = (sz.width + 8.0, sz.height + 8.0);
-    let flip_right = ax + box_w > b.x + b.width;
-    let box_x = if flip_right { ax - box_w } else { ax };
-    let box_y = ay - box_h;
-    let box_x = box_x.clamp(b.x, (b.x + b.width - box_w).max(b.x));
-    let box_y = box_y.clamp(b.y, (b.y + b.height - box_h).max(b.y));
-    let (tx, ty) = (box_x + 4.0, box_y + 4.0);
-    let bg = Rectangle::new(Point::new(box_x, box_y), Size::new(box_w, box_h));
-    let bdr = iced::Border {
-        color: with_alpha(crate::ui::theme::BORDER_SUBTLE, pk.opacity),
-        width: 1.0,
-        radius: 0.0.into(),
-    };
+    let right = p.x + w + 8.0 <= b.x + b.width;
+    let x = if right { p.x + 8.0 } else { p.x - w - 8.0 }.clamp(b.x, (b.x + b.width - w).max(b.x));
+    let y = (p.y - h - 8.0).clamp(b.y, (b.y + b.height - h).max(b.y));
+    Some(PeakLayout {
+        rect: Rectangle::new(Point::new(x, y), Size::new(w, h)),
+        title,
+        detail,
+        text: Point::new(x + 7.0, y + 6.0),
+        leader_anchor: Point::new(if right { x } else { x + w }, y + h),
+    })
+}
+
+fn draw_peak(
+    r: &mut iced::Renderer,
+    th: &iced::Theme,
+    pk: &PeakLabel,
+    layout: PeakLayout,
+    accent: Color,
+) {
     let pal = th.extended_palette();
     r.fill_quad(
         Quad {
-            bounds: bg,
-            border: bdr,
+            bounds: layout.rect,
+            border: iced::Border {
+                color: with_alpha(accent, 0.50 * pk.opacity),
+                width: 1.0,
+                radius: 2.0.into(),
+            },
             shadow: Default::default(),
             snap: true,
         },
-        Background::Color(with_alpha(pal.background.strong.color, pk.opacity)),
+        Background::Color(with_alpha(pal.background.strong.color, 0.90 * pk.opacity)),
     );
     r.fill_text(
-        crate::visuals::make_text(&pk.text, 12.0, sz),
-        Point::new(tx, ty),
+        crate::visuals::make_text(&pk.text[0], 12.0, layout.title),
+        layout.text,
         with_alpha(pal.background.base.text, pk.opacity),
-        Rectangle::new(Point::new(tx, ty), sz),
+        Rectangle::new(layout.text, layout.title),
+    );
+    let pos = Point::new(layout.text.x, layout.text.y + layout.title.height + 2.0);
+    r.fill_text(
+        crate::visuals::make_text(&pk.text[1], 10.0, layout.detail),
+        pos,
+        with_alpha(pal.secondary.weak.text, 0.84 * pk.opacity),
+        Rectangle::new(pos, layout.detail),
     );
 }

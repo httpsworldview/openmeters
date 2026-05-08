@@ -239,8 +239,8 @@ visual_settings!(SpectrumSettings from SpectrumConfig {
     weighting_mode: SpectrumWeightingMode = SpectrumWeightingMode::default(),
     show_secondary_line: bool = true,
     bar_count: usize = 64,
-    bar_gap: f32 = 0.2,
-    highlight_threshold: f32 = 0.45,
+    bar_gap: f32 = 0.16,
+    highlight_threshold: f32 = 0.52,
 });
 
 visual_settings!(SpectrogramSettings from SpectrogramConfig {
