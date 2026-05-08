@@ -42,7 +42,7 @@ macro_rules! visuals {
     (@apply_palette $st:expr, $settings:ident, $default:expr) => {
         $st.set_palette(&resolve_palette(&$settings.palette, $default))
     };
-    ($($variant:ident($name:expr, $width:expr, $height:expr, $min_w:expr $(, max=$max_w:expr)?) =>
+    ($($variant:ident($name:expr, $width:expr, $height:expr, $min_w:expr) =>
        $module:ident :: $processor:ident, $state:ident;
        $settings_ty:ty, $default_palette:expr;
        $(pre_ingest($pip:ident, $pis:ident) $pre_ingest_body:expr;)?
@@ -68,7 +68,7 @@ macro_rules! visuals {
             kind: VisualKind::$variant,
             meta: VisualMetadata {
                 display_name: $name, preferred_width: $width, preferred_height: $height,
-                min_width: $min_w, $( max_width: $max_w, )? ..DEFAULT_METADATA
+                min_width: $min_w, ..DEFAULT_METADATA
             },
             build: || Box::new(Visual {
                 processor: $module::$processor::new(DEFAULT_SAMPLE_RATE),
@@ -106,7 +106,7 @@ macro_rules! visuals {
 }
 
 visuals! {
-    Loudness("Loudness", 140.0, 300.0, 80.0, max=140.0) =>
+    Loudness("Loudness", 140.0, 300.0, 80.0) =>
         loudness::LoudnessProcessor, LoudnessState;
         settings_cfg::LoudnessSettings, &palettes::loudness::COLORS;
         apply(_p, s, set) { let mut st = s.borrow_mut();
@@ -229,7 +229,6 @@ pub struct VisualMetadata {
     pub fill_horizontal: bool,
     pub fill_vertical: bool,
     pub min_width: f32,
-    pub max_width: f32,
 }
 
 const DEFAULT_METADATA: VisualMetadata = VisualMetadata {
@@ -239,7 +238,6 @@ const DEFAULT_METADATA: VisualMetadata = VisualMetadata {
     fill_horizontal: true,
     fill_vertical: true,
     min_width: 100.0,
-    max_width: f32::INFINITY,
 };
 
 impl VisualMetadata {

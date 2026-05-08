@@ -17,6 +17,7 @@ use std::collections::HashMap;
 #[derive(Debug, Clone)]
 pub enum VisualsMessage {
     PaneDragged(pane_grid::DragEvent),
+    PaneResized(pane_grid::ResizeWidths),
     PaneContextRequested(Pane),
     PaneHovered(Option<Pane>),
     SettingsRequested {
@@ -32,23 +33,22 @@ struct VisualPane {
     kind: VisualKind,
     metadata: VisualMetadata,
     content: VisualContent,
+    width_basis: f32,
 }
 
 impl VisualPane {
-    fn from_snapshot(s: &VisualSlotSnapshot) -> Self {
+    fn from_snapshot(s: &VisualSlotSnapshot, width_basis: f32) -> Self {
         Self {
             id: s.id,
             kind: s.kind,
             metadata: s.metadata,
             content: s.content.clone(),
+            width_basis,
         }
     }
     fn view(&self) -> PaneContent<'_, VisualsMessage> {
-        PaneContent::new(self.content.render(self.metadata)).with_width_hint(
-            self.metadata.min_width,
-            self.metadata.preferred_width,
-            self.metadata.max_width,
-        )
+        PaneContent::new(self.content.render(self.metadata))
+            .with_width_basis(self.metadata.min_width, self.width_basis)
     }
 }
 
@@ -76,6 +76,12 @@ impl VisualsPage {
 
     pub fn update(&mut self, message: VisualsMessage) -> Task<VisualsMessage> {
         match message {
+            VisualsMessage::PaneResized(widths) => {
+                let bases = self.apply_resize_width_basis(&widths);
+                if !bases.is_empty() {
+                    self.settings.update(|s| s.set_visual_width_basis(bases));
+                }
+            }
             VisualsMessage::PaneDragged(pane_grid::DragEvent::Moved { pane, target }) => {
                 if let Some(panes) = self.panes.as_mut()
                     && panes.move_to(pane, target)
@@ -127,6 +133,7 @@ impl VisualsPage {
         let mut grid = pane_grid::PaneGrid::new(panes, |_, p| p.view())
             .width(Length::Fill)
             .height(Length::Fill)
+            .on_resize(VisualsMessage::PaneResized)
             .on_context_request(VisualsMessage::PaneContextRequested)
             .on_hover(VisualsMessage::PaneHovered);
 
@@ -167,7 +174,7 @@ impl VisualsPage {
         }
         if self.panes.is_none() || new_order != self.order {
             self.order = new_order;
-            self.panes = Self::build_panes(&slots);
+            self.panes = self.build_panes(&slots);
             return;
         }
         if let Some(panes) = self.panes.as_mut() {
@@ -181,14 +188,50 @@ impl VisualsPage {
         }
     }
 
-    fn build_panes(slots: &[&VisualSlotSnapshot]) -> Option<pane_grid::State<VisualPane>> {
+    fn apply_resize_width_basis(&mut self, widths: &[(Pane, f32)]) -> Vec<(VisualKind, f32)> {
+        let Some(panes) = self.panes.as_mut() else {
+            return Vec::new();
+        };
+        widths
+            .iter()
+            .filter_map(|&(pane, basis)| {
+                if !basis.is_finite() || basis <= 0.0 {
+                    return None;
+                }
+                let visual = panes.get_mut(pane)?;
+                visual.width_basis = basis;
+                Some((visual.kind, basis))
+            })
+            .collect()
+    }
+
+    fn build_panes(&self, slots: &[&VisualSlotSnapshot]) -> Option<pane_grid::State<VisualPane>> {
+        let settings = self.settings.borrow();
+        let saved_width_basis = &settings.settings().visuals.width_basis;
+        let visual_pane = |slot: &VisualSlotSnapshot| {
+            VisualPane::from_snapshot(
+                slot,
+                Self::width_basis_from_settings(slot, saved_width_basis),
+            )
+        };
         let (first, rest) = slots.split_first()?;
-        let (mut state, mut last) = pane_grid::State::new(VisualPane::from_snapshot(first));
-        for s in rest {
-            if let Some(p) = state.insert_after(last, VisualPane::from_snapshot(s)) {
+        let (mut state, mut last) = pane_grid::State::new(visual_pane(first));
+        for slot in rest {
+            if let Some(p) = state.insert_after(last, visual_pane(slot)) {
                 last = p;
             }
         }
         Some(state)
+    }
+
+    fn width_basis_from_settings(
+        slot: &VisualSlotSnapshot,
+        saved_width_basis: &HashMap<VisualKind, f32>,
+    ) -> f32 {
+        saved_width_basis
+            .get(&slot.kind)
+            .copied()
+            .filter(|basis| basis.is_finite() && *basis > 0.0)
+            .unwrap_or(slot.metadata.preferred_width)
     }
 }

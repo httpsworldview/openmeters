@@ -93,6 +93,13 @@ impl SettingsManager {
     pub fn set_visual_order(&mut self, order: impl IntoIterator<Item = VisualKind>) {
         self.data.visuals.order = order.into_iter().collect();
     }
+    pub fn set_visual_width_basis(&mut self, bases: impl IntoIterator<Item = (VisualKind, f32)>) {
+        self.data.visuals.width_basis.extend(
+            bases
+                .into_iter()
+                .filter(|(_, basis)| basis.is_finite() && *basis > 0.0),
+        );
+    }
     pub fn set_background_color(&mut self, c: Option<Color>) {
         self.data.background_color = c.map(Into::into);
     }

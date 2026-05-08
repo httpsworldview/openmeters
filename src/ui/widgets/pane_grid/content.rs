@@ -10,8 +10,7 @@ where
 {
     body: Element<'a, Message, Theme, Renderer>,
     min_width: f32,
-    preferred_width: f32,
-    max_width: f32,
+    basis_width: f32,
 }
 
 impl<'a, Message, Theme, Renderer> Content<'a, Message, Theme, Renderer>
@@ -22,20 +21,18 @@ where
         Self {
             body: body.into(),
             min_width: 0.0,
-            preferred_width: 0.0,
-            max_width: f32::INFINITY,
+            basis_width: 0.0,
         }
     }
 
-    pub fn with_width_hint(mut self, min: f32, preferred: f32, max: f32) -> Self {
+    pub fn with_width_basis(mut self, min: f32, basis: f32) -> Self {
         self.min_width = min;
-        self.preferred_width = preferred;
-        self.max_width = max;
+        self.basis_width = basis;
         self
     }
 
-    pub(super) fn width_hint(&self) -> (f32, f32, f32) {
-        (self.min_width, self.preferred_width, self.max_width)
+    pub(super) fn width_spec(&self) -> (f32, f32) {
+        (self.min_width, self.basis_width)
     }
 
     pub(super) fn state(&self) -> Tree {

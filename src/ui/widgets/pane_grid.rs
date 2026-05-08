@@ -16,12 +16,26 @@ use iced::{Background, Element, Event, Length, Point, Rectangle, Size};
 
 use crate::util::color::with_alpha;
 
+const DIVIDER_HIT_WIDTH: f32 = 8.0;
+const EPS: f32 = 0.001;
+
+struct ResizeState {
+    divider: usize,
+    origin_x: f32,
+    start: Vec<f32>,
+    min: Vec<f32>,
+    current: Vec<f32>,
+}
+
 #[derive(Default)]
 struct Interaction {
     dragging: Option<(Pane, Point)>,
+    resizing: Option<ResizeState>,
     last_x: Option<f32>,
     cursor_over: Option<Pane>,
 }
+
+pub type ResizeWidths = Vec<(Pane, f32)>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DragEvent {
@@ -42,6 +56,7 @@ where
     width: Length,
     height: Length,
     on_drag: Option<Box<dyn Fn(DragEvent) -> Message + 'a>>,
+    on_resize: Option<Box<dyn Fn(ResizeWidths) -> Message + 'a>>,
     on_context: Option<Box<dyn Fn(Pane) -> Message + 'a>>,
     on_hover: Option<Box<dyn Fn(Option<Pane>) -> Message + 'a>>,
 }
@@ -66,6 +81,7 @@ where
             width: Length::Fill,
             height: Length::Fill,
             on_drag: None,
+            on_resize: None,
             on_context: None,
             on_hover: None,
         }
@@ -86,6 +102,11 @@ where
         self
     }
 
+    pub fn on_resize(mut self, callback: impl Fn(ResizeWidths) -> Message + 'a) -> Self {
+        self.on_resize = Some(Box::new(callback));
+        self
+    }
+
     pub fn on_context_request(mut self, callback: impl Fn(Pane) -> Message + 'a) -> Self {
         self.on_context = Some(Box::new(callback));
         self
@@ -102,6 +123,36 @@ where
             .zip(layout.children())
             .find(|(_, child)| child.bounds().contains(cursor))
             .map(|((pane, _), _)| *pane)
+    }
+
+    fn divider_at(&self, layout: Layout<'_>, cursor: Point) -> Option<usize> {
+        if self.entries.len() < 2 || !layout.bounds().contains(cursor) {
+            return None;
+        }
+        let half = DIVIDER_HIT_WIDTH / 2.0;
+        layout
+            .children()
+            .take(self.entries.len() - 1)
+            .enumerate()
+            .find_map(|(i, child)| {
+                let x = child.bounds().x + child.bounds().width;
+                (cursor.x >= x - half && cursor.x <= x + half).then_some(i)
+            })
+    }
+
+    fn width_specs(&self) -> Vec<(f32, f32)> {
+        self.entries
+            .iter()
+            .map(|(_, content)| content.width_spec())
+            .collect()
+    }
+
+    fn pair_widths(&self, widths: &[f32]) -> Vec<(Pane, f32)> {
+        self.entries
+            .iter()
+            .map(|(pane, _)| *pane)
+            .zip(widths.iter().copied())
+            .collect()
     }
 }
 
@@ -156,25 +207,16 @@ where
         }
 
         let available_width = size.width.max(0.0);
-
-        let mut widths: Vec<f32> = Vec::with_capacity(count);
-        let mut min_widths: Vec<f32> = Vec::with_capacity(count);
-        let mut max_widths: Vec<f32> = Vec::with_capacity(count);
-
-        for (_, content) in &self.entries {
-            let (min, preferred, max) = content.width_hint();
-            min_widths.push(min.max(0.0));
-            widths.push(preferred.max(min));
-            max_widths.push(max.max(min));
-        }
-
-        let total_width: f32 = widths.iter().sum();
-
-        if total_width > available_width {
-            distribute_deficit(&mut widths, &min_widths, total_width - available_width);
-        } else if total_width < available_width {
-            distribute_surplus(&mut widths, &max_widths, available_width - total_width);
-        }
+        let interaction = tree.state.downcast_ref::<Interaction>();
+        let widths = interaction
+            .resizing
+            .as_ref()
+            .filter(|r| {
+                r.current.len() == count
+                    && (r.current.iter().sum::<f32>() - available_width).abs() < 0.5
+            })
+            .map(|r| fit_sum(r.current.clone(), available_width))
+            .unwrap_or_else(|| solve_widths(&self.width_specs(), available_width));
 
         let mut position = 0.0;
         let mut children = Vec::with_capacity(count);
@@ -230,7 +272,11 @@ where
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
-        let interaction = tree.state.downcast_mut::<Interaction>();
+        if self.update_resize(tree, event, shell)
+            || self.update_interaction(tree, event, layout, cursor, shell)
+        {
+            return;
+        }
 
         for (((_, content), child), child_layout) in self
             .entries
@@ -249,100 +295,18 @@ where
                 viewport,
             );
         }
+        if shell.is_event_captured() {
+            return;
+        }
 
-        if let Event::Mouse(mouse_event) = event {
-            use mouse::Button;
-
-            match mouse_event {
-                mouse::Event::ButtonPressed(Button::Left) if self.on_drag.is_some() => {
-                    if let Some(on_drag) = &self.on_drag
-                        && let Some(cursor_position) = cursor.position()
-                        && let Some(pane) = self.pane_at(layout, cursor_position)
-                    {
-                        interaction.dragging = Some((pane, cursor_position));
-                        interaction.last_x = Some(cursor_position.x);
-                        shell.publish(on_drag(DragEvent::Picked { pane }));
-                        shell.capture_event();
-                    }
+        if let Event::Mouse(mouse::Event::CursorMoved { position }) = event {
+            let pane = self.pane_at(layout, *position);
+            let interaction = tree.state.downcast_mut::<Interaction>();
+            if interaction.cursor_over != pane {
+                interaction.cursor_over = pane;
+                if let Some(on_hover) = &self.on_hover {
+                    shell.publish(on_hover(pane));
                 }
-                mouse::Event::ButtonPressed(Button::Right) => {
-                    if let Some(on_context) = &self.on_context
-                        && let Some(cursor_position) = cursor.position()
-                        && let Some(pane) = self.pane_at(layout, cursor_position)
-                    {
-                        shell.publish(on_context(pane));
-                        shell.capture_event();
-                    }
-                }
-                mouse::Event::CursorMoved { position } => {
-                    let pane_under_cursor = self.pane_at(layout, *position);
-
-                    if interaction.cursor_over != pane_under_cursor {
-                        interaction.cursor_over = pane_under_cursor;
-                        if let Some(on_hover) = &self.on_hover {
-                            shell.publish(on_hover(pane_under_cursor));
-                        }
-                    }
-
-                    if let Some((pane, origin)) = interaction.dragging {
-                        const DRAG_DEADBAND: f32 = 5.0;
-                        if position.distance(origin) > DRAG_DEADBAND {
-                            let last_x = interaction.last_x.unwrap_or(position.x);
-                            let dragged_idx = self.entries.iter().position(|(p, _)| *p == pane);
-
-                            if let Some(idx) = dragged_idx {
-                                let neighbor_idx = if position.x > last_x {
-                                    (idx + 1 < self.entries.len()).then_some(idx + 1)
-                                } else if position.x < last_x {
-                                    idx.checked_sub(1)
-                                } else {
-                                    None
-                                };
-
-                                if let Some(n_idx) = neighbor_idx
-                                    && let Some(child_layout) = layout.children().nth(n_idx)
-                                {
-                                    let n_bounds = child_layout.bounds();
-                                    let n_center = n_bounds.x + n_bounds.width / 2.0;
-                                    let crossed = (n_idx > idx && position.x > n_center)
-                                        || (n_idx < idx && position.x < n_center);
-
-                                    if crossed && let Some(on_drag) = &self.on_drag {
-                                        let target = self.entries[n_idx].0;
-                                        shell.publish(on_drag(DragEvent::Moved { pane, target }));
-                                    }
-                                }
-                            }
-                        }
-                        interaction.last_x = Some(position.x);
-                        shell.capture_event();
-                    }
-                }
-                mouse::Event::ButtonReleased(Button::Left) => {
-                    if let Some((pane, _)) = interaction.dragging.take() {
-                        interaction.last_x = None;
-                        if let Some(on_drag) = &self.on_drag {
-                            shell.publish(on_drag(DragEvent::Dropped { pane }));
-                        }
-                        shell.capture_event();
-                    }
-                }
-                mouse::Event::CursorLeft => {
-                    if let Some((pane, _)) = interaction.dragging.take()
-                        && let Some(on_drag) = &self.on_drag
-                    {
-                        shell.publish(on_drag(DragEvent::Canceled { pane }));
-                    }
-
-                    interaction.last_x = None;
-                    if interaction.cursor_over.is_some() {
-                        interaction.cursor_over = None;
-                        if let Some(on_hover) = &self.on_hover {
-                            shell.publish(on_hover(None));
-                        }
-                    }
-                }
-                _ => {}
             }
         }
     }
@@ -359,6 +323,15 @@ where
 
         if interaction.dragging.is_some() {
             return mouse::Interaction::Grabbing;
+        }
+        if interaction.resizing.is_some()
+            || (self.on_resize.is_some()
+                && cursor
+                    .position()
+                    .and_then(|p| self.divider_at(layout, p))
+                    .is_some())
+        {
+            return mouse::Interaction::ResizingHorizontally;
         }
 
         self.entries
@@ -382,23 +355,25 @@ where
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
-        let dragging = tree.state.downcast_ref::<Interaction>().dragging;
+        let interaction = tree.state.downcast_ref::<Interaction>();
         for (((pane, content), child), child_layout) in self
             .entries
             .iter()
             .zip(&tree.children)
             .zip(layout.children())
         {
-            content.draw(
-                child,
-                renderer,
-                theme,
-                defaults,
-                child_layout,
-                cursor,
-                viewport,
-            );
-            if dragging.is_some_and(|(p, _)| p == *pane) {
+            renderer.with_layer(child_layout.bounds(), |renderer| {
+                content.draw(
+                    child,
+                    renderer,
+                    theme,
+                    defaults,
+                    child_layout,
+                    cursor,
+                    viewport,
+                );
+            });
+            if interaction.dragging.is_some_and(|(p, _)| p == *pane) {
                 let accent = crate::ui::theme::accent_primary();
                 renderer.fill_quad(
                     Quad {
@@ -415,77 +390,326 @@ where
                 );
             }
         }
+        if let Some(r) = &interaction.resizing
+            && let Some(child) = layout.children().nth(r.divider)
+        {
+            let b = layout.bounds();
+            renderer.fill_quad(
+                Quad {
+                    bounds: Rectangle::new(
+                        Point::new(child.bounds().x + child.bounds().width - 1.0, b.y),
+                        Size::new(2.0, b.height),
+                    ),
+                    border: Default::default(),
+                    shadow: Default::default(),
+                    snap: true,
+                },
+                Background::Color(with_alpha(crate::ui::theme::accent_primary(), 0.75)),
+            );
+        }
     }
 }
 
-fn distribute_proportionally(
-    widths: &mut [f32],
-    entries: &mut [(usize, f32)],
-    target: f32,
-    sign: f32,
-) {
-    loop {
-        let delta = (target - widths.iter().sum::<f32>()) * sign;
-        if delta <= f32::EPSILON {
-            break;
-        }
-        let remaining: f32 = entries.iter().map(|(_, c)| *c).sum();
-        if remaining <= f32::EPSILON {
-            break;
-        }
-        for (i, capacity) in entries.iter_mut() {
-            if *capacity <= f32::EPSILON {
-                continue;
+impl<'a, Message, Theme, Renderer> PaneGrid<'a, Message, Theme, Renderer>
+where
+    Message: 'a,
+    Theme: 'a,
+    Renderer: core::Renderer,
+{
+    fn update_interaction(
+        &self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        shell: &mut Shell<'_, Message>,
+    ) -> bool {
+        let Event::Mouse(mouse_event) = event else {
+            return false;
+        };
+        use mouse::Button;
+
+        if let mouse::Event::CursorLeft = mouse_event {
+            let interaction = tree.state.downcast_mut::<Interaction>();
+            let dragging = interaction.dragging.take();
+            interaction.last_x = None;
+            if interaction.cursor_over.take().is_some()
+                && let Some(on_hover) = &self.on_hover
+            {
+                shell.publish(on_hover(None));
             }
-            let portion = (delta * (*capacity / remaining)).min(*capacity);
-            widths[*i] += sign * portion;
-            *capacity -= portion;
+            if let Some((pane, _)) = dragging {
+                if let Some(on_drag) = &self.on_drag {
+                    shell.publish(on_drag(DragEvent::Canceled { pane }));
+                }
+                shell.capture_event();
+                return true;
+            }
+            return false;
         }
+
+        let interaction = tree.state.downcast_ref::<Interaction>();
+        if let Some((pane, origin)) = interaction.dragging {
+            match mouse_event {
+                mouse::Event::CursorMoved { position } => {
+                    const DRAG_DEADBAND: f32 = 5.0;
+                    let last_x = interaction.last_x.unwrap_or(position.x);
+                    if position.distance(origin) > DRAG_DEADBAND
+                        && let Some(idx) = self.entries.iter().position(|(p, _)| *p == pane)
+                    {
+                        let neighbor = if position.x > last_x {
+                            (idx + 1 < self.entries.len()).then_some(idx + 1)
+                        } else if position.x < last_x {
+                            idx.checked_sub(1)
+                        } else {
+                            None
+                        };
+                        if let Some(n) =
+                            neighbor.and_then(|n| layout.children().nth(n).map(|l| (n, l)))
+                        {
+                            let b = n.1.bounds();
+                            let crossed = (n.0 > idx && position.x > b.x + b.width / 2.0)
+                                || (n.0 < idx && position.x < b.x + b.width / 2.0);
+                            if crossed && let Some(on_drag) = &self.on_drag {
+                                shell.publish(on_drag(DragEvent::Moved {
+                                    pane,
+                                    target: self.entries[n.0].0,
+                                }));
+                            }
+                        }
+                    }
+                    tree.state.downcast_mut::<Interaction>().last_x = Some(position.x);
+                }
+                mouse::Event::ButtonReleased(Button::Left) => {
+                    let interaction = tree.state.downcast_mut::<Interaction>();
+                    interaction.dragging = None;
+                    interaction.last_x = None;
+                    if let Some(on_drag) = &self.on_drag {
+                        shell.publish(on_drag(DragEvent::Dropped { pane }));
+                    }
+                }
+                _ => {}
+            }
+            shell.capture_event();
+            return true;
+        }
+
+        match mouse_event {
+            mouse::Event::ButtonPressed(Button::Left) => {
+                let Some(position) = cursor.position() else {
+                    return false;
+                };
+                if self.on_resize.is_some()
+                    && let Some(divider) = self.divider_at(layout, position)
+                {
+                    let start = layout
+                        .children()
+                        .map(|c| c.bounds().width.max(0.0))
+                        .collect::<Vec<_>>();
+                    tree.state.downcast_mut::<Interaction>().resizing = Some(ResizeState {
+                        divider,
+                        origin_x: position.x,
+                        min: fit_mins(&self.width_specs(), start.iter().sum()),
+                        current: start.clone(),
+                        start,
+                    });
+                    shell.capture_event();
+                    shell.request_redraw();
+                    return true;
+                }
+                if let Some(on_drag) = &self.on_drag
+                    && let Some(pane) = self.pane_at(layout, position)
+                {
+                    let interaction = tree.state.downcast_mut::<Interaction>();
+                    interaction.dragging = Some((pane, position));
+                    interaction.last_x = Some(position.x);
+                    shell.publish(on_drag(DragEvent::Picked { pane }));
+                    shell.capture_event();
+                    return true;
+                }
+            }
+            mouse::Event::ButtonPressed(Button::Right) => {
+                if let Some(on_context) = &self.on_context
+                    && let Some(position) = cursor.position()
+                    && let Some(pane) = self.pane_at(layout, position)
+                {
+                    shell.publish(on_context(pane));
+                    shell.capture_event();
+                    return true;
+                }
+            }
+            _ => {}
+        }
+        false
+    }
+
+    fn update_resize(
+        &self,
+        tree: &mut Tree,
+        event: &Event,
+        shell: &mut Shell<'_, Message>,
+    ) -> bool {
+        let interaction = tree.state.downcast_mut::<Interaction>();
+        let Some(mut resizing) = interaction.resizing.take() else {
+            return false;
+        };
+        let Event::Mouse(mouse_event) = event else {
+            interaction.resizing = Some(resizing);
+            return false;
+        };
+        use mouse::Button;
+
+        match mouse_event {
+            mouse::Event::CursorMoved { position } => {
+                let next = resize_widths(
+                    &resizing.start,
+                    &resizing.min,
+                    resizing.divider,
+                    position.x - resizing.origin_x,
+                );
+                if !widths_equal(&next, &resizing.current) {
+                    resizing.current = next;
+                    shell.invalidate_layout();
+                    shell.request_redraw();
+                }
+                interaction.resizing = Some(resizing);
+            }
+            mouse::Event::ButtonReleased(Button::Left) => {
+                if !widths_equal(&resizing.current, &resizing.start) {
+                    if let Some(on_resize) = &self.on_resize {
+                        shell.publish(on_resize(self.pair_widths(&resizing.current)));
+                    }
+                    shell.invalidate_layout();
+                }
+                shell.request_redraw();
+            }
+            mouse::Event::CursorLeft => {
+                if !widths_equal(&resizing.current, &resizing.start) {
+                    shell.invalidate_layout();
+                }
+                if interaction.cursor_over.take().is_some()
+                    && let Some(on_hover) = &self.on_hover
+                {
+                    shell.publish(on_hover(None));
+                }
+                shell.request_redraw();
+            }
+            _ => {
+                interaction.resizing = Some(resizing);
+            }
+        }
+        shell.capture_event();
+        true
     }
 }
 
-fn distribute_deficit(widths: &mut [f32], min_widths: &[f32], initial_deficit: f32) {
-    let target = widths.iter().sum::<f32>() - initial_deficit;
-    let mut entries: Vec<(usize, f32)> = widths
-        .iter()
-        .enumerate()
-        .map(|(i, w)| (i, (w - min_widths[i]).max(0.0)))
-        .collect();
-    distribute_proportionally(widths, &mut entries, target, -1.0);
-}
+fn solve_widths(specs: &[(f32, f32)], available: f32) -> Vec<f32> {
+    let available = finite_positive(available);
+    let mut min = fit_mins(specs, available);
+    let min_sum = min.iter().sum::<f32>();
+    if min_sum >= available - EPS {
+        return fit_sum(min, available);
+    }
 
-fn distribute_surplus(widths: &mut [f32], max_widths: &[f32], initial_surplus: f32) {
-    let target = widths.iter().sum::<f32>() + initial_surplus;
-    let growable: Vec<(usize, f32)> = widths
-        .iter()
-        .enumerate()
-        .map(|(i, w)| {
-            let max = max_widths[i];
-            let capacity = if max.is_infinite() {
-                f32::INFINITY
+    let mut free: Vec<_> = (0..specs.len()).collect();
+    let mut remaining = available;
+    while !free.is_empty() {
+        let basis_sum: f64 = free.iter().map(|&i| width_basis(specs[i], min[i])).sum();
+        let available = f64::from(remaining.max(0.0));
+        let mut fixed = false;
+        for i in std::mem::take(&mut free) {
+            let width = (available * width_basis(specs[i], min[i]) / basis_sum) as f32;
+            if width < min[i] - EPS {
+                remaining -= min[i];
+                fixed = true;
             } else {
-                (max - w).max(0.0)
-            };
-            (i, capacity)
-        })
-        .collect();
-
-    // Infinite-capacity entries absorb all surplus first.
-    let infinite_indices: Vec<usize> = growable
-        .iter()
-        .filter_map(|(i, c)| c.is_infinite().then_some(*i))
-        .collect();
-
-    if !infinite_indices.is_empty() {
-        let share = initial_surplus / infinite_indices.len() as f32;
-        for i in infinite_indices {
-            widths[i] += share;
+                free.push(i);
+            }
         }
-        return;
+        if !fixed {
+            for i in free {
+                min[i] = (available * width_basis(specs[i], min[i]) / basis_sum) as f32;
+            }
+            break;
+        }
     }
+    fit_sum(min, available)
+}
 
-    let mut finite: Vec<(usize, f32)> = growable.into_iter().filter(|(_, c)| *c > 0.0).collect();
-    distribute_proportionally(widths, &mut finite, target, 1.0);
+fn fit_mins(specs: &[(f32, f32)], available: f32) -> Vec<f32> {
+    let mut min: Vec<_> = specs.iter().map(|(min, _)| finite_positive(*min)).collect();
+    let sum = min.iter().sum::<f32>();
+    if sum > available && sum > EPS {
+        let scale = available / sum;
+        min.iter_mut().for_each(|w| *w *= scale);
+    }
+    min
+}
+
+fn width_basis(spec: (f32, f32), min: f32) -> f64 {
+    f64::from(finite_positive(spec.1).max(min).max(1.0))
+}
+
+fn finite_positive(value: f32) -> f32 {
+    if value.is_finite() {
+        value.max(0.0)
+    } else {
+        0.0
+    }
+}
+
+fn fit_sum(mut widths: Vec<f32>, available: f32) -> Vec<f32> {
+    let delta = available - widths.iter().sum::<f32>();
+    if let Some(last) = widths.last_mut() {
+        *last = (*last + delta).max(0.0);
+    }
+    widths
+}
+
+fn widths_equal(a: &[f32], b: &[f32]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(a, b)| (a - b).abs() <= EPS)
+}
+
+fn resize_widths(start: &[f32], min: &[f32], divider: usize, delta: f32) -> Vec<f32> {
+    if start.len() != min.len() || divider + 1 >= start.len() || delta.abs() <= EPS {
+        return start.to_vec();
+    }
+    let mut widths = start.to_vec();
+    if delta > 0.0 {
+        let amount = delta.min(shrink_capacity(&widths, min, divider + 1..start.len()));
+        apply_nearest(&mut widths, min, (0..=divider).rev(), amount, true);
+        apply_nearest(&mut widths, min, divider + 1..start.len(), amount, false);
+    } else {
+        let amount = (-delta).min(shrink_capacity(&widths, min, (0..=divider).rev()));
+        apply_nearest(&mut widths, min, divider + 1..start.len(), amount, true);
+        apply_nearest(&mut widths, min, (0..=divider).rev(), amount, false);
+    }
+    fit_sum(widths, start.iter().sum())
+}
+
+fn shrink_capacity(widths: &[f32], min: &[f32], order: impl Iterator<Item = usize>) -> f32 {
+    order.map(|i| (widths[i] - min[i]).max(0.0)).sum()
+}
+
+fn apply_nearest(
+    widths: &mut [f32],
+    min: &[f32],
+    order: impl Iterator<Item = usize>,
+    mut amount: f32,
+    grow: bool,
+) {
+    for i in order {
+        if amount <= EPS {
+            break;
+        }
+        let cap = if grow {
+            amount
+        } else {
+            (widths[i] - min[i]).max(0.0).min(amount)
+        };
+        widths[i] += if grow { cap } else { -cap };
+        amount -= cap;
+    }
 }
 
 impl<'a, Message, Theme, Renderer> From<PaneGrid<'a, Message, Theme, Renderer>>
@@ -497,5 +721,30 @@ where
 {
     fn from(pane_grid: PaneGrid<'a, Message, Theme, Renderer>) -> Self {
         Element::new(pane_grid)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn solve_widths_uses_basis_and_minimums() {
+        assert_eq!(
+            solve_widths(&[(0.0, 1.0), (0.0, 3.0)], 800.0),
+            [200.0, 600.0]
+        );
+        assert_eq!(
+            solve_widths(&[(300.0, 1.0), (0.0, 100.0)], 400.0),
+            [300.0, 100.0]
+        );
+    }
+
+    #[test]
+    fn resize_widths_takes_from_nearest_pane_first() {
+        assert_eq!(
+            resize_widths(&[200.0, 300.0, 500.0], &[100.0, 250.0, 100.0], 0, 200.0),
+            [400.0, 250.0, 350.0],
+        );
     }
 }

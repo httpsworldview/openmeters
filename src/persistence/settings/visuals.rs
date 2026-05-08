@@ -20,6 +20,8 @@ use tracing::warn;
 pub struct VisualSettings {
     pub modules: HashMap<VisualKind, ModuleSettings>,
     pub order: Vec<VisualKind>,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub width_basis: HashMap<VisualKind, f32>,
 }
 
 impl VisualSettings {
@@ -33,6 +35,8 @@ impl VisualSettings {
             Oscilloscope => OscilloscopeSettings, Waveform => WaveformSettings,
             Loudness => LoudnessSettings, Stereometer => StereometerSettings);
         self.modules.retain(valid);
+        self.width_basis
+            .retain(|_, basis| basis.is_finite() && *basis > 0.0);
     }
 
     /// Strips palette data from all module configs (theme owns palettes, not settings.json).

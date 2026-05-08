@@ -29,6 +29,10 @@ impl<T> State<T> {
         self.panes.get(&pane)
     }
 
+    pub fn get_mut(&mut self, pane: Pane) -> Option<&mut T> {
+        self.panes.get_mut(&pane)
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = (&Pane, &T)> {
         self.order
             .iter()
