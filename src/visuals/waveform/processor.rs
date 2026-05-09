@@ -2,8 +2,9 @@
 // Copyright (C) 2026 Maika Namuo
 
 use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
-use crate::util::audio::{BAND_SPLITS_HZ, DEFAULT_SAMPLE_RATE, power_to_db};
-use crate::visuals::spectrogram::processor::WindowKind;
+use crate::util::audio::{
+    BAND_SPLITS_HZ, DEFAULT_SAMPLE_RATE, WindowKind, apply_window, power_to_db, window_coefficients,
+};
 use realfft::{RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex32;
 use std::sync::Arc;
@@ -118,7 +119,7 @@ struct FrequencyAnalyzer {
     smoothed: f32,
     smoothed_bands: [f32; NUM_BANDS],
     band_bin_ranges: [(usize, usize); NUM_BANDS],
-    hann_window: Vec<f32>,
+    hann_window: Arc<[f32]>,
 }
 
 impl std::fmt::Debug for FrequencyAnalyzer {
@@ -147,7 +148,7 @@ impl FrequencyAnalyzer {
             smoothed: 0.1,
             smoothed_bands: [0.0; NUM_BANDS],
             band_bin_ranges,
-            hann_window: Vec::new(),
+            hann_window: Arc::from([]),
             size,
             fft,
         }
@@ -200,22 +201,16 @@ impl FrequencyAnalyzer {
     }
 
     fn apply_hann_window(&mut self) {
-        self.input_buffer.fill(0.0);
         let n = self.sample_history.len().min(self.size);
+        self.input_buffer[n..].fill(0.0);
         self.ensure_hann_window(n);
-        for (i, (&sample, &w)) in self
-            .sample_history
-            .iter()
-            .zip(self.hann_window.iter())
-            .enumerate()
-        {
-            self.input_buffer[i] = sample * w;
-        }
+        self.input_buffer[..n].copy_from_slice(&self.sample_history[..n]);
+        apply_window(&mut self.input_buffer[..n], &self.hann_window);
     }
 
     fn ensure_hann_window(&mut self, len: usize) {
         if self.hann_window.len() != len {
-            self.hann_window = WindowKind::Hann.coefficients(len);
+            self.hann_window = window_coefficients(WindowKind::Hann, len);
         }
     }
 

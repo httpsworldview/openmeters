@@ -3,6 +3,7 @@
 
 use bytemuck::{Pod, Zeroable};
 use iced::advanced::graphics::Viewport;
+use iced::{Border, Color, Rectangle, Renderer, Size};
 use iced_wgpu::wgpu;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -25,6 +26,94 @@ impl ClipTransform {
     pub fn to_clip(self, x: f32, y: f32) -> [f32; 2] {
         [x * self.0 - 1.0, 1.0 - y * self.1]
     }
+}
+
+#[derive(Clone, Copy)]
+pub struct ChannelLayout {
+    top: f32,
+    stride: f32,
+    pub channel_height: f32,
+    pub amplitude_scale: f32,
+}
+
+impl ChannelLayout {
+    pub fn new(bounds: Rectangle, channels: usize, padding: f32, gap: f32, amp: f32) -> Self {
+        let channels = channels.max(1) as f32;
+        let (padding, gap) = (padding.max(0.0), gap.max(0.0));
+        let channel_height =
+            (bounds.height - padding * 2.0 - gap * (channels - 1.0)).max(1.0) / channels;
+        Self {
+            top: bounds.y + padding,
+            stride: channel_height + gap,
+            channel_height,
+            amplitude_scale: channel_height * 0.5 * amp.max(0.01),
+        }
+    }
+
+    #[inline]
+    pub fn center_y(self, channel: usize) -> f32 {
+        self.top + channel as f32 * self.stride + self.channel_height * 0.5
+    }
+}
+
+fn text<C>(content: C, px: f32, bounds: Size) -> iced::advanced::text::Text<C> {
+    use iced::advanced::text;
+    text::Text {
+        content,
+        bounds,
+        size: iced::Pixels(px),
+        font: iced::Font::default(),
+        align_x: iced::alignment::Horizontal::Left.into(),
+        align_y: iced::alignment::Vertical::Top,
+        line_height: text::LineHeight::default(),
+        shaping: text::Shaping::Basic,
+        wrapping: text::Wrapping::None,
+    }
+}
+
+pub(crate) fn measure_text(s: &str, px: f32) -> Size {
+    use iced::advanced::graphics::text::Paragraph;
+    use iced::advanced::text::Paragraph as _;
+    Paragraph::with_text(text(s, px, Size::INFINITE)).min_bounds()
+}
+
+pub(crate) fn make_text(s: &str, px: f32, bounds: Size) -> iced::advanced::text::Text<String> {
+    text(s.to_string(), px, bounds)
+}
+
+fn fill_rect_quad(r: &mut Renderer, bounds: Rectangle, color: Color, border: Border, snap: bool) {
+    use iced::advanced::{Renderer as _, renderer::Quad};
+    r.fill_quad(
+        Quad {
+            bounds,
+            border,
+            snap,
+            ..Default::default()
+        },
+        color,
+    );
+}
+
+pub(crate) fn fill_rect(r: &mut Renderer, bounds: Rectangle, color: Color) {
+    fill_rect_quad(r, bounds, color, Default::default(), true);
+}
+
+pub(crate) fn fill_bordered_rect(
+    r: &mut Renderer,
+    bounds: Rectangle,
+    color: Color,
+    border: Border,
+) {
+    fill_rect_quad(r, bounds, color, border, false);
+}
+
+pub(crate) fn fill_snapped_bordered_rect(
+    r: &mut Renderer,
+    bounds: Rectangle,
+    color: Color,
+    border: Border,
+) {
+    fill_rect_quad(r, bounds, color, border, true);
 }
 
 #[repr(C)]
@@ -191,25 +280,39 @@ pub fn dot_vertices(
     })
 }
 
-pub fn build_aa_line_list(
+pub fn extend_aa_line_list(
+    out: &mut Vec<SdfVertex>,
     pts: &[(f32, f32)],
     stroke: f32,
     color: [f32; 4],
-    clip: &ClipTransform,
-) -> Vec<SdfVertex> {
-    if pts.len() < 2 {
-        return Vec::new();
-    }
+    clip: ClipTransform,
+) {
     let width = stroke.max(0.1);
-    let mut verts = Vec::with_capacity((pts.len() - 1) * 6);
+    out.reserve(pts.len().saturating_sub(1) * 6);
     for seg in pts.windows(2) {
         let (dx, dy) = (seg[1].0 - seg[0].0, seg[1].1 - seg[0].1);
-        if (dx * dx + dy * dy) < 1e-8 {
-            continue;
+        if (dx * dx + dy * dy) >= 1e-8 {
+            out.extend(line_vertices(seg[0], seg[1], color, color, width, clip));
         }
-        verts.extend(line_vertices(seg[0], seg[1], color, color, width, *clip));
     }
-    verts
+}
+
+pub fn extend_filled_line(
+    out: &mut Vec<SdfVertex>,
+    pts: &[(f32, f32)],
+    baseline: f32,
+    stroke: f32,
+    line: [f32; 4],
+    fill: [f32; 4],
+    clip: ClipTransform,
+) {
+    out.reserve(pts.len().saturating_sub(1) * 12);
+    for seg in pts.windows(2) {
+        out.extend(baseline_segment_vertices(
+            seg[0], seg[1], baseline, clip, [fill; 2],
+        ));
+    }
+    extend_aa_line_list(out, pts, stroke, line, clip);
 }
 
 pub fn decimate_line(pts: &[(f32, f32)], max_points: usize) -> Cow<'_, [(f32, f32)]> {

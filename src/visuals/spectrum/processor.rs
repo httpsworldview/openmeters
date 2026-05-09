@@ -2,8 +2,11 @@
 // Copyright (C) 2026 Maika Namuo
 
 use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
-use crate::util::audio::{DB_FLOOR, DEFAULT_SAMPLE_RATE, power_to_db};
-use crate::visuals::spectrogram::processor::{FrequencyScale, WindowKind};
+use crate::util::audio::{
+    DB_FLOOR, DEFAULT_SAMPLE_RATE, FrequencyScale, WindowKind, apply_window,
+    compute_fft_bin_normalization, copy_from_deque, mixdown_into_deque, power_to_db, remove_dc,
+    window_coefficients,
+};
 use realfft::{RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex32;
 use serde::{Deserialize, Serialize};
@@ -138,7 +141,7 @@ pub struct SpectrumProcessor {
     snapshot: SpectrumSnapshot,
     planner: RealFftPlanner<f32>,
     fft: Arc<dyn RealToComplex<f32>>,
-    window: Vec<f32>,
+    window: Arc<[f32]>,
     real_buffer: Vec<f32>,
     spectrum_buffer: Vec<Complex32>,
     scratch_buffer: Vec<Complex32>,
@@ -165,7 +168,7 @@ impl SpectrumProcessor {
             snapshot: SpectrumSnapshot::default(),
             planner,
             fft,
-            window: Vec::new(),
+            window: Arc::from([]),
             real_buffer: Vec::new(),
             spectrum_buffer: Vec::new(),
             scratch_buffer: Vec::new(),
@@ -192,12 +195,11 @@ impl SpectrumProcessor {
         self.config.normalize();
         let fft_size = self.config.fft_size;
         self.fft = self.planner.plan_fft_forward(fft_size);
-        self.window = self.config.window.coefficients(fft_size);
+        self.window = window_coefficients(self.config.window, fft_size);
         self.real_buffer.resize(fft_size, 0.0);
         self.spectrum_buffer = self.fft.make_output_vec();
         self.scratch_buffer = self.fft.make_scratch_vec();
-        self.bin_normalization =
-            crate::util::audio::compute_fft_bin_normalization(&self.window, fft_size);
+        self.bin_normalization = compute_fft_bin_normalization(&self.window, fft_size);
         self.reset_buffers();
     }
 
@@ -239,7 +241,7 @@ impl SpectrumProcessor {
     }
 
     fn mixdown_into(&mut self, block: &AudioBlock<'_>) {
-        crate::util::audio::mixdown_into_deque(&mut self.pcm_buffer, block.samples, block.channels);
+        mixdown_into_deque(&mut self.pcm_buffer, block.samples, block.channels);
     }
 
     fn process_ready_windows(&mut self, timestamp: Instant) -> bool {
@@ -250,13 +252,9 @@ impl SpectrumProcessor {
         let mut produced = false;
 
         while self.pcm_buffer.len() >= fft_size {
-            crate::util::audio::copy_from_deque(
-                &mut self.real_buffer[..fft_size],
-                &self.pcm_buffer,
-            );
-
-            crate::util::audio::remove_dc(&mut self.real_buffer);
-            crate::util::audio::apply_window(&mut self.real_buffer, &self.window);
+            copy_from_deque(&mut self.real_buffer[..fft_size], &self.pcm_buffer);
+            remove_dc(&mut self.real_buffer);
+            apply_window(&mut self.real_buffer, &self.window);
 
             if self
                 .fft

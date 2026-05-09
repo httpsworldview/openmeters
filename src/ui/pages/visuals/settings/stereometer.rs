@@ -14,20 +14,6 @@ use crate::visuals::registry::VisualKind;
 use iced::widget::{column, row};
 use iced::{Element, Length};
 
-const MODE_OPTIONS: [StereometerMode; 3] = [
-    StereometerMode::Lissajous,
-    StereometerMode::DotCloud,
-    StereometerMode::DotCloudBands,
-];
-const SCALE_OPTIONS: [StereometerScale; 2] =
-    [StereometerScale::Linear, StereometerScale::Exponential];
-const CORR_METER_OPTIONS: [CorrelationMeterMode; 3] = [
-    CorrelationMeterMode::Off,
-    CorrelationMeterMode::SingleBand,
-    CorrelationMeterMode::MultiBand,
-];
-const CORR_SIDE_OPTIONS: [CorrelationMeterSide; 2] =
-    [CorrelationMeterSide::Left, CorrelationMeterSide::Right];
 const ROTATION_RANGE: SliderRange = SliderRange::new(-4.0, 4.0, 1.0);
 const SCALE_RANGE: SliderRange = SliderRange::new(1.0, 30.0, 0.5);
 const SEGMENT_DURATION_RANGE: SliderRange = SliderRange::new(0.005, 0.2, 0.001);
@@ -54,7 +40,7 @@ pub enum Message {
     Scale(StereometerScale),
     ScaleRange(f32),
     CorrelationMeter(CorrelationMeterMode),
-    CorrelationMeterSide(CorrelationMeterSide),
+    CorrelationSide(CorrelationMeterSide),
     Palette(PaletteEvent),
 }
 
@@ -64,8 +50,9 @@ impl StereometerSettingsPane {
         let s = &self.settings;
 
         let picks = row![
-            labeled_pick_list("Mode", &MODE_OPTIONS, Some(s.mode), Mode).width(Length::Fill),
-            labeled_pick_list("Scale", &SCALE_OPTIONS, Some(s.scale), Scale).width(Length::Fill),
+            labeled_pick_list("Mode", StereometerMode::ALL, Some(s.mode), Mode).width(Length::Fill),
+            labeled_pick_list("Scale", StereometerScale::ALL, Some(s.scale), Scale)
+                .width(Length::Fill),
         ]
         .spacing(16);
 
@@ -120,7 +107,7 @@ impl StereometerSettingsPane {
         let mut corr_picks = row![
             labeled_pick_list(
                 "Meter",
-                &CORR_METER_OPTIONS,
+                CorrelationMeterMode::ALL,
                 Some(s.correlation_meter),
                 CorrelationMeter
             )
@@ -131,9 +118,9 @@ impl StereometerSettingsPane {
             corr_picks = corr_picks.push(
                 labeled_pick_list(
                     "Side",
-                    &CORR_SIDE_OPTIONS,
+                    CorrelationMeterSide::ALL,
                     Some(s.correlation_meter_side),
-                    CorrelationMeterSide,
+                    CorrelationSide,
                 )
                 .width(Length::Fill),
             );
@@ -186,7 +173,7 @@ impl StereometerSettingsPane {
             Scale(sc) => set_if_changed(&mut s.scale, sc),
             ScaleRange(v) => update_f32_range(&mut s.scale_range, v, SCALE_RANGE),
             CorrelationMeter(m) => set_if_changed(&mut s.correlation_meter, m),
-            CorrelationMeterSide(side) => set_if_changed(&mut s.correlation_meter_side, side),
+            CorrelationSide(side) => set_if_changed(&mut s.correlation_meter_side, side),
             Palette(e) => self.palette.update(e),
         }
     }

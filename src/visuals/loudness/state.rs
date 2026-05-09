@@ -12,12 +12,12 @@ use crate::persistence::settings::{LoudnessSettings, MeterMode};
 use crate::util::color::{color_to_rgba, with_alpha};
 use crate::vis_processor;
 use crate::visuals::palettes;
-use iced::advanced::Renderer as _;
-use iced::advanced::renderer::{self, Quad};
+use crate::visuals::render::common::{fill_rect, make_text};
+use iced::advanced::renderer;
 use iced::advanced::widget::{Tree, tree};
 use iced::advanced::{Layout, Widget, layout, mouse, text};
 use iced::alignment::{Horizontal, Vertical};
-use iced::{Background, Border, Color, Element, Length, Point, Rectangle, Size, Theme};
+use iced::{Color, Element, Length, Point, Rectangle, Size, Theme};
 use iced_wgpu::primitive::Renderer as _;
 use std::cell::RefCell;
 const DEFAULT_RANGE: (f32, f32) = (-60.0, 4.0);
@@ -227,19 +227,12 @@ impl<'a, Message> Widget<Message, Theme, iced::Renderer> for Loudness<'a> {
                 let y = bounds.y + height * (1.0 - ratio);
                 let label = format!("{:.0}", db.abs());
 
+                let mut text = make_text(&label, LABEL_FONT_SIZE, Size::new(LEFT_PADDING, 20.0));
+                text.align_x = Horizontal::Right.into();
+                text.align_y = Vertical::Center;
                 text::Renderer::fill_text(
                     renderer,
-                    iced::advanced::text::Text {
-                        content: label,
-                        bounds: Size::new(LEFT_PADDING, 20.0),
-                        size: iced::Pixels(LABEL_FONT_SIZE),
-                        line_height: iced::advanced::text::LineHeight::default(),
-                        font: iced::Font::default(),
-                        align_x: Horizontal::Right.into(),
-                        align_y: Vertical::Center,
-                        shaping: iced::advanced::text::Shaping::Basic,
-                        wrapping: iced::advanced::text::Wrapping::None,
-                    },
+                    text,
                     Point::new(bounds.x + LEFT_PADDING - 4.0, y),
                     label_color,
                     bounds,
@@ -261,32 +254,22 @@ impl<'a, Message> Widget<Message, Theme, iced::Renderer> for Loudness<'a> {
                 height: 20.0,
             };
 
-            renderer.fill_quad(
-                Quad {
-                    bounds: label_rect,
-                    border: Border::default(),
-                    shadow: Default::default(),
-                    snap: true,
-                },
-                Background::Color(with_alpha(state.palette[0], 1.0)),
-            );
+            fill_rect(renderer, label_rect, with_alpha(state.palette[0], 1.0));
 
+            let mut text = make_text(
+                &label,
+                VALUE_FONT_SIZE,
+                Size::new(label_rect.width, label_rect.height),
+            );
+            text.font = iced::Font {
+                weight: iced::font::Weight::Bold,
+                ..Default::default()
+            };
+            text.align_x = Horizontal::Center.into();
+            text.align_y = Vertical::Center;
             text::Renderer::fill_text(
                 renderer,
-                iced::advanced::text::Text {
-                    content: label,
-                    bounds: Size::new(label_rect.width, label_rect.height),
-                    size: iced::Pixels(VALUE_FONT_SIZE),
-                    line_height: iced::advanced::text::LineHeight::default(),
-                    font: iced::Font {
-                        weight: iced::font::Weight::Bold,
-                        ..Default::default()
-                    },
-                    align_x: Horizontal::Center.into(),
-                    align_y: Vertical::Center,
-                    shaping: iced::advanced::text::Shaping::Basic,
-                    wrapping: iced::advanced::text::Wrapping::None,
-                },
+                text,
                 Point::new(
                     label_rect.x + label_rect.width / 2.0,
                     label_rect.y + label_rect.height / 2.0,

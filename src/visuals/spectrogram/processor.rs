@@ -23,17 +23,15 @@
 
 use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::util::audio::{
-    DB_FLOOR, DEFAULT_SAMPLE_RATE, LN_TO_DB, copy_from_deque, db_to_power, erb_rate_to_hz,
-    hz_to_erb_rate,
+    DB_FLOOR, DEFAULT_SAMPLE_RATE, FrequencyScale, LN_TO_DB, WindowKind,
+    compute_fft_bin_normalization, copy_from_deque, db_to_power, mixdown_into_deque, remove_dc,
+    window_coefficients,
 };
 use bytemuck::{Pod, Zeroable};
 use rustfft::num_complex::Complex32;
 use rustfft::{Fft, FftPlanner};
-use std::collections::HashMap;
 use std::collections::VecDeque;
-use std::hash::Hash;
-use std::sync::RwLock;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use wide::{CmpGe, CmpGt, f32x8};
 
 #[repr(C)]
@@ -76,127 +74,6 @@ impl Default for SpectrogramConfig {
             use_reassignment: true,
             zero_padding_factor: 2,
         }
-    }
-}
-
-crate::settings_enum!(pub enum FrequencyScale {
-    Linear => "Linear",
-    #[default] Logarithmic => "Logarithmic",
-    #[serde(alias = "mel")] Erb => "Erb",
-});
-
-// Knee frequency for the asinh-based "log" axis. Mirrored in spectrogram.wgsl.
-const LOG_KNEE_HZ: f32 = 20.0;
-
-impl FrequencyScale {
-    #[inline]
-    pub fn freq_at(self, min: f32, max: f32, t: f32) -> f32 {
-        match self {
-            Self::Linear => min + (max - min) * t,
-            Self::Logarithmic => {
-                let lo = (min / LOG_KNEE_HZ).asinh();
-                let hi = (max / LOG_KNEE_HZ).asinh();
-                LOG_KNEE_HZ * (lo + (hi - lo) * t).sinh()
-            }
-            Self::Erb => {
-                let erb_min = hz_to_erb_rate(min);
-                erb_rate_to_hz(erb_min + (hz_to_erb_rate(max) - erb_min) * t)
-            }
-        }
-    }
-
-    #[inline]
-    pub fn pos_of(self, min: f32, max: f32, freq: f32) -> f32 {
-        match self {
-            Self::Linear => (freq - min) / (max - min).max(1e-6),
-            Self::Logarithmic => {
-                let lo = (min / LOG_KNEE_HZ).asinh();
-                let hi = (max / LOG_KNEE_HZ).asinh();
-                ((freq / LOG_KNEE_HZ).asinh() - lo) / (hi - lo).max(1e-6)
-            }
-            Self::Erb => {
-                let erb_min = hz_to_erb_rate(min);
-                (hz_to_erb_rate(freq) - erb_min) / (hz_to_erb_rate(max) - erb_min).max(1e-6)
-            }
-        }
-    }
-}
-
-crate::settings_enum!(no_default
-    #[derive(Hash)]
-    pub enum WindowKind {
-        Rectangular => "Rectangular",
-        Hann => "Hann",
-        Hamming => "Hamming",
-        Blackman => "Blackman",
-        BlackmanHarris => "Blackman-Harris",
-    }
-);
-
-impl WindowKind {
-    pub const ALL: [Self; 5] = [
-        Self::Rectangular,
-        Self::Hann,
-        Self::Hamming,
-        Self::Blackman,
-        Self::BlackmanHarris,
-    ];
-
-    pub(crate) fn coefficients(self, len: usize) -> Vec<f32> {
-        if len <= 1 {
-            return vec![1.0; len];
-        }
-        match self {
-            Self::Rectangular => vec![1.0; len],
-            Self::Hann => cosine_window(len, &[0.5, -0.5]),
-            Self::Hamming => cosine_window(len, &[25.0 / 46.0, -21.0 / 46.0]),
-            Self::Blackman => cosine_window(len, &[0.42, -0.5, 0.08]),
-            Self::BlackmanHarris => cosine_window(len, &[0.35875, -0.48829, 0.14128, -0.01168]),
-        }
-    }
-}
-
-fn cosine_window(len: usize, coeffs: &[f32]) -> Vec<f32> {
-    let step = core::f32::consts::TAU / (len.saturating_sub(1).max(1) as f32);
-    (0..len)
-        .map(|n| {
-            let phi = n as f32 * step;
-            coeffs
-                .iter()
-                .enumerate()
-                .fold(0.0, |sum, (k, &c)| sum + c * (phi * k as f32).cos())
-        })
-        .collect()
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-struct WindowKey {
-    kind: WindowKind,
-    len: usize,
-}
-
-struct WindowCache(RwLock<HashMap<WindowKey, Arc<[f32]>>>);
-
-impl WindowCache {
-    fn get(kind: WindowKind, len: usize) -> Arc<[f32]> {
-        static INSTANCE: OnceLock<WindowCache> = OnceLock::new();
-        let cache = INSTANCE.get_or_init(|| WindowCache(RwLock::new(HashMap::default())));
-        if len == 0 {
-            return Arc::from([]);
-        }
-        // SAFETY: lock cannot be poisoned as panic is set to abort in
-        // cargo.toml.
-        let key = WindowKey { kind, len };
-        if let Some(cached) = cache.0.read().unwrap().get(&key) {
-            return cached.clone();
-        }
-        cache
-            .0
-            .write()
-            .unwrap()
-            .entry(key)
-            .or_insert_with(|| Arc::from(kind.coefficients(len)))
-            .clone()
     }
 }
 
@@ -304,13 +181,6 @@ impl SpectrogramProcessor {
         (window_size * 2).next_power_of_two().max(2)
     }
 
-    fn needs_fft_rebuild(&self) -> bool {
-        self.window_size != self.config.fft_size
-            || self.fft_size != self.config.fft_size * self.config.zero_padding_factor.max(1)
-            || WindowCache::get(self.config.window, self.config.fft_size).as_ptr()
-                != self.window.as_ptr()
-    }
-
     fn rebuild_fft(&mut self) {
         self.window_size = self.config.fft_size;
         self.fft_size = self.window_size * self.config.zero_padding_factor.max(1);
@@ -319,7 +189,7 @@ impl SpectrogramProcessor {
         self.ifft = self.planner.plan_fft_inverse(self.fft_size);
         self.hilbert_fft = self.planner.plan_fft_forward(hilbert_len);
         self.hilbert_ifft = self.planner.plan_fft_inverse(hilbert_len);
-        self.window = WindowCache::get(self.config.window, self.window_size);
+        self.window = window_coefficients(self.config.window, self.window_size);
         self.real.resize(hilbert_len, 0.0);
         self.complex_buf.resize(self.fft_size, Complex32::ZERO);
         self.hilbert_buf.resize(hilbert_len, Complex32::ZERO);
@@ -336,8 +206,7 @@ impl SpectrogramProcessor {
         self.magnitudes.resize(bin_count, 0.0);
         self.reassign
             .rebuild(&mut self.planner, &self.window, bin_count);
-        self.bin_norm =
-            crate::util::audio::compute_fft_bin_normalization(&self.window, self.fft_size);
+        self.bin_norm = compute_fft_bin_normalization(&self.window, self.fft_size);
         self.audio_buffer.truncate(hilbert_len * 2);
         self.bin_hz = self.config.sample_rate / self.fft_size.max(1) as f32;
         self.points_buf
@@ -364,7 +233,7 @@ impl SpectrogramProcessor {
 
         while self.audio_buffer.len() >= read_len {
             copy_from_deque(&mut self.real[..read_len], &self.audio_buffer);
-            crate::util::audio::remove_dc(&mut self.real[..read_len]);
+            remove_dc(&mut self.real[..read_len]);
 
             let center = &self.real[center_offset..center_offset + self.window_size];
 
@@ -515,16 +384,10 @@ impl AudioProcessor for SpectrogramProcessor {
         {
             self.config.sample_rate = block.sample_rate;
             self.rebuild_fft();
-            self.reset = true;
-        } else if self.needs_fft_rebuild() {
-            self.rebuild_fft();
+            self.audio_buffer.clear();
             self.reset = true;
         }
-        crate::util::audio::mixdown_into_deque(
-            &mut self.audio_buffer,
-            block.samples,
-            block.channels,
-        );
+        mixdown_into_deque(&mut self.audio_buffer, block.samples, block.channels);
         let cols = self.process_ready_windows();
         let bin_count = self.fft_size / 2 + 1;
         if cols.is_empty() {
@@ -554,10 +417,22 @@ impl Reconfigurable<SpectrogramConfig> for SpectrogramProcessor {
         let prev = self.config;
         self.config = cfg;
 
-        if self.needs_fft_rebuild() {
+        let rate_changed = (prev.sample_rate - cfg.sample_rate).abs() > f32::EPSILON;
+        let rebuild = prev.fft_size != cfg.fft_size
+            || prev.zero_padding_factor != cfg.zero_padding_factor
+            || prev.window != cfg.window
+            || rate_changed;
+
+        if rebuild {
             self.rebuild_fft();
-            self.reset = true;
-        } else if prev.use_reassignment != cfg.use_reassignment {
+            if rate_changed {
+                self.audio_buffer.clear();
+            }
+        }
+        let reset = rebuild
+            || prev.use_reassignment != cfg.use_reassignment
+            || prev.hop_size != cfg.hop_size;
+        if reset {
             self.reset = true;
         }
     }
@@ -684,6 +559,7 @@ fn load_complex_simd(data: &[Complex32], off: usize) -> (f32x8, f32x8) {
 mod tests {
     use super::*;
     use crate::dsp::AudioBlock;
+    use crate::util::audio::{erb_rate_to_hz, hz_to_erb_rate, window_coefficients};
     use std::time::Instant;
 
     fn make_block(samples: Vec<f32>, channels: usize, rate: f32) -> AudioBlock<'static> {
@@ -756,6 +632,20 @@ mod tests {
     }
 
     #[test]
+    fn sample_rate_config_rebuilds_bin_spacing() {
+        let cfg = SpectrogramConfig {
+            fft_size: 1024,
+            ..Default::default()
+        };
+        let mut processor = SpectrogramProcessor::new(cfg);
+        let mut next = cfg;
+        next.sample_rate *= 2.0;
+        processor.update_config(next);
+        let expected = next.sample_rate / processor.fft_size as f32;
+        assert_eq!(processor.bin_hz, expected);
+    }
+
+    #[test]
     fn erb_conversions_are_invertible() {
         for &h in &[20.0f32, 100.0, 440.0, 1000.0, 4000.0, 10000.0] {
             assert!((h - erb_rate_to_hz(hz_to_erb_rate(h))).abs() < 0.002);
@@ -806,7 +696,7 @@ mod tests {
             (WindowKind::BlackmanHarris, 0.1013),
         ];
         for &(kind, expected) in pairs {
-            let window = kind.coefficients(size as usize);
+            let window = window_coefficients(kind, size as usize);
             let ratio = compute_sigma_t(&window) / size;
             assert!(
                 (ratio - expected).abs() < 0.001,

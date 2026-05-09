@@ -7,16 +7,18 @@ use super::processor::{
 use super::render::{MIN_BAR_COUNT, SpectrumParams, SpectrumPeakParams, SpectrumPrimitive};
 use crate::persistence::settings::{SpectrumDisplayMode, SpectrumSettings, SpectrumWeightingMode};
 use crate::util::audio::musical::NoteInfo;
-use crate::util::audio::{fmt_freq, lerp};
+use crate::util::audio::{FrequencyScale, fmt_freq, lerp};
 use crate::util::color::{color_to_rgba, with_alpha};
 use crate::vis_processor;
 use crate::visuals::palettes;
-use crate::visuals::spectrogram::processor::FrequencyScale;
-use iced::advanced::renderer::{self, Quad};
+use crate::visuals::render::common::{
+    fill_rect, fill_snapped_bordered_rect, make_text, measure_text,
+};
+use iced::advanced::renderer;
 use iced::advanced::text::Renderer as _;
 use iced::advanced::widget::{Tree, tree};
 use iced::advanced::{Layout, Renderer as _, Widget, layout, mouse};
-use iced::{Background, Color, Element, Length, Point, Rectangle, Size};
+use iced::{Color, Element, Length, Point, Rectangle, Size};
 use iced_wgpu::primitive::Renderer as _;
 use std::cell::RefCell;
 use std::sync::{Arc, LazyLock};
@@ -28,7 +30,7 @@ const GRID_LABEL_GAP: f32 = 6.0;
 static GRID_LABEL_SLOT: LazyLock<Size> = LazyLock::new(|| {
     ["20.00Hz", "100.0Hz", "1.00kHz", "10.0kHz"]
         .iter()
-        .map(|s| crate::visuals::measure_text(s, GRID_LABEL_SIZE))
+        .map(|s| measure_text(s, GRID_LABEL_SIZE))
         .fold(Size::ZERO, |a, s| {
             Size::new(a.width.max(s.width), a.height.max(s.height))
         })
@@ -452,17 +454,6 @@ fn reindex(pts: &mut [[f32; 2]]) {
     }
 }
 
-fn fill_rect(r: &mut iced::Renderer, bounds: Rectangle, color: Color) {
-    r.fill_quad(
-        Quad {
-            bounds,
-            snap: true,
-            ..Default::default()
-        },
-        Background::Color(color),
-    );
-}
-
 fn draw_grid(
     r: &mut iced::Renderer,
     th: &iced::Theme,
@@ -544,18 +535,10 @@ fn draw_grid(
             }
             last_right = tx + slot.width + GRID_LABEL_GAP;
 
+            let mut text = make_text(&fmt_freq(f), GRID_LABEL_SIZE, slot);
+            text.align_x = iced::alignment::Horizontal::Center.into();
             r.fill_text(
-                iced::advanced::text::Text {
-                    content: fmt_freq(f),
-                    bounds: slot,
-                    size: iced::Pixels(GRID_LABEL_SIZE),
-                    font: iced::Font::default(),
-                    align_x: iced::alignment::Horizontal::Center.into(),
-                    align_y: iced::alignment::Vertical::Top,
-                    line_height: iced::advanced::text::LineHeight::default(),
-                    shaping: iced::advanced::text::Shaping::Basic,
-                    wrapping: iced::advanced::text::Wrapping::None,
-                },
+                text,
                 Point::new(tx + slot.width * 0.5, ty),
                 tc,
                 Rectangle::new(Point::new(tx, ty), slot),
@@ -581,8 +564,8 @@ fn peak_label_layout(b: Rectangle, pk: &PeakLabel) -> Option<PeakLayout> {
     if pk.opacity < 0.01 || b.width < 8.0 || b.height < 8.0 {
         return None;
     }
-    let title = crate::visuals::measure_text(&pk.text[0], 12.0);
-    let detail = crate::visuals::measure_text(&pk.text[1], 10.0);
+    let title = measure_text(&pk.text[0], 12.0);
+    let detail = measure_text(&pk.text[1], 10.0);
     let [px, py] = pk.label_pos;
     let p = Point::new(b.x + b.width * px, b.y + b.height * (1.0 - py));
     let (w, h) = (
@@ -609,28 +592,25 @@ fn draw_peak(
     accent: Color,
 ) {
     let pal = th.extended_palette();
-    r.fill_quad(
-        Quad {
-            bounds: layout.rect,
-            border: iced::Border {
-                color: with_alpha(accent, 0.50 * pk.opacity),
-                width: 1.0,
-                radius: 2.0.into(),
-            },
-            shadow: Default::default(),
-            snap: true,
+    fill_snapped_bordered_rect(
+        r,
+        layout.rect,
+        with_alpha(pal.background.strong.color, 0.90 * pk.opacity),
+        iced::Border {
+            color: with_alpha(accent, 0.50 * pk.opacity),
+            width: 1.0,
+            radius: 2.0.into(),
         },
-        Background::Color(with_alpha(pal.background.strong.color, 0.90 * pk.opacity)),
     );
     r.fill_text(
-        crate::visuals::make_text(&pk.text[0], 12.0, layout.title),
+        make_text(&pk.text[0], 12.0, layout.title),
         layout.text,
         with_alpha(pal.background.base.text, pk.opacity),
         Rectangle::new(layout.text, layout.title),
     );
     let pos = Point::new(layout.text.x, layout.text.y + layout.title.height + 2.0);
     r.fill_text(
-        crate::visuals::make_text(&pk.text[1], 10.0, layout.detail),
+        make_text(&pk.text[1], 10.0, layout.detail),
         pos,
         with_alpha(pal.secondary.weak.text, 0.84 * pk.opacity),
         Rectangle::new(pos, layout.detail),

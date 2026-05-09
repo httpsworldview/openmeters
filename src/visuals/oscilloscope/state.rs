@@ -5,10 +5,10 @@ use super::processor::{
     OscilloscopeConfig, OscilloscopeProcessor as CoreOscilloscopeProcessor, OscilloscopeSnapshot,
 };
 use super::render::{OscilloscopeParams, OscilloscopePrimitive};
-use crate::persistence::settings::{Channel, OscilloscopeSettings};
+use crate::persistence::settings::OscilloscopeSettings;
+use crate::util::audio::{Channel, project_planar_channels};
 use crate::util::color::color_to_rgba;
 use crate::visuals::palettes;
-use crate::visuals::project_channel_data;
 use crate::{vis_processor, visualization_widget};
 use iced::Color;
 
@@ -96,11 +96,7 @@ impl OscilloscopeState {
         if spc == 0 || source.samples.len() < ch * spc {
             return OscilloscopeSnapshot::default();
         }
-        let samples: Vec<f32> = [ch1, ch2]
-            .into_iter()
-            .filter_map(|c| project_channel_data(c, &source.samples, spc, ch))
-            .flatten()
-            .collect();
+        let samples = project_planar_channels([ch1, ch2], &source.samples, spc, ch);
         OscilloscopeSnapshot {
             channels: samples.len() / spc,
             samples_per_channel: spc,

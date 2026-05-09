@@ -12,7 +12,8 @@ use crate::util::color::f32_to_u8;
 
 use crate::visuals::render::common::{CacheTracker, create_shader_module};
 
-use super::processor::{FrequencyScale, SpectrogramPoint};
+use super::processor::SpectrogramPoint;
+use crate::util::audio::FrequencyScale;
 
 pub const SPECTROGRAM_PALETTE_SIZE: usize = 5;
 
@@ -49,8 +50,6 @@ fn write_texture_region(
         extent,
     );
 }
-
-// public API
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColumnKind {
@@ -94,8 +93,6 @@ pub struct SpectrogramParams {
     pub uv_y_range: [f32; 2],
     pub rotation: i8,
 }
-
-// primitive
 
 #[derive(Debug)]
 pub struct SpectrogramPrimitive {
@@ -185,8 +182,6 @@ impl Primitive for SpectrogramPrimitive {
     }
 }
 
-// gpu types
-
 type QuadCorner = [f32; 2];
 
 const UNIT_QUAD: [QuadCorner; 6] = [
@@ -271,9 +266,9 @@ const _: () = assert!(std::mem::offset_of!(Uniforms, stops) == 112);
 impl Uniforms {
     fn from_params(p: &SpectrogramParams, viewport: [f32; 2], scale_factor: f32) -> Self {
         let freq_scale = match p.freq_scale {
-            FrequencyScale::Linear => 0u32,
-            FrequencyScale::Logarithmic => 1u32,
-            FrequencyScale::Erb => 2u32,
+            FrequencyScale::Linear => 0,
+            FrequencyScale::Logarithmic => 1,
+            FrequencyScale::Erb => 2,
         };
         let rotation = p.rotation.rem_euclid(4) as u32;
         let sf = scale_factor.max(1.0);
@@ -327,8 +322,6 @@ impl Uniforms {
         }
     }
 }
-
-// pipeline
 
 pub struct Pipeline {
     splat_pipeline: wgpu::RenderPipeline,
@@ -484,8 +477,6 @@ struct Bgls<'a> {
     strip: &'a wgpu::BindGroupLayout,
 }
 
-// instance
-
 #[derive(Default)]
 struct Instance {
     resources: Option<Resources>,
@@ -517,8 +508,6 @@ impl Instance {
         self.points_per_col = p.points_per_column;
     }
 }
-
-// gpu resources
 
 // Fixed [dB] storage domain -- must match the shader constants in spectrogram.wgsl.
 // u16 unorm over this range gives ~0.0024 dB/step, decoupled from the live

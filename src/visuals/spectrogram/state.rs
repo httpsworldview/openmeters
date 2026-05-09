@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::processor::{
-    FrequencyScale, SpectrogramColumn, SpectrogramConfig,
-    SpectrogramProcessor as CoreSpectrogramProcessor, SpectrogramUpdate,
+    SpectrogramColumn, SpectrogramConfig, SpectrogramProcessor as CoreSpectrogramProcessor,
+    SpectrogramUpdate,
 };
 use super::render::{
     ColumnKind, PendingUpload, SPECTROGRAM_PALETTE_SIZE, SpectrogramParams, SpectrogramPrimitive,
@@ -12,15 +12,16 @@ use super::render::{
 use crate::persistence::settings::PianoRollOverlay;
 use crate::ui::theme::BORDER_SUBTLE;
 use crate::util::audio::musical::{MusicalNote, NoteInfo};
-use crate::util::audio::{DB_FLOOR, DEFAULT_SAMPLE_RATE, fmt_duration, fmt_freq};
+use crate::util::audio::{DB_FLOOR, DEFAULT_SAMPLE_RATE, FrequencyScale, fmt_duration, fmt_freq};
 use crate::util::color::{color_to_rgba, lerp_color, rgba_with_alpha, with_alpha};
 use crate::vis_processor;
 use crate::visuals::palettes;
-use iced::advanced::renderer::{self, Quad};
+use crate::visuals::render::common::{fill_bordered_rect, fill_rect, make_text, measure_text};
+use iced::advanced::renderer;
 use iced::advanced::text::Renderer as _;
 use iced::advanced::widget::{Tree, tree};
 use iced::advanced::{Layout, Renderer as _, Widget, layout, mouse};
-use iced::{Background, Color, Element, Length, Point, Rectangle, Size, keyboard};
+use iced::{Color, Element, Length, Point, Rectangle, Size, keyboard};
 use iced_wgpu::primitive::Renderer as _;
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -47,14 +48,6 @@ const DISPLAY_MIN_HZ: f32 = 1.0;
 fn display_axis(sample_rate: f32) -> (f32, f32) {
     let nyq = (sample_rate / 2.0).max(1.0);
     (DISPLAY_MIN_HZ.min(nyq * 0.5), nyq)
-}
-
-fn norm_to_freq(inv: f32, nyquist: f32, min_freq: f32, scale: FrequencyScale) -> f32 {
-    scale.freq_at(min_freq, nyquist, inv)
-}
-
-fn freq_to_norm(freq: f32, nyquist: f32, min_freq: f32, scale: FrequencyScale) -> f32 {
-    scale.pos_of(min_freq, nyquist, freq)
 }
 
 vis_processor!(
@@ -301,7 +294,7 @@ impl SpectrogramState {
             return None;
         }
         let (min_f, nyq) = display_axis(self.sample_rate);
-        let freq = norm_to_freq(tex_uv, nyq, min_f, self.freq_scale);
+        let freq = self.freq_scale.freq_at(min_f, nyq, tex_uv);
         (freq.is_finite() && freq > 0.0).then_some(freq)
     }
 
@@ -419,7 +412,6 @@ impl<'a> Spectrogram<'a> {
     }
 
     fn draw_crosshair(&self, renderer: &mut iced::Renderer, bounds: Rectangle, cursor: Point) {
-        let c = BORDER_SUBTLE;
         for rect in [
             Rectangle::new(
                 Point::new(cursor.x, bounds.y),
@@ -427,13 +419,7 @@ impl<'a> Spectrogram<'a> {
             ),
             Rectangle::new(Point::new(bounds.x, cursor.y), Size::new(bounds.width, 1.0)),
         ] {
-            renderer.fill_quad(
-                Quad {
-                    bounds: rect,
-                    ..Default::default()
-                },
-                c,
-            );
+            fill_rect(renderer, rect, BORDER_SUBTLE);
         }
     }
 
@@ -458,9 +444,9 @@ impl<'a> Spectrogram<'a> {
             .map_or_else(|| String::from("--"), |ni| ni.fmt_note_cents());
         let time_text = time_ago.map_or_else(|| String::from("--"), fmt_duration);
 
-        let fsz = crate::visuals::measure_text(&freq_text, TOOLTIP_SIZE);
-        let nsz = crate::visuals::measure_text(&note_text, TOOLTIP_SIZE);
-        let tsz = crate::visuals::measure_text(&time_text, TOOLTIP_SIZE);
+        let fsz = measure_text(&freq_text, TOOLTIP_SIZE);
+        let nsz = measure_text(&note_text, TOOLTIP_SIZE);
+        let tsz = measure_text(&time_text, TOOLTIP_SIZE);
         let line_h = fsz.height;
         let content_w = fsz.width.max(nsz.width).max(tsz.width);
         let content_h = line_h * 3.0 + TOOLTIP_GAP * 2.0;
@@ -468,17 +454,15 @@ impl<'a> Spectrogram<'a> {
         let tb = place_tooltip(bounds, cursor, sz, horizontal);
 
         let pal = theme.extended_palette();
-        renderer.fill_quad(
-            Quad {
-                bounds: tb,
-                border: iced::Border {
-                    color: with_alpha(crate::ui::theme::BORDER_SUBTLE, TOOLTIP_BORDER_ALPHA),
-                    width: 1.0,
-                    radius: 0.0.into(),
-                },
-                ..Default::default()
+        fill_bordered_rect(
+            renderer,
+            tb,
+            with_alpha(pal.background.strong.color, TOOLTIP_BG_ALPHA),
+            iced::Border {
+                color: with_alpha(crate::ui::theme::BORDER_SUBTLE, TOOLTIP_BORDER_ALPHA),
+                width: 1.0,
+                radius: 0.0.into(),
             },
-            Background::Color(with_alpha(pal.background.strong.color, TOOLTIP_BG_ALPHA)),
         );
 
         let text_color = pal.background.base.text;
@@ -487,7 +471,7 @@ impl<'a> Spectrogram<'a> {
         for (text, sz) in [(&freq_text, fsz), (&note_text, nsz), (&time_text, tsz)] {
             let pt = Point::new(tx, ty);
             renderer.fill_text(
-                crate::visuals::make_text(text, TOOLTIP_SIZE, sz),
+                make_text(text, TOOLTIP_SIZE, sz),
                 pt,
                 text_color,
                 Rectangle::new(pt, sz),
@@ -514,8 +498,8 @@ impl<'a> Spectrogram<'a> {
         let horizontal = matches!(rot, 1 | 3);
 
         let (freq_top, freq_bot) = (
-            norm_to_freq(uv_range[1], nyq, min_f, scale),
-            norm_to_freq(uv_range[0], nyq, min_f, scale),
+            scale.freq_at(min_f, nyq, uv_range[1]),
+            scale.freq_at(min_f, nyq, uv_range[0]),
         );
         let midi_lo = MusicalNote::from_frequency(freq_bot.max(16.0))
             .map_or(PIANO_MIDI_LO, |n| (n.midi_number - 1).max(PIANO_MIDI_LO));
@@ -535,7 +519,7 @@ impl<'a> Spectrogram<'a> {
 
         // Must mirror frequency_at_cursor so keys align with the tooltip.
         let freq_to_px = |f: f32| -> f32 {
-            let uv = freq_to_norm(f, nyq, min_f, scale);
+            let uv = scale.pos_of(min_f, nyq, f);
             let t = ((uv - uv_range[0]) / (uv_range[1] - uv_range[0])).clamp(0.0, 1.0);
             freq_org + freq_ext * if matches!(rot, 1 | 2) { t } else { 1.0 - t }
         };
@@ -609,24 +593,17 @@ impl<'a> Spectrogram<'a> {
                 } else {
                     strip
                 };
-                renderer.fill_quad(
-                    Quad {
-                        bounds: orient_rect(lo, key_len, anchor, w),
-                        border: brd,
-                        ..Default::default()
-                    },
-                    Background::Color(fill),
-                );
+                fill_bordered_rect(renderer, orient_rect(lo, key_len, anchor, w), fill, brd);
                 if note.midi_number % 12 == 0 && key_len >= PIANO_LABEL_SIZE {
                     let s = format!("C{}", note.octave);
-                    let tsz = crate::visuals::measure_text(&s, PIANO_LABEL_SIZE);
+                    let tsz = measure_text(&s, PIANO_LABEL_SIZE);
                     let fp = lo + (key_len - if horizontal { tsz.width } else { tsz.height }) * 0.5;
                     let tp = strip
                         + (PIANO_ROLL_WIDTH - if horizontal { tsz.height } else { tsz.width })
                             * 0.5;
                     let pt = orient_point(fp, tp);
                     renderer.fill_text(
-                        crate::visuals::make_text(&s, PIANO_LABEL_SIZE, tsz),
+                        make_text(&s, PIANO_LABEL_SIZE, tsz),
                         pt,
                         black,
                         Rectangle::new(pt, tsz),
@@ -769,15 +746,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
             params = state.visual_params(bounds, uv_y_range);
         }
         let interaction = tree.state.downcast_ref::<InteractionState>();
-        renderer.fill_quad(
-            Quad {
-                bounds,
-                border: Default::default(),
-                shadow: Default::default(),
-                snap: true,
-            },
-            Background::Color(bg),
-        );
+        fill_rect(renderer, bounds, bg);
         if let Some(p) = params {
             renderer.draw_primitive(bounds, SpectrogramPrimitive::new(p));
         }

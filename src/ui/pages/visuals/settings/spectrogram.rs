@@ -3,22 +3,17 @@
 
 use super::palette::PaletteEvent;
 use super::widgets::{
-    FFT_OPTIONS, FREQ_SCALE_OPTIONS, HOP_DIVISORS, SliderRange, get_closest_hop_divisor,
-    labeled_pick_list, labeled_slider, labeled_toggler, section_title, set_if_changed,
-    update_f32_range, update_fft_size, update_hop_divisor,
+    FFT_OPTIONS, HOP_DIVISORS, SliderRange, get_closest_hop_divisor, labeled_pick_list,
+    labeled_slider, labeled_toggler, section_title, set_if_changed, update_f32_range,
+    update_fft_size, update_hop_divisor,
 };
 use crate::persistence::settings::{PianoRollOverlay, SpectrogramSettings};
+use crate::util::audio::{FrequencyScale, WindowKind};
 use crate::visuals::registry::VisualKind;
-use crate::visuals::spectrogram::processor::{FrequencyScale, WindowKind};
 use iced::widget::{column, row};
 use iced::{Element, Length};
 
 const ZERO_PAD_OPTIONS: [usize; 6] = [1, 2, 4, 8, 16, 32];
-const PIANO_ROLL_OVERLAY_OPTIONS: [PianoRollOverlay; 3] = [
-    PianoRollOverlay::Off,
-    PianoRollOverlay::Right,
-    PianoRollOverlay::Left,
-];
 const FLOOR_DB_RANGE: SliderRange = SliderRange::new(-140.0, -1.0, 1.0);
 const TILT_DB_RANGE: SliderRange = SliderRange::new(-6.0, 6.0, 0.5);
 const ROTATION_RANGE: SliderRange = SliderRange::new(-1.0, 2.0, 1.0);
@@ -60,7 +55,7 @@ impl SpectrogramSettingsPane {
             ),
             labeled_pick_list(
                 "Piano roll overlay",
-                &PIANO_ROLL_OVERLAY_OPTIONS,
+                PianoRollOverlay::ALL,
                 Some(s.piano_roll_overlay),
                 Message::PianoRoll
             ),
@@ -69,10 +64,10 @@ impl SpectrogramSettingsPane {
         .width(Length::Fill);
 
         let right_col = column![
-            labeled_pick_list("Window", &WindowKind::ALL, Some(s.window), Message::Window),
+            labeled_pick_list("Window", WindowKind::ALL, Some(s.window), Message::Window),
             labeled_pick_list(
                 "Freq scale",
-                &FREQ_SCALE_OPTIONS,
+                FrequencyScale::ALL,
                 Some(s.frequency_scale),
                 Message::FrequencyScale
             ),

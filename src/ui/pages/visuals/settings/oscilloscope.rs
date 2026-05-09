@@ -49,7 +49,7 @@ impl OscilloscopeSettingsPane {
         let mut content = column![
             labeled_pick_list(
                 "Mode",
-                &TriggerPreset::ALL,
+                TriggerPreset::ALL,
                 Some(preset),
                 Message::TriggerMode
             ),
@@ -137,14 +137,12 @@ impl OscilloscopeSettingsPane {
     }
 }
 
-crate::settings_enum!(no_default pub(crate) enum TriggerPreset {
+crate::settings_enum!(no_default all pub(crate) enum TriggerPreset {
     ZeroCrossing => "Zero-crossing",
     Stable => "Stable",
 });
 
 impl TriggerPreset {
-    const ALL: [Self; 2] = [Self::ZeroCrossing, Self::Stable];
-
     fn from_mode(mode: TriggerMode) -> Self {
         match mode {
             TriggerMode::ZeroCrossing => Self::ZeroCrossing,

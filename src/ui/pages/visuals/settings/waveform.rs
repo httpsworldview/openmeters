@@ -25,12 +25,6 @@ settings_pane!(
 const SCROLL_SPEED_RANGE: SliderRange = SliderRange::new(MIN_SCROLL_SPEED, MAX_SCROLL_SPEED, 1.0);
 const BAND_DB_FLOOR_RANGE: SliderRange =
     SliderRange::new(MIN_BAND_DB_FLOOR, MAX_BAND_DB_FLOOR, 1.0);
-const COLOR_MODE_OPTIONS: [WaveformColorMode; 3] = [
-    WaveformColorMode::Frequency,
-    WaveformColorMode::Loudness,
-    WaveformColorMode::Static,
-];
-
 fn configure_palette_for_mode(palette: &mut PaletteEditor, mode: WaveformColorMode) {
     match mode {
         WaveformColorMode::Static => {
@@ -83,7 +77,7 @@ impl WaveformSettingsPane {
             ),
             labeled_pick_list(
                 "Color mode",
-                &COLOR_MODE_OPTIONS,
+                WaveformColorMode::ALL,
                 Some(self.settings.color_mode),
                 Message::ColorMode
             ),

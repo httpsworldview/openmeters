@@ -3,9 +3,11 @@
 
 use super::palette::{HasPalette, PaletteSettings};
 use crate::domain::visuals::VisualKind;
+pub use crate::util::audio::Channel;
+use crate::util::audio::{FrequencyScale, WindowKind};
 use crate::visuals::{
     oscilloscope::processor::{OscilloscopeConfig, TriggerMode},
-    spectrogram::processor::{FrequencyScale, SpectrogramConfig, WindowKind},
+    spectrogram::processor::SpectrogramConfig,
     spectrum::processor::{AveragingMode, SpectrumConfig},
     stereometer::processor::StereometerConfig,
     waveform::processor::WaveformConfig,
@@ -111,8 +113,9 @@ impl ModuleSettings {
 }
 
 // Emits a serde-tagged unit enum with Debug/Clone/Copy/Eq + Display from labels.
-// Default is on by default; prefix with `no_default` to skip. Extra derives go
-// via `#[derive(...)]` before the enum (e.g. `#[derive(Hash)]`).
+// Default is on by default; prefix with `no_default` to skip. Prefix with
+// `all` to emit an `ALL` slice. Extra derives go via `#[derive(...)]` before
+// the enum (e.g. `#[derive(Hash)]`).
 #[macro_export]
 macro_rules! settings_enum {
     (@build [$($default:ident)?] $(#[$attr:meta])* $vis:vis enum $name:ident { $($(#[$var_attr:meta])* $variant:ident => $label:expr),+ $(,)? }) => {
@@ -125,6 +128,12 @@ macro_rules! settings_enum {
             }
         }
     };
+    (@build_all [$($default:ident)?] $(#[$attr:meta])* $vis:vis enum $name:ident { $($(#[$var_attr:meta])* $variant:ident => $label:expr),+ $(,)? }) => {
+        $crate::settings_enum!(@build [$($default)?] $(#[$attr])* $vis enum $name { $($(#[$var_attr])* $variant => $label,)+ });
+        impl $name { pub const ALL: &'static [Self] = &[$(Self::$variant,)+]; }
+    };
+    (no_default all $($rest:tt)+) => { $crate::settings_enum!(@build_all [] $($rest)+); };
+    (all $($rest:tt)+) => { $crate::settings_enum!(@build_all [Default] $($rest)+); };
     (no_default $($rest:tt)+) => { $crate::settings_enum!(@build [] $($rest)+); };
     ($($rest:tt)+) => { $crate::settings_enum!(@build [Default] $($rest)+); };
 }
@@ -158,35 +167,17 @@ macro_rules! visual_settings {
     };
 }
 
-settings_enum!(pub enum Channel {
-    #[default]
-    Left => "Left",
-    Right => "Right",
-    Mid => "Mid",
-    Side => "Side",
-    None => "None",
-});
-
-impl Channel {
-    pub const ALL: &'static [Channel] = &[
-        Channel::Left,
-        Channel::Right,
-        Channel::Mid,
-        Channel::Side,
-        Channel::None,
-    ];
-}
-settings_enum!(pub enum StereometerMode  {
+settings_enum!(all pub enum StereometerMode {
     Lissajous => "Lissajous",
     #[default] DotCloud => "Dot Cloud",
     DotCloudBands => "Dot Cloud (Bands)",
 });
-settings_enum!(pub enum StereometerScale { Linear => "Linear", #[default] Exponential => "Exponential" });
-settings_enum!(pub enum CorrelationMeterMode { Off => "Off", SingleBand => "Single Band", #[default] MultiBand => "Multi Band" });
-settings_enum!(pub enum CorrelationMeterSide { Left => "Left", #[default] Right => "Right" });
-settings_enum!(pub enum PianoRollOverlay { #[default] Off => "Off", Right => "Right", Left => "Left" });
+settings_enum!(all pub enum StereometerScale { Linear => "Linear", #[default] Exponential => "Exponential" });
+settings_enum!(all pub enum CorrelationMeterMode { Off => "Off", SingleBand => "Single Band", #[default] MultiBand => "Multi Band" });
+settings_enum!(all pub enum CorrelationMeterSide { Left => "Left", #[default] Right => "Right" });
+settings_enum!(all pub enum PianoRollOverlay { #[default] Off => "Off", Right => "Right", Left => "Left" });
 
-settings_enum!(pub enum MeterMode {
+settings_enum!(all pub enum MeterMode {
     #[default]
     LufsShortTerm => "LUFS Short-term",
     LufsMomentary => "LUFS Momentary",
@@ -196,14 +187,6 @@ settings_enum!(pub enum MeterMode {
 });
 
 impl MeterMode {
-    pub const ALL: &'static [MeterMode] = &[
-        MeterMode::LufsShortTerm,
-        MeterMode::LufsMomentary,
-        MeterMode::RmsFast,
-        MeterMode::RmsSlow,
-        MeterMode::TruePeak,
-    ];
-
     pub fn unit_label(self) -> &'static str {
         match self {
             MeterMode::LufsShortTerm | MeterMode::LufsMomentary => "LUFS",
@@ -211,9 +194,9 @@ impl MeterMode {
         }
     }
 }
-settings_enum!(pub enum SpectrumDisplayMode { #[default] Line => "Line", Bar => "Bar" });
-settings_enum!(pub enum SpectrumWeightingMode { #[default] AWeighted => "A-Weighted", Raw => "Raw" });
-settings_enum!(pub enum WaveformColorMode { #[default] Frequency => "Frequency", Loudness => "Loudness", Static => "Static" });
+settings_enum!(all pub enum SpectrumDisplayMode { #[default] Line => "Line", Bar => "Bar" });
+settings_enum!(all pub enum SpectrumWeightingMode { #[default] AWeighted => "A-Weighted", Raw => "Raw" });
+settings_enum!(all pub enum WaveformColorMode { #[default] Frequency => "Frequency", Loudness => "Loudness", Static => "Static" });
 
 visual_settings!(OscilloscopeSettings from OscilloscopeConfig {
     segment_duration: f32, trigger_mode: TriggerMode,

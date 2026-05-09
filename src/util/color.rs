@@ -32,15 +32,11 @@ pub fn palettes_equal(a: &[Color], b: &[Color]) -> bool {
     a.len() == b.len() && a.iter().zip(b).all(|(x, y)| colors_equal(*x, *y))
 }
 
-// Packs `iced::Color` to `[f32; 4]` for GPU upload. Delegates to iced's `pack`
-// so the `web-colors` feature flag controls linearization.
 #[inline]
 pub fn color_to_rgba(color: Color) -> [f32; 4] {
     iced_wgpu::graphics::color::pack(color).components()
 }
 
-// sRGB-space lerp. Only correct for inputs close in value (theme tweens, track
-// fills); distant-hue interpolation belongs on the GPU palette pipeline.
 #[inline]
 pub fn lerp_color(a: Color, b: Color, t: f32) -> Color {
     let t = t.clamp(0.0, 1.0);
@@ -103,8 +99,6 @@ pub fn sanitize_stop_positions(raw: Option<&[f32]>, defaults: &[f32]) -> Vec<f32
     let end = count - 1;
     let internals = count - 2;
 
-    // Accept either the full row (endpoints included, discarded here) or just
-    // the interior stops. Anything else falls back to defaults.
     if let Some(raw) = raw.filter(|r| r.len() == count || r.len() == internals) {
         let start = if raw.len() == count { 1 } else { 0 };
         out[1..end].copy_from_slice(&raw[start..start + internals]);
@@ -145,7 +139,6 @@ pub fn sanitize_stop_spreads(raw: Option<&[f32]>, count: usize) -> Vec<f32> {
     out
 }
 
-// Returns (lo, hi, spread-adjusted factor) for the gradient segment containing `t`.
 pub fn find_segment(
     positions: &[f32],
     spreads: &[f32],

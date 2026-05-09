@@ -8,7 +8,7 @@ use std::sync::Arc;
 use crate::sdf_primitive;
 use crate::util::color::rgba_with_alpha;
 use crate::visuals::render::common::{
-    ClipTransform, SdfVertex, baseline_segment_vertices, build_aa_line_list, quad_vertices,
+    ChannelLayout, ClipTransform, SdfVertex, extend_filled_line, quad_vertices,
 };
 use crate::visuals::waveform::processor::NUM_BANDS;
 
@@ -32,8 +32,6 @@ pub struct WaveformParams {
     pub colors: Arc<[[f32; 4]]>,
     pub preview_samples: Arc<[PreviewSample]>,
     pub preview_progress: f32,
-    /// Band levels for peak history overlay. Layout: `(channel * NUM_BANDS + band) * columns + col`.
-    /// Empty if peak history is disabled.
     pub band_levels: Arc<[f32]>,
     pub band_colors: [[f32; 4]; NUM_BANDS],
     pub fill_alpha: f32,
@@ -45,13 +43,15 @@ pub struct WaveformParams {
 
 impl WaveformParams {
     fn preview_active(&self) -> bool {
-        self.preview_progress > 0.0 && self.preview_samples.len() >= self.channels
+        self.channels > 0
+            && self.preview_progress > 0.0
+            && self.preview_samples.len() >= self.channels
     }
 }
 
 #[inline]
 fn normalize_sample(min: f32, max: f32) -> (f32, f32) {
-    let (lo, hi) = if min <= max { (min, max) } else { (max, min) };
+    let (lo, hi) = (min.min(max), min.max(max));
     (lo.clamp(-1.0, 1.0), hi.clamp(-1.0, 1.0))
 }
 
@@ -69,34 +69,31 @@ impl WaveformPrimitive {
         let params = &self.params;
         let (channels, columns) = (params.channels.max(1), params.columns);
         let total = channels * columns;
+        let preview_active = params.preview_active();
 
         let valid = (columns == 0
             || (params.samples.len() >= total && params.colors.len() >= total))
-            && (columns > 0 || params.preview_active());
+            && (columns > 0 || preview_active);
         if !valid {
             return Vec::new();
         }
 
         let clip = ClipTransform::from_viewport(viewport);
         let col_width = params.column_width.max(0.5);
-        let preview_width = if params.preview_active() {
-            col_width
-        } else {
-            0.0
-        };
+        let preview_width = if preview_active { col_width } else { 0.0 };
         let right_edge = params.bounds.x + params.bounds.width;
 
-        let v_pad = params.vertical_padding.max(0.0);
-        let gap = params.channel_gap.max(0.0);
-        let usable_h =
-            (params.bounds.height - v_pad * 2.0 - gap * (channels.saturating_sub(1) as f32))
-                .max(1.0);
-        let ch_height = usable_h / channels as f32;
-        let amp_scale = ch_height * 0.5 * params.amplitude_scale.max(0.01);
+        let layout = ChannelLayout::new(
+            params.bounds,
+            channels,
+            params.vertical_padding,
+            params.channel_gap,
+            params.amplitude_scale,
+        );
 
         let mut vertices = Vec::with_capacity(channels * (columns + 1) * 6);
 
-        let scroll_offset = if params.preview_active() {
+        let scroll_offset = if preview_active {
             params.preview_progress * col_width
         } else {
             0.0
@@ -109,54 +106,50 @@ impl WaveformPrimitive {
         };
 
         for ch in 0..channels {
-            let center_y =
-                params.bounds.y + v_pad + ch as f32 * (ch_height + gap) + ch_height * 0.5;
+            let center_y = layout.center_y(ch);
 
             for i in 0..columns {
                 let idx = ch * columns + i;
-                let (min, max) = normalize_sample(params.samples[idx][0], params.samples[idx][1]);
                 let x = column_x(i);
-
+                let (min, max) = normalize_sample(params.samples[idx][0], params.samples[idx][1]);
                 let color = rgba_with_alpha(
                     params.colors.get(idx).copied().unwrap_or([1.0; 4]),
                     params.fill_alpha,
                 );
                 vertices.extend(quad_vertices(
                     x,
-                    center_y - max * amp_scale,
+                    center_y - max * layout.amplitude_scale,
                     x + col_width,
-                    center_y - min * amp_scale,
+                    center_y - min * layout.amplitude_scale,
                     clip,
                     color,
                 ));
             }
 
-            if params.preview_active() {
+            if preview_active {
                 let raw_last_x = right_edge - preview_width - scroll_offset;
                 let start_x = raw_last_x.floor();
                 let end_x = right_edge;
 
                 let ps = params.preview_samples[ch];
                 let (min, max) = normalize_sample(ps.min, ps.max);
-                let color = rgba_with_alpha(ps.color, params.fill_alpha);
                 vertices.extend(quad_vertices(
                     start_x,
-                    center_y - max * amp_scale,
+                    center_y - max * layout.amplitude_scale,
                     end_x,
-                    center_y - min * amp_scale,
+                    center_y - min * layout.amplitude_scale,
                     clip,
-                    color,
+                    rgba_with_alpha(ps.color, params.fill_alpha),
                 ));
             }
 
-            // Peak history overlay -- confined to this channel's vertical region.
-            let band_expected = params.channels * NUM_BANDS * columns;
+            let band_expected = channels * NUM_BANDS * columns;
             if !params.band_levels.is_empty()
                 && params.band_levels.len() >= band_expected
                 && columns >= 2
             {
-                let baseline = center_y + ch_height * 0.5;
-                let band_height = ch_height;
+                let baseline = center_y + layout.channel_height * 0.5;
+                let band_height = layout.channel_height;
                 let mut pts = Vec::with_capacity(columns + 1);
                 for band in 0..NUM_BANDS {
                     let band_base = (ch * NUM_BANDS + band) * columns;
@@ -169,22 +162,19 @@ impl WaveformPrimitive {
                         (column_x(i), baseline - level * band_height)
                     }));
 
-                    // Extend to the right edge so the overlay covers the preview region.
                     if let Some(&last) = pts.last() {
                         pts.push((right_edge, last.1));
                     }
 
-                    for pair in pts.windows(2) {
-                        vertices.extend(baseline_segment_vertices(
-                            pair[0],
-                            pair[1],
-                            baseline,
-                            clip,
-                            [fill_color, fill_color],
-                        ));
-                    }
-
-                    vertices.extend(build_aa_line_list(&pts, BAND_LINE_WIDTH, color, &clip));
+                    extend_filled_line(
+                        &mut vertices,
+                        &pts,
+                        baseline,
+                        BAND_LINE_WIDTH,
+                        color,
+                        fill_color,
+                        clip,
+                    );
                 }
             }
         }

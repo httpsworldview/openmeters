@@ -9,8 +9,8 @@ use crate::persistence::settings::SpectrumDisplayMode;
 use crate::sdf_primitive;
 use crate::util::color::{rgba_with_alpha, sample_rgba_gradient};
 use crate::visuals::render::common::{
-    ClipTransform, SdfVertex, baseline_segment_vertices, build_aa_line_list, decimate_line,
-    dot_vertices, gradient_quad_vertices, line_vertices, quad_vertices,
+    ClipTransform, SdfVertex, baseline_segment_vertices, decimate_line, dot_vertices,
+    extend_aa_line_list, gradient_quad_vertices, line_vertices, quad_vertices,
 };
 
 pub(crate) const MIN_BAR_COUNT: usize = 4;
@@ -61,9 +61,9 @@ impl SpectrumPrimitive {
         }
 
         let mut vertices = if self.params.display_mode == SpectrumDisplayMode::Bar {
-            self.build_bar_vertices(&clip, bounds)
+            self.build_bar_vertices(clip, bounds)
         } else {
-            self.build_line_vertices(&clip, bounds)
+            self.build_line_vertices(clip, bounds)
         };
         if let Some(peak) = self.params.peak {
             if let Some(anchor) = peak.leader_anchor {
@@ -82,7 +82,7 @@ impl SpectrumPrimitive {
         vertices
     }
 
-    fn build_line_vertices(&self, clip: &ClipTransform, bounds: Rectangle) -> Vec<SdfVertex> {
+    fn build_line_vertices(&self, clip: ClipTransform, bounds: Rectangle) -> Vec<SdfVertex> {
         let pixel_budget = bounds.width.ceil().max(1.0) as usize * 2;
         let positions = to_cartesian_positions(bounds, self.params.normalized_points.as_ref());
         if positions.len() < 2 {
@@ -105,26 +105,28 @@ impl SpectrumPrimitive {
         if self.params.show_secondary_line && self.params.secondary_points.len() >= 2 {
             let sec_pts = to_cartesian_positions(bounds, self.params.secondary_points.as_ref());
             let overlay_positions = decimate_line(&sec_pts, pixel_budget);
-            vertices.extend(build_aa_line_list(
+            extend_aa_line_list(
+                &mut vertices,
                 &overlay_positions,
                 self.params.secondary_line_width,
                 self.params.secondary_line_color,
                 clip,
-            ));
+            );
         }
 
         let line_positions = decimate_line(&positions, pixel_budget);
-        vertices.extend(build_aa_line_list(
+        extend_aa_line_list(
+            &mut vertices,
             &line_positions,
             self.params.line_width,
             self.params.line_color,
             clip,
-        ));
+        );
 
         vertices
     }
 
-    fn build_bar_vertices(&self, clip: &ClipTransform, bounds: Rectangle) -> Vec<SdfVertex> {
+    fn build_bar_vertices(&self, clip: ClipTransform, bounds: Rectangle) -> Vec<SdfVertex> {
         let p = &self.params;
         let bar_count = p.bar_count.max(MIN_BAR_COUNT);
         let gap = p.bar_gap.clamp(0.0, 0.8);
@@ -154,7 +156,7 @@ impl SpectrumPrimitive {
                 y,
                 x1,
                 baseline,
-                *clip,
+                clip,
                 rgba_with_alpha(color, color[3] * 0.82),
                 rgba_with_alpha(color, color[3] * 0.22),
             ));
@@ -167,7 +169,7 @@ impl SpectrumPrimitive {
                     sec_y - h,
                     x1,
                     sec_y + h,
-                    *clip,
+                    clip,
                     p.secondary_line_color,
                 ));
             }
@@ -188,7 +190,7 @@ fn to_cartesian_positions(bounds: Rectangle, pts: &[[f32; 2]]) -> Vec<(f32, f32)
 
 fn push_highlight_columns(
     vertices: &mut Vec<SdfVertex>,
-    clip: &ClipTransform,
+    clip: ClipTransform,
     baseline: f32,
     positions: &[(f32, f32)],
     normalized_points: &[[f32; 2]],
@@ -205,7 +207,7 @@ fn push_highlight_columns(
             seg[0],
             seg[1],
             baseline,
-            *clip,
+            clip,
             [c0, c1],
         ));
     }

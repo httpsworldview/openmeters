@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Maika Namuo
 
 use crate::ui::theme;
-use crate::visuals::spectrogram::processor::FrequencyScale;
 use iced::Length;
 use iced::alignment::Vertical;
 use iced::widget::text::Wrapping;
@@ -12,12 +11,6 @@ use std::fmt;
 
 pub const FFT_OPTIONS: [usize; 5] = [1024, 2048, 4096, 8192, 16384];
 pub const HOP_DIVISORS: [usize; 7] = [4, 6, 8, 16, 32, 64, 128];
-pub const FREQ_SCALE_OPTIONS: [FrequencyScale; 3] = [
-    FrequencyScale::Linear,
-    FrequencyScale::Logarithmic,
-    FrequencyScale::Erb,
-];
-
 pub struct SliderRange {
     pub min: f32,
     pub max: f32,

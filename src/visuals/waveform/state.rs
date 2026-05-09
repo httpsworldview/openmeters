@@ -6,11 +6,11 @@ use super::processor::{
     WaveformProcessor as CoreWaveformProcessor, WaveformSnapshot,
 };
 use super::render::{PreviewSample, WaveformParams, WaveformPrimitive};
-use crate::persistence::settings::{Channel, WaveformColorMode, WaveformSettings};
+use crate::persistence::settings::{WaveformColorMode, WaveformSettings};
+use crate::util::audio::{Channel, project_planar_channels};
 use crate::util::color::{color_to_rgba, sample_gradient};
 use crate::visuals::palettes;
 use crate::visuals::palettes::waveform::GRADIENT_STOPS;
-use crate::visuals::project_channel_data;
 use crate::{vis_processor, visualization_widget};
 use iced::Color;
 use std::sync::Arc;
@@ -221,13 +221,8 @@ impl WaveformState {
             return WaveformSnapshot::default();
         }
 
-        let remap = |data: &[f32], stride: usize| -> Vec<f32> {
-            [ch1, ch2]
-                .into_iter()
-                .filter_map(|c| project_channel_data(c, data, stride, channels))
-                .flatten()
-                .collect()
-        };
+        let remap =
+            |data: &[f32], stride| project_planar_channels([ch1, ch2], data, stride, channels);
 
         let min_values = remap(&source.min_values, columns);
         let out_channels = min_values.len() / columns;

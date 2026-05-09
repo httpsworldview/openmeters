@@ -3,25 +3,19 @@
 
 use super::palette::PaletteEvent;
 use super::widgets::{
-    FFT_OPTIONS, FREQ_SCALE_OPTIONS, HOP_DIVISORS, SliderRange, get_closest_hop_divisor,
-    labeled_pick_list, labeled_slider, labeled_toggler, section_title, set_if_changed,
-    update_f32_range, update_fft_size, update_hop_divisor, update_usize_from_f32,
+    FFT_OPTIONS, HOP_DIVISORS, SliderRange, get_closest_hop_divisor, labeled_pick_list,
+    labeled_slider, labeled_toggler, section_title, set_if_changed, update_f32_range,
+    update_fft_size, update_hop_divisor, update_usize_from_f32,
 };
 use crate::persistence::settings::{SpectrumDisplayMode, SpectrumSettings, SpectrumWeightingMode};
+use crate::util::audio::FrequencyScale;
 use crate::visuals::registry::VisualKind;
-use crate::visuals::spectrogram::processor::FrequencyScale;
 use crate::visuals::spectrum::processor::{
     AveragingMode, MAX_SPECTRUM_DB_FLOOR, MAX_SPECTRUM_EXP_FACTOR, MAX_SPECTRUM_PEAK_DECAY,
     MIN_SPECTRUM_DB_FLOOR, MIN_SPECTRUM_EXP_FACTOR, MIN_SPECTRUM_PEAK_DECAY,
 };
 use iced::widget::{column, row};
 use iced::{Element, Length};
-
-const DISPLAY_MODE: [SpectrumDisplayMode; 2] =
-    [SpectrumDisplayMode::Line, SpectrumDisplayMode::Bar];
-const WEIGHTING: [SpectrumWeightingMode; 2] =
-    [SpectrumWeightingMode::AWeighted, SpectrumWeightingMode::Raw];
-const AVG_MODE: [AvgMode; 3] = [AvgMode::None, AvgMode::Exponential, AvgMode::PeakHold];
 
 const EXP_R: SliderRange = SliderRange::new(MIN_SPECTRUM_EXP_FACTOR, MAX_SPECTRUM_EXP_FACTOR, 0.01);
 const DECAY_R: SliderRange =
@@ -33,7 +27,7 @@ const GAP_R: SliderRange = SliderRange::new(0.0, 0.8, 0.05);
 const HIGH_R: SliderRange = SliderRange::new(0.0, 0.9, 0.01);
 const FLOOR_R: SliderRange = SliderRange::new(MIN_SPECTRUM_DB_FLOOR, MAX_SPECTRUM_DB_FLOOR, 1.0);
 
-crate::settings_enum!(pub(crate) enum AvgMode {
+crate::settings_enum!(all pub(crate) enum AvgMode {
     None => "None",
     #[default] Exponential => "Exponential",
     PeakHold => "Peak hold",
@@ -52,7 +46,7 @@ settings_pane!(
 pub enum Message {
     FftSize(usize),
     HopDivisor(usize),
-    FrequencyScale(FrequencyScale),
+    FreqScale(FrequencyScale),
     ReverseFrequency(bool),
     DisplayMode(SpectrumDisplayMode),
     WeightingMode(SpectrumWeightingMode),
@@ -83,10 +77,15 @@ impl SpectrumSettingsPane {
         };
 
         let left = column![
-            labeled_pick_list("Display", &DISPLAY_MODE, Some(s.display_mode), DisplayMode),
+            labeled_pick_list(
+                "Display",
+                SpectrumDisplayMode::ALL,
+                Some(s.display_mode),
+                DisplayMode
+            ),
             labeled_pick_list(
                 "Weighting",
-                &WEIGHTING,
+                SpectrumWeightingMode::ALL,
                 Some(s.weighting_mode),
                 WeightingMode
             ),
@@ -98,11 +97,11 @@ impl SpectrumSettingsPane {
         let right = column![
             labeled_pick_list(
                 "Freq scale",
-                &FREQ_SCALE_OPTIONS,
+                FrequencyScale::ALL,
                 Some(s.frequency_scale),
-                FrequencyScale
+                FreqScale
             ),
-            labeled_pick_list("Averaging", &AVG_MODE, Some(self.avg_mode), Averaging),
+            labeled_pick_list("Averaging", AvgMode::ALL, Some(self.avg_mode), Averaging),
             labeled_pick_list("Hop divisor", &HOP_DIVISORS, Some(hop_divisor), HopDivisor),
         ]
         .spacing(8)
@@ -216,7 +215,7 @@ impl SpectrumSettingsPane {
         match *msg {
             FftSize(v) => update_fft_size(&mut s.fft_size, &mut s.hop_size, v),
             HopDivisor(v) => update_hop_divisor(s.fft_size, &mut s.hop_size, v),
-            FrequencyScale(v) => set_if_changed(&mut s.frequency_scale, v),
+            FreqScale(v) => set_if_changed(&mut s.frequency_scale, v),
             ReverseFrequency(v) => set_if_changed(&mut s.reverse_frequency, v),
             DisplayMode(v) => set_if_changed(&mut s.display_mode, v),
             WeightingMode(v) => set_if_changed(&mut s.weighting_mode, v),

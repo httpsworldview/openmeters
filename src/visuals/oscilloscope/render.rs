@@ -7,7 +7,7 @@ use iced::advanced::graphics::Viewport;
 use crate::sdf_primitive;
 use crate::util::color::rgba_with_alpha;
 use crate::visuals::render::common::{
-    ClipTransform, SdfVertex, baseline_segment_vertices, build_aa_line_list, decimate_line,
+    ChannelLayout, ClipTransform, SdfVertex, decimate_line, extend_filled_line,
 };
 
 #[derive(Debug, Clone)]
@@ -46,14 +46,14 @@ impl OscilloscopePrimitive {
         const CHANNEL_GAP: f32 = 12.0;
         const AMPLITUDE_SCALE: f32 = 0.9;
         const STROKE_WIDTH: f32 = 1.0;
-        const LINE_ALPHA: f32 = 1.0;
 
-        let usable_height = (bounds.height
-            - VERTICAL_PADDING * 2.0
-            - CHANNEL_GAP * (channels.saturating_sub(1) as f32))
-            .max(1.0);
-        let channel_height = usable_height / channels as f32;
-        let amplitude_scale = channel_height * 0.5 * AMPLITUDE_SCALE;
+        let layout = ChannelLayout::new(
+            bounds,
+            channels,
+            VERTICAL_PADDING,
+            CHANNEL_GAP,
+            AMPLITUDE_SCALE,
+        );
         let step = bounds.width.max(1.0) / (samples_per_channel.saturating_sub(1) as f32).max(1.0);
         let pixel_width = bounds.width.ceil().max(1.0) as usize;
 
@@ -72,10 +72,7 @@ impl OscilloscopePrimitive {
                 .get(channel_idx)
                 .copied()
                 .unwrap_or([0.6, 0.8, 0.9, 1.0]);
-            let center = bounds.y
-                + VERTICAL_PADDING
-                + channel_idx as f32 * (channel_height + CHANNEL_GAP)
-                + channel_height * 0.5;
+            let center = layout.center_y(channel_idx);
 
             let positions: Vec<_> = channel_samples
                 .iter()
@@ -83,29 +80,21 @@ impl OscilloscopePrimitive {
                 .map(|(i, &s)| {
                     (
                         bounds.x + i as f32 * step,
-                        center - s.clamp(-1.0, 1.0) * amplitude_scale,
+                        center - s.clamp(-1.0, 1.0) * layout.amplitude_scale,
                     )
                 })
                 .collect();
             let positions = decimate_line(&positions, pixel_width * 2);
 
-            let fill_color = rgba_with_alpha(color, self.params.fill_alpha);
-            for pair in positions.windows(2) {
-                vertices.extend(baseline_segment_vertices(
-                    pair[0],
-                    pair[1],
-                    center,
-                    clip,
-                    [fill_color, fill_color],
-                ));
-            }
-
-            vertices.extend(build_aa_line_list(
+            extend_filled_line(
+                &mut vertices,
                 &positions,
+                center,
                 STROKE_WIDTH,
-                rgba_with_alpha(color, LINE_ALPHA),
-                &clip,
-            ));
+                rgba_with_alpha(color, 1.0),
+                rgba_with_alpha(color, self.params.fill_alpha),
+                clip,
+            );
         }
 
         vertices
