@@ -7,9 +7,10 @@ use super::widgets::{
     update_f32_range,
 };
 use crate::persistence::settings::{Channel, WaveformColorMode, WaveformSettings};
+use crate::visuals::palettes::waveform::GRADIENT_STOPS;
 use crate::visuals::registry::VisualKind;
 use crate::visuals::waveform::processor::{
-    MAX_BAND_DB_FLOOR, MAX_SCROLL_SPEED, MIN_BAND_DB_FLOOR, MIN_SCROLL_SPEED,
+    MAX_BAND_DB_FLOOR, MAX_SCROLL_SPEED, MIN_BAND_DB_FLOOR, MIN_SCROLL_SPEED, NUM_BANDS,
 };
 use iced::Element;
 use iced::widget::column;
@@ -28,7 +29,10 @@ const BAND_DB_FLOOR_RANGE: SliderRange =
 fn configure_palette_for_mode(palette: &mut PaletteEditor, mode: WaveformColorMode) {
     match mode {
         WaveformColorMode::Static => {
-            palette.set_visible_indices(Some(vec![0]));
+            let visible = std::iter::once(0)
+                .chain(GRADIENT_STOPS..GRADIENT_STOPS + NUM_BANDS)
+                .collect();
+            palette.set_visible_indices(Some(visible));
             palette.set_label_overrides(vec![(0, "Color")]);
         }
         WaveformColorMode::Loudness => {
