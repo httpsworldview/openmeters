@@ -107,6 +107,15 @@ fn clamp_extrema(min: f32, max: f32) -> (f32, f32) {
     )
 }
 
+fn sample_extrema(samples: &[f32]) -> (f32, f32) {
+    let (min, max) = samples
+        .iter()
+        .fold((f32::MAX, f32::MIN), |(min, max), &sample| {
+            (min.min(sample), max.max(sample))
+        });
+    clamp_extrema(min, max)
+}
+
 #[derive(Clone)]
 struct FrequencyAnalyzer {
     fft: Arc<dyn RealToComplex<f32>>,
@@ -271,8 +280,6 @@ pub struct WaveformProcessor {
     column_count: usize,
     total_columns_written: u64,
     sample_accumulators: Vec<Vec<f32>>,
-    accumulator_min: Vec<f32>,
-    accumulator_max: Vec<f32>,
     frequency_analyzers: Vec<FrequencyAnalyzer>,
     has_pending_changes: bool,
 }
@@ -294,8 +301,6 @@ impl WaveformProcessor {
             column_count: 0,
             total_columns_written: 0,
             sample_accumulators: Vec::new(),
-            accumulator_min: Vec::new(),
-            accumulator_max: Vec::new(),
             has_pending_changes: false,
         };
         processor.allocate_buffers();
@@ -318,8 +323,6 @@ impl WaveformProcessor {
         self.sample_accumulators = (0..self.channel_count)
             .map(|_| Vec::with_capacity(self.samples_per_column))
             .collect();
-        self.accumulator_min = vec![f32::MAX; self.channel_count];
-        self.accumulator_max = vec![f32::MIN; self.channel_count];
         self.frequency_analyzers = (0..self.channel_count)
             .map(|_| FrequencyAnalyzer::new(self.config.sample_rate))
             .collect();
@@ -334,57 +337,52 @@ impl WaveformProcessor {
         self.allocate_buffers();
     }
 
-    fn flush_accumulated_samples(&mut self) {
-        let max_columns = self.config.max_columns;
+    fn flush_ready_columns(&mut self) {
+        let (max_columns, sample_count) = (self.config.max_columns, self.samples_per_column);
+        let floor = self.config.band_db_floor;
 
-        for channel in 0..self.channel_count {
-            if self.sample_accumulators[channel].is_empty() {
-                continue;
+        while self
+            .sample_accumulators
+            .first()
+            .is_some_and(|acc| acc.len() >= sample_count)
+        {
+            for channel in 0..self.channel_count {
+                let samples = &self.sample_accumulators[channel][..sample_count];
+                let (clamped_min, clamped_max) = sample_extrema(samples);
+                let ring_index = channel * max_columns + self.ring_head;
+
+                self.min_values[ring_index] = clamped_min;
+                self.max_values[ring_index] = clamped_max;
+                self.frequency_values[ring_index] =
+                    self.frequency_analyzers[channel].analyze(samples);
+
+                for (band, &level) in self.frequency_analyzers[channel]
+                    .smoothed_bands
+                    .iter()
+                    .enumerate()
+                {
+                    let band_index = (channel * NUM_BANDS + band) * max_columns + self.ring_head;
+                    let db = power_to_db(level * level, floor);
+                    self.band_levels[band_index] = ((db - floor) / -floor).clamp(0.0, 1.0);
+                }
             }
 
-            let (clamped_min, clamped_max) =
-                clamp_extrema(self.accumulator_min[channel], self.accumulator_max[channel]);
-            let ring_index = channel * max_columns + self.ring_head;
-
-            self.min_values[ring_index] = clamped_min;
-            self.max_values[ring_index] = clamped_max;
-            self.frequency_values[ring_index] =
-                self.frequency_analyzers[channel].analyze(&self.sample_accumulators[channel]);
-
-            for (band, &level) in self.frequency_analyzers[channel]
-                .smoothed_bands
-                .iter()
-                .enumerate()
-            {
-                let band_index = (channel * NUM_BANDS + band) * max_columns + self.ring_head;
-                let floor = self.config.band_db_floor;
-                let db = power_to_db(level * level, floor);
-                self.band_levels[band_index] = ((db - floor) / -floor).clamp(0.0, 1.0);
+            self.ring_head = (self.ring_head + 1) % max_columns;
+            self.column_count = (self.column_count + 1).min(max_columns);
+            self.total_columns_written = self.total_columns_written.saturating_add(1);
+            self.has_pending_changes = true;
+            for acc in &mut self.sample_accumulators {
+                acc.drain(..sample_count);
             }
         }
-
-        self.ring_head = (self.ring_head + 1) % max_columns;
-        self.column_count = (self.column_count + 1).min(max_columns);
-        self.total_columns_written = self.total_columns_written.saturating_add(1);
-        self.has_pending_changes = true;
-        for acc in &mut self.sample_accumulators {
-            acc.clear();
-        }
-        self.accumulator_min.fill(f32::MAX);
-        self.accumulator_max.fill(f32::MIN);
     }
 
     fn ingest_samples(&mut self, samples: &[f32]) {
         for frame in samples.chunks_exact(self.channel_count) {
             for (channel, &sample) in frame.iter().enumerate() {
-                self.accumulator_min[channel] = self.accumulator_min[channel].min(sample);
-                self.accumulator_max[channel] = self.accumulator_max[channel].max(sample);
                 self.sample_accumulators[channel].push(sample);
             }
-
-            if self.sample_accumulators[0].len() >= self.samples_per_column {
-                self.flush_accumulated_samples();
-            }
+            self.flush_ready_columns();
         }
     }
 
@@ -454,8 +452,7 @@ impl WaveformProcessor {
         self.snapshot.preview.resize(self.channel_count);
 
         for channel in 0..self.channel_count {
-            let (min, max) =
-                clamp_extrema(self.accumulator_min[channel], self.accumulator_max[channel]);
+            let (min, max) = sample_extrema(&self.sample_accumulators[channel]);
             self.snapshot.preview.set_channel(channel, min, max);
         }
     }
@@ -502,12 +499,21 @@ impl Reconfigurable<WaveformConfig> for WaveformProcessor {
     fn update_config(&mut self, config: WaveformConfig) {
         let normalized = config.normalized();
         let rebuild = self.config.sample_rate != normalized.sample_rate
-            || self.config.scroll_speed != normalized.scroll_speed;
+            || self.config.max_columns != normalized.max_columns;
+        let old_scroll_speed = self.config.scroll_speed;
+        let old_samples_per_column = self.samples_per_column;
 
         self.config = normalized;
         if rebuild {
             self.rebuild();
+            return;
         }
+
+        self.samples_per_column = self.config.samples_per_column();
+        if self.samples_per_column != old_samples_per_column {
+            self.flush_ready_columns();
+        }
+        self.has_pending_changes |= self.config.scroll_speed != old_scroll_speed;
     }
 }
 
@@ -609,6 +615,41 @@ mod tests {
                 "scroll_speed {speed} produced {normalized:.6}, deviates {dev_pct:.3}% from avg {avg:.6}"
             );
         }
+    }
+
+    #[test]
+    fn scroll_speed_update_preserves_history() {
+        let config = WaveformConfig {
+            sample_rate: 48_000.0,
+            scroll_speed: 100.0,
+            max_columns: 16,
+            ..Default::default()
+        };
+        let mut processor = WaveformProcessor::new(config);
+        let old_samples_per_column = config.samples_per_column();
+
+        for value in [0.1, 0.2, 0.3, 0.4] {
+            processor.process_block(&block(&vec![value; old_samples_per_column], 1, 48_000.0));
+        }
+        let before = processor.snapshot.max_values.clone();
+
+        let mut updated = processor.config();
+        updated.scroll_speed = 400.0;
+        processor.update_config(updated);
+
+        assert_eq!(processor.snapshot.max_values, before);
+        assert_eq!(processor.samples_per_column, updated.samples_per_column());
+
+        let after = extract_snapshot(processor.process_block(&block(
+            &vec![0.9; processor.samples_per_column],
+            1,
+            48_000.0,
+        )));
+
+        let mut expected = before;
+        expected.push(0.9);
+        assert_eq!(after.columns, expected.len());
+        assert_eq!(after.max_values, expected);
     }
 
     #[test]
