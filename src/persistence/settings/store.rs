@@ -131,6 +131,7 @@ impl SettingsManager {
 
 fn schedule_persist(path: PathBuf, mut settings: UiSettings) {
     static SENDER: OnceLock<Option<mpsc::Sender<(PathBuf, UiSettings)>>> = OnceLock::new();
+    settings.visuals.sanitize_layout();
     settings.visuals.strip_all_palettes();
     settings.bar.sanitize();
     if let Some(sender) = SENDER.get_or_init(|| {
@@ -146,7 +147,6 @@ fn schedule_persist(path: PathBuf, mut settings: UiSettings) {
                         dest = new_dest;
                         data = new_data;
                     }
-                    data.visuals.sanitize();
                     let Ok(json) = serde_json::to_string_pretty(&data) else {
                         tracing::warn!("[settings] serialization failed");
                         continue;
@@ -191,7 +191,7 @@ impl SettingsHandle {
     pub fn update<F: FnOnce(&mut SettingsManager) -> R, R>(&self, mutate: F) -> R {
         let mut manager = self.0.borrow_mut();
         let result = mutate(&mut manager);
-        manager.data.visuals.sanitize();
+        manager.data.visuals.sanitize_layout();
         manager.data.bar.sanitize();
         schedule_persist(manager.path.clone(), manager.data.clone());
         result

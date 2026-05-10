@@ -37,6 +37,10 @@ impl VisualSettings {
             Oscilloscope => OscilloscopeSettings, Waveform => WaveformSettings,
             Loudness => LoudnessSettings, Stereometer => StereometerSettings);
         self.modules.retain(valid);
+        self.sanitize_layout();
+    }
+
+    pub fn sanitize_layout(&mut self) {
         self.width_basis
             .retain(|_, basis| basis.is_finite() && *basis > 0.0);
     }
