@@ -297,9 +297,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.2.61"
+version = "1.2.62"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d16d90359e986641506914ba71350897565610e87ce0ad9e6f28569db3dd5c6d"
+checksum = "a1dce859f0832a7d088c4f1119888ab94ef4b5d6795d1ce05afb7fe159d79f98"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -705,7 +705,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1125,9 +1125,9 @@ dependencies = [
 
 [[package]]
 name = "hashbrown"
-version = "0.17.0"
+version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4f467dd6dccf739c208452f8014c75c18bb8301b050ad1cfb27153803edb0f51"
+checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
 name = "heck"
@@ -1206,8 +1206,8 @@ dependencies = [
 
 [[package]]
 name = "iced_exdevtools"
-version = "0.18.0"
-source = "git+https://github.com/httpsworldview/exwlshelleventloop?branch=output-snapshot#5083f9581a32f14ec29b147def4f23610e5bdc69"
+version = "0.18.1"
+source = "git+https://github.com/httpsworldview/exwlshelleventloop?branch=output-snapshot#c06e57f75274aed79ed6a57e8557089a620416b8"
 dependencies = [
  "iced_debug",
  "iced_devtools",
@@ -1251,8 +1251,8 @@ dependencies = [
 
 [[package]]
 name = "iced_layershell"
-version = "0.18.0"
-source = "git+https://github.com/httpsworldview/exwlshelleventloop?branch=output-snapshot#5083f9581a32f14ec29b147def4f23610e5bdc69"
+version = "0.18.1"
+source = "git+https://github.com/httpsworldview/exwlshelleventloop?branch=output-snapshot#c06e57f75274aed79ed6a57e8557089a620416b8"
 dependencies = [
  "enumflags2",
  "futures",
@@ -1276,8 +1276,8 @@ dependencies = [
 
 [[package]]
 name = "iced_layershell_macros"
-version = "0.18.0"
-source = "git+https://github.com/httpsworldview/exwlshelleventloop?branch=output-snapshot#5083f9581a32f14ec29b147def4f23610e5bdc69"
+version = "0.18.1"
+source = "git+https://github.com/httpsworldview/exwlshelleventloop?branch=output-snapshot#c06e57f75274aed79ed6a57e8557089a620416b8"
 dependencies = [
  "darling",
  "manyhow",
@@ -1410,7 +1410,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d466e9454f08e4a911e14806c24e16fba1b4c121d1ea474396f396069cf949d9"
 dependencies = [
  "equivalent",
- "hashbrown 0.17.0",
+ "hashbrown 0.17.1",
  "serde",
  "serde_core",
 ]
@@ -1549,8 +1549,8 @@ dependencies = [
 
 [[package]]
 name = "layershellev"
-version = "0.18.0"
-source = "git+https://github.com/httpsworldview/exwlshelleventloop?branch=output-snapshot#5083f9581a32f14ec29b147def4f23610e5bdc69"
+version = "0.18.1"
+source = "git+https://github.com/httpsworldview/exwlshelleventloop?branch=output-snapshot#c06e57f75274aed79ed6a57e8557089a620416b8"
 dependencies = [
  "calloop 0.14.4",
  "calloop-wayland-source 0.4.1",
@@ -1867,7 +1867,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2454,9 +2454,9 @@ checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
 name = "quick-xml"
-version = "0.39.3"
+version = "0.39.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "721da970c312655cde9b4ffe0547f20a8494866a4af5ff51f18b7c633d0c870b"
+checksum = "cdcc8dd4e2f670d309a5f0e83fe36dfdc05af317008fea29144da1a2ac858e5e"
 dependencies = [
  "memchr",
 ]
@@ -2656,7 +2656,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3056,7 +3056,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3482,8 +3482,8 @@ dependencies = [
 
 [[package]]
 name = "waycrate_xkbkeycode"
-version = "0.18.0"
-source = "git+https://github.com/httpsworldview/exwlshelleventloop?branch=output-snapshot#5083f9581a32f14ec29b147def4f23610e5bdc69"
+version = "0.18.1"
+source = "git+https://github.com/httpsworldview/exwlshelleventloop?branch=output-snapshot#c06e57f75274aed79ed6a57e8557089a620416b8"
 dependencies = [
  "calloop 0.14.4",
  "log",
@@ -3803,9 +3803,9 @@ dependencies = [
 
 [[package]]
 name = "wide"
-version = "1.3.0"
+version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c9479f84a757f819cfab37295955906479181395de83add28f74975fde083141"
+checksum = "9a7714cd0430a663154667c74da5d09325c2387695bee18b3f7f72825aa3693a"
 dependencies = [
  "bytemuck",
  "safe_arch",
@@ -3817,7 +3817,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
