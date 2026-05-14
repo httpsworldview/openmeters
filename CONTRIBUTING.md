@@ -77,44 +77,52 @@ That's it. If `cargo clippy` passes, you're good to go.
 
 ## Architecture
 
-Our codebase is organized into a handful of layers with a strict
-dependency direction:
+OpenMeters is split into coarse modules. `domain`, `dsp`, and `util`
+form the shared base:
 
 ```text
-domain/         - core types (VisualKind, RoutingConfig, CaptureMode)
-dsp.rs          - FFT, windowing, generic DSP utilities
-util/           - audio math, color utilities, tracing setup
-infra/          - PipeWire integration (registry, monitor, virtual sink, sample tap)
-persistence/    - settings schema, JSON store
-visuals/        - per-visual processors, state machines, and wgpu render primitives
-ui/             - iced application, pages, theme, widgets
-main.rs         - orchestrator, launches the app
+domain/               - app-level shared enums/types (VisualKind, routing/capture commands)
+dsp.rs                - AudioBlock and processor/reconfiguration traits
+util/                 - audio math, channel/frequency/window helpers, color, telemetry
+infra/pipewire/       - PipeWire registry/monitor runtime, routing, virtual sink, meter tap
+persistence/settings/ - settings schema/store/handle, theme files, palettes, visual/bar/capture config
+visuals/              - visual modules, VisualManager registry, palettes, render helpers/WGSL shaders
+ui/                   - iced daemon/layer-shell app, subscriptions, config drawer, panes/popouts,
+                        settings windows, widgets, theme styling
+main.rs               - wires telemetry/settings, routing monitor, virtual sink/meter tap, and UI
 ```
 
-For the most part dependencies flow downward: `ui` can reach into
-everything, `visuals` depends on `dsp`/`persistence`/`util`, `infra`
-depends on `domain`, and `domain`/`dsp`/`util` depend on nothing
-internal.
+Keep dependencies shallow and one-way where possible. `domain` and `dsp`
+should stay UI- and PipeWire-free; `util` should remain low-level shared
+helpers rather than a place for app orchestration. `infra` stays
+PipeWire-focused: it receives `RoutingCommand`s, manages routing and the
+virtual sink, and emits registry snapshots/audio samples. `persistence`
+owns serialized settings and theme files; visual settings intentionally
+mirror visual processor config types. `visuals/registry.rs` owns visual
+descriptors, `VisualManager`, settings/theme application, ordering,
+enablement, and delivery of meter-tap samples into enabled visual modules.
+`ui` composes the app: it owns settings and visual manager handles,
+persists user changes, sends routing commands, subscribes to PipeWire
+registry/audio updates, and syncs the main window, popouts, config
+drawer, settings window, and layer-shell bar mode.
 
-Each visual (spectrum, spectrogram, loudness, oscilloscope,
-stereometer, waveform) follows the same three-file pattern under
-`visuals/<name>/`:
-
-- `processor.rs` - DSP processing
-- `state.rs` - visual state machine
-- `render.rs` - render primitive
+Each visual has `visuals/<name>.rs` plus
+`visuals/<name>/{processor,state,render}.rs`: core processors stay
+UI-free and turn `AudioBlock`s into snapshots, state owns visual/widget
+state and render parameters, and render files own custom wgpu primitives.
+Shared render helpers and WGSL shaders live under `visuals/render/`.
 
 ## Where to start
 
-- **Adding a new visual?** Use any existing visual directory
-  (e.g. `visuals/spectrum/`) as a template. The `visuals!`,
-  `vis_processor!`, and `visualization_widget!` macros handle the
-  boilerplate, please use them.
-- **UI changes?** Pages live in `ui/pages/`. The main app struct is in
-  `ui/app.rs`.
+- **Adding a new visual?** Use an existing visual as a template. Add the
+  `VisualKind`, settings, palette defaults, registry descriptor, and a
+  settings panel if needed. The `visuals!`, `vis_processor!`, and
+  `visualization_widget!` macros handle most boilerplate.
+- **UI changes?** Pages live in `ui/pages/`; the main app is in
+  `ui/app.rs`; window/layer-shell behavior is in `ui/app/windowing.rs`.
 - **PipeWire plumbing?** Everything lives under `infra/pipewire/`.
-- **Settings?** Schema types are in `persistence/settings/schema.rs`,
-  persisted via `persistence/settings/store.rs`.
+- **Settings?** Start with `persistence/settings/schema.rs`,
+  `store.rs`, and `visuals.rs`.
 - **Shaders?** WGSL files are in `visuals/render/shaders/`.
 
 ## Pull requests
