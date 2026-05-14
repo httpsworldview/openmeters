@@ -560,23 +560,17 @@ mod tests {
     use super::*;
     use crate::dsp::AudioBlock;
     use crate::util::audio::{erb_rate_to_hz, hz_to_erb_rate, window_coefficients};
-    use std::time::Instant;
-
-    fn make_block(samples: Vec<f32>, channels: usize, rate: f32) -> AudioBlock<'static> {
-        AudioBlock::new(
-            Box::leak(samples.into_boxed_slice()),
-            channels,
-            rate,
-            Instant::now(),
-        )
-    }
     fn sine(freq: f32, rate: f32, count: usize) -> Vec<f32> {
         (0..count)
             .map(|i| (core::f32::consts::TAU * freq * i as f32 / rate).sin())
             .collect()
     }
-    fn unwrap(result: Option<SpectrogramUpdate>) -> SpectrogramUpdate {
-        result.expect("expected snapshot")
+    fn process_sine(cfg: SpectrogramConfig, freq: f32, samples: usize) -> SpectrogramUpdate {
+        let mut processor = SpectrogramProcessor::new(cfg);
+        let samples = sine(freq, cfg.sample_rate, samples);
+        processor
+            .process_block(&AudioBlock::now(&samples, 1, cfg.sample_rate))
+            .expect("expected snapshot")
     }
 
     fn find_peak_db(mags: &[f32]) -> (usize, f32) {
@@ -621,10 +615,8 @@ mod tests {
             use_reassignment: false,
             ..Default::default()
         };
-        let mut processor = SpectrogramProcessor::new(cfg);
         let freq = 200.0 * cfg.sample_rate / 1024.0;
-        let block = make_block(sine(freq, cfg.sample_rate, 2048), 1, cfg.sample_rate);
-        let update = unwrap(processor.process_block(&block));
+        let update = process_sine(cfg, freq, 2048);
         let col = update.new_columns.last().unwrap();
         let (idx, db) = find_peak_db(classic_mags(col));
         assert_eq!(idx, 200);
@@ -662,10 +654,8 @@ mod tests {
             zero_padding_factor: 1,
             ..Default::default()
         };
-        let mut processor = SpectrogramProcessor::new(cfg);
         let freq = 50.3 * cfg.sample_rate / 2048.0;
-        let block = make_block(sine(freq, cfg.sample_rate, 4096), 1, cfg.sample_rate);
-        let update = unwrap(processor.process_block(&block));
+        let update = process_sine(cfg, freq, 4096);
         let col = update.new_columns.last().unwrap();
         let pts = reassigned_points(col);
         let (_, peak_db) = find_peak_point(pts);
@@ -715,9 +705,7 @@ mod tests {
             zero_padding_factor: 1,
             ..Default::default()
         };
-        let mut processor = SpectrogramProcessor::new(cfg);
-        let block = make_block(sine(440.0, cfg.sample_rate, 1024), 1, cfg.sample_rate);
-        let update = unwrap(processor.process_block(&block));
+        let update = process_sine(cfg, 440.0, 1024);
         let expected_bins = cfg.fft_size / 2 + 1;
         assert_eq!(update.points_per_column, expected_bins);
         for col in &update.new_columns {
@@ -735,9 +723,7 @@ mod tests {
             zero_padding_factor: 1,
             ..Default::default()
         };
-        let mut processor = SpectrogramProcessor::new(cfg);
-        let block = make_block(sine(1000.0, cfg.sample_rate, 2048), 1, cfg.sample_rate);
-        let update = unwrap(processor.process_block(&block));
+        let update = process_sine(cfg, 1000.0, 2048);
         let col = update.new_columns.last().unwrap();
         let pts = reassigned_points(col);
         let sentinel_count = pts
