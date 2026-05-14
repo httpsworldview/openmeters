@@ -96,7 +96,7 @@ pub fn update_hop_divisor(fft_size: usize, hop_size: &mut usize, divisor: usize)
     set_if_changed(hop_size, (fft_size / divisor.max(1)).max(1))
 }
 
-pub fn labeled_slider<'a, M: Clone + 'a>(
+pub fn slide<'a, M: Clone + 'a>(
     label: &'static str,
     value: f32,
     formatted: String,
@@ -116,10 +116,10 @@ pub fn labeled_slider<'a, M: Clone + 'a>(
     .spacing(8.0)
 }
 
-pub fn labeled_pick_list<'a, T, M>(
+pub fn pick<'a, T, M>(
     label: &'static str,
     options: impl Into<Cow<'a, [T]>>,
-    selected: Option<T>,
+    selected: T,
     on_select: impl Fn(T) -> M + 'a,
 ) -> iced::widget::Row<'a, M>
 where
@@ -130,13 +130,13 @@ where
         container(text(label).size(12).wrapping(Wrapping::None))
             .width(Length::Shrink)
             .clip(true),
-        pick_list(options.into(), selected, on_select),
+        pick_list(options.into(), Some(selected), on_select),
     ]
     .spacing(8.0)
     .align_y(Vertical::Center)
 }
 
-pub fn labeled_toggler<'a, M: 'a>(
+pub fn toggle<'a, M: 'a>(
     label: &'static str,
     value: bool,
     on_toggle: impl Fn(bool) -> M + 'a,
@@ -148,6 +148,6 @@ pub fn labeled_toggler<'a, M: 'a>(
         .on_toggle(on_toggle)
 }
 
-pub fn section_title<'a, M: 'a>(label: &'static str) -> container::Container<'a, M> {
+pub fn section<'a, M: 'a>(label: &'static str) -> container::Container<'a, M> {
     container(text(label).size(14).wrapping(Wrapping::None)).clip(true)
 }

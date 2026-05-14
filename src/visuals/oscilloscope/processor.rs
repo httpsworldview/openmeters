@@ -704,6 +704,7 @@ mod tests {
 
     const RATE: f32 = 48_000.0;
     const BLOCK: usize = 1024;
+    const TAU: f32 = std::f32::consts::TAU;
 
     fn make_block(samples: &[f32], channels: usize, sample_rate: f32) -> AudioBlock<'_> {
         AudioBlock::new(samples, channels, sample_rate, Instant::now())
@@ -719,37 +720,41 @@ mod tests {
 
     fn sine_samples(freq: f32, rate: f32, frames: usize) -> Vec<f32> {
         (0..frames)
-            .map(|n| (std::f32::consts::TAU * freq * n as f32 / rate).sin())
+            .map(|n| (TAU * freq * n as f32 / rate).sin())
             .collect()
     }
 
-    fn feed_blocks(
-        processor: &mut OscilloscopeProcessor,
-        signal: &[f32],
-        block_frames: usize,
-        blocks: Range<usize>,
-        rate: f32,
-    ) {
-        let _ = first_block_where(processor, signal, block_frames, blocks, rate, |_| false);
+    fn feed_blocks(processor: &mut OscilloscopeProcessor, signal: &[f32], blocks: Range<usize>) {
+        let _ = first_block_where(processor, signal, blocks, |_| false);
     }
 
     fn first_block_where(
         processor: &mut OscilloscopeProcessor,
         signal: &[f32],
-        block_frames: usize,
         blocks: Range<usize>,
-        rate: f32,
         predicate: impl Fn(&OscilloscopeProcessor) -> bool,
     ) -> Option<usize> {
         let start = blocks.start;
         for block in blocks {
-            let offset = block * block_frames;
-            processor.process_block(&make_block(&signal[offset..offset + block_frames], 1, rate));
+            let offset = block * BLOCK;
+            processor.process_block(&make_block(&signal[offset..offset + BLOCK], 1, RATE));
             if predicate(processor) {
                 return Some(block - start);
             }
         }
         None
+    }
+
+    fn assert_lock_within(
+        processor: &mut OscilloscopeProcessor,
+        signal: &[f32],
+        blocks: Range<usize>,
+        limit: usize,
+        label: &str,
+        predicate: impl Fn(&OscilloscopeProcessor) -> bool,
+    ) {
+        let took = first_block_where(processor, signal, blocks, predicate).expect(label);
+        assert!(took <= limit, "{label} within {limit} blocks, took {took}");
     }
 
     fn frequency_switch_signal(from: f32, to: f32, warmup: usize, after: usize) -> Vec<f32> {
@@ -758,11 +763,11 @@ mod tests {
             .map(|n| {
                 let t = n as f32 / RATE;
                 if n < switch {
-                    (std::f32::consts::TAU * from * t).sin()
+                    (TAU * from * t).sin()
                 } else {
                     let t0 = switch as f32 / RATE;
-                    let phase0 = std::f32::consts::TAU * from * t0;
-                    (phase0 + std::f32::consts::TAU * to * (t - t0)).sin()
+                    let phase0 = TAU * from * t0;
+                    (phase0 + TAU * to * (t - t0)).sin()
                 }
             })
             .collect()
@@ -772,35 +777,13 @@ mod tests {
         let onset = silence * BLOCK;
         (0..BLOCK * (silence + signal_blocks))
             .map(|n| {
-                (n >= onset)
-                    .then(|| (std::f32::consts::TAU * freq * (n - onset) as f32 / RATE).sin())
-                    .unwrap_or_default()
+                if n >= onset {
+                    (TAU * freq * (n - onset) as f32 / RATE).sin()
+                } else {
+                    0.0
+                }
             })
             .collect()
-    }
-
-    #[test]
-    fn produces_downsampled_snapshot_when_buffer_ready() {
-        let config = OscilloscopeConfig {
-            segment_duration: 0.01,
-            trigger_mode: TriggerMode::ZeroCrossing,
-            ..Default::default()
-        };
-        let mut processor = OscilloscopeProcessor::new(config);
-        let frames = (config.sample_rate * config.segment_duration).round() as usize;
-        let samples: Vec<f32> = (0..frames)
-            .flat_map(|f| {
-                let s = (f as f32 / frames as f32 * std::f32::consts::TAU).sin();
-                [s, -s]
-            })
-            .collect();
-
-        let snap = processor
-            .process_block(&make_block(&samples, 2, DEFAULT_SAMPLE_RATE))
-            .expect("expected snapshot");
-        assert_eq!(snap.channels, 2);
-        assert!(snap.samples_per_channel > 0 && snap.samples_per_channel <= 4096);
-        assert_eq!(snap.samples.len(), snap.samples_per_channel * 2);
     }
 
     #[test]
@@ -846,15 +829,19 @@ mod tests {
             ..Default::default()
         };
         let mut processor = OscilloscopeProcessor::new(config);
-        let samples = sine_samples(
+        let mono = sine_samples(
             440.0,
             config.sample_rate,
             (config.sample_rate * 0.1) as usize,
         );
+        let samples: Vec<_> = mono.into_iter().flat_map(|s| [s, s]).collect();
         let snap = processor
-            .process_block(&make_block(&samples, 1, config.sample_rate))
+            .process_block(&make_block(&samples, 2, config.sample_rate))
             .expect("expected snapshot");
 
+        assert_eq!(snap.channels, 2);
+        assert!(snap.samples_per_channel > 0 && snap.samples_per_channel <= 4096);
+        assert_eq!(snap.samples.len(), snap.samples_per_channel * 2);
         let n = snap.samples_per_channel;
         assert!(snap.samples[0] > 0.0 && snap.samples[0] < 0.15, "left edge");
         assert!(snap.samples[n - 1].abs() < 0.15, "right edge");
@@ -864,58 +851,51 @@ mod tests {
     fn lock_acquisition_and_frequency_transitions() {
         let mut processor = OscilloscopeProcessor::new(stable_config());
         let signal = sine_samples(440.0, RATE, BLOCK * 20);
-        let lock = first_block_where(&mut processor, &signal, BLOCK, 0..20, RATE, |p| {
-            p.last_pitch.is_some()
-        })
-        .expect("should lock on clean sine");
-        assert!(lock <= 10, "should lock within 10 blocks, took {lock}");
+        assert_lock_within(
+            &mut processor,
+            &signal,
+            0..20,
+            10,
+            "lock on clean sine",
+            |p| p.last_pitch.is_some(),
+        );
 
         let mut processor = OscilloscopeProcessor::new(stable_config());
         let (warmup, after) = (20, 20);
         let signal = frequency_switch_signal(440.0, 880.0, warmup, after);
-        feed_blocks(&mut processor, &signal, BLOCK, 0..warmup, RATE);
+        feed_blocks(&mut processor, &signal, 0..warmup);
         let pre = processor.last_pitch.expect("pitch after warmup");
         assert!(
             (pre - 440.0).abs() < 20.0,
             "pre-transition pitch was {pre:.1}"
         );
-        let adapted = first_block_where(
+        assert_lock_within(
             &mut processor,
             &signal,
-            BLOCK,
             warmup..warmup + after,
-            RATE,
+            10,
+            "adapt to 880Hz",
             |p| {
                 p.last_pitch
                     .is_some_and(|pitch| (pitch - 880.0).abs() < 50.0)
             },
-        )
-        .expect("should adapt to 880Hz");
-        assert!(
-            adapted <= 10,
-            "should adapt within 10 blocks, took {adapted}"
         );
 
         let mut processor = OscilloscopeProcessor::new(stable_config());
         let (silence, signal_blocks) = (10, 20);
         let signal = delayed_sine(440.0, silence, signal_blocks);
-        feed_blocks(&mut processor, &signal, BLOCK, 0..silence, RATE);
+        feed_blocks(&mut processor, &signal, 0..silence);
         assert!(
             processor.last_pitch.is_none(),
             "should have no pitch during silence"
         );
-        let lock = first_block_where(
+        assert_lock_within(
             &mut processor,
             &signal,
-            BLOCK,
             silence..silence + signal_blocks,
-            RATE,
+            10,
+            "lock after signal onset",
             |p| p.last_pitch.is_some(),
-        )
-        .expect("should lock after signal onset");
-        assert!(
-            lock <= 10,
-            "should lock within 10 blocks of onset, took {lock}"
         );
     }
 }

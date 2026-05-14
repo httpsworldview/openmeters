@@ -3,9 +3,8 @@
 
 use super::palette::PaletteEvent;
 use super::widgets::{
-    FFT_OPTIONS, HOP_DIVISORS, SliderRange, get_closest_hop_divisor, labeled_pick_list,
-    labeled_slider, labeled_toggler, section_title, set_if_changed, update_f32_range,
-    update_fft_size, update_hop_divisor, update_usize_from_f32,
+    FFT_OPTIONS, HOP_DIVISORS, SliderRange, get_closest_hop_divisor, pick, section, set_if_changed,
+    slide, toggle, update_f32_range, update_fft_size, update_hop_divisor, update_usize_from_f32,
 };
 use crate::persistence::settings::{SpectrumDisplayMode, SpectrumSettings, SpectrumWeightingMode};
 use crate::util::audio::FrequencyScale;
@@ -75,131 +74,77 @@ impl SpectrumSettingsPane {
         } else {
             "Low -> High"
         };
-
-        let left = column![
-            labeled_pick_list(
-                "Display",
-                SpectrumDisplayMode::ALL,
-                Some(s.display_mode),
-                DisplayMode
-            ),
-            labeled_pick_list(
-                "Weighting",
-                SpectrumWeightingMode::ALL,
-                Some(s.weighting_mode),
-                WeightingMode
-            ),
-            labeled_pick_list("FFT size", &FFT_OPTIONS, Some(s.fft_size), FftSize),
-        ]
-        .spacing(8)
+        let left = controls!(8.0;
+            pick("Display", SpectrumDisplayMode::ALL, s.display_mode, DisplayMode);
+            pick("Weighting", SpectrumWeightingMode::ALL, s.weighting_mode, WeightingMode);
+            pick("FFT size", &FFT_OPTIONS, s.fft_size, FftSize);
+        )
         .width(Length::Fill);
-
-        let right = column![
-            labeled_pick_list(
-                "Freq scale",
-                FrequencyScale::ALL,
-                Some(s.frequency_scale),
-                FreqScale
-            ),
-            labeled_pick_list("Averaging", AvgMode::ALL, Some(self.avg_mode), Averaging),
-            labeled_pick_list("Hop divisor", &HOP_DIVISORS, Some(hop_divisor), HopDivisor),
-        ]
-        .spacing(8)
+        let right = controls!(8.0;
+            pick("Freq scale", FrequencyScale::ALL, s.frequency_scale, FreqScale);
+            pick("Averaging", AvgMode::ALL, self.avg_mode, Averaging);
+            pick("Hop divisor", &HOP_DIVISORS, hop_divisor, HopDivisor);
+        )
         .width(Length::Fill);
+        let avg_ctrl = match self.avg_mode {
+            AvgMode::Exponential => controls!(8.0;
+                slide(
+                    "Exp factor", self.avg_factor, format!("{:.2}", self.avg_factor),
+                    EXP_R, AvgFactor
+                );
+            ),
+            AvgMode::PeakHold => controls!(8.0;
+                slide(
+                    "Peak decay", self.peak_decay, format!("{:.1} dB/s", self.peak_decay),
+                    DECAY_R, PeakDecay
+                );
+            ),
+            AvgMode::None => column![].spacing(8),
+        };
 
-        let mut avg_ctrl = column![].spacing(8);
-        match self.avg_mode {
-            AvgMode::Exponential => {
-                avg_ctrl = avg_ctrl.push(labeled_slider(
-                    "Exp factor",
-                    self.avg_factor,
-                    format!("{:.2}", self.avg_factor),
-                    EXP_R,
-                    AvgFactor,
-                ));
-            }
-            AvgMode::PeakHold => {
-                avg_ctrl = avg_ctrl.push(labeled_slider(
-                    "Peak decay",
-                    self.peak_decay,
-                    format!("{:.1} dB/s", self.peak_decay),
-                    DECAY_R,
-                    PeakDecay,
-                ));
-            }
-            AvgMode::None => {}
-        }
-
-        let mut visual = column![
-            labeled_slider(
-                "Smooth radius",
-                s.smoothing_radius as f32,
-                format!("{} bins", s.smoothing_radius),
-                SRAD_R,
-                SmoothRadius
-            ),
-            labeled_slider(
-                "Smooth passes",
-                s.smoothing_passes as f32,
-                s.smoothing_passes.to_string(),
-                SPAS_R,
-                SmoothPasses
-            ),
-            labeled_slider(
-                "Noise floor",
-                s.floor_db,
-                format!("{:.0} dB", s.floor_db),
-                FLOOR_R,
-                FloorDb
-            ),
-        ]
-        .spacing(8);
+        let mut visual = controls!(8.0;
+            slide(
+                "Smooth radius", s.smoothing_radius as f32, format!("{} bins", s.smoothing_radius),
+                SRAD_R, SmoothRadius
+            );
+            slide(
+                "Smooth passes", s.smoothing_passes as f32, s.smoothing_passes.to_string(),
+                SPAS_R, SmoothPasses
+            );
+            slide("Noise floor", s.floor_db, format!("{:.0} dB", s.floor_db), FLOOR_R, FloorDb);
+        );
         if s.display_mode == SpectrumDisplayMode::Bar {
-            visual = visual
-                .push(labeled_slider(
-                    "Bar count",
-                    s.bar_count as f32,
-                    s.bar_count.to_string(),
-                    BARS_R,
-                    BarCount,
-                ))
-                .push(labeled_slider(
-                    "Bar gap",
-                    s.bar_gap,
-                    format!("{:.0}%", s.bar_gap * 100.0),
-                    GAP_R,
-                    BarGap,
-                ));
+            visual = controls!(visual;
+                slide("Bar count", s.bar_count as f32, s.bar_count.to_string(), BARS_R, BarCount);
+                slide("Bar gap", s.bar_gap, format!("{:.0}%", s.bar_gap * 100.0), GAP_R, BarGap);
+            );
         }
-        visual = visual.push(labeled_slider(
-            "Color floor",
-            s.highlight_threshold,
-            format!("{:.0}%", s.highlight_threshold * 100.0),
-            HIGH_R,
-            Highlight,
-        ));
+        visual = controls!(visual;
+            slide(
+                "Color floor", s.highlight_threshold, format!("{:.0}%", s.highlight_threshold * 100.0),
+                HIGH_R, Highlight
+            );
+        );
 
         let toggles = row![
-            column![
-                labeled_toggler(dir, s.reverse_frequency, ReverseFrequency),
-                labeled_toggler("Freq grid", s.show_grid, ShowGrid),
-            ]
-            .spacing(8)
+            controls!(8.0;
+                toggle(dir, s.reverse_frequency, ReverseFrequency);
+                toggle("Freq grid", s.show_grid, ShowGrid);
+            )
             .width(Length::Fill),
-            column![
-                labeled_toggler("Peak label", s.show_peak_label, ShowPeakLabel),
-                labeled_toggler("Secondary", s.show_secondary_line, ShowSecondary),
-            ]
-            .spacing(8)
+            controls!(8.0;
+                toggle("Peak label", s.show_peak_label, ShowPeakLabel);
+                toggle("Secondary", s.show_secondary_line, ShowSecondary);
+            )
             .width(Length::Fill),
         ]
         .spacing(16);
 
         column![
-            section_title("Core"),
+            section("Core"),
             row![left, right].spacing(16),
             avg_ctrl,
-            section_title("Display"),
+            section("Display"),
             toggles,
             visual,
             super::palette_section(&self.palette, Palette)
@@ -211,7 +156,6 @@ impl SpectrumSettingsPane {
     fn handle(&mut self, msg: &Message) -> bool {
         use Message::*;
         let s = &mut self.settings;
-
         match *msg {
             FftSize(v) => update_fft_size(&mut s.fft_size, &mut s.hop_size, v),
             HopDivisor(v) => update_hop_divisor(s.fft_size, &mut s.hop_size, v),

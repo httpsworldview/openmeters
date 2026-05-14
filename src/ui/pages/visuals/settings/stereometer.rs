@@ -3,8 +3,8 @@
 
 use super::palette::PaletteEvent;
 use super::widgets::{
-    SliderRange, labeled_pick_list, labeled_slider, labeled_toggler, section_title, set_if_changed,
-    update_f32_range, update_usize_from_f32,
+    SliderRange, pick, section, set_if_changed, slide, toggle, update_f32_range,
+    update_usize_from_f32,
 };
 use crate::persistence::settings::{
     CorrelationMeterMode, CorrelationMeterSide, StereometerMode, StereometerScale,
@@ -48,101 +48,72 @@ impl StereometerSettingsPane {
     fn view(&self) -> Element<'_, Message> {
         use Message::*;
         let s = &self.settings;
-
         let picks = row![
-            labeled_pick_list("Mode", StereometerMode::ALL, Some(s.mode), Mode).width(Length::Fill),
-            labeled_pick_list("Scale", StereometerScale::ALL, Some(s.scale), Scale)
-                .width(Length::Fill),
+            pick("Mode", StereometerMode::ALL, s.mode, Mode).width(Length::Fill),
+            pick("Scale", StereometerScale::ALL, s.scale, Scale).width(Length::Fill),
         ]
         .spacing(16);
-
-        let mut core = column![
-            picks,
-            labeled_slider(
-                "Segment duration",
-                s.segment_duration,
-                format!("{:.1} ms", s.segment_duration * 1000.0),
-                SEGMENT_DURATION_RANGE,
+        let mut core = controls!(iced::widget::Column::new().spacing(8.0).push(picks);
+            slide(
+                "Segment duration", s.segment_duration,
+                format!("{:.1} ms", s.segment_duration * 1000.0), SEGMENT_DURATION_RANGE,
                 SegmentDuration
-            ),
-            labeled_slider(
-                "Sample count",
-                s.target_sample_count as f32,
-                s.target_sample_count.to_string(),
-                TARGET_SAMPLE_COUNT_RANGE,
-                TargetSampleCount
-            ),
-        ]
-        .spacing(8);
+            );
+            slide(
+                "Sample count", s.target_sample_count as f32, s.target_sample_count.to_string(),
+                TARGET_SAMPLE_COUNT_RANGE, TargetSampleCount
+            );
+        );
         if s.scale == StereometerScale::Exponential {
-            core = core.push(labeled_slider(
-                "Scale range",
-                s.scale_range,
-                format!("{:.1}", s.scale_range),
-                SCALE_RANGE,
-                ScaleRange,
-            ));
+            core = controls!(core;
+                slide("Scale range", s.scale_range, format!("{:.1}", s.scale_range), SCALE_RANGE, ScaleRange);
+            );
         }
-
-        let display = column![
-            labeled_slider(
-                "Rotation",
-                s.rotation as f32,
-                s.rotation.to_string(),
-                ROTATION_RANGE,
-                Rotation
-            ),
-            labeled_slider(
-                "Persistence",
-                s.persistence,
-                format!("{:.2}", s.persistence),
-                PERSISTENCE_RANGE,
-                Persistence
-            ),
-            labeled_toggler("Flip", s.flip, Flip),
-        ]
-        .spacing(8);
+        let display = controls!(8.0;
+            slide("Rotation", s.rotation as f32, s.rotation.to_string(), ROTATION_RANGE, Rotation);
+            slide("Persistence", s.persistence, format!("{:.2}", s.persistence), PERSISTENCE_RANGE, Persistence);
+            toggle("Flip", s.flip, Flip);
+        );
 
         let corr_active = s.correlation_meter != CorrelationMeterMode::Off;
         let mut corr_picks = row![
-            labeled_pick_list(
+            pick(
                 "Meter",
                 CorrelationMeterMode::ALL,
-                Some(s.correlation_meter),
-                CorrelationMeter
+                s.correlation_meter,
+                CorrelationMeter,
             )
             .width(Length::Fill),
         ]
         .spacing(16);
         if corr_active {
             corr_picks = corr_picks.push(
-                labeled_pick_list(
+                pick(
                     "Side",
                     CorrelationMeterSide::ALL,
-                    Some(s.correlation_meter_side),
+                    s.correlation_meter_side,
                     CorrelationSide,
                 )
                 .width(Length::Fill),
             );
         }
-
         let mut correlation = column![corr_picks].spacing(8);
         if corr_active {
-            correlation = correlation.push(labeled_slider(
-                "Window",
-                s.correlation_window,
-                format!("{:.0} ms", s.correlation_window * 1000.0),
-                CORRELATION_WINDOW_RANGE,
-                CorrelationWindow,
-            ));
+            correlation = controls!(correlation;
+                slide(
+                    "Window", s.correlation_window,
+                    format!("{:.0} ms", s.correlation_window * 1000.0), CORRELATION_WINDOW_RANGE,
+                    CorrelationWindow
+                );
+            );
         }
 
         column![
-            section_title("Core"),
+            section("Core"),
             core,
-            section_title("Display"),
+            section("Display"),
             display,
-            section_title("Correlation"),
+            section("Correlation"),
             correlation,
             super::palette_section(&self.palette, Palette)
         ]

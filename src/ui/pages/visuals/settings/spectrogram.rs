@@ -3,9 +3,8 @@
 
 use super::palette::PaletteEvent;
 use super::widgets::{
-    FFT_OPTIONS, HOP_DIVISORS, SliderRange, get_closest_hop_divisor, labeled_pick_list,
-    labeled_slider, labeled_toggler, section_title, set_if_changed, update_f32_range,
-    update_fft_size, update_hop_divisor,
+    FFT_OPTIONS, HOP_DIVISORS, SliderRange, get_closest_hop_divisor, pick, section, set_if_changed,
+    slide, toggle, update_f32_range, update_fft_size, update_hop_divisor,
 };
 use crate::persistence::settings::{PianoRollOverlay, SpectrogramSettings};
 use crate::util::audio::{FrequencyScale, WindowKind};
@@ -17,6 +16,7 @@ const ZERO_PAD_OPTIONS: [usize; 6] = [1, 2, 4, 8, 16, 32];
 const FLOOR_DB_RANGE: SliderRange = SliderRange::new(-140.0, -1.0, 1.0);
 const TILT_DB_RANGE: SliderRange = SliderRange::new(-6.0, 6.0, 0.5);
 const ROTATION_RANGE: SliderRange = SliderRange::new(-1.0, 2.0, 1.0);
+
 settings_pane!(
     SpectrogramSettingsPane, SpectrogramSettings, VisualKind::Spectrogram, Spectrogram,
     extra_from_settings(_s) {}
@@ -44,84 +44,46 @@ impl SpectrogramSettingsPane {
     fn view(&self) -> Element<'_, Message> {
         let s = &self.settings;
         let hop_divisor = get_closest_hop_divisor(s.fft_size, s.hop_size);
-
-        let left_col = column![
-            labeled_pick_list("FFT size", &FFT_OPTIONS, Some(s.fft_size), Message::FftSize),
-            labeled_pick_list(
-                "Hop divisor",
-                &HOP_DIVISORS,
-                Some(hop_divisor),
-                Message::HopDivisor
-            ),
-            labeled_pick_list(
-                "Piano roll overlay",
-                PianoRollOverlay::ALL,
-                Some(s.piano_roll_overlay),
+        let left = controls!(8.0;
+            pick("FFT size", &FFT_OPTIONS, s.fft_size, Message::FftSize);
+            pick("Hop divisor", &HOP_DIVISORS, hop_divisor, Message::HopDivisor);
+            pick(
+                "Piano roll overlay", PianoRollOverlay::ALL, s.piano_roll_overlay,
                 Message::PianoRoll
-            ),
-        ]
-        .spacing(8)
+            );
+        )
         .width(Length::Fill);
-
-        let right_col = column![
-            labeled_pick_list("Window", WindowKind::ALL, Some(s.window), Message::Window),
-            labeled_pick_list(
-                "Freq scale",
-                FrequencyScale::ALL,
-                Some(s.frequency_scale),
-                Message::FrequencyScale
-            ),
-            labeled_pick_list(
-                "Zero pad",
-                &ZERO_PAD_OPTIONS,
-                Some(s.zero_padding_factor),
-                Message::ZeroPadding
-            ),
-        ]
-        .spacing(8)
+        let right = controls!(8.0;
+            pick("Window", WindowKind::ALL, s.window, Message::Window);
+            pick("Freq scale", FrequencyScale::ALL, s.frequency_scale, Message::FrequencyScale);
+            pick("Zero pad", &ZERO_PAD_OPTIONS, s.zero_padding_factor, Message::ZeroPadding);
+        )
         .width(Length::Fill);
-
-        let mut core =
-            column![row![left_col, right_col].spacing(10).width(Length::Fill)].spacing(8);
-        core = core
-            .push(labeled_slider(
-                "Floor",
-                s.floor_db,
-                format!("{:.0} dB", s.floor_db),
-                FLOOR_DB_RANGE,
-                Message::FloorDb,
-            ))
-            .push(labeled_slider(
-                "Spectral tilt",
-                s.tilt_db,
-                if s.tilt_db == 0.0 {
-                    "Off".to_string()
-                } else {
-                    format!("{:+.1} dB/dec", s.tilt_db)
-                },
-                TILT_DB_RANGE,
-                Message::TiltDb,
-            ))
-            .push(labeled_slider(
-                "Rotation",
-                s.rotation as f32,
-                format!("{}\u{00b0}", s.rotation as i32 * 90),
-                ROTATION_RANGE,
-                Message::Rotation,
-            ));
-
-        let adv = column![labeled_toggler(
-            "Time-frequency reassignment",
-            s.use_reassignment,
-            Message::UseReassignment
-        )]
-        .spacing(8);
+        let tilt = if s.tilt_db == 0.0 {
+            "Off".to_string()
+        } else {
+            format!("{:+.1} dB/dec", s.tilt_db)
+        };
+        let core = controls!(
+            iced::widget::Column::new()
+                .spacing(8.0)
+                .push(row![left, right].spacing(10).width(Length::Fill));
+            slide("Floor", s.floor_db, format!("{:.0} dB", s.floor_db), FLOOR_DB_RANGE, Message::FloorDb);
+            slide("Spectral tilt", s.tilt_db, tilt, TILT_DB_RANGE, Message::TiltDb);
+            slide(
+                "Rotation", s.rotation as f32, format!("{}\u{00b0}", s.rotation as i32 * 90),
+                ROTATION_RANGE, Message::Rotation
+            );
+        );
+        let advanced = controls!(8.0;
+            toggle("Time-frequency reassignment", s.use_reassignment, Message::UseReassignment);
+        );
 
         column![
-            section_title("Core controls"),
+            section("Core controls"),
             core,
-            section_title("Advanced"),
-            adv,
+            section("Advanced"),
+            advanced,
             super::palette_section(&self.palette, Message::Palette)
         ]
         .spacing(16)
