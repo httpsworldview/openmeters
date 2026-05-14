@@ -424,30 +424,62 @@ pub fn create_shader_module(
     })
 }
 
-fn create_sdf_pipeline(
+pub(crate) fn begin_load_pass<'a>(
+    encoder: &'a mut wgpu::CommandEncoder,
+    target: &'a wgpu::TextureView,
+    clip: &Rectangle<u32>,
+    label: &'static str,
+) -> wgpu::RenderPass<'a> {
+    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some(label),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: target,
+            resolve_target: None,
+            depth_slice: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Load,
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+    });
+    pass.set_scissor_rect(clip.x, clip.y, clip.width.max(1), clip.height.max(1));
+    pass
+}
+
+pub(crate) struct RenderPipelineSpec<'a> {
+    pub(crate) label: &'static str,
+    pub(crate) shader: &'a wgpu::ShaderModule,
+    pub(crate) vertex_entry: &'static str,
+    pub(crate) buffers: &'a [wgpu::VertexBufferLayout<'a>],
+    pub(crate) bind_group_layouts: &'a [&'a wgpu::BindGroupLayout],
+    pub(crate) topology: wgpu::PrimitiveTopology,
+}
+
+pub(crate) fn create_render_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
-    label: &'static str,
-    topology: wgpu::PrimitiveTopology,
+    spec: RenderPipelineSpec<'_>,
 ) -> wgpu::RenderPipeline {
-    let shader = create_shader_module(device, label, include_str!("shaders/sdf.wgsl"));
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        label: Some(label),
+        label: Some(spec.label),
         layout: Some(
             &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some(label),
-                bind_group_layouts: &[],
+                label: Some(spec.label),
+                bind_group_layouts: spec.bind_group_layouts,
                 push_constant_ranges: &[],
             }),
         ),
         vertex: wgpu::VertexState {
-            module: &shader,
-            entry_point: Some("vs_main"),
-            buffers: &[SdfVertex::layout()],
+            module: spec.shader,
+            entry_point: Some(spec.vertex_entry),
+            buffers: spec.buffers,
             compilation_options: Default::default(),
         },
         fragment: Some(wgpu::FragmentState {
-            module: &shader,
+            module: spec.shader,
             entry_point: Some("fs_main"),
             targets: &[Some(wgpu::ColorTargetState {
                 format,
@@ -457,7 +489,7 @@ fn create_sdf_pipeline(
             compilation_options: Default::default(),
         }),
         primitive: wgpu::PrimitiveState {
-            topology,
+            topology: spec.topology,
             ..Default::default()
         },
         depth_stencil: None,
@@ -465,6 +497,27 @@ fn create_sdf_pipeline(
         multiview: None,
         cache: None,
     })
+}
+
+fn create_sdf_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    label: &'static str,
+    topology: wgpu::PrimitiveTopology,
+) -> wgpu::RenderPipeline {
+    let shader = create_shader_module(device, label, include_str!("shaders/sdf.wgsl"));
+    create_render_pipeline(
+        device,
+        format,
+        RenderPipelineSpec {
+            label,
+            shader: &shader,
+            vertex_entry: "vs_main",
+            buffers: &[SdfVertex::layout()],
+            bind_group_layouts: &[],
+            topology,
+        },
+    )
 }
 
 #[derive(Debug)]
@@ -556,18 +609,9 @@ macro_rules! sdf_primitive {
                 let key: $key_ty = $key_expr;
                 let Some(inst) = pipeline.inner.instance(key) else { return };
                 if inst.vertex_count == 0 { return }
-                let mut pass = encoder.begin_render_pass(&iced_wgpu::wgpu::RenderPassDescriptor {
-                    label: Some($label),
-                    color_attachments: &[Some(iced_wgpu::wgpu::RenderPassColorAttachment {
-                        view: target, resolve_target: None, depth_slice: None,
-                        ops: iced_wgpu::wgpu::Operations {
-                            load: iced_wgpu::wgpu::LoadOp::Load,
-                            store: iced_wgpu::wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None, timestamp_writes: None, occlusion_query_set: None,
-                });
-                pass.set_scissor_rect(clip.x, clip.y, clip.width.max(1), clip.height.max(1));
+                let mut pass = $crate::visuals::render::common::begin_load_pass(
+                    encoder, target, clip, $label,
+                );
                 pass.set_pipeline(&pipeline.inner.pipeline);
                 pass.set_vertex_buffer(0, inst.vertex_buffer.slice(0..inst.used_bytes()));
                 pass.draw(0..inst.vertex_count, 0..1);

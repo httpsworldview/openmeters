@@ -10,16 +10,12 @@ use super::processor::{
 use super::render::{LoudnessParams, LoudnessPrimitive, MeterBar};
 use crate::persistence::settings::{LoudnessSettings, MeterMode};
 use crate::util::color::{color_to_rgba, with_alpha};
-use crate::vis_processor;
 use crate::visuals::palettes;
 use crate::visuals::render::common::{fill_rect, make_text};
-use iced::advanced::renderer;
-use iced::advanced::widget::{Tree, tree};
-use iced::advanced::{Layout, Widget, layout, mouse, text};
+use crate::{vis_processor, visualization_widget};
+use iced::advanced::text;
 use iced::alignment::{Horizontal, Vertical};
-use iced::{Color, Element, Length, Point, Rectangle, Size, Theme};
-use iced_wgpu::primitive::Renderer as _;
-use std::cell::RefCell;
+use iced::{Color, Point, Rectangle, Size};
 const DEFAULT_RANGE: (f32, f32) = (-60.0, 4.0);
 const GUIDE_LEVELS: [f32; 6] = [0.0, -6.0, -12.0, -18.0, -24.0, -36.0];
 const LEFT_PADDING: f32 = 28.0;
@@ -167,132 +163,73 @@ impl LoudnessState {
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct Loudness<'a> {
-    state: &'a RefCell<LoudnessState>,
-}
+visualization_widget!(Loudness, LoudnessState, |this, renderer, theme, bounds| {
+    let state = this.state.borrow();
+    let params = state.visual_params(bounds);
 
-impl<'a> Loudness<'a> {
-    pub fn new(state: &'a RefCell<LoudnessState>) -> Self {
-        Self { state }
-    }
-}
+    renderer.draw_primitive(bounds, LoudnessPrimitive::new(params.clone()));
 
-impl<'a, Message> Widget<Message, Theme, iced::Renderer> for Loudness<'a> {
-    fn tag(&self) -> tree::Tag {
-        tree::Tag::stateless()
-    }
+    let palette = theme.extended_palette();
+    let label_color = state.palette[4];
 
-    fn state(&self) -> tree::State {
-        tree::State::new(())
-    }
+    if let Some((meter_x, bar_width, stride)) = params.meter_bounds() {
+        let y_of = |db| bounds.y + bounds.height * (1.0 - params.db_to_ratio(db));
 
-    fn size(&self) -> Size<Length> {
-        Size::new(Length::Fill, Length::Fill)
-    }
+        for &db in &params.guides {
+            let y = y_of(db);
+            let label = format!("{:.0}", db.abs());
 
-    fn layout(
-        &mut self,
-        _tree: &mut Tree,
-        _renderer: &iced::Renderer,
-        limits: &layout::Limits,
-    ) -> layout::Node {
-        layout::Node::new(limits.resolve(Length::Fill, Length::Fill, Size::ZERO))
-    }
-
-    fn draw(
-        &self,
-        _tree: &Tree,
-        renderer: &mut iced::Renderer,
-        theme: &Theme,
-        _style: &renderer::Style,
-        layout: Layout<'_>,
-        _cursor: mouse::Cursor,
-        _viewport: &Rectangle,
-    ) {
-        let bounds = layout.bounds();
-        let state = self.state.borrow();
-        let params = state.visual_params(bounds);
-
-        renderer.draw_primitive(bounds, LoudnessPrimitive::new(params.clone()));
-
-        let palette = theme.extended_palette();
-        let label_color = state.palette[4];
-
-        if let Some((meter_x, bar_width, stride)) = params.meter_bounds() {
-            let height = bounds.height;
-
-            for &db in &params.guides {
-                let ratio = params.db_to_ratio(db);
-                let y = bounds.y + height * (1.0 - ratio);
-                let label = format!("{:.0}", db.abs());
-
-                let mut text = make_text(&label, LABEL_FONT_SIZE, Size::new(LEFT_PADDING, 20.0));
-                text.align_x = Horizontal::Right.into();
-                text.align_y = Vertical::Center;
-                text::Renderer::fill_text(
-                    renderer,
-                    text,
-                    Point::new(bounds.x + LEFT_PADDING - 4.0, y),
-                    label_color,
-                    bounds,
-                );
-            }
-
-            let value = state.get_value(state.right_mode, 0);
-            let unit = state.right_mode.unit_label();
-            let ratio = params.db_to_ratio(value);
-            let y = bounds.y + height * (1.0 - ratio);
-            let label = format!("{value:.1} {unit}");
-
-            let label_x = meter_x + stride + bar_width + 4.0;
-            let clamp_max = (bounds.y + bounds.height - 20.0).max(bounds.y);
-            let label_rect = Rectangle {
-                x: label_x,
-                y: (y - 10.0).clamp(bounds.y, clamp_max),
-                width: 68.0,
-                height: 20.0,
-            };
-
-            fill_rect(renderer, label_rect, with_alpha(state.palette[0], 1.0));
-
-            let mut text = make_text(
-                &label,
-                VALUE_FONT_SIZE,
-                Size::new(label_rect.width, label_rect.height),
-            );
-            text.font = iced::Font {
-                weight: iced::font::Weight::Bold,
-                ..Default::default()
-            };
-            text.align_x = Horizontal::Center.into();
+            let mut text = make_text(&label, LABEL_FONT_SIZE, Size::new(LEFT_PADDING, 20.0));
+            text.align_x = Horizontal::Right.into();
             text.align_y = Vertical::Center;
             text::Renderer::fill_text(
                 renderer,
                 text,
-                Point::new(
-                    label_rect.x + label_rect.width / 2.0,
-                    label_rect.y + label_rect.height / 2.0,
-                ),
-                palette.background.base.text,
+                Point::new(bounds.x + LEFT_PADDING - 4.0, y),
+                label_color,
                 bounds,
             );
         }
+
+        let value = state.get_value(state.right_mode, 0);
+        let unit = state.right_mode.unit_label();
+        let y = y_of(value);
+        let label = format!("{value:.1} {unit}");
+
+        let label_x = meter_x + stride + bar_width + 4.0;
+        let clamp_max = (bounds.y + bounds.height - 20.0).max(bounds.y);
+        let label_rect = Rectangle {
+            x: label_x,
+            y: (y - 10.0).clamp(bounds.y, clamp_max),
+            width: 68.0,
+            height: 20.0,
+        };
+
+        fill_rect(renderer, label_rect, with_alpha(state.palette[0], 1.0));
+
+        let mut text = make_text(
+            &label,
+            VALUE_FONT_SIZE,
+            Size::new(label_rect.width, label_rect.height),
+        );
+        text.font = iced::Font {
+            weight: iced::font::Weight::Bold,
+            ..Default::default()
+        };
+        text.align_x = Horizontal::Center.into();
+        text.align_y = Vertical::Center;
+        text::Renderer::fill_text(
+            renderer,
+            text,
+            Point::new(
+                label_rect.x + label_rect.width / 2.0,
+                label_rect.y + label_rect.height / 2.0,
+            ),
+            palette.background.base.text,
+            bounds,
+        );
     }
-
-    fn children(&self) -> Vec<Tree> {
-        Vec::new()
-    }
-
-    fn diff(&self, _tree: &mut Tree) {}
-}
-
-pub(crate) fn widget<'a, Message>(state: &'a RefCell<LoudnessState>) -> Element<'a, Message>
-where
-    Message: 'a,
-{
-    Element::new(Loudness::new(state))
-}
+});
 
 #[cfg(test)]
 mod tests {

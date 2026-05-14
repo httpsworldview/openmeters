@@ -10,7 +10,9 @@ use std::collections::HashMap;
 
 use crate::util::color::f32_to_u8;
 
-use crate::visuals::render::common::{CacheTracker, create_shader_module};
+use crate::visuals::render::common::{
+    CacheTracker, RenderPipelineSpec, begin_load_pass, create_render_pipeline, create_shader_module,
+};
 
 use super::processor::SpectrogramPoint;
 use crate::util::audio::FrequencyScale;
@@ -156,22 +158,7 @@ impl Primitive for SpectrogramPrimitive {
             return;
         }
 
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Spectrogram pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
-                resolve_target: None,
-                depth_slice: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-        });
-        pass.set_scissor_rect(clip.x, clip.y, clip.width.max(1), clip.height.max(1));
+        let mut pass = begin_load_pass(encoder, target, clip, "Spectrogram pass");
         pass.set_pipeline(pl);
         pass.set_bind_group(0, &r.ring.bg, &[]);
         pass.set_vertex_buffer(0, r.quad_buf.slice(..));
@@ -374,57 +361,29 @@ impl primitive::Pipeline for Pipeline {
             entries: &[uniform_entry, palette_entry, mag_entry],
         });
 
-        let build = |label: &'static str,
-                     entry: &'static str,
-                     bgl: &wgpu::BindGroupLayout,
-                     buffers: &[wgpu::VertexBufferLayout]| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(
-                    &device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                        label: Some(label),
-                        bind_group_layouts: &[bgl],
-                        push_constant_ranges: &[],
-                    }),
-                ),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some(entry),
-                    buffers,
-                    compilation_options: Default::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some("fs_main"),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: Default::default(),
-                }),
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    ..Default::default()
-                },
-                depth_stencil: None,
-                multisample: Default::default(),
-                multiview: None,
-                cache: None,
-            })
-        };
-
-        let splat_pipeline = build(
-            "Spectrogram splat pipeline",
-            "vs_splat",
-            &splat_bgl,
-            &[quad_corner_layout(), point_instance_layout()],
+        let splat_pipeline = create_render_pipeline(
+            device,
+            format,
+            RenderPipelineSpec {
+                label: "Spectrogram splat pipeline",
+                shader: &shader,
+                vertex_entry: "vs_splat",
+                buffers: &[quad_corner_layout(), point_instance_layout()],
+                bind_group_layouts: &[&splat_bgl],
+                topology: wgpu::PrimitiveTopology::TriangleList,
+            },
         );
-        let strip_pipeline = build(
-            "Spectrogram strip pipeline",
-            "vs_strip",
-            &strip_bgl,
-            &[quad_corner_layout()],
+        let strip_pipeline = create_render_pipeline(
+            device,
+            format,
+            RenderPipelineSpec {
+                label: "Spectrogram strip pipeline",
+                shader: &shader,
+                vertex_entry: "vs_strip",
+                buffers: &[quad_corner_layout()],
+                bind_group_layouts: &[&strip_bgl],
+                topology: wgpu::PrimitiveTopology::TriangleList,
+            },
         );
 
         Self {

@@ -81,14 +81,14 @@ macro_rules! vis_processor {
 
 #[macro_export]
 macro_rules! visualization_widget {
-    ($widget:ident, $state:ty, $primitive:ty) => {
+    (@base $widget:ident, $state:ty, |$this:ident, $renderer:ident, $theme:ident, $bounds:ident| $draw:block) => {
         #[derive(Debug)]
-        pub struct $widget<'a> {
+        pub(crate) struct $widget<'a> {
             state: &'a std::cell::RefCell<$state>,
         }
 
         impl<'a> $widget<'a> {
-            pub fn new(state: &'a std::cell::RefCell<$state>) -> Self {
+            pub(crate) fn new(state: &'a std::cell::RefCell<$state>) -> Self {
                 Self { state }
             }
         }
@@ -97,15 +97,19 @@ macro_rules! visualization_widget {
             fn tag(&self) -> iced::advanced::widget::tree::Tag {
                 iced::advanced::widget::tree::Tag::stateless()
             }
+
             fn state(&self) -> iced::advanced::widget::tree::State {
-                iced::advanced::widget::tree::State::new(())
+                iced::advanced::widget::tree::State::None
             }
+
             fn size(&self) -> iced::Size<iced::Length> {
                 iced::Size::new(iced::Length::Fill, iced::Length::Fill)
             }
+
             fn children(&self) -> Vec<iced::advanced::widget::Tree> {
                 Vec::new()
             }
+
             fn diff(&self, _: &mut iced::advanced::widget::Tree) {}
 
             fn layout(
@@ -132,21 +136,29 @@ macro_rules! visualization_widget {
                 _: &iced::Rectangle,
             ) {
                 use iced_wgpu::primitive::Renderer as _;
-                let bounds = layout.bounds();
-                let state = self.state.borrow();
-                match state.visual_params(bounds) {
-                    Some(params) => renderer.draw_primitive(bounds, <$primitive>::new(params)),
-                    None => $crate::visuals::render::common::fill_rect(
-                        renderer,
-                        bounds,
-                        theme.extended_palette().background.base.color,
-                    ),
-                }
+                let ($this, $renderer, $theme, $bounds) = (self, renderer, theme, layout.bounds());
+                $draw
             }
         }
 
-        pub fn widget<'a, M: 'a>(state: &'a std::cell::RefCell<$state>) -> iced::Element<'a, M> {
+        pub(crate) fn widget<'a, M: 'a>(state: &'a std::cell::RefCell<$state>) -> iced::Element<'a, M> {
             iced::Element::new($widget::new(state))
         }
+    };
+    ($widget:ident, $state:ty, |$this:ident, $renderer:ident, $theme:ident, $bounds:ident| $draw:block) => {
+        $crate::visualization_widget!(@base $widget, $state, |$this, $renderer, $theme, $bounds| $draw);
+    };
+    ($widget:ident, $state:ty, $primitive:ty) => {
+        $crate::visualization_widget!(@base $widget, $state, |this, renderer, theme, bounds| {
+            let state = this.state.borrow();
+            match state.visual_params(bounds) {
+                Some(params) => renderer.draw_primitive(bounds, <$primitive>::new(params)),
+                None => $crate::visuals::render::common::fill_rect(
+                    renderer,
+                    bounds,
+                    theme.extended_palette().background.base.color,
+                ),
+            }
+        });
     };
 }

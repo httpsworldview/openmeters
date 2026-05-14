@@ -9,18 +9,14 @@ use crate::persistence::settings::{SpectrumDisplayMode, SpectrumSettings, Spectr
 use crate::util::audio::musical::NoteInfo;
 use crate::util::audio::{FrequencyScale, fmt_freq, lerp};
 use crate::util::color::{color_to_rgba, with_alpha};
-use crate::vis_processor;
 use crate::visuals::palettes;
 use crate::visuals::render::common::{
     fill_rect, fill_snapped_bordered_rect, make_text, measure_text,
 };
-use iced::advanced::renderer;
+use crate::{vis_processor, visualization_widget};
+use iced::advanced::Renderer as _;
 use iced::advanced::text::Renderer as _;
-use iced::advanced::widget::{Tree, tree};
-use iced::advanced::{Layout, Renderer as _, Widget, layout, mouse};
-use iced::{Color, Element, Length, Point, Rectangle, Size};
-use iced_wgpu::primitive::Renderer as _;
-use std::cell::RefCell;
+use iced::{Color, Point, Rectangle, Size};
 use std::sync::{Arc, LazyLock};
 
 const EPSILON: f32 = 1e-6;
@@ -306,63 +302,23 @@ impl SpectrumState {
     }
 }
 
-#[derive(Debug)]
-pub(crate) struct Spectrum<'a>(&'a RefCell<SpectrumState>);
-impl<'a> Spectrum<'a> {
-    pub fn new(state: &'a RefCell<SpectrumState>) -> Self {
-        Self(state)
+visualization_widget!(Spectrum, SpectrumState, |this, r, th, b| {
+    let state = this.state.borrow();
+    let peak = state.peak();
+    let peak_layout = peak.and_then(|p| peak_label_layout(b, p));
+    let Some(params) = state.visual_params(b, th, peak_layout) else {
+        fill_rect(r, b, th.extended_palette().background.base.color);
+        return;
+    };
+    if let Some((min_f, max_f)) = state.effective_range.filter(|_| state.style.show_grid) {
+        r.with_layer(b, |r| draw_grid(r, th, b, min_f, max_f, &state.style));
     }
-}
-
-impl<'a, M> Widget<M, iced::Theme, iced::Renderer> for Spectrum<'a> {
-    fn tag(&self) -> tree::Tag {
-        tree::Tag::of::<()>()
+    r.draw_primitive(b, SpectrumPrimitive::new(params));
+    if let Some((pk, layout)) = peak.zip(peak_layout) {
+        let accent = state.style.spectrum_palette[5];
+        r.with_layer(b, |r| draw_peak(r, th, pk, layout, accent));
     }
-    fn state(&self) -> tree::State {
-        tree::State::None
-    }
-    fn size(&self) -> Size<Length> {
-        Size::new(Length::Fill, Length::Fill)
-    }
-    fn children(&self) -> Vec<Tree> {
-        Vec::new()
-    }
-    fn diff(&self, _: &mut Tree) {}
-    fn layout(&mut self, _: &mut Tree, _: &iced::Renderer, lim: &layout::Limits) -> layout::Node {
-        layout::Node::new(lim.resolve(Length::Fill, Length::Fill, Size::ZERO))
-    }
-    fn draw(
-        &self,
-        _: &Tree,
-        r: &mut iced::Renderer,
-        th: &iced::Theme,
-        _: &renderer::Style,
-        lay: Layout<'_>,
-        _: mouse::Cursor,
-        _: &Rectangle,
-    ) {
-        let b = lay.bounds();
-        let state = self.0.borrow();
-        let peak = state.peak();
-        let peak_layout = peak.and_then(|p| peak_label_layout(b, p));
-        let Some(params) = state.visual_params(b, th, peak_layout) else {
-            fill_rect(r, b, th.extended_palette().background.base.color);
-            return;
-        };
-        if let Some((min_f, max_f)) = state.effective_range.filter(|_| state.style.show_grid) {
-            r.with_layer(b, |r| draw_grid(r, th, b, min_f, max_f, &state.style));
-        }
-        r.draw_primitive(b, SpectrumPrimitive::new(params));
-        if let Some((pk, layout)) = peak.zip(peak_layout) {
-            let accent = state.style.spectrum_palette[5];
-            r.with_layer(b, |r| draw_peak(r, th, pk, layout, accent));
-        }
-    }
-}
-
-pub(crate) fn widget<'a, M: 'a>(state: &'a RefCell<SpectrumState>) -> Element<'a, M> {
-    Element::new(Spectrum::new(state))
-}
+});
 
 fn interp(bins: &[f32], mags: &[f32], t: f32) -> f32 {
     let i = bins.partition_point(|&f| f < t);

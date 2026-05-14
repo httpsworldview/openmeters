@@ -69,23 +69,6 @@ pub struct WaveformPreview {
     pub max_values: Vec<f32>,
 }
 
-impl WaveformPreview {
-    fn clear(&mut self) {
-        self.min_values.clear();
-        self.max_values.clear();
-    }
-
-    fn resize(&mut self, channel_count: usize) {
-        self.min_values.resize(channel_count, 0.0);
-        self.max_values.resize(channel_count, 0.0);
-    }
-
-    fn set_channel(&mut self, channel: usize, min: f32, max: f32) {
-        self.min_values[channel] = min;
-        self.max_values[channel] = max;
-    }
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct WaveformSnapshot {
     pub channels: usize,
@@ -99,21 +82,19 @@ pub struct WaveformSnapshot {
     pub preview: WaveformPreview,
 }
 
-#[inline]
-fn clamp_extrema(min: f32, max: f32) -> (f32, f32) {
-    (
-        if min == f32::MAX { 0.0 } else { min },
-        if max == f32::MIN { 0.0 } else { max },
-    )
-}
-
 fn sample_extrema(samples: &[f32]) -> (f32, f32) {
     let (min, max) = samples
         .iter()
-        .fold((f32::MAX, f32::MIN), |(min, max), &sample| {
+        .copied()
+        .filter(|sample| sample.is_finite())
+        .fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), sample| {
             (min.min(sample), max.max(sample))
         });
-    clamp_extrema(min, max)
+    if min.is_finite() {
+        (min, max)
+    } else {
+        (0.0, 0.0)
+    }
 }
 
 #[derive(Clone)]
@@ -180,7 +161,16 @@ impl FrequencyAnalyzer {
 
         self.apply_hann_window();
 
-        if self.compute_fft().is_err() {
+        self.output_spectrum.fill(Complex32::default());
+        if self
+            .fft
+            .process_with_scratch(
+                &mut self.input_buffer,
+                &mut self.output_spectrum,
+                &mut self.scratch,
+            )
+            .is_err()
+        {
             return self.smoothed;
         }
 
@@ -212,26 +202,11 @@ impl FrequencyAnalyzer {
     fn apply_hann_window(&mut self) {
         let n = self.sample_history.len().min(self.size);
         self.input_buffer[n..].fill(0.0);
-        self.ensure_hann_window(n);
+        if self.hann_window.len() != n {
+            self.hann_window = window_coefficients(WindowKind::Hann, n);
+        }
         self.input_buffer[..n].copy_from_slice(&self.sample_history[..n]);
         apply_window(&mut self.input_buffer[..n], &self.hann_window);
-    }
-
-    fn ensure_hann_window(&mut self, len: usize) {
-        if self.hann_window.len() != len {
-            self.hann_window = window_coefficients(WindowKind::Hann, len);
-        }
-    }
-
-    fn compute_fft(&mut self) -> Result<(), ()> {
-        self.output_spectrum.fill(Complex32::default());
-        self.fft
-            .process_with_scratch(
-                &mut self.input_buffer,
-                &mut self.output_spectrum,
-                &mut self.scratch,
-            )
-            .map_err(|_| ())
     }
 
     fn spectral_centroid(&self) -> f32 {
@@ -438,22 +413,22 @@ impl WaveformProcessor {
 
     fn sync_preview(&mut self) {
         let progress = self.accumulator_progress();
-        self.snapshot.preview.progress = progress;
+        let preview = &mut self.snapshot.preview;
+        preview.progress = progress;
 
-        let has_data = self
-            .sample_accumulators
-            .first()
-            .is_some_and(|a| !a.is_empty());
-        if !has_data {
-            self.snapshot.preview.clear();
+        if self.sample_accumulators.first().is_none_or(Vec::is_empty) {
+            preview.min_values.clear();
+            preview.max_values.clear();
             return;
         }
 
-        self.snapshot.preview.resize(self.channel_count);
+        preview.min_values.resize(self.channel_count, 0.0);
+        preview.max_values.resize(self.channel_count, 0.0);
 
-        for channel in 0..self.channel_count {
-            let (min, max) = sample_extrema(&self.sample_accumulators[channel]);
-            self.snapshot.preview.set_channel(channel, min, max);
+        for (channel, samples) in self.sample_accumulators.iter().enumerate() {
+            let (min, max) = sample_extrema(samples);
+            preview.min_values[channel] = min;
+            preview.max_values[channel] = max;
         }
     }
 }
@@ -521,14 +496,31 @@ impl Reconfigurable<WaveformConfig> for WaveformProcessor {
 mod tests {
     use super::*;
     use std::f32::consts::PI;
-    use std::time::Instant;
 
     fn block(samples: &[f32], channels: usize, sample_rate: f32) -> AudioBlock<'_> {
-        AudioBlock::new(samples, channels, sample_rate, Instant::now())
+        AudioBlock::now(samples, channels, sample_rate)
     }
 
     fn extract_snapshot(update: Option<WaveformSnapshot>) -> WaveformSnapshot {
         update.expect("expected snapshot")
+    }
+
+    fn centroid_for(frequency: f32, scroll_speed: f32) -> f32 {
+        let config = WaveformConfig {
+            sample_rate: 48_000.0,
+            scroll_speed,
+            ..Default::default()
+        };
+        let samples_per_column = config.samples_per_column();
+        let mut processor = WaveformProcessor::new(config);
+        let samples: Vec<f32> = (0..samples_per_column * 60)
+            .map(|n| (2.0 * PI * frequency * n as f32 / 48_000.0).sin())
+            .collect();
+        extract_snapshot(processor.process_block(&block(&samples, 1, 48_000.0)))
+            .frequency_normalized
+            .last()
+            .copied()
+            .unwrap_or(0.5)
     }
 
     #[test]
@@ -549,28 +541,20 @@ mod tests {
     }
 
     #[test]
-    fn centroid_tracks_brightness() {
-        let config = WaveformConfig {
-            sample_rate: 48_000.0,
-            scroll_speed: 200.0,
-            ..Default::default()
-        };
-        let samples_per_column = config.samples_per_column();
+    fn extrema_ignore_non_finite_samples() {
+        assert_eq!(sample_extrema(&[f32::NAN, f32::INFINITY]), (0.0, 0.0));
+        assert_eq!(
+            sample_extrema(&[f32::NAN, -0.5, f32::INFINITY, 0.25]),
+            (-0.5, 0.25)
+        );
+    }
 
-        let mut results = Vec::new();
-        for &frequency in &[100.0, 440.0, 1000.0, 5000.0] {
-            let mut processor = WaveformProcessor::new(config);
-            let samples: Vec<f32> = (0..samples_per_column * 60)
-                .map(|n| (2.0 * PI * frequency * n as f32 / 48_000.0).sin())
-                .collect();
-            let normalized =
-                extract_snapshot(processor.process_block(&block(&samples, 1, 48_000.0)))
-                    .frequency_normalized
-                    .last()
-                    .copied()
-                    .unwrap_or(0.5);
-            results.push((frequency, normalized));
-        }
+    #[test]
+    fn centroid_tracks_brightness() {
+        let results: Vec<_> = [100.0, 440.0, 1000.0, 5000.0]
+            .into_iter()
+            .map(|frequency| (frequency, centroid_for(frequency, 200.0)))
+            .collect();
 
         for window in results.windows(2) {
             let (low_hz, low_norm) = window[0];
@@ -584,28 +568,10 @@ mod tests {
 
     #[test]
     fn scroll_speed_does_not_affect_centroid() {
-        let frequency = 440.0;
-        let mut results = Vec::new();
-
-        for &scroll_speed in &[50.0, 100.0, 200.0, 500.0] {
-            let config = WaveformConfig {
-                sample_rate: 48_000.0,
-                scroll_speed,
-                ..Default::default()
-            };
-            let samples_per_column = config.samples_per_column();
-            let mut processor = WaveformProcessor::new(config);
-            let samples: Vec<f32> = (0..samples_per_column * 60)
-                .map(|n| (2.0 * PI * frequency * n as f32 / 48_000.0).sin())
-                .collect();
-            let normalized =
-                extract_snapshot(processor.process_block(&block(&samples, 1, 48_000.0)))
-                    .frequency_normalized
-                    .last()
-                    .copied()
-                    .unwrap_or(0.5);
-            results.push((scroll_speed, normalized));
-        }
+        let results: Vec<_> = [50.0, 100.0, 200.0, 500.0]
+            .into_iter()
+            .map(|scroll_speed| (scroll_speed, centroid_for(440.0, scroll_speed)))
+            .collect();
 
         let avg: f32 = results.iter().map(|(_, n)| n).sum::<f32>() / results.len() as f32;
         for (speed, normalized) in &results {
