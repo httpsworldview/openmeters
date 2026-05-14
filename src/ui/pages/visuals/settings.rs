@@ -1,6 +1,20 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
+macro_rules! controls {
+    ($spacing:literal; $($control:expr;)*) => {{
+        controls!(@push iced::widget::Column::new().spacing($spacing); $($control;)*)
+    }};
+    ($base:expr; $($control:expr;)*) => {{
+        controls!(@push $base; $($control;)*)
+    }};
+    (@push $base:expr; $($control:expr;)*) => {{
+        let mut column = $base;
+        $(column = column.push($control);)*
+        column
+    }};
+}
+
 macro_rules! settings_pane {
     (
         $pane:ident, $settings_ty:ty, $kind:expr, $variant:ident,
@@ -128,7 +142,7 @@ pub(super) fn palette_section<'a, M: 'a>(
     palette: &'a PaletteEditor,
     map: fn(PaletteEvent) -> M,
 ) -> iced::widget::Column<'a, M> {
-    column![widgets::section_title("Colors"), palette.view().map(map)].spacing(8)
+    column![widgets::section("Colors"), palette.view().map(map)].spacing(8)
 }
 
 pub(super) fn persist_with_palette<T: Clone + Serialize + HasPalette>(

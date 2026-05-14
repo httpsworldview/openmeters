@@ -2,14 +2,11 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::palette::PaletteEvent;
-use super::widgets::{
-    SliderRange, labeled_pick_list, labeled_slider, set_if_changed, update_f32_range,
-};
+use super::widgets::{SliderRange, pick, set_if_changed, slide, update_f32_range};
 use crate::persistence::settings::{Channel, OscilloscopeSettings};
 use crate::visuals::oscilloscope::processor::TriggerMode;
 use crate::visuals::registry::VisualKind;
 use iced::Element;
-use iced::widget::column;
 
 settings_pane!(
     OscilloscopeSettingsPane, OscilloscopeSettings, VisualKind::Oscilloscope, Oscilloscope,
@@ -38,38 +35,19 @@ pub enum Message {
 
 impl OscilloscopeSettingsPane {
     fn view(&self) -> Element<'_, Message> {
-        let mode = self.settings.trigger_mode;
-        let preset = TriggerPreset::from_mode(mode);
-        let dur_label = if preset == TriggerPreset::Stable {
-            "Segment duration (fallback)"
-        } else {
-            "Segment duration"
+        let preset = TriggerPreset::from_mode(self.settings.trigger_mode);
+        let dur_label = match preset {
+            TriggerPreset::Stable => "Segment duration (fallback)",
+            TriggerPreset::ZeroCrossing => "Segment duration",
         };
+        let mut content = controls!(16.0;
+            pick("Mode", TriggerPreset::ALL, preset, Message::TriggerMode);
+            pick("Channel 1", Channel::ALL, self.settings.channel_1, Message::Channel1);
+            pick("Channel 2", Channel::ALL, self.settings.channel_2, Message::Channel2);
+        );
 
-        let mut content = column![
-            labeled_pick_list(
-                "Mode",
-                TriggerPreset::ALL,
-                Some(preset),
-                Message::TriggerMode
-            ),
-            labeled_pick_list(
-                "Channel 1",
-                Channel::ALL,
-                Some(self.settings.channel_1),
-                Message::Channel1
-            ),
-            labeled_pick_list(
-                "Channel 2",
-                Channel::ALL,
-                Some(self.settings.channel_2),
-                Message::Channel2
-            ),
-        ]
-        .spacing(16);
-
-        if let TriggerMode::Stable { num_cycles } = mode {
-            content = content.push(labeled_slider(
+        if let TriggerMode::Stable { num_cycles } = self.settings.trigger_mode {
+            content = content.push(slide(
                 "Cycles",
                 num_cycles as f32,
                 num_cycles.to_string(),
@@ -78,23 +56,19 @@ impl OscilloscopeSettingsPane {
             ));
         }
 
-        content
-            .push(labeled_slider(
-                dur_label,
-                self.settings.segment_duration,
+        controls!(content;
+            slide(
+                dur_label, self.settings.segment_duration,
                 format!("{:.1} ms", self.settings.segment_duration * 1000.0),
-                SEGMENT_DURATION_RANGE,
-                Message::SegmentDuration,
-            ))
-            .push(labeled_slider(
-                "Persistence",
-                self.settings.persistence,
-                format!("{:.2}", self.settings.persistence),
-                PERSISTENCE_RANGE,
-                Message::Persistence,
-            ))
-            .push(super::palette_section(&self.palette, Message::Palette))
-            .into()
+                SEGMENT_DURATION_RANGE, Message::SegmentDuration
+            );
+            slide(
+                "Persistence", self.settings.persistence, format!("{:.2}", self.settings.persistence),
+                PERSISTENCE_RANGE, Message::Persistence
+            );
+            super::palette_section(&self.palette, Message::Palette);
+        )
+        .into()
     }
 
     fn handle(&mut self, msg: &Message) -> bool {

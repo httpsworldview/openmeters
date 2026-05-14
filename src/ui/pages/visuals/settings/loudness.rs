@@ -2,10 +2,10 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::palette::PaletteEvent;
-use super::widgets::{labeled_pick_list, set_if_changed};
+use super::widgets::{pick, set_if_changed};
 use crate::persistence::settings::{LoudnessSettings, MeterMode};
 use crate::visuals::registry::VisualKind;
-use iced::{Element, widget::column};
+use iced::Element;
 
 settings_pane!(
     LoudnessSettingsPane,
@@ -23,22 +23,11 @@ pub enum Message {
 
 impl LoudnessSettingsPane {
     fn view(&self) -> Element<'_, Message> {
-        column![
-            labeled_pick_list(
-                "Left meter mode",
-                MeterMode::ALL,
-                Some(self.settings.left_mode),
-                Message::LeftMode
-            ),
-            labeled_pick_list(
-                "Right meter mode",
-                MeterMode::ALL,
-                Some(self.settings.right_mode),
-                Message::RightMode
-            ),
-            super::palette_section(&self.palette, Message::Palette)
-        ]
-        .spacing(16)
+        controls!(16.0;
+            pick("Left meter mode", MeterMode::ALL, self.settings.left_mode, Message::LeftMode);
+            pick("Right meter mode", MeterMode::ALL, self.settings.right_mode, Message::RightMode);
+            super::palette_section(&self.palette, Message::Palette);
+        )
         .into()
     }
 

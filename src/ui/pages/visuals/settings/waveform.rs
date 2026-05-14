@@ -2,10 +2,7 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::palette::{PaletteEditor, PaletteEvent};
-use super::widgets::{
-    SliderRange, labeled_pick_list, labeled_slider, labeled_toggler, set_if_changed,
-    update_f32_range,
-};
+use super::widgets::{SliderRange, pick, set_if_changed, slide, toggle, update_f32_range};
 use crate::persistence::settings::{Channel, WaveformColorMode, WaveformSettings};
 use crate::visuals::palettes::waveform::GRADIENT_STOPS;
 use crate::visuals::registry::VisualKind;
@@ -13,7 +10,6 @@ use crate::visuals::waveform::processor::{
     MAX_BAND_DB_FLOOR, MAX_SCROLL_SPEED, MIN_BAND_DB_FLOOR, MIN_SCROLL_SPEED, NUM_BANDS,
 };
 use iced::Element;
-use iced::widget::column;
 
 settings_pane!(
     WaveformSettingsPane, WaveformSettings, VisualKind::Waveform, Waveform,
@@ -26,24 +22,22 @@ settings_pane!(
 const SCROLL_SPEED_RANGE: SliderRange = SliderRange::new(MIN_SCROLL_SPEED, MAX_SCROLL_SPEED, 1.0);
 const BAND_DB_FLOOR_RANGE: SliderRange =
     SliderRange::new(MIN_BAND_DB_FLOOR, MAX_BAND_DB_FLOOR, 1.0);
+
 fn configure_palette_for_mode(palette: &mut PaletteEditor, mode: WaveformColorMode) {
-    match mode {
-        WaveformColorMode::Static => {
-            let visible = std::iter::once(0)
-                .chain(GRADIENT_STOPS..GRADIENT_STOPS + NUM_BANDS)
-                .collect();
-            palette.set_visible_indices(Some(visible));
-            palette.set_label_overrides(vec![(0, "Color")]);
-        }
-        WaveformColorMode::Loudness => {
-            palette.set_visible_indices(None);
-            palette.set_label_overrides(vec![(0, "Quiet"), (5, "Loud")]);
-        }
-        WaveformColorMode::Frequency => {
-            palette.set_visible_indices(None);
-            palette.set_label_overrides(vec![]);
-        }
-    }
+    let (visible, labels) = match mode {
+        WaveformColorMode::Static => (
+            Some(
+                std::iter::once(0)
+                    .chain(GRADIENT_STOPS..GRADIENT_STOPS + NUM_BANDS)
+                    .collect(),
+            ),
+            vec![(0, "Color")],
+        ),
+        WaveformColorMode::Loudness => (None, vec![(0, "Quiet"), (5, "Loud")]),
+        WaveformColorMode::Frequency => (None, Vec::new()),
+    };
+    palette.set_visible_indices(visible);
+    palette.set_label_overrides(labels);
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -59,47 +53,22 @@ pub enum Message {
 
 impl WaveformSettingsPane {
     fn view(&self) -> Element<'_, Message> {
-        column![
-            labeled_slider(
-                "Scroll speed",
-                self.settings.scroll_speed,
-                format!("{:.0} px/s", self.settings.scroll_speed),
-                SCROLL_SPEED_RANGE,
-                Message::ScrollSpeed
-            ),
-            labeled_pick_list(
-                "Channel 1",
-                Channel::ALL,
-                Some(self.settings.channel_1),
-                Message::Channel1
-            ),
-            labeled_pick_list(
-                "Channel 2",
-                Channel::ALL,
-                Some(self.settings.channel_2),
-                Message::Channel2
-            ),
-            labeled_pick_list(
-                "Color mode",
-                WaveformColorMode::ALL,
-                Some(self.settings.color_mode),
-                Message::ColorMode
-            ),
-            labeled_toggler(
-                "Peak history",
-                self.settings.show_peak_history,
-                Message::ShowPeakHistory
-            ),
-            labeled_slider(
-                "Peak range",
-                self.settings.band_db_floor,
-                format!("{:.0} dB", self.settings.band_db_floor),
-                BAND_DB_FLOOR_RANGE,
-                Message::BandDbFloor
-            ),
-            super::palette_section(&self.palette, Message::Palette)
-        ]
-        .spacing(16)
+        let s = &self.settings;
+        controls!(16.0;
+            slide(
+                "Scroll speed", s.scroll_speed, format!("{:.0} px/s", s.scroll_speed),
+                SCROLL_SPEED_RANGE, Message::ScrollSpeed
+            );
+            pick("Channel 1", Channel::ALL, s.channel_1, Message::Channel1);
+            pick("Channel 2", Channel::ALL, s.channel_2, Message::Channel2);
+            pick("Color mode", WaveformColorMode::ALL, s.color_mode, Message::ColorMode);
+            toggle("Peak history", s.show_peak_history, Message::ShowPeakHistory);
+            slide(
+                "Peak range", s.band_db_floor, format!("{:.0} dB", s.band_db_floor),
+                BAND_DB_FLOOR_RANGE, Message::BandDbFloor
+            );
+            super::palette_section(&self.palette, Message::Palette);
+        )
         .into()
     }
 
