@@ -180,18 +180,28 @@ pub mod stereometer {
         [0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0];
 }
 
-// Loudness meter: background, left_ch_1, left_ch_2, right_fill, guide_line (5 stops)
+// Loudness meter: background, level zones, peak hold, guide line (7 stops)
 pub mod loudness {
     use super::*;
-    pub const COLORS: [Color; 5] = [
+    pub const COLORS: [Color; 7] = [
         hex(0x29, 0x29, 0x29, 0xFF),
         hex(0xA0, 0xAA, 0xAD, 0xFF),
-        hex(0x95, 0x9E, 0xA6, 0xFF),
-        hex(0xB3, 0xC4, 0xBC, 0xFF),
-        hex(0xBB, 0xBF, 0xC5, 0xE0),
+        hex(0xAB, 0xCF, 0xAD, 0xFF),
+        hex(0xFF, 0xB7, 0x54, 0xFF),
+        hex(0xFF, 0x5C, 0x4F, 0xFF),
+        hex(0xF5, 0xED, 0xC4, 0xFF),
+        hex(0xB7, 0xC2, 0xC9, 0xE0),
     ];
-    pub const LABELS: &[&str] = &["Background", "Left 1", "Left 2", "Right", "Guide"];
-    pub const DEFAULT_POSITIONS: [f32; COLORS.len()] = [0.0, 0.25, 0.5, 0.75, 1.0];
+    pub const LABELS: &[&str] = &[
+        "Background",
+        "Low",
+        "Mid",
+        "High",
+        "Danger",
+        "Peak",
+        "Guide",
+    ];
+    pub const DEFAULT_POSITIONS: [f32; COLORS.len()] = [0.0, 0.16, 0.32, 0.48, 0.64, 0.80, 1.0];
 }
 
 // App background color (1 stop)

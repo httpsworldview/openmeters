@@ -7,7 +7,7 @@
 use super::processor::{
     LoudnessConfig, LoudnessProcessor as CoreLoudnessProcessor, LoudnessSnapshot, MAX_CHANNELS,
 };
-use super::render::{LoudnessParams, LoudnessPrimitive, MeterBar};
+use super::render::{LoudnessParams, LoudnessPrimitive, MeterFill};
 use crate::persistence::settings::{LoudnessSettings, MeterMode};
 use crate::util::color::{color_to_rgba, with_alpha};
 use crate::visuals::palettes;
@@ -16,8 +16,12 @@ use crate::{vis_processor, visualization_widget};
 use iced::advanced::text;
 use iced::alignment::{Horizontal, Vertical};
 use iced::{Color, Point, Rectangle, Size};
+use std::time::{Duration, Instant};
+
 const DEFAULT_RANGE: (f32, f32) = (-60.0, 4.0);
 const GUIDE_LEVELS: [f32; 6] = [0.0, -6.0, -12.0, -18.0, -24.0, -36.0];
+const PEAK_HOLD: Duration = Duration::from_secs(2);
+const PEAK_DECAY_DB_PER_SEC: f32 = 60.0;
 const LEFT_PADDING: f32 = 28.0;
 const RIGHT_PADDING: f32 = 64.0;
 const LABEL_FONT_SIZE: f32 = 10.0;
@@ -37,7 +41,44 @@ vis_processor!(
     no_config
 );
 
-pub const LOUDNESS_PALETTE_SIZE: usize = 5;
+pub const LOUDNESS_PALETTE_SIZE: usize = palettes::loudness::COLORS.len();
+
+const PAL_BACKGROUND: usize = 0;
+const PAL_LOW: usize = 1;
+const PAL_MID: usize = 2;
+const PAL_HIGH: usize = 3;
+const PAL_DANGER: usize = 4;
+const PAL_PEAK: usize = 5;
+const PAL_GUIDE: usize = 6;
+const ZONE_COUNT: usize = 4;
+const DANGER_ZONE_INDEX: usize = ZONE_COUNT - 1;
+const VISIBLE_METER_COUNT: usize = 3;
+
+#[derive(Debug, Clone, Copy)]
+struct PeakHold {
+    db: f32,
+    decay_from: Instant,
+}
+
+impl PeakHold {
+    fn new(db: f32, now: Instant) -> Self {
+        Self {
+            db,
+            decay_from: now,
+        }
+    }
+
+    fn update(&mut self, value: f32, now: Instant) {
+        if value > self.db {
+            self.db = value;
+            self.decay_from = now + PEAK_HOLD;
+        } else if now > self.decay_from {
+            let decay_dt = now.duration_since(self.decay_from).as_secs_f32();
+            self.db = (self.db - PEAK_DECAY_DB_PER_SEC * decay_dt).max(value);
+            self.decay_from = now;
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct LoudnessState {
@@ -51,12 +92,15 @@ pub(crate) struct LoudnessState {
     pub(crate) left_mode: MeterMode,
     pub(crate) right_mode: MeterMode,
     pub(crate) palette: [Color; LOUDNESS_PALETTE_SIZE],
+    peaks: [PeakHold; VISIBLE_METER_COUNT],
     key: u64,
 }
 
 impl LoudnessState {
     pub fn new() -> Self {
         let defaults = LoudnessSettings::default();
+        let now = Instant::now();
+        let peak = PeakHold::new(DEFAULT_RANGE.0, now);
         Self {
             short_term_loudness: DEFAULT_RANGE.0,
             momentary_loudness: DEFAULT_RANGE.0,
@@ -68,6 +112,7 @@ impl LoudnessState {
             left_mode: defaults.left_mode,
             right_mode: defaults.right_mode,
             palette: palettes::loudness::COLORS,
+            peaks: [peak; VISIBLE_METER_COUNT],
             key: crate::visuals::next_key(),
         }
     }
@@ -75,12 +120,22 @@ impl LoudnessState {
     pub fn apply_snapshot(&mut self, snapshot: LoudnessSnapshot) {
         self.short_term_loudness = snapshot.short_term_loudness;
         self.momentary_loudness = snapshot.momentary_loudness;
-        self.channel_count = snapshot.channel_count.max(1);
-        for i in 0..self.channel_count.min(MAX_CHANNELS) {
+        self.channel_count = snapshot.channel_count.clamp(1, MAX_CHANNELS);
+        for i in 0..self.channel_count {
             self.rms_fast_db[i] = snapshot.rms_fast_db[i];
             self.rms_slow_db[i] = snapshot.rms_slow_db[i];
             self.true_peak_db[i] = snapshot.true_peak_db[i];
         }
+
+        self.update_peak_holds(Instant::now());
+    }
+
+    pub fn set_modes(&mut self, left: MeterMode, right: MeterMode) {
+        if self.left_mode != left || self.right_mode != right {
+            self.reset_peaks(Instant::now());
+        }
+        self.left_mode = left;
+        self.right_mode = right;
     }
 
     pub fn set_palette(&mut self, palette: &[Color; LOUDNESS_PALETTE_SIZE]) {
@@ -106,33 +161,22 @@ impl LoudnessState {
 
     fn visual_params(&self, bounds: Rectangle) -> LoudnessParams {
         let (min, max) = self.range;
-        let guide_color = color_to_rgba(self.palette[4]);
-        let bg_color = color_to_rgba(with_alpha(self.palette[0], 1.0));
-
-        // Stereo L/R display with surround aggregation (ITU-R BS.775 layout)
-        let left_value = self.aggregate_channels(self.left_mode, LEFT_CHANNEL_INDICES);
-        let right_value = self.aggregate_channels(self.left_mode, RIGHT_CHANNEL_INDICES);
+        let guide_color = color_to_rgba(self.palette[PAL_GUIDE]);
+        let bg_color = color_to_rgba(with_alpha(self.palette[PAL_BACKGROUND], 1.0));
+        let values = self.visible_values();
 
         LoudnessParams {
             key: self.key,
             bounds,
             min_db: min,
             max_db: max,
+            bg_color,
             bars: vec![
-                MeterBar {
-                    bg_color,
-                    fills: vec![
-                        (left_value, color_to_rgba(self.palette[1])),
-                        (right_value, color_to_rgba(self.palette[2])),
-                    ],
-                },
-                MeterBar {
-                    bg_color,
-                    fills: vec![(
-                        self.get_value(self.right_mode, 0),
-                        color_to_rgba(self.palette[3]),
-                    )],
-                },
+                vec![
+                    self.meter_fill(0, self.left_mode, values[0]),
+                    self.meter_fill(1, self.left_mode, values[1]),
+                ],
+                vec![self.meter_fill(2, self.right_mode, values[2])],
             ],
             guides: GUIDE_LEVELS
                 .iter()
@@ -161,6 +205,70 @@ impl LoudnessState {
         }
         max_val
     }
+
+    fn visible_values(&self) -> [f32; VISIBLE_METER_COUNT] {
+        [
+            self.aggregate_channels(self.left_mode, LEFT_CHANNEL_INDICES),
+            self.aggregate_channels(self.left_mode, RIGHT_CHANNEL_INDICES),
+            self.get_value(self.right_mode, 0),
+        ]
+    }
+
+    fn meter_fill(&self, peak_index: usize, mode: MeterMode, db: f32) -> MeterFill {
+        let peak_db = self.peaks[peak_index].db;
+        MeterFill {
+            db,
+            segments: self.meter_segments(mode),
+            peak: (peak_db > self.range.0).then(|| {
+                let color = self.palette[if is_danger_zone(mode, peak_db) {
+                    PAL_DANGER
+                } else {
+                    PAL_PEAK
+                }];
+                (peak_db, color_to_rgba(color))
+            }),
+        }
+    }
+
+    fn meter_segments(&self, mode: MeterMode) -> [(f32, [f32; 4]); ZONE_COUNT] {
+        let [low, mid, high] = zone_thresholds(mode);
+        [
+            (low, color_to_rgba(self.palette[PAL_LOW])),
+            (mid, color_to_rgba(self.palette[PAL_MID])),
+            (high, color_to_rgba(self.palette[PAL_HIGH])),
+            (self.range.1, color_to_rgba(self.palette[PAL_DANGER])),
+        ]
+    }
+
+    fn reset_peaks(&mut self, now: Instant) {
+        self.peaks.fill(PeakHold::new(self.range.0, now));
+    }
+
+    fn update_peak_holds(&mut self, now: Instant) {
+        let values = self.visible_values();
+        let (min, max) = self.range;
+        for (peak, value) in self.peaks.iter_mut().zip(values) {
+            peak.update(value.clamp(min, max), now);
+        }
+    }
+}
+
+fn zone_thresholds(mode: MeterMode) -> [f32; 3] {
+    match mode {
+        MeterMode::LufsShortTerm | MeterMode::LufsMomentary => [-24.0, -18.0, -9.0],
+        MeterMode::RmsFast | MeterMode::RmsSlow | MeterMode::TruePeak => [-12.0, -6.0, -1.0],
+    }
+}
+
+fn zone_index(mode: MeterMode, db: f32) -> usize {
+    zone_thresholds(mode)
+        .iter()
+        .take_while(|&&threshold| db >= threshold)
+        .count()
+}
+
+fn is_danger_zone(mode: MeterMode, db: f32) -> bool {
+    zone_index(mode, db) == DANGER_ZONE_INDEX
 }
 
 visualization_widget!(Loudness, LoudnessState, |this, renderer, theme, bounds| {
@@ -170,14 +278,18 @@ visualization_widget!(Loudness, LoudnessState, |this, renderer, theme, bounds| {
     renderer.draw_primitive(bounds, LoudnessPrimitive::new(params.clone()));
 
     let palette = theme.extended_palette();
-    let label_color = state.palette[4];
+    let label_color = state.palette[PAL_GUIDE];
 
     if let Some((meter_x, bar_width, stride)) = params.meter_bounds() {
         let y_of = |db| bounds.y + bounds.height * (1.0 - params.db_to_ratio(db));
 
         for &db in &params.guides {
             let y = y_of(db);
-            let label = format!("{:.0}", db.abs());
+            let label = if db == 0.0 {
+                "0".into()
+            } else {
+                format!("{db:+.0}")
+            };
 
             let mut text = make_text(&label, LABEL_FONT_SIZE, Size::new(LEFT_PADDING, 20.0));
             text.align_x = Horizontal::Right.into();
@@ -205,7 +317,11 @@ visualization_widget!(Loudness, LoudnessState, |this, renderer, theme, bounds| {
             height: 20.0,
         };
 
-        fill_rect(renderer, label_rect, with_alpha(state.palette[0], 1.0));
+        fill_rect(
+            renderer,
+            label_rect,
+            with_alpha(state.palette[PAL_BACKGROUND], 1.0),
+        );
 
         let mut text = make_text(
             &label,
@@ -253,7 +369,21 @@ mod tests {
 
         let params = state.visual_params(Rectangle::new(Point::ORIGIN, Size::new(200.0, 100.0)));
         assert_eq!(params.bars.len(), 2);
-        assert_eq!(params.bars[0].fills.len(), 2);
-        assert_eq!(params.bars[1].fills.len(), 1);
+        assert_eq!(params.bars[0].len(), 2);
+        assert_eq!(params.bars[1].len(), 1);
+    }
+
+    #[test]
+    fn peak_hold_waits_before_decaying() {
+        let mut state = LoudnessState::new();
+        let start = Instant::now();
+
+        for (input, elapsed, expected) in
+            [(-1.0, 0.0, -1.0), (-20.0, 1.0, -1.0), (-60.0, 2.5, -31.0)]
+        {
+            state.true_peak_db[0] = input;
+            state.update_peak_holds(start + Duration::from_secs_f32(elapsed));
+            assert!((state.peaks[0].db - expected).abs() < 0.01);
+        }
     }
 }

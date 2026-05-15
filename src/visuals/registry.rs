@@ -110,7 +110,7 @@ visuals! {
         loudness::LoudnessProcessor, LoudnessState;
         settings_cfg::LoudnessSettings, &palettes::loudness::COLORS;
         apply(_p, s, set) { let mut st = s.borrow_mut();
-            st.left_mode = set.left_mode; st.right_mode = set.right_mode;
+            st.set_modes(set.left_mode, set.right_mode);
             visuals!(@apply_palette st, set, &palettes::loudness::COLORS); };
         export(_p, s) { let st = s.borrow(); settings_cfg::LoudnessSettings { left_mode: st.left_mode, right_mode: st.right_mode,
             palette: visuals!(@export_palette &st.palette, &palettes::loudness::COLORS) } };
