@@ -705,7 +705,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1207,7 +1207,7 @@ dependencies = [
 [[package]]
 name = "iced_exdevtools"
 version = "0.18.1"
-source = "git+https://github.com/httpsworldview/exwlshelleventloop?branch=output-snapshot#c06e57f75274aed79ed6a57e8557089a620416b8"
+source = "git+https://github.com/httpsworldview/exwlshelleventloop?branch=output-snapshot#ed7dc62844a98df360a1069a1d5e325c77081049"
 dependencies = [
  "iced_debug",
  "iced_devtools",
@@ -1252,7 +1252,7 @@ dependencies = [
 [[package]]
 name = "iced_layershell"
 version = "0.18.1"
-source = "git+https://github.com/httpsworldview/exwlshelleventloop?branch=output-snapshot#c06e57f75274aed79ed6a57e8557089a620416b8"
+source = "git+https://github.com/httpsworldview/exwlshelleventloop?branch=output-snapshot#ed7dc62844a98df360a1069a1d5e325c77081049"
 dependencies = [
  "enumflags2",
  "futures",
@@ -1277,7 +1277,7 @@ dependencies = [
 [[package]]
 name = "iced_layershell_macros"
 version = "0.18.1"
-source = "git+https://github.com/httpsworldview/exwlshelleventloop?branch=output-snapshot#c06e57f75274aed79ed6a57e8557089a620416b8"
+source = "git+https://github.com/httpsworldview/exwlshelleventloop?branch=output-snapshot#ed7dc62844a98df360a1069a1d5e325c77081049"
 dependencies = [
  "darling",
  "manyhow",
@@ -1550,7 +1550,7 @@ dependencies = [
 [[package]]
 name = "layershellev"
 version = "0.18.1"
-source = "git+https://github.com/httpsworldview/exwlshelleventloop?branch=output-snapshot#c06e57f75274aed79ed6a57e8557089a620416b8"
+source = "git+https://github.com/httpsworldview/exwlshelleventloop?branch=output-snapshot#ed7dc62844a98df360a1069a1d5e325c77081049"
 dependencies = [
  "calloop 0.14.4",
  "calloop-wayland-source 0.4.1",
@@ -1867,7 +1867,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2293,18 +2293,18 @@ checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
 name = "pin-project"
-version = "1.1.12"
+version = "1.1.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cbf0d9e68100b3a7989b4901972f265cd542e560a3a8a724e1e20322f4d06ce9"
+checksum = "2466b2336ed02bcdca6b294417127b90ec92038d1d5c4fbeac971a922e0e0924"
 dependencies = [
  "pin-project-internal",
 ]
 
 [[package]]
 name = "pin-project-internal"
-version = "1.1.12"
+version = "1.1.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a990e22f43e84855daf260dded30524ef4a9021cc7541c26540500a50b624389"
+checksum = "c96395f0a926bc13b1c17622aaddda1ecb55d49c8f1bf9777e4d877800a43f8b"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2656,7 +2656,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3056,7 +3056,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3483,7 +3483,7 @@ dependencies = [
 [[package]]
 name = "waycrate_xkbkeycode"
 version = "0.18.1"
-source = "git+https://github.com/httpsworldview/exwlshelleventloop?branch=output-snapshot#c06e57f75274aed79ed6a57e8557089a620416b8"
+source = "git+https://github.com/httpsworldview/exwlshelleventloop?branch=output-snapshot#ed7dc62844a98df360a1069a1d5e325c77081049"
 dependencies = [
  "calloop 0.14.4",
  "log",
@@ -3817,7 +3817,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4073,9 +4073,9 @@ dependencies = [
 
 [[package]]
 name = "winnow"
-version = "1.0.2"
+version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ee1708bef14716a11bae175f579062d4554d95be2c6829f518df847b7b3fdd0"
+checksum = "0592e1c9d151f854e6fd382574c3a0855250e1d9b2f99d9281c6e6391af352f1"
 dependencies = [
  "memchr",
 ]
