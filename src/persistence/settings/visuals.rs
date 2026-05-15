@@ -194,7 +194,8 @@ impl MeterMode {
     pub fn unit_label(self) -> &'static str {
         match self {
             MeterMode::LufsShortTerm | MeterMode::LufsMomentary => "LUFS",
-            MeterMode::RmsFast | MeterMode::RmsSlow | MeterMode::TruePeak => "dB",
+            MeterMode::RmsFast | MeterMode::RmsSlow => "dB",
+            MeterMode::TruePeak => "dBTP",
         }
     }
 }
