@@ -43,6 +43,7 @@ pub struct StereometerParams {
     pub mode: StereometerMode,
     pub scale: StereometerScale,
     pub scale_range: f32,
+    pub dot_radius: f32,
     pub rotation: i8,
     pub flip: bool,
     pub correlation_meter: CorrelationMeterMode,
@@ -211,6 +212,7 @@ impl StereometerPrimitive {
 
         let t = VecTransform::new(p, vec_bounds);
         let [cr, cg, cb, ca] = p.palette[0];
+        let dot_r = p.dot_radius;
 
         let mut v = self.grid_vertices(&t, clip);
 
@@ -219,14 +221,8 @@ impl StereometerPrimitive {
                 let nf = p.points.len() as f32;
                 v.extend(p.points.iter().enumerate().flat_map(|(i, &(l, r))| {
                     let (px, py) = t.apply_rotation(l, r);
-                    dot_vertices(
-                        px,
-                        py,
-                        1.5,
-                        [cr, cg, cb, ca * (i + 1) as f32 / nf],
-                        clip,
-                        false,
-                    )
+                    let a = ca * (i + 1) as f32 / nf;
+                    dot_vertices(px, py, dot_r, [cr, cg, cb, a], clip, false)
                 }));
             }
             StereometerMode::Lissajous if p.points.len() >= 2 => {
@@ -237,28 +233,18 @@ impl StereometerPrimitive {
                         t.apply_rotation(w[1].0, w[1].1),
                     );
                     let (t0, t1) = (i as f32 / nm1, (i + 1) as f32 / nm1);
-                    line_vertices(
-                        p0,
-                        p1,
-                        [cr, cg, cb, ca * t0],
-                        [cr, cg, cb, ca * t1],
-                        1.5,
-                        clip,
-                    )
+                    let (c0, c1) = ([cr, cg, cb, ca * t0], [cr, cg, cb, ca * t1]);
+                    line_vertices(p0, p1, c0, c1, 1.5, clip)
                 }));
             }
             StereometerMode::DotCloudBands => {
-                for band in 0..3 {
-                    let pts = &p.band_points[band];
-                    if pts.is_empty() {
-                        continue;
-                    }
+                for (band, pts) in p.band_points.iter().enumerate() {
                     let nf = pts.len() as f32;
                     let [cr, cg, cb, ca] = p.palette[5 + band];
                     v.extend(pts.iter().enumerate().flat_map(|(i, &(l, r))| {
                         let (px, py) = t.apply_rotation(l, r);
                         let f = ca * (i + 1) as f32 / nf;
-                        dot_vertices(px, py, 1.5, [cr * f, cg * f, cb * f, 0.0], clip, true)
+                        dot_vertices(px, py, dot_r, [cr * f, cg * f, cb * f, 0.0], clip, true)
                     }));
                 }
             }

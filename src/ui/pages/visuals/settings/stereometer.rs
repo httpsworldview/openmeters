@@ -20,6 +20,7 @@ const SEGMENT_DURATION_RANGE: SliderRange = SliderRange::new(0.005, 0.2, 0.001);
 const TARGET_SAMPLE_COUNT_RANGE: SliderRange = SliderRange::new(100.0, 2000.0, 50.0);
 const CORRELATION_WINDOW_RANGE: SliderRange = SliderRange::new(0.05, 1.0, 0.01);
 const PERSISTENCE_RANGE: SliderRange = SliderRange::new(0.0, 1.0, 0.01);
+const DOT_RADIUS_RANGE: SliderRange = SliderRange::new(0.5, 8.0, 0.1);
 
 settings_pane!(
     StereometerSettingsPane,
@@ -34,6 +35,7 @@ pub enum Message {
     TargetSampleCount(f32),
     CorrelationWindow(f32),
     Persistence(f32),
+    DotRadius(f32),
     Rotation(f32),
     Flip(bool),
     Mode(StereometerMode),
@@ -69,11 +71,16 @@ impl StereometerSettingsPane {
                 slide("Scale range", s.scale_range, format!("{:.1}", s.scale_range), SCALE_RANGE, ScaleRange);
             );
         }
-        let display = controls!(8.0;
+        let mut display = controls!(8.0;
             slide("Rotation", s.rotation as f32, s.rotation.to_string(), ROTATION_RANGE, Rotation);
             slide("Persistence", s.persistence, format!("{:.2}", s.persistence), PERSISTENCE_RANGE, Persistence);
             toggle("Flip", s.flip, Flip);
         );
+        if s.mode == StereometerMode::DotCloud || s.mode == StereometerMode::DotCloudBands {
+            display = controls!(display;
+                slide("Dot size", s.dot_radius, format!("{:.1}px", s.dot_radius), DOT_RADIUS_RANGE, DotRadius);
+            );
+        }
 
         let corr_active = s.correlation_meter != CorrelationMeterMode::Off;
         let mut corr_picks = row![
@@ -135,6 +142,7 @@ impl StereometerSettingsPane {
                 update_f32_range(&mut s.correlation_window, v, CORRELATION_WINDOW_RANGE)
             }
             Persistence(v) => update_f32_range(&mut s.persistence, v, PERSISTENCE_RANGE),
+            DotRadius(v) => update_f32_range(&mut s.dot_radius, v, DOT_RADIUS_RANGE),
             Rotation(v) => set_if_changed(
                 &mut s.rotation,
                 (v.round() as i8).clamp(ROTATION_RANGE.min as i8, ROTATION_RANGE.max as i8),
