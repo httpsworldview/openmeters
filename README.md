@@ -82,6 +82,15 @@ pull request!
 
 ## Installation
 
+### Prerequisites
+
+In order for things to work properly, you must have the following:
+
+0. A graphical Linux host (X11 or Wayland)
+1. PipeWire installed and running.
+2. Vulkan available on your system (usually packaged as
+   `vulkan-loader` or `vulkan-icd`)
+
 ### Arch Linux
 
 Install the `openmeters-git` package via the AUR.
