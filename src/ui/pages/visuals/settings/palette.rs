@@ -78,13 +78,11 @@ impl PaletteEditor {
     }
 
     fn label_for(&self, index: usize) -> String {
-        if let Some((_, label)) = self.label_overrides.iter().find(|(i, _)| *i == index) {
-            return (*label).to_string();
-        }
-        self.palette
-            .labels()
-            .get(index)
-            .map_or_else(|| format!("Color {}", index + 1), |s| (*s).to_string())
+        self.label_overrides
+            .iter()
+            .find_map(|&(i, label)| (i == index).then_some(label))
+            .or_else(|| self.palette.labels().get(index).copied())
+            .map_or_else(|| format!("Color {}", index + 1), str::to_owned)
     }
 
     pub fn positions(&self) -> &[f32] {
@@ -129,14 +127,13 @@ impl PaletteEditor {
             }
             PaletteEvent::Adjust { index, color } => {
                 let colors = self.palette.colors();
-                if index < colors.len() && !colors_equal(colors[index], color) {
-                    let mut c = colors.to_vec();
-                    c[index] = color;
-                    self.palette.set(&c);
-                    true
-                } else {
-                    false
+                if index >= colors.len() || colors_equal(colors[index], color) {
+                    return false;
                 }
+                let mut colors = colors.to_vec();
+                colors[index] = color;
+                self.palette.set(&colors);
+                true
             }
             PaletteEvent::AdjustPosition { index, position } => {
                 let n = self.palette.len();
@@ -285,14 +282,13 @@ fn swatch_style(color: Color, active: bool) -> container::Style {
         b: color.b * a,
         a,
     };
-    let border = if active {
-        theme::focus_border()
-    } else {
-        theme::sharp_border()
-    };
     container::Style::default()
         .background(Background::Color(d))
-        .border(border)
+        .border(if active {
+            theme::focus_border()
+        } else {
+            theme::sharp_border()
+        })
 }
 
 fn to_hex(c: Color) -> String {
@@ -317,13 +313,10 @@ fn nearest_handle(
     cursor_x: f32,
 ) -> Option<usize> {
     range
-        .map(|i| {
-            (
-                i,
-                (cursor_x - (bounds.x + positions[i] * bounds.width)).abs(),
-            )
+        .filter_map(|i| {
+            let d = (cursor_x - (bounds.x + positions[i] * bounds.width)).abs();
+            (d <= HANDLE_HIT_RADIUS).then_some((i, d))
         })
-        .filter(|(_, d)| *d <= HANDLE_HIT_RADIUS)
         .min_by(|a, b| a.1.total_cmp(&b.1))
         .map(|(i, _)| i)
 }
@@ -393,8 +386,11 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for GradientBar<'_> {
         }
         let st = tree.state.downcast_mut::<GradientBarState>();
         let bounds = layout.bounds();
-        match event {
-            iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
+        let iced::Event::Mouse(mouse_event) = event else {
+            return;
+        };
+        match mouse_event {
+            mouse::Event::ButtonPressed(mouse::Button::Left) => {
                 if n >= 3
                     && let Some(pos) = cursor.position().filter(|p| bounds.contains(*p))
                     && let Some(i) = nearest_handle(1..n - 1, self.positions, &bounds, pos.x)
@@ -403,7 +399,7 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for GradientBar<'_> {
                     shell.capture_event();
                 }
             }
-            iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
+            mouse::Event::CursorMoved { position } => {
                 if let Some(i) = st.dragging {
                     let t = ((position.x - bounds.x) / bounds.width).clamp(0.0, 1.0);
                     shell.publish(PaletteEvent::AdjustPosition {
@@ -413,12 +409,12 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for GradientBar<'_> {
                     shell.capture_event();
                 }
             }
-            iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+            mouse::Event::ButtonReleased(mouse::Button::Left) => {
                 if st.dragging.take().is_some() {
                     shell.capture_event();
                 }
             }
-            iced::Event::Mouse(mouse::Event::WheelScrolled { delta }) => {
+            mouse::Event::WheelScrolled { delta } => {
                 if let Some(pos) = cursor.position().filter(|p| bounds.contains(*p))
                     && let Some(i) = nearest_handle(0..n, self.positions, &bounds, pos.x)
                 {

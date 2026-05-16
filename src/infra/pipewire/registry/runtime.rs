@@ -34,10 +34,8 @@ type PendingSyncs = Vec<PendingSync>;
 static RUNTIME: OnceLock<RegistryRuntime> = OnceLock::new();
 
 pub fn spawn_registry() -> Result<AudioRegistryHandle> {
-    if let Some(runtime) = RUNTIME.get() {
-        return Ok(AudioRegistryHandle {
-            runtime: runtime.clone(),
-        });
+    if let Some(runtime) = RUNTIME.get().cloned() {
+        return Ok(AudioRegistryHandle { runtime });
     }
 
     let runtime = RegistryRuntime::default();
@@ -255,11 +253,7 @@ fn registry_thread_main(runtime: RegistryRuntime) -> Result<()> {
     let mut consecutive_errors = 0u32;
     const MAX_CONSECUTIVE_ERRORS: u32 = 10;
 
-    loop {
-        if shutdown_requested {
-            break;
-        }
-
+    while !shutdown_requested {
         if !commands_disconnected {
             loop {
                 match command_rx.try_recv() {
@@ -420,13 +414,12 @@ fn handle_command(
 ) -> bool {
     match command {
         RegistryCommand::Sync(tx) => {
-            match link_state.core.sync(0) {
-                Ok(seq) => {
-                    pending_syncs.borrow_mut().push((seq, tx));
-                }
-                Err(err) => {
-                    error!("[registry] failed to sync core: {err}");
-                }
+            if let Ok(seq) = link_state
+                .core
+                .sync(0)
+                .inspect_err(|err| error!("[registry] failed to sync core: {err}"))
+            {
+                pending_syncs.borrow_mut().push((seq, tx));
             }
             true
         }

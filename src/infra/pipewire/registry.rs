@@ -28,10 +28,10 @@ pub fn pair_ports_by_channel(
 
     let matches = |src: &GraphPort, target: &GraphPort| {
         if use_channel {
-            match (src.channel.as_deref(), target.channel.as_deref()) {
-                (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
-                _ => false,
-            }
+            src.channel
+                .as_deref()
+                .zip(target.channel.as_deref())
+                .is_some_and(|(a, b)| a.eq_ignore_ascii_case(b))
         } else {
             src.port_id == target.port_id
         }

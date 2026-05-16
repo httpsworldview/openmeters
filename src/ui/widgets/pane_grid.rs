@@ -121,8 +121,7 @@ where
         self.entries
             .iter()
             .zip(layout.children())
-            .find(|(_, child)| child.bounds().contains(cursor))
-            .map(|((pane, _), _)| *pane)
+            .find_map(|((pane, _), child)| child.bounds().contains(cursor).then_some(*pane))
     }
 
     fn divider_at(&self, layout: Layout<'_>, cursor: Point) -> Option<usize> {
@@ -136,7 +135,7 @@ where
             .enumerate()
             .find_map(|(i, child)| {
                 let x = child.bounds().x + child.bounds().width;
-                (cursor.x >= x - half && cursor.x <= x + half).then_some(i)
+                ((cursor.x - x).abs() <= half).then_some(i)
             })
     }
 
@@ -319,8 +318,7 @@ where
             || (self.on_resize.is_some()
                 && cursor
                     .position()
-                    .and_then(|p| self.divider_at(layout, p))
-                    .is_some())
+                    .is_some_and(|p| self.divider_at(layout, p).is_some()))
         {
             return mouse::Interaction::ResizingHorizontally;
         }
@@ -439,14 +437,14 @@ where
             let dragging = interaction.dragging.take();
             interaction.last_x = None;
             self.publish_hover(interaction, None, shell);
-            if let Some((pane, _)) = dragging {
-                if let Some(on_drag) = &self.on_drag {
-                    shell.publish(on_drag(DragEvent::Canceled { pane }));
-                }
-                shell.capture_event();
-                return true;
+            let Some((pane, _)) = dragging else {
+                return false;
+            };
+            if let Some(on_drag) = &self.on_drag {
+                shell.publish(on_drag(DragEvent::Canceled { pane }));
             }
-            return false;
+            shell.capture_event();
+            return true;
         }
 
         let interaction = tree.state.downcast_ref::<Interaction>();
@@ -664,7 +662,7 @@ fn fit_sum(mut widths: Vec<f32>, available: f32) -> Vec<f32> {
 }
 
 fn widths_equal(a: &[f32], b: &[f32]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).all(|(a, b)| (a - b).abs() <= EPS)
+    a.len() == b.len() && std::iter::zip(a, b).all(|(a, b)| (a - b).abs() <= EPS)
 }
 
 fn resize_widths(start: &[f32], min: &[f32], divider: usize, delta: f32) -> Vec<f32> {

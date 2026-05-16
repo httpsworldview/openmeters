@@ -33,9 +33,7 @@ impl ScrollGlow {
         on_scroll: impl Fn(Self) -> M + 'a,
     ) -> Element<'a, M> {
         let body = scrollable(content)
-            .direction(scrollable::Direction::Vertical(
-                Scrollbar::new().width(0).scroller_width(0),
-            ))
+            .direction(scrollable::Direction::Vertical(hidden_scrollbar()))
             .width(Length::Fill)
             .height(Length::Fill)
             .on_scroll(move |vp: scrollable::Viewport| {
@@ -62,9 +60,7 @@ impl ScrollGlow {
         on_scroll: impl Fn(Self) -> M + 'a,
     ) -> Element<'a, M> {
         let body = scrollable(content)
-            .direction(scrollable::Direction::Horizontal(
-                Scrollbar::new().width(0).scroller_width(0),
-            ))
+            .direction(scrollable::Direction::Horizontal(hidden_scrollbar()))
             .width(Length::Fill)
             .on_scroll(move |vp: scrollable::Viewport| {
                 on_scroll(Self::from_axis(
@@ -83,6 +79,10 @@ impl ScrollGlow {
         ]
         .into()
     }
+}
+
+fn hidden_scrollbar() -> Scrollbar {
+    Scrollbar::new().width(0).scroller_width(0)
 }
 
 fn glow<'a, M: 'a>(

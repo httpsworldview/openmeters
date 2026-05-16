@@ -20,6 +20,7 @@ use wayland_client::globals::{GlobalListContents, registry_queue_init};
 use wayland_client::protocol::wl_registry;
 use wayland_client::{Connection, Dispatch, QueueHandle};
 
+pub(super) const APP_ID: &str = "openmeters-ui";
 const WINDOW_MIN_SIZE: Size = Size::new(200.0, 150.0);
 pub(super) const SETTINGS_WINDOW_SIZE: Size = Size::new(480.0, 600.0);
 pub(super) const MAIN_WINDOW_INITIAL_SIZE: Size = Size::new(420.0, 520.0);
@@ -53,7 +54,7 @@ pub(super) fn layershell_available() -> bool {
 }
 
 pub(super) fn namespace() -> String {
-    "openmeters-ui".into()
+    APP_ID.into()
 }
 
 pub(super) fn bar_anchor(alignment: BarAlignment) -> Anchor {
@@ -100,7 +101,7 @@ pub(super) fn open_base_window(
             transparent,
             ..Default::default()
         });
-        (id, task.map(|_| Message::WindowOpened))
+        (id, task.discard())
     }
 }
 
@@ -120,6 +121,13 @@ pub(super) fn open_main_window(
 
     let (id, task) = open_base_window(use_layershell, base_size, with_decorations, true);
     (id, task, false, base_size)
+}
+
+fn popout_window_size(metadata: &VisualMetadata) -> Size {
+    Size::new(
+        metadata.preferred_width.max(400.0),
+        metadata.preferred_height.max(300.0),
+    )
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -223,10 +231,7 @@ impl UiApp {
         else {
             return Task::none();
         };
-        let window_size = Size::new(
-            slot.metadata.preferred_width.max(400.0),
-            slot.metadata.preferred_height.max(300.0),
-        );
+        let window_size = popout_window_size(&slot.metadata);
         let use_decorations = self.settings_handle.borrow().settings().decorations;
         let (new_id, open_task) =
             open_base_window(self.use_layershell, window_size, use_decorations, true);
@@ -426,7 +431,6 @@ impl UiApp {
         self.main_window_id = new_main_id;
         self.main_window_size = main_size;
         self.main_window_is_layer = main_is_layer;
-        self.focused_window = Some(new_main_id);
         Task::batch([open_main, window::close(old_main_id)])
     }
 
@@ -516,13 +520,12 @@ impl UiApp {
         let old_popouts = std::mem::take(&mut self.popout_windows);
         let mut tasks = Vec::with_capacity(old_popouts.len() * 2);
         for (old_id, popout) in old_popouts {
-            let window_size = match &popout.cached {
-                Some((metadata, _)) => Size::new(
-                    metadata.preferred_width.max(400.0),
-                    metadata.preferred_height.max(300.0),
-                ),
-                None => Size::new(400.0, 300.0),
-            };
+            let window_size = popout
+                .cached
+                .as_ref()
+                .map_or(Size::new(400.0, 300.0), |(meta, _)| {
+                    popout_window_size(meta)
+                });
             let (new_id, open_task) =
                 open_base_window(self.use_layershell, window_size, use_decorations, true);
             self.popout_windows.insert(new_id, popout);

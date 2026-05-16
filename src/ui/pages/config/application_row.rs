@@ -33,7 +33,7 @@ impl ApplicationRow {
     pub(crate) fn display_label(&self) -> String {
         self.secondary.as_ref().map_or_else(
             || self.primary.clone(),
-            |s| format!("{} ({})", self.primary, s),
+            |s| format!("{} ({s})", self.primary),
         )
     }
 

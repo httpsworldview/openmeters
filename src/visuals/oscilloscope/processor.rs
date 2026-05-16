@@ -241,10 +241,6 @@ impl PitchDetector {
 
     fn compute_diff_direct(&mut self, samples: &[f32], max_period: usize) {
         let len = samples.len() - max_period;
-        if len == 0 {
-            return;
-        }
-
         for tau in 0..max_period {
             let mut sum = 0.0_f32;
             for i in 0..len {

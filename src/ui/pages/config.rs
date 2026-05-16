@@ -53,11 +53,7 @@ struct DeviceOption {
 impl std::fmt::Display for DeviceOption {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let (trimmed, truncated) = truncate_label(&self.label, MAX_DEVICE_NAME_LEN);
-        if truncated {
-            write!(f, "{trimmed}...")
-        } else {
-            f.write_str(trimmed)
-        }
+        write!(f, "{trimmed}{}", if truncated { "..." } else { "" })
     }
 }
 
@@ -160,10 +156,9 @@ impl ConfigPage {
     pub fn subscription(&self) -> Subscription<ConfigMessage> {
         self.registry_updates
             .as_ref()
-            .map(|receiver| {
+            .map_or_else(Subscription::none, |receiver| {
                 channel_subscription(Arc::clone(receiver)).map(ConfigMessage::RegistryUpdated)
             })
-            .unwrap_or_else(Subscription::none)
     }
 
     pub fn update(&mut self, message: ConfigMessage) -> Task<ConfigMessage> {
@@ -228,15 +223,11 @@ impl ConfigPage {
             ConfigMessage::DecorationsToggled(v) => self.settings.update(|s| s.set_decorations(v)),
             ConfigMessage::BarModeToggled(v) => self.settings.update(|s| s.set_bar_enabled(v)),
             ConfigMessage::BarAlignmentChanged(v) => {
-                self.settings.update(|s| s.set_bar_alignment(v));
+                self.settings.update(|s| s.set_bar_alignment(v))
             }
-            ConfigMessage::BarHeightChanged(v) => {
-                self.settings.update(|s| s.set_bar_height(v));
-            }
+            ConfigMessage::BarHeightChanged(v) => self.settings.update(|s| s.set_bar_height(v)),
             ConfigMessage::BarMonitorChanged(v) => self.settings.update(|s| s.set_bar_monitor(v)),
-            ConfigMessage::ThemeChanged(name) => {
-                self.apply_theme(&name);
-            }
+            ConfigMessage::ThemeChanged(name) => self.apply_theme(&name),
             ConfigMessage::SaveTheme(name) => {
                 self.save_current_as_theme(&name);
                 if self.active_theme != name {
@@ -245,9 +236,7 @@ impl ConfigPage {
                 }
                 self.save_theme_name.clear();
             }
-            ConfigMessage::ThemeNameInput(val) => {
-                self.save_theme_name = val;
-            }
+            ConfigMessage::ThemeNameInput(val) => self.save_theme_name = val,
             ConfigMessage::Scrolled(g) => self.scroll = g,
         }
 
@@ -255,21 +244,16 @@ impl ConfigPage {
     }
 
     pub fn view(&self) -> Element<'_, ConfigMessage> {
-        let visuals_snapshot = self.visual_manager.snapshot();
-        let content = Column::new()
+        let mut content = Column::new()
             .spacing(14)
             .padding(8)
             .push(self.render_capture_section())
-            .push(self.render_visuals_section(&visuals_snapshot))
+            .push(self.render_visuals_section(&self.visual_manager.snapshot()))
             .push(self.render_theme_section())
             .push(self.render_global_section());
-
-        let content = if self.bar_supported {
-            content.push(self.render_bar_section())
-        } else {
-            content
-        };
-
+        if self.bar_supported {
+            content = content.push(self.render_bar_section());
+        }
         self.scroll.vertical(content, ConfigMessage::Scrolled)
     }
 
@@ -282,15 +266,14 @@ impl ConfigPage {
             self.capture_mode,
             ConfigMessage::CaptureModeChanged,
         );
-        let primary_section: Element<'_, ConfigMessage> = match self.capture_mode {
-            CaptureMode::Applications => self.render_applications_section().into(),
-            CaptureMode::Device => self.render_device_section().into(),
-        };
-
-        let content = Column::new()
-            .spacing(8)
-            .push(capture_controls)
-            .push(primary_section);
+        let content =
+            Column::new()
+                .spacing(8)
+                .push(capture_controls)
+                .push(match self.capture_mode {
+                    CaptureMode::Applications => self.render_applications_section(),
+                    CaptureMode::Device => self.render_device_section(),
+                });
 
         section_with_divider("Audio Capture", content)
     }
@@ -380,19 +363,19 @@ impl ConfigPage {
             .filter(|node| Self::is_capture_candidate(node))
             .collect();
         nodes.sort_by_key(|node| node.display_name().to_ascii_lowercase());
-        for node in nodes {
+        choices.extend(nodes.into_iter().map(|node| {
             let label = node.display_name();
             let token = node
                 .name
                 .clone()
-                .or(node.description.clone())
+                .or_else(|| node.description.clone())
                 .or_else(|| Some(label.clone()));
-            choices.push(DeviceOption {
+            DeviceOption {
                 label,
                 token,
                 selection: DeviceSelection::Node(node.id),
-            });
-        }
+            }
+        }));
         choices
     }
 
@@ -412,17 +395,16 @@ impl ConfigPage {
 
     fn render_global_section(&self) -> Column<'_, ConfigMessage> {
         let decorations_enabled = self.settings.borrow().settings().decorations;
-
-        let decorations_toggle = iced::widget::checkbox(decorations_enabled)
-            .label("Enable Window Decorations")
-            .size(14)
-            .text_size(TEXT_SIZE)
-            .on_toggle(ConfigMessage::DecorationsToggled);
-
         let content = Column::new()
             .spacing(12)
             .push(self.bg_palette.view().map(ConfigMessage::BgPalette))
-            .push(decorations_toggle);
+            .push(
+                iced::widget::checkbox(decorations_enabled)
+                    .label("Enable Window Decorations")
+                    .size(14)
+                    .text_size(TEXT_SIZE)
+                    .on_toggle(ConfigMessage::DecorationsToggled),
+            );
 
         section_with_divider("Global", content)
     }
@@ -501,15 +483,18 @@ impl ConfigPage {
 
     fn export_theme(&self, name: &str) -> ThemeFile {
         let manager = self.visual_manager.borrow();
-        let mut palettes = HashMap::new();
-        for slot in &manager.snapshot().slots {
-            if let Some(ms) = manager.module_settings(slot.kind)
-                && let Some(ps) = ms.extract_palette()
-                && !ps.stops.is_empty()
-            {
-                palettes.insert(slot.kind, ps);
-            }
-        }
+        let palettes = manager
+            .snapshot()
+            .slots
+            .iter()
+            .filter_map(|slot| {
+                manager
+                    .module_settings(slot.kind)?
+                    .extract_palette()
+                    .filter(|ps| !ps.stops.is_empty())
+                    .map(|ps| (slot.kind, ps))
+            })
+            .collect();
         let bg = self.settings.borrow().settings().background_color;
         ThemeFile {
             name: Some(name.to_owned()),
@@ -613,25 +598,27 @@ impl ConfigPage {
         self.update_hardware_sink_label(&snapshot);
         let choices = self.build_device_choices(&snapshot);
         self.resolve_pending_device(&choices);
-        if !choices
+        if choices
             .iter()
-            .any(|opt| opt.selection == self.selected_device)
+            .all(|opt| opt.selection != self.selected_device)
         {
             self.selected_device = DeviceSelection::Default;
         }
         self.device_choices = choices;
 
-        let mut entries = Vec::new();
         let mut seen = HashSet::new();
-        if let Some(sink) = snapshot.find_node_by_label(VIRTUAL_SINK_NAME) {
-            for node in snapshot.route_candidates(sink) {
-                entries.push(ApplicationRow::from_node(
+        let mut entries: Vec<_> = snapshot
+            .find_node_by_label(VIRTUAL_SINK_NAME)
+            .into_iter()
+            .flat_map(|sink| snapshot.route_candidates(sink))
+            .map(|node| {
+                seen.insert(node.id);
+                ApplicationRow::from_node(
                     node,
                     self.preferences.get(&node.id).copied().unwrap_or(true),
-                ));
-                seen.insert(node.id);
-            }
-        }
+                )
+            })
+            .collect();
         self.preferences.retain(|id, _| seen.contains(id));
         entries.sort_unstable_by_key(ApplicationRow::sort_key);
         self.applications = entries;
@@ -642,16 +629,16 @@ impl ConfigPage {
             return;
         };
 
-        let opt = choices
+        let Some(opt) = choices
             .iter()
-            .find(|opt| opt.token.as_deref() == Some(token) || opt.label == *token);
-
-        if let Some(opt) = opt {
-            self.selected_device = opt.selection;
-            self.pending_device_name = None;
-            self.settings
-                .update(|s| s.set_last_device_name(opt.token.clone()));
-        }
+            .find(|opt| opt.token.as_deref() == Some(token) || opt.label == *token)
+        else {
+            return;
+        };
+        self.selected_device = opt.selection;
+        self.pending_device_name = None;
+        self.settings
+            .update(|s| s.set_last_device_name(opt.token.clone()));
     }
 
     fn dispatch_capture_state(&self, selection: DeviceSelection) {

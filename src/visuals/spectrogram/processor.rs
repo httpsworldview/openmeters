@@ -153,19 +153,19 @@ impl SpectrogramProcessor {
             ifft: placeholder_ifft.clone(),
             hilbert_fft: placeholder_fft,
             hilbert_ifft: placeholder_ifft,
-            hilbert_buf: vec![],
+            hilbert_buf: Vec::new(),
             window_size: 0,
             fft_size: 0,
             window: Arc::from([]),
-            real: vec![],
-            complex_buf: vec![],
-            spectrum: vec![],
-            scratch: vec![],
-            magnitudes: vec![],
+            real: Vec::new(),
+            complex_buf: Vec::new(),
+            spectrum: Vec::new(),
+            scratch: Vec::new(),
+            magnitudes: Vec::new(),
             reassign: ReassignmentBuffers::default(),
-            bin_norm: vec![],
+            bin_norm: Vec::new(),
             audio_buffer: VecDeque::new(),
-            points_buf: vec![],
+            points_buf: Vec::new(),
             bin_hz: 0.0,
             reset: true,
         };
@@ -215,7 +215,7 @@ impl SpectrogramProcessor {
 
     fn process_ready_windows(&mut self) -> Vec<SpectrogramColumn> {
         if self.window_size == 0 {
-            return vec![];
+            return Vec::new();
         }
         let (hop_size, sample_rate) = (self.config.hop_size, self.config.sample_rate);
         let reassignment_enabled = self.config.use_reassignment && sample_rate > f32::EPSILON;
@@ -489,7 +489,10 @@ fn compute_derivative_spectral(planner: &mut FftPlanner<f32>, window: &[f32]) ->
     let inv = planner.plan_fft_inverse(n);
 
     let mut buf: Vec<Complex32> = window.iter().map(|&r| Complex32::new(r, 0.0)).collect();
-    let mut scratch = vec![Complex32::ZERO; fwd.get_inplace_scratch_len()];
+    let scratch_len = fwd
+        .get_inplace_scratch_len()
+        .max(inv.get_inplace_scratch_len());
+    let mut scratch = vec![Complex32::ZERO; scratch_len];
     fwd.process_with_scratch(&mut buf, &mut scratch);
 
     let scale = core::f32::consts::TAU / n as f32;
@@ -503,7 +506,6 @@ fn compute_derivative_spectral(planner: &mut FftPlanner<f32>, window: &[f32]) ->
         *bin = Complex32::new(-omega * bin.im, omega * bin.re);
     }
 
-    scratch.resize(inv.get_inplace_scratch_len(), Complex32::ZERO);
     inv.process_with_scratch(&mut buf, &mut scratch);
 
     let inv_n = 1.0 / n as f32;

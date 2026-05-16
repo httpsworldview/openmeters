@@ -92,14 +92,12 @@ impl SampleBatcher {
     }
 
     fn reuse_buffer(&mut self, needed: usize) -> Vec<f32> {
-        self.recycle.pop().map_or_else(
-            || Vec::with_capacity(needed),
-            |mut recycled| {
-                recycled.clear();
-                recycled.reserve(needed.saturating_sub(recycled.capacity()));
-                recycled
-            },
-        )
+        let Some(mut recycled) = self.recycle.pop() else {
+            return Vec::with_capacity(needed);
+        };
+        recycled.clear();
+        recycled.reserve(needed.saturating_sub(recycled.capacity()));
+        recycled
     }
 
     fn stash_recycle(recycle: &mut Vec<Vec<f32>>, mut chunk: Vec<f32>) {

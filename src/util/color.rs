@@ -124,12 +124,9 @@ pub fn sanitize_stop_positions(raw: Option<&[f32]>, defaults: &[f32]) -> Vec<f32
 
 pub fn sanitize_stop_spreads(raw: Option<&[f32]>, count: usize) -> Vec<f32> {
     let mut out = default_spreads(count);
-    let Some(raw) = raw else {
+    let Some(raw) = raw.filter(|raw| raw.len() == count) else {
         return out;
     };
-    if raw.len() != count {
-        return out;
-    }
     for (dst, &value) in out.iter_mut().zip(raw.iter()) {
         *dst = if value.is_finite() {
             value.clamp(0.2, 5.0)
@@ -158,18 +155,13 @@ pub fn find_segment(
             interpolate_with_spreads(linear, spreads, lo, lo + 1),
         );
     }
-    for i in 0..count - 1 {
-        if t <= positions[i + 1] || i == count - 2 {
-            let span = (positions[i + 1] - positions[i]).max(f32::EPSILON);
-            let linear = ((t - positions[i]) / span).clamp(0.0, 1.0);
-            return (
-                i,
-                i + 1,
-                interpolate_with_spreads(linear, spreads, i, i + 1),
-            );
-        }
-    }
-    (count - 2, count - 1, 1.0)
+    let hi = positions[..count]
+        .partition_point(|&pos| pos < t)
+        .clamp(1, count - 1);
+    let lo = hi - 1;
+    let span = (positions[hi] - positions[lo]).max(f32::EPSILON);
+    let linear = ((t - positions[lo]) / span).clamp(0.0, 1.0);
+    (lo, hi, interpolate_with_spreads(linear, spreads, lo, hi))
 }
 
 #[inline]

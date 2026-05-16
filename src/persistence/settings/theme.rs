@@ -70,18 +70,16 @@ impl ThemeStore {
             builtin: true,
         }];
         if let Ok(entries) = fs::read_dir(&self.dir) {
-            for entry in entries.filter_map(Result::ok) {
+            choices.extend(entries.filter_map(Result::ok).filter_map(|entry| {
                 let path = entry.path();
-                if path.extension().is_some_and(|e| e == "json")
-                    && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
-                    && stem != BUILTIN_THEME
-                {
-                    choices.push(ThemeChoice {
+                let stem = path.file_stem()?.to_str()?;
+                (path.extension().is_some_and(|e| e == "json") && stem != BUILTIN_THEME).then(
+                    || ThemeChoice {
                         name: stem.to_owned(),
                         builtin: false,
-                    });
-                }
-            }
+                    },
+                )
+            }));
         }
         choices.sort_by_key(|choice| (!choice.builtin, choice.name.to_lowercase()));
         choices
