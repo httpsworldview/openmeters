@@ -23,7 +23,7 @@ wayland-client = "0.31.14"
   [dependencies.iced]
   version = "0.14.0"
   default-features = false
-  features = [ "advanced", "wgpu", "wayland", "thread-pool", "web-colors" ]
+  features = [ "advanced", "wgpu", "wayland", "x11", "thread-pool", "web-colors" ]
 
   [dependencies.bytemuck]
   version = "1.25.0"
