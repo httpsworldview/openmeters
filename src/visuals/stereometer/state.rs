@@ -37,6 +37,7 @@ pub(crate) struct StereometerState {
     mode: StereometerMode,
     scale: StereometerScale,
     scale_range: f32,
+    dot_radius: f32,
     rotation: i8,
     flip: bool,
     correlation_meter: CorrelationMeterMode,
@@ -74,6 +75,7 @@ impl StereometerState {
             mode: defaults.mode,
             scale: defaults.scale,
             scale_range: defaults.scale_range,
+            dot_radius: defaults.dot_radius,
             rotation: defaults.rotation,
             flip: defaults.flip,
             correlation_meter: defaults.correlation_meter,
@@ -87,6 +89,7 @@ impl StereometerState {
         self.mode = s.mode;
         self.scale = s.scale;
         self.scale_range = s.scale_range;
+        self.dot_radius = s.dot_radius.clamp(0.5, 8.0);
         self.rotation = s.rotation.clamp(-4, 4);
         self.flip = s.flip;
         self.correlation_meter = s.correlation_meter;
@@ -103,6 +106,7 @@ impl StereometerState {
             mode: self.mode,
             scale: self.scale,
             scale_range: self.scale_range,
+            dot_radius: self.dot_radius,
             rotation: self.rotation,
             flip: self.flip,
             correlation_meter: self.correlation_meter,
@@ -165,6 +169,7 @@ impl StereometerState {
             mode: self.mode,
             scale: self.scale,
             scale_range: self.scale_range,
+            dot_radius: self.dot_radius,
             rotation: self.rotation,
             flip: self.flip,
             correlation_meter: self.correlation_meter,
