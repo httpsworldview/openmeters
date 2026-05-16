@@ -72,6 +72,6 @@ impl<T> State<T> {
     }
 
     fn position(&self, pane: Pane) -> Option<usize> {
-        self.order.iter().position(|id| *id == pane)
+        self.order.iter().position(|&id| id == pane)
     }
 }

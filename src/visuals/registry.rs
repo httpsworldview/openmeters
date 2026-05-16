@@ -279,13 +279,12 @@ struct Entry {
 }
 impl Entry {
     fn new(id: VisualId, descriptor: &Descriptor) -> Self {
-        let module = (descriptor.build)();
         Self {
             id,
             kind: descriptor.kind,
             enabled: false,
             meta: descriptor.meta,
-            module,
+            module: (descriptor.build)(),
         }
     }
     fn apply_settings(&mut self, settings: &ModuleSettings) {
@@ -395,15 +394,13 @@ impl VisualManager {
                     .unwrap_or(&default_settings),
             );
         }
-        if !settings.order.is_empty() {
-            let ids: Vec<_> = settings
-                .order
-                .iter()
-                .filter_map(|kind| self.by_kind(*kind).map(|entry| entry.id))
-                .collect();
-            if !ids.is_empty() {
-                self.reorder(&ids);
-            }
+        let ids: Vec<_> = settings
+            .order
+            .iter()
+            .filter_map(|kind| self.by_kind(*kind).map(|entry| entry.id))
+            .collect();
+        if !ids.is_empty() {
+            self.reorder(&ids);
         }
     }
     pub fn reorder(&mut self, order: &[VisualId]) {

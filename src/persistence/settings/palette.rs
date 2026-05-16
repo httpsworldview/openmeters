@@ -80,8 +80,7 @@ impl PaletteSettings {
     }
     // Returns `Some` only if colors differ from defaults (avoids persisting unchanged palettes).
     pub fn if_differs_from(colors: &[Color], defaults: &[Color]) -> Option<Self> {
-        let differs = colors_differ(colors, defaults);
-        differs.then_some(Self {
+        colors_differ(colors, defaults).then_some(Self {
             stops: colors.iter().copied().map(Into::into).collect(),
             stop_positions: None,
             stop_spreads: None,
@@ -100,7 +99,7 @@ impl PaletteSettings {
         let colors_differ = colors_differ(colors, defaults);
         let positions_differ = positions
             .iter()
-            .zip(default_positions.iter())
+            .zip(default_positions)
             .any(|(a, b)| (a - b).abs() > EPSILON);
         let sanitized_spreads = sanitize_stop_spreads(Some(spreads), count);
         let spreads_differ = sanitized_spreads.iter().any(|s| (*s - 1.0).abs() > EPSILON);

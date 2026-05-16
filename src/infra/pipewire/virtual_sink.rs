@@ -48,30 +48,22 @@ impl CaptureBuffer {
     }
 
     pub fn try_push(&self, frame: CapturedAudio) {
-        match self.inner.try_lock() {
-            Ok(mut guard) => {
-                if guard.len() >= self.capacity {
-                    guard.pop_front();
-                    self.dropped_frames.fetch_add(1, Ordering::Relaxed);
-                }
-                guard.push_back(frame);
-                self.available.notify_one();
-            }
-            Err(_) => {
-                self.dropped_frames.fetch_add(1, Ordering::Relaxed);
-            }
+        let Ok(mut guard) = self.inner.try_lock() else {
+            self.dropped_frames.fetch_add(1, Ordering::Relaxed);
+            return;
+        };
+        if guard.len() >= self.capacity {
+            guard.pop_front();
+            self.dropped_frames.fetch_add(1, Ordering::Relaxed);
         }
+        guard.push_back(frame);
+        self.available.notify_one();
     }
 
     pub fn pop_wait_timeout(&self, timeout: Duration) -> Result<Option<CapturedAudio>, ()> {
-        let mut guard = self
-            .inner
-            .lock()
-            .map_err(|e| {
-                error!("[virtual-sink] capture buffer lock poisoned");
-                e.into_inner()
-            })
-            .map_err(|_| ())?;
+        let mut guard = self.inner.lock().map_err(|_| {
+            error!("[virtual-sink] capture buffer lock poisoned");
+        })?;
 
         if let Some(frame) = guard.pop_front() {
             return Ok(Some(frame));
@@ -301,10 +293,9 @@ fn run_virtual_sink() -> Result<(), Box<dyn Error + Send + Sync>> {
                     continue;
                 }
 
-                if let Some(slice) = data.data()
-                    && let Some(samples) =
-                        convert_samples_to_f32(&slice[..used.min(slice.len())], state.format)
-                {
+                if let Some(samples) = data.data().and_then(|slice| {
+                    convert_samples_to_f32(&slice[..used.min(slice.len())], state.format)
+                }) {
                     capture_buffer.try_push(CapturedAudio {
                         samples,
                         channels: state.channels,

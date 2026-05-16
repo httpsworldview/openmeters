@@ -297,7 +297,7 @@ impl SpectrogramState {
 
     // Normalized rotation (0..3) matching the shader's rotate_uv convention
     fn rotation_index(&self) -> u32 {
-        ((self.rotation as i32 % 4) + 4) as u32 % 4
+        (self.rotation as i32).rem_euclid(4) as u32
     }
 
     fn freq_axis_is_horizontal(&self) -> bool {

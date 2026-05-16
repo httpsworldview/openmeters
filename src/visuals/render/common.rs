@@ -323,8 +323,7 @@ pub fn decimate_line(pts: &[(f32, f32)], max_points: usize) -> Cow<'_, [(f32, f3
                 mx_i = i;
             }
         }
-        result.push(pts[lo + mn_i.min(mx_i)]);
-        result.push(pts[lo + mn_i.max(mx_i)]);
+        result.extend([pts[lo + mn_i.min(mx_i)], pts[lo + mn_i.max(mx_i)]]);
     }
     Cow::Owned(result)
 }
@@ -393,7 +392,7 @@ impl CacheTracker {
         let threshold = self
             .counter
             .is_multiple_of(Self::INTERVAL)
-            .then(|| self.frame.saturating_sub(Self::RETAIN));
+            .then_some(self.frame.saturating_sub(Self::RETAIN));
         (self.frame, threshold)
     }
 }

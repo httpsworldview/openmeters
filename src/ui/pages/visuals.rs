@@ -70,7 +70,8 @@ impl VisualsPage {
             order: Vec::new(),
             hovered_pane: None,
         };
-        page.sync_with_manager();
+        let snapshot = page.visual_manager.snapshot();
+        page.apply_snapshot_excluding(snapshot, &[]);
         page
     }
 
@@ -149,10 +150,6 @@ impl VisualsPage {
                 .interaction(iced::mouse::Interaction::Grab)
                 .into()
         }
-    }
-
-    pub fn sync_with_manager(&mut self) {
-        self.apply_snapshot_excluding(self.visual_manager.snapshot(), &[]);
     }
 
     pub(crate) fn apply_snapshot_excluding(

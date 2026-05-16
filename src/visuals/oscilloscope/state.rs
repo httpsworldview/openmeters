@@ -116,15 +116,7 @@ impl OscilloscopeState {
             return None;
         }
 
-        let colors = self
-            .style
-            .colors
-            .iter()
-            .copied()
-            .cycle()
-            .take(channels)
-            .map(color_to_rgba)
-            .collect();
+        let colors = vec![color_to_rgba(self.style.colors[0]); channels];
 
         Some(OscilloscopeParams {
             key: self.key,

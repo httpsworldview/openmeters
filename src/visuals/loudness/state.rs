@@ -194,16 +194,13 @@ impl LoudnessState {
         if matches!(mode, MeterMode::LufsShortTerm | MeterMode::LufsMomentary) {
             return self.get_value(mode, 0);
         }
-        let mut max_val = self.range.0;
-        for &ch in indices {
-            if ch < self.channel_count {
-                max_val = max_val.max(self.get_value(mode, ch));
-            }
-        }
-        if self.channel_count > CENTER_CHANNEL_INDEX {
-            max_val = max_val.max(self.get_value(mode, CENTER_CHANNEL_INDEX));
-        }
-        max_val
+        indices
+            .iter()
+            .copied()
+            .filter(|&ch| ch < self.channel_count)
+            .chain((self.channel_count > CENTER_CHANNEL_INDEX).then_some(CENTER_CHANNEL_INDEX))
+            .map(|ch| self.get_value(mode, ch))
+            .fold(self.range.0, f32::max)
     }
 
     fn visible_values(&self) -> [f32; VISIBLE_METER_COUNT] {

@@ -92,11 +92,10 @@ impl ModuleSettings {
             .config
             .get_or_insert_with(|| Value::Object(Default::default()));
         if let Value::Object(map) = obj {
-            if let Some(v) = palette.and_then(|p| serde_json::to_value(p).ok()) {
-                map.insert("palette".into(), v);
-            } else {
-                map.remove("palette");
-            }
+            match palette.and_then(|p| serde_json::to_value(p).ok()) {
+                Some(v) => map.insert("palette".into(), v),
+                None => map.remove("palette"),
+            };
         }
     }
 

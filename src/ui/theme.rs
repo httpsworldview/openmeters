@@ -49,20 +49,20 @@ fn palette(custom_bg: Option<Color>) -> palette::Palette {
     }
 }
 
-pub fn sharp_border() -> Border {
+fn border(color: Color) -> Border {
     Border {
-        color: BORDER_SUBTLE,
+        color,
         width: 1.0,
         radius: 0.0.into(),
     }
 }
 
+pub fn sharp_border() -> Border {
+    border(BORDER_SUBTLE)
+}
+
 pub fn focus_border() -> Border {
-    Border {
-        color: BORDER_FOCUS,
-        width: 1.0,
-        radius: 0.0.into(),
-    }
+    border(BORDER_FOCUS)
 }
 
 pub fn button_style(theme: &Theme, base: Color, status: button::Status) -> button::Style {

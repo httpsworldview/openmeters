@@ -28,8 +28,7 @@ where
     type Output = T;
 
     fn hash(&self, state: &mut Hasher) {
-        let ptr = Arc::as_ptr(&self.receiver) as usize;
-        state.write(&ptr.to_ne_bytes());
+        state.write_usize(Arc::as_ptr(&self.receiver) as usize);
     }
 
     fn stream(self: Box<Self>, _input: EventStream) -> futures::stream::BoxStream<'static, T> {

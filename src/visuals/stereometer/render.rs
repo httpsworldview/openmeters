@@ -73,8 +73,7 @@ impl VecTransform {
             bounds.x + bounds.width * 0.5,
             bounds.y + bounds.height * 0.5,
         );
-        let theta = (p.rotation as f32) * std::f32::consts::FRAC_PI_4;
-        let (sin_t, cos_t) = theta.sin_cos();
+        let (sin_t, cos_t) = ((p.rotation as f32) * std::f32::consts::FRAC_PI_4).sin_cos();
         let corner_k = match p.scale {
             StereometerScale::Linear => 1.0,
             StereometerScale::Exponential => {

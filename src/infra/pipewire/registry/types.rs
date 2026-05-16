@@ -62,13 +62,12 @@ fn derive_node_direction(
     media_class: Option<&str>,
     props: &HashMap<String, String>,
 ) -> NodeDirection {
-    let class = media_class.map(str::to_ascii_lowercase);
-    let has = |needle| class.as_ref().is_some_and(|c| c.contains(needle));
+    let class = media_class.unwrap_or_default().to_ascii_lowercase();
 
-    if has("sink") || has("output") {
+    if class.contains("sink") || class.contains("output") {
         return NodeDirection::Output;
     }
-    if has("source") || has("input") {
+    if class.contains("source") || class.contains("input") {
         return NodeDirection::Input;
     }
     match props.get(*PORT_DIRECTION).map(String::as_str) {
@@ -103,11 +102,11 @@ impl DefaultTarget {
             type_hint: type_hint.map(str::to_string),
             name: name.map(str::to_string),
         };
-        let changed = *self != new;
-        if changed {
-            *self = new;
+        if *self == new {
+            return false;
         }
-        changed
+        *self = new;
+        true
     }
 }
 
@@ -116,14 +115,14 @@ pub(crate) fn parse_metadata_name(type_hint: Option<&str>, value: Option<&str>) 
     let trimmed = value?.trim();
     let is_json = matches!(type_hint, Some(h) if h.eq_ignore_ascii_case("Spa:String:JSON"))
         || trimmed.starts_with('{');
-    match (is_json, serde_json::from_str::<Value>(trimmed)) {
-        (true, Ok(Value::Object(map))) => {
-            map.get("name").and_then(|n| n.as_str()).map(str::to_string)
-        }
-        (true, Ok(Value::String(s))) => Some(s),
-        (true, _) => None,
-        (false, _) if trimmed.is_empty() => None,
-        (false, _) => Some(trimmed.to_string()),
+    if !is_json {
+        return (!trimmed.is_empty()).then(|| trimmed.to_string());
+    }
+
+    match serde_json::from_str::<Value>(trimmed) {
+        Ok(Value::Object(map)) => map.get("name").and_then(|n| n.as_str()).map(str::to_string),
+        Ok(Value::String(s)) => Some(s),
+        _ => None,
     }
 }
 
@@ -250,9 +249,8 @@ impl NodeInfo {
 
     pub fn display_name(&self) -> String {
         self.name
-            .as_ref()
-            .or(self.description.as_ref())
-            .cloned()
+            .clone()
+            .or_else(|| self.description.clone())
             .unwrap_or_else(|| format!("node#{}", self.id))
     }
 
@@ -265,10 +263,10 @@ impl NodeInfo {
     }
 
     pub fn matches_label(&self, label: &str) -> bool {
-        [&self.name, &self.description].iter().any(|opt| {
-            opt.as_deref()
-                .is_some_and(|v| v.eq_ignore_ascii_case(label))
-        })
+        [self.name.as_deref(), self.description.as_deref()]
+            .into_iter()
+            .flatten()
+            .any(|v| v.eq_ignore_ascii_case(label))
     }
 
     pub fn should_route_to(&self, sink: &Self) -> bool {

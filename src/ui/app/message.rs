@@ -33,10 +33,8 @@ pub(super) enum Message {
     BarResizeEnd,
     Quit,
     Resize,
-    WindowOpened,
     WindowClosed(window::Id),
     WindowResized(window::Id, Size),
-    WindowFocused(window::Id),
     Settings(window::Id, SettingsMessage),
     SettingsScrolled(ScrollGlow),
 }
@@ -88,19 +86,12 @@ pub(super) fn keyboard_shortcut(
             Some(Message::ToggleDrawer)
         }
         Key::Named(keyboard::key::Named::Space) if ctrl => Some(Message::PopOutOrDock(window_id)),
-        Key::Character(ch)
-            if no_modifiers
-                && status != event::Status::Captured
-                && ch.eq_ignore_ascii_case("p") =>
-        {
-            Some(Message::TogglePause)
-        }
-        Key::Character(ch)
-            if no_modifiers
-                && status != event::Status::Captured
-                && ch.eq_ignore_ascii_case("q") =>
-        {
-            Some(Message::Quit)
+        Key::Character(ch) if no_modifiers && status != event::Status::Captured => {
+            if ch.eq_ignore_ascii_case("p") {
+                Some(Message::TogglePause)
+            } else {
+                ch.eq_ignore_ascii_case("q").then_some(Message::Quit)
+            }
         }
         _ => None,
     }
@@ -190,10 +181,6 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
             Task::none()
         }
         Message::WindowClosed(window_id) => app.on_window_closed(window_id),
-        Message::WindowFocused(id) => {
-            app.focused_window = Some(id);
-            Task::none()
-        }
         Message::Settings(window_id, settings_msg) => {
             if let Some((wid, panel)) = app.settings_window.as_mut()
                 && *wid == window_id

@@ -55,11 +55,11 @@ impl RegistryState {
     }
 
     pub(crate) fn remove_device(&mut self, id: u32) -> bool {
-        let removed = self.device_ids.remove(&id);
-        if removed {
-            self.bump_serial();
+        if !self.device_ids.remove(&id) {
+            return false;
         }
-        removed
+        self.bump_serial();
+        true
     }
 
     pub(crate) fn upsert_port(&mut self, port: GraphPort) -> bool {
@@ -68,23 +68,15 @@ impl RegistryState {
             return false;
         };
 
-        let changed = match node.ports.iter().position(|p| p.port_id == port_id) {
-            Some(idx) if node.ports[idx] != port => {
-                node.ports[idx] = port;
-                true
-            }
-            Some(_) => false,
-            None => {
-                node.ports.push(port);
-                true
-            }
-        };
-
-        if changed {
-            self.port_index.insert(global_id, (node_id, port_id));
-            self.bump_serial();
+        match node.ports.iter().position(|p| p.port_id == port_id) {
+            Some(idx) if node.ports[idx] == port => return false,
+            Some(idx) => node.ports[idx] = port,
+            None => node.ports.push(port),
         }
-        changed
+
+        self.port_index.insert(global_id, (node_id, port_id));
+        self.bump_serial();
+        true
     }
 
     pub(crate) fn remove_port(&mut self, global_id: u32) -> bool {

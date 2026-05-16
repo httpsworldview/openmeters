@@ -130,9 +130,9 @@ impl FrequencyAnalyzer {
         let [s0, s1] = BAND_SPLITS_HZ.map(|hz| ((hz / bin_hz).round() as usize).min(spectrum_len));
         let band_bin_ranges: [(usize, usize); NUM_BANDS] = [(0, s0), (s0, s1), (s1, spectrum_len)];
         Self {
-            scratch: vec![Complex32::default(); fft.get_scratch_len()],
+            scratch: fft.make_scratch_vec(),
             input_buffer: vec![0.0; size],
-            output_spectrum: vec![Complex32::default(); spectrum_len],
+            output_spectrum: fft.make_output_vec(),
             sample_history: Vec::with_capacity(size),
             bin_hz,
             smoothed: 0.1,
@@ -184,7 +184,7 @@ impl FrequencyAnalyzer {
 
     fn update_band_levels(&mut self) {
         let inv_n_sq = 1.0 / (self.size as f32 * self.size as f32);
-        for band in 0..NUM_BANDS {
+        for (band, smoothed) in self.smoothed_bands.iter_mut().enumerate() {
             let (lo_bin, hi_bin) = self.band_bin_ranges[band];
             let rms = if lo_bin < hi_bin {
                 let power: f32 = self.output_spectrum[lo_bin..hi_bin]
@@ -195,7 +195,7 @@ impl FrequencyAnalyzer {
             } else {
                 0.0
             };
-            self.smoothed_bands[band] += BAND_EMA_ALPHA * (rms - self.smoothed_bands[band]);
+            *smoothed += BAND_EMA_ALPHA * (rms - *smoothed);
         }
     }
 
@@ -354,11 +354,11 @@ impl WaveformProcessor {
 
     fn ingest_samples(&mut self, samples: &[f32]) {
         for frame in samples.chunks_exact(self.channel_count) {
-            for (channel, &sample) in frame.iter().enumerate() {
-                self.sample_accumulators[channel].push(sample);
+            for (acc, &sample) in self.sample_accumulators.iter_mut().zip(frame) {
+                acc.push(sample);
             }
-            self.flush_ready_columns();
         }
+        self.flush_ready_columns();
     }
 
     fn sync_ring_to_snapshot(&mut self) {

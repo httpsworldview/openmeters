@@ -33,8 +33,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 use windowing::{
-    BarResizeState, MAIN_WINDOW_INITIAL_SIZE, PopoutWindow, layershell_available, namespace,
-    open_main_window,
+    APP_ID, BarResizeState, MAIN_WINDOW_INITIAL_SIZE, PopoutWindow, layershell_available,
+    namespace, open_main_window,
 };
 
 const TOAST_DISPLAY_DURATION: Duration = Duration::from_secs(2);
@@ -85,7 +85,7 @@ pub fn run(config: UiConfig) -> UiResult {
             view,
         )
         .settings(LayerSettings {
-            id: Some("openmeters-ui".into()),
+            id: Some(APP_ID.into()),
             layer_settings,
             ..Default::default()
         })
@@ -97,7 +97,7 @@ pub fn run(config: UiConfig) -> UiResult {
     } else {
         iced_daemon(move || UiApp::new(config.clone(), false), update, view)
             .settings(IcedSettings {
-                id: Some("openmeters-ui".into()),
+                id: Some(APP_ID.into()),
                 ..Default::default()
             })
             .subscription(UiApp::subscription)
@@ -130,7 +130,6 @@ struct UiApp {
     settings_window: Option<(window::Id, ActiveSettings)>,
     settings_scroll: ScrollGlow,
     popout_windows: HashMap<window::Id, PopoutWindow>,
-    focused_window: Option<window::Id>,
     exit_warning_until: Option<Instant>,
 }
 
@@ -142,23 +141,19 @@ impl UiApp {
             audio_frames,
         } = config;
         let settings_handle = SettingsHandle::load_or_default();
-        let (visual_settings, use_decorations, bar_settings) = {
+        let (visual_settings, use_decorations, bar_settings, theme_file) = {
             let guard = settings_handle.borrow();
             (
                 guard.settings().visuals.clone(),
                 guard.settings().decorations,
                 guard.settings().bar.clone(),
+                guard.theme_store().load(guard.active_theme()),
             )
         };
         let mut manager = VisualManager::new();
         manager.apply_visual_settings(&visual_settings);
-        // Theme palettes override whatever settings.json had
-        {
-            let guard = settings_handle.borrow();
-            let theme_name = guard.active_theme();
-            if let Some(theme_file) = guard.theme_store().load(theme_name) {
-                manager.apply_theme(&theme_file);
-            }
+        if let Some(theme_file) = theme_file {
+            manager.apply_theme(&theme_file);
         }
         let visual_manager = VisualManagerHandle::new(manager);
         let config_page = ConfigPage::new(
@@ -194,7 +189,6 @@ impl UiApp {
                 settings_window: None,
                 settings_scroll: ScrollGlow::default(),
                 popout_windows: HashMap::default(),
-                focused_window: Some(main_id),
                 exit_warning_until: None,
             },
             open_task,
@@ -208,7 +202,6 @@ impl UiApp {
             window::close_events().map(Message::WindowClosed),
             window::resize_events().map(|(id, size)| Message::WindowResized(id, size)),
             event::listen_with(|evt, _, wid| match evt {
-                Event::Window(window::Event::Focused) => Some(Message::WindowFocused(wid)),
                 Event::Window(window::Event::Opened { size, .. }) => {
                     Some(Message::WindowResized(wid, size))
                 }
@@ -303,10 +296,13 @@ impl UiApp {
     }
 
     fn main_window_view(&self) -> Element<'_, Message> {
-        let settings_ref = self.settings_handle.borrow();
-        let use_decorations = settings_ref.settings().decorations;
-        let bar = settings_ref.settings().bar.clone();
-        drop(settings_ref);
+        let (use_decorations, bar) = {
+            let settings_ref = self.settings_handle.borrow();
+            (
+                settings_ref.settings().decorations,
+                settings_ref.settings().bar.clone(),
+            )
+        };
 
         let content = self.visuals_with_toasts();
         let content = self.wrap_drawer(content);
@@ -395,11 +391,10 @@ impl UiApp {
         )
         .on_press(Message::BarResizeStart)
         .interaction(iced::mouse::Interaction::ResizingVertically);
-        let v_align = match bar.alignment {
+        let handle_layer = fill!(handle).align_y(match bar.alignment {
             BarAlignment::Top => Vertical::Bottom,
             BarAlignment::Bottom => Vertical::Top,
-        };
-        let handle_layer = fill!(handle).align_y(v_align);
+        });
 
         if let Some((current, pending)) = self.pending_bar_resize() {
             let overlay: Element<'_, Message> =
