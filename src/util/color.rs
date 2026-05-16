@@ -61,29 +61,30 @@ pub fn rgba_with_alpha(color: [f32; 4], alpha: f32) -> [f32; 4] {
 }
 
 #[inline]
+fn gradient_segment(count: usize, t: f32) -> Option<(usize, f32)> {
+    (count >= 2).then(|| {
+        let pos = t.clamp(0.0, 1.0) * (count - 1) as f32;
+        let i = (pos as usize).min(count - 2);
+        (i, pos - i as f32)
+    })
+}
+
+#[inline]
 pub fn sample_gradient(palette: &[Color], t: f32) -> Color {
-    let n = palette.len();
-    match n {
-        0 => Color::BLACK,
-        1 => palette[0],
-        _ => {
-            let pos = t.clamp(0.0, 1.0) * (n - 1) as f32;
-            let i = (pos as usize).min(n - 2);
-            lerp_color(palette[i], palette[i + 1], pos - i as f32)
-        }
+    match gradient_segment(palette.len(), t) {
+        Some((i, f)) => lerp_color(palette[i], palette[i + 1], f),
+        None => palette.first().copied().unwrap_or(Color::BLACK),
     }
 }
 
 #[inline]
 pub fn sample_rgba_gradient(palette: &[[f32; 4]], t: f32) -> [f32; 4] {
-    let n = palette.len();
-    if n < 2 {
-        return palette.first().copied().unwrap_or([0.0; 4]);
+    match gradient_segment(palette.len(), t) {
+        Some((i, f)) => {
+            std::array::from_fn(|c| palette[i][c] + (palette[i + 1][c] - palette[i][c]) * f)
+        }
+        None => palette.first().copied().unwrap_or([0.0; 4]),
     }
-    let pos = t.clamp(0.0, 1.0) * (n - 1) as f32;
-    let i = (pos as usize).min(n - 2);
-    let f = pos - i as f32;
-    std::array::from_fn(|c| palette[i][c] + (palette[i + 1][c] - palette[i][c]) * f)
 }
 
 pub fn default_spreads(count: usize) -> Vec<f32> {
@@ -150,11 +151,12 @@ pub fn find_segment(
         return (0, 0, 0.0);
     }
     if positions.len() < count {
-        let pos = t * (count - 1) as f32;
-        let lo = (pos.floor() as usize).min(count - 2);
-        let hi = lo + 1;
-        let linear = (pos - lo as f32).clamp(0.0, 1.0);
-        return (lo, hi, interpolate_with_spreads(linear, spreads, lo, hi));
+        let (lo, linear) = gradient_segment(count, t).unwrap_or((0, 0.0));
+        return (
+            lo,
+            lo + 1,
+            interpolate_with_spreads(linear, spreads, lo, lo + 1),
+        );
     }
     for i in 0..count - 1 {
         if t <= positions[i + 1] || i == count - 2 {

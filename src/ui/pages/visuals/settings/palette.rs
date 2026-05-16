@@ -66,8 +66,7 @@ impl PaletteEditor {
 
     pub fn set_visible_indices(&mut self, indices: Option<Vec<usize>>) {
         self.visible_indices = indices;
-        if let Some(active) = self.active
-            && let Some(ref visible) = self.visible_indices
+        if let (Some(active), Some(visible)) = (self.active, &self.visible_indices)
             && !visible.contains(&active)
         {
             self.active = None;

@@ -193,8 +193,7 @@ pub fn mixdown_into_deque(buffer: &mut VecDeque<f32>, samples: &[f32], channels:
         return;
     }
 
-    let frame_count = samples.len() / channels;
-    buffer.reserve(frame_count);
+    buffer.reserve(samples.len() / channels);
 
     let inv = 1.0 / channels as f32;
     for frame in samples.chunks_exact(channels) {
@@ -301,10 +300,6 @@ pub fn fmt_duration(secs: f32) -> String {
 
 pub fn compute_fft_bin_normalization(window: &[f32], fft_size: usize) -> Vec<f32> {
     let bins = fft_size / 2 + 1;
-    if bins == 0 {
-        return Vec::new();
-    }
-
     let window_sum: f32 = window.iter().sum();
     let inv_sum = if window_sum.abs() > f32::EPSILON {
         1.0 / window_sum

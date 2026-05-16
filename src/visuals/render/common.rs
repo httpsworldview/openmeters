@@ -128,26 +128,12 @@ impl SdfVertex {
     const SOLID_PARAMS: [f32; 4] = [0.0, 0.0, 1000.0, 0.0];
 
     pub fn layout() -> wgpu::VertexBufferLayout<'static> {
+        const ATTRS: [wgpu::VertexAttribute; 3] =
+            wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x4, 2 => Float32x4];
         wgpu::VertexBufferLayout {
             array_stride: size_of::<Self>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[
-                wgpu::VertexAttribute {
-                    offset: 0,
-                    shader_location: 0,
-                    format: wgpu::VertexFormat::Float32x2,
-                },
-                wgpu::VertexAttribute {
-                    offset: 8,
-                    shader_location: 1,
-                    format: wgpu::VertexFormat::Float32x4,
-                },
-                wgpu::VertexAttribute {
-                    offset: 24,
-                    shader_location: 2,
-                    format: wgpu::VertexFormat::Float32x4,
-                },
-            ],
+            attributes: &ATTRS,
         }
     }
 

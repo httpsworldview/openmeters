@@ -118,18 +118,15 @@ fn restore_all_routes(routing: &mut RoutingManager, snapshot: Option<&registry::
             routed_nodes.len()
         );
 
-        let hw_sink_id = routing.hw_sink(snapshot).map(|n| n.id);
+        let hw_sink = routing.hw_sink(snapshot).cloned();
+        let find_node = |id: &u32| snapshot.nodes.iter().find(|node| node.id == *id);
 
-        for node_id in &routed_nodes {
-            if let Some(node) = snapshot.nodes.iter().find(|n| n.id == *node_id) {
-                if let Some(sink_id) = hw_sink_id
-                    && let Some(sink) = snapshot.nodes.iter().find(|n| n.id == sink_id)
-                {
-                    routing.handle.route_node(node, sink);
-                } else {
-                    // relying on the policy manager to pick a default.
-                    routing.handle.reset_route(node);
-                }
+        for node in routed_nodes.iter().filter_map(&find_node) {
+            if let Some(sink) = hw_sink.as_ref() {
+                routing.handle.route_node(node, sink);
+            } else {
+                // relying on the policy manager to pick a default.
+                routing.handle.reset_route(node);
             }
         }
 
@@ -138,10 +135,8 @@ fn restore_all_routes(routing: &mut RoutingManager, snapshot: Option<&registry::
             warn!("[registry-monitor] failed to sync with registry thread");
         }
 
-        for node_id in &routed_nodes {
-            if let Some(node) = snapshot.nodes.iter().find(|n| n.id == *node_id) {
-                routing.handle.reset_route(node);
-            }
+        for node in routed_nodes.iter().filter_map(find_node) {
+            routing.handle.reset_route(node);
         }
     }
 

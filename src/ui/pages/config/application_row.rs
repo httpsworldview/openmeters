@@ -36,4 +36,13 @@ impl ApplicationRow {
             |s| format!("{} ({})", self.primary, s),
         )
     }
+
+    pub(crate) fn sort_key(&self) -> (String, String, u32) {
+        let secondary = self
+            .secondary
+            .as_deref()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        (self.primary.to_ascii_lowercase(), secondary, self.node_id)
+    }
 }

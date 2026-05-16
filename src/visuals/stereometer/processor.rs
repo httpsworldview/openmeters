@@ -161,9 +161,8 @@ impl StereometerProcessor {
     }
 
     fn fresh_correlators(config: StereometerConfig) -> [Correlator; 4] {
-        let alpha = ema_alpha(config.sample_rate, config.correlation_window);
         [Correlator {
-            alpha,
+            alpha: ema_alpha(config.sample_rate, config.correlation_window),
             ..Default::default()
         }; 4]
     }

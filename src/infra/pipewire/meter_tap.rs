@@ -75,13 +75,12 @@ impl SampleBatcher {
             return None;
         }
 
-        self.total_samples = 0;
+        let total_samples = std::mem::take(&mut self.total_samples);
 
         if self.chunks.len() == 1 {
             return self.chunks.pop();
         }
 
-        let total_samples = self.chunks.iter().map(std::vec::Vec::len).sum();
         let mut batch = self.reuse_buffer(total_samples);
 
         for chunk in self.chunks.drain(..) {

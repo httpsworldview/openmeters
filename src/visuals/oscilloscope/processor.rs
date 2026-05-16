@@ -290,7 +290,7 @@ impl TriggerScratch {
         self.phase_sine[0] = sine_value;
         self.phase_cosine[0] = cosine_value;
 
-        for (i, &sample) in data.iter().take(len).enumerate() {
+        for (i, &sample) in data.iter().enumerate() {
             self.sine_prefix_sum[i + 1] = self.sine_prefix_sum[i] + sample * sine_value;
             self.cosine_prefix_sum[i + 1] = self.cosine_prefix_sum[i] + sample * cosine_value;
 
@@ -579,17 +579,12 @@ impl AudioProcessor for OscilloscopeProcessor {
 
                 let data = self.history.make_contiguous();
                 self.mono_buffer.clear();
-                self.mono_buffer.reserve(available);
-                if channel_count == 1 {
-                    self.mono_buffer.extend_from_slice(&data[..available]);
-                } else {
-                    let scale = 1.0 / channel_count as f32;
-                    for i in 0..available {
-                        let idx = i * channel_count;
-                        let sum: f32 = (0..channel_count).map(|c| data[idx + c]).sum();
-                        self.mono_buffer.push(sum * scale);
-                    }
-                }
+                let scale = 1.0 / channel_count as f32;
+                self.mono_buffer.extend(
+                    data.chunks_exact(channel_count)
+                        .take(available)
+                        .map(|frame| frame.iter().sum::<f32>() * scale),
+                );
 
                 let detected = self
                     .pitch_detector

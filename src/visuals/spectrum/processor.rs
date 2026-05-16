@@ -287,11 +287,9 @@ impl SpectrumProcessor {
                 self.scratch_magnitudes[idx] = (raw_magnitude + weight).max(floor);
             }
 
-            let dt_seconds = self
-                .last_update_at
-                .map(|last| timestamp.saturating_duration_since(last))
-                .unwrap_or_default()
-                .as_secs_f32();
+            let dt_seconds = self.last_update_at.map_or(0.0, |last| {
+                timestamp.saturating_duration_since(last).as_secs_f32()
+            });
             averaging_update(
                 &self.config.averaging,
                 &mut self.averaged_db,

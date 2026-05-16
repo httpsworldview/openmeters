@@ -132,10 +132,9 @@ pub(crate) fn format_target_metadata(
     node_id: u32,
 ) -> (String, String) {
     let target_object = object_serial
-        .and_then(|raw| {
-            let trimmed = raw.trim();
-            (!trimmed.is_empty()).then(|| trimmed.to_string())
-        })
+        .map(str::trim)
+        .filter(|raw| !raw.is_empty())
+        .map(str::to_owned)
         .unwrap_or_else(|| node_id.to_string());
     (target_object, node_id.to_string())
 }
@@ -294,23 +293,16 @@ impl NodeInfo {
     }
 
     fn ports_for_loopback(&self, dir: PortDirection, prefer_monitor: bool) -> Vec<GraphPort> {
-        let primary: Vec<_> = self
-            .ports
-            .iter()
-            .filter(|p| p.direction == dir && p.is_monitor == prefer_monitor)
-            .cloned()
-            .collect();
-        if !primary.is_empty() {
-            return primary;
-        }
-        let secondary: Vec<_> = self
-            .ports
-            .iter()
-            .filter(|p| p.direction == dir)
-            .cloned()
-            .collect();
-        if !secondary.is_empty() {
-            return secondary;
+        for monitor in [Some(prefer_monitor), None] {
+            let ports: Vec<_> = self
+                .ports
+                .iter()
+                .filter(|p| p.direction == dir && monitor.is_none_or(|m| p.is_monitor == m))
+                .cloned()
+                .collect();
+            if !ports.is_empty() {
+                return ports;
+            }
         }
         self.ports.clone()
     }
@@ -347,11 +339,15 @@ impl MetadataDefaults {
                 let updated = target.update(metadata_id, subject, type_hint, name_ref);
                 inserted || updated
             }
-            None => slot
-                .as_ref()
-                .is_some_and(|t| t.metadata_id == Some(metadata_id))
-                .then(|| *slot = None)
-                .is_some(),
+            None => {
+                let remove = slot
+                    .as_ref()
+                    .is_some_and(|t| t.metadata_id == Some(metadata_id));
+                if remove {
+                    *slot = None;
+                }
+                remove
+            }
         }
     }
 

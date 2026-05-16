@@ -154,15 +154,12 @@ impl SpectrogramState {
     }
 
     pub fn set_floor_db(&mut self, floor_db: f32) {
-        let mut floor = if floor_db.is_finite() {
+        let floor = if floor_db.is_finite() {
             floor_db
         } else {
             DB_FLOOR
         };
-        if floor >= self.style.ceiling_db - 1.0 {
-            floor = self.style.ceiling_db - 1.0;
-        }
-        self.style.floor_db = floor;
+        self.style.floor_db = floor.min(self.style.ceiling_db - 1.0);
     }
 
     pub fn set_tilt_db(&mut self, tilt_db: f32) {

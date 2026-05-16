@@ -180,11 +180,11 @@ fn convert_samples_to_f32(
     Some(samples)
 }
 
-pub fn run() -> Option<std::thread::JoinHandle<()>> {
+pub fn run() {
     ensure_capture_buffer();
 
     if SINK_THREAD.get().is_some() {
-        return None;
+        return;
     }
 
     match thread::Builder::new()
@@ -196,12 +196,8 @@ pub fn run() -> Option<std::thread::JoinHandle<()>> {
         }) {
         Ok(handle) => {
             let _ = SINK_THREAD.set(handle);
-            None
         }
-        Err(err) => {
-            error!("[virtual-sink] failed to start PipeWire thread: {err}");
-            None
-        }
+        Err(err) => error!("[virtual-sink] failed to start PipeWire thread: {err}"),
     }
 }
 
@@ -299,10 +295,7 @@ fn run_virtual_sink() -> Result<(), Box<dyn Error + Send + Sync>> {
             };
 
             for data in buffer.datas_mut() {
-                let used = {
-                    let chunk = data.chunk();
-                    chunk.size() as usize
-                };
+                let used = data.chunk().size() as usize;
 
                 if used == 0 {
                     continue;
@@ -324,7 +317,6 @@ fn run_virtual_sink() -> Result<(), Box<dyn Error + Send + Sync>> {
                 *chunk_mut.size_mut() = used as u32;
                 *chunk_mut.stride_mut() = state.frame_bytes as i32;
             }
-            drop(buffer);
         })
         .register()?;
 
