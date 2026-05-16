@@ -83,11 +83,7 @@ impl ThemeStore {
                 }
             }
         }
-        choices.sort_by(|a, b| match (a.builtin, b.builtin) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-        });
+        choices.sort_by_key(|choice| (!choice.builtin, choice.name.to_lowercase()));
         choices
     }
 

@@ -73,7 +73,7 @@ pub enum ConfigMessage {
     DecorationsToggled(bool),
     BarModeToggled(bool),
     BarAlignmentChanged(BarAlignment),
-    BarHeightChanged(u16),
+    BarHeightChanged(u32),
     BarMonitorChanged(String),
     ThemeChanged(String),
     SaveTheme(String),
@@ -231,7 +231,7 @@ impl ConfigPage {
                 self.settings.update(|s| s.set_bar_alignment(v));
             }
             ConfigMessage::BarHeightChanged(v) => {
-                self.settings.update(|s| s.set_bar_height(v as u32));
+                self.settings.update(|s| s.set_bar_height(v));
             }
             ConfigMessage::BarMonitorChanged(v) => self.settings.update(|s| s.set_bar_monitor(v)),
             ConfigMessage::ThemeChanged(name) => {
@@ -557,7 +557,7 @@ impl ConfigPage {
                     slider(
                         BAR_MIN_HEIGHT..=BAR_MAX_HEIGHT,
                         bar.height.clamp(BAR_MIN_HEIGHT, BAR_MAX_HEIGHT),
-                        |v| ConfigMessage::BarHeightChanged(v as u16),
+                        ConfigMessage::BarHeightChanged,
                     )
                     .step(1u32)
                     .width(Length::Fill),
@@ -633,17 +633,7 @@ impl ConfigPage {
             }
         }
         self.preferences.retain(|id, _| seen.contains(id));
-        entries.sort_unstable_by(|a, b| {
-            a.primary
-                .to_ascii_lowercase()
-                .cmp(&b.primary.to_ascii_lowercase())
-                .then_with(|| {
-                    let a_sec = a.secondary.as_deref().unwrap_or_default();
-                    let b_sec = b.secondary.as_deref().unwrap_or_default();
-                    a_sec.to_ascii_lowercase().cmp(&b_sec.to_ascii_lowercase())
-                })
-                .then_with(|| a.node_id.cmp(&b.node_id))
-        });
+        entries.sort_unstable_by_key(ApplicationRow::sort_key);
         self.applications = entries;
     }
 

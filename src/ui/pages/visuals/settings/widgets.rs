@@ -32,12 +32,11 @@ impl SliderRange {
 
 #[inline]
 pub fn set_if_changed<T: PartialEq>(target: &mut T, value: T) -> bool {
-    if *target != value {
+    let changed = *target != value;
+    if changed {
         *target = value;
-        true
-    } else {
-        false
     }
+    changed
 }
 
 // Bits comparison so a write of a value with identical bits (e.g. the same NaN
@@ -45,12 +44,11 @@ pub fn set_if_changed<T: PartialEq>(target: &mut T, value: T) -> bool {
 #[inline]
 pub fn update_f32_range(target: &mut f32, value: f32, range: SliderRange) -> bool {
     let snapped = range.snap(value);
-    if target.to_bits() != snapped.to_bits() {
+    let changed = target.to_bits() != snapped.to_bits();
+    if changed {
         *target = snapped;
-        true
-    } else {
-        false
     }
+    changed
 }
 
 #[inline]

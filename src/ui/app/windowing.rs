@@ -479,7 +479,7 @@ impl UiApp {
                 self.apply_bar_layout(*alignment, bar.height)
             }
             ConfigMessage::BarHeightChanged(height) if self.main_window_is_layer => {
-                self.apply_bar_layout(bar.alignment, *height as u32)
+                self.apply_bar_layout(bar.alignment, *height)
             }
             ConfigMessage::BarMonitorChanged(monitor) if self.main_window_is_layer => {
                 let monitor = Some(monitor.clone());

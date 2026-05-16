@@ -322,20 +322,16 @@ pub(crate) struct VisualSlotSnapshot {
 
 pub(crate) struct VisualManager {
     entries: Vec<Entry>,
-    next_id: u32,
 }
 impl VisualManager {
     pub fn new() -> Self {
-        let mut m = Self {
-            entries: Vec::with_capacity(DESCRIPTORS.len()),
-            next_id: 1,
-        };
-        for descriptor in DESCRIPTORS {
-            let id = VisualId(m.next_id);
-            m.next_id = m.next_id.saturating_add(1);
-            m.entries.push(Entry::new(id, descriptor));
+        Self {
+            entries: DESCRIPTORS
+                .iter()
+                .enumerate()
+                .map(|(i, descriptor)| Entry::new(VisualId((i + 1) as u32), descriptor))
+                .collect(),
         }
-        m
     }
     fn by_kind(&self, kind: VisualKind) -> Option<&Entry> {
         self.entries.iter().find(|entry| entry.kind == kind)
@@ -385,9 +381,7 @@ impl VisualManager {
         })
     }
     pub fn set_enabled_by_kind(&mut self, kind: VisualKind, enabled: bool) {
-        if let Some(entry) = self.by_kind_mut(kind)
-            && entry.enabled != enabled
-        {
+        if let Some(entry) = self.by_kind_mut(kind) {
             entry.enabled = enabled;
         }
     }

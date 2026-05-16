@@ -181,38 +181,21 @@ const UNIT_QUAD: [QuadCorner; 6] = [
 ];
 
 fn quad_corner_layout() -> wgpu::VertexBufferLayout<'static> {
+    const ATTRS: [wgpu::VertexAttribute; 1] = wgpu::vertex_attr_array![0 => Float32x2];
     wgpu::VertexBufferLayout {
         array_stride: std::mem::size_of::<QuadCorner>() as wgpu::BufferAddress,
         step_mode: wgpu::VertexStepMode::Vertex,
-        attributes: &[wgpu::VertexAttribute {
-            offset: 0,
-            shader_location: 0,
-            format: wgpu::VertexFormat::Float32x2,
-        }],
+        attributes: &ATTRS,
     }
 }
 
 fn point_instance_layout() -> wgpu::VertexBufferLayout<'static> {
+    const ATTRS: [wgpu::VertexAttribute; 3] =
+        wgpu::vertex_attr_array![1 => Float32, 2 => Float32, 3 => Float32];
     wgpu::VertexBufferLayout {
         array_stride: std::mem::size_of::<SpectrogramPoint>() as wgpu::BufferAddress,
         step_mode: wgpu::VertexStepMode::Instance,
-        attributes: &[
-            wgpu::VertexAttribute {
-                offset: 0,
-                shader_location: 1,
-                format: wgpu::VertexFormat::Float32,
-            },
-            wgpu::VertexAttribute {
-                offset: 4,
-                shader_location: 2,
-                format: wgpu::VertexFormat::Float32,
-            },
-            wgpu::VertexAttribute {
-                offset: 8,
-                shader_location: 3,
-                format: wgpu::VertexFormat::Float32,
-            },
-        ],
+        attributes: &ATTRS,
     }
 }
 

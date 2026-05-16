@@ -33,7 +33,7 @@ fn main() {
     let registry_thread =
         monitor::init_registry_monitor(routing_rx, snapshot_tx.clone(), routing_config);
 
-    let _sink_thread = virtual_sink::run();
+    virtual_sink::run();
 
     let audio_stream = infra::pipewire::meter_tap::audio_sample_stream();
 

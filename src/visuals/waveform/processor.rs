@@ -378,27 +378,34 @@ impl WaveformProcessor {
         self.snapshot.columns = visible_columns;
 
         if visible_columns > 0 {
-            let start = if self.column_count < max_columns {
+            let start = if visible_columns < max_columns {
                 0
             } else {
                 self.ring_head
             };
-            for channel in 0..channels {
-                for column in 0..visible_columns {
-                    let ring_col = (start + column) % max_columns;
-                    let src = channel * max_columns + ring_col;
-                    let dst = channel * visible_columns + column;
-                    self.snapshot.min_values[dst] = self.min_values[src];
-                    self.snapshot.max_values[dst] = self.max_values[src];
-                    self.snapshot.frequency_normalized[dst] = self.frequency_values[src];
-
-                    for band in 0..NUM_BANDS {
-                        let band_src = (channel * NUM_BANDS + band) * max_columns + ring_col;
-                        let band_dst = (channel * NUM_BANDS + band) * visible_columns + column;
-                        self.snapshot.band_levels[band_dst] = self.band_levels[band_src];
+            let copy = |src: &[f32], dst: &mut [f32], lanes| {
+                for (src_lane, dst_lane) in src
+                    .chunks_exact(max_columns)
+                    .take(lanes)
+                    .zip(dst.chunks_exact_mut(visible_columns))
+                {
+                    for (col, out) in dst_lane.iter_mut().enumerate() {
+                        *out = src_lane[(start + col) % max_columns];
                     }
                 }
-            }
+            };
+            copy(&self.min_values, &mut self.snapshot.min_values, channels);
+            copy(&self.max_values, &mut self.snapshot.max_values, channels);
+            copy(
+                &self.frequency_values,
+                &mut self.snapshot.frequency_normalized,
+                channels,
+            );
+            copy(
+                &self.band_levels,
+                &mut self.snapshot.band_levels,
+                channels * NUM_BANDS,
+            );
         }
 
         self.snapshot.column_spacing_seconds = 1.0 / self.config.scroll_speed;

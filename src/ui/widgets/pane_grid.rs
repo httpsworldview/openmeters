@@ -187,10 +187,7 @@ where
     }
 
     fn size(&self) -> Size<Length> {
-        Size {
-            width: self.width,
-            height: self.height,
-        }
+        Size::new(self.width, self.height)
     }
 
     fn layout(
@@ -301,13 +298,7 @@ where
 
         if let Event::Mouse(mouse::Event::CursorMoved { position }) = event {
             let pane = self.pane_at(layout, *position);
-            let interaction = tree.state.downcast_mut::<Interaction>();
-            if interaction.cursor_over != pane {
-                interaction.cursor_over = pane;
-                if let Some(on_hover) = &self.on_hover {
-                    shell.publish(on_hover(pane));
-                }
-            }
+            self.publish_hover(tree.state.downcast_mut::<Interaction>(), pane, shell);
         }
     }
 
@@ -416,6 +407,20 @@ where
     Theme: 'a,
     Renderer: core::Renderer,
 {
+    fn publish_hover(
+        &self,
+        interaction: &mut Interaction,
+        pane: Option<Pane>,
+        shell: &mut Shell<'_, Message>,
+    ) {
+        if interaction.cursor_over != pane {
+            interaction.cursor_over = pane;
+            if let Some(on_hover) = &self.on_hover {
+                shell.publish(on_hover(pane));
+            }
+        }
+    }
+
     fn update_interaction(
         &self,
         tree: &mut Tree,
@@ -433,11 +438,7 @@ where
             let interaction = tree.state.downcast_mut::<Interaction>();
             let dragging = interaction.dragging.take();
             interaction.last_x = None;
-            if interaction.cursor_over.take().is_some()
-                && let Some(on_hover) = &self.on_hover
-            {
-                shell.publish(on_hover(None));
-            }
+            self.publish_hover(interaction, None, shell);
             if let Some((pane, _)) = dragging {
                 if let Some(on_drag) = &self.on_drag {
                     shell.publish(on_drag(DragEvent::Canceled { pane }));
@@ -587,11 +588,7 @@ where
                 if !widths_equal(&resizing.current, &resizing.start) {
                     shell.invalidate_layout();
                 }
-                if interaction.cursor_over.take().is_some()
-                    && let Some(on_hover) = &self.on_hover
-                {
-                    shell.publish(on_hover(None));
-                }
+                self.publish_hover(interaction, None, shell);
                 shell.request_redraw();
             }
             _ => {

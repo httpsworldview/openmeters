@@ -37,16 +37,15 @@ impl RegistryState {
     }
 
     pub(crate) fn remove_node(&mut self, id: u32) -> bool {
-        if let Some(info) = self.nodes.remove(&id) {
-            let fallback = info.name.or(info.description);
-            if self.metadata_defaults.clear_node(id, fallback) {
-                self.metadata_defaults.reconcile_with_nodes(&self.nodes);
-            }
-            self.bump_serial();
-            true
-        } else {
-            false
+        let Some(info) = self.nodes.remove(&id) else {
+            return false;
+        };
+        let fallback = info.name.or(info.description);
+        if self.metadata_defaults.clear_node(id, fallback) {
+            self.metadata_defaults.reconcile_with_nodes(&self.nodes);
         }
+        self.bump_serial();
+        true
     }
 
     pub(crate) fn add_device(&mut self, id: u32) {
@@ -56,12 +55,11 @@ impl RegistryState {
     }
 
     pub(crate) fn remove_device(&mut self, id: u32) -> bool {
-        if self.device_ids.remove(&id) {
+        let removed = self.device_ids.remove(&id);
+        if removed {
             self.bump_serial();
-            true
-        } else {
-            false
         }
+        removed
     }
 
     pub(crate) fn upsert_port(&mut self, port: GraphPort) -> bool {

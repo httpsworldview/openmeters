@@ -26,28 +26,25 @@ pub fn pair_ports_by_channel(
     let use_channel = sources.iter().all(|p| valid_channel(p.channel.as_deref()))
         && targets.iter().all(|p| valid_channel(p.channel.as_deref()));
 
+    let matches = |src: &GraphPort, target: &GraphPort| {
+        if use_channel {
+            match (src.channel.as_deref(), target.channel.as_deref()) {
+                (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
+                _ => false,
+            }
+        } else {
+            src.port_id == target.port_id
+        }
+    };
+
     let mut pairs = Vec::with_capacity(sources.len().min(targets.len()));
-    let mut used: std::collections::HashSet<u32> = std::collections::HashSet::default();
-
-    for src in &sources {
-        let target = targets.iter().find(|t| {
-            !used.contains(&t.port_id)
-                && if use_channel {
-                    match (src.channel.as_deref(), t.channel.as_deref()) {
-                        (Some(a), Some(b)) => a.eq_ignore_ascii_case(b),
-                        _ => false,
-                    }
-                } else {
-                    src.port_id == t.port_id
-                }
-        });
-
-        if let Some(tgt) = target {
-            used.insert(tgt.port_id);
-            pairs.push((src.clone(), tgt.clone()));
+    for src in sources {
+        if let Some(idx) = targets.iter().position(|target| matches(&src, target)) {
+            let target = targets.remove(idx);
+            targets.retain(|t| t.port_id != target.port_id);
+            pairs.push((src, target));
         }
     }
-
     pairs
 }
 
