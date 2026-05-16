@@ -1228,7 +1228,7 @@ dependencies = [
 [[package]]
 name = "iced_exdevtools"
 version = "0.18.1"
-source = "git+https://github.com/httpsworldview/exwlshelleventloop?branch=output-snapshot#ed7dc62844a98df360a1069a1d5e325c77081049"
+source = "git+https://github.com/httpsworldview/exwlshelleventloop?branch=output-snapshot#a0e177a18810f2fcff1bfc800c9f2f63b653844e"
 dependencies = [
  "iced_debug",
  "iced_devtools",
@@ -1273,7 +1273,7 @@ dependencies = [
 [[package]]
 name = "iced_layershell"
 version = "0.18.1"
-source = "git+https://github.com/httpsworldview/exwlshelleventloop?branch=output-snapshot#ed7dc62844a98df360a1069a1d5e325c77081049"
+source = "git+https://github.com/httpsworldview/exwlshelleventloop?branch=output-snapshot#a0e177a18810f2fcff1bfc800c9f2f63b653844e"
 dependencies = [
  "enumflags2",
  "futures",
@@ -1298,7 +1298,7 @@ dependencies = [
 [[package]]
 name = "iced_layershell_macros"
 version = "0.18.1"
-source = "git+https://github.com/httpsworldview/exwlshelleventloop?branch=output-snapshot#ed7dc62844a98df360a1069a1d5e325c77081049"
+source = "git+https://github.com/httpsworldview/exwlshelleventloop?branch=output-snapshot#a0e177a18810f2fcff1bfc800c9f2f63b653844e"
 dependencies = [
  "darling",
  "manyhow",
@@ -1571,7 +1571,7 @@ dependencies = [
 [[package]]
 name = "layershellev"
 version = "0.18.1"
-source = "git+https://github.com/httpsworldview/exwlshelleventloop?branch=output-snapshot#ed7dc62844a98df360a1069a1d5e325c77081049"
+source = "git+https://github.com/httpsworldview/exwlshelleventloop?branch=output-snapshot#a0e177a18810f2fcff1bfc800c9f2f63b653844e"
 dependencies = [
  "calloop 0.14.4",
  "calloop-wayland-source 0.4.1",
@@ -3526,7 +3526,7 @@ dependencies = [
 [[package]]
 name = "waycrate_xkbkeycode"
 version = "0.18.1"
-source = "git+https://github.com/httpsworldview/exwlshelleventloop?branch=output-snapshot#ed7dc62844a98df360a1069a1d5e325c77081049"
+source = "git+https://github.com/httpsworldview/exwlshelleventloop?branch=output-snapshot#a0e177a18810f2fcff1bfc800c9f2f63b653844e"
 dependencies = [
  "calloop 0.14.4",
  "log",
