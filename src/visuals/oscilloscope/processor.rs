@@ -20,9 +20,8 @@ const PITCH_THRESHOLD: f32 = 0.15;
 
 // Sample count above which the difference function switches from
 // O(n*tau) direct computation to O(n log n) FFT-based
-// autocorrelation. 512 is the crossover point where FFT overhead is
-// amortized by the larger inner loop savings; below this the direct
-// method is faster due to cache locality and no FFT setup cost.
+// autocorrelation. Below this, the direct method is faster and avoids
+// FFT autocorrelation edge differences on short buffers.
 const FFT_AUTOCORR_THRESHOLD: usize = 512;
 
 #[inline]
@@ -786,6 +785,15 @@ mod tests {
             let error = (detected - freq).abs() / freq;
             assert!(error < 0.02, "got {detected}Hz, expected {freq}Hz");
         }
+    }
+
+    #[test]
+    fn short_buffer_pitch_detection_uses_direct_difference() {
+        let mut detector = PitchDetector::new();
+        let samples = sine_samples(1000.0, RATE, 256);
+        let detected = detector.detect_pitch(&samples, RATE).expect("pitch");
+        let error = (detected - 1000.0).abs() / 1000.0;
+        assert!(error < 0.03, "got {detected}Hz");
     }
 
     #[test]

@@ -111,15 +111,14 @@ impl ConfigPage {
         bar_supported: bool,
     ) -> Self {
         let (current_bg, capture_mode, last_device_name, active_theme, theme_choices) = {
-            let s = settings.borrow();
+            let guard = settings.borrow();
+            let settings = guard.settings();
             (
-                s.settings()
-                    .background_color
-                    .map_or(theme::BG_BASE, Into::into),
-                s.settings().capture_mode,
-                s.settings().last_device_name.clone(),
-                s.active_theme().to_owned(),
-                s.theme_store().list(),
+                settings.background_color.map_or(theme::BG_BASE, Into::into),
+                settings.capture_mode,
+                settings.last_device_name.clone(),
+                guard.active_theme().to_owned(),
+                guard.theme_store().list(),
             )
         };
 
@@ -302,7 +301,7 @@ impl ConfigPage {
             let content: Element<'_, _> = if !self.applications.is_empty() {
                 render_toggle_grid(&self.applications, |entry| {
                     (
-                        entry.display_label(),
+                        entry.label.clone(),
                         entry.enabled,
                         ConfigMessage::ToggleChanged {
                             node_id: entry.node_id,
@@ -620,7 +619,7 @@ impl ConfigPage {
             })
             .collect();
         self.preferences.retain(|id, _| seen.contains(id));
-        entries.sort_unstable_by_key(ApplicationRow::sort_key);
+        entries.sort_unstable_by(|a, b| a.sort_key().cmp(b.sort_key()));
         self.applications = entries;
     }
 

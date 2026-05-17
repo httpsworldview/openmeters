@@ -53,7 +53,9 @@ macro_rules! visuals {
         pub struct VisualContent(VisualContentInner);
 
         #[derive(Debug, Clone)]
-        enum VisualContentInner { $($variant(Shared<$module::$state>)),* }
+        enum VisualContentInner {
+            $($variant(Shared<$module::$state>)),*
+        }
 
         impl VisualContent {
             pub fn render<M: 'static>(&self, meta: VisualMetadata) -> Element<'_, M> {
@@ -67,8 +69,10 @@ macro_rules! visuals {
         const DESCRIPTORS: &[Descriptor] = &[$(Descriptor {
             kind: VisualKind::$variant,
             meta: VisualMetadata {
-                display_name: $name, preferred_width: $width, preferred_height: $height,
-                min_width: $min_w, ..DEFAULT_METADATA
+                display_name: $name,
+                preferred_width: $width,
+                preferred_height: $height,
+                min_width: $min_w,
             },
             build: || Box::new(Visual {
                 processor: $module::$processor::new(DEFAULT_SAMPLE_RATE),
@@ -226,32 +230,14 @@ pub struct VisualMetadata {
     pub display_name: &'static str,
     pub preferred_width: f32,
     pub preferred_height: f32,
-    pub fill_horizontal: bool,
-    pub fill_vertical: bool,
     pub min_width: f32,
 }
 
-const DEFAULT_METADATA: VisualMetadata = VisualMetadata {
-    display_name: "",
-    preferred_width: 200.0,
-    preferred_height: 200.0,
-    fill_horizontal: true,
-    fill_vertical: true,
-    min_width: 100.0,
-};
-
 impl VisualMetadata {
     pub(crate) fn wrap<'a, M: 'static>(&self, elem: Element<'a, M>) -> Element<'a, M> {
-        let length = |fill, preferred| {
-            if fill {
-                Length::Fill
-            } else {
-                Length::Fixed(preferred)
-            }
-        };
         container(elem)
-            .width(length(self.fill_horizontal, self.preferred_width))
-            .height(length(self.fill_vertical, self.preferred_height))
+            .width(Length::Fill)
+            .height(Length::Fill)
             .center(Length::Fill)
             .into()
     }

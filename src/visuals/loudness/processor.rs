@@ -130,9 +130,7 @@ impl TruePeakMeter {
                 *o += s * c;
             }
         }
-        for &v in &out {
-            self.peak = self.peak.max(v.abs());
-        }
+        self.peak = out.into_iter().map(f32::abs).fold(self.peak, f32::max);
     }
 
     #[inline]
@@ -301,7 +299,7 @@ impl LoudnessProcessor {
     }
 
     fn ensure_state(&mut self, requested_channels: usize, sample_rate: f32) {
-        let channels = requested_channels.max(1);
+        let channels = requested_channels.clamp(1, MAX_CHANNELS);
         let rate_changed = sample_rate.is_finite()
             && sample_rate > 0.0
             && (self.config.sample_rate - sample_rate).abs() > f32::EPSILON;
@@ -316,7 +314,6 @@ impl LoudnessProcessor {
     }
 
     fn rebuild_state(&mut self, channels: usize) {
-        let channels = channels.min(MAX_CHANNELS);
         let capacities = self
             .config
             .windows
@@ -338,10 +335,6 @@ impl AudioProcessor for LoudnessProcessor {
         }
 
         self.ensure_state(block.channels, block.sample_rate);
-
-        if self.channels.is_empty() {
-            return None;
-        }
 
         for frame in block.samples.chunks_exact(block.channels) {
             for (channel, &sample) in self.channels.iter_mut().zip(frame) {

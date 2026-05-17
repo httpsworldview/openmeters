@@ -62,18 +62,36 @@ pub struct SpectrogramConfig {
     pub zero_padding_factor: usize,
 }
 
+const DEFAULT_SPECTROGRAM_FFT_SIZE: usize = 2048;
+const DEFAULT_SPECTROGRAM_HOP_SIZE: usize = 64;
+
 impl Default for SpectrogramConfig {
     fn default() -> Self {
         Self {
             sample_rate: DEFAULT_SAMPLE_RATE,
-            fft_size: 2048,
-            hop_size: 64,
+            fft_size: DEFAULT_SPECTROGRAM_FFT_SIZE,
+            hop_size: DEFAULT_SPECTROGRAM_HOP_SIZE,
             window: WindowKind::Blackman,
             frequency_scale: FrequencyScale::default(),
             history_length: 0,
             use_reassignment: true,
             zero_padding_factor: 2,
         }
+    }
+}
+
+impl SpectrogramConfig {
+    fn normalize(&mut self) {
+        if !self.sample_rate.is_finite() || self.sample_rate <= 0.0 {
+            self.sample_rate = DEFAULT_SAMPLE_RATE;
+        }
+        if self.fft_size == 0 {
+            self.fft_size = DEFAULT_SPECTROGRAM_FFT_SIZE;
+        }
+        if self.hop_size == 0 {
+            self.hop_size = DEFAULT_SPECTROGRAM_HOP_SIZE.min(self.fft_size).max(1);
+        }
+        self.zero_padding_factor = self.zero_padding_factor.max(1);
     }
 }
 
@@ -142,7 +160,8 @@ pub struct SpectrogramProcessor {
 }
 
 impl SpectrogramProcessor {
-    pub fn new(cfg: SpectrogramConfig) -> Self {
+    pub fn new(mut cfg: SpectrogramConfig) -> Self {
+        cfg.normalize();
         let mut planner = FftPlanner::new();
         let placeholder_fft = planner.plan_fft_forward(1024);
         let placeholder_ifft = planner.plan_fft_inverse(1024);
@@ -338,16 +357,12 @@ impl SpectrogramProcessor {
 
             let inv_pow = f32x8::splat(1.0) / pow.max(v_eps);
             let d_omega = -(d_im * base_re - d_re * base_im) * inv_pow;
-            let f_corr = d_omega * v_inv_2pi;
-
-            let freq = k_idx.mul_add(v_bin_hz, f_corr);
-            // the point of reassignment is to resolve below the bin
+            let freq = k_idx.mul_add(v_bin_hz, d_omega * v_inv_2pi);
+            // The point of reassignment is to resolve below the bin
             // grid, so no artificial floor.
             let final_mask = mask & freq.simd_gt(v_zero) & (v_max_hz - freq).simd_gt(v_zero);
 
-            let d_tau = (t_re * base_re + t_im * base_im) * inv_pow;
-
-            let time_offset = d_tau * v_inv_hop;
+            let time_offset = (t_re * base_re + t_im * base_im) * inv_pow * v_inv_hop;
             let mag_db = (pow.max(v_eps) * energy_scale.max(v_eps)).ln() * v_ln_to_db;
             let mag_db = mag_db.max(v_db_floor);
 
@@ -379,10 +394,13 @@ impl AudioProcessor for SpectrogramProcessor {
         if block.frame_count() == 0 || block.channels == 0 {
             return None;
         }
-        if self.config.sample_rate <= 0.0
-            || (self.config.sample_rate - block.sample_rate).abs() > f32::EPSILON
-        {
-            self.config.sample_rate = block.sample_rate;
+        let sample_rate = if block.sample_rate.is_finite() && block.sample_rate > 0.0 {
+            block.sample_rate
+        } else {
+            DEFAULT_SAMPLE_RATE
+        };
+        if (self.config.sample_rate - sample_rate).abs() > f32::EPSILON {
+            self.config.sample_rate = sample_rate;
             self.rebuild_fft();
             self.audio_buffer.clear();
             self.reset = true;
@@ -413,7 +431,8 @@ impl AudioProcessor for SpectrogramProcessor {
 }
 
 impl Reconfigurable<SpectrogramConfig> for SpectrogramProcessor {
-    fn update_config(&mut self, cfg: SpectrogramConfig) {
+    fn update_config(&mut self, mut cfg: SpectrogramConfig) {
+        cfg.normalize();
         let prev = self.config;
         self.config = cfg;
 
@@ -573,6 +592,22 @@ mod tests {
         processor
             .process_block(&AudioBlock::now(&samples, 1, cfg.sample_rate))
             .expect("expected snapshot")
+    }
+
+    #[test]
+    fn invalid_config_values_are_normalized() {
+        let processor = SpectrogramProcessor::new(SpectrogramConfig {
+            sample_rate: f32::NAN,
+            fft_size: 0,
+            hop_size: 0,
+            zero_padding_factor: 0,
+            ..Default::default()
+        });
+
+        assert_eq!(processor.config.sample_rate, DEFAULT_SAMPLE_RATE);
+        assert_eq!(processor.config.fft_size, DEFAULT_SPECTROGRAM_FFT_SIZE);
+        assert_eq!(processor.config.hop_size, DEFAULT_SPECTROGRAM_HOP_SIZE);
+        assert_eq!(processor.config.zero_padding_factor, 1);
     }
 
     fn find_peak_db(mags: &[f32]) -> (usize, f32) {

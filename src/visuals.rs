@@ -1,15 +1,53 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-pub mod loudness;
-pub mod oscilloscope;
+pub mod loudness {
+    pub mod processor;
+    pub mod render;
+    pub mod state;
+    pub(crate) use state::{LoudnessProcessor, LoudnessState, widget};
+}
+
+pub mod oscilloscope {
+    pub mod processor;
+    pub mod render;
+    pub mod state;
+    pub(crate) use state::{OscilloscopeProcessor, OscilloscopeState, widget};
+}
+
+pub mod spectrogram {
+    pub mod processor;
+    pub mod render;
+    pub mod state;
+    pub(crate) use state::{SpectrogramProcessor, SpectrogramState, widget};
+}
+
+pub mod spectrum {
+    pub mod processor;
+    pub mod render;
+    pub mod state;
+    pub(crate) use state::{SpectrumProcessor, SpectrumState, widget};
+}
+
+pub mod stereometer {
+    pub mod processor;
+    pub mod render;
+    pub mod state;
+    pub(crate) use state::{StereometerProcessor, StereometerState, widget};
+}
+
+pub mod waveform {
+    pub mod processor;
+    pub mod render;
+    pub mod state;
+    pub(crate) use state::{WaveformProcessor, WaveformState, widget};
+}
+
 pub mod palettes;
 pub mod registry;
-pub mod render;
-pub mod spectrogram;
-pub mod spectrum;
-pub mod stereometer;
-pub mod waveform;
+pub mod render {
+    pub mod common;
+}
 
 use std::sync::atomic::{AtomicU64, Ordering};
 

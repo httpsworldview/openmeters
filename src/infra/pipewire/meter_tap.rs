@@ -208,7 +208,9 @@ fn forward_loop(sender: AsyncSender<Vec<f32>>, buffer: Arc<CaptureBuffer>) {
         }
     }
 
-    let _ = batcher.take().map(|b| sender.send_blocking(b));
+    if let Some(batch) = batcher.take() {
+        let _ = sender.send_blocking(batch);
+    }
     info!(
         "[meter-tap] audio channel closed; {} dropped capture frames",
         buffer.dropped_frames()

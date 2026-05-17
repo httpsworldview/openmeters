@@ -200,20 +200,21 @@ impl AudioProcessor for StereometerProcessor {
             let (left, right) = (frame[0], frame[1]);
             self.correlators[0].update(left, right);
 
-            let low_l = self.crossovers[0].process(left);
-            let low_r = self.crossovers[1].process(right);
-            let mid_l = self.crossovers[2].process(left - low_l);
-            let mid_r = self.crossovers[3].process(right - low_r);
-            let (high_l, high_r) = (left - low_l - mid_l, right - low_r - mid_r);
+            let low = (
+                self.crossovers[0].process(left),
+                self.crossovers[1].process(right),
+            );
+            let mid = (
+                self.crossovers[2].process(left - low.0),
+                self.crossovers[3].process(right - low.1),
+            );
+            let bands = [low, mid, (left - low.0 - mid.0, right - low.1 - mid.1)];
 
-            self.correlators[1].update(low_l, low_r);
-            self.correlators[2].update(mid_l, mid_r);
-            self.correlators[3].update(high_l, high_r);
-
-            if self.config.emit_band_points {
-                self.band_history[0].extend([low_l, low_r]);
-                self.band_history[1].extend([mid_l, mid_r]);
-                self.band_history[2].extend([high_l, high_r]);
+            for (i, (l, r)) in bands.into_iter().enumerate() {
+                self.correlators[i + 1].update(l, r);
+                if self.config.emit_band_points {
+                    self.band_history[i].extend([l, r]);
+                }
             }
         }
 

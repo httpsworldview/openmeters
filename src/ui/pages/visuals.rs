@@ -211,14 +211,7 @@ impl VisualsPage {
                 Self::width_basis_from_settings(slot, saved_width_basis),
             )
         };
-        let (first, rest) = slots.split_first()?;
-        let (mut state, mut last) = pane_grid::State::new(visual_pane(first));
-        for slot in rest {
-            if let Some(p) = state.insert_after(last, visual_pane(slot)) {
-                last = p;
-            }
-        }
-        Some(state)
+        pane_grid::State::from_iter(slots.iter().map(|&slot| visual_pane(slot)))
     }
 
     fn width_basis_from_settings(

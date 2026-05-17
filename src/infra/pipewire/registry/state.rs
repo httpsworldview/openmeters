@@ -48,10 +48,12 @@ impl RegistryState {
         true
     }
 
-    pub(crate) fn add_device(&mut self, id: u32) {
-        if self.device_ids.insert(id) {
-            self.bump_serial();
+    pub(crate) fn add_device(&mut self, id: u32) -> bool {
+        if !self.device_ids.insert(id) {
+            return false;
         }
+        self.bump_serial();
+        true
     }
 
     pub(crate) fn remove_device(&mut self, id: u32) -> bool {
