@@ -6,8 +6,8 @@ use crate::infra::pipewire::registry::NodeInfo;
 #[derive(Clone, Debug)]
 pub(crate) struct ApplicationRow {
     pub(crate) node_id: u32,
-    pub(crate) primary: String,
-    pub(crate) secondary: Option<String>,
+    pub(crate) label: String,
+    sort_key: (String, String, u32),
     pub(crate) enabled: bool,
 }
 
@@ -18,31 +18,25 @@ impl ApplicationRow {
             .map(str::to_owned)
             .filter(|name| !name.trim().is_empty())
             .unwrap_or_else(|| node.display_name());
-
         let node_label = node.display_name();
         let secondary = (!primary.eq_ignore_ascii_case(&node_label)).then_some(node_label);
+        let label = secondary
+            .as_ref()
+            .map_or_else(|| primary.clone(), |s| format!("{primary} ({s})"));
 
         Self {
             node_id: node.id,
-            primary,
-            secondary,
+            label,
+            sort_key: (
+                primary.to_ascii_lowercase(),
+                secondary.unwrap_or_default().to_ascii_lowercase(),
+                node.id,
+            ),
             enabled,
         }
     }
 
-    pub(crate) fn display_label(&self) -> String {
-        self.secondary.as_ref().map_or_else(
-            || self.primary.clone(),
-            |s| format!("{} ({s})", self.primary),
-        )
-    }
-
-    pub(crate) fn sort_key(&self) -> (String, String, u32) {
-        let secondary = self
-            .secondary
-            .as_deref()
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        (self.primary.to_ascii_lowercase(), secondary, self.node_id)
+    pub(crate) fn sort_key(&self) -> &(String, String, u32) {
+        &self.sort_key
     }
 }

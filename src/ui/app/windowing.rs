@@ -460,7 +460,11 @@ impl UiApp {
         if !self.use_layershell {
             return Task::none();
         }
-        let bar = self.settings_handle.borrow().settings().bar.clone();
+        let (bar, decorations) = {
+            let guard = self.settings_handle.borrow();
+            let settings = guard.settings();
+            (settings.bar.clone(), settings.decorations)
+        };
         match config_msg {
             ConfigMessage::BarModeToggled(true) if self.main_window_is_layer => {
                 self.apply_bar_layout(bar.alignment, bar.height)
@@ -469,16 +473,13 @@ impl UiApp {
             ConfigMessage::BarModeToggled(enabled) if *enabled == self.main_window_is_layer => {
                 Task::none()
             }
-            ConfigMessage::BarModeToggled(enabled) => {
-                let decorations = self.settings_handle.borrow().settings().decorations;
-                self.recreate_main_window(
-                    BarSettings {
-                        enabled: *enabled,
-                        ..bar
-                    },
-                    decorations,
-                )
-            }
+            ConfigMessage::BarModeToggled(enabled) => self.recreate_main_window(
+                BarSettings {
+                    enabled: *enabled,
+                    ..bar
+                },
+                decorations,
+            ),
             ConfigMessage::BarAlignmentChanged(alignment) if self.main_window_is_layer => {
                 self.apply_bar_layout(*alignment, bar.height)
             }
@@ -490,7 +491,6 @@ impl UiApp {
                 if bar.monitor == monitor {
                     Task::none()
                 } else {
-                    let decorations = self.settings_handle.borrow().settings().decorations;
                     self.recreate_main_window(BarSettings { monitor, ..bar }, decorations)
                 }
             }

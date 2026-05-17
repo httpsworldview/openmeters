@@ -53,8 +53,8 @@ fn blend_points<F: Fn(f32, f32) -> (f32, f32)>(
 ) {
     dst.resize(src.len(), (0.0, 0.0));
     let fresh = 1.0 - persistence;
-    for (d, s) in dst.iter_mut().zip(src) {
-        let sp = scale(s.0, s.1);
+    for (d, &(x, y)) in dst.iter_mut().zip(src) {
+        let sp = scale(x, y);
         *d = (
             d.0 * persistence + sp.0 * fresh,
             d.1 * persistence + sp.1 * fresh,

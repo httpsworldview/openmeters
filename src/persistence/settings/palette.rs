@@ -42,12 +42,9 @@ impl<'de> Deserialize<'de> for ColorSetting {
         D: Deserializer<'de>,
     {
         match ColorSettingRepr::deserialize(deserializer)? {
-            ColorSettingRepr::Hex(value) => value
-                .parse::<Color>()
-                .map(ColorSetting)
-                .map_err(de::Error::custom),
+            ColorSettingRepr::Hex(value) => value.parse().map(Self).map_err(de::Error::custom),
             ColorSettingRepr::Legacy(LegacyRgba { r, g, b, a }) => {
-                Ok(ColorSetting(Color::from_rgba(r, g, b, a)))
+                Ok(Self(Color::from_rgba(r, g, b, a)))
             }
         }
     }
@@ -80,7 +77,7 @@ impl PaletteSettings {
     }
     // Returns `Some` only if colors differ from defaults (avoids persisting unchanged palettes).
     pub fn if_differs_from(colors: &[Color], defaults: &[Color]) -> Option<Self> {
-        colors_differ(colors, defaults).then_some(Self {
+        colors_differ(colors, defaults).then(|| Self {
             stops: colors.iter().copied().map(Into::into).collect(),
             stop_positions: None,
             stop_spreads: None,
@@ -119,8 +116,8 @@ impl PaletteSettings {
 }
 
 fn colors_differ(colors: &[Color], defaults: &[Color]) -> bool {
-    colors.len() == defaults.len()
-        && colors
+    colors.len() != defaults.len()
+        || colors
             .iter()
             .zip(defaults)
             .any(|(c, d)| !colors_equal(*c, *d))

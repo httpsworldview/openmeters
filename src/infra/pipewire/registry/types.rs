@@ -89,24 +89,13 @@ pub struct DefaultTarget {
 }
 
 impl DefaultTarget {
-    pub(crate) fn update(
-        &mut self,
-        metadata_id: u32,
-        subject: u32,
-        type_hint: Option<&str>,
-        name: Option<&str>,
-    ) -> bool {
-        let new = Self {
+    fn new(metadata_id: u32, subject: u32, type_hint: Option<&str>, name: Option<&str>) -> Self {
+        Self {
             metadata_id: Some(metadata_id),
             node_id: (subject != 0).then_some(subject),
             type_hint: type_hint.map(str::to_string),
             name: name.map(str::to_string),
-        };
-        if *self == new {
-            return false;
         }
-        *self = new;
-        true
     }
 }
 
@@ -120,7 +109,7 @@ pub(crate) fn parse_metadata_name(type_hint: Option<&str>, value: Option<&str>) 
     }
 
     match serde_json::from_str::<Value>(trimmed) {
-        Ok(Value::Object(map)) => map.get("name").and_then(|n| n.as_str()).map(str::to_string),
+        Ok(Value::Object(map)) => map.get("name").and_then(Value::as_str).map(str::to_string),
         Ok(Value::String(s)) => Some(s),
         _ => None,
     }
@@ -151,11 +140,7 @@ pub enum RegistryCommand {
     SetLinks(Vec<LinkSpec>),
     RouteNode {
         subject: u32,
-        target_object: String,
-        target_node: String,
-    },
-    ResetRoute {
-        subject: u32,
+        target: Option<(String, String)>,
     },
     Sync(std::sync::mpsc::Sender<()>),
     Shutdown,
@@ -249,8 +234,9 @@ impl NodeInfo {
 
     pub fn display_name(&self) -> String {
         self.name
-            .clone()
-            .or_else(|| self.description.clone())
+            .as_deref()
+            .or(self.description.as_deref())
+            .map(str::to_owned)
             .unwrap_or_else(|| format!("node#{}", self.id))
     }
 
@@ -329,13 +315,12 @@ impl MetadataDefaults {
 
         match value {
             Some(val) => {
-                let inserted = slot.is_none();
                 let parsed_name = parse_metadata_name(type_hint, Some(val));
                 let name_ref = parsed_name.as_deref().or(Some(val));
-
-                let target = slot.get_or_insert_with(DefaultTarget::default);
-                let updated = target.update(metadata_id, subject, type_hint, name_ref);
-                inserted || updated
+                let target = DefaultTarget::new(metadata_id, subject, type_hint, name_ref);
+                let changed = slot.as_ref() != Some(&target);
+                *slot = Some(target);
+                changed
             }
             None => {
                 let remove = slot

@@ -184,8 +184,9 @@ impl FrequencyAnalyzer {
 
     fn update_band_levels(&mut self) {
         let inv_n_sq = 1.0 / (self.size as f32 * self.size as f32);
-        for (band, smoothed) in self.smoothed_bands.iter_mut().enumerate() {
-            let (lo_bin, hi_bin) = self.band_bin_ranges[band];
+        for (&(lo_bin, hi_bin), smoothed) in
+            self.band_bin_ranges.iter().zip(&mut self.smoothed_bands)
+        {
             let rms = if lo_bin < hi_bin {
                 let power: f32 = self.output_spectrum[lo_bin..hi_bin]
                     .iter()
@@ -321,21 +322,21 @@ impl WaveformProcessor {
             .first()
             .is_some_and(|acc| acc.len() >= sample_count)
         {
-            for channel in 0..self.channel_count {
-                let samples = &self.sample_accumulators[channel][..sample_count];
+            for (channel, (acc, analyzer)) in self
+                .sample_accumulators
+                .iter()
+                .zip(&mut self.frequency_analyzers)
+                .enumerate()
+            {
+                let samples = &acc[..sample_count];
                 let (clamped_min, clamped_max) = sample_extrema(samples);
                 let ring_index = channel * max_columns + self.ring_head;
 
                 self.min_values[ring_index] = clamped_min;
                 self.max_values[ring_index] = clamped_max;
-                self.frequency_values[ring_index] =
-                    self.frequency_analyzers[channel].analyze(samples);
+                self.frequency_values[ring_index] = analyzer.analyze(samples);
 
-                for (band, &level) in self.frequency_analyzers[channel]
-                    .smoothed_bands
-                    .iter()
-                    .enumerate()
-                {
+                for (band, &level) in analyzer.smoothed_bands.iter().enumerate() {
                     let band_index = (channel * NUM_BANDS + band) * max_columns + self.ring_head;
                     let db = power_to_db(level * level, floor);
                     self.band_levels[band_index] = ((db - floor) / -floor).clamp(0.0, 1.0);

@@ -116,15 +116,13 @@ impl OscilloscopeState {
             return None;
         }
 
-        let colors = vec![color_to_rgba(self.style.colors[0]); channels];
-
         Some(OscilloscopeParams {
             key: self.key,
             bounds,
             channels,
             samples_per_channel,
             samples: self.snapshot.samples.clone(),
-            colors,
+            color: color_to_rgba(self.style.colors[0]),
             fill_alpha: FILL_ALPHA,
         })
     }

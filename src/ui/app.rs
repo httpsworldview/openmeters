@@ -143,10 +143,11 @@ impl UiApp {
         let settings_handle = SettingsHandle::load_or_default();
         let (visual_settings, use_decorations, bar_settings, theme_file) = {
             let guard = settings_handle.borrow();
+            let settings = guard.settings();
             (
-                guard.settings().visuals.clone(),
-                guard.settings().decorations,
-                guard.settings().bar.clone(),
+                settings.visuals.clone(),
+                settings.decorations,
+                settings.bar.clone(),
                 guard.theme_store().load(guard.active_theme()),
             )
         };
@@ -298,10 +299,8 @@ impl UiApp {
     fn main_window_view(&self) -> Element<'_, Message> {
         let (use_decorations, bar) = {
             let settings_ref = self.settings_handle.borrow();
-            (
-                settings_ref.settings().decorations,
-                settings_ref.settings().bar.clone(),
-            )
+            let settings = settings_ref.settings();
+            (settings.decorations, settings.bar.clone())
         };
 
         let content = self.visuals_with_toasts();

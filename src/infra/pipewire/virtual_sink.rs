@@ -65,27 +65,15 @@ impl CaptureBuffer {
             error!("[virtual-sink] capture buffer lock poisoned");
         })?;
 
-        if let Some(frame) = guard.pop_front() {
-            return Ok(Some(frame));
-        }
-        if timeout.is_zero() {
-            return Ok(None);
-        }
-
-        loop {
-            let (new_guard, result) = self
+        if guard.is_empty() && !timeout.is_zero() {
+            let (new_guard, _) = self
                 .available
-                .wait_timeout(guard, timeout)
+                .wait_timeout_while(guard, timeout, |queue| queue.is_empty())
                 .map_err(|_| ())?;
             guard = new_guard;
-
-            if let Some(frame) = guard.pop_front() {
-                return Ok(Some(frame));
-            }
-            if result.timed_out() {
-                return Ok(None);
-            }
         }
+
+        Ok(guard.pop_front())
     }
 
     pub fn dropped_frames(&self) -> u64 {

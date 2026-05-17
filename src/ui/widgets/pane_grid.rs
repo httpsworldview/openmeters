@@ -1,11 +1,3 @@
-mod content;
-mod pane;
-pub mod state;
-
-pub use content::Content;
-pub use pane::Pane;
-pub use state::State;
-
 use iced::advanced::renderer::{self, Quad};
 use iced::advanced::widget::{
     self,
@@ -15,6 +7,63 @@ use iced::advanced::{self as core, Clipboard, Layout, Shell, Widget, layout, mou
 use iced::{Background, Element, Event, Length, Point, Rectangle, Size};
 
 use crate::util::color::with_alpha;
+
+// This type is adapted from iced_widget v0.13.4 (MIT License).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Pane(usize);
+
+#[derive(Debug, Clone)]
+pub struct State<T> {
+    panes: Vec<(Pane, T)>,
+}
+
+impl<T> State<T> {
+    pub fn from_iter(items: impl IntoIterator<Item = T>) -> Option<Self> {
+        let panes = items
+            .into_iter()
+            .enumerate()
+            .map(|(id, item)| (Pane(id), item))
+            .collect::<Vec<_>>();
+        (!panes.is_empty()).then_some(Self { panes })
+    }
+
+    pub fn get(&self, pane: Pane) -> Option<&T> {
+        self.panes.iter().find(|(p, _)| *p == pane).map(|(_, v)| v)
+    }
+
+    pub fn get_mut(&mut self, pane: Pane) -> Option<&mut T> {
+        self.panes
+            .iter_mut()
+            .find(|(p, _)| *p == pane)
+            .map(|(_, v)| v)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&Pane, &T)> {
+        self.panes.iter().map(|(pane, state)| (pane, state))
+    }
+
+    pub fn move_to(&mut self, a: Pane, b: Pane) -> bool {
+        let (Some(from), Some(to)) = (self.position(a), self.position(b)) else {
+            return false;
+        };
+        if from == to {
+            return false;
+        }
+        let pane = self.panes.remove(from);
+        self.panes.insert(to, pane);
+        true
+    }
+
+    pub fn for_each_mut(&mut self, mut f: impl FnMut(Pane, &mut T)) {
+        for (pane, value) in &mut self.panes {
+            f(*pane, value);
+        }
+    }
+
+    fn position(&self, pane: Pane) -> Option<usize> {
+        self.panes.iter().position(|(id, _)| *id == pane)
+    }
+}
 
 const DIVIDER_HIT_WIDTH: f32 = 8.0;
 const EPS: f32 = 0.001;
@@ -43,6 +92,35 @@ pub enum DragEvent {
     Moved { pane: Pane, target: Pane },
     Dropped { pane: Pane },
     Canceled { pane: Pane },
+}
+
+#[allow(missing_debug_implementations)]
+pub struct Content<'a, Message, Theme = iced::Theme, Renderer = iced::Renderer>
+where
+    Renderer: core::Renderer,
+{
+    body: Element<'a, Message, Theme, Renderer>,
+    min_width: f32,
+    basis_width: f32,
+}
+
+impl<'a, Message, Theme, Renderer> Content<'a, Message, Theme, Renderer>
+where
+    Renderer: core::Renderer,
+{
+    pub fn new(body: impl Into<Element<'a, Message, Theme, Renderer>>) -> Self {
+        Self {
+            body: body.into(),
+            min_width: 0.0,
+            basis_width: 0.0,
+        }
+    }
+
+    pub fn with_width_basis(mut self, min: f32, basis: f32) -> Self {
+        self.min_width = min;
+        self.basis_width = basis;
+        self
+    }
 }
 
 #[allow(missing_debug_implementations)]
@@ -142,7 +220,7 @@ where
     fn width_specs(&self) -> Vec<(f32, f32)> {
         self.entries
             .iter()
-            .map(|(_, content)| content.width_spec())
+            .map(|(_, content)| (content.min_width, content.basis_width))
             .collect()
     }
 
@@ -173,15 +251,15 @@ where
     fn children(&self) -> Vec<Tree> {
         self.entries
             .iter()
-            .map(|(_, content)| content.state())
+            .map(|(_, content)| Tree::new(&content.body))
             .collect()
     }
 
     fn diff(&self, tree: &mut Tree) {
         tree.diff_children_custom(
             &self.entries,
-            |state, entry| entry.1.diff(state),
-            |entry| entry.1.state(),
+            |state, entry| state.diff(&entry.1.body),
+            |entry| Tree::new(&entry.1.body),
         );
     }
 
@@ -230,6 +308,8 @@ where
             );
 
             let node = content
+                .body
+                .as_widget_mut()
                 .layout(child, renderer, &limits)
                 .move_to(Point::new(position, 0.0));
 
@@ -253,7 +333,10 @@ where
             .zip(tree.children.iter_mut())
             .zip(layout.children())
         {
-            content.operate(child, child_layout, renderer, operation);
+            content
+                .body
+                .as_widget_mut()
+                .operate(child, child_layout, renderer, operation);
         }
     }
 
@@ -280,7 +363,7 @@ where
             .zip(tree.children.iter_mut())
             .zip(layout.children())
         {
-            content.update(
+            content.body.as_widget_mut().update(
                 child,
                 event,
                 child_layout,
@@ -328,7 +411,13 @@ where
             .zip(&tree.children)
             .zip(layout.children())
             .map(|(((_, content), child), child_layout)| {
-                content.mouse_interaction(child, child_layout, cursor, viewport, renderer)
+                content.body.as_widget().mouse_interaction(
+                    child,
+                    child_layout,
+                    cursor,
+                    viewport,
+                    renderer,
+                )
             })
             .max()
             .unwrap_or_default()
@@ -352,7 +441,7 @@ where
             .zip(layout.children())
         {
             renderer.with_layer(child_layout.bounds(), |renderer| {
-                content.draw(
+                content.body.as_widget().draw(
                     child,
                     renderer,
                     theme,

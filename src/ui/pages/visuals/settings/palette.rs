@@ -137,7 +137,7 @@ impl PaletteEditor {
             }
             PaletteEvent::AdjustPosition { index, position } => {
                 let n = self.palette.len();
-                if index == 0 || index >= n - 1 || n < 3 {
+                if n < 3 || index == 0 || index >= n - 1 {
                     return false;
                 }
                 let lo = (self.positions[index - 1] + MIN_STOP_GAP).max(MIN_STOP_GAP);

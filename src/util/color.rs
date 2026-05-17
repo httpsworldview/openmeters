@@ -41,10 +41,10 @@ pub fn color_to_rgba(color: Color) -> [f32; 4] {
 pub fn lerp_color(a: Color, b: Color, t: f32) -> Color {
     let t = t.clamp(0.0, 1.0);
     Color::from_rgba(
-        a.r + (b.r - a.r) * t,
-        a.g + (b.g - a.g) * t,
-        a.b + (b.b - a.b) * t,
-        a.a + (b.a - a.a) * t,
+        (b.r - a.r).mul_add(t, a.r),
+        (b.g - a.g).mul_add(t, a.g),
+        (b.b - a.b).mul_add(t, a.b),
+        (b.a - a.a).mul_add(t, a.a),
     )
 }
 
@@ -81,7 +81,7 @@ pub fn sample_gradient(palette: &[Color], t: f32) -> Color {
 pub fn sample_rgba_gradient(palette: &[[f32; 4]], t: f32) -> [f32; 4] {
     match gradient_segment(palette.len(), t) {
         Some((i, f)) => {
-            std::array::from_fn(|c| palette[i][c] + (palette[i + 1][c] - palette[i][c]) * f)
+            std::array::from_fn(|c| (palette[i + 1][c] - palette[i][c]).mul_add(f, palette[i][c]))
         }
         None => palette.first().copied().unwrap_or([0.0; 4]),
     }
@@ -101,7 +101,7 @@ pub fn sanitize_stop_positions(raw: Option<&[f32]>, defaults: &[f32]) -> Vec<f32
     let internals = count - 2;
 
     if let Some(raw) = raw.filter(|r| r.len() == count || r.len() == internals) {
-        let start = if raw.len() == count { 1 } else { 0 };
+        let start = usize::from(raw.len() == count);
         out[1..end].copy_from_slice(&raw[start..start + internals]);
     }
 

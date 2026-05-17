@@ -79,17 +79,16 @@ impl AudioRegistryHandle {
     }
 
     pub fn route_node(&self, application: &NodeInfo, sink: &NodeInfo) -> bool {
-        let (target_object, target_node) = format_target_metadata(sink.object_serial(), sink.id);
         self.send_command(RegistryCommand::RouteNode {
             subject: application.id,
-            target_object,
-            target_node,
+            target: Some(format_target_metadata(sink.object_serial(), sink.id)),
         })
     }
 
     pub fn reset_route(&self, application: &NodeInfo) -> bool {
-        self.send_command(RegistryCommand::ResetRoute {
+        self.send_command(RegistryCommand::RouteNode {
             subject: application.id,
+            target: None,
         })
     }
 
@@ -197,10 +196,14 @@ fn registry_thread_main(runtime: RegistryRuntime) -> Result<()> {
     runtime.set_command_sender(command_tx);
 
     let mut link_state = LinkState::new(core.clone());
-    let routing_metadata: Rc<RefCell<Option<Metadata>>> = Rc::new(RefCell::new(None));
-
-    let metadata_bindings: Rc<RefCell<HashMap<u32, MetadataBinding>>> = Default::default();
-
+    let registry_context = RegistryContext {
+        registry: registry.clone(),
+        runtime: runtime.clone(),
+        metadata_bindings: Default::default(),
+        routing_metadata_id: Rc::new(RefCell::new(None)),
+    };
+    let metadata_bindings = Rc::clone(&registry_context.metadata_bindings);
+    let routing_metadata_id = Rc::clone(&registry_context.routing_metadata_id);
     let pending_syncs: Rc<RefCell<PendingSyncs>> = Default::default();
 
     let _core_listener = {
@@ -217,27 +220,12 @@ fn registry_thread_main(runtime: RegistryRuntime) -> Result<()> {
     };
 
     let _registry_listener = {
-        let registry_added = registry.clone();
-        let metadata_added = Rc::clone(&metadata_bindings);
-        let metadata_removed = Rc::clone(&metadata_bindings);
-        let routing_metadata = Rc::clone(&routing_metadata);
-        let runtime_added = runtime.clone();
-        let runtime_removed = runtime.clone();
-
+        let added = registry_context.clone();
+        let removed = registry_context;
         registry
             .add_listener_local()
-            .global(move |global| {
-                handle_global_added(
-                    &registry_added,
-                    global,
-                    &runtime_added,
-                    &metadata_added,
-                    &routing_metadata,
-                );
-            })
-            .global_remove(move |id| {
-                handle_global_removed(id, &runtime_removed, &metadata_removed);
-            })
+            .global(move |global| added.handle_global_added(global))
+            .global_remove(move |id| removed.handle_global_removed(id))
             .register()
     };
 
@@ -261,7 +249,8 @@ fn registry_thread_main(runtime: RegistryRuntime) -> Result<()> {
                         if !handle_command(
                             command,
                             &mut link_state,
-                            &routing_metadata,
+                            &metadata_bindings,
+                            &routing_metadata_id,
                             &mainloop,
                             &pending_syncs,
                         ) {
@@ -387,18 +376,29 @@ fn create_passive_audio_link(
 }
 
 fn apply_route(
-    routing_metadata: &Rc<RefCell<Option<Metadata>>>,
+    metadata_bindings: &Rc<RefCell<HashMap<u32, MetadataBinding>>>,
+    routing_metadata_id: &Rc<RefCell<Option<u32>>>,
     subject: u32,
     target: Option<(&str, &str)>,
 ) {
-    let borrowed = routing_metadata.borrow();
-    let Some(metadata) = borrowed.as_ref() else {
+    let Some(metadata_id) = *routing_metadata_id.borrow() else {
         warn!("[registry] cannot route node {subject}; no metadata bound");
         return;
     };
+    let bindings = metadata_bindings.borrow();
+    let Some(binding) = bindings.get(&metadata_id) else {
+        warn!(
+            "[registry] cannot route node {subject}; selected metadata {metadata_id} is unavailable"
+        );
+        return;
+    };
     let hint = target.map(|_| "Spa:Id");
-    metadata.set_property(subject, TARGET_OBJECT_KEY, hint, target.map(|(o, _)| o));
-    metadata.set_property(subject, TARGET_NODE_KEY, hint, target.map(|(_, n)| n));
+    binding
+        .proxy
+        .set_property(subject, TARGET_OBJECT_KEY, hint, target.map(|(o, _)| o));
+    binding
+        .proxy
+        .set_property(subject, TARGET_NODE_KEY, hint, target.map(|(_, n)| n));
     match target {
         Some((o, n)) => debug!("[registry] routed node {subject} -> object={o}, node={n}"),
         None => debug!("[registry] reset route for node {subject}"),
@@ -408,7 +408,8 @@ fn apply_route(
 fn handle_command(
     command: RegistryCommand,
     link_state: &mut LinkState,
-    routing_metadata: &Rc<RefCell<Option<Metadata>>>,
+    metadata_bindings: &Rc<RefCell<HashMap<u32, MetadataBinding>>>,
+    routing_metadata_id: &Rc<RefCell<Option<u32>>>,
     mainloop: &pw::main_loop::MainLoopRc,
     pending_syncs: &Rc<RefCell<PendingSyncs>>,
 ) -> bool {
@@ -427,20 +428,15 @@ fn handle_command(
             link_state.apply_links(desired);
             true
         }
-        RegistryCommand::RouteNode {
-            subject,
-            target_object,
-            target_node,
-        } => {
+        RegistryCommand::RouteNode { subject, target } => {
             apply_route(
-                routing_metadata,
+                metadata_bindings,
+                routing_metadata_id,
                 subject,
-                Some((target_object.as_str(), target_node.as_str())),
+                target
+                    .as_ref()
+                    .map(|(object, node)| (object.as_str(), node.as_str())),
             );
-            true
-        }
-        RegistryCommand::ResetRoute { subject } => {
-            apply_route(routing_metadata, subject, None);
             true
         }
         RegistryCommand::Shutdown => {
@@ -451,112 +447,138 @@ fn handle_command(
     }
 }
 
-fn handle_global_added(
-    registry: &RegistryRc,
-    global: &GlobalObject<&DictRef>,
-    runtime: &RegistryRuntime,
-    metadata_bindings: &Rc<RefCell<HashMap<u32, MetadataBinding>>>,
-    routing_metadata: &Rc<RefCell<Option<Metadata>>>,
-) {
-    match global.type_ {
-        ObjectType::Node => {
-            runtime.mutate(|s| s.upsert_node(NodeInfo::from_global(global)));
+#[derive(Clone)]
+struct RegistryContext {
+    registry: RegistryRc,
+    runtime: RegistryRuntime,
+    metadata_bindings: Rc<RefCell<HashMap<u32, MetadataBinding>>>,
+    routing_metadata_id: Rc<RefCell<Option<u32>>>,
+}
+
+impl RegistryContext {
+    fn handle_global_added(&self, global: &GlobalObject<&DictRef>) {
+        match global.type_ {
+            ObjectType::Node => {
+                self.runtime
+                    .mutate(|s| s.upsert_node(NodeInfo::from_global(global)));
+            }
+            ObjectType::Device => {
+                let id = global.id;
+                self.runtime.mutate(|s| s.add_device(id));
+            }
+            ObjectType::Port => {
+                if let Some(p) = GraphPort::from_global(global) {
+                    self.runtime.mutate(|s| s.upsert_port(p));
+                }
+            }
+            ObjectType::Metadata => self.process_metadata_added(global),
+            _ => {}
         }
-        ObjectType::Device => {
-            let id = global.id;
-            runtime.mutate(|s| {
-                s.add_device(id);
-                true
-            });
+    }
+
+    fn handle_global_removed(&self, id: u32) {
+        if self
+            .runtime
+            .mutate(|s| s.remove_port(id) || s.remove_node(id) || s.remove_device(id))
+        {
+            return;
         }
-        ObjectType::Port => {
-            if let Some(p) = GraphPort::from_global(global) {
-                runtime.mutate(|s| s.upsert_port(p));
+        if self.metadata_bindings.borrow_mut().remove(&id).is_some() {
+            self.runtime
+                .mutate(|s| s.apply_metadata_property(id, 0, None, None, None));
+            if *self.routing_metadata_id.borrow() == Some(id) {
+                self.select_routing_metadata(self.best_routing_metadata_id());
             }
         }
-        ObjectType::Metadata => process_metadata_added(
-            registry,
-            global,
-            runtime,
-            metadata_bindings,
-            routing_metadata,
-        ),
-        _ => {}
-    }
-}
-
-fn handle_global_removed(
-    id: u32,
-    runtime: &RegistryRuntime,
-    metadata_bindings: &Rc<RefCell<HashMap<u32, MetadataBinding>>>,
-) {
-    if runtime.mutate(|s| s.remove_port(id) || s.remove_node(id) || s.remove_device(id)) {
-        return;
-    }
-    if metadata_bindings.borrow_mut().remove(&id).is_some() {
-        runtime.mutate(|s| s.apply_metadata_property(id, 0, None, None, None));
-    }
-}
-
-fn process_metadata_added(
-    registry: &RegistryRc,
-    global: &GlobalObject<&DictRef>,
-    runtime: &RegistryRuntime,
-    metadata_bindings: &Rc<RefCell<HashMap<u32, MetadataBinding>>>,
-    routing_metadata: &Rc<RefCell<Option<Metadata>>>,
-) {
-    let metadata_id = global.id;
-    if metadata_bindings.borrow().contains_key(&metadata_id) {
-        return;
     }
 
-    let props = super::types::dict_to_map(global.props.as_ref().copied());
-    let metadata_name = props.get("metadata.name").cloned();
+    fn process_metadata_added(&self, global: &GlobalObject<&DictRef>) {
+        let metadata_id = global.id;
+        if self.metadata_bindings.borrow().contains_key(&metadata_id) {
+            return;
+        }
 
-    let Ok(metadata) = registry.bind::<Metadata, _>(global) else {
-        warn!("[registry] failed to bind metadata {metadata_id}");
-        return;
-    };
+        let props = super::types::dict_to_map(global.props.as_ref().copied());
+        let metadata_name = props.get("metadata.name").cloned();
 
-    let is_preferred = metadata_name.as_deref().is_some_and(|n| {
-        PREFERRED_METADATA_NAMES
-            .iter()
-            .any(|p| p.eq_ignore_ascii_case(n))
-    });
+        let Ok(metadata) = self.registry.bind::<Metadata, _>(global) else {
+            warn!("[registry] failed to bind metadata {metadata_id}");
+            return;
+        };
 
-    {
-        let mut routing_ref = routing_metadata.borrow_mut();
-        if (is_preferred || routing_ref.is_none())
-            && let Ok(copy) = registry.bind::<Metadata, _>(global)
-        {
-            *routing_ref = Some(copy);
-            info!(
-                "[registry] using metadata '{}' for routing",
-                metadata_name.as_deref().unwrap_or("unnamed")
-            );
+        let is_preferred = metadata_name.as_deref().is_some_and(|n| {
+            PREFERRED_METADATA_NAMES
+                .iter()
+                .any(|p| p.eq_ignore_ascii_case(n))
+        });
+
+        let runtime = self.runtime.clone();
+        let listener = metadata
+            .add_listener_local()
+            .property(move |subject, key, type_, value| {
+                runtime
+                    .mutate(|s| s.apply_metadata_property(metadata_id, subject, key, type_, value));
+                0
+            })
+            .register();
+
+        self.metadata_bindings.borrow_mut().insert(
+            metadata_id,
+            MetadataBinding {
+                proxy: metadata,
+                _listener: listener,
+                name: metadata_name,
+                is_preferred,
+            },
+        );
+        self.maybe_select_routing_metadata(metadata_id);
+    }
+
+    fn maybe_select_routing_metadata(&self, metadata_id: u32) {
+        let should_select = {
+            let bindings = self.metadata_bindings.borrow();
+            let Some(candidate) = bindings.get(&metadata_id) else {
+                return;
+            };
+            let current_available = self
+                .routing_metadata_id
+                .borrow()
+                .is_some_and(|id| bindings.contains_key(&id));
+            candidate.is_preferred || !current_available
+        };
+        if should_select {
+            self.select_routing_metadata(Some(metadata_id));
         }
     }
 
-    let runtime_for_listener = runtime.clone();
-    let listener = metadata
-        .add_listener_local()
-        .property(move |subject, key, type_, value| {
-            runtime_for_listener
-                .mutate(|s| s.apply_metadata_property(metadata_id, subject, key, type_, value));
-            0
-        })
-        .register();
+    fn best_routing_metadata_id(&self) -> Option<u32> {
+        let bindings = self.metadata_bindings.borrow();
+        bindings
+            .iter()
+            .filter(|(_, binding)| binding.is_preferred)
+            .map(|(&id, _)| id)
+            .max()
+            .or_else(|| bindings.keys().copied().max())
+    }
 
-    metadata_bindings.borrow_mut().insert(
-        metadata_id,
-        MetadataBinding {
-            _proxy: metadata,
-            _listener: listener,
-        },
-    );
+    fn select_routing_metadata(&self, metadata_id: Option<u32>) {
+        *self.routing_metadata_id.borrow_mut() = metadata_id;
+        if let Some(id) = metadata_id {
+            let bindings = self.metadata_bindings.borrow();
+            let name = bindings
+                .get(&id)
+                .and_then(|binding| binding.name.as_deref())
+                .unwrap_or("unnamed");
+            info!("[registry] using metadata '{name}' for routing");
+        } else {
+            warn!("[registry] no metadata available for routing");
+        }
+    }
 }
 
 struct MetadataBinding {
-    _proxy: Metadata,
+    proxy: Metadata,
     _listener: MetadataListener,
+    name: Option<String>,
+    is_preferred: bool,
 }

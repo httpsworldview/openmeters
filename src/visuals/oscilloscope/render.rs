@@ -17,7 +17,7 @@ pub struct OscilloscopeParams {
     pub channels: usize,
     pub samples_per_channel: usize,
     pub samples: Vec<f32>,
-    pub colors: Vec<[f32; 4]>,
+    pub color: [f32; 4],
     pub fill_alpha: f32,
 }
 
@@ -66,12 +66,7 @@ impl OscilloscopePrimitive {
             .take(channels)
             .enumerate()
         {
-            let color = self
-                .params
-                .colors
-                .get(channel_idx)
-                .copied()
-                .unwrap_or([0.6, 0.8, 0.9, 1.0]);
+            let color = self.params.color;
             let center = layout.center_y(channel_idx);
 
             let positions: Vec<_> = channel_samples

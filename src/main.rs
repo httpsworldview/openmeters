@@ -25,9 +25,10 @@ fn main() {
     let (snapshot_tx, snapshot_rx) = async_channel::bounded::<registry::RegistrySnapshot>(64);
 
     let settings = SettingsManager::load_or_default();
+    let app_settings = settings.settings();
     let routing_config = RoutingConfig {
-        capture_mode: settings.settings().capture_mode,
-        preferred_device: settings.settings().last_device_name.clone(),
+        capture_mode: app_settings.capture_mode,
+        preferred_device: app_settings.last_device_name.clone(),
     };
 
     let registry_thread =
