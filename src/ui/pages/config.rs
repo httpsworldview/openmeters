@@ -213,10 +213,13 @@ impl ConfigPage {
             ConfigMessage::BgPalette(event) => {
                 if self.bg_palette.update(event) {
                     let color = self.bg_palette.colors().first().copied();
-                    self.settings.update(|s| s.set_background_color(color));
-                    self.settings.borrow().update_active_theme(|theme| {
-                        theme.background = color.map(Into::into);
+                    self.settings.update(|s| {
+                        s.set_background_color(color);
+                        s.update_active_theme(|theme| {
+                            theme.background = color.map(Into::into);
+                        });
                     });
+                    self.sync_active_theme();
                 }
             }
             ConfigMessage::DecorationsToggled(v) => self.settings.update(|s| s.set_decorations(v)),
@@ -452,6 +455,14 @@ impl ConfigPage {
         section_with_divider("Theme", content)
     }
 
+    pub(crate) fn sync_active_theme(&mut self) {
+        let active = self.settings.borrow().active_theme().to_owned();
+        if active != self.active_theme {
+            self.active_theme = active;
+            self.theme_choices = self.settings.borrow().theme_store().list();
+        }
+    }
+
     fn apply_theme(&mut self, name: &str) {
         let theme_file = self
             .settings
@@ -490,7 +501,6 @@ impl ConfigPage {
                 manager
                     .module_settings(slot.kind)?
                     .extract_palette()
-                    .filter(|ps| !ps.stops.is_empty())
                     .map(|ps| (slot.kind, ps))
             })
             .collect();

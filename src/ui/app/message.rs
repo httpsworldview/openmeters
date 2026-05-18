@@ -186,6 +186,7 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
                 && *wid == window_id
             {
                 panel.handle(&settings_msg, &app.visual_manager, &app.settings_handle);
+                app.config_page.sync_active_theme();
             }
             Task::none()
         }
