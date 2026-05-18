@@ -71,12 +71,25 @@ impl SettingsManager {
     pub fn active_theme(&self) -> &str {
         self.data.theme.as_deref().unwrap_or(BUILTIN_THEME)
     }
-    pub fn update_active_theme(&self, mutate: impl FnOnce(&mut ThemeFile)) {
-        let active = self.active_theme();
-        if active != BUILTIN_THEME
-            && let Err(e) = self.theme_store.update(active, mutate)
-        {
-            warn!("[theme] update failed for {active:?}: {e}");
+    pub fn update_active_theme(&mut self, mutate: impl FnOnce(&mut ThemeFile)) {
+        let active = self.active_theme().to_owned();
+        if active != BUILTIN_THEME {
+            if let Err(e) = self.theme_store.update(&active, mutate) {
+                warn!("[theme] update failed for {active:?}: {e}");
+            }
+            return;
+        }
+
+        let name = self.theme_store.next_auto_name();
+        let mut theme = ThemeFile {
+            name: Some(name.clone()),
+            ..Default::default()
+        };
+        mutate(&mut theme);
+        if let Err(e) = self.theme_store.save(&name, &theme) {
+            warn!("[theme] update failed for {name:?}: {e}");
+        } else {
+            self.data.theme = Some(name);
         }
     }
     pub fn set_visual_enabled(&mut self, kind: VisualKind, enabled: bool) {
@@ -195,5 +208,37 @@ impl SettingsHandle {
         manager.data.bar.sanitize();
         schedule_persist(manager.path.clone(), manager.data.clone());
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builtin_theme_updates_create_auto_theme() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manager = SettingsManager {
+            path: dir.path().join("settings.json"),
+            data: UiSettings::default(),
+            theme_store: ThemeStore::new(dir.path()),
+        };
+        manager
+            .theme_store
+            .save("default-custom", &ThemeFile::default())
+            .unwrap();
+
+        manager.update_active_theme(|theme| theme.author = Some("OpenMeters".into()));
+
+        assert_eq!(manager.active_theme(), "default-custom-2");
+        assert_eq!(
+            manager
+                .theme_store
+                .load("default-custom-2")
+                .unwrap()
+                .author
+                .as_deref(),
+            Some("OpenMeters")
+        );
     }
 }

@@ -11,6 +11,7 @@ use tracing::warn;
 use serde::{Deserialize, Serialize};
 
 const THEMES_DIR: &str = "themes";
+const AUTO_THEME_BASE: &str = "default-custom";
 pub const BUILTIN_THEME: &str = "default";
 
 #[derive(Debug, Clone, Eq)]
@@ -118,6 +119,19 @@ impl ThemeStore {
         let mut theme = self.load(name).unwrap_or_default();
         mutate(&mut theme);
         self.save(name, &theme)
+    }
+
+    pub(super) fn next_auto_name(&self) -> String {
+        (1..)
+            .map(|i| {
+                if i == 1 {
+                    AUTO_THEME_BASE.to_owned()
+                } else {
+                    format!("{AUTO_THEME_BASE}-{i}")
+                }
+            })
+            .find(|name| !self.theme_path(name).exists())
+            .expect("auto theme name sequence is unbounded")
     }
 
     fn theme_path(&self, name: &str) -> PathBuf {

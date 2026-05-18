@@ -74,7 +74,9 @@ mod waveform;
 mod widgets;
 
 use self::palette::{PaletteEditor, PaletteEvent};
-use crate::persistence::settings::{HasPalette, ModuleSettings, PaletteSettings, SettingsHandle};
+use crate::persistence::settings::{
+    BUILTIN_THEME, HasPalette, ModuleSettings, PaletteSettings, SettingsHandle,
+};
 use crate::ui::theme::Palette;
 use crate::visuals::registry::{VisualId, VisualKind, VisualManagerHandle};
 use iced::widget::column;
@@ -167,12 +169,16 @@ pub(super) fn persist_with_palette<T: Clone + Serialize + HasPalette>(
         .borrow_mut()
         .apply_module_settings(kind, &ModuleSettings::with_config(&stored));
     if applied {
-        settings_handle.update(|s| s.set_module_config(kind, &stored));
-        settings_handle.borrow().update_active_theme(|theme| {
-            if let Some(ps) = palette_settings {
-                theme.palettes.insert(kind, ps);
-            } else {
-                theme.palettes.remove(&kind);
+        settings_handle.update(move |s| {
+            s.set_module_config(kind, &stored);
+            if palette_settings.is_some() || s.active_theme() != BUILTIN_THEME {
+                s.update_active_theme(|theme| {
+                    if let Some(ps) = palette_settings {
+                        theme.palettes.insert(kind, ps);
+                    } else {
+                        theme.palettes.remove(&kind);
+                    }
+                });
             }
         });
     }
