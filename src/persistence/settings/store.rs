@@ -28,7 +28,6 @@ fn config_dir() -> PathBuf {
         .join("openmeters")
 }
 
-#[derive(Debug)]
 pub struct SettingsManager {
     path: PathBuf,
     pub data: UiSettings,
@@ -191,7 +190,7 @@ fn schedule_persist(path: PathBuf, mut settings: UiSettings) {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct SettingsHandle(Rc<RefCell<SettingsManager>>);
 
 impl SettingsHandle {

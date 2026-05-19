@@ -68,11 +68,11 @@ impl SpectrogramSettingsPane {
             iced::widget::Column::new()
                 .spacing(8.0)
                 .push(row![left, right].spacing(10).width(Length::Fill));
-            slide("Floor", s.floor_db, format!("{:.0} dB", s.floor_db), FLOOR_DB_RANGE, Message::FloorDb);
-            slide("Spectral tilt", s.tilt_db, tilt, TILT_DB_RANGE, Message::TiltDb);
-            slide(
-                "Rotation", s.rotation as f32, format!("{}\u{00b0}", s.rotation as i32 * 90),
-                ROTATION_RANGE, Message::Rotation
+            slider!("Floor", s.floor_db, FLOOR_DB_RANGE, Message::FloorDb, "{:.0} dB");
+            slider!("Spectral tilt", s.tilt_db, TILT_DB_RANGE, Message::TiltDb, tilt);
+            slider!(
+                "Rotation", s.rotation as f32, ROTATION_RANGE, Message::Rotation,
+                format!("{}\u{00b0}", s.rotation as i32 * 90)
             );
         );
         let advanced = controls!(8.0;

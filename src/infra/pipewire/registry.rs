@@ -63,57 +63,51 @@ mod tests {
         }
     }
 
+    fn ports(items: &[(u32, Option<&str>)]) -> Vec<GraphPort> {
+        items.iter().map(|&(id, ch)| port(id, ch)).collect()
+    }
+
     #[test]
     fn pair_ports_by_channel_behavior() {
-        let p = pair_ports_by_channel;
-        let ids = |pairs: &[(GraphPort, GraphPort)]| -> Vec<(u32, u32)> {
-            pairs.iter().map(|(s, t)| (s.port_id, t.port_id)).collect()
+        let ids = |sources, targets| -> Vec<(u32, u32)> {
+            pair_ports_by_channel(ports(sources), ports(targets))
+                .iter()
+                .map(|(s, t)| (s.port_id, t.port_id))
+                .collect()
         };
 
-        assert_eq!(
-            ids(&p(vec![port(0, Some("FL"))], vec![port(0, Some("FL"))])),
-            [(0, 0)]
-        );
-        assert_eq!(
-            ids(&p(vec![port(0, Some("FL"))], vec![port(1, Some("FL"))])),
-            [(0, 1)]
-        );
-        assert_eq!(
-            ids(&p(
-                vec![port(1, Some("FR"))],
-                vec![port(0, Some("FL")), port(1, Some("FR"))]
-            )),
-            [(1, 1)]
-        );
-        assert_eq!(
-            ids(&p(
-                vec![port(1, Some("FR")), port(0, Some("FL"))],
-                vec![port(1, Some("FR")), port(0, Some("FL"))]
-            )),
-            [(0, 0), (1, 1)]
-        );
-        assert_eq!(
-            ids(&p(
-                vec![port(0, None), port(1, None)],
-                vec![port(0, None), port(1, None)]
-            )),
-            [(0, 0), (1, 1)]
-        );
-        assert_eq!(
-            ids(&p(vec![port(0, Some("UNK"))], vec![port(0, Some("FL"))])),
-            [(0, 0)]
-        );
-        assert_eq!(
-            ids(&p(vec![port(0, Some("FL"))], vec![port(0, Some("UNK"))])),
-            [(0, 0)]
-        );
-        assert_eq!(
-            ids(&p(
-                vec![port(0, Some("FL")), port(1, Some("FR"))],
-                vec![port(0, Some("FL"))]
-            )),
-            [(0, 0)]
-        );
+        for (sources, targets, expected) in [
+            (
+                &[(0, Some("FL"))][..],
+                &[(0, Some("FL"))][..],
+                &[(0, 0)][..],
+            ),
+            (&[(0, Some("FL"))], &[(1, Some("FL"))], &[(0, 1)]),
+            (
+                &[(1, Some("FR"))],
+                &[(0, Some("FL")), (1, Some("FR"))],
+                &[(1, 1)],
+            ),
+            (
+                &[(1, Some("FR")), (0, Some("FL"))],
+                &[(1, Some("FR")), (0, Some("FL"))],
+                &[(0, 0), (1, 1)],
+            ),
+            (
+                &[(0, None), (1, None)],
+                &[(0, None), (1, None)],
+                &[(0, 0), (1, 1)],
+            ),
+            (&[(0, Some("UNK"))], &[(0, Some("FL"))], &[(0, 0)]),
+            (&[(0, Some("FL"))], &[(0, Some("UNK"))], &[(0, 0)]),
+            (
+                &[(0, Some("FL")), (1, Some("FR"))],
+                &[(0, Some("FL"))],
+                &[(0, 0)],
+            ),
+        ] {
+            assert_eq!(ids(sources, targets), expected);
+        }
 
         let ch51 = ["FL", "FR", "FC", "LFE", "RL", "RR"];
         let src: Vec<_> = ch51
@@ -127,7 +121,11 @@ mod tests {
             .rev()
             .map(|(i, c)| port(i as u32, Some(c)))
             .collect();
-        assert!(p(src, tgt).iter().all(|(s, t)| s.channel == t.channel));
+        assert!(
+            pair_ports_by_channel(src, tgt)
+                .iter()
+                .all(|(s, t)| s.channel == t.channel)
+        );
     }
 
     #[test]

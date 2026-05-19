@@ -77,8 +77,8 @@ impl PaletteSettings {
     }
     // Returns `Some` only if colors differ from defaults (avoids persisting unchanged palettes).
     pub fn if_differs_from(colors: &[Color], defaults: &[Color]) -> Option<Self> {
-        colors_differ(colors, defaults).then(|| Self {
-            stops: colors.iter().copied().map(Into::into).collect(),
+        color_stops_if_differ(colors, defaults).map(|stops| Self {
+            stops,
             stop_positions: None,
             stop_spreads: None,
         })
@@ -93,7 +93,7 @@ impl PaletteSettings {
     ) -> Option<Self> {
         let count = defaults.len();
         debug_assert_eq!(positions.len(), default_positions.len());
-        let colors_differ = colors_differ(colors, defaults);
+        let stops = color_stops_if_differ(colors, defaults);
         let positions_differ = positions
             .iter()
             .zip(default_positions)
@@ -101,18 +101,17 @@ impl PaletteSettings {
         let sanitized_spreads = sanitize_stop_spreads(Some(spreads), count);
         let spreads_differ = sanitized_spreads.iter().any(|s| (*s - 1.0).abs() > EPSILON);
 
-        let stops = if colors_differ {
-            colors.iter().copied().map(Into::into).collect()
-        } else {
-            Vec::new()
-        };
-        (colors_differ || positions_differ || spreads_differ).then_some(Self {
-            stops,
+        (stops.is_some() || positions_differ || spreads_differ).then_some(Self {
+            stops: stops.unwrap_or_default(),
             stop_positions: (positions_differ && count > 2)
                 .then(|| positions[1..count - 1].to_vec()),
             stop_spreads: spreads_differ.then_some(sanitized_spreads),
         })
     }
+}
+
+fn color_stops_if_differ(colors: &[Color], defaults: &[Color]) -> Option<Vec<ColorSetting>> {
+    colors_differ(colors, defaults).then(|| colors.iter().copied().map(Into::into).collect())
 }
 
 fn colors_differ(colors: &[Color], defaults: &[Color]) -> bool {

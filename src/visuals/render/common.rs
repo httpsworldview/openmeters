@@ -328,7 +328,6 @@ pub fn decimate_line(pts: &[(f32, f32)], max_points: usize) -> Cow<'_, [(f32, f3
     Cow::Owned(result)
 }
 
-#[derive(Debug)]
 pub struct InstanceBuffer<V: Pod> {
     pub vertex_buffer: wgpu::Buffer,
     pub capacity: wgpu::BufferAddress,
@@ -505,13 +504,11 @@ fn create_sdf_pipeline(
     )
 }
 
-#[derive(Debug)]
 struct CachedInstance {
     buffer: InstanceBuffer<SdfVertex>,
     last_used: u64,
 }
 
-#[derive(Debug)]
 pub struct SdfPipeline<K> {
     pub pipeline: wgpu::RenderPipeline,
     instances: HashMap<K, CachedInstance>,
@@ -603,7 +600,6 @@ macro_rules! sdf_primitive {
             }
         }
 
-        #[derive(Debug)]
         pub struct $pipeline { inner: $crate::visuals::render::common::SdfPipeline<$key_ty> }
 
         impl iced_wgpu::primitive::Pipeline for $pipeline {

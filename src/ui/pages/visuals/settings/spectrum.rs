@@ -88,41 +88,29 @@ impl SpectrumSettingsPane {
         .width(Length::Fill);
         let avg_ctrl = match self.avg_mode {
             AvgMode::Exponential => controls!(8.0;
-                slide(
-                    "Exp factor", self.avg_factor, format!("{:.2}", self.avg_factor),
-                    EXP_R, AvgFactor
-                );
+                slider!("Exp factor", self.avg_factor, EXP_R, AvgFactor, "{:.2}");
             ),
             AvgMode::PeakHold => controls!(8.0;
-                slide(
-                    "Peak decay", self.peak_decay, format!("{:.1} dB/s", self.peak_decay),
-                    DECAY_R, PeakDecay
-                );
+                slider!("Peak decay", self.peak_decay, DECAY_R, PeakDecay, "{:.1} dB/s");
             ),
             AvgMode::None => column![].spacing(8),
         };
 
         let mut visual = controls!(8.0;
-            slide(
-                "Smooth radius", s.smoothing_radius as f32, format!("{} bins", s.smoothing_radius),
-                SRAD_R, SmoothRadius
-            );
-            slide(
-                "Smooth passes", s.smoothing_passes as f32, s.smoothing_passes.to_string(),
-                SPAS_R, SmoothPasses
-            );
-            slide("Noise floor", s.floor_db, format!("{:.0} dB", s.floor_db), FLOOR_R, FloorDb);
+            slider!("Smooth radius", s.smoothing_radius as f32, SRAD_R, SmoothRadius, format!("{} bins", s.smoothing_radius));
+            slider!("Smooth passes", s.smoothing_passes as f32, SPAS_R, SmoothPasses, s.smoothing_passes.to_string());
+            slider!("Noise floor", s.floor_db, FLOOR_R, FloorDb, "{:.0} dB");
         );
         if s.display_mode == SpectrumDisplayMode::Bar {
             visual = controls!(visual;
-                slide("Bar count", s.bar_count as f32, s.bar_count.to_string(), BARS_R, BarCount);
-                slide("Bar gap", s.bar_gap, format!("{:.0}%", s.bar_gap * 100.0), GAP_R, BarGap);
+                slider!("Bar count", s.bar_count as f32, BARS_R, BarCount, s.bar_count.to_string());
+                slider!("Bar gap", s.bar_gap, GAP_R, BarGap, format!("{:.0}%", s.bar_gap * 100.0));
             );
         }
         visual = controls!(visual;
-            slide(
-                "Color floor", s.highlight_threshold, format!("{:.0}%", s.highlight_threshold * 100.0),
-                HIGH_R, Highlight
+            slider!(
+                "Color floor", s.highlight_threshold, HIGH_R, Highlight,
+                format!("{:.0}%", s.highlight_threshold * 100.0)
             );
         );
 

@@ -112,15 +112,6 @@ struct FrequencyAnalyzer {
     hann_window: Arc<[f32]>,
 }
 
-impl std::fmt::Debug for FrequencyAnalyzer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FrequencyAnalyzer")
-            .field("size", &self.size)
-            .field("window_len", &self.hann_window.len())
-            .finish_non_exhaustive()
-    }
-}
-
 impl FrequencyAnalyzer {
     fn new(sample_rate: f32) -> Self {
         let size = FREQUENCY_FFT_SIZE;
@@ -242,7 +233,7 @@ impl FrequencyAnalyzer {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct WaveformProcessor {
     config: WaveformConfig,
     snapshot: WaveformSnapshot,
@@ -505,8 +496,19 @@ mod tests {
     use super::*;
     use std::f32::consts::PI;
 
+    const RATE: f32 = 48_000.0;
+
     fn block(samples: &[f32], channels: usize, sample_rate: f32) -> AudioBlock<'_> {
         AudioBlock::now(samples, channels, sample_rate)
+    }
+
+    fn config(scroll_speed: f32, max_columns: usize) -> WaveformConfig {
+        WaveformConfig {
+            sample_rate: RATE,
+            scroll_speed,
+            max_columns,
+            ..Default::default()
+        }
     }
 
     fn extract_snapshot(update: Option<WaveformSnapshot>) -> WaveformSnapshot {
@@ -514,17 +516,13 @@ mod tests {
     }
 
     fn centroid_for(frequency: f32, scroll_speed: f32) -> f32 {
-        let config = WaveformConfig {
-            sample_rate: 48_000.0,
-            scroll_speed,
-            ..Default::default()
-        };
+        let config = config(scroll_speed, MAX_COLUMN_CAPACITY);
         let samples_per_column = config.samples_per_column();
         let mut processor = WaveformProcessor::new(config);
         let samples: Vec<f32> = (0..samples_per_column * 60)
-            .map(|n| (2.0 * PI * frequency * n as f32 / 48_000.0).sin())
+            .map(|n| (2.0 * PI * frequency * n as f32 / RATE).sin())
             .collect();
-        extract_snapshot(processor.process_block(&block(&samples, 1, 48_000.0)))
+        extract_snapshot(processor.process_block(&block(&samples, 1, RATE)))
             .frequency_normalized
             .last()
             .copied()
@@ -533,16 +531,12 @@ mod tests {
 
     #[test]
     fn downsampling_produces_min_max_pairs() {
-        let config = WaveformConfig {
-            sample_rate: 48_000.0,
-            scroll_speed: 120.0,
-            ..Default::default()
-        };
+        let config = config(120.0, MAX_COLUMN_CAPACITY);
         let mut processor = WaveformProcessor::new(config);
         let samples: Vec<f32> = (0..processor.samples_per_column)
             .map(|i| if i % 2 == 0 { 0.5 } else { -0.25 })
             .collect();
-        let snapshot = extract_snapshot(processor.process_block(&block(&samples, 1, 48_000.0)));
+        let snapshot = extract_snapshot(processor.process_block(&block(&samples, 1, RATE)));
         assert_eq!(snapshot.columns, 1);
         assert!((snapshot.max_values[0] - 0.5).abs() < f32::EPSILON);
         assert!((snapshot.min_values[0] + 0.25).abs() < f32::EPSILON);
@@ -593,17 +587,12 @@ mod tests {
 
     #[test]
     fn scroll_speed_update_preserves_history() {
-        let config = WaveformConfig {
-            sample_rate: 48_000.0,
-            scroll_speed: 100.0,
-            max_columns: 16,
-            ..Default::default()
-        };
+        let config = config(100.0, 16);
         let mut processor = WaveformProcessor::new(config);
         let old_samples_per_column = config.samples_per_column();
 
         for value in [0.1, 0.2, 0.3, 0.4] {
-            processor.process_block(&block(&vec![value; old_samples_per_column], 1, 48_000.0));
+            processor.process_block(&block(&vec![value; old_samples_per_column], 1, RATE));
         }
         let before = processor.snapshot.max_values.clone();
 
@@ -617,7 +606,7 @@ mod tests {
         let after = extract_snapshot(processor.process_block(&block(
             &vec![0.9; processor.samples_per_column],
             1,
-            48_000.0,
+            RATE,
         )));
 
         let mut expected = before;
@@ -628,18 +617,13 @@ mod tests {
 
     #[test]
     fn ring_buffer_wraps_correctly() {
-        let config = WaveformConfig {
-            sample_rate: 48_000.0,
-            scroll_speed: 200.0,
-            max_columns: 512,
-            ..Default::default()
-        };
+        let config = config(200.0, 512);
         let mut processor = WaveformProcessor::new(config);
         for batch in 0..512 + 10 {
             processor.process_block(&block(
                 &vec![((batch + 1) as f32 * 0.001).min(1.0); processor.samples_per_column],
                 1,
-                48_000.0,
+                RATE,
             ));
         }
         assert_eq!(

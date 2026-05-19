@@ -15,13 +15,42 @@ macro_rules! controls {
     }};
 }
 
+macro_rules! slider {
+    ($label:expr, $value:expr, $range:expr, $on_change:expr, $fmt:literal) => {
+        slide($label, $value, format!($fmt, $value), $range, $on_change)
+    };
+    ($label:expr, $value:expr, $range:expr, $on_change:expr, $display:expr) => {
+        slide($label, $value, $display, $range, $on_change)
+    };
+}
+
+macro_rules! settings_modules {
+    ($($module:ident => $variant:ident),+ $(,)?) => {
+        $(mod $module;)+
+
+        #[derive(Debug, Clone)]
+        pub enum SettingsMessage {
+            $($variant($module::Message),)+
+        }
+
+        pub fn create_panel(
+            visual_id: VisualId,
+            kind: VisualKind,
+            visual_manager: &VisualManagerHandle,
+        ) -> ActiveSettings {
+            match kind {
+                $(VisualKind::$variant => Box::new($module::create(visual_id, visual_manager)),)+
+            }
+        }
+    };
+}
+
 macro_rules! settings_pane {
     (
         $pane:ident, $settings_ty:ty, $kind:expr, $variant:ident,
         extra_from_settings($s:ident) { $($field:ident : $ty:ty = $init:expr),* $(,)? }
         $(init_palette($p:ident) $init_body:block)?
     ) => {
-        #[derive(Debug)]
         pub struct $pane {
             visual_id: super::VisualId,
             settings: $settings_ty,
@@ -64,13 +93,7 @@ macro_rules! settings_pane {
     };
 }
 
-mod loudness;
-mod oscilloscope;
 pub mod palette;
-mod spectrogram;
-mod spectrum;
-mod stereometer;
-mod waveform;
 mod widgets;
 
 use self::palette::{PaletteEditor, PaletteEvent};
@@ -83,17 +106,16 @@ use iced::widget::column;
 use iced::{Color, Element};
 use serde::{Serialize, de::DeserializeOwned};
 
-#[derive(Debug, Clone)]
-pub enum SettingsMessage {
-    Loudness(loudness::Message),
-    Oscilloscope(oscilloscope::Message),
-    Spectrogram(spectrogram::Message),
-    Spectrum(spectrum::Message),
-    Stereometer(stereometer::Message),
-    Waveform(waveform::Message),
+settings_modules! {
+    loudness => Loudness,
+    oscilloscope => Oscilloscope,
+    spectrogram => Spectrogram,
+    spectrum => Spectrum,
+    stereometer => Stereometer,
+    waveform => Waveform,
 }
 
-pub trait ModuleSettingsPane: std::fmt::Debug + 'static {
+pub trait ModuleSettingsPane: 'static {
     fn visual_id(&self) -> VisualId;
     fn view(&self) -> Element<'_, SettingsMessage>;
     fn handle(
@@ -105,21 +127,6 @@ pub trait ModuleSettingsPane: std::fmt::Debug + 'static {
 }
 
 pub type ActiveSettings = Box<dyn ModuleSettingsPane>;
-
-pub fn create_panel(
-    visual_id: VisualId,
-    kind: VisualKind,
-    visual_manager: &VisualManagerHandle,
-) -> ActiveSettings {
-    match kind {
-        VisualKind::Loudness => Box::new(loudness::create(visual_id, visual_manager)),
-        VisualKind::Oscilloscope => Box::new(oscilloscope::create(visual_id, visual_manager)),
-        VisualKind::Spectrogram => Box::new(spectrogram::create(visual_id, visual_manager)),
-        VisualKind::Spectrum => Box::new(spectrum::create(visual_id, visual_manager)),
-        VisualKind::Stereometer => Box::new(stereometer::create(visual_id, visual_manager)),
-        VisualKind::Waveform => Box::new(waveform::create(visual_id, visual_manager)),
-    }
-}
 
 pub(super) fn load_settings_and_palette<T: DeserializeOwned + Default + HasPalette>(
     visual_manager: &VisualManagerHandle,

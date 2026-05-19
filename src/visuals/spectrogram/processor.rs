@@ -594,6 +594,17 @@ mod tests {
             .expect("expected snapshot")
     }
 
+    fn cfg(fft_size: usize, hop_size: usize, use_reassignment: bool) -> SpectrogramConfig {
+        SpectrogramConfig {
+            fft_size,
+            hop_size,
+            history_length: 4,
+            use_reassignment,
+            zero_padding_factor: 1,
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn invalid_config_values_are_normalized() {
         let processor = SpectrogramProcessor::new(SpectrogramConfig {
@@ -644,13 +655,9 @@ mod tests {
     #[test]
     fn detects_sine_frequency_peak() {
         let cfg = SpectrogramConfig {
-            fft_size: 1024,
-            hop_size: 512,
             history_length: 8,
             window: WindowKind::Hann,
-            zero_padding_factor: 1,
-            use_reassignment: false,
-            ..Default::default()
+            ..cfg(1024, 512, false)
         };
         let freq = 200.0 * cfg.sample_rate / 1024.0;
         let update = process_sine(cfg, freq, 2048);
@@ -683,14 +690,7 @@ mod tests {
 
     #[test]
     fn reassignment_2d_with_group_delay() {
-        let cfg = SpectrogramConfig {
-            fft_size: 2048,
-            hop_size: 512,
-            history_length: 4,
-            use_reassignment: true,
-            zero_padding_factor: 1,
-            ..Default::default()
-        };
+        let cfg = cfg(2048, 512, true);
         let freq = 50.3 * cfg.sample_rate / 2048.0;
         let update = process_sine(cfg, freq, 4096);
         let col = update.new_columns.last().unwrap();
@@ -734,14 +734,7 @@ mod tests {
 
     #[test]
     fn points_per_column_matches_bin_count() {
-        let cfg = SpectrogramConfig {
-            fft_size: 512,
-            hop_size: 256,
-            history_length: 4,
-            use_reassignment: false,
-            zero_padding_factor: 1,
-            ..Default::default()
-        };
+        let cfg = cfg(512, 256, false);
         let update = process_sine(cfg, 440.0, 1024);
         let expected_bins = cfg.fft_size / 2 + 1;
         assert_eq!(update.points_per_column, expected_bins);
@@ -752,14 +745,7 @@ mod tests {
 
     #[test]
     fn reassigned_sentinels_for_filtered_bins() {
-        let cfg = SpectrogramConfig {
-            fft_size: 1024,
-            hop_size: 512,
-            history_length: 4,
-            use_reassignment: true,
-            zero_padding_factor: 1,
-            ..Default::default()
-        };
+        let cfg = cfg(1024, 512, true);
         let update = process_sine(cfg, 1000.0, 2048);
         let col = update.new_columns.last().unwrap();
         let pts = reassigned_points(col);

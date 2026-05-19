@@ -1,46 +1,24 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-pub mod loudness {
-    pub mod processor;
-    pub mod render;
-    pub mod state;
-    pub(crate) use state::{LoudnessProcessor, LoudnessState, widget};
+macro_rules! visual_modules {
+    ($($module:ident { $processor:ident, $state:ident }),+ $(,)?) => {
+        $(pub mod $module {
+            pub mod processor;
+            pub mod render;
+            pub mod state;
+            pub(crate) use state::{widget, $processor, $state};
+        })+
+    };
 }
 
-pub mod oscilloscope {
-    pub mod processor;
-    pub mod render;
-    pub mod state;
-    pub(crate) use state::{OscilloscopeProcessor, OscilloscopeState, widget};
-}
-
-pub mod spectrogram {
-    pub mod processor;
-    pub mod render;
-    pub mod state;
-    pub(crate) use state::{SpectrogramProcessor, SpectrogramState, widget};
-}
-
-pub mod spectrum {
-    pub mod processor;
-    pub mod render;
-    pub mod state;
-    pub(crate) use state::{SpectrumProcessor, SpectrumState, widget};
-}
-
-pub mod stereometer {
-    pub mod processor;
-    pub mod render;
-    pub mod state;
-    pub(crate) use state::{StereometerProcessor, StereometerState, widget};
-}
-
-pub mod waveform {
-    pub mod processor;
-    pub mod render;
-    pub mod state;
-    pub(crate) use state::{WaveformProcessor, WaveformState, widget};
+visual_modules! {
+    loudness { LoudnessProcessor, LoudnessState },
+    oscilloscope { OscilloscopeProcessor, OscilloscopeState },
+    spectrogram { SpectrogramProcessor, SpectrogramState },
+    spectrum { SpectrumProcessor, SpectrumState },
+    stereometer { StereometerProcessor, StereometerState },
+    waveform { WaveformProcessor, WaveformState },
 }
 
 pub mod palettes;
@@ -61,11 +39,6 @@ pub(crate) fn next_key() -> u64 {
 macro_rules! vis_processor {
     (@struct_new $name:ident, $core:ty, $config:ident) => {
         pub(crate) struct $name { inner: $core }
-        impl std::fmt::Debug for $name {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.debug_struct(stringify!($name)).finish_non_exhaustive()
-            }
-        }
         impl $name {
             pub fn new(sample_rate: f32) -> Self {
                 Self { inner: <$core>::new($config { sample_rate, ..Default::default() }) }
@@ -120,7 +93,6 @@ macro_rules! vis_processor {
 #[macro_export]
 macro_rules! visualization_widget {
     (@base $widget:ident, $state:ty, |$this:ident, $renderer:ident, $theme:ident, $bounds:ident| $draw:block) => {
-        #[derive(Debug)]
         pub(crate) struct $widget<'a> {
             state: &'a std::cell::RefCell<$state>,
         }
@@ -132,23 +104,9 @@ macro_rules! visualization_widget {
         }
 
         impl<M> iced::advanced::widget::Widget<M, iced::Theme, iced::Renderer> for $widget<'_> {
-            fn tag(&self) -> iced::advanced::widget::tree::Tag {
-                iced::advanced::widget::tree::Tag::stateless()
-            }
-
-            fn state(&self) -> iced::advanced::widget::tree::State {
-                iced::advanced::widget::tree::State::None
-            }
-
             fn size(&self) -> iced::Size<iced::Length> {
                 iced::Size::new(iced::Length::Fill, iced::Length::Fill)
             }
-
-            fn children(&self) -> Vec<iced::advanced::widget::Tree> {
-                Vec::new()
-            }
-
-            fn diff(&self, _: &mut iced::advanced::widget::Tree) {}
 
             fn layout(
                 &mut self,

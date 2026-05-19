@@ -55,18 +55,12 @@ impl WaveformSettingsPane {
     fn view(&self) -> Element<'_, Message> {
         let s = &self.settings;
         controls!(16.0;
-            slide(
-                "Scroll speed", s.scroll_speed, format!("{:.0} px/s", s.scroll_speed),
-                SCROLL_SPEED_RANGE, Message::ScrollSpeed
-            );
+            slider!("Scroll speed", s.scroll_speed, SCROLL_SPEED_RANGE, Message::ScrollSpeed, "{:.0} px/s");
             pick("Channel 1", Channel::ALL, s.channel_1, Message::Channel1);
             pick("Channel 2", Channel::ALL, s.channel_2, Message::Channel2);
             pick("Color mode", WaveformColorMode::ALL, s.color_mode, Message::ColorMode);
             toggle("Peak history", s.show_peak_history, Message::ShowPeakHistory);
-            slide(
-                "Peak range", s.band_db_floor, format!("{:.0} dB", s.band_db_floor),
-                BAND_DB_FLOOR_RANGE, Message::BandDbFloor
-            );
+            slider!("Peak range", s.band_db_floor, BAND_DB_FLOOR_RANGE, Message::BandDbFloor, "{:.0} dB");
             super::palette_section(&self.palette, Message::Palette);
         )
         .into()
