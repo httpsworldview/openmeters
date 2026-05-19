@@ -5,7 +5,7 @@ edition = "2024"
 license = "GPL-3.0-or-later"
 
 [dependencies]
-pipewire = "0.9.2"
+pipewire = "0.10.0"
 anyhow = "1.0.102"
 serde_json = "1.0.149"
 async-channel = "2.5"

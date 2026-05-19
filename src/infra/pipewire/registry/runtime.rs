@@ -271,7 +271,7 @@ fn registry_thread_main(runtime: RegistryRuntime) -> Result<()> {
             break;
         }
 
-        let result = loop_ref.iterate(Duration::from_millis(50));
+        let result = loop_ref.iterate(pw::loop_::Timeout::Finite(Duration::from_millis(50)));
         if result >= 0 {
             if consecutive_errors > 0 {
                 info!(
