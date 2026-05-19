@@ -490,6 +490,7 @@ struct Resources {
     uniform_cache: Uniforms,
     palette_cache: [[f32; 4]; SPECTROGRAM_PALETTE_SIZE],
     ring: ColumnRing,
+    classic_upload_scratch: Vec<u16>,
 }
 
 impl Resources {
@@ -528,6 +529,7 @@ impl Resources {
             uniform_cache: Uniforms::zeroed(),
             palette_cache: [[0.0; 4]; SPECTROGRAM_PALETTE_SIZE],
             ring,
+            classic_upload_scratch: Vec::new(),
         }
     }
 
@@ -599,10 +601,11 @@ impl Resources {
         self.ring = new_ring;
     }
 
-    fn upload_pending(&self, queue: &wgpu::Queue, p: &SpectrogramParams) {
+    fn upload_pending(&mut self, queue: &wgpu::Queue, p: &SpectrogramParams) {
         let stride = col_byte_stride(p.col_kind, p.points_per_column);
+        let ring_buf = &self.ring.buf;
         let write = |slot: u32, data: &[u8]| {
-            queue.write_buffer(&self.ring.buf, slot as u64 * stride, data);
+            queue.write_buffer(ring_buf, slot as u64 * stride, data);
         };
         match p.col_kind {
             ColumnKind::Reassigned => {
@@ -615,19 +618,22 @@ impl Resources {
                 }
             }
             ColumnKind::Classic => {
-                // Trailing u16 (for odd bin counts) stays zero: vec![0; _] inits it
-                // once and nothing ever writes there.
                 let u16_stride = (stride / 2) as usize;
-                let mut packed = vec![0u16; u16_stride];
+                self.classic_upload_scratch.resize(u16_stride, 0);
+                let packed = &mut self.classic_upload_scratch;
                 let inv_range = 65535.0 / DB_STORE_RANGE;
                 for upload in &p.pending_uploads {
                     if let PendingUpload::Classic { slot, mags } = upload
                         && !mags.is_empty()
                     {
-                        for (i, &db) in mags.iter().enumerate().take(u16_stride) {
+                        let written = mags.len().min(u16_stride);
+                        for (i, &db) in mags.iter().take(written).enumerate() {
                             packed[i] = ((db - DB_STORE_LO) * inv_range).clamp(0.0, 65535.0) as u16;
                         }
-                        write(*slot, bytemuck::cast_slice(&packed));
+                        if written < u16_stride {
+                            packed[written..].fill(0);
+                        }
+                        write(*slot, bytemuck::cast_slice(packed));
                     }
                 }
             }

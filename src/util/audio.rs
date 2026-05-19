@@ -210,18 +210,40 @@ pub fn apply_window(buffer: &mut [f32], window: &[f32]) {
     }
 }
 
-pub fn remove_dc(buffer: &mut [f32]) {
-    if buffer.is_empty() {
+/// Copies the front of `src` into `dst` and removes the copied window's DC offset.
+#[inline]
+pub fn copy_dc_removed_from_deque(dst: &mut [f32], src: &VecDeque<f32>) {
+    debug_assert!(dst.len() <= src.len());
+    if dst.is_empty() {
         return;
     }
 
-    let mean = buffer.iter().sum::<f32>() / buffer.len() as f32;
-    if mean.abs() <= f32::EPSILON {
-        return;
-    }
+    let len = dst.len();
+    let (head, tail) = src.as_slices();
+    let sum = if head.len() >= len {
+        let head = &head[..len];
+        dst[..len].copy_from_slice(head);
+        head.iter().sum::<f32>()
+    } else {
+        let split = head.len();
+        let tail = &tail[..len - split];
+        dst[..split].copy_from_slice(head);
+        dst[split..len].copy_from_slice(tail);
+        let mut sum = 0.0;
+        for &sample in head {
+            sum += sample;
+        }
+        for &sample in tail {
+            sum += sample;
+        }
+        sum
+    };
 
-    for sample in buffer.iter_mut() {
-        *sample -= mean;
+    let mean = sum / len as f32;
+    if mean.abs() > f32::EPSILON {
+        for sample in &mut dst[..len] {
+            *sample -= mean;
+        }
     }
 }
 
@@ -239,20 +261,6 @@ pub fn hz_to_erb_rate(hz: f32) -> f32 {
 #[inline]
 pub fn erb_rate_to_hz(erb: f32) -> f32 {
     228.8 * (10.0f32.powf(erb / 21.4) - 1.0)
-}
-
-#[inline]
-pub fn copy_from_deque(dst: &mut [f32], src: &VecDeque<f32>) {
-    debug_assert!(dst.len() <= src.len());
-    let len = dst.len().min(src.len());
-    let (head, tail) = src.as_slices();
-    if head.len() >= len {
-        dst[..len].copy_from_slice(&head[..len]);
-    } else {
-        let split = head.len();
-        dst[..split].copy_from_slice(head);
-        dst[split..len].copy_from_slice(&tail[..len - split]);
-    }
 }
 
 // Maintains an interleaved rolling history, draining whole frames only.

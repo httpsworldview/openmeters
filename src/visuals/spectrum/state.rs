@@ -95,9 +95,18 @@ impl Default for SpectrumStyle {
 #[derive(Debug, Clone)]
 pub(crate) struct PeakLabel {
     text: [String; 2],
+    title_size: Size,
+    detail_size: Size,
     label_pos: [f32; 2],
     marker_pos: [f32; 2],
     opacity: f32,
+}
+
+#[derive(Debug, Clone)]
+struct PeakUpdate {
+    text: [String; 2],
+    label_pos: [f32; 2],
+    marker_pos: [f32; 2],
 }
 
 #[derive(Debug, Clone)]
@@ -205,7 +214,7 @@ impl SpectrumState {
         self.peak = None;
     }
 
-    fn build_peak(&self, pts: &[[f32; 2]], min_f: f32, max_f: f32) -> Option<PeakLabel> {
+    fn build_peak(&self, pts: &[[f32; 2]], min_f: f32, max_f: f32) -> Option<PeakUpdate> {
         let [x, y] = visible_peak(pts, &self.style).filter(|p| p[1] >= 0.08)?;
         let t = if self.style.reverse_frequency {
             1.0 - x
@@ -228,23 +237,37 @@ impl SpectrumState {
             || [freq.clone(), format!("{:.1} {unit}", m)],
             |ni| [ni.fmt_note_cents(), format!("{freq}   {:.1} {unit}", m)],
         );
-        Some(PeakLabel {
+        Some(PeakUpdate {
             text,
             label_pos: pos,
             marker_pos: pos,
-            opacity: 1.0,
         })
     }
 
-    fn fade_peak(&mut self, incoming: Option<PeakLabel>) {
+    fn fade_peak(&mut self, incoming: Option<PeakUpdate>) {
         match (incoming, &mut self.peak) {
             (Some(new), Some(p)) => {
-                p.text = new.text;
+                if p.text != new.text {
+                    let (title_size, detail_size) = measure_peak_text(&new.text);
+                    p.text = new.text;
+                    p.title_size = title_size;
+                    p.detail_size = detail_size;
+                }
                 p.label_pos = std::array::from_fn(|i| lerp(p.label_pos[i], new.label_pos[i], 0.20));
                 p.marker_pos = new.marker_pos;
                 p.opacity = (0.65 * p.opacity + 0.35).min(1.0);
             }
-            (Some(new), None) => self.peak = Some(new),
+            (Some(new), None) => {
+                let (title_size, detail_size) = measure_peak_text(&new.text);
+                self.peak = Some(PeakLabel {
+                    text: new.text,
+                    title_size,
+                    detail_size,
+                    label_pos: new.label_pos,
+                    marker_pos: new.marker_pos,
+                    opacity: 1.0,
+                });
+            }
             (None, Some(p)) => {
                 p.opacity *= 0.88;
                 if p.opacity < 0.01 {
@@ -320,8 +343,7 @@ visualization_widget!(Spectrum, SpectrumState, |this, r, th, b| {
     }
 });
 
-fn interp(bins: &[f32], mags: &[f32], t: f32) -> f32 {
-    let i = bins.partition_point(|&f| f < t);
+fn interp_at(bins: &[f32], mags: &[f32], t: f32, i: usize) -> f32 {
     if i == 0 {
         return mags.first().copied().unwrap_or(0.0);
     }
@@ -370,15 +392,20 @@ fn build_points(
     let dr = (style.max_db - style.min_db).max(EPSILON);
     let denom = res.saturating_sub(1).max(1) as f32;
     let y = |m: f32| ((m - style.min_db) / dr).clamp(0.0, 1.0);
-    (0..res)
-        .map(|i| {
-            let t = i as f32 / denom;
-            let f = style.frequency_scale.freq_at(min_f, max_f, t);
-            let mw = y(interp(bins, db, f));
-            let mu = y(interp(bins, raw, f));
-            ([t, mw], [t, mu])
-        })
-        .unzip()
+    let (mut weighted, mut unweighted) = (Vec::with_capacity(res), Vec::with_capacity(res));
+    let mut bin = 0;
+
+    for i in 0..res {
+        let t = i as f32 / denom;
+        let f = style.frequency_scale.freq_at(min_f, max_f, t);
+        while bin < bins.len() && bins[bin] < f {
+            bin += 1;
+        }
+        weighted.push([t, y(interp_at(bins, db, f, bin))]);
+        unweighted.push([t, y(interp_at(bins, raw, f, bin))]);
+    }
+
+    (weighted, unweighted)
 }
 
 fn smooth(pts: &mut [[f32; 2]], r: usize, passes: usize, scratch: &mut Vec<f32>) {
@@ -512,6 +539,10 @@ struct PeakLayout {
     leader_anchor: Point,
 }
 
+fn measure_peak_text(text: &[String; 2]) -> (Size, Size) {
+    (measure_text(&text[0], 12.0), measure_text(&text[1], 10.0))
+}
+
 fn point_to_normalized(b: Rectangle, p: Point) -> [f32; 2] {
     [(p.x - b.x) / b.width, 1.0 - (p.y - b.y) / b.height]
 }
@@ -520,8 +551,7 @@ fn peak_label_layout(b: Rectangle, pk: &PeakLabel) -> Option<PeakLayout> {
     if pk.opacity < 0.01 || b.width < 8.0 || b.height < 8.0 {
         return None;
     }
-    let title = measure_text(&pk.text[0], 12.0);
-    let detail = measure_text(&pk.text[1], 10.0);
+    let (title, detail) = (pk.title_size, pk.detail_size);
     let [px, py] = pk.label_pos;
     let p = Point::new(b.x + b.width * px, b.y + b.height * (1.0 - py));
     let (w, h) = (

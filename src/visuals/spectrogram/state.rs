@@ -699,18 +699,16 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
             iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Middle)) => {
                 st.drag = None;
             }
-            iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
-                if st.cursor.is_some_and(|p| b.contains(p)) {
+            iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
+                if st.cursor.is_some_and(|p| b.contains(p)) => {
                     st.left_held = true;
                     shell.request_redraw();
                 }
-            }
-            iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
-                if st.left_held {
+            iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
+                if st.left_held => {
                     st.left_held = false;
                     shell.request_redraw();
                 }
-            }
             _ => {}
         }
     }

@@ -405,10 +405,8 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for GradientBar<'_> {
                     shell.capture_event();
                 }
             }
-            mouse::Event::ButtonReleased(mouse::Button::Left) => {
-                if st.dragging.take().is_some() {
-                    shell.capture_event();
-                }
+            mouse::Event::ButtonReleased(mouse::Button::Left) if st.dragging.take().is_some() => {
+                shell.capture_event();
             }
             mouse::Event::WheelScrolled { delta } => {
                 if let Some(pos) = cursor.position().filter(|p| bounds.contains(*p))

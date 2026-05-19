@@ -24,7 +24,7 @@
 use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::util::audio::{
     DB_FLOOR, DEFAULT_SAMPLE_RATE, FrequencyScale, LN_TO_DB, WindowKind,
-    compute_fft_bin_normalization, copy_from_deque, db_to_power, mixdown_into_deque, remove_dc,
+    compute_fft_bin_normalization, copy_dc_removed_from_deque, db_to_power, mixdown_into_deque,
     window_coefficients,
 };
 use bytemuck::{Pod, Zeroable};
@@ -152,7 +152,6 @@ pub struct SpectrogramProcessor {
     reassign: ReassignmentBuffers,
     bin_norm: Vec<f32>,
     audio_buffer: VecDeque<f32>,
-    points_buf: Vec<SpectrogramPoint>,
     bin_hz: f32,
     reset: bool,
 }
@@ -181,7 +180,6 @@ impl SpectrogramProcessor {
             reassign: ReassignmentBuffers::default(),
             bin_norm: Vec::new(),
             audio_buffer: VecDeque::new(),
-            points_buf: Vec::new(),
             bin_hz: 0.0,
             reset: true,
         };
@@ -223,8 +221,6 @@ impl SpectrogramProcessor {
         self.bin_norm = compute_fft_bin_normalization(&self.window, self.fft_size);
         self.audio_buffer.truncate(hilbert_len * 2);
         self.bin_hz = self.config.sample_rate / self.fft_size.max(1) as f32;
-        self.points_buf
-            .resize(bin_count, SpectrogramPoint::SENTINEL);
     }
 
     fn process_ready_windows(&mut self) -> Vec<SpectrogramColumn> {
@@ -234,7 +230,6 @@ impl SpectrogramProcessor {
         let (hop_size, sample_rate) = (self.config.hop_size, self.config.sample_rate);
         let reassignment_enabled = self.config.use_reassignment && sample_rate > f32::EPSILON;
         let bin_count = self.fft_size / 2 + 1;
-        let mut output = Vec::new();
 
         // Don't pay the extra hilbert_len - window_size latency for
         // classic just because the buffers are allocated for both.
@@ -245,9 +240,17 @@ impl SpectrogramProcessor {
             (self.window_size, 0)
         };
 
+        let pending = self.audio_buffer.len();
+        let mut output = Vec::with_capacity(
+            pending
+                .saturating_sub(read_len)
+                .checked_div(hop_size.max(1))
+                .unwrap_or(0)
+                + usize::from(pending >= read_len),
+        );
+
         while self.audio_buffer.len() >= read_len {
-            copy_from_deque(&mut self.real[..read_len], &self.audio_buffer);
-            remove_dc(&mut self.real[..read_len]);
+            copy_dc_removed_from_deque(&mut self.real[..read_len], &self.audio_buffer);
 
             let center = &self.real[center_offset..center_offset + self.window_size];
 
@@ -279,8 +282,9 @@ impl SpectrogramProcessor {
                         &mut self.scratch,
                     );
                 }
-                self.emit_reassigned_points(sample_rate, hop_size, bin_count);
-                SpectrogramColumn::Reassigned(self.points_buf.clone())
+                SpectrogramColumn::Reassigned(
+                    self.reassigned_points(sample_rate, hop_size, bin_count),
+                )
             } else {
                 for (c, (&sample, &weight)) in self
                     .complex_buf
@@ -292,9 +296,11 @@ impl SpectrogramProcessor {
                 self.complex_buf[self.window_size..].fill(Complex32::ZERO);
                 self.fft
                     .process_with_scratch(&mut self.complex_buf, &mut self.scratch);
-                self.spectrum
-                    .copy_from_slice(&self.complex_buf[..bin_count]);
-                self.compute_standard_magnitudes(bin_count);
+                Self::compute_standard_magnitudes(
+                    &self.complex_buf[..bin_count],
+                    &self.bin_norm,
+                    &mut self.magnitudes,
+                );
                 SpectrogramColumn::Classic(self.magnitudes[..bin_count].to_vec())
             };
 
@@ -305,11 +311,14 @@ impl SpectrogramProcessor {
         output
     }
 
-    fn compute_standard_magnitudes(&mut self, bin_count: usize) {
-        for i in 0..bin_count {
-            let c = self.spectrum[i];
-            let power = (c.re * c.re + c.im * c.im) * self.bin_norm[i];
-            self.magnitudes[i] = if power > 1.0e-20 {
+    fn compute_standard_magnitudes(
+        spectrum: &[Complex32],
+        bin_norm: &[f32],
+        magnitudes: &mut [f32],
+    ) {
+        for (i, c) in spectrum.iter().enumerate() {
+            let power = (c.re * c.re + c.im * c.im) * bin_norm[i];
+            magnitudes[i] = if power > 1.0e-20 {
                 (power.ln() * LN_TO_DB).max(DB_FLOOR)
             } else {
                 DB_FLOOR
@@ -317,14 +326,20 @@ impl SpectrogramProcessor {
         }
     }
 
-    fn emit_reassigned_points(&mut self, sample_rate: f32, hop_size: usize, bin_count: usize) {
+    fn reassigned_points(
+        &self,
+        sample_rate: f32,
+        hop_size: usize,
+        bin_count: usize,
+    ) -> Vec<SpectrogramPoint> {
         let bin_hz = self.bin_hz;
         let max_hz = sample_rate * 0.5;
         let floor_linear = self.reassign.floor_linear;
         let inv_2pi = sample_rate / core::f32::consts::TAU;
         let inv_hop = 1.0 / hop_size.max(1) as f32;
+        let mut points = vec![SpectrogramPoint::SENTINEL; bin_count];
 
-        for i in 0..bin_count {
+        for (i, point) in points.iter_mut().enumerate() {
             let base = self.spectrum[i];
             let d = self.reassign.derivative_spectrum[i];
             let t = self.reassign.time_weighted_spectrum[i];
@@ -339,20 +354,20 @@ impl SpectrogramProcessor {
                 * LN_TO_DB)
                 .max(DB_FLOOR);
 
-            self.points_buf[i] = if pow >= floor_linear
+            if pow >= floor_linear
                 && energy_scale > 0.0
                 && freq_hz > 0.0
                 && max_hz - freq_hz > 0.0
             {
-                SpectrogramPoint {
+                *point = SpectrogramPoint {
                     time_offset,
                     freq_hz,
                     magnitude_db,
-                }
-            } else {
-                SpectrogramPoint::SENTINEL
-            };
+                };
+            }
         }
+
+        points
     }
 }
 
