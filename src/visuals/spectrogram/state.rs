@@ -12,7 +12,7 @@ use super::render::{
 use crate::persistence::settings::PianoRollOverlay;
 use crate::ui::theme::BORDER_SUBTLE;
 use crate::util::audio::musical::{MusicalNote, NoteInfo};
-use crate::util::audio::{DB_FLOOR, DEFAULT_SAMPLE_RATE, FrequencyScale, fmt_duration, fmt_freq};
+use crate::util::audio::{DB_FLOOR, FrequencyScale, fmt_duration, fmt_freq};
 use crate::util::color::{color_to_rgba, lerp_color, rgba_with_alpha, with_alpha};
 use crate::vis_processor;
 use crate::visuals::palettes;
@@ -110,6 +110,7 @@ pub(crate) struct SpectrogramState {
 
 impl SpectrogramState {
     pub fn new() -> Self {
+        let cfg = SpectrogramConfig::default();
         Self {
             style: SpectrogramStyle::default(),
             palette: palettes::spectrogram::COLORS,
@@ -118,10 +119,10 @@ impl SpectrogramState {
             key: crate::visuals::next_key(),
             piano_roll_overlay: PianoRollOverlay::Off,
             rotation: 0,
-            sample_rate: DEFAULT_SAMPLE_RATE,
-            fft_size: 4096,
-            hop_size: 1024,
-            freq_scale: FrequencyScale::default(),
+            sample_rate: cfg.sample_rate,
+            fft_size: cfg.fft_size * cfg.zero_padding_factor.max(1),
+            hop_size: cfg.hop_size,
+            freq_scale: cfg.frequency_scale,
             col_kind: ColumnKind::Reassigned,
             zoom: 1.0,
             pan: 0.5,
