@@ -368,7 +368,14 @@ mod tests {
     #[test]
     fn sample_format_conversion() {
         let s16 = [0x00_u8, 0x80, 0xFF, 0x7F];
-        assert_sample(&s16, Fmt::S16LE, 2, 0, i16::MIN as f32 / i16::MAX as f32, 1e-5);
+        assert_sample(
+            &s16,
+            Fmt::S16LE,
+            2,
+            0,
+            i16::MIN as f32 / i16::MAX as f32,
+            1e-5,
+        );
         assert_sample(&s16, Fmt::S16LE, 2, 1, 1.0, f32::EPSILON);
 
         let val: f32 = 0.123_456_78;

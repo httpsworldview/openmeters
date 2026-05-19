@@ -2246,7 +2246,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "wayland-client",
- "wide",
 ]
 
 [[package]]
@@ -2691,15 +2690,6 @@ name = "rustversion"
 version = "1.0.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
-
-[[package]]
-name = "safe_arch"
-version = "1.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f7caad094bd561859bcd467734a720c3c1f5d1f338995351fefe2190c45efed"
-dependencies = [
- "bytemuck",
-]
 
 [[package]]
 name = "same-file"
@@ -3842,16 +3832,6 @@ dependencies = [
  "log",
  "thiserror 2.0.18",
  "web-sys",
-]
-
-[[package]]
-name = "wide"
-version = "1.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9a7714cd0430a663154667c74da5d09325c2387695bee18b3f7f72825aa3693a"
-dependencies = [
- "bytemuck",
- "safe_arch",
 ]
 
 [[package]]

@@ -32,7 +32,6 @@ use rustfft::num_complex::Complex32;
 use rustfft::{Fft, FftPlanner};
 use std::collections::VecDeque;
 use std::sync::Arc;
-use wide::{CmpGe, CmpGt, f32x8};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq)]
@@ -71,11 +70,11 @@ impl Default for SpectrogramConfig {
             sample_rate: DEFAULT_SAMPLE_RATE,
             fft_size: DEFAULT_SPECTROGRAM_FFT_SIZE,
             hop_size: DEFAULT_SPECTROGRAM_HOP_SIZE,
-            window: WindowKind::Blackman,
+            window: WindowKind::Hann,
             frequency_scale: FrequencyScale::default(),
             history_length: 0,
             use_reassignment: true,
-            zero_padding_factor: 2,
+            zero_padding_factor: 1,
         }
     }
 }
@@ -139,15 +138,14 @@ pub struct SpectrogramProcessor {
     config: SpectrogramConfig,
     planner: FftPlanner<f32>,
     fft: Arc<dyn Fft<f32>>,
-    ifft: Arc<dyn Fft<f32>>,
     hilbert_fft: Arc<dyn Fft<f32>>,
     hilbert_ifft: Arc<dyn Fft<f32>>,
-    hilbert_buf: Vec<Complex32>,
     window_size: usize,
     fft_size: usize,
     window: Arc<[f32]>,
     real: Vec<f32>,
     complex_buf: Vec<Complex32>,
+    hilbert_buf: Vec<Complex32>,
     spectrum: Vec<Complex32>,
     scratch: Vec<Complex32>,
     magnitudes: Vec<f32>,
@@ -169,15 +167,14 @@ impl SpectrogramProcessor {
             config: cfg,
             planner,
             fft: placeholder_fft.clone(),
-            ifft: placeholder_ifft.clone(),
             hilbert_fft: placeholder_fft,
             hilbert_ifft: placeholder_ifft,
-            hilbert_buf: Vec::new(),
             window_size: 0,
             fft_size: 0,
             window: Arc::from([]),
             real: Vec::new(),
             complex_buf: Vec::new(),
+            hilbert_buf: Vec::new(),
             spectrum: Vec::new(),
             scratch: Vec::new(),
             magnitudes: Vec::new(),
@@ -205,7 +202,6 @@ impl SpectrogramProcessor {
         self.fft_size = self.window_size * self.config.zero_padding_factor.max(1);
         let hilbert_len = Self::hilbert_len_for(self.window_size);
         self.fft = self.planner.plan_fft_forward(self.fft_size);
-        self.ifft = self.planner.plan_fft_inverse(self.fft_size);
         self.hilbert_fft = self.planner.plan_fft_forward(hilbert_len);
         self.hilbert_ifft = self.planner.plan_fft_inverse(hilbert_len);
         self.window = window_coefficients(self.config.window, self.window_size);
@@ -217,7 +213,6 @@ impl SpectrogramProcessor {
         self.scratch.resize(
             self.fft
                 .get_inplace_scratch_len()
-                .max(self.ifft.get_inplace_scratch_len())
                 .max(self.hilbert_fft.get_inplace_scratch_len())
                 .max(self.hilbert_ifft.get_inplace_scratch_len()),
             Complex32::ZERO,
@@ -257,6 +252,8 @@ impl SpectrogramProcessor {
             let center = &self.real[center_offset..center_offset + self.window_size];
 
             let col = if reassignment_enabled {
+                // Use an analytic signal so low-frequency bins are not polluted
+                // by the negative-frequency mirror of the windowed real signal.
                 hilbert_transform(
                     &self.real[..read_len],
                     &mut self.hilbert_buf,
@@ -285,12 +282,12 @@ impl SpectrogramProcessor {
                 self.emit_reassigned_points(sample_rate, hop_size, bin_count);
                 SpectrogramColumn::Reassigned(self.points_buf.clone())
             } else {
-                for (c, (&r, &w)) in self
+                for (c, (&sample, &weight)) in self
                     .complex_buf
                     .iter_mut()
                     .zip(center.iter().zip(self.window.iter()))
                 {
-                    *c = Complex32::new(r * w, 0.0);
+                    *c = Complex32::new(sample * weight, 0.0);
                 }
                 self.complex_buf[self.window_size..].fill(Complex32::ZERO);
                 self.fft
@@ -309,20 +306,14 @@ impl SpectrogramProcessor {
     }
 
     fn compute_standard_magnitudes(&mut self, bin_count: usize) {
-        let v_floor = f32x8::splat(DB_FLOOR);
-        let v_ln_to_db = f32x8::splat(LN_TO_DB);
-        let v_eps = f32x8::splat(1.0e-20);
-
-        for chunk in 0..bin_count.div_ceil(8) {
-            let off = chunk * 8;
-            let (re, im) = load_complex_simd(&self.spectrum, off);
-            let norm = load_f32_simd(&self.bin_norm, off);
-            let power = (re * re + im * im) * norm;
-            let valid = power.simd_gt(v_eps);
-            let db = (power.max(v_eps).ln() * v_ln_to_db).max(v_floor);
-            let result = valid.blend(db, v_floor).to_array();
-            let count = (bin_count.saturating_sub(off)).min(8);
-            self.magnitudes[off..off + count].copy_from_slice(&result[..count]);
+        for i in 0..bin_count {
+            let c = self.spectrum[i];
+            let power = (c.re * c.re + c.im * c.im) * self.bin_norm[i];
+            self.magnitudes[i] = if power > 1.0e-20 {
+                (power.ln() * LN_TO_DB).max(DB_FLOOR)
+            } else {
+                DB_FLOOR
+            };
         }
     }
 
@@ -333,56 +324,34 @@ impl SpectrogramProcessor {
         let inv_2pi = sample_rate / core::f32::consts::TAU;
         let inv_hop = 1.0 / hop_size.max(1) as f32;
 
-        let v_eps = f32x8::splat(f32::MIN_POSITIVE);
-        let v_floor = f32x8::splat(floor_linear);
-        let v_bin_hz = f32x8::splat(bin_hz);
-        let v_inv_2pi = f32x8::splat(inv_2pi);
-        let v_max_hz = f32x8::splat(max_hz);
-        let v_inv_hop = f32x8::splat(inv_hop);
-        let v_db_floor = f32x8::splat(DB_FLOOR);
-        let v_ln_to_db = f32x8::splat(LN_TO_DB);
-        let v_zero = f32x8::splat(0.0);
+        for i in 0..bin_count {
+            let base = self.spectrum[i];
+            let d = self.reassign.derivative_spectrum[i];
+            let t = self.reassign.time_weighted_spectrum[i];
+            let energy_scale = self.bin_norm[i];
+            let pow = base.re * base.re + base.im * base.im;
+            let inv_pow = 1.0 / pow.max(f32::MIN_POSITIVE);
+            let d_omega = -(d.im * base.re - d.re * base.im) * inv_pow;
+            let freq_hz = i as f32 * bin_hz + d_omega * inv_2pi;
+            let time_offset = (t.re * base.re + t.im * base.im) * inv_pow * inv_hop;
+            let magnitude_db = ((pow.max(f32::MIN_POSITIVE) * energy_scale.max(f32::MIN_POSITIVE))
+                .ln()
+                * LN_TO_DB)
+                .max(DB_FLOOR);
 
-        for chunk in 0..bin_count.div_ceil(8) {
-            let off = chunk * 8;
-            let k_idx = f32x8::new(std::array::from_fn(|j| (off + j) as f32));
-
-            let (base_re, base_im) = load_complex_simd(&self.spectrum, off);
-            let (d_re, d_im) = load_complex_simd(&self.reassign.derivative_spectrum, off);
-            let (t_re, t_im) = load_complex_simd(&self.reassign.time_weighted_spectrum, off);
-            let energy_scale = load_f32_simd(&self.bin_norm, off);
-
-            let pow = base_re * base_re + base_im * base_im;
-            let mask = pow.simd_ge(v_floor) & energy_scale.simd_gt(v_zero);
-
-            let inv_pow = f32x8::splat(1.0) / pow.max(v_eps);
-            let d_omega = -(d_im * base_re - d_re * base_im) * inv_pow;
-            let freq = k_idx.mul_add(v_bin_hz, d_omega * v_inv_2pi);
-            // The point of reassignment is to resolve below the bin
-            // grid, so no artificial floor.
-            let final_mask = mask & freq.simd_gt(v_zero) & (v_max_hz - freq).simd_gt(v_zero);
-
-            let time_offset = (t_re * base_re + t_im * base_im) * inv_pow * v_inv_hop;
-            let mag_db = (pow.max(v_eps) * energy_scale.max(v_eps)).ln() * v_ln_to_db;
-            let mag_db = mag_db.max(v_db_floor);
-
-            let freqs = freq.to_array();
-            let times = time_offset.to_array();
-            let mags = mag_db.to_array();
-            let masks = final_mask.blend(f32x8::splat(1.0), v_zero).to_array();
-
-            let count = (bin_count.saturating_sub(off)).min(8);
-            for i in 0..count {
-                self.points_buf[off + i] = if masks[i] != 0.0 {
-                    SpectrogramPoint {
-                        time_offset: times[i],
-                        freq_hz: freqs[i],
-                        magnitude_db: mags[i],
-                    }
-                } else {
-                    SpectrogramPoint::SENTINEL
-                };
-            }
+            self.points_buf[i] = if pow >= floor_linear
+                && energy_scale > 0.0
+                && freq_hz > 0.0
+                && max_hz - freq_hz > 0.0
+            {
+                SpectrogramPoint {
+                    time_offset,
+                    freq_hz,
+                    magnitude_db,
+                }
+            } else {
+                SpectrogramPoint::SENTINEL
+            };
         }
     }
 }
@@ -558,24 +527,6 @@ fn compute_sigma_t(window: &[f32]) -> f32 {
     }
 }
 
-#[inline]
-fn load_f32_simd(data: &[f32], off: usize) -> f32x8 {
-    let mut lanes = [0.0; 8];
-    let count = (data.len().saturating_sub(off)).min(8);
-    lanes[..count].copy_from_slice(&data[off..off + count]);
-    f32x8::new(lanes)
-}
-
-#[inline]
-fn load_complex_simd(data: &[Complex32], off: usize) -> (f32x8, f32x8) {
-    let (mut re, mut im) = ([0.0; 8], [0.0; 8]);
-    for (i, c) in data[off..].iter().take(8).enumerate() {
-        re[i] = c.re;
-        im[i] = c.im;
-    }
-    (f32x8::new(re), f32x8::new(im))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -691,25 +642,27 @@ mod tests {
     #[test]
     fn reassignment_2d_with_group_delay() {
         let cfg = cfg(2048, 512, true);
-        let freq = 50.3 * cfg.sample_rate / 2048.0;
-        let update = process_sine(cfg, freq, 4096);
-        let col = update.new_columns.last().unwrap();
-        let pts = reassigned_points(col);
-        let (_, peak_db) = find_peak_point(pts);
-        let peak_pt = pts
-            .iter()
-            .filter(|p| p.magnitude_db > DB_FLOOR)
-            .max_by(|a, b| a.magnitude_db.total_cmp(&b.magnitude_db))
-            .expect("expected non-sentinel point");
-        assert!(
-            (peak_pt.freq_hz - freq).abs() < 2.0,
-            "reassigned freq {:.4} vs expected {freq:.4}",
-            peak_pt.freq_hz
-        );
-        assert!(
-            peak_db > DB_FLOOR,
-            "peak dB = {peak_db:.6}, expected above floor"
-        );
+        for bin in [3.4, 10.25, 50.3, 200.75, 800.4] {
+            let freq = bin * cfg.sample_rate / 2048.0;
+            let update = process_sine(cfg, freq, 4096);
+            let col = update.new_columns.last().unwrap();
+            let pts = reassigned_points(col);
+            let (_, peak_db) = find_peak_point(pts);
+            let peak_pt = pts
+                .iter()
+                .filter(|p| p.magnitude_db > DB_FLOOR)
+                .max_by(|a, b| a.magnitude_db.total_cmp(&b.magnitude_db))
+                .expect("expected non-sentinel point");
+            assert!(
+                (peak_pt.freq_hz - freq).abs() < 2.0,
+                "reassigned freq {:.4} vs expected {freq:.4}",
+                peak_pt.freq_hz
+            );
+            assert!(
+                peak_db > DB_FLOOR,
+                "peak dB = {peak_db:.6}, expected above floor"
+            );
+        }
     }
 
     #[test]
