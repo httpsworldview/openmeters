@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
+use super::widgets::clipped_text;
 use crate::ui::theme::{self, Palette};
 use crate::ui::widgets::scroll_glow::ScrollGlow;
 use crate::util::color::{
@@ -11,8 +12,7 @@ use iced::advanced::renderer::{self, Quad};
 use iced::advanced::widget::{Tree, tree};
 use iced::advanced::{Layout, Renderer as _, Widget, layout, mouse};
 use iced::alignment::{Horizontal, Vertical};
-use iced::widget::text::Wrapping;
-use iced::widget::{Button, Column, Row, Space, container, slider, text};
+use iced::widget::{Button, Column, Row, Space, container, slider};
 use iced::{Background, Color, Element, Length, Point, Rectangle, Size};
 
 const SWATCH_SIZE: (f32, f32) = (56.0, 28.0);
@@ -213,12 +213,10 @@ impl PaletteEditor {
             col = col.push(self.color_controls(i, c));
         }
         col.push(
-            Button::new(
-                container(text("Reset to defaults").size(12).wrapping(Wrapping::None)).clip(true),
-            )
-            .padding([6, 10])
-            .style(|t, s| theme::tab_button_style(t, false, s))
-            .on_press_maybe((!self.is_default()).then_some(PaletteEvent::Reset)),
+            Button::new(clipped_text("Reset to defaults", 12.0))
+                .padding([6, 10])
+                .style(|t, s| theme::tab_button_style(t, false, s))
+                .on_press_maybe((!self.is_default()).then_some(PaletteEvent::Reset)),
         )
         .into()
     }
@@ -231,16 +229,14 @@ impl PaletteEditor {
                 .width(Length::Shrink)
                 .spacing(4.0)
                 .align_x(Horizontal::Center)
-                .push(
-                    container(text(self.label_for(i)).size(11).wrapping(Wrapping::None)).clip(true),
-                )
+                .push(clipped_text(self.label_for(i), 11.0))
                 .push(
                     container(Space::new().width(Length::Fill).height(Length::Fill))
                         .width(Length::Fixed(w))
                         .height(Length::Fixed(h))
                         .style(move |_| swatch_style(c, active)),
                 )
-                .push(container(text(to_hex(c)).size(11).wrapping(Wrapping::None)).clip(true)),
+                .push(clipped_text(to_hex(c), 11.0)),
         )
         .padding([6, 8])
         .style(|t, s| theme::tab_button_style(t, false, s))
@@ -252,10 +248,10 @@ impl PaletteEditor {
         let header = Row::new()
             .spacing(8.0)
             .align_y(Vertical::Center)
-            .push(container(text(self.label_for(i)).size(12).wrapping(Wrapping::None)).clip(true))
+            .push(clipped_text(self.label_for(i), 12.0))
             .push(Space::new().width(Length::Fill).height(Length::Shrink))
             .push(
-                Button::new(container(text("Done").size(12).wrapping(Wrapping::None)).clip(true))
+                Button::new(clipped_text("Done", 12.0))
                     .padding([6, 10])
                     .style(|t, s| theme::tab_button_style(t, false, s))
                     .on_press(PaletteEvent::Close),
@@ -551,11 +547,7 @@ fn channel_slider<'a>(
     Row::new()
         .spacing(8.0)
         .align_y(Vertical::Center)
-        .push(
-            container(text(lbl).size(12).wrapping(Wrapping::None))
-                .width(Length::Fixed(32.0))
-                .clip(true),
-        )
+        .push(clipped_text(lbl, 12.0).width(Length::Fixed(32.0)))
         .push(
             slider::Slider::new(0.0..=1.0, val, move |nv| {
                 let nv = if ch == 3 && nv < 0.005 { 0.0 } else { nv };
@@ -572,5 +564,5 @@ fn channel_slider<'a>(
             .style(theme::slider_style)
             .width(Length::Fill),
         )
-        .push(container(text(display).size(12).wrapping(Wrapping::None)).clip(true))
+        .push(clipped_text(display, 12.0))
 }

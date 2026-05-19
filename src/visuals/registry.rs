@@ -49,10 +49,10 @@ macro_rules! visuals {
        apply($ap:ident, $as:ident, $aset:ident) $apply_body:expr;
        export($ep:ident, $es:ident) $export_body:expr;
     )*) => {
-        #[derive(Debug, Clone)]
+        #[derive(Clone)]
         pub struct VisualContent(VisualContentInner);
 
-        #[derive(Debug, Clone)]
+        #[derive(Clone)]
         enum VisualContentInner {
             $($variant(Shared<$module::$state>)),*
         }
@@ -291,12 +291,12 @@ impl Entry {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct VisualSnapshot {
     pub slots: Vec<VisualSlotSnapshot>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct VisualSlotSnapshot {
     pub id: VisualId,
     pub kind: VisualKind,
@@ -432,11 +432,5 @@ impl VisualManagerHandle {
     }
     pub fn snapshot(&self) -> VisualSnapshot {
         self.0.borrow().snapshot()
-    }
-}
-impl std::fmt::Debug for VisualManagerHandle {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("VisualManagerHandle")
-            .finish_non_exhaustive()
     }
 }

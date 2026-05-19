@@ -47,25 +47,21 @@ impl OscilloscopeSettingsPane {
         );
 
         if let TriggerMode::Stable { num_cycles } = self.settings.trigger_mode {
-            content = content.push(slide(
+            content = content.push(slider!(
                 "Cycles",
                 num_cycles as f32,
-                num_cycles.to_string(),
                 NUM_CYCLES_RANGE,
                 |v| Message::NumCycles(v as usize),
+                num_cycles.to_string()
             ));
         }
 
         controls!(content;
-            slide(
-                dur_label, self.settings.segment_duration,
-                format!("{:.1} ms", self.settings.segment_duration * 1000.0),
-                SEGMENT_DURATION_RANGE, Message::SegmentDuration
+            slider!(
+                dur_label, self.settings.segment_duration, SEGMENT_DURATION_RANGE,
+                Message::SegmentDuration, format!("{:.1} ms", self.settings.segment_duration * 1000.0)
             );
-            slide(
-                "Persistence", self.settings.persistence, format!("{:.2}", self.settings.persistence),
-                PERSISTENCE_RANGE, Message::Persistence
-            );
+            slider!("Persistence", self.settings.persistence, PERSISTENCE_RANGE, Message::Persistence, "{:.2}");
             super::palette_section(&self.palette, Message::Palette);
         )
         .into()

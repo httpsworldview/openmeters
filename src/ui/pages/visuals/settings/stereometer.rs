@@ -56,29 +56,28 @@ impl StereometerSettingsPane {
         ]
         .spacing(16);
         let mut core = controls!(iced::widget::Column::new().spacing(8.0).push(picks);
-            slide(
-                "Segment duration", s.segment_duration,
-                format!("{:.1} ms", s.segment_duration * 1000.0), SEGMENT_DURATION_RANGE,
-                SegmentDuration
+            slider!(
+                "Segment duration", s.segment_duration, SEGMENT_DURATION_RANGE, SegmentDuration,
+                format!("{:.1} ms", s.segment_duration * 1000.0)
             );
-            slide(
-                "Sample count", s.target_sample_count as f32, s.target_sample_count.to_string(),
-                TARGET_SAMPLE_COUNT_RANGE, TargetSampleCount
+            slider!(
+                "Sample count", s.target_sample_count as f32, TARGET_SAMPLE_COUNT_RANGE,
+                TargetSampleCount, s.target_sample_count.to_string()
             );
         );
         if s.scale == StereometerScale::Exponential {
             core = controls!(core;
-                slide("Scale range", s.scale_range, format!("{:.1}", s.scale_range), SCALE_RANGE, ScaleRange);
+                slider!("Scale range", s.scale_range, SCALE_RANGE, ScaleRange, "{:.1}");
             );
         }
         let mut display = controls!(8.0;
-            slide("Rotation", s.rotation as f32, s.rotation.to_string(), ROTATION_RANGE, Rotation);
-            slide("Persistence", s.persistence, format!("{:.2}", s.persistence), PERSISTENCE_RANGE, Persistence);
+            slider!("Rotation", s.rotation as f32, ROTATION_RANGE, Rotation, s.rotation.to_string());
+            slider!("Persistence", s.persistence, PERSISTENCE_RANGE, Persistence, "{:.2}");
             toggle("Flip", s.flip, Flip);
         );
         if s.mode == StereometerMode::DotCloud || s.mode == StereometerMode::DotCloudBands {
             display = controls!(display;
-                slide("Dot size", s.dot_radius, format!("{:.1}px", s.dot_radius), DOT_RADIUS_RANGE, DotRadius);
+                slider!("Dot size", s.dot_radius, DOT_RADIUS_RANGE, DotRadius, "{:.1}px");
             );
         }
 
@@ -107,10 +106,9 @@ impl StereometerSettingsPane {
         let mut correlation = column![corr_picks].spacing(8);
         if corr_active {
             correlation = controls!(correlation;
-                slide(
-                    "Window", s.correlation_window,
-                    format!("{:.0} ms", s.correlation_window * 1000.0), CORRELATION_WINDOW_RANGE,
-                    CorrelationWindow
+                slider!(
+                    "Window", s.correlation_window, CORRELATION_WINDOW_RANGE, CorrelationWindow,
+                    format!("{:.0} ms", s.correlation_window * 1000.0)
                 );
             );
         }

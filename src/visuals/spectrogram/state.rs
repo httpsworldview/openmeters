@@ -81,7 +81,6 @@ impl Default for SpectrogramStyle {
     }
 }
 
-#[derive(Debug)]
 pub(crate) struct SpectrogramState {
     pub(crate) style: SpectrogramStyle,
     pub(crate) palette: [Color; SPECTROGRAM_PALETTE_SIZE],

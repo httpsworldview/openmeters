@@ -108,7 +108,6 @@ pub fn run(config: UiConfig) -> UiResult {
     }
 }
 
-#[derive(Debug)]
 struct UiApp {
     config_page: ConfigPage,
     visuals_page: VisualsPage,

@@ -94,17 +94,24 @@ pub fn update_hop_divisor(fft_size: usize, hop_size: &mut usize, divisor: usize)
     set_if_changed(hop_size, (fft_size / divisor.max(1)).max(1))
 }
 
+pub fn clipped_text<'a, M: 'a>(
+    content: impl iced::widget::text::IntoFragment<'a>,
+    size: f32,
+) -> container::Container<'a, M> {
+    container(text(content).size(size).wrapping(Wrapping::None)).clip(true)
+}
+
 pub fn slide<'a, M: Clone + 'a>(
     label: &'static str,
     value: f32,
-    formatted: String,
+    formatted: impl Into<String>,
     range: SliderRange,
     on_change: impl Fn(f32) -> M + 'a,
 ) -> iced::widget::Column<'a, M> {
     column![
         row![
-            container(text(label).size(12).wrapping(Wrapping::None)).clip(true),
-            container(text(formatted).size(11).wrapping(Wrapping::None)).clip(true),
+            clipped_text(label, 12.0),
+            clipped_text(formatted.into(), 11.0)
         ]
         .spacing(6.0),
         slider::Slider::new(range.min..=range.max, value, on_change)
@@ -125,9 +132,7 @@ where
     M: Clone + 'a,
 {
     row![
-        container(text(label).size(12).wrapping(Wrapping::None))
-            .width(Length::Shrink)
-            .clip(true),
+        clipped_text(label, 12.0).width(Length::Shrink),
         pick_list(options.into(), Some(selected), on_select),
     ]
     .spacing(8.0)
@@ -147,5 +152,5 @@ pub fn toggle<'a, M: 'a>(
 }
 
 pub fn section<'a, M: 'a>(label: &'static str) -> container::Container<'a, M> {
-    container(text(label).size(14).wrapping(Wrapping::None)).clip(true)
+    clipped_text(label, 14.0)
 }

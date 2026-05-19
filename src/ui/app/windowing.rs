@@ -137,7 +137,6 @@ pub(super) struct BarResizeState {
     pub pending_height: u32,
 }
 
-#[derive(Debug)]
 pub(super) struct PopoutWindow {
     pub visual_id: VisualId,
     pub kind: VisualKind,

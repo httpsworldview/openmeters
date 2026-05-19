@@ -11,7 +11,6 @@ use realfft::{RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex32;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
-use std::fmt;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -318,14 +317,6 @@ impl SpectrumProcessor {
         }
 
         produced
-    }
-}
-
-impl fmt::Debug for SpectrumProcessor {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SpectrumProcessor")
-            .field("config", &self.config)
-            .finish()
     }
 }
 

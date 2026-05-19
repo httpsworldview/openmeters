@@ -77,7 +77,6 @@ pub enum ConfigMessage {
     Scrolled(ScrollGlow),
 }
 
-#[derive(Debug)]
 pub struct ConfigPage {
     routing_sender: mpsc::Sender<RoutingCommand>,
     registry_updates: Option<Arc<AsyncReceiver<RegistrySnapshot>>>,

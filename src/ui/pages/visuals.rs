@@ -27,7 +27,7 @@ pub enum VisualsMessage {
     WindowDragRequested,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct VisualPane {
     id: VisualId,
     kind: VisualKind,
@@ -52,7 +52,6 @@ impl VisualPane {
     }
 }
 
-#[derive(Debug)]
 pub struct VisualsPage {
     visual_manager: VisualManagerHandle,
     settings: SettingsHandle,

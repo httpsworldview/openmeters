@@ -77,18 +77,6 @@ struct PitchDetector {
     fft_scratch: Vec<Complex<f32>>,
 }
 
-impl std::fmt::Debug for PitchDetector {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PitchDetector")
-            .field("diff", &self.difference_function.len())
-            .field("cmean", &self.cumulative_mean_normalized.len())
-            .field("last_cmnd_min", &self.last_cmnd_min)
-            .field("fft_size", &self.fft_size)
-            .field("has_fft", &self.fft_forward.is_some())
-            .finish()
-    }
-}
-
 impl PitchDetector {
     fn new() -> Self {
         Self {
@@ -442,7 +430,7 @@ pub struct OscilloscopeSnapshot {
     pub samples_per_channel: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct OscilloscopeProcessor {
     config: OscilloscopeConfig,
     snapshot: OscilloscopeSnapshot,
@@ -776,24 +764,30 @@ mod tests {
             .collect()
     }
 
+    fn assert_detects_pitch(
+        detector: &mut PitchDetector,
+        freq: f32,
+        frames: usize,
+        max_error: f32,
+    ) {
+        let samples = sine_samples(freq, RATE, frames);
+        let detected = detector.detect_pitch(&samples, RATE).expect("pitch");
+        let error = (detected - freq).abs() / freq;
+        assert!(error < max_error, "got {detected}Hz, expected {freq}Hz");
+    }
+
     #[test]
     fn pitch_detection() {
         let mut detector = PitchDetector::new();
         for freq in [41.0, 110.0, 440.0, 1000.0, 4000.0] {
-            let samples = sine_samples(freq, RATE, (RATE * 0.1) as usize);
-            let detected = detector.detect_pitch(&samples, RATE).expect("pitch");
-            let error = (detected - freq).abs() / freq;
-            assert!(error < 0.02, "got {detected}Hz, expected {freq}Hz");
+            assert_detects_pitch(&mut detector, freq, (RATE * 0.1) as usize, 0.02);
         }
     }
 
     #[test]
     fn short_buffer_pitch_detection_uses_direct_difference() {
         let mut detector = PitchDetector::new();
-        let samples = sine_samples(1000.0, RATE, 256);
-        let detected = detector.detect_pitch(&samples, RATE).expect("pitch");
-        let error = (detected - 1000.0).abs() / 1000.0;
-        assert!(error < 0.03, "got {detected}Hz");
+        assert_detects_pitch(&mut detector, 1000.0, 256, 0.03);
     }
 
     #[test]

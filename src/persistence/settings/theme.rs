@@ -49,7 +49,6 @@ pub struct ThemeFile {
     pub palettes: HashMap<VisualKind, PaletteSettings>,
 }
 
-#[derive(Debug)]
 pub struct ThemeStore {
     dir: PathBuf,
 }

@@ -348,39 +348,33 @@ mod tests {
     use super::*;
     use spa::param::audio::AudioFormat as Fmt;
 
+    fn assert_sample(
+        bytes: &[u8],
+        fmt: Fmt,
+        expected_len: usize,
+        index: usize,
+        expected: f32,
+        eps: f32,
+    ) {
+        let out = convert_samples_to_f32(bytes, fmt).unwrap();
+        assert_eq!(out.len(), expected_len);
+        assert!(
+            (out[index] - expected).abs() < eps,
+            "{fmt:?}[{index}] = {}, expected {expected}",
+            out[index]
+        );
+    }
+
     #[test]
     fn sample_format_conversion() {
-        // S16LE: i16::MIN -> -1.0, i16::MAX -> +1.0
-        let s16_out = convert_samples_to_f32(&[0x00_u8, 0x80, 0xFF, 0x7F], Fmt::S16LE).unwrap();
-        assert_eq!(s16_out.len(), 2);
-        let expected_min = i16::MIN as f32 / i16::MAX as f32;
-        let s16_min = s16_out[0];
-        let s16_max = s16_out[1];
-        assert!(
-            (s16_min - expected_min).abs() < 1e-5,
-            "S16LE min: {s16_min} vs {expected_min}"
-        );
-        assert!((s16_max - 1.0).abs() < f32::EPSILON, "S16LE max: {s16_max}");
+        let s16 = [0x00_u8, 0x80, 0xFF, 0x7F];
+        assert_sample(&s16, Fmt::S16LE, 2, 0, i16::MIN as f32 / i16::MAX as f32, 1e-5);
+        assert_sample(&s16, Fmt::S16LE, 2, 1, 1.0, f32::EPSILON);
 
-        // F32LE: passthrough preserves exact values
         let val: f32 = 0.123_456_78;
-        let f32_out = convert_samples_to_f32(&val.to_le_bytes(), Fmt::F32LE).unwrap();
-        assert_eq!(f32_out.len(), 1);
-        let f32_result = f32_out[0];
-        assert!(
-            (f32_result - val).abs() < f32::EPSILON,
-            "F32LE passthrough: {f32_result} vs {val}"
-        );
+        assert_sample(&val.to_le_bytes(), Fmt::F32LE, 1, 0, val, f32::EPSILON);
+        assert_sample(&i32::MAX.to_le_bytes(), Fmt::S32LE, 1, 0, 1.0, f32::EPSILON);
 
-        // S32LE: verify normalization range
-        let s32_out = convert_samples_to_f32(&i32::MAX.to_le_bytes(), Fmt::S32LE).unwrap();
-        let s32_result = s32_out[0];
-        assert!(
-            (s32_result - 1.0).abs() < f32::EPSILON,
-            "S32LE max: {s32_result}"
-        );
-
-        // Unsupported format returns None; misaligned buffer returns None
         assert!(convert_samples_to_f32(&[0u8; 4], Fmt::Unknown).is_none());
         assert!(convert_samples_to_f32(&[0u8; 3], Fmt::S16LE).is_none());
     }
