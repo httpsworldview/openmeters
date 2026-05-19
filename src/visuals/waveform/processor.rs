@@ -307,19 +307,23 @@ impl WaveformProcessor {
     fn flush_ready_columns(&mut self) {
         let (max_columns, sample_count) = (self.config.max_columns, self.samples_per_column);
         let floor = self.config.band_db_floor;
-
-        while self
+        let ready_columns = self
             .sample_accumulators
-            .first()
-            .is_some_and(|acc| acc.len() >= sample_count)
-        {
+            .iter()
+            .map(|acc| acc.len() / sample_count)
+            .min()
+            .unwrap_or(0);
+
+        for column in 0..ready_columns {
+            let start = column * sample_count;
+            let end = start + sample_count;
             for (channel, (acc, analyzer)) in self
                 .sample_accumulators
                 .iter()
                 .zip(&mut self.frequency_analyzers)
                 .enumerate()
             {
-                let samples = &acc[..sample_count];
+                let samples = &acc[start..end];
                 let (clamped_min, clamped_max) = sample_extrema(samples);
                 let ring_index = channel * max_columns + self.ring_head;
 
@@ -338,8 +342,12 @@ impl WaveformProcessor {
             self.column_count = (self.column_count + 1).min(max_columns);
             self.total_columns_written = self.total_columns_written.saturating_add(1);
             self.has_pending_changes = true;
+        }
+
+        if ready_columns > 0 {
+            let drain = ready_columns * sample_count;
             for acc in &mut self.sample_accumulators {
-                acc.drain(..sample_count);
+                acc.drain(..drain);
             }
         }
     }
@@ -381,8 +389,12 @@ impl WaveformProcessor {
                     .take(lanes)
                     .zip(dst.chunks_exact_mut(visible_columns))
                 {
-                    for (col, out) in dst_lane.iter_mut().enumerate() {
-                        *out = src_lane[(start + col) % max_columns];
+                    if start == 0 {
+                        dst_lane.copy_from_slice(&src_lane[..visible_columns]);
+                    } else {
+                        let first = max_columns - start;
+                        dst_lane[..first].copy_from_slice(&src_lane[start..]);
+                        dst_lane[first..].copy_from_slice(&src_lane[..start]);
                     }
                 }
             };

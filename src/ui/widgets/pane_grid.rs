@@ -299,7 +299,7 @@ where
             .entries
             .iter_mut()
             .zip(tree.children.iter_mut())
-            .zip(widths.into_iter())
+            .zip(widths)
         {
             let pane_width = width.max(0.0);
             let limits = layout::Limits::new(

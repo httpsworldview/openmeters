@@ -4,7 +4,7 @@
 use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::util::audio::{
     DB_FLOOR, DEFAULT_SAMPLE_RATE, FrequencyScale, WindowKind, apply_window,
-    compute_fft_bin_normalization, copy_from_deque, mixdown_into_deque, power_to_db, remove_dc,
+    compute_fft_bin_normalization, copy_dc_removed_from_deque, mixdown_into_deque, power_to_db,
     window_coefficients,
 };
 use realfft::{RealFftPlanner, RealToComplex};
@@ -250,9 +250,22 @@ impl SpectrumProcessor {
         let floor = self.config.floor_db;
         let mut produced = false;
 
+        for buf in [&mut self.scratch_magnitudes, &mut self.scratch_unweighted] {
+            if buf.len() != bins {
+                buf.resize(bins, floor);
+            }
+        }
+        if self.a_weighting_db.len() != bins {
+            self.a_weighting_db = self
+                .snapshot
+                .frequency_bins
+                .iter()
+                .map(|&f| a_weight(f))
+                .collect();
+        }
+
         while self.pcm_buffer.len() >= fft_size {
-            copy_from_deque(&mut self.real_buffer[..fft_size], &self.pcm_buffer);
-            remove_dc(&mut self.real_buffer);
+            copy_dc_removed_from_deque(&mut self.real_buffer[..fft_size], &self.pcm_buffer);
             apply_window(&mut self.real_buffer, &self.window);
 
             if self
@@ -267,21 +280,16 @@ impl SpectrumProcessor {
                 return produced;
             }
 
-            self.scratch_magnitudes.resize(bins, floor);
-            self.scratch_unweighted.resize(bins, floor);
-
-            for (idx, (complex, norm)) in self
+            for (idx, ((complex, norm), &weight)) in self
                 .spectrum_buffer
                 .iter()
                 .zip(&self.bin_normalization)
+                .zip(&self.a_weighting_db)
                 .take(bins)
                 .enumerate()
             {
                 let raw_magnitude = power_to_db(complex.norm_sqr() * *norm, floor);
                 self.scratch_unweighted[idx] = raw_magnitude;
-                let weight = self.a_weighting_db.get(idx).copied().unwrap_or_else(|| {
-                    a_weight(*self.snapshot.frequency_bins.get(idx).unwrap_or(&0.0))
-                });
                 let weight = if raw_magnitude > floor { weight } else { 0.0 };
                 self.scratch_magnitudes[idx] = (raw_magnitude + weight).max(floor);
             }
