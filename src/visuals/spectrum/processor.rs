@@ -146,12 +146,8 @@ pub struct SpectrumProcessor {
     scratch_buffer: Vec<Complex32>,
     bin_normalization: Vec<f32>,
     pcm_buffer: VecDeque<f32>,
-    averaged_db: Vec<f32>,
-    peak_hold_db: Vec<f32>,
-    scratch_magnitudes: Vec<f32>,
-    averaged_unweighted_db: Vec<f32>,
-    peak_hold_unweighted_db: Vec<f32>,
-    scratch_unweighted: Vec<f32>,
+    weighted: SpectrumLevelBuffers,
+    unweighted: SpectrumLevelBuffers,
     a_weighting_db: Vec<f32>,
     last_update_at: Option<Instant>,
 }
@@ -173,12 +169,8 @@ impl SpectrumProcessor {
             scratch_buffer: Vec::new(),
             bin_normalization: Vec::new(),
             pcm_buffer: VecDeque::new(),
-            averaged_db: Vec::new(),
-            peak_hold_db: Vec::new(),
-            scratch_magnitudes: Vec::new(),
-            averaged_unweighted_db: Vec::new(),
-            peak_hold_unweighted_db: Vec::new(),
-            scratch_unweighted: Vec::new(),
+            weighted: SpectrumLevelBuffers::default(),
+            unweighted: SpectrumLevelBuffers::default(),
             a_weighting_db: Vec::new(),
             last_update_at: None,
         };
@@ -218,29 +210,10 @@ impl SpectrumProcessor {
     fn reset_level_buffers(&mut self) {
         let bins = self.config.fft_size / 2 + 1;
         let floor = self.config.floor_db;
-        for buf in [
-            &mut self.snapshot.magnitudes_db,
-            &mut self.snapshot.magnitudes_unweighted_db,
-            &mut self.averaged_db,
-            &mut self.peak_hold_db,
-            &mut self.scratch_magnitudes,
-            &mut self.averaged_unweighted_db,
-            &mut self.peak_hold_unweighted_db,
-            &mut self.scratch_unweighted,
-        ] {
-            buf.clear();
-            buf.resize(bins, floor);
-        }
-    }
-
-    fn ensure_fft(&mut self) {
-        if self.real_buffer.len() != self.config.fft_size {
-            self.rebuild_fft();
-        }
-    }
-
-    fn mixdown_into(&mut self, block: &AudioBlock<'_>) {
-        mixdown_into_deque(&mut self.pcm_buffer, block.samples, block.channels);
+        reset_to_floor(&mut self.snapshot.magnitudes_db, bins, floor);
+        reset_to_floor(&mut self.snapshot.magnitudes_unweighted_db, bins, floor);
+        self.weighted.reset(bins, floor);
+        self.unweighted.reset(bins, floor);
     }
 
     fn process_ready_windows(&mut self, timestamp: Instant) -> bool {
@@ -250,11 +223,8 @@ impl SpectrumProcessor {
         let floor = self.config.floor_db;
         let mut produced = false;
 
-        for buf in [&mut self.scratch_magnitudes, &mut self.scratch_unweighted] {
-            if buf.len() != bins {
-                buf.resize(bins, floor);
-            }
-        }
+        self.weighted.ensure_scratch(bins, floor);
+        self.unweighted.ensure_scratch(bins, floor);
         if self.a_weighting_db.len() != bins {
             self.a_weighting_db = self
                 .snapshot
@@ -289,33 +259,20 @@ impl SpectrumProcessor {
                 .enumerate()
             {
                 let raw_magnitude = power_to_db(complex.norm_sqr() * *norm, floor);
-                self.scratch_unweighted[idx] = raw_magnitude;
+                self.unweighted.scratch[idx] = raw_magnitude;
                 let weight = if raw_magnitude > floor { weight } else { 0.0 };
-                self.scratch_magnitudes[idx] = (raw_magnitude + weight).max(floor);
+                self.weighted.scratch[idx] = (raw_magnitude + weight).max(floor);
             }
 
             let dt_seconds = self.last_update_at.map_or(0.0, |last| {
                 timestamp.saturating_duration_since(last).as_secs_f32()
             });
-            averaging_update(
-                &self.config.averaging,
-                &mut self.averaged_db,
-                &mut self.peak_hold_db,
-                &mut self.snapshot.magnitudes_db,
-                &self.scratch_magnitudes,
-                dt_seconds,
-                floor,
-            );
-
-            averaging_update(
-                &self.config.averaging,
-                &mut self.averaged_unweighted_db,
-                &mut self.peak_hold_unweighted_db,
-                &mut self.snapshot.magnitudes_unweighted_db,
-                &self.scratch_unweighted,
-                dt_seconds,
-                floor,
-            );
+            for (level, output) in [
+                (&mut self.weighted, &mut self.snapshot.magnitudes_db),
+                (&mut self.unweighted, &mut self.snapshot.magnitudes_unweighted_db),
+            ] {
+                level.update_output(self.config.averaging, output, dt_seconds, floor);
+            }
 
             self.last_update_at = Some(timestamp);
 
@@ -341,8 +298,10 @@ impl AudioProcessor for SpectrumProcessor {
             self.reset_buffers();
         }
 
-        self.ensure_fft();
-        self.mixdown_into(block);
+        if self.real_buffer.len() != self.config.fft_size {
+            self.rebuild_fft();
+        }
+        mixdown_into_deque(&mut self.pcm_buffer, block.samples, block.channels);
 
         if self.process_ready_windows(block.timestamp) {
             Some(self.snapshot.clone())
@@ -372,48 +331,74 @@ impl Reconfigurable<SpectrumConfig> for SpectrumProcessor {
     }
 }
 
-fn averaging_update(
-    mode: &AveragingMode,
-    averaged_db: &mut Vec<f32>,
-    peak_hold_db: &mut Vec<f32>,
-    output: &mut Vec<f32>,
-    input: &[f32],
-    dt_seconds: f32,
-    floor: f32,
-) {
-    let bins = input.len();
+#[derive(Default)]
+struct SpectrumLevelBuffers {
+    averaged: Vec<f32>,
+    peak_hold: Vec<f32>,
+    scratch: Vec<f32>,
+}
 
-    for buf in [&mut *averaged_db, &mut *peak_hold_db, &mut *output] {
-        if buf.len() != bins {
-            buf.resize(bins, floor);
+impl SpectrumLevelBuffers {
+    fn reset(&mut self, bins: usize, floor: f32) {
+        reset_to_floor(&mut self.averaged, bins, floor);
+        reset_to_floor(&mut self.peak_hold, bins, floor);
+        reset_to_floor(&mut self.scratch, bins, floor);
+    }
+
+    fn ensure_scratch(&mut self, bins: usize, floor: f32) {
+        if self.scratch.len() != bins {
+            self.scratch.resize(bins, floor);
         }
     }
 
-    match mode {
-        AveragingMode::None => {
-            for (out, &value) in output.iter_mut().zip(input) {
-                *out = value.max(floor);
+    fn update_output(
+        &mut self,
+        mode: AveragingMode,
+        output: &mut Vec<f32>,
+        dt_seconds: f32,
+        floor: f32,
+    ) {
+        let bins = self.scratch.len();
+        for buf in [&mut self.averaged, &mut self.peak_hold, &mut *output] {
+            if buf.len() != bins {
+                buf.resize(bins, floor);
             }
         }
-        AveragingMode::Exponential { factor } => {
-            let alpha = factor.clamp(0.0, 0.9999);
-            for ((avg, out), &value) in averaged_db.iter_mut().zip(output).zip(input) {
-                *avg = if *avg <= floor + f32::EPSILON {
-                    value
-                } else {
-                    *avg * alpha + value * (1.0 - alpha)
-                };
-                *out = (*avg).max(floor);
+
+        match mode {
+            AveragingMode::None => {
+                for (out, &value) in output.iter_mut().zip(&self.scratch) {
+                    *out = value.max(floor);
+                }
             }
-        }
-        AveragingMode::PeakHold { decay_per_second } => {
-            let decay = decay_per_second.max(0.0) * dt_seconds;
-            for ((hold, out), &value) in peak_hold_db.iter_mut().zip(output).zip(input) {
-                *hold = (*hold - decay).max(floor).max(value);
-                *out = *hold;
+            AveragingMode::Exponential { factor } => {
+                let alpha = factor.clamp(0.0, 0.9999);
+                for ((avg, out), &value) in self.averaged.iter_mut().zip(output).zip(&self.scratch)
+                {
+                    *avg = if *avg <= floor + f32::EPSILON {
+                        value
+                    } else {
+                        *avg * alpha + value * (1.0 - alpha)
+                    };
+                    *out = (*avg).max(floor);
+                }
+            }
+            AveragingMode::PeakHold { decay_per_second } => {
+                let decay = decay_per_second.max(0.0) * dt_seconds;
+                for ((hold, out), &value) in
+                    self.peak_hold.iter_mut().zip(output).zip(&self.scratch)
+                {
+                    *hold = (*hold - decay).max(floor).max(value);
+                    *out = *hold;
+                }
             }
         }
     }
+}
+
+fn reset_to_floor(buf: &mut Vec<f32>, bins: usize, floor: f32) {
+    buf.clear();
+    buf.resize(bins, floor);
 }
 
 fn a_weight(freq_hz: f32) -> f32 {
@@ -468,9 +453,16 @@ mod tests {
         p.update_config(cfg);
 
         assert_eq!(p.pcm_buffer.len(), 2);
-        assert!(p.snapshot.magnitudes_db.iter().all(|&v| v == cfg.floor_db));
-        assert!(p.averaged_db.iter().all(|&v| v == cfg.floor_db));
-        assert!(p.peak_hold_db.iter().all(|&v| v == cfg.floor_db));
+        for output in [
+            &p.snapshot.magnitudes_db,
+            &p.snapshot.magnitudes_unweighted_db,
+        ] {
+            assert!(output.iter().all(|&v| v == cfg.floor_db));
+        }
+        for buffers in [&p.weighted, &p.unweighted] {
+            assert!(buffers.averaged.iter().all(|&v| v == cfg.floor_db));
+            assert!(buffers.peak_hold.iter().all(|&v| v == cfg.floor_db));
+        }
     }
 
     #[test]
