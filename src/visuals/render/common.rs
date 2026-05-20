@@ -306,14 +306,11 @@ pub fn decimate_line(pts: &[(f32, f32)], max_points: usize) -> Cow<'_, [(f32, f3
         return Cow::Borrowed(pts);
     }
     let buckets = max_points / 2;
-    let bucket_size = pts.len() as f32 / buckets.max(1) as f32;
+    let len = pts.len();
     let mut result = Vec::with_capacity(max_points);
     for b in 0..buckets {
-        let lo = (b as f32 * bucket_size) as usize;
-        let hi = (((b + 1) as f32 * bucket_size) as usize).min(pts.len());
-        if lo >= hi {
-            continue;
-        }
+        let lo = b * len / buckets;
+        let hi = (b + 1) * len / buckets;
         let (mut mn_i, mut mx_i) = (0, 0);
         for (i, &(_, y)) in pts[lo..hi].iter().enumerate() {
             if y < pts[lo + mn_i].1 {

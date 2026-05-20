@@ -329,10 +329,9 @@ impl ConfigPage {
         let selected = self
             .device_choices
             .iter()
-            .find(|opt| opt.selection == self.selected_device)
-            .cloned();
+            .find(|opt| opt.selection == self.selected_device);
         let mut picker = pick_list(
-            self.device_choices.clone(),
+            self.device_choices.as_slice(),
             selected,
             |opt: DeviceOption| ConfigMessage::CaptureDeviceChanged(opt.selection),
         )
@@ -414,12 +413,11 @@ impl ConfigPage {
         let selected = self
             .theme_choices
             .iter()
-            .find(|c| c.name == self.active_theme)
-            .cloned();
-        let is_builtin = selected.as_ref().is_some_and(|c| c.builtin);
+            .find(|c| c.name == self.active_theme);
+        let is_builtin = selected.is_some_and(|c| c.builtin);
 
         let picker = pick_list(
-            self.theme_choices.clone(),
+            self.theme_choices.as_slice(),
             selected,
             |choice: ThemeChoice| ConfigMessage::ThemeChanged(choice.name),
         )
@@ -533,7 +531,7 @@ impl ConfigPage {
             content = content
                 .push(
                     pick_list(
-                        self.bar_monitors.clone(),
+                        self.bar_monitors.as_slice(),
                         bar.monitor.clone(),
                         ConfigMessage::BarMonitorChanged,
                     )

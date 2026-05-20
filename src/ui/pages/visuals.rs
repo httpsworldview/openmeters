@@ -174,12 +174,14 @@ impl VisualsPage {
             return;
         }
         if let Some(panes) = self.panes.as_mut() {
-            let map: HashMap<_, _> = slots.iter().map(|s| (s.id, *s)).collect();
             panes.for_each_mut(|_, p| {
-                if let Some(s) = map.get(&p.id) {
-                    p.content = s.content.clone();
-                    p.metadata = s.metadata;
-                }
+                let s = slots
+                    .iter()
+                    .copied()
+                    .find(|s| s.id == p.id)
+                    .expect("pane id should exist in current visual snapshot");
+                p.content = s.content.clone();
+                p.metadata = s.metadata;
             });
         }
     }

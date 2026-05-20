@@ -41,6 +41,7 @@ impl RegistryState {
             return false;
         };
         let fallback = info.name.or(info.description);
+        self.port_index.retain(|_, (node_id, _)| *node_id != id);
         if self.metadata_defaults.clear_node(id, fallback) {
             self.metadata_defaults.reconcile_with_nodes(&self.nodes);
         }

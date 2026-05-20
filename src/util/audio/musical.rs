@@ -47,9 +47,11 @@ impl MusicalNote {
     pub fn is_black(self) -> bool {
         matches!(self.name, "C#" | "D#" | "F#" | "G#" | "A#")
     }
+}
 
-    pub fn format(&self) -> String {
-        format!("{}{}", self.name, self.octave)
+impl std::fmt::Display for MusicalNote {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}{}", self.name, self.octave)
     }
 }
 
@@ -75,6 +77,6 @@ impl NoteInfo {
     /// `"F4  + 42 Cents"`
     pub fn fmt_note_cents(&self) -> String {
         let sign = if self.cents >= 0 { '+' } else { '-' };
-        format!("{:<4}{sign} {} Cents", self.note.format(), self.cents.abs())
+        format!("{:<4}{sign} {} Cents", self.note, self.cents.abs())
     }
 }

@@ -28,6 +28,7 @@ vis_processor!(
 
 #[derive(Debug, Clone)]
 pub(crate) struct WaveformState {
+    raw_snapshot: WaveformSnapshot,
     snapshot: WaveformSnapshot,
     pub(crate) style: WaveformStyle,
     key: u64,
@@ -41,6 +42,7 @@ impl WaveformState {
     pub fn new() -> Self {
         let defaults = WaveformSettings::default();
         Self {
+            raw_snapshot: WaveformSnapshot::default(),
             snapshot: WaveformSnapshot::default(),
             style: WaveformStyle::default(),
             key: crate::visuals::next_key(),
@@ -53,13 +55,13 @@ impl WaveformState {
 
     pub fn apply_snapshot(&mut self, snapshot: WaveformSnapshot) {
         self.snapshot = Self::project_channels(&snapshot, self.channel_1, self.channel_2);
+        self.raw_snapshot = snapshot;
     }
 
     pub fn set_channels(&mut self, channel_1: Channel, channel_2: Channel) {
         if self.channel_1 != channel_1 || self.channel_2 != channel_2 {
-            self.channel_1 = channel_1;
-            self.channel_2 = channel_2;
-            self.snapshot = Self::project_channels(&self.snapshot, channel_1, channel_2);
+            (self.channel_1, self.channel_2) = (channel_1, channel_2);
+            self.snapshot = Self::project_channels(&self.raw_snapshot, channel_1, channel_2);
         }
     }
 

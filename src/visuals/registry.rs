@@ -20,11 +20,10 @@ use std::{
 type Shared<T> = Rc<RefCell<T>>;
 
 fn resolve_palette<const N: usize>(
-    custom: &Option<PaletteSettings>,
+    custom: Option<&PaletteSettings>,
     default: &[Color; N],
 ) -> [Color; N] {
     custom
-        .as_ref()
         .and_then(PaletteSettings::to_array)
         .unwrap_or(*default)
 }
@@ -40,7 +39,7 @@ macro_rules! visuals {
         $proc.update_config(config)
     }};
     (@apply_palette $st:expr, $settings:ident, $default:expr) => {
-        $st.set_palette(&resolve_palette(&$settings.palette, $default))
+        $st.set_palette(&resolve_palette($settings.palette.as_ref(), $default))
     };
     ($($variant:ident($name:expr, $width:expr, $height:expr, $min_w:expr) =>
        $module:ident :: $processor:ident, $state:ident;
@@ -313,8 +312,8 @@ impl VisualManager {
         Self {
             entries: DESCRIPTORS
                 .iter()
-                .enumerate()
-                .map(|(i, descriptor)| Entry::new(VisualId((i + 1) as u32), descriptor))
+                .zip(1..)
+                .map(|(descriptor, id)| Entry::new(VisualId(id), descriptor))
                 .collect(),
         }
     }
