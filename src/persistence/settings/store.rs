@@ -15,7 +15,7 @@ use std::{
     fs,
     path::PathBuf,
     rc::Rc,
-    sync::{OnceLock, mpsc},
+    sync::{Mutex, mpsc},
     time::Duration,
 };
 use tracing::warn;
@@ -141,52 +141,57 @@ impl SettingsManager {
     }
 }
 
-fn schedule_persist(path: PathBuf, mut settings: UiSettings) {
-    static SENDER: OnceLock<Option<mpsc::Sender<(PathBuf, UiSettings)>>> = OnceLock::new();
+fn schedule_persist(mut path: PathBuf, mut settings: UiSettings) {
+    static SENDER: Mutex<Option<mpsc::Sender<(PathBuf, UiSettings)>>> = Mutex::new(None);
+
     settings.visuals.sanitize_layout();
     settings.visuals.strip_all_palettes();
     settings.bar.sanitize();
-    if let Some(sender) = SENDER.get_or_init(|| {
-        let (tx, rx) = mpsc::channel::<(PathBuf, UiSettings)>();
-        std::thread::Builder::new()
-            .name("openmeters-settings-saver".into())
-            .spawn(move || {
-                let mut last_written: Option<String> = None;
-                while let Ok((mut dest, mut data)) = rx.recv() {
-                    // Coalesce rapid updates by draining pending messages.
-                    while let Ok((new_dest, new_data)) = rx.recv_timeout(Duration::from_millis(500))
-                    {
-                        dest = new_dest;
-                        data = new_data;
-                    }
-                    let Ok(json) = serde_json::to_string_pretty(&data) else {
-                        tracing::warn!("[settings] serialization failed");
-                        continue;
-                    };
-                    if last_written.as_deref() == Some(&json) {
-                        continue;
-                    }
-                    if let Some(parent) = dest.parent()
-                        && let Err(err) = fs::create_dir_all(parent)
-                    {
-                        tracing::warn!("[settings] failed to create config dir: {err}");
-                    }
-                    let temp_path = dest.with_extension("json.tmp");
-                    match fs::write(&temp_path, &json).and_then(|()| fs::rename(&temp_path, &dest))
-                    {
-                        Ok(()) => last_written = Some(json),
-                        Err(err) => tracing::warn!("[settings] failed to write settings: {err}"),
-                    }
+
+    let mut sender = SENDER.lock().unwrap();
+    if let Some(tx) = sender.as_ref() {
+        match tx.send((path, settings)) {
+            Ok(()) => return,
+            Err(mpsc::SendError(failed)) => (path, settings) = failed,
+        }
+        *sender = None;
+    }
+
+    let (tx, rx) = mpsc::channel::<(PathBuf, UiSettings)>();
+    match std::thread::Builder::new()
+        .name("openmeters-settings-saver".into())
+        .spawn(move || {
+            let mut last_written: Option<String> = None;
+            while let Ok((mut dest, mut data)) = rx.recv() {
+                // Coalesce rapid updates by draining pending messages.
+                while let Ok((new_dest, new_data)) = rx.recv_timeout(Duration::from_millis(500)) {
+                    dest = new_dest;
+                    data = new_data;
                 }
-            })
-            .map_err(|err| {
-                tracing::error!("[settings] failed to spawn saver thread: {err}");
-                err
-            })
-            .ok()
-            .map(|_| tx)
-    }) {
-        let _ = sender.send((path, settings));
+                let Ok(json) = serde_json::to_string_pretty(&data) else {
+                    tracing::warn!("[settings] serialization failed");
+                    continue;
+                };
+                if last_written.as_deref() == Some(&json) {
+                    continue;
+                }
+                if let Some(parent) = dest.parent()
+                    && let Err(err) = fs::create_dir_all(parent)
+                {
+                    tracing::warn!("[settings] failed to create config dir: {err}");
+                }
+                let temp_path = dest.with_extension("json.tmp");
+                match fs::write(&temp_path, &json).and_then(|()| fs::rename(&temp_path, &dest)) {
+                    Ok(()) => last_written = Some(json),
+                    Err(err) => tracing::warn!("[settings] failed to write settings: {err}"),
+                }
+            }
+        }) {
+        Ok(_) => {
+            let _ = tx.send((path, settings));
+            *sender = Some(tx);
+        }
+        Err(err) => tracing::error!("[settings] failed to spawn saver thread: {err}"),
     }
 }
 

@@ -6,7 +6,6 @@ use pipewire as pw;
 use pw::{properties::properties, spa};
 use spa::pod::Pod;
 use std::collections::VecDeque;
-use std::convert::TryInto;
 use std::error::Error;
 use std::io::Cursor;
 use std::mem::size_of;
@@ -20,7 +19,7 @@ const VIRTUAL_SINK_SAMPLE_RATE: u32 = DEFAULT_SAMPLE_RATE as u32;
 const CAPTURE_BUFFER_CAPACITY: usize = 256;
 const DESIRED_LATENCY_FRAMES: u32 = 256;
 
-static SINK_THREAD: OnceLock<thread::JoinHandle<()>> = OnceLock::new();
+static SINK_THREAD: Mutex<Option<thread::JoinHandle<()>>> = Mutex::new(None);
 static CAPTURE_BUFFER: OnceLock<Arc<CaptureBuffer>> = OnceLock::new();
 
 #[derive(Debug, Clone)]
@@ -163,21 +162,17 @@ fn convert_samples_to_f32(
 pub fn run() {
     ensure_capture_buffer();
 
-    if SINK_THREAD.get().is_some() {
-        return;
-    }
-
-    match thread::Builder::new()
-        .name("openmeters-pw-virtual-sink".into())
-        .spawn(|| {
-            if let Err(err) = run_virtual_sink() {
-                error!("[virtual-sink] stopped: {err}");
-            }
-        }) {
-        Ok(handle) => {
-            let _ = SINK_THREAD.set(handle);
-        }
-        Err(err) => error!("[virtual-sink] failed to start PipeWire thread: {err}"),
+    let mut sink_thread = SINK_THREAD.lock().unwrap();
+    if sink_thread.is_none() {
+        *sink_thread = thread::Builder::new()
+            .name("openmeters-pw-virtual-sink".into())
+            .spawn(|| {
+                if let Err(err) = run_virtual_sink() {
+                    error!("[virtual-sink] stopped: {err}");
+                }
+            })
+            .inspect_err(|err| error!("[virtual-sink] failed to start PipeWire thread: {err}"))
+            .ok();
     }
 }
 
