@@ -14,12 +14,11 @@ settings_pane!(
     Loudness
 );
 
-#[derive(Debug, Clone)]
-pub enum Message {
-    LeftMode(MeterMode),
-    RightMode(MeterMode),
-    Palette(PaletteEvent),
-}
+settings_messages!(LoudnessSettingsPane as pane, value {
+    LeftMode(MeterMode) => set_if_changed(&mut pane.settings.left_mode, value);
+    RightMode(MeterMode) => set_if_changed(&mut pane.settings.right_mode, value);
+    Palette(PaletteEvent) => pane.palette.update(value);
+});
 
 impl LoudnessSettingsPane {
     fn view(&self) -> Element<'_, Message> {
@@ -29,13 +28,5 @@ impl LoudnessSettingsPane {
             super::palette_section(&self.palette, Message::Palette);
         )
         .into()
-    }
-
-    fn handle(&mut self, msg: &Message) -> bool {
-        match msg {
-            Message::LeftMode(mode) => set_if_changed(&mut self.settings.left_mode, *mode),
-            Message::RightMode(mode) => set_if_changed(&mut self.settings.right_mode, *mode),
-            Message::Palette(event) => self.palette.update(*event),
-        }
     }
 }

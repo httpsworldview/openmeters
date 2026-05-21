@@ -29,22 +29,24 @@ settings_pane!(
     Stereometer
 );
 
-#[derive(Debug, Clone)]
-pub enum Message {
-    SegmentDuration(f32),
-    TargetSampleCount(f32),
-    CorrelationWindow(f32),
-    Persistence(f32),
-    DotRadius(f32),
-    Rotation(f32),
-    Flip(bool),
-    Mode(StereometerMode),
-    Scale(StereometerScale),
-    ScaleRange(f32),
-    CorrelationMeter(CorrelationMeterMode),
-    CorrelationSide(CorrelationMeterSide),
-    Palette(PaletteEvent),
-}
+settings_messages!(StereometerSettingsPane as pane, value {
+    SegmentDuration(f32) => update_f32_range(&mut pane.settings.segment_duration, value, SEGMENT_DURATION_RANGE);
+    TargetSampleCount(f32) => update_usize_from_f32(&mut pane.settings.target_sample_count, value, TARGET_SAMPLE_COUNT_RANGE);
+    CorrelationWindow(f32) => update_f32_range(&mut pane.settings.correlation_window, value, CORRELATION_WINDOW_RANGE);
+    Persistence(f32) => update_f32_range(&mut pane.settings.persistence, value, PERSISTENCE_RANGE);
+    DotRadius(f32) => update_f32_range(&mut pane.settings.dot_radius, value, DOT_RADIUS_RANGE);
+    Rotation(f32) => set_if_changed(
+        &mut pane.settings.rotation,
+        (value.round() as i8).clamp(ROTATION_RANGE.min as i8, ROTATION_RANGE.max as i8),
+    );
+    Flip(bool) => set_if_changed(&mut pane.settings.flip, value);
+    Mode(StereometerMode) => set_if_changed(&mut pane.settings.mode, value);
+    Scale(StereometerScale) => set_if_changed(&mut pane.settings.scale, value);
+    ScaleRange(f32) => update_f32_range(&mut pane.settings.scale_range, value, SCALE_RANGE);
+    CorrelationMeter(CorrelationMeterMode) => set_if_changed(&mut pane.settings.correlation_meter, value);
+    CorrelationSide(CorrelationMeterSide) => set_if_changed(&mut pane.settings.correlation_meter_side, value);
+    Palette(PaletteEvent) => pane.palette.update(value);
+});
 
 impl StereometerSettingsPane {
     fn view(&self) -> Element<'_, Message> {
@@ -124,34 +126,5 @@ impl StereometerSettingsPane {
         ]
         .spacing(12)
         .into()
-    }
-
-    fn handle(&mut self, msg: &Message) -> bool {
-        use Message::*;
-        let s = &mut self.settings;
-        match *msg {
-            SegmentDuration(v) => {
-                update_f32_range(&mut s.segment_duration, v, SEGMENT_DURATION_RANGE)
-            }
-            TargetSampleCount(v) => {
-                update_usize_from_f32(&mut s.target_sample_count, v, TARGET_SAMPLE_COUNT_RANGE)
-            }
-            CorrelationWindow(v) => {
-                update_f32_range(&mut s.correlation_window, v, CORRELATION_WINDOW_RANGE)
-            }
-            Persistence(v) => update_f32_range(&mut s.persistence, v, PERSISTENCE_RANGE),
-            DotRadius(v) => update_f32_range(&mut s.dot_radius, v, DOT_RADIUS_RANGE),
-            Rotation(v) => set_if_changed(
-                &mut s.rotation,
-                (v.round() as i8).clamp(ROTATION_RANGE.min as i8, ROTATION_RANGE.max as i8),
-            ),
-            Flip(v) => set_if_changed(&mut s.flip, v),
-            Mode(m) => set_if_changed(&mut s.mode, m),
-            Scale(sc) => set_if_changed(&mut s.scale, sc),
-            ScaleRange(v) => update_f32_range(&mut s.scale_range, v, SCALE_RANGE),
-            CorrelationMeter(m) => set_if_changed(&mut s.correlation_meter, m),
-            CorrelationSide(side) => set_if_changed(&mut s.correlation_meter_side, side),
-            Palette(e) => self.palette.update(e),
-        }
     }
 }

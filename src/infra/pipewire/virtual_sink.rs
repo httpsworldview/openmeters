@@ -115,48 +115,46 @@ fn convert_samples_to_f32(
         return None;
     }
 
-    let sample_count = bytes.len() / sample_bytes;
-    let mut samples = Vec::with_capacity(sample_count);
-
+    let little_endian = matches!(
+        format,
+        Fmt::F32LE | Fmt::F64LE | Fmt::S16LE | Fmt::S24_32LE | Fmt::S32LE | Fmt::U16LE | Fmt::U32LE
+    );
     macro_rules! convert {
-        ($ty:ty, $from:ident, $to_f32:expr) => {{
-            for chunk in bytes.chunks_exact(std::mem::size_of::<$ty>()) {
-                samples.push($to_f32(<$ty>::$from(chunk.try_into().unwrap())));
-            }
+        ($ty:ty, $to_f32:expr) => {{
+            bytes
+                .chunks_exact(size_of::<$ty>())
+                .map(|chunk| {
+                    let raw = if little_endian {
+                        <$ty>::from_le_bytes(chunk.try_into().unwrap())
+                    } else {
+                        <$ty>::from_be_bytes(chunk.try_into().unwrap())
+                    };
+                    $to_f32(raw)
+                })
+                .collect()
         }};
     }
     const I16_DIV: f32 = i16::MAX as f32;
     const I32_DIV: f32 = i32::MAX as f32;
 
-    match format {
-        Fmt::F32LE => convert!(f32, from_le_bytes, |v: f32| v),
-        Fmt::F32BE => convert!(f32, from_be_bytes, |v: f32| v),
-        Fmt::F64LE => convert!(f64, from_le_bytes, |v: f64| v as f32),
-        Fmt::F64BE => convert!(f64, from_be_bytes, |v: f64| v as f32),
-        Fmt::S16LE => convert!(i16, from_le_bytes, |v: i16| v as f32 / I16_DIV),
-        Fmt::S16BE => convert!(i16, from_be_bytes, |v: i16| v as f32 / I16_DIV),
-        Fmt::S32LE | Fmt::S24_32LE => convert!(i32, from_le_bytes, |v: i32| v as f32 / I32_DIV),
-        Fmt::S32BE | Fmt::S24_32BE => convert!(i32, from_be_bytes, |v: i32| v as f32 / I32_DIV),
-        Fmt::U16LE => convert!(u16, from_le_bytes, |v: u16| (v as f32 - 32_768.0)
-            / 32_768.0),
-        Fmt::U16BE => convert!(u16, from_be_bytes, |v: u16| (v as f32 - 32_768.0)
-            / 32_768.0),
-        Fmt::U32LE => convert!(
-            u32,
-            from_le_bytes,
-            |v: u32| (v as f64 / u32::MAX as f64 * 2.0 - 1.0) as f32
-        ),
-        Fmt::U32BE => convert!(
-            u32,
-            from_be_bytes,
-            |v: u32| (v as f64 / u32::MAX as f64 * 2.0 - 1.0) as f32
-        ),
-        Fmt::U8 => samples.extend(bytes.iter().map(|&b| (b as f32 - 128.0) / 128.0)),
-        Fmt::S8 => samples.extend(bytes.iter().map(|&b| (b as i8) as f32 / i8::MAX as f32)),
+    Some(match format {
+        Fmt::F32LE | Fmt::F32BE => convert!(f32, |v| v),
+        Fmt::F64LE | Fmt::F64BE => convert!(f64, |v| v as f32),
+        Fmt::S16LE | Fmt::S16BE => convert!(i16, |v| v as f32 / I16_DIV),
+        Fmt::S32LE | Fmt::S24_32LE | Fmt::S32BE | Fmt::S24_32BE => {
+            convert!(i32, |v| v as f32 / I32_DIV)
+        }
+        Fmt::U16LE | Fmt::U16BE => convert!(u16, |v| (v as f32 - 32_768.0) / 32_768.0),
+        Fmt::U32LE | Fmt::U32BE => {
+            convert!(u32, |v| (v as f64 / u32::MAX as f64 * 2.0 - 1.0) as f32)
+        }
+        Fmt::U8 => bytes.iter().map(|&b| (b as f32 - 128.0) / 128.0).collect(),
+        Fmt::S8 => bytes
+            .iter()
+            .map(|&b| (b as i8) as f32 / i8::MAX as f32)
+            .collect(),
         _ => return None,
-    }
-
-    Some(samples)
+    })
 }
 
 pub fn run() {
@@ -372,6 +370,22 @@ mod tests {
             1e-5,
         );
         assert_sample(&s16, Fmt::S16LE, 2, 1, 1.0, f32::EPSILON);
+        assert_sample(
+            &[0x80, 0x00, 0x7F, 0xFF],
+            Fmt::S16BE,
+            2,
+            0,
+            i16::MIN as f32 / i16::MAX as f32,
+            1e-5,
+        );
+        assert_sample(
+            &[0x00, 0x00, 0xFF, 0xFF],
+            Fmt::U16BE,
+            2,
+            1,
+            (u16::MAX as f32 - 32_768.0) / 32_768.0,
+            f32::EPSILON,
+        );
 
         let val: f32 = 0.123_456_78;
         assert_sample(&val.to_le_bytes(), Fmt::F32LE, 1, 0, val, f32::EPSILON);

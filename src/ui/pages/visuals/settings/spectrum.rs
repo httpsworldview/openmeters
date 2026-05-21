@@ -41,28 +41,27 @@ settings_pane!(
     }
 );
 
-#[derive(Debug, Clone, Copy)]
-pub enum Message {
-    FftSize(usize),
-    HopDivisor(usize),
-    FreqScale(FrequencyScale),
-    ReverseFrequency(bool),
-    DisplayMode(SpectrumDisplayMode),
-    WeightingMode(SpectrumWeightingMode),
-    ShowSecondary(bool),
-    Averaging(AvgMode),
-    AvgFactor(f32),
-    PeakDecay(f32),
-    SmoothRadius(f32),
-    SmoothPasses(f32),
-    ShowGrid(bool),
-    ShowPeakLabel(bool),
-    FloorDb(f32),
-    BarCount(f32),
-    BarGap(f32),
-    Highlight(f32),
-    Palette(PaletteEvent),
-}
+settings_messages!(SpectrumSettingsPane as pane, value {
+    FftSize(usize) => update_fft_size(&mut pane.settings.fft_size, &mut pane.settings.hop_size, value);
+    HopDivisor(usize) => update_hop_divisor(pane.settings.fft_size, &mut pane.settings.hop_size, value);
+    FreqScale(FrequencyScale) => set_if_changed(&mut pane.settings.frequency_scale, value);
+    ReverseFrequency(bool) => set_if_changed(&mut pane.settings.reverse_frequency, value);
+    DisplayMode(SpectrumDisplayMode) => set_if_changed(&mut pane.settings.display_mode, value);
+    WeightingMode(SpectrumWeightingMode) => set_if_changed(&mut pane.settings.weighting_mode, value);
+    ShowSecondary(bool) => set_if_changed(&mut pane.settings.show_secondary_line, value);
+    Averaging(AvgMode) => set_if_changed(&mut pane.avg_mode, value).then(|| pane.sync_avg()).is_some();
+    AvgFactor(f32) => update_f32_range(&mut pane.avg_factor, value, EXP_R).then(|| pane.sync_avg()).is_some();
+    PeakDecay(f32) => update_f32_range(&mut pane.peak_decay, value, DECAY_R).then(|| pane.sync_avg()).is_some();
+    SmoothRadius(f32) => update_usize_from_f32(&mut pane.settings.smoothing_radius, value, SRAD_R);
+    SmoothPasses(f32) => update_usize_from_f32(&mut pane.settings.smoothing_passes, value, SPAS_R);
+    ShowGrid(bool) => set_if_changed(&mut pane.settings.show_grid, value);
+    ShowPeakLabel(bool) => set_if_changed(&mut pane.settings.show_peak_label, value);
+    FloorDb(f32) => update_f32_range(&mut pane.settings.floor_db, value, FLOOR_R);
+    BarCount(f32) => update_usize_from_f32(&mut pane.settings.bar_count, value, BARS_R);
+    BarGap(f32) => update_f32_range(&mut pane.settings.bar_gap, value, GAP_R);
+    Highlight(f32) => update_f32_range(&mut pane.settings.highlight_threshold, value, HIGH_R);
+    Palette(PaletteEvent) => pane.palette.update(value);
+});
 
 impl SpectrumSettingsPane {
     fn view(&self) -> Element<'_, Message> {
@@ -141,37 +140,6 @@ impl SpectrumSettingsPane {
         .into()
     }
 
-    fn handle(&mut self, msg: &Message) -> bool {
-        use Message::*;
-        let s = &mut self.settings;
-        match *msg {
-            FftSize(v) => update_fft_size(&mut s.fft_size, &mut s.hop_size, v),
-            HopDivisor(v) => update_hop_divisor(s.fft_size, &mut s.hop_size, v),
-            FreqScale(v) => set_if_changed(&mut s.frequency_scale, v),
-            ReverseFrequency(v) => set_if_changed(&mut s.reverse_frequency, v),
-            DisplayMode(v) => set_if_changed(&mut s.display_mode, v),
-            WeightingMode(v) => set_if_changed(&mut s.weighting_mode, v),
-            ShowSecondary(v) => set_if_changed(&mut s.show_secondary_line, v),
-            ShowGrid(v) => set_if_changed(&mut s.show_grid, v),
-            ShowPeakLabel(v) => set_if_changed(&mut s.show_peak_label, v),
-            FloorDb(v) => update_f32_range(&mut s.floor_db, v, FLOOR_R),
-            Averaging(m) => set_if_changed(&mut self.avg_mode, m)
-                .then(|| self.sync_avg())
-                .is_some(),
-            AvgFactor(v) => update_f32_range(&mut self.avg_factor, v, EXP_R)
-                .then(|| self.sync_avg())
-                .is_some(),
-            PeakDecay(v) => update_f32_range(&mut self.peak_decay, v, DECAY_R)
-                .then(|| self.sync_avg())
-                .is_some(),
-            SmoothRadius(v) => update_usize_from_f32(&mut s.smoothing_radius, v, SRAD_R),
-            SmoothPasses(v) => update_usize_from_f32(&mut s.smoothing_passes, v, SPAS_R),
-            BarCount(v) => update_usize_from_f32(&mut s.bar_count, v, BARS_R),
-            BarGap(v) => update_f32_range(&mut s.bar_gap, v, GAP_R),
-            Highlight(v) => update_f32_range(&mut s.highlight_threshold, v, HIGH_R),
-            Palette(e) => self.palette.update(e),
-        }
-    }
 
     fn sync_avg(&mut self) {
         self.settings.averaging = match self.avg_mode {
