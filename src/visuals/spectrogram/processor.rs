@@ -282,9 +282,12 @@ impl SpectrogramProcessor {
                         &mut self.scratch,
                     );
                 }
-                SpectrogramColumn::Reassigned(
-                    self.reassigned_points(sample_rate, hop_size, bin_count),
-                )
+                SpectrogramColumn::Reassigned(self.reassigned_points(
+                    sample_rate,
+                    hop_size,
+                    center_offset,
+                    bin_count,
+                ))
             } else {
                 for (c, (&sample, &weight)) in self
                     .complex_buf
@@ -330,6 +333,7 @@ impl SpectrogramProcessor {
         &self,
         sample_rate: f32,
         hop_size: usize,
+        latency_samples: usize,
         bin_count: usize,
     ) -> Vec<SpectrogramPoint> {
         let bin_hz = self.bin_hz;
@@ -348,13 +352,14 @@ impl SpectrogramProcessor {
             let inv_pow = 1.0 / pow.max(f32::MIN_POSITIVE);
             let d_omega = -(d.im * base.re - d.re * base.im) * inv_pow;
             let freq_hz = i as f32 * bin_hz + d_omega * inv_2pi;
-            let time_offset = (t.re * base.re + t.im * base.im) * inv_pow * inv_hop;
+            let time_offset = (t.re * base.re + t.im * base.im) * inv_pow * inv_hop
+                - latency_samples as f32 * inv_hop;
             let magnitude_db = ((pow.max(f32::MIN_POSITIVE) * energy_scale.max(f32::MIN_POSITIVE))
                 .ln()
                 * LN_TO_DB)
                 .max(DB_FLOOR);
 
-            if pow >= floor_linear
+            if pow * energy_scale >= floor_linear
                 && energy_scale > 0.0
                 && freq_hz > 0.0
                 && max_hz - freq_hz > 0.0
@@ -678,6 +683,26 @@ mod tests {
                 "peak dB = {peak_db:.6}, expected above floor"
             );
         }
+    }
+
+    #[test]
+    fn reassignment_time_offset_compensates_hilbert_latency() {
+        let cfg = cfg(2048, 512, true);
+        let freq = 50.25 * cfg.sample_rate / cfg.fft_size as f32;
+        let update = process_sine(cfg, freq, 4096);
+        let col = update.new_columns.last().unwrap();
+        let peak_pt = reassigned_points(col)
+            .iter()
+            .filter(|p| p.magnitude_db > DB_FLOOR)
+            .max_by(|a, b| a.magnitude_db.total_cmp(&b.magnitude_db))
+            .expect("expected non-sentinel point");
+        let latency = (SpectrogramProcessor::hilbert_len_for(cfg.fft_size) - cfg.fft_size) / 2;
+        let expected = -(latency as f32) / cfg.hop_size as f32;
+        assert!(
+            (peak_pt.time_offset - expected).abs() < 0.05,
+            "time offset {:.4} vs expected {expected:.4}",
+            peak_pt.time_offset
+        );
     }
 
     #[test]

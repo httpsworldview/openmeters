@@ -163,6 +163,7 @@ visuals! {
                 set.palette.as_ref().and_then(|p| p.stop_spreads.as_deref()),
                 palettes::spectrogram::COLORS.len()));
             st.piano_roll_overlay = set.piano_roll_overlay;
+            st.freq_scale = set.frequency_scale;
             st.set_floor_db(set.floor_db);
             st.set_tilt_db(set.tilt_db);
             st.set_rotation(set.rotation); };
