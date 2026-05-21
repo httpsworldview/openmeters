@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::processor::{
-    SpectrogramColumn, SpectrogramConfig, SpectrogramProcessor as CoreSpectrogramProcessor,
-    SpectrogramUpdate,
+    MAX_SPECTROGRAM_HISTORY_COLUMNS, SPECTROGRAM_HISTORY_BYTE_BUDGET, SpectrogramColumn,
+    SpectrogramConfig, SpectrogramProcessor as CoreSpectrogramProcessor, SpectrogramUpdate,
 };
 use super::render::{
     ColumnKind, PendingUpload, RingCopyPlan, SPECTROGRAM_PALETTE_SIZE, SpectrogramParams,
@@ -186,9 +186,12 @@ impl SpectrogramState {
             Some(SpectrogramColumn::Classic(_)) => ColumnKind::Classic,
             None => self.col_kind,
         };
-        let max_bytes = 128 * 1024 * 1024 * (1 + u64::from(new_kind == ColumnKind::Reassigned));
+        let max_bytes = SPECTROGRAM_HISTORY_BYTE_BUDGET as u64
+            * (1 + u64::from(new_kind == ColumnKind::Reassigned));
         let max_cols = (max_bytes / col_byte_stride(new_kind, ppc as u32)) as u32;
-        let capacity = (snap.history_length as u32).clamp(1, 8192).min(max_cols);
+        let capacity = (snap.history_length as u32)
+            .clamp(1, MAX_SPECTROGRAM_HISTORY_COLUMNS as u32)
+            .min(max_cols);
         if capacity == 0 {
             return;
         }
@@ -200,7 +203,7 @@ impl SpectrogramState {
             self.col_kind = new_kind;
             self.write_slot = 0;
             self.col_count = 0;
-            self.pending.clear();
+            self.pending = VecDeque::new();
             self.pending_copy = None;
         } else if capacity != self.ring_capacity {
             self.ensure_pending_copy();
@@ -285,7 +288,7 @@ impl SpectrogramState {
             points_per_column: self.points_per_column as u32,
             col_count: self.col_count,
             write_slot: self.write_slot,
-            pending_uploads: Vec::from(std::mem::take(&mut self.pending)),
+            pending_uploads: std::mem::take(&mut self.pending),
             copy_plan,
             col_kind: self.col_kind,
             freq_min,
@@ -827,7 +830,9 @@ mod tests {
             points_per_column: 2,
             new_columns: values
                 .iter()
-                .map(|&v| SpectrogramColumn::Classic(vec![v; 2]))
+                .map(|&v| {
+                    SpectrogramColumn::Classic(vec![super::super::processor::pack_classic_db(v); 2])
+                })
                 .collect(),
         }
     }
@@ -853,38 +858,32 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn growth_copy_plan_remaps_wrapped_ring() {
+    fn seeded_ring() -> SpectrogramState {
         let mut state = SpectrogramState::new();
         state.apply_snapshot(classic_update(4, true, &[0.0, 1.0, 2.0, 3.0]));
         assert_eq!(upload_slots(&visual_params(&mut state)), vec![0, 1, 2, 3]);
+        state
+    }
 
+    #[test]
+    fn resize_copy_plans_preserve_visible_columns() {
+        let mut state = seeded_ring();
         state.apply_snapshot(classic_update(4, false, &[4.0, 5.0]));
         assert_eq!(upload_slots(&visual_params(&mut state)), vec![0, 1]);
 
         state.apply_snapshot(classic_update(6, false, &[6.0]));
         let params = visual_params(&mut state);
-        assert_eq!(params.ring_capacity, 6);
-        assert_eq!(params.col_count, 5);
-        assert_eq!(params.write_slot, 5);
+        assert_eq!((params.ring_capacity, params.col_count, params.write_slot), (6, 5, 5));
         assert_eq!(upload_slots(&params), vec![4]);
         assert_eq!(
             params.copy_plan,
             Some((4, vec![[0, 2], [1, 3], [2, 0], [3, 1]]))
         );
-    }
 
-    #[test]
-    fn shrink_copy_plan_keeps_newest_columns() {
-        let mut state = SpectrogramState::new();
-        state.apply_snapshot(classic_update(4, true, &[0.0, 1.0, 2.0, 3.0]));
-        assert_eq!(upload_slots(&visual_params(&mut state)), vec![0, 1, 2, 3]);
-
+        let mut state = seeded_ring();
         state.apply_snapshot(classic_update(2, false, &[4.0]));
         let params = visual_params(&mut state);
-        assert_eq!(params.ring_capacity, 2);
-        assert_eq!(params.col_count, 2);
-        assert_eq!(params.write_slot, 1);
+        assert_eq!((params.ring_capacity, params.col_count, params.write_slot), (2, 2, 1));
         assert_eq!(upload_slots(&params), vec![0]);
         assert_eq!(params.copy_plan, Some((4, vec![[2, 0], [3, 1]])));
     }

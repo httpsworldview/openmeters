@@ -379,8 +379,8 @@ pub struct CacheTracker {
 }
 
 impl CacheTracker {
-    const RETAIN: u64 = 1024;
-    const INTERVAL: u64 = 256;
+    const RETAIN: u64 = 256;
+    const INTERVAL: u64 = 64;
 
     pub fn advance(&mut self) -> (u64, Option<u64>) {
         self.frame = self.frame.wrapping_add(1).max(1);

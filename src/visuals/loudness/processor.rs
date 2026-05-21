@@ -3,7 +3,7 @@
 
 use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::util::audio::{DEFAULT_SAMPLE_RATE, power_to_db};
-use std::f64::consts::PI;
+use std::{f64::consts::PI, sync::LazyLock};
 
 const MIN_MEAN_SQUARE: f64 = 1e-12;
 const LOUDNESS_OFFSET: f64 = -0.691;
@@ -95,11 +95,14 @@ fn compute_fir_coefficients() -> [[f32; PHASES]; TAPS_PER_PHASE] {
     h
 }
 
+static TRUE_PEAK_FIR: LazyLock<[[f32; PHASES]; TAPS_PER_PHASE]> =
+    LazyLock::new(compute_fir_coefficients);
+
 #[derive(Debug, Clone)]
 struct TruePeakMeter {
     delay_buffer: [f32; TAPS_PER_PHASE * 2],
     write_position: usize,
-    fir: [[f32; PHASES]; TAPS_PER_PHASE],
+    fir: &'static [[f32; PHASES]; TAPS_PER_PHASE],
     peak: f32,
 }
 
@@ -108,7 +111,7 @@ impl TruePeakMeter {
         Self {
             delay_buffer: [0.0; TAPS_PER_PHASE * 2],
             write_position: TAPS_PER_PHASE,
-            fir: compute_fir_coefficients(),
+            fir: &TRUE_PEAK_FIR,
             peak: 0.0,
         }
     }
@@ -124,7 +127,7 @@ impl TruePeakMeter {
         let mut out = [0.0_f32; PHASES];
         for (s, h) in self.delay_buffer[self.write_position..self.write_position + TAPS_PER_PHASE]
             .iter()
-            .zip(&self.fir)
+            .zip(self.fir.iter())
         {
             for (o, &c) in out.iter_mut().zip(h) {
                 *o += s * c;
@@ -165,55 +168,49 @@ impl KWeightingFilter {
 }
 
 #[derive(Debug, Clone)]
-struct RollingMeanSquare {
+struct WindowMeans {
     buffer: Box<[f64]>,
+    capacities: [usize; 4],
+    sums: [f64; 4],
     head: usize,
-    sum: f64,
-    filled: bool,
+    count: usize,
 }
 
-impl RollingMeanSquare {
-    fn with_capacity(capacity: usize) -> Self {
+impl WindowMeans {
+    fn new(capacities: [usize; 4]) -> Self {
         Self {
-            buffer: vec![0.0; capacity.max(1)].into_boxed_slice(),
+            buffer: vec![0.0; capacities.into_iter().max().unwrap_or(1).max(1)].into_boxed_slice(),
+            capacities: capacities.map(|c| c.max(1)),
+            sums: [0.0; 4],
             head: 0,
-            sum: 0.0,
-            filled: false,
+            count: 0,
         }
     }
 
     #[inline]
     fn push(&mut self, value: f64) {
-        if self.filled {
-            self.sum -= self.buffer[self.head];
+        let len = self.buffer.len();
+        for (sum, &cap) in self.sums.iter_mut().zip(&self.capacities) {
+            if self.count >= cap {
+                *sum -= self.buffer[(self.head + len - cap) % len];
+            }
+            *sum += value;
         }
         self.buffer[self.head] = value;
-        self.sum += value;
-        self.head += 1;
-        if self.head >= self.buffer.len() {
-            self.head = 0;
-            self.filled = true;
-        }
+        self.head = (self.head + 1) % len;
+        self.count = (self.count + 1).min(len);
     }
 
     #[inline]
-    fn mean(&self) -> f64 {
-        let count = if self.filled {
-            self.buffer.len()
-        } else {
-            self.head
-        };
-        if count == 0 {
-            0.0
-        } else {
-            self.sum / count as f64
-        }
+    fn mean(&self, idx: usize) -> f64 {
+        let count = self.count.min(self.capacities[idx]);
+        if count == 0 { 0.0 } else { self.sums[idx] / count as f64 }
     }
 }
 
 #[derive(Debug, Clone)]
 struct ChannelState {
-    windows: [RollingMeanSquare; 4],
+    windows: WindowMeans,
     filter: KWeightingFilter,
     true_peak: TruePeakMeter,
 }
@@ -221,7 +218,7 @@ struct ChannelState {
 impl ChannelState {
     fn new(capacities: [usize; 4], sample_rate: f64) -> Self {
         Self {
-            windows: capacities.map(RollingMeanSquare::with_capacity),
+            windows: WindowMeans::new(capacities),
             filter: KWeightingFilter::new(sample_rate),
             true_peak: TruePeakMeter::new(),
         }
@@ -339,9 +336,7 @@ impl AudioProcessor for LoudnessProcessor {
         for frame in block.samples.chunks_exact(block.channels) {
             for (channel, &sample) in self.channels.iter_mut().zip(frame) {
                 let energy = f64::from(channel.filter.process(sample)).powi(2);
-                for window in &mut channel.windows {
-                    window.push(energy);
-                }
+                channel.windows.push(energy);
                 channel.true_peak.process(sample);
             }
         }
@@ -351,8 +346,7 @@ impl AudioProcessor for LoudnessProcessor {
         let mut weighted_short_term = 0.0;
         let mut weighted_momentary = 0.0;
 
-        let window_mean =
-            |ch: &ChannelState, idx: usize| ch.windows[idx].mean().max(MIN_MEAN_SQUARE);
+        let window_mean = |ch: &ChannelState, idx: usize| ch.windows.mean(idx).max(MIN_MEAN_SQUARE);
         for (channel_index, channel_state) in self.channels.iter_mut().enumerate() {
             let weight = channel_weight(channel_index, num_channels);
             weighted_short_term += window_mean(channel_state, WIN_SHORT_TERM) * weight;
@@ -406,16 +400,18 @@ mod tests {
 
     #[test]
     fn rolling_mean_square_tracks_average() {
-        let mut window = RollingMeanSquare::with_capacity(4);
+        let mut window = WindowMeans::new([4, 2, 1, 4]);
         window.push(1.0);
         window.push(9.0);
-        assert!((window.mean() - 5.0).abs() < f64::EPSILON);
+        assert!((window.mean(0) - 5.0).abs() < f64::EPSILON);
 
         window.push(16.0);
         window.push(25.0);
         window.push(36.0);
         // Now should hold 9,16,25,36
-        assert!((window.mean() - 21.5).abs() < f64::EPSILON);
+        assert!((window.mean(0) - 21.5).abs() < f64::EPSILON);
+        assert!((window.mean(1) - 30.5).abs() < f64::EPSILON);
+        assert!((window.mean(2) - 36.0).abs() < f64::EPSILON);
     }
 
     #[test]

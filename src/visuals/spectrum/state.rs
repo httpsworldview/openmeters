@@ -184,6 +184,9 @@ impl SpectrumState {
             let (r, p) = (self.style.smoothing_radius, self.style.smoothing_passes);
             smooth(&mut w, r, p, &mut self.scratch);
             smooth(&mut u, r, p, &mut self.scratch);
+            self.scratch.shrink_to(res);
+        } else {
+            self.scratch = Vec::new();
         }
         if self.style.reverse_frequency {
             for buf in [&mut w, &mut u] {

@@ -117,8 +117,8 @@ impl StereometerState {
 
     pub fn apply_snapshot(&mut self, snap: StereometerSnapshot) {
         if snap.xy_points.is_empty() {
-            self.points.clear();
-            self.band_points.iter_mut().for_each(Vec::clear);
+            self.points = Vec::new();
+            self.band_points = Default::default();
             self.corr_trail.clear();
             self.band_trail.clear();
             return;

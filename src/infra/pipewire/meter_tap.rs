@@ -40,6 +40,7 @@ impl MeterFormat {
 }
 
 const MAX_RECYCLED_BUFFERS: usize = 4;
+const MAX_RECYCLED_BUFFER_SAMPLES: usize = TARGET_BATCH_SAMPLES * 4;
 
 #[derive(Default)]
 struct SampleBatcher {
@@ -101,7 +102,7 @@ impl SampleBatcher {
     }
 
     fn stash_recycle(recycle: &mut Vec<Vec<f32>>, mut chunk: Vec<f32>) {
-        if recycle.len() < MAX_RECYCLED_BUFFERS {
+        if recycle.len() < MAX_RECYCLED_BUFFERS && chunk.capacity() <= MAX_RECYCLED_BUFFER_SAMPLES {
             chunk.clear();
             recycle.push(chunk);
         }

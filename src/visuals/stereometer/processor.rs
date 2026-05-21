@@ -282,8 +282,8 @@ impl AudioProcessor for StereometerProcessor {
 
     fn reset(&mut self) {
         self.snapshot = StereometerSnapshot::default();
-        self.history.clear();
-        self.band_history.iter_mut().for_each(VecDeque::clear);
+        self.history = VecDeque::new();
+        self.band_history = Default::default();
         self.history_channels = 0;
         self.crossovers = Self::build_crossovers(self.config.sample_rate);
         self.correlators = Self::fresh_correlators(self.config);
@@ -307,8 +307,8 @@ impl Reconfigurable<StereometerConfig> for StereometerProcessor {
         }
 
         if emit_turned_off {
-            self.band_history.iter_mut().for_each(VecDeque::clear);
-            self.snapshot.band_points.iter_mut().for_each(Vec::clear);
+            self.band_history = Default::default();
+            self.snapshot.band_points = Default::default();
         }
     }
 }

@@ -145,7 +145,8 @@ pub(crate) fn project_planar_channels<const N: usize>(
     channels: usize,
 ) -> Vec<f32> {
     let channels = channels.max(1);
-    let mut out = Vec::with_capacity(N.saturating_mul(stride));
+    let selected = selection.iter().filter(|&&c| c != Channel::None).count();
+    let mut out = Vec::with_capacity(selected.saturating_mul(stride));
     let left = data.get(..stride);
     let right = if channels > 1 {
         data.get(stride..stride + stride)
