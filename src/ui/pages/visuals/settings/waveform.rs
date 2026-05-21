@@ -40,16 +40,19 @@ fn configure_palette_for_mode(palette: &mut PaletteEditor, mode: WaveformColorMo
     palette.set_label_overrides(labels);
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum Message {
-    ScrollSpeed(f32),
-    BandDbFloor(f32),
-    Channel1(Channel),
-    Channel2(Channel),
-    ColorMode(WaveformColorMode),
-    ShowPeakHistory(bool),
-    Palette(PaletteEvent),
-}
+settings_messages!(WaveformSettingsPane as pane, value {
+    ScrollSpeed(f32) => update_f32_range(&mut pane.settings.scroll_speed, value, SCROLL_SPEED_RANGE);
+    BandDbFloor(f32) => update_f32_range(&mut pane.settings.band_db_floor, value, BAND_DB_FLOOR_RANGE);
+    Channel1(Channel) => set_if_changed(&mut pane.settings.channel_1, value);
+    Channel2(Channel) => set_if_changed(&mut pane.settings.channel_2, value);
+    ColorMode(WaveformColorMode) => {
+        let changed = set_if_changed(&mut pane.settings.color_mode, value);
+        if changed { configure_palette_for_mode(&mut pane.palette, value); }
+        changed
+    };
+    ShowPeakHistory(bool) => set_if_changed(&mut pane.settings.show_peak_history, value);
+    Palette(PaletteEvent) => pane.palette.update(value);
+});
 
 impl WaveformSettingsPane {
     fn view(&self) -> Element<'_, Message> {
@@ -64,27 +67,5 @@ impl WaveformSettingsPane {
             super::palette_section(&self.palette, Message::Palette);
         )
         .into()
-    }
-
-    fn handle(&mut self, msg: &Message) -> bool {
-        match *msg {
-            Message::ScrollSpeed(v) => {
-                update_f32_range(&mut self.settings.scroll_speed, v, SCROLL_SPEED_RANGE)
-            }
-            Message::BandDbFloor(v) => {
-                update_f32_range(&mut self.settings.band_db_floor, v, BAND_DB_FLOOR_RANGE)
-            }
-            Message::Channel1(ch) => set_if_changed(&mut self.settings.channel_1, ch),
-            Message::Channel2(ch) => set_if_changed(&mut self.settings.channel_2, ch),
-            Message::ColorMode(m) => {
-                let changed = set_if_changed(&mut self.settings.color_mode, m);
-                if changed {
-                    configure_palette_for_mode(&mut self.palette, m);
-                }
-                changed
-            }
-            Message::ShowPeakHistory(v) => set_if_changed(&mut self.settings.show_peak_history, v),
-            Message::Palette(e) => self.palette.update(e),
-        }
     }
 }

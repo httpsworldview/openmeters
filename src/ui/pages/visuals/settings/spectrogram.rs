@@ -25,20 +25,19 @@ settings_pane!(
     }
 );
 
-#[derive(Debug, Clone, Copy)]
-pub enum Message {
-    FftSize(usize),
-    HopDivisor(usize),
-    Window(WindowKind),
-    FrequencyScale(FrequencyScale),
-    UseReassignment(bool),
-    FloorDb(f32),
-    TiltDb(f32),
-    Rotation(f32),
-    ZeroPadding(usize),
-    PianoRoll(PianoRollOverlay),
-    Palette(PaletteEvent),
-}
+settings_messages!(SpectrogramSettingsPane as pane, value {
+    FftSize(usize) => update_fft_size(&mut pane.settings.fft_size, &mut pane.settings.hop_size, value);
+    HopDivisor(usize) => update_hop_divisor(pane.settings.fft_size, &mut pane.settings.hop_size, value);
+    Window(WindowKind) => set_if_changed(&mut pane.settings.window, value);
+    FrequencyScale(FrequencyScale) => set_if_changed(&mut pane.settings.frequency_scale, value);
+    UseReassignment(bool) => set_if_changed(&mut pane.settings.use_reassignment, value);
+    FloorDb(f32) => update_f32_range(&mut pane.settings.floor_db, value, FLOOR_DB_RANGE);
+    TiltDb(f32) => update_f32_range(&mut pane.settings.tilt_db, value, TILT_DB_RANGE);
+    Rotation(f32) => set_if_changed(&mut pane.settings.rotation, value.round() as i8);
+    ZeroPadding(usize) => set_if_changed(&mut pane.settings.zero_padding_factor, value);
+    PianoRoll(PianoRollOverlay) => set_if_changed(&mut pane.settings.piano_roll_overlay, value);
+    Palette(PaletteEvent) => pane.palette.update(value);
+});
 
 impl SpectrogramSettingsPane {
     fn view(&self) -> Element<'_, Message> {
@@ -88,22 +87,5 @@ impl SpectrogramSettingsPane {
         ]
         .spacing(16)
         .into()
-    }
-
-    fn handle(&mut self, msg: &Message) -> bool {
-        let s = &mut self.settings;
-        match *msg {
-            Message::FftSize(size) => update_fft_size(&mut s.fft_size, &mut s.hop_size, size),
-            Message::HopDivisor(div) => update_hop_divisor(s.fft_size, &mut s.hop_size, div),
-            Message::Window(kind) => set_if_changed(&mut s.window, kind),
-            Message::FrequencyScale(sc) => set_if_changed(&mut s.frequency_scale, sc),
-            Message::UseReassignment(v) => set_if_changed(&mut s.use_reassignment, v),
-            Message::FloorDb(v) => update_f32_range(&mut s.floor_db, v, FLOOR_DB_RANGE),
-            Message::TiltDb(v) => update_f32_range(&mut s.tilt_db, v, TILT_DB_RANGE),
-            Message::Rotation(v) => set_if_changed(&mut s.rotation, v.round() as i8),
-            Message::ZeroPadding(v) => set_if_changed(&mut s.zero_padding_factor, v),
-            Message::PianoRoll(opt) => set_if_changed(&mut s.piano_roll_overlay, opt),
-            Message::Palette(e) => self.palette.update(e),
-        }
     }
 }

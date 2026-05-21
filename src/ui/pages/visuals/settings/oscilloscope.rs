@@ -22,16 +22,28 @@ const SEGMENT_DURATION_RANGE: SliderRange = SliderRange::new(0.005, 0.1, 0.001);
 const PERSISTENCE_RANGE: SliderRange = SliderRange::new(0.0, 1.0, 0.01);
 const NUM_CYCLES_RANGE: SliderRange = SliderRange::new(1.0, 4.0, 1.0);
 
-#[derive(Debug, Clone, Copy)]
-pub enum Message {
-    SegmentDuration(f32),
-    Persistence(f32),
-    TriggerMode(TriggerPreset),
-    NumCycles(usize),
-    Channel1(Channel),
-    Channel2(Channel),
-    Palette(PaletteEvent),
-}
+settings_messages!(OscilloscopeSettingsPane as pane, value {
+    SegmentDuration(f32) => update_f32_range(&mut pane.settings.segment_duration, value, SEGMENT_DURATION_RANGE);
+    Persistence(f32) => update_f32_range(&mut pane.settings.persistence, value, PERSISTENCE_RANGE);
+    TriggerMode(TriggerPreset) => {
+        let mode = match value {
+            TriggerPreset::Stable => TriggerMode::Stable { num_cycles: pane.num_cycles },
+            TriggerPreset::ZeroCrossing => TriggerMode::ZeroCrossing,
+        };
+        set_if_changed(&mut pane.settings.trigger_mode, mode)
+    };
+    NumCycles(usize) => match pane.settings.trigger_mode {
+        TriggerMode::Stable { .. } => {
+            let cycles = value.clamp(NUM_CYCLES_RANGE.min as usize, NUM_CYCLES_RANGE.max as usize);
+            pane.num_cycles = cycles;
+            set_if_changed(&mut pane.settings.trigger_mode, TriggerMode::Stable { num_cycles: cycles })
+        }
+        TriggerMode::ZeroCrossing => false,
+    };
+    Channel1(Channel) => set_if_changed(&mut pane.settings.channel_1, value);
+    Channel2(Channel) => set_if_changed(&mut pane.settings.channel_2, value);
+    Palette(PaletteEvent) => pane.palette.update(value);
+});
 
 impl OscilloscopeSettingsPane {
     fn view(&self) -> Element<'_, Message> {
@@ -65,45 +77,6 @@ impl OscilloscopeSettingsPane {
             super::palette_section(&self.palette, Message::Palette);
         )
         .into()
-    }
-
-    fn handle(&mut self, msg: &Message) -> bool {
-        match *msg {
-            Message::SegmentDuration(v) => update_f32_range(
-                &mut self.settings.segment_duration,
-                v,
-                SEGMENT_DURATION_RANGE,
-            ),
-            Message::Persistence(v) => {
-                update_f32_range(&mut self.settings.persistence, v, PERSISTENCE_RANGE)
-            }
-            Message::TriggerMode(preset) => {
-                let mode = match preset {
-                    TriggerPreset::Stable => TriggerMode::Stable {
-                        num_cycles: self.num_cycles,
-                    },
-                    TriggerPreset::ZeroCrossing => TriggerMode::ZeroCrossing,
-                };
-                set_if_changed(&mut self.settings.trigger_mode, mode)
-            }
-            Message::NumCycles(c) => match self.settings.trigger_mode {
-                TriggerMode::Stable { .. } => {
-                    let clamped =
-                        c.clamp(NUM_CYCLES_RANGE.min as usize, NUM_CYCLES_RANGE.max as usize);
-                    self.num_cycles = clamped;
-                    set_if_changed(
-                        &mut self.settings.trigger_mode,
-                        TriggerMode::Stable {
-                            num_cycles: clamped,
-                        },
-                    )
-                }
-                TriggerMode::ZeroCrossing => false,
-            },
-            Message::Channel1(ch) => set_if_changed(&mut self.settings.channel_1, ch),
-            Message::Channel2(ch) => set_if_changed(&mut self.settings.channel_2, ch),
-            Message::Palette(e) => self.palette.update(e),
-        }
     }
 }
 
