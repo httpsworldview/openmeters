@@ -6,7 +6,7 @@ use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
 use iced_wgpu::primitive::{self, Primitive};
 use iced_wgpu::wgpu;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use crate::util::color::f32_to_u8;
 
@@ -67,7 +67,7 @@ pub enum PendingUpload {
     },
     Classic {
         slot: u32,
-        mags: Vec<f32>,
+        mags: Vec<u16>,
     },
 }
 
@@ -82,7 +82,7 @@ pub struct SpectrogramParams {
     pub points_per_column: u32,
     pub col_count: u32,
     pub write_slot: u32,
-    pub pending_uploads: Vec<PendingUpload>,
+    pub pending_uploads: VecDeque<PendingUpload>,
     pub copy_plan: Option<RingCopyPlan>,
     pub col_kind: ColumnKind,
     pub freq_min: f32,
@@ -461,13 +461,6 @@ impl Instance {
     }
 }
 
-// Fixed [dB] storage domain -- must match the shader constants in spectrogram.wgsl.
-// u16 unorm over this range gives ~0.0024 dB/step, decoupled from the live
-// floor/ceiling window so history recolors cleanly on slider drags.
-const DB_STORE_LO: f32 = -144.0;
-const DB_STORE_HI: f32 = 12.0;
-const DB_STORE_RANGE: f32 = DB_STORE_HI - DB_STORE_LO;
-
 // Column stride in bytes for the active storage kind. Packed rounds u16 pairs
 // up to a full u32 so pack/unpack2x16 never straddles a word boundary.
 pub(super) fn col_byte_stride(kind: ColumnKind, points_per_col: u32) -> u64 {
@@ -612,15 +605,12 @@ impl Resources {
                 let u16_stride = (stride / 2) as usize;
                 self.classic_upload_scratch.resize(u16_stride, 0);
                 let packed = &mut self.classic_upload_scratch;
-                let inv_range = 65535.0 / DB_STORE_RANGE;
                 for upload in &p.pending_uploads {
                     if let PendingUpload::Classic { slot, mags } = upload
                         && !mags.is_empty()
                     {
                         let written = mags.len().min(u16_stride);
-                        for (i, &db) in mags.iter().take(written).enumerate() {
-                            packed[i] = ((db - DB_STORE_LO) * inv_range).clamp(0.0, 65535.0) as u16;
-                        }
+                        packed[..written].copy_from_slice(&mags[..written]);
                         if written < u16_stride {
                             packed[written..].fill(0);
                         }

@@ -627,10 +627,11 @@ impl AudioProcessor for OscilloscopeProcessor {
 
     fn reset(&mut self) {
         self.snapshot = OscilloscopeSnapshot::default();
-        self.history.clear();
+        self.history = VecDeque::new();
+        self.pitch_detector = PitchDetector::new();
         self.last_pitch = None;
-        self.mono_buffer.clear();
-        self.trigger_scratch.clear();
+        self.mono_buffer = Vec::new();
+        self.trigger_scratch = TriggerScratch::default();
         self.octave_streak = 0;
     }
 }

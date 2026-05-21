@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::{loudness, oscilloscope, palettes, spectrogram, spectrum, stereometer, waveform};
+use super::{
+    loudness, oscilloscope, palettes,
+    spectrogram::{self, processor::MAX_SPECTROGRAM_HISTORY_COLUMNS},
+    spectrum, stereometer, waveform,
+};
 pub use crate::domain::visuals::VisualKind;
 use crate::{
     infra::pipewire::meter_tap::{self, MeterFormat},
@@ -147,7 +151,7 @@ visuals! {
             let vw = { s.borrow().view_width };
             if vw > 0 {
                 let mut cfg = p.config();
-                let tw = (vw as usize).min(8192);
+                let tw = (vw as usize).min(MAX_SPECTROGRAM_HISTORY_COLUMNS);
                 if cfg.history_length != tw {
                     cfg.history_length = tw;
                     p.update_config(cfg);

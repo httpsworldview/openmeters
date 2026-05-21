@@ -2,9 +2,7 @@
 // Copyright (C) 2026 Maika Namuo
 
 use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
-use crate::util::audio::{
-    BAND_SPLITS_HZ, DEFAULT_SAMPLE_RATE, WindowKind, apply_window, power_to_db, window_coefficients,
-};
+use crate::util::audio::{BAND_SPLITS_HZ, DEFAULT_SAMPLE_RATE, power_to_db};
 use realfft::{RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex32;
 use std::sync::Arc;
@@ -109,7 +107,6 @@ struct FrequencyAnalyzer {
     smoothed: f32,
     smoothed_bands: [f32; NUM_BANDS],
     band_bin_ranges: [(usize, usize); NUM_BANDS],
-    hann_window: Arc<[f32]>,
 }
 
 impl FrequencyAnalyzer {
@@ -129,7 +126,6 @@ impl FrequencyAnalyzer {
             smoothed: 0.1,
             smoothed_bands: [0.0; NUM_BANDS],
             band_bin_ranges,
-            hann_window: Arc::from([]),
             size,
             fft,
         }
@@ -194,11 +190,14 @@ impl FrequencyAnalyzer {
     fn apply_hann_window(&mut self) {
         let n = self.sample_history.len().min(self.size);
         self.input_buffer[n..].fill(0.0);
-        if self.hann_window.len() != n {
-            self.hann_window = window_coefficients(WindowKind::Hann, n);
-        }
         self.input_buffer[..n].copy_from_slice(&self.sample_history[..n]);
-        apply_window(&mut self.input_buffer[..n], &self.hann_window);
+        if n <= 1 {
+            return;
+        }
+        let step = core::f32::consts::TAU / (n - 1) as f32;
+        for (i, sample) in self.input_buffer[..n].iter_mut().enumerate() {
+            *sample *= 0.5 - 0.5 * (i as f32 * step).cos();
+        }
     }
 
     fn spectral_centroid(&self) -> f32 {
@@ -561,6 +560,20 @@ mod tests {
             sample_extrema(&[f32::NAN, -0.5, f32::INFINITY, 0.25]),
             (-0.5, 0.25)
         );
+    }
+
+    #[test]
+    fn frequency_analyzer_windows_partial_history_without_extra_cache() {
+        let mut analyzer = FrequencyAnalyzer::new(RATE);
+        analyzer.sample_history = vec![1.0; 5];
+        analyzer.apply_hann_window();
+
+        for (&actual, expected) in analyzer.input_buffer[..5].iter().zip([0.0, 0.5, 1.0, 0.5, 0.0]) {
+            assert!((actual - expected).abs() < 1e-6);
+        }
+        analyzer.sample_history.truncate(1);
+        analyzer.apply_hann_window();
+        assert_eq!(analyzer.input_buffer[0], 1.0);
     }
 
     #[test]
