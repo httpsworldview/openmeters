@@ -210,41 +210,30 @@ pub fn apply_window(buffer: &mut [f32], window: &[f32]) {
     }
 }
 
+#[inline]
+pub fn copy_from_deque(dst: &mut [f32], src: &VecDeque<f32>) {
+    assert!(
+        dst.len() <= src.len(),
+        "destination longer than source deque"
+    );
+    let len = dst.len();
+    let (head, tail) = src.as_slices();
+    let split = head.len().min(len);
+    dst[..split].copy_from_slice(&head[..split]);
+    if split < len {
+        dst[split..].copy_from_slice(&tail[..len - split]);
+    }
+}
+
 /// Copies the front of `src` into `dst` and removes the copied window's DC offset.
 #[inline]
 pub fn copy_dc_removed_from_deque(dst: &mut [f32], src: &VecDeque<f32>) {
-    debug_assert!(dst.len() <= src.len());
     if dst.is_empty() {
         return;
     }
-
-    let len = dst.len();
-    let (head, tail) = src.as_slices();
-    let sum = if head.len() >= len {
-        let head = &head[..len];
-        dst[..len].copy_from_slice(head);
-        head.iter().sum::<f32>()
-    } else {
-        let split = head.len();
-        let tail = &tail[..len - split];
-        dst[..split].copy_from_slice(head);
-        dst[split..len].copy_from_slice(tail);
-        let mut sum = 0.0;
-        for &sample in head {
-            sum += sample;
-        }
-        for &sample in tail {
-            sum += sample;
-        }
-        sum
-    };
-
-    let mean = sum / len as f32;
-    if mean.abs() > f32::EPSILON {
-        for sample in &mut dst[..len] {
-            *sample -= mean;
-        }
-    }
+    copy_from_deque(dst, src);
+    let mean = dst.iter().sum::<f32>() / dst.len() as f32;
+    dst.iter_mut().for_each(|sample| *sample -= mean);
 }
 
 #[inline]

@@ -71,6 +71,10 @@ pub enum PendingUpload {
     },
 }
 
+// (source_capacity, [source_slot, destination_slot] copies) for preserving
+// GPU-resident columns when the CPU ring is resized or re-linearized.
+pub type RingCopyPlan = (u32, Vec<[u32; 2]>);
+
 pub struct SpectrogramParams {
     pub key: u64,
     pub bounds: Rectangle,
@@ -79,7 +83,7 @@ pub struct SpectrogramParams {
     pub col_count: u32,
     pub write_slot: u32,
     pub pending_uploads: Vec<PendingUpload>,
-    pub linearize_old_write_slot: Option<u32>,
+    pub copy_plan: Option<RingCopyPlan>,
     pub col_kind: ColumnKind,
     pub freq_min: f32,
     pub freq_max: f32,
@@ -548,7 +552,6 @@ impl Resources {
         self.write_palette(queue, p);
     }
 
-    // Grow or shrink the ring, preserving the newest `col_count` columns.
     fn resize_ring(
         &mut self,
         device: &wgpu::Device,
@@ -558,45 +561,33 @@ impl Resources {
     ) {
         let stride = col_byte_stride(p.col_kind, p.points_per_column);
         let needed = p.ring_capacity as u64 * stride;
-        if needed == self.ring.capacity {
+        let copy_plan = p
+            .copy_plan
+            .as_ref()
+            .filter(|(_, copies)| p.col_count > 0 && !copies.is_empty());
+        if needed == self.ring.capacity && copy_plan.is_none() {
             return;
         }
+
         let new_ring = create_ring(device, bgls, &self.uniform_buf, &self.palette_view, p);
-        if p.col_count > 0 {
-            let old_cap_cols = self.ring.capacity / stride;
-            let cols_to_copy = (p.col_count as u64).min(old_cap_cols);
-            let mut encoder =
-                device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-            if let Some(start) = p.linearize_old_write_slot {
-                let start = start as u64;
-                let tail = (old_cap_cols - start).min(cols_to_copy);
-                encoder.copy_buffer_to_buffer(
-                    &self.ring.buf,
-                    start * stride,
-                    &new_ring.buf,
-                    0,
-                    tail * stride,
-                );
-                let head = cols_to_copy - tail;
-                if head > 0 {
-                    encoder.copy_buffer_to_buffer(
-                        &self.ring.buf,
-                        0,
-                        &new_ring.buf,
-                        tail * stride,
-                        head * stride,
-                    );
+        if let Some((source_cap, copies)) = copy_plan {
+            let source_cap = u64::from(*source_cap).min(self.ring.capacity / stride);
+            if source_cap > 0 {
+                let mut encoder =
+                    device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+                for &[src, dst] in copies {
+                    if u64::from(src) < source_cap && dst < p.ring_capacity {
+                        encoder.copy_buffer_to_buffer(
+                            &self.ring.buf,
+                            u64::from(src) * stride,
+                            &new_ring.buf,
+                            u64::from(dst) * stride,
+                            stride,
+                        );
+                    }
                 }
-            } else {
-                encoder.copy_buffer_to_buffer(
-                    &self.ring.buf,
-                    0,
-                    &new_ring.buf,
-                    0,
-                    cols_to_copy * stride,
-                );
+                queue.submit(std::iter::once(encoder.finish()));
             }
-            queue.submit(std::iter::once(encoder.finish()));
         }
         self.ring = new_ring;
     }

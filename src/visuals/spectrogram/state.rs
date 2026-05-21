@@ -6,8 +6,8 @@ use super::processor::{
     SpectrogramUpdate,
 };
 use super::render::{
-    ColumnKind, PendingUpload, SPECTROGRAM_PALETTE_SIZE, SpectrogramParams, SpectrogramPrimitive,
-    col_byte_stride,
+    ColumnKind, PendingUpload, RingCopyPlan, SPECTROGRAM_PALETTE_SIZE, SpectrogramParams,
+    SpectrogramPrimitive, col_byte_stride,
 };
 use crate::persistence::settings::PianoRollOverlay;
 use crate::ui::theme::BORDER_SUBTLE;
@@ -92,20 +92,18 @@ pub(crate) struct SpectrogramState {
     sample_rate: f32,
     fft_size: usize,
     hop_size: usize,
-    freq_scale: FrequencyScale,
+    pub(crate) freq_scale: FrequencyScale,
     col_kind: ColumnKind,
     zoom: f32,
     pan: f32,
     pub(crate) view_width: u32,
-    pub(crate) view_height: u32,
     points_per_column: usize,
     ring_capacity: u32,
+    gpu_capacity: u32,
     write_slot: u32,
     col_count: u32,
-    // keeps pending from growing when draw() stops firing
-    // (e.g. spectrogram on another workspace or occluded)
     pending: VecDeque<PendingUpload>,
-    linearize_from: Option<u32>,
+    pending_copy: Option<RingCopyPlan>,
 }
 
 impl SpectrogramState {
@@ -127,13 +125,13 @@ impl SpectrogramState {
             zoom: 1.0,
             pan: 0.5,
             view_width: 0,
-            view_height: 0,
             points_per_column: 0,
             ring_capacity: 0,
+            gpu_capacity: 0,
             write_slot: 0,
             col_count: 0,
             pending: VecDeque::new(),
-            linearize_from: None,
+            pending_copy: None,
         }
     }
 
@@ -188,30 +186,31 @@ impl SpectrogramState {
             Some(SpectrogramColumn::Classic(_)) => ColumnKind::Classic,
             None => self.col_kind,
         };
-        const GPU_MAX_BUFFER: u64 = 256 * 1024 * 1024; // wgpu guaranteed minimum
-        let stride = col_byte_stride(new_kind, ppc as u32);
-        let max_cols = (GPU_MAX_BUFFER / stride) as u32;
+        let max_bytes = 128 * 1024 * 1024 * (1 + u64::from(new_kind == ColumnKind::Reassigned));
+        let max_cols = (max_bytes / col_byte_stride(new_kind, ppc as u32)) as u32;
         let capacity = (snap.history_length as u32).clamp(1, 8192).min(max_cols);
+        if capacity == 0 {
+            return;
+        }
 
         if snap.reset || self.points_per_column != ppc || new_kind != self.col_kind {
             self.points_per_column = ppc;
             self.ring_capacity = capacity;
+            self.gpu_capacity = 0;
             self.col_kind = new_kind;
             self.write_slot = 0;
             self.col_count = 0;
-            self.linearize_from = None;
             self.pending.clear();
-        } else if capacity > self.ring_capacity {
-            if self.col_count >= self.ring_capacity {
-                self.linearize_from = (self.write_slot != 0).then_some(self.write_slot);
+            self.pending_copy = None;
+        } else if capacity != self.ring_capacity {
+            self.ensure_pending_copy();
+            if capacity > self.ring_capacity && self.col_count >= self.ring_capacity {
+                self.remap_retained(self.write_slot, self.col_count);
                 self.write_slot = self.col_count % capacity;
-            }
-            self.ring_capacity = capacity;
-        } else if capacity < self.ring_capacity {
-            if self.col_count >= capacity {
+            } else if capacity < self.ring_capacity && self.col_count >= capacity {
                 let oldest_kept =
                     (self.write_slot + self.ring_capacity - capacity) % self.ring_capacity;
-                self.linearize_from = (oldest_kept != 0).then_some(oldest_kept);
+                self.remap_retained(oldest_kept, capacity);
                 self.col_count = capacity;
                 self.write_slot = 0;
             }
@@ -240,6 +239,29 @@ impl SpectrogramState {
         }
     }
 
+    fn ensure_pending_copy(&mut self) {
+        if self.pending_copy.is_none() && self.gpu_capacity > 0 && self.col_count > 0 {
+            let n = self.col_count.min(self.ring_capacity).min(self.gpu_capacity);
+            self.pending_copy = Some((self.gpu_capacity, (0..n).map(|s| [s, s]).collect()));
+        }
+    }
+
+    fn remap_retained(&mut self, start: u32, keep: u32) {
+        let old_cap = self.ring_capacity.max(1);
+        let remap = |slot: &mut u32| {
+            *slot = (*slot + old_cap - start) % old_cap;
+            *slot < keep
+        };
+        self.pending.retain_mut(|upload| {
+            let (PendingUpload::Reassigned { slot, .. } | PendingUpload::Classic { slot, .. }) =
+                upload;
+            remap(slot)
+        });
+        if let Some((_, copies)) = &mut self.pending_copy {
+            copies.retain_mut(|[_, dst]| remap(dst));
+        }
+    }
+
     pub fn visual_params(
         &mut self,
         bounds: Rectangle,
@@ -253,6 +275,9 @@ impl SpectrogramState {
         let bin_hz = self.sample_rate / (self.fft_size.max(1) as f32);
         let (freq_min, freq_max) = display_axis(self.sample_rate);
 
+        let copy_plan = self.pending_copy.take();
+        self.gpu_capacity = self.ring_capacity;
+
         Some(SpectrogramParams {
             key: self.key,
             bounds,
@@ -261,6 +286,7 @@ impl SpectrogramState {
             col_count: self.col_count,
             write_slot: self.write_slot,
             pending_uploads: Vec::from(std::mem::take(&mut self.pending)),
+            copy_plan,
             col_kind: self.col_kind,
             freq_min,
             freq_max,
@@ -275,7 +301,6 @@ impl SpectrogramState {
             tilt_db: self.style.tilt_db,
             uv_y_range,
             rotation: self.rotation,
-            linearize_old_write_slot: self.linearize_from.take(),
         })
     }
 
@@ -731,10 +756,11 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
                 bounds.width.round().max(1.0) as u32,
                 bounds.height.round().max(1.0) as u32,
             );
-            let swapped = matches!(state.rotation_index(), 1 | 3);
-            let (pw, ph) = if swapped { (bh, bw) } else { (bw, bh) };
-            state.view_width = pw;
-            state.view_height = ph;
+            state.view_width = if matches!(state.rotation_index(), 1 | 3) {
+                bh
+            } else {
+                bw
+            };
             uv_y_range = state.uv_y_range();
             piano_roll = state.piano_roll_overlay;
             bg = state.style.background;
@@ -784,4 +810,82 @@ pub(crate) fn widget<'a, Message: 'a>(
     state: &'a RefCell<SpectrogramState>,
 ) -> Element<'a, Message> {
     Element::new(Spectrogram::new(state))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn classic_update(history_length: usize, reset: bool, values: &[f32]) -> SpectrogramUpdate {
+        SpectrogramUpdate {
+            fft_size: 2,
+            hop_size: 1,
+            sample_rate: 48_000.0,
+            frequency_scale: FrequencyScale::Linear,
+            history_length,
+            reset,
+            points_per_column: 2,
+            new_columns: values
+                .iter()
+                .map(|&v| SpectrogramColumn::Classic(vec![v; 2]))
+                .collect(),
+        }
+    }
+
+    fn visual_params(state: &mut SpectrogramState) -> SpectrogramParams {
+        state
+            .visual_params(
+                Rectangle::new(Point::new(0.0, 0.0), Size::new(10.0, 10.0)),
+                [0.0, 1.0],
+            )
+            .expect("expected spectrogram params")
+    }
+
+    fn upload_slots(params: &SpectrogramParams) -> Vec<u32> {
+        params
+            .pending_uploads
+            .iter()
+            .map(|upload| match upload {
+                PendingUpload::Reassigned { slot, .. } | PendingUpload::Classic { slot, .. } => {
+                    *slot
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn growth_copy_plan_remaps_wrapped_ring() {
+        let mut state = SpectrogramState::new();
+        state.apply_snapshot(classic_update(4, true, &[0.0, 1.0, 2.0, 3.0]));
+        assert_eq!(upload_slots(&visual_params(&mut state)), vec![0, 1, 2, 3]);
+
+        state.apply_snapshot(classic_update(4, false, &[4.0, 5.0]));
+        assert_eq!(upload_slots(&visual_params(&mut state)), vec![0, 1]);
+
+        state.apply_snapshot(classic_update(6, false, &[6.0]));
+        let params = visual_params(&mut state);
+        assert_eq!(params.ring_capacity, 6);
+        assert_eq!(params.col_count, 5);
+        assert_eq!(params.write_slot, 5);
+        assert_eq!(upload_slots(&params), vec![4]);
+        assert_eq!(
+            params.copy_plan,
+            Some((4, vec![[0, 2], [1, 3], [2, 0], [3, 1]]))
+        );
+    }
+
+    #[test]
+    fn shrink_copy_plan_keeps_newest_columns() {
+        let mut state = SpectrogramState::new();
+        state.apply_snapshot(classic_update(4, true, &[0.0, 1.0, 2.0, 3.0]));
+        assert_eq!(upload_slots(&visual_params(&mut state)), vec![0, 1, 2, 3]);
+
+        state.apply_snapshot(classic_update(2, false, &[4.0]));
+        let params = visual_params(&mut state);
+        assert_eq!(params.ring_capacity, 2);
+        assert_eq!(params.col_count, 2);
+        assert_eq!(params.write_slot, 1);
+        assert_eq!(upload_slots(&params), vec![0]);
+        assert_eq!(params.copy_plan, Some((4, vec![[2, 0], [3, 1]])));
+    }
 }
