@@ -3,7 +3,9 @@
 
 use super::palette::{PaletteEditor, PaletteEvent};
 use super::widgets::{SliderRange, pick, set_if_changed, slide, toggle, update_f32_range};
-use crate::persistence::settings::{Channel, WaveformColorMode, WaveformSettings};
+use crate::persistence::settings::WaveformSettings;
+use crate::util::audio::Channel;
+use crate::visuals::options::WaveformColorMode;
 use crate::visuals::palettes::waveform::GRADIENT_STOPS;
 use crate::visuals::registry::VisualKind;
 use crate::visuals::waveform::processor::{

@@ -9,14 +9,13 @@ use crate::persistence::settings::OscilloscopeSettings;
 use crate::util::audio::{Channel, project_planar_channels};
 use crate::util::color::color_to_rgba;
 use crate::visuals::palettes;
-use crate::{vis_processor, visualization_widget};
 use iced::Color;
 
 const OSCILLOSCOPE_PALETTE_SIZE: usize = 1;
 const MAX_PERSISTENCE: f32 = 0.98;
 const FILL_ALPHA: f32 = 0.15;
 
-vis_processor!(
+crate::visuals::vis_processor!(
     OscilloscopeProcessor,
     CoreOscilloscopeProcessor,
     OscilloscopeConfig,
@@ -141,4 +140,4 @@ impl Default for OscilloscopeStyle {
     }
 }
 
-visualization_widget!(Oscilloscope, OscilloscopeState, OscilloscopePrimitive);
+crate::visuals::visualization_widget!(Oscilloscope, OscilloscopeState, OscilloscopePrimitive);

@@ -6,8 +6,9 @@ use super::widgets::{
     FFT_OPTIONS, HOP_DIVISORS, SliderRange, get_closest_hop_divisor, pick, section, set_if_changed,
     slide, toggle, update_f32_range, update_fft_size, update_hop_divisor, update_usize_from_f32,
 };
-use crate::persistence::settings::{SpectrumDisplayMode, SpectrumSettings, SpectrumWeightingMode};
+use crate::persistence::settings::SpectrumSettings;
 use crate::util::audio::FrequencyScale;
+use crate::visuals::options::{SpectrumDisplayMode, SpectrumWeightingMode};
 use crate::visuals::registry::VisualKind;
 use crate::visuals::spectrum::processor::{
     AveragingMode, MAX_SPECTRUM_DB_FLOOR, MAX_SPECTRUM_EXP_FACTOR, MAX_SPECTRUM_PEAK_DECAY,
@@ -26,7 +27,7 @@ const GAP_R: SliderRange = SliderRange::new(0.0, 0.8, 0.05);
 const HIGH_R: SliderRange = SliderRange::new(0.0, 0.9, 0.01);
 const FLOOR_R: SliderRange = SliderRange::new(MIN_SPECTRUM_DB_FLOOR, MAX_SPECTRUM_DB_FLOOR, 1.0);
 
-crate::settings_enum!(all pub(crate) enum AvgMode {
+crate::macros::choice_enum!(all pub(crate) enum AvgMode {
     None => "None",
     #[default] Exponential => "Exponential",
     PeakHold => "Peak hold",

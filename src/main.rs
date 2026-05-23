@@ -4,6 +4,7 @@
 mod domain;
 mod dsp;
 mod infra;
+mod macros;
 mod persistence;
 mod ui;
 mod util;

@@ -6,9 +6,9 @@ use super::widgets::{
     SliderRange, pick, section, set_if_changed, slide, toggle, update_f32_range,
     update_usize_from_f32,
 };
-use crate::persistence::settings::{
+use crate::persistence::settings::StereometerSettings;
+use crate::visuals::options::{
     CorrelationMeterMode, CorrelationMeterSide, StereometerMode, StereometerScale,
-    StereometerSettings,
 };
 use crate::visuals::registry::VisualKind;
 use iced::widget::{column, row};

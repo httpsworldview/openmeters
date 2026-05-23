@@ -4,7 +4,7 @@
 use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
 
-use crate::sdf_primitive;
+use crate::visuals::render::common::sdf_primitive;
 use crate::visuals::render::common::{ClipTransform, SdfVertex, line_vertices, quad_vertices};
 
 const GAP_FRACTION: f32 = 0.1;

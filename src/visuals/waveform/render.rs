@@ -5,7 +5,7 @@ use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
 use std::sync::Arc;
 
-use crate::sdf_primitive;
+use crate::visuals::render::common::sdf_primitive;
 use crate::util::color::rgba_with_alpha;
 use crate::visuals::render::common::{
     ChannelLayout, ClipTransform, SdfVertex, extend_filled_line, quad_vertices,

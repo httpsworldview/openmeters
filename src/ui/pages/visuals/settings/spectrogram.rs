@@ -6,8 +6,9 @@ use super::widgets::{
     FFT_OPTIONS, HOP_DIVISORS, SliderRange, get_closest_hop_divisor, pick, section, set_if_changed,
     slide, toggle, update_f32_range, update_fft_size, update_hop_divisor,
 };
-use crate::persistence::settings::{PianoRollOverlay, SpectrogramSettings};
+use crate::persistence::settings::SpectrogramSettings;
 use crate::util::audio::{FrequencyScale, WindowKind};
+use crate::visuals::options::PianoRollOverlay;
 use crate::visuals::registry::VisualKind;
 use iced::widget::{column, row};
 use iced::{Element, Length};

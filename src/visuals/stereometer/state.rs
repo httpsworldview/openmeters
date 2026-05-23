@@ -5,13 +5,12 @@ use super::processor::{
     BandCorrelation, StereometerConfig, StereometerProcessor as CoreProcessor, StereometerSnapshot,
 };
 use super::render::{StereometerParams, StereometerPrimitive, scale_point};
-use crate::persistence::settings::{
-    CorrelationMeterMode, CorrelationMeterSide, StereometerMode, StereometerScale,
-    StereometerSettings,
-};
+use crate::persistence::settings::StereometerSettings;
 use crate::util::color::color_to_rgba;
+use crate::visuals::options::{
+    CorrelationMeterMode, CorrelationMeterSide, StereometerMode, StereometerScale,
+};
 use crate::visuals::palettes;
-use crate::{vis_processor, visualization_widget};
 use iced::Color;
 use std::collections::VecDeque;
 
@@ -19,7 +18,7 @@ const TRAIL_LEN: usize = 32;
 const CORRELATION_SMOOTHING: f32 = 0.85;
 const MAX_PERSISTENCE: f32 = 0.9;
 
-vis_processor!(
+crate::visuals::vis_processor!(
     StereometerProcessor,
     CoreProcessor,
     StereometerConfig,
@@ -180,4 +179,4 @@ impl StereometerState {
     }
 }
 
-visualization_widget!(Stereometer, StereometerState, StereometerPrimitive);
+crate::visuals::visualization_widget!(Stereometer, StereometerState, StereometerPrimitive);

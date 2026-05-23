@@ -5,7 +5,8 @@ use super::processor::{
     SpectrumConfig, SpectrumProcessor as CoreSpectrumProcessor, SpectrumSnapshot,
 };
 use super::render::{MIN_BAR_COUNT, SpectrumParams, SpectrumPeakParams, SpectrumPrimitive};
-use crate::persistence::settings::{SpectrumDisplayMode, SpectrumSettings, SpectrumWeightingMode};
+use crate::persistence::settings::SpectrumSettings;
+use crate::visuals::options::{SpectrumDisplayMode, SpectrumWeightingMode};
 use crate::util::audio::musical::NoteInfo;
 use crate::util::audio::{FrequencyScale, fmt_freq, lerp};
 use crate::util::color::{color_to_rgba, with_alpha};
@@ -13,7 +14,6 @@ use crate::visuals::palettes;
 use crate::visuals::render::common::{
     fill_rect, fill_snapped_bordered_rect, make_text, measure_text,
 };
-use crate::{vis_processor, visualization_widget};
 use iced::advanced::Renderer as _;
 use iced::advanced::text::Renderer as _;
 use iced::{Color, Point, Rectangle, Size};
@@ -32,7 +32,7 @@ static GRID_LABEL_SLOT: LazyLock<Size> = LazyLock::new(|| {
         })
 });
 
-vis_processor!(
+crate::visuals::vis_processor!(
     SpectrumProcessor,
     CoreSpectrumProcessor,
     SpectrumConfig,
@@ -328,7 +328,7 @@ impl SpectrumState {
     }
 }
 
-visualization_widget!(Spectrum, SpectrumState, |this, r, th, b| {
+crate::visuals::visualization_widget!(Spectrum, SpectrumState, |this, r, th, b| {
     let state = this.state.borrow();
     let peak = state.peak();
     let peak_layout = peak.and_then(|p| peak_label_layout(b, p));

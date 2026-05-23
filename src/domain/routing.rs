@@ -9,7 +9,7 @@ pub enum RoutingCommand {
     SelectCaptureDevice(DeviceSelection),
 }
 
-crate::settings_enum!(pub enum CaptureMode { #[default] Applications => "Applications", Device => "Device" });
+crate::macros::choice_enum!(all pub enum CaptureMode { #[default] Applications => "Applications", Device => "Devices" });
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]

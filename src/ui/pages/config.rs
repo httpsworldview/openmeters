@@ -260,10 +260,7 @@ impl ConfigPage {
 
     fn render_capture_section(&self) -> Column<'_, ConfigMessage> {
         let capture_controls = radio_row(
-            &[
-                (CaptureMode::Applications, "Applications"),
-                (CaptureMode::Device, "Devices"),
-            ],
+            CaptureMode::ALL,
             self.capture_mode,
             ConfigMessage::CaptureModeChanged,
         );
@@ -540,7 +537,7 @@ impl ConfigPage {
                     .width(Length::Fill),
                 )
                 .push(radio_row(
-                    &[(BarAlignment::Top, "Top"), (BarAlignment::Bottom, "Bottom")],
+                    BarAlignment::ALL,
                     bar.alignment,
                     ConfigMessage::BarAlignmentChanged,
                 ))
@@ -684,20 +681,18 @@ fn section_with_divider<'a>(
         .push(content)
 }
 
-fn radio_row<'a, T: Copy + Eq + 'a>(
-    options: &[(T, &str)],
+fn radio_row<'a, T: Copy + Eq + std::fmt::Display + 'a>(
+    options: &'a [T],
     selected: T,
     on_select: fn(T) -> ConfigMessage,
 ) -> Row<'a, ConfigMessage> {
-    options
-        .iter()
-        .fold(Row::new().spacing(12), |row, &(val, label)| {
-            row.push(
-                radio(label, val, Some(selected), on_select)
-                    .size(14)
-                    .text_size(TEXT_SIZE),
-            )
-        })
+    options.iter().fold(Row::new().spacing(12), |row, &val| {
+        row.push(
+            radio(val.to_string(), val, Some(selected), on_select)
+                .size(14)
+                .text_size(TEXT_SIZE),
+        )
+    })
 }
 
 fn render_toggle_grid<'a, T, N, F>(items: &[T], mut project: F) -> Column<'a, ConfigMessage>

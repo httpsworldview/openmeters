@@ -11,7 +11,7 @@ pub fn clamp_bar_height(height: u32) -> u32 {
     height.clamp(BAR_MIN_HEIGHT, BAR_MAX_HEIGHT)
 }
 
-crate::settings_enum!(pub enum BarAlignment { #[default] Top => "Top", Bottom => "Bottom" });
+crate::macros::choice_enum!(all pub enum BarAlignment { #[default] Top => "Top", Bottom => "Bottom" });
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]

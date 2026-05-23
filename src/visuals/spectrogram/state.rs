@@ -9,12 +9,11 @@ use super::render::{
     ColumnKind, PendingUpload, RingCopyPlan, SPECTROGRAM_PALETTE_SIZE, SpectrogramParams,
     SpectrogramPrimitive, col_byte_stride,
 };
-use crate::persistence::settings::PianoRollOverlay;
+use crate::visuals::options::PianoRollOverlay;
 use crate::ui::theme::BORDER_SUBTLE;
 use crate::util::audio::musical::{MusicalNote, NoteInfo};
 use crate::util::audio::{DB_FLOOR, FrequencyScale, fmt_duration, fmt_freq};
 use crate::util::color::{color_to_rgba, lerp_color, rgba_with_alpha, with_alpha};
-use crate::vis_processor;
 use crate::visuals::palettes;
 use crate::visuals::render::common::{fill_bordered_rect, fill_rect, make_text, measure_text};
 use iced::advanced::renderer;
@@ -50,7 +49,7 @@ fn display_axis(sample_rate: f32) -> (f32, f32) {
     (DISPLAY_MIN_HZ.min(nyq * 0.5), nyq)
 }
 
-vis_processor!(
+crate::visuals::vis_processor!(
     SpectrogramProcessor,
     CoreSpectrogramProcessor,
     SpectrogramConfig,
