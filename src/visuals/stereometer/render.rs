@@ -5,10 +5,10 @@ use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
 
 use super::processor::BandCorrelation;
-use crate::persistence::settings::{
+use crate::visuals::render::common::sdf_primitive;
+use crate::visuals::options::{
     CorrelationMeterMode, CorrelationMeterSide, StereometerMode, StereometerScale,
 };
-use crate::sdf_primitive;
 use crate::visuals::render::common::{
     ClipTransform, SdfVertex, dot_vertices, gradient_quad_vertices, line_vertices, quad_vertices,
 };

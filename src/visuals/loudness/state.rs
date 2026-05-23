@@ -8,11 +8,11 @@ use super::processor::{
     LoudnessConfig, LoudnessProcessor as CoreLoudnessProcessor, LoudnessSnapshot, MAX_CHANNELS,
 };
 use super::render::{LoudnessParams, LoudnessPrimitive, MeterFill};
-use crate::persistence::settings::{LoudnessSettings, MeterMode};
-use crate::util::color::{color_to_rgba, with_alpha};
+use crate::persistence::settings::LoudnessSettings;
+use crate::visuals::options::MeterMode;
 use crate::visuals::palettes;
+use crate::util::color::{color_to_rgba, with_alpha};
 use crate::visuals::render::common::{fill_rect, make_text};
-use crate::{vis_processor, visualization_widget};
 use iced::advanced::text;
 use iced::alignment::{Horizontal, Vertical};
 use iced::{Color, Point, Rectangle, Size};
@@ -33,7 +33,7 @@ const LEFT_CHANNEL_INDICES: &[usize] = &[0, 4, 6];
 const RIGHT_CHANNEL_INDICES: &[usize] = &[1, 5, 7];
 const CENTER_CHANNEL_INDEX: usize = 2;
 
-vis_processor!(
+crate::visuals::vis_processor!(
     LoudnessProcessor,
     CoreLoudnessProcessor,
     LoudnessConfig,
@@ -268,7 +268,7 @@ fn is_danger_zone(mode: MeterMode, db: f32) -> bool {
     zone_index(mode, db) == DANGER_ZONE_INDEX
 }
 
-visualization_widget!(Loudness, LoudnessState, |this, renderer, theme, bounds| {
+crate::visuals::visualization_widget!(Loudness, LoudnessState, |this, renderer, theme, bounds| {
     let state = this.state.borrow();
     let params = state.visual_params(bounds);
 

@@ -14,7 +14,7 @@ pub const DB_FLOOR: f32 = -140.0;
 
 pub const BAND_SPLITS_HZ: [f32; 2] = [250.0, 4000.0];
 
-crate::settings_enum!(all pub enum Channel {
+crate::macros::choice_enum!(all pub enum Channel {
     #[default]
     Left => "Left",
     Right => "Right",
@@ -23,7 +23,7 @@ crate::settings_enum!(all pub enum Channel {
     None => "None",
 });
 
-crate::settings_enum!(all pub enum FrequencyScale {
+crate::macros::choice_enum!(all pub enum FrequencyScale {
     Linear => "Linear",
     #[default] Logarithmic => "Logarithmic",
     #[serde(alias = "mel")] Erb => "Erb",
@@ -63,7 +63,7 @@ impl FrequencyScale {
     }
 }
 
-crate::settings_enum!(no_default all
+crate::macros::choice_enum!(no_default all
     #[derive(Hash)]
     pub enum WindowKind {
         Rectangular => "Rectangular",

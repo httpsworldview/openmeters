@@ -14,7 +14,7 @@ pub(crate) fn dict_to_map(dict: Option<&DictRef>) -> HashMap<String, String> {
         .collect()
 }
 
-crate::settings_enum!(pub enum PortDirection {
+crate::macros::choice_enum!(pub enum PortDirection {
     Input => "Input",
     Output => "Output",
     #[default] Unknown => "Unknown",
@@ -52,7 +52,7 @@ impl GraphPort {
     }
 }
 
-crate::settings_enum!(pub enum NodeDirection {
+crate::macros::choice_enum!(pub enum NodeDirection {
     Input => "Input",
     Output => "Output",
     #[default] Unknown => "Unknown",

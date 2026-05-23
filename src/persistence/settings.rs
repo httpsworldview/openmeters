@@ -12,8 +12,6 @@ pub use palette::{HasPalette, PaletteSettings};
 pub use store::{SettingsHandle, SettingsManager};
 pub use theme::{BUILTIN_THEME, ThemeChoice, ThemeFile};
 pub use visuals::{
-    Channel, CorrelationMeterMode, CorrelationMeterSide, LoudnessSettings, MeterMode,
-    ModuleSettings, OscilloscopeSettings, PianoRollOverlay, SpectrogramSettings,
-    SpectrumDisplayMode, SpectrumSettings, SpectrumWeightingMode, StereometerMode,
-    StereometerScale, StereometerSettings, VisualSettings, WaveformColorMode, WaveformSettings,
+    LoudnessSettings, ModuleSettings, OscilloscopeSettings, SpectrogramSettings, SpectrumSettings,
+    StereometerSettings, VisualSettings, WaveformSettings,
 };

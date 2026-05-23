@@ -560,7 +560,6 @@ impl<K: std::hash::Hash + Eq + Copy> SdfPipeline<K> {
 }
 
 // Spectrogram has different requirements, so it does not use this macro.
-#[macro_export]
 macro_rules! sdf_primitive {
     ($primitive:ident, $pipeline:ident, $key_ty:ty, $label:expr, $topology:ident, |$self:ident| $key_expr:expr) => {
         impl iced_wgpu::primitive::Primitive for $primitive {
@@ -606,3 +605,5 @@ macro_rules! sdf_primitive {
         }
     };
 }
+
+pub(crate) use sdf_primitive;

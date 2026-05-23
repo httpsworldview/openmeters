@@ -6,12 +6,12 @@ use super::processor::{
     WaveformProcessor as CoreWaveformProcessor, WaveformSnapshot,
 };
 use super::render::{PreviewSample, WaveformParams, WaveformPrimitive};
-use crate::persistence::settings::{WaveformColorMode, WaveformSettings};
+use crate::persistence::settings::WaveformSettings;
 use crate::util::audio::{Channel, project_planar_channels};
+use crate::visuals::options::WaveformColorMode;
 use crate::util::color::{color_to_rgba, sample_gradient};
 use crate::visuals::palettes;
 use crate::visuals::palettes::waveform::GRADIENT_STOPS;
-use crate::{vis_processor, visualization_widget};
 use iced::Color;
 use std::sync::Arc;
 
@@ -19,7 +19,7 @@ const COLUMN_WIDTH_PIXELS: f32 = 1.0;
 
 type SampleColorData = (Arc<[[f32; 2]]>, Arc<[[f32; 4]]>);
 
-vis_processor!(
+crate::visuals::vis_processor!(
     WaveformProcessor,
     CoreWaveformProcessor,
     WaveformConfig,
@@ -286,4 +286,4 @@ impl WaveformStyle {
     }
 }
 
-visualization_widget!(Waveform, WaveformState, WaveformPrimitive);
+crate::visuals::visualization_widget!(Waveform, WaveformState, WaveformPrimitive);

@@ -2,7 +2,9 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::{
-    loudness, oscilloscope, palettes,
+    loudness,
+    options::StereometerMode,
+    oscilloscope, palettes,
     spectrogram::{self, processor::MAX_SPECTROGRAM_HISTORY_COLUMNS},
     spectrum, stereometer, waveform,
 };
@@ -207,7 +209,7 @@ visuals! {
         apply(p, s, set) {
             let mut cfg = p.config();
             set.apply_to(&mut cfg);
-            cfg.emit_band_points = set.mode == settings_cfg::StereometerMode::DotCloudBands;
+            cfg.emit_band_points = set.mode == StereometerMode::DotCloudBands;
             p.update_config(cfg);
             let mut st = s.borrow_mut();
             st.update_view_settings(&set);

@@ -3,7 +3,8 @@
 
 use super::palette::PaletteEvent;
 use super::widgets::{SliderRange, pick, set_if_changed, slide, update_f32_range};
-use crate::persistence::settings::{Channel, OscilloscopeSettings};
+use crate::persistence::settings::OscilloscopeSettings;
+use crate::util::audio::Channel;
 use crate::visuals::oscilloscope::processor::TriggerMode;
 use crate::visuals::registry::VisualKind;
 use iced::Element;
@@ -80,7 +81,7 @@ impl OscilloscopeSettingsPane {
     }
 }
 
-crate::settings_enum!(no_default all pub(crate) enum TriggerPreset {
+crate::macros::choice_enum!(no_default all pub(crate) enum TriggerPreset {
     ZeroCrossing => "Zero-crossing",
     Stable => "Stable",
 });

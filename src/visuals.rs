@@ -12,30 +12,6 @@ macro_rules! visual_modules {
     };
 }
 
-visual_modules! {
-    loudness { LoudnessProcessor, LoudnessState },
-    oscilloscope { OscilloscopeProcessor, OscilloscopeState },
-    spectrogram { SpectrogramProcessor, SpectrogramState },
-    spectrum { SpectrumProcessor, SpectrumState },
-    stereometer { StereometerProcessor, StereometerState },
-    waveform { WaveformProcessor, WaveformState },
-}
-
-pub mod palettes;
-pub mod registry;
-pub mod render {
-    pub mod common;
-}
-
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static NEXT_VIS_KEY: AtomicU64 = AtomicU64::new(1);
-
-pub(crate) fn next_key() -> u64 {
-    NEXT_VIS_KEY.fetch_add(1, Ordering::Relaxed)
-}
-
-#[macro_export]
 macro_rules! vis_processor {
     (@struct_new $name:ident, $core:ty, $config:ident) => {
         pub(crate) struct $name { inner: $core }
@@ -72,7 +48,7 @@ macro_rules! vis_processor {
                 use $crate::dsp::AudioProcessor as _;
                 if samples.is_empty() { return None; }
                 let sr = format.sample_rate.max(1.0);
-                $($crate::vis_processor!(@$sync self, sr);)?
+                $($crate::visuals::vis_processor!(@$sync self, sr);)?
                 self.inner.process_block(&$crate::dsp::AudioBlock::now(
                     samples, format.channels.max(1), sr,
                 ))
@@ -80,17 +56,16 @@ macro_rules! vis_processor {
         }
     };
     ($name:ident, $core:ty, $config:ident, $output:ty, no_config) => {
-        $crate::vis_processor!(@struct_new $name, $core, $config);
-        $crate::vis_processor!(@ingest $name, $output);
+        $crate::visuals::vis_processor!(@struct_new $name, $core, $config);
+        $crate::visuals::vis_processor!(@ingest $name, $output);
     };
     ($name:ident, $core:ty, $config:ident, $output:ty $(, $sync:ident)?) => {
-        $crate::vis_processor!(@struct_new $name, $core, $config);
-        $crate::vis_processor!(@config $name, $config);
-        $crate::vis_processor!(@ingest $name, $output $(, $sync)?);
+        $crate::visuals::vis_processor!(@struct_new $name, $core, $config);
+        $crate::visuals::vis_processor!(@config $name, $config);
+        $crate::visuals::vis_processor!(@ingest $name, $output $(, $sync)?);
     };
 }
 
-#[macro_export]
 macro_rules! visualization_widget {
     (@base $widget:ident, $state:ty, |$this:ident, $renderer:ident, $theme:ident, $bounds:ident| $draw:block) => {
         pub(crate) struct $widget<'a> {
@@ -142,10 +117,10 @@ macro_rules! visualization_widget {
         }
     };
     ($widget:ident, $state:ty, |$this:ident, $renderer:ident, $theme:ident, $bounds:ident| $draw:block) => {
-        $crate::visualization_widget!(@base $widget, $state, |$this, $renderer, $theme, $bounds| $draw);
+        $crate::visuals::visualization_widget!(@base $widget, $state, |$this, $renderer, $theme, $bounds| $draw);
     };
     ($widget:ident, $state:ty, $primitive:ty) => {
-        $crate::visualization_widget!(@base $widget, $state, |this, renderer, theme, bounds| {
+        $crate::visuals::visualization_widget!(@base $widget, $state, |this, renderer, theme, bounds| {
             let state = this.state.borrow();
             match state.visual_params(bounds) {
                 Some(params) => renderer.draw_primitive(bounds, <$primitive>::new(params)),
@@ -157,4 +132,31 @@ macro_rules! visualization_widget {
             }
         });
     };
+}
+
+pub(crate) use vis_processor;
+pub(crate) use visualization_widget;
+
+visual_modules! {
+    loudness { LoudnessProcessor, LoudnessState },
+    oscilloscope { OscilloscopeProcessor, OscilloscopeState },
+    spectrogram { SpectrogramProcessor, SpectrogramState },
+    spectrum { SpectrumProcessor, SpectrumState },
+    stereometer { StereometerProcessor, StereometerState },
+    waveform { WaveformProcessor, WaveformState },
+}
+
+pub mod options;
+pub mod palettes;
+pub mod registry;
+pub mod render {
+    pub mod common;
+}
+
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_VIS_KEY: AtomicU64 = AtomicU64::new(1);
+
+pub(crate) fn next_key() -> u64 {
+    NEXT_VIS_KEY.fetch_add(1, Ordering::Relaxed)
 }

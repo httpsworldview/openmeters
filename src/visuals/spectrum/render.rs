@@ -5,8 +5,8 @@ use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
 use std::sync::Arc;
 
-use crate::persistence::settings::SpectrumDisplayMode;
-use crate::sdf_primitive;
+use crate::visuals::options::SpectrumDisplayMode;
+use crate::visuals::render::common::sdf_primitive;
 use crate::util::color::{rgba_with_alpha, sample_rgba_gradient};
 use crate::visuals::render::common::{
     ClipTransform, SdfVertex, baseline_segment_vertices, decimate_line, dot_vertices,

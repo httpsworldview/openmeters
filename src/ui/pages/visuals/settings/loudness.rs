@@ -3,7 +3,8 @@
 
 use super::palette::PaletteEvent;
 use super::widgets::{pick, set_if_changed};
-use crate::persistence::settings::{LoudnessSettings, MeterMode};
+use crate::persistence::settings::LoudnessSettings;
+use crate::visuals::options::MeterMode;
 use crate::visuals::registry::VisualKind;
 use iced::Element;
 
