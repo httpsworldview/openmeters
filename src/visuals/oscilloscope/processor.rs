@@ -24,7 +24,6 @@ const PITCH_THRESHOLD: f32 = 0.15;
 // FFT autocorrelation edge differences on short buffers.
 const FFT_AUTOCORR_THRESHOLD: usize = 512;
 
-#[inline]
 fn parabolic_refine(y_prev: f32, y_curr: f32, y_next: f32, tau: usize) -> f32 {
     let denom = y_prev - 2.0 * y_curr + y_next;
     if denom.abs() < f32::EPSILON {
@@ -63,7 +62,6 @@ impl Default for OscilloscopeConfig {
     }
 }
 
-#[derive(Clone)]
 struct PitchDetector {
     difference_function: Vec<f32>,
     cumulative_mean_normalized: Vec<f32>,
@@ -165,7 +163,6 @@ impl PitchDetector {
         }
     }
 
-    #[inline]
     fn refine_tau(&self, tau: usize, max_period: usize) -> f32 {
         if tau > 0 && tau + 1 < max_period {
             parabolic_refine(
@@ -294,7 +291,6 @@ impl TriggerScratch {
         }
     }
 
-    #[inline]
     fn correlation(&self, offset: usize, length: usize) -> f32 {
         debug_assert!(offset + length < self.sine_prefix_sum.len());
         debug_assert!(offset < self.phase_cosine.len());
@@ -307,7 +303,6 @@ impl TriggerScratch {
 
 /// Snaps `new_f` to the octave of `prev_f` when YIN jumps by a
 /// factor of ~2 or ~0.5.
-#[inline]
 fn octave_correct(new_f: f32, prev_f: f32) -> f32 {
     let ratio = new_f / prev_f;
     if (1.9..=2.1).contains(&ratio) {
@@ -319,7 +314,6 @@ fn octave_correct(new_f: f32, prev_f: f32) -> f32 {
     }
 }
 
-#[inline]
 fn find_trigger(
     period: f32,
     cycles: usize,
@@ -430,7 +424,6 @@ pub struct OscilloscopeSnapshot {
     pub samples_per_channel: usize,
 }
 
-#[derive(Clone)]
 pub struct OscilloscopeProcessor {
     config: OscilloscopeConfig,
     snapshot: OscilloscopeSnapshot,
@@ -494,9 +487,6 @@ impl OscilloscopeProcessor {
             (None, prev) => prev,
         }
     }
-}
-
-impl OscilloscopeProcessor {
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<OscilloscopeSnapshot> {
         let channel_count = block.channels.max(1);
         if block.frame_count() == 0 {
@@ -623,21 +613,8 @@ impl OscilloscopeProcessor {
         Some(self.snapshot.clone())
     }
 
-    fn reset(&mut self) {
-        self.snapshot = OscilloscopeSnapshot::default();
-        self.history = VecDeque::new();
-        self.pitch_detector = PitchDetector::new();
-        self.last_pitch = None;
-        self.mono_buffer = Vec::new();
-        self.trigger_scratch = TriggerScratch::default();
-        self.octave_streak = 0;
-    }
-}
-
-impl OscilloscopeProcessor {
     pub fn update_config(&mut self, config: OscilloscopeConfig) {
-        self.config = config;
-        self.reset();
+        *self = Self::new(config);
     }
 }
 

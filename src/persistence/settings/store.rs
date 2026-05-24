@@ -56,9 +56,6 @@ impl SettingsManager {
             theme_store,
         }
     }
-    pub fn settings(&self) -> &UiSettings {
-        &self.data
-    }
     pub fn theme_store(&self) -> &ThemeStore {
         &self.theme_store
     }
@@ -91,9 +88,7 @@ impl SettingsManager {
 fn schedule_persist(mut path: PathBuf, mut settings: UiSettings) {
     static SENDER: Mutex<Option<mpsc::Sender<(PathBuf, UiSettings)>>> = Mutex::new(None);
 
-    settings.visuals.sanitize_layout();
     settings.visuals.strip_all_palettes();
-    settings.bar.sanitize();
 
     let mut sender = SENDER.lock().unwrap();
     if let Some(tx) = sender.as_ref() {

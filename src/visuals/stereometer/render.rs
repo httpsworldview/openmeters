@@ -264,9 +264,13 @@ impl StereometerPrimitive {
         };
         let val = |band: usize, i: usize| {
             if is_single {
-                p.corr_trail.get(i).copied().unwrap_or(0.0)
+                p.corr_trail[i]
             } else {
-                p.band_trail.get(i).map_or(0.0, |b| b[band])
+                match band {
+                    0 => p.band_trail[i].low,
+                    1 => p.band_trail[i].mid,
+                    _ => p.band_trail[i].high,
+                }
             }
         };
         let color_for = |band: usize, value: f32| {

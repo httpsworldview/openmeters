@@ -5,8 +5,8 @@ use super::widgets::clipped_text;
 use crate::ui::theme::{self, Palette};
 use crate::ui::widgets::{scroll_delta_lines, scroll_glow::ScrollGlow};
 use crate::util::color::{
-    EPSILON, colors_equal, default_spreads, f32_to_u8, find_segment, lerp_color,
-    sanitize_stop_positions, sanitize_stop_spreads, with_alpha,
+    EPSILON, colors_equal, f32_to_u8, find_segment, lerp_color, sanitize_stop_positions,
+    sanitize_stop_spreads, with_alpha,
 };
 use iced::advanced::renderer::{self, Quad};
 use iced::advanced::widget::{Tree, tree};
@@ -36,7 +36,6 @@ pub struct PaletteEditor {
     palette: Palette,
     positions: Vec<f32>,
     spreads: Vec<f32>,
-    default_spreads: Vec<f32>,
     active: Option<usize>,
     visible_indices: Option<Vec<usize>>,
     label_overrides: Vec<(usize, &'static str)>,
@@ -46,12 +45,10 @@ pub struct PaletteEditor {
 
 impl PaletteEditor {
     pub fn new(palette: Palette) -> Self {
-        let default_spreads = default_spreads(palette.len());
         Self {
             positions: palette.default_positions.to_vec(),
-            spreads: default_spreads.clone(),
+            spreads: vec![1.0; palette.len()],
             palette,
-            default_spreads,
             active: None,
             visible_indices: None,
             label_overrides: Vec::new(),
@@ -174,7 +171,7 @@ impl PaletteEditor {
                 } else {
                     self.palette.reset();
                     self.positions = self.palette.default_positions.to_vec();
-                    self.spreads.clone_from(&self.default_spreads);
+                    self.spreads = vec![1.0; self.palette.len()];
                     true
                 }
             }
@@ -188,7 +185,8 @@ impl PaletteEditor {
     pub fn is_default(&self) -> bool {
         self.palette.is_default()
             && self.positions == self.palette.default_positions
-            && self.spreads == self.default_spreads
+            && self.spreads.len() == self.palette.len()
+            && self.spreads.iter().all(|&spread| spread == 1.0)
     }
 
     pub fn view(&self) -> Element<'_, PaletteEvent> {

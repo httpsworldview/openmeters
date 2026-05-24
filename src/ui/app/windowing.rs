@@ -8,7 +8,7 @@ use crate::ui::pages::config::ConfigMessage;
 use crate::ui::pages::visuals::{VisualsMessage, create_settings_panel};
 use crate::ui::theme;
 use crate::visuals::registry::{
-    VisualContent, VisualId, VisualKind, VisualMetadata, VisualSnapshot,
+    VisualContent, VisualId, VisualKind, VisualMetadata, VisualSlotSnapshot,
 };
 use iced::widget::{container, mouse_area, text};
 use iced::{Element, Length, Size, Task, exit, window};
@@ -145,9 +145,8 @@ pub(super) struct PopoutWindow {
 }
 
 impl PopoutWindow {
-    pub fn sync_from_snapshot(&mut self, snapshot: &VisualSnapshot) {
+    pub fn sync_from_snapshot(&mut self, snapshot: &[VisualSlotSnapshot]) {
         self.cached = snapshot
-            .slots
             .iter()
             .find(|slot| slot.id == self.visual_id && slot.enabled)
             .map(|slot| (slot.metadata, slot.content.clone()));
@@ -174,12 +173,7 @@ impl UiApp {
         };
         let visual_id = panel.visual_id;
         let snapshot = self.visual_manager.snapshot();
-        let Some(kind) = snapshot
-            .slots
-            .iter()
-            .find(|s| s.id == visual_id)
-            .map(|s| s.kind)
-        else {
+        let Some(kind) = snapshot.iter().find(|s| s.id == visual_id).map(|s| s.kind) else {
             return;
         };
         *panel = create_settings_panel(visual_id, kind, &self.visual_manager);
@@ -222,16 +216,12 @@ impl UiApp {
             return Task::none();
         }
         let snapshot = self.visual_manager.snapshot();
-        let Some((index, slot)) = snapshot
-            .slots
-            .iter()
-            .enumerate()
-            .find(|(_, s)| s.id == visual_id)
+        let Some((index, slot)) = snapshot.iter().enumerate().find(|(_, s)| s.id == visual_id)
         else {
             return Task::none();
         };
         let window_size = popout_window_size(&slot.metadata);
-        let use_decorations = self.settings_handle.borrow().settings().decorations;
+        let use_decorations = self.settings_handle.borrow().data.decorations;
         let (new_id, open_task) =
             open_base_window(self.use_layershell, window_size, use_decorations, true);
         let mut popout = PopoutWindow {
@@ -266,7 +256,6 @@ impl UiApp {
             .settings_window
             .take_if(|(_, panel)| {
                 !snapshot
-                    .slots
                     .iter()
                     .any(|slot| slot.id == panel.visual_id && slot.enabled)
             })
@@ -282,7 +271,7 @@ impl UiApp {
         self.popout_windows
             .retain(|_, popout| popout.cached.is_some());
         self.visuals_page
-            .apply_snapshot_excluding(snapshot, &self.popped_out_ids());
+            .apply_snapshot_excluding(&snapshot, &self.popped_out_ids());
         Task::batch(
             close_settings_task
                 .into_iter()
@@ -309,7 +298,6 @@ impl UiApp {
 
         self.visual_manager
             .snapshot()
-            .slots
             .iter()
             .find(|s| s.id == visual_id)
             .map_or_else(
@@ -325,7 +313,7 @@ impl UiApp {
         let custom_bg = (is_settings
             || window_id == self.main_window_id
             || self.popout_windows.contains_key(&window_id))
-        .then(|| self.settings_handle.borrow().settings().background_color)
+        .then(|| self.settings_handle.borrow().data.background_color)
         .flatten()
         .map(|c| {
             let c: iced::Color = c.into();
@@ -348,7 +336,6 @@ impl UiApp {
                 settings.data.visuals.order = self
                     .visual_manager
                     .snapshot()
-                    .slots
                     .iter()
                     .map(|s| s.kind)
                     .collect();
@@ -364,8 +351,9 @@ impl UiApp {
     }
 
     pub(super) fn sync_visuals_page(&mut self) {
+        let snapshot = self.visual_manager.snapshot();
         self.visuals_page
-            .apply_snapshot_excluding(self.visual_manager.snapshot(), &self.popped_out_ids());
+            .apply_snapshot_excluding(&snapshot, &self.popped_out_ids());
     }
 
     pub(super) fn apply_bar_layout(
@@ -403,7 +391,7 @@ impl UiApp {
         self.main_window_size = new_size;
         if self.main_window_is_layer {
             let height = clamp_bar_height(new_size.height.round().max(1.0) as u32);
-            let current_height = self.settings_handle.borrow().settings().bar.height;
+            let current_height = self.settings_handle.borrow().data.bar.height;
             if current_height != height {
                 self.settings_handle.update(|s| s.data.bar.height = height);
             }
@@ -466,7 +454,7 @@ impl UiApp {
         }
         let (bar, decorations) = {
             let guard = self.settings_handle.borrow();
-            let settings = guard.settings();
+            let settings = &guard.data;
             (settings.bar.clone(), settings.decorations)
         };
         match config_msg {
@@ -508,7 +496,7 @@ impl UiApp {
         };
         let visual_id = panel.visual_id;
         let snapshot = self.visual_manager.snapshot();
-        let Some(slot) = snapshot.slots.iter().find(|s| s.id == visual_id) else {
+        let Some(slot) = snapshot.iter().find(|s| s.id == visual_id) else {
             return window::close(old_id);
         };
         let (new_id, open_task) =

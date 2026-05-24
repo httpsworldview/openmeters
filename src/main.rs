@@ -28,15 +28,14 @@ fn main() {
     let settings_handle = SettingsHandle::load_or_default();
     let routing_config = {
         let guard = settings_handle.borrow();
-        let settings = guard.settings();
+        let settings = &guard.data;
         RoutingConfig {
             capture_mode: settings.capture_mode,
             preferred_device: settings.last_device_name.clone(),
         }
     };
 
-    let registry_thread =
-        monitor::init_registry_monitor(routing_rx, snapshot_tx.clone(), routing_config);
+    let registry_thread = monitor::init_registry_monitor(routing_rx, snapshot_tx, routing_config);
 
     virtual_sink::run();
 
@@ -44,8 +43,6 @@ fn main() {
 
     let ui_config = UiConfig::new(routing_tx, Some(Arc::new(snapshot_rx)), settings_handle)
         .with_audio_stream(audio_stream);
-
-    drop(snapshot_tx);
 
     if let Err(err) = ui::run(ui_config) {
         error!("[ui] failed: {err}");

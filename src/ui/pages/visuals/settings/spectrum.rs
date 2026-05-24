@@ -91,7 +91,7 @@ impl SpectrumSettingsPane {
             AvgMode::PeakHold => controls!(8.0;
                 slider!("Peak decay", self.peak_decay, DECAY_R, PeakDecay, "{:.1} dB/s");
             ),
-            AvgMode::None => column![].spacing(8),
+            AvgMode::None => column![],
         };
 
         let mut visual = controls!(8.0;

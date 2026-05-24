@@ -145,7 +145,7 @@ impl UiApp {
         } = config;
         let (visual_settings, use_decorations, bar_settings, theme_file) = {
             let guard = settings_handle.borrow();
-            let settings = guard.settings();
+            let settings = &guard.data;
             (
                 settings.visuals.clone(),
                 settings.decorations,
@@ -252,7 +252,7 @@ impl UiApp {
         if !self.main_window_is_layer {
             return;
         }
-        let bar = self.settings_handle.borrow().settings().bar.clone();
+        let bar = self.settings_handle.borrow().data.bar.clone();
         if !bar.enabled {
             return;
         }
@@ -270,7 +270,7 @@ impl UiApp {
 
     fn handle_bar_resize(&mut self, position: iced::Point) {
         if let Some(state) = &mut self.bar_resize_state {
-            let alignment = self.settings_handle.borrow().settings().bar.alignment;
+            let alignment = self.settings_handle.borrow().data.bar.alignment;
             let delta = match alignment {
                 BarAlignment::Top => position.y - state.start_y,
                 BarAlignment::Bottom => state.start_y - position.y,
@@ -285,7 +285,7 @@ impl UiApp {
             .take()
             .filter(|s| s.pending_height != s.start_height)
             .map(|s| {
-                let alignment = self.settings_handle.borrow().settings().bar.alignment;
+                let alignment = self.settings_handle.borrow().data.bar.alignment;
                 self.settings_handle
                     .update(|settings| settings.data.bar.height = s.pending_height);
                 self.apply_bar_layout(alignment, s.pending_height)
@@ -300,8 +300,8 @@ impl UiApp {
 
     fn main_window_view(&self) -> Element<'_, Message> {
         let (use_decorations, bar) = {
-            let settings_ref = self.settings_handle.borrow();
-            let settings = settings_ref.settings();
+            let guard = self.settings_handle.borrow();
+            let settings = &guard.data;
             (settings.decorations, settings.bar.clone())
         };
 

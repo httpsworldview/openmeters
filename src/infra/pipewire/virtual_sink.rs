@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
+use super::VIRTUAL_SINK_NAME;
 use crate::util::audio::DEFAULT_SAMPLE_RATE;
 use pipewire as pw;
 use pw::{properties::properties, spa};
@@ -187,12 +188,11 @@ struct VirtualSinkState {
 
 impl Default for VirtualSinkState {
     fn default() -> Self {
-        let format = spa::param::audio::AudioFormat::F32LE;
         Self {
-            frame_bytes: 2 * bytes_per_sample(format).unwrap_or(size_of::<f32>()),
+            frame_bytes: 2 * size_of::<f32>(),
             channels: 2,
             sample_rate: VIRTUAL_SINK_SAMPLE_RATE,
-            format,
+            format: spa::param::audio::AudioFormat::F32LE,
         }
     }
 }
@@ -235,7 +235,7 @@ fn run_virtual_sink() -> Result<(), Box<dyn Error + Send + Sync>> {
             *pw::keys::MEDIA_ROLE => "Playback",
             *pw::keys::MEDIA_CATEGORY => "Playback",
             *pw::keys::NODE_DESCRIPTION => "OpenMeters Sink",
-            *pw::keys::NODE_NAME => "openmeters.sink",
+            *pw::keys::NODE_NAME => VIRTUAL_SINK_NAME,
             *pw::keys::APP_NAME => "OpenMeters",
             *pw::keys::NODE_LATENCY => format!("{}/{}", DESIRED_LATENCY_FRAMES, VIRTUAL_SINK_SAMPLE_RATE),
         },

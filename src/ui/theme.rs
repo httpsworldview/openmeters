@@ -148,9 +148,9 @@ pub fn slider_style(theme: &Theme, status: slider::Status) -> slider::Style {
     let track = lerp_color(palette.background.base.color, Color::WHITE, 0.16);
     let filled = lerp_color(palette.primary.base.color, Color::WHITE, 0.10);
 
-    let (handle_color, border_color, border_width) = match status {
-        slider::Status::Hovered | slider::Status::Dragged => (filled, BORDER_FOCUS, 1.0),
-        _ => (filled, BORDER_SUBTLE, 1.0),
+    let border_color = match status {
+        slider::Status::Hovered | slider::Status::Dragged => BORDER_FOCUS,
+        _ => BORDER_SUBTLE,
     };
 
     slider::Style {
@@ -161,9 +161,9 @@ pub fn slider_style(theme: &Theme, status: slider::Status) -> slider::Style {
         },
         handle: slider::Handle {
             shape: slider::HandleShape::Circle { radius: 7.0 },
-            background: Background::Color(handle_color),
+            background: Background::Color(filled),
             border_color,
-            border_width,
+            border_width: 1.0,
         },
     }
 }

@@ -226,7 +226,6 @@ fn push_highlight_columns(
     }
 }
 
-#[inline]
 fn palette_color(palette: &[[f32; 4]], amp: f32, threshold: f32) -> [f32; 4] {
     let intensity = (amp - threshold) / (1.0 - threshold).max(1e-6);
     sample_rgba_gradient(palette, intensity.clamp(0.0, 1.0))
@@ -244,13 +243,11 @@ pub(crate) fn sample_max(pts: &[[f32; 2]], t0: f32, t1: f32) -> f32 {
 }
 
 fn sample_lerp(pts: &[[f32; 2]], t: f32) -> f32 {
-    let n = pts.len().saturating_sub(1).max(1);
+    let n = pts.len() - 1;
     let pos = t.clamp(0.0, 1.0) * n as f32;
-    let i = (pos as usize).min(n.saturating_sub(1));
+    let i = (pos as usize).min(n - 1);
     let f = pos - i as f32;
-    pts.get(i).map_or(0.0, |a| {
-        a[1] * (1.0 - f) + pts.get(i + 1).map_or(a[1], |b| b[1]) * f
-    })
+    pts[i][1] * (1.0 - f) + pts[i + 1][1] * f
 }
 
 sdf_primitive!(

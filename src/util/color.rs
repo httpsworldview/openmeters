@@ -5,7 +5,6 @@ use iced::Color;
 
 pub const EPSILON: f32 = 1e-4;
 
-#[inline]
 pub fn f32_to_u8(v: f32) -> u8 {
     (v.clamp(0.0, 1.0) * 255.0).round() as u8
 }
@@ -19,7 +18,6 @@ pub const fn hex(r: u8, g: u8, b: u8, a: u8) -> Color {
     )
 }
 
-#[inline]
 pub fn colors_equal(a: Color, b: Color) -> bool {
     (a.r - b.r).abs() <= EPSILON
         && (a.g - b.g).abs() <= EPSILON
@@ -27,17 +25,14 @@ pub fn colors_equal(a: Color, b: Color) -> bool {
         && (a.a - b.a).abs() <= EPSILON
 }
 
-#[inline]
 pub fn palettes_equal(a: &[Color], b: &[Color]) -> bool {
     a.len() == b.len() && a.iter().zip(b).all(|(x, y)| colors_equal(*x, *y))
 }
 
-#[inline]
 pub fn color_to_rgba(color: Color) -> [f32; 4] {
     iced_wgpu::graphics::color::pack(color).components()
 }
 
-#[inline]
 pub fn lerp_color(a: Color, b: Color, t: f32) -> Color {
     let t = t.clamp(0.0, 1.0);
     Color::from_rgba(
@@ -55,12 +50,10 @@ pub fn with_alpha(color: Color, alpha: f32) -> Color {
     }
 }
 
-#[inline]
 pub fn rgba_with_alpha(color: [f32; 4], alpha: f32) -> [f32; 4] {
     [color[0], color[1], color[2], alpha]
 }
 
-#[inline]
 fn gradient_segment(count: usize, t: f32) -> Option<(usize, f32)> {
     (count >= 2).then(|| {
         let pos = t.clamp(0.0, 1.0) * (count - 1) as f32;
@@ -69,7 +62,6 @@ fn gradient_segment(count: usize, t: f32) -> Option<(usize, f32)> {
     })
 }
 
-#[inline]
 pub fn sample_gradient(palette: &[Color], t: f32) -> Color {
     match gradient_segment(palette.len(), t) {
         Some((i, f)) => lerp_color(palette[i], palette[i + 1], f),
@@ -77,7 +69,6 @@ pub fn sample_gradient(palette: &[Color], t: f32) -> Color {
     }
 }
 
-#[inline]
 pub fn sample_rgba_gradient(palette: &[[f32; 4]], t: f32) -> [f32; 4] {
     match gradient_segment(palette.len(), t) {
         Some((i, f)) => {
@@ -85,10 +76,6 @@ pub fn sample_rgba_gradient(palette: &[[f32; 4]], t: f32) -> [f32; 4] {
         }
         None => palette.first().copied().unwrap_or([0.0; 4]),
     }
-}
-
-pub fn default_spreads(count: usize) -> Vec<f32> {
-    vec![1.0; count]
 }
 
 pub fn sanitize_stop_positions(raw: Option<&[f32]>, defaults: &[f32]) -> Vec<f32> {
@@ -123,7 +110,7 @@ pub fn sanitize_stop_positions(raw: Option<&[f32]>, defaults: &[f32]) -> Vec<f32
 }
 
 pub fn sanitize_stop_spreads(raw: Option<&[f32]>, count: usize) -> Vec<f32> {
-    let mut out = default_spreads(count);
+    let mut out = vec![1.0; count];
     let Some(raw) = raw.filter(|raw| raw.len() == count) else {
         return out;
     };
@@ -164,7 +151,6 @@ pub fn find_segment(
     (lo, hi, interpolate_with_spreads(linear, spreads, lo, hi))
 }
 
-#[inline]
 fn interpolate_with_spreads(linear: f32, spreads: &[f32], lo: usize, hi: usize) -> f32 {
     let sl = spreads.get(lo).copied().unwrap_or(1.0);
     let sr = spreads.get(hi).copied().unwrap_or(1.0);

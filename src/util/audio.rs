@@ -33,18 +33,15 @@ crate::macros::choice_enum!(all pub enum FrequencyScale {
 const LOG_KNEE_HZ: f32 = 20.0;
 
 impl FrequencyScale {
-    #[inline]
     pub fn freq_at(self, min: f32, max: f32, t: f32) -> f32 {
         self.unscale(lerp(self.scale(min), self.scale(max), t))
     }
 
-    #[inline]
     pub fn pos_of(self, min: f32, max: f32, freq: f32) -> f32 {
         let (lo, hi) = (self.scale(min), self.scale(max));
         (self.scale(freq) - lo) / (hi - lo).max(1e-6)
     }
 
-    #[inline]
     fn scale(self, hz: f32) -> f32 {
         match self {
             Self::Linear => hz,
@@ -53,7 +50,6 @@ impl FrequencyScale {
         }
     }
 
-    #[inline]
     fn unscale(self, x: f32) -> f32 {
         match self {
             Self::Linear => x,
@@ -122,7 +118,6 @@ const POWER_EPSILON: f32 = 1.0e-20;
 
 pub const LN_TO_DB: f32 = 4.342_944_8;
 
-#[inline]
 pub fn power_to_db(power: f32, floor: f32) -> f32 {
     if power > POWER_EPSILON {
         (power.ln() * LN_TO_DB).max(floor)
@@ -131,7 +126,6 @@ pub fn power_to_db(power: f32, floor: f32) -> f32 {
     }
 }
 
-#[inline]
 pub fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
@@ -203,7 +197,6 @@ pub fn mixdown_into_deque(buffer: &mut VecDeque<f32>, samples: &[f32], channels:
     }
 }
 
-#[inline]
 pub fn apply_window(buffer: &mut [f32], window: &[f32]) {
     debug_assert_eq!(buffer.len(), window.len());
     for (sample, coeff) in buffer.iter_mut().zip(window.iter()) {
@@ -211,7 +204,6 @@ pub fn apply_window(buffer: &mut [f32], window: &[f32]) {
     }
 }
 
-#[inline]
 pub fn copy_from_deque(dst: &mut [f32], src: &VecDeque<f32>) {
     assert!(
         dst.len() <= src.len(),
@@ -227,7 +219,6 @@ pub fn copy_from_deque(dst: &mut [f32], src: &VecDeque<f32>) {
 }
 
 /// Copies the front of `src` into `dst` and removes the copied window's DC offset.
-#[inline]
 pub fn copy_dc_removed_from_deque(dst: &mut [f32], src: &VecDeque<f32>) {
     if dst.is_empty() {
         return;
@@ -237,18 +228,15 @@ pub fn copy_dc_removed_from_deque(dst: &mut [f32], src: &VecDeque<f32>) {
     dst.iter_mut().for_each(|sample| *sample -= mean);
 }
 
-#[inline]
 pub fn db_to_power(db: f32) -> f32 {
     const DB_TO_LOG2: f32 = 0.1 * core::f32::consts::LOG2_10;
     (db * DB_TO_LOG2).exp2()
 }
 
-#[inline]
 pub fn hz_to_erb_rate(hz: f32) -> f32 {
     21.4 * (1.0 + hz / 228.8).log10()
 }
 
-#[inline]
 pub fn erb_rate_to_hz(erb: f32) -> f32 {
     228.8 * (10.0f32.powf(erb / 21.4) - 1.0)
 }

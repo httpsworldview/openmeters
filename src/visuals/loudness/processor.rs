@@ -55,7 +55,6 @@ fn k_weighting_coefficients(fs: f64) -> ([f64; 5], [f64; 5]) {
     (conv(pb, rb), conv(pa, ra))
 }
 
-#[inline]
 fn mean_square_to_lufs(mean_square: f64, floor: f32) -> f32 {
     if mean_square <= MIN_MEAN_SQUARE {
         floor
@@ -67,7 +66,6 @@ fn mean_square_to_lufs(mean_square: f64, floor: f32) -> f32 {
     }
 }
 
-#[inline]
 const fn window_length(sample_rate: f32, window_secs: f32) -> usize {
     let len = sample_rate * window_secs;
     if len < 1.0 { 1 } else { len as usize }
@@ -98,7 +96,7 @@ fn compute_fir_coefficients() -> [[f32; PHASES]; TAPS_PER_PHASE] {
 static TRUE_PEAK_FIR: LazyLock<[[f32; PHASES]; TAPS_PER_PHASE]> =
     LazyLock::new(compute_fir_coefficients);
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct TruePeakMeter {
     delay_buffer: [f32; TAPS_PER_PHASE * 2],
     write_position: usize,
@@ -116,7 +114,6 @@ impl TruePeakMeter {
         }
     }
 
-    #[inline]
     fn process(&mut self, sample: f32) {
         self.write_position = self
             .write_position
@@ -136,13 +133,12 @@ impl TruePeakMeter {
         self.peak = out.into_iter().map(f32::abs).fold(self.peak, f32::max);
     }
 
-    #[inline]
     fn take_peak(&mut self) -> f32 {
         std::mem::take(&mut self.peak)
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct KWeightingFilter {
     b: [f64; 5],
     a: [f64; 5],
@@ -155,7 +151,6 @@ impl KWeightingFilter {
         Self { b, a, z: [0.0; 4] }
     }
 
-    #[inline]
     fn process(&mut self, sample: f32) -> f32 {
         let x = f64::from(sample);
         let y = self.b[0].mul_add(x, self.z[0]);
@@ -167,7 +162,7 @@ impl KWeightingFilter {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct WindowMeans {
     buffer: Box<[f64]>,
     capacities: [usize; 4],
@@ -187,7 +182,6 @@ impl WindowMeans {
         }
     }
 
-    #[inline]
     fn push(&mut self, value: f64) {
         let len = self.buffer.len();
         for (sum, &cap) in self.sums.iter_mut().zip(&self.capacities) {
@@ -201,14 +195,13 @@ impl WindowMeans {
         self.count = (self.count + 1).min(len);
     }
 
-    #[inline]
     fn mean(&self, idx: usize) -> f64 {
         let count = self.count.min(self.capacities[idx]);
         if count == 0 { 0.0 } else { self.sums[idx] / count as f64 }
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct ChannelState {
     windows: WindowMeans,
     filter: KWeightingFilter,
@@ -228,7 +221,6 @@ impl ChannelState {
 pub const MAX_CHANNELS: usize = 8;
 
 // L/R/C = 1.0 (0 dB), LFE = 0.0 (excluded), Ls/Rs/Lb/Rb = 1.41 (+1.5 dB).
-#[inline]
 fn channel_weight(channel_index: usize, total_channels: usize) -> f64 {
     match total_channels {
         1 | 2 => 1.0,
@@ -279,7 +271,7 @@ impl Default for LoudnessConfig {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct LoudnessProcessor {
     config: LoudnessConfig,
     channels: Vec<ChannelState>,
@@ -321,9 +313,6 @@ impl LoudnessProcessor {
             .collect();
         self.snapshot = LoudnessSnapshot::with_floor(self.config.floor_db);
     }
-}
-
-impl LoudnessProcessor {
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<LoudnessSnapshot> {
         if block.channels == 0 || block.frame_count() == 0 {
             return None;

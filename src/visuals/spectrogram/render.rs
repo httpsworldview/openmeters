@@ -27,32 +27,6 @@ const fn extent3d(w: u32, h: u32) -> wgpu::Extent3d {
     }
 }
 
-#[inline]
-fn write_texture_region(
-    queue: &wgpu::Queue,
-    texture: &wgpu::Texture,
-    origin: wgpu::Origin3d,
-    extent: wgpu::Extent3d,
-    bytes_per_row: u32,
-    data: &[u8],
-) {
-    queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture,
-            mip_level: 0,
-            origin,
-            aspect: wgpu::TextureAspect::All,
-        },
-        data,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(bytes_per_row),
-            rows_per_image: None,
-        },
-        extent,
-    );
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColumnKind {
     Reassigned,
@@ -510,12 +484,20 @@ impl Resources {
             .copy_from_slice(bytemuck::cast_slice(&UNIT_QUAD));
         quad_buf.unmap();
         // Rgba8Unorm palette: raw sRGB stops, mix in sRGB space (web-colors pipeline).
-        let (palette_tex, palette_view) = create_1d_texture(
-            device,
-            "Spectrogram palette",
-            SPECTROGRAM_PALETTE_SIZE as u32,
-            wgpu::TextureFormat::Rgba8Unorm,
-        );
+        let palette_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Spectrogram palette"),
+            size: extent3d(SPECTROGRAM_PALETTE_SIZE as u32, 1),
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D1,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[wgpu::TextureFormat::Rgba8Unorm],
+        });
+        let palette_view = palette_tex.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D1),
+            ..Default::default()
+        });
         let ring = create_ring(device, bgls, &uniform_buf, &palette_view, p);
 
         Self {
@@ -643,13 +625,20 @@ impl Resources {
         for (dst, rgba) in bytes.chunks_exact_mut(4).zip(p.palette.iter()) {
             dst.copy_from_slice(&rgba.map(f32_to_u8));
         }
-        write_texture_region(
-            queue,
-            &self.palette_tex,
-            wgpu::Origin3d::ZERO,
-            extent3d(SPECTROGRAM_PALETTE_SIZE as u32, 1),
-            (SPECTROGRAM_PALETTE_SIZE * 4) as u32,
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.palette_tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
             &bytes,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some((SPECTROGRAM_PALETTE_SIZE * 4) as u32),
+                rows_per_image: None,
+            },
+            extent3d(SPECTROGRAM_PALETTE_SIZE as u32, 1),
         );
         self.palette_cache = p.palette;
     }
@@ -690,30 +679,6 @@ fn create_ring(
         capacity,
         bg,
     }
-}
-
-fn create_1d_texture(
-    device: &wgpu::Device,
-    label: &'static str,
-    width: u32,
-    format: wgpu::TextureFormat,
-) -> (wgpu::Texture, wgpu::TextureView) {
-    let view_fmt = [format];
-    let tex = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some(label),
-        size: extent3d(width.max(1), 1),
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D1,
-        format,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &view_fmt,
-    });
-    let view = tex.create_view(&wgpu::TextureViewDescriptor {
-        dimension: Some(wgpu::TextureViewDimension::D1),
-        ..Default::default()
-    });
-    (tex, view)
 }
 
 fn make_bind_group(

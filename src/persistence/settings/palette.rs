@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::util::color::{EPSILON, colors_equal, sanitize_stop_spreads};
+use crate::util::color::{EPSILON, palettes_equal, sanitize_stop_spreads};
 use iced::Color;
 use serde::de::{self, Deserializer};
 use serde::ser::Serializer;
@@ -111,15 +111,7 @@ impl PaletteSettings {
 }
 
 fn color_stops_if_differ(colors: &[Color], defaults: &[Color]) -> Option<Vec<ColorSetting>> {
-    colors_differ(colors, defaults).then(|| colors.iter().copied().map(Into::into).collect())
-}
-
-fn colors_differ(colors: &[Color], defaults: &[Color]) -> bool {
-    colors.len() != defaults.len()
-        || colors
-            .iter()
-            .zip(defaults)
-            .any(|(c, d)| !colors_equal(*c, *d))
+    (!palettes_equal(colors, defaults)).then(|| colors.iter().copied().map(Into::into).collect())
 }
 
 pub trait HasPalette {

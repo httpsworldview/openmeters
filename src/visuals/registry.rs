@@ -142,7 +142,7 @@ visuals! {
             visuals!(@apply_palette st, set, &palettes::oscilloscope::COLORS); };
         export(p, s) { let st = s.borrow(); let mut out = settings_cfg::OscilloscopeSettings::from_config(&p.config());
             out.persistence = st.persistence; out.channel_1 = st.channel_1; out.channel_2 = st.channel_2;
-            out.palette = visuals!(@export_palette &st.style.colors, &palettes::oscilloscope::COLORS); out };
+            out.palette = visuals!(@export_palette &st.colors, &palettes::oscilloscope::COLORS); out };
 
     Waveform("Waveform", 220.0, 180.0, 220.0) =>
         waveform::WaveformProcessor, WaveformConfig, WaveformState;
@@ -285,21 +285,6 @@ impl Entry {
         }
         self.module.apply(settings);
     }
-
-    fn snapshot(&self) -> VisualSlotSnapshot {
-        VisualSlotSnapshot {
-            id: self.id,
-            kind: self.kind,
-            enabled: self.enabled,
-            metadata: self.meta,
-            content: self.module.content(),
-        }
-    }
-}
-
-#[derive(Clone)]
-pub(crate) struct VisualSnapshot {
-    pub slots: Vec<VisualSlotSnapshot>,
 }
 
 #[derive(Clone)]
@@ -353,10 +338,17 @@ impl VisualManager {
             self.entries.swap(first_index, second_index);
         }
     }
-    pub fn snapshot(&self) -> VisualSnapshot {
-        VisualSnapshot {
-            slots: self.entries.iter().map(Entry::snapshot).collect(),
-        }
+    pub fn snapshot(&self) -> Vec<VisualSlotSnapshot> {
+        self.entries
+            .iter()
+            .map(|entry| VisualSlotSnapshot {
+                id: entry.id,
+                kind: entry.kind,
+                enabled: entry.enabled,
+                metadata: entry.meta,
+                content: entry.module.content(),
+            })
+            .collect()
     }
     pub fn module_settings(&self, kind: VisualKind) -> Option<ModuleSettings> {
         self.by_kind(kind).map(|entry| {
@@ -436,7 +428,7 @@ impl VisualManagerHandle {
     pub fn borrow_mut(&self) -> RefMut<'_, VisualManager> {
         self.0.borrow_mut()
     }
-    pub fn snapshot(&self) -> VisualSnapshot {
+    pub fn snapshot(&self) -> Vec<VisualSlotSnapshot> {
         self.0.borrow().snapshot()
     }
 }

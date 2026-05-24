@@ -16,7 +16,7 @@ const FILL_ALPHA: f32 = 0.15;
 #[derive(Debug, Clone)]
 pub(crate) struct OscilloscopeState {
     snapshot: OscilloscopeSnapshot,
-    pub(crate) style: OscilloscopeStyle,
+    pub(crate) colors: [Color; OSCILLOSCOPE_PALETTE_SIZE],
     pub(crate) persistence: f32,
     pub(crate) channel_1: Channel,
     pub(crate) channel_2: Channel,
@@ -28,7 +28,7 @@ impl OscilloscopeState {
         let defaults = OscilloscopeSettings::default();
         Self {
             snapshot: OscilloscopeSnapshot::default(),
-            style: OscilloscopeStyle::default(),
+            colors: palettes::oscilloscope::COLORS,
             persistence: defaults.persistence,
             channel_1: defaults.channel_1,
             channel_2: defaults.channel_2,
@@ -52,7 +52,7 @@ impl OscilloscopeState {
     }
 
     pub fn set_palette(&mut self, palette: &[Color; OSCILLOSCOPE_PALETTE_SIZE]) {
-        self.style.colors = *palette;
+        self.colors = *palette;
     }
 
     pub fn apply_snapshot(&mut self, snapshot: OscilloscopeSnapshot) {
@@ -111,22 +111,9 @@ impl OscilloscopeState {
             channels,
             samples_per_channel,
             samples: self.snapshot.samples.clone(),
-            color: color_to_rgba(self.style.colors[0]),
+            color: color_to_rgba(self.colors[0]),
             fill_alpha: FILL_ALPHA,
         })
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct OscilloscopeStyle {
-    pub(crate) colors: [Color; OSCILLOSCOPE_PALETTE_SIZE],
-}
-
-impl Default for OscilloscopeStyle {
-    fn default() -> Self {
-        Self {
-            colors: palettes::oscilloscope::COLORS,
-        }
     }
 }
 

@@ -15,7 +15,7 @@ use crate::util::color::with_alpha;
 
 mod application_row;
 use crate::ui::widgets::scroll_glow::ScrollGlow;
-use crate::visuals::registry::{VisualKind, VisualManagerHandle};
+use crate::visuals::registry::{VisualKind, VisualManagerHandle, VisualSlotSnapshot};
 use application_row::ApplicationRow;
 use async_channel::Receiver as AsyncReceiver;
 use iced::widget::text::Wrapping;
@@ -109,7 +109,7 @@ impl ConfigPage {
     ) -> Self {
         let (current_bg, capture_mode, last_device_name, active_theme, theme_choices) = {
             let guard = settings.borrow();
-            let settings = guard.settings();
+            let settings = &guard.data;
             (
                 settings.background_color.map_or(theme::BG_BASE, Into::into),
                 settings.capture_mode,
@@ -300,7 +300,7 @@ impl ConfigPage {
             let content: Element<'_, _> = if !self.applications.is_empty() {
                 render_toggle_grid(&self.applications, |entry| {
                     (
-                        entry.label.clone(),
+                        entry.label.as_str(),
                         entry.enabled,
                         ConfigMessage::ToggleChanged {
                             node_id: entry.node_id,
@@ -371,7 +371,7 @@ impl ConfigPage {
     }
 
     fn render_global_section(&self) -> Column<'_, ConfigMessage> {
-        let decorations_enabled = self.settings.borrow().settings().decorations;
+        let decorations_enabled = self.settings.borrow().data.decorations;
         let content = Column::new()
             .spacing(12)
             .push(self.bg_palette.view().map(ConfigMessage::BgPalette))
@@ -430,11 +430,15 @@ impl ConfigPage {
     }
 
     pub(crate) fn sync_active_theme(&mut self) {
-        let active = self.settings.borrow().active_theme().to_owned();
-        if active != self.active_theme {
-            self.active_theme = active;
-            self.theme_choices = self.settings.borrow().theme_store().list();
-        }
+        let (active, choices) = {
+            let guard = self.settings.borrow();
+            if guard.active_theme() == self.active_theme {
+                return;
+            }
+            (guard.active_theme().to_owned(), guard.theme_store().list())
+        };
+        self.active_theme = active;
+        self.theme_choices = choices;
     }
 
     fn apply_theme(&mut self, name: &str) {
@@ -469,7 +473,6 @@ impl ConfigPage {
         let manager = self.visual_manager.borrow();
         let palettes = manager
             .snapshot()
-            .slots
             .iter()
             .filter_map(|slot| {
                 manager
@@ -478,7 +481,7 @@ impl ConfigPage {
                     .map(|ps| (slot.kind, ps))
             })
             .collect();
-        let bg = self.settings.borrow().settings().background_color;
+        let bg = self.settings.borrow().data.background_color;
         ThemeFile {
             name: Some(name.to_owned()),
             author: None,
@@ -490,14 +493,14 @@ impl ConfigPage {
     pub(crate) fn sync_bar_outputs(&mut self, snapshot: OutputSnapshot) {
         self.bar_monitors = snapshot.outputs;
         if let Some(monitor) = snapshot.current
-            && self.settings.borrow().settings().bar.monitor.as_ref() != Some(&monitor)
+            && self.settings.borrow().data.bar.monitor.as_ref() != Some(&monitor)
         {
             self.settings.update(|s| s.data.bar.monitor = Some(monitor));
         }
     }
 
     fn render_bar_section(&self) -> Column<'_, ConfigMessage> {
-        let bar = self.settings.borrow().settings().bar.clone();
+        let bar = self.settings.borrow().data.bar.clone();
         let bar_toggle = iced::widget::checkbox(bar.enabled)
             .label("Enable Bar Mode")
             .size(14)
@@ -539,18 +542,15 @@ impl ConfigPage {
         section_with_divider("Bar Mode", content)
     }
 
-    fn render_visuals_section(
-        &self,
-        snapshot: &crate::visuals::registry::VisualSnapshot,
-    ) -> Column<'_, ConfigMessage> {
-        let enabled = snapshot.slots.iter().filter(|s| s.enabled).count();
-        let title = format!("Visual Modules ({enabled}/{})", snapshot.slots.len());
-        let content: Element<'_, ConfigMessage> = if snapshot.slots.is_empty() {
+    fn render_visuals_section(&self, snapshot: &[VisualSlotSnapshot]) -> Column<'_, ConfigMessage> {
+        let enabled = snapshot.iter().filter(|s| s.enabled).count();
+        let title = format!("Visual Modules ({enabled}/{})", snapshot.len());
+        let content: Element<'_, ConfigMessage> = if snapshot.is_empty() {
             text("No visual modules available.").size(TEXT_SIZE).into()
         } else {
-            render_toggle_grid(&snapshot.slots, |slot| {
+            render_toggle_grid(snapshot, |slot| {
                 (
-                    slot.metadata.display_name.to_string(),
+                    slot.metadata.display_name,
                     slot.enabled,
                     ConfigMessage::VisualToggled {
                         kind: slot.kind,
@@ -673,10 +673,9 @@ fn radio_row<'a, T: Copy + Eq + std::fmt::Display + 'a>(
     })
 }
 
-fn render_toggle_grid<'a, T, N, F>(items: &[T], mut project: F) -> Column<'a, ConfigMessage>
+fn render_toggle_grid<'a, T, F>(items: &[T], mut project: F) -> Column<'a, ConfigMessage>
 where
-    N: std::fmt::Display,
-    F: FnMut(&T) -> (N, bool, ConfigMessage),
+    for<'b> F: FnMut(&'b T) -> (&'b str, bool, ConfigMessage),
 {
     let mut grid = Column::new().spacing(6);
     for chunk in items.chunks(GRID_COLUMNS) {
@@ -684,7 +683,7 @@ where
         for item in chunk {
             let (name, enabled, message) = project(item);
             let label = format!("{name} ({})", if enabled { "enabled" } else { "disabled" });
-            row = row.push(toggle_button(label, enabled, message));
+            row = row.push(tab_button(label, enabled, message).width(Length::FillPortion(1)));
         }
         for _ in chunk.len()..GRID_COLUMNS {
             row = row.push(
@@ -696,14 +695,6 @@ where
         grid = grid.push(row);
     }
     grid
-}
-
-fn toggle_button<'a>(
-    label: String,
-    enabled: bool,
-    message: ConfigMessage,
-) -> iced::widget::Button<'a, ConfigMessage> {
-    tab_button(label, enabled, message).width(Length::FillPortion(1))
 }
 
 fn tab_button<'a>(
