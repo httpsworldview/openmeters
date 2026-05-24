@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::palette::PaletteEvent;
 use super::widgets::{pick, set_if_changed};
 use crate::persistence::settings::LoudnessSettings;
 use crate::visuals::options::MeterMode;
@@ -18,7 +17,6 @@ settings_pane!(
 settings_messages!(LoudnessSettingsPane as pane, value {
     LeftMode(MeterMode) => set_if_changed(&mut pane.settings.left_mode, value);
     RightMode(MeterMode) => set_if_changed(&mut pane.settings.right_mode, value);
-    Palette(PaletteEvent) => pane.palette.update(value);
 });
 
 impl LoudnessSettingsPane {

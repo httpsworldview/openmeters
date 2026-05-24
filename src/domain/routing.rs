@@ -5,18 +5,26 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone)]
 pub enum RoutingCommand {
     SetApplicationEnabled { node_id: u32, enabled: bool },
-    SetCaptureMode(CaptureMode),
-    SelectCaptureDevice(DeviceSelection),
+    SetCaptureState(CaptureMode, DeviceSelection),
 }
 
 crate::macros::choice_enum!(all pub enum CaptureMode { #[default] Applications => "Applications", Device => "Devices" });
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum DeviceSelection {
     #[default]
     Default,
-    Node(u32),
+    Device(String),
+}
+
+impl DeviceSelection {
+    pub fn token(&self) -> Option<&str> {
+        match self {
+            Self::Device(token) => Some(token),
+            Self::Default => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

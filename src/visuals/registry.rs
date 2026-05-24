@@ -10,7 +10,7 @@ use super::{
 };
 pub use crate::domain::visuals::VisualKind;
 use crate::{
-    infra::pipewire::meter_tap::{self, MeterFormat},
+    infra::pipewire::meter_tap::MeterFormat,
     persistence::settings::{
         self as settings_cfg, ModuleSettings, PaletteSettings, ThemeFile, VisualSettings,
     },
@@ -410,12 +410,11 @@ impl VisualManager {
             entry.module.apply(&settings);
         }
     }
-    pub fn ingest_samples(&mut self, samples: &[f32]) {
+    pub fn ingest_samples(&mut self, samples: &[f32], format: MeterFormat) {
         if samples.is_empty() {
             return;
         }
 
-        let format = meter_tap::current_format();
         for entry in &mut self.entries {
             if entry.enabled {
                 entry.module.ingest(samples, format);

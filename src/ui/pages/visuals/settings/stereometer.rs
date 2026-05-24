@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::palette::PaletteEvent;
 use super::widgets::{
     SliderRange, pick, section, set_if_changed, slide, toggle, update_f32_range,
     update_usize_from_f32,
@@ -45,7 +44,6 @@ settings_messages!(StereometerSettingsPane as pane, value {
     ScaleRange(f32) => update_f32_range(&mut pane.settings.scale_range, value, SCALE_RANGE);
     CorrelationMeter(CorrelationMeterMode) => set_if_changed(&mut pane.settings.correlation_meter, value);
     CorrelationSide(CorrelationMeterSide) => set_if_changed(&mut pane.settings.correlation_meter_side, value);
-    Palette(PaletteEvent) => pane.palette.update(value);
 });
 
 impl StereometerSettingsPane {

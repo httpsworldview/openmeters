@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::palette::{PaletteEditor, PaletteEvent};
+use super::palette::PaletteEditor;
 use super::widgets::{SliderRange, pick, set_if_changed, slide, toggle, update_f32_range};
 use crate::persistence::settings::WaveformSettings;
 use crate::util::audio::Channel;
@@ -53,7 +53,6 @@ settings_messages!(WaveformSettingsPane as pane, value {
         changed
     };
     ShowPeakHistory(bool) => set_if_changed(&mut pane.settings.show_peak_history, value);
-    Palette(PaletteEvent) => pane.palette.update(value);
 });
 
 impl WaveformSettingsPane {

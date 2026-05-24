@@ -11,7 +11,7 @@ mod message;
 mod windowing;
 
 use crate::domain::routing::RoutingCommand;
-use crate::infra::pipewire::registry::RegistrySnapshot;
+use crate::infra::pipewire::{meter_tap::AudioBatch, registry::RegistrySnapshot};
 use crate::persistence::settings::{BarAlignment, BarSettings, SettingsHandle, clamp_bar_height};
 use crate::ui::pages::config::ConfigPage;
 use crate::ui::pages::visuals::{ActiveSettings, VisualsPage};
@@ -50,7 +50,7 @@ pub type UiResult = std::result::Result<(), Box<dyn std::error::Error + Send + S
 pub struct UiConfig {
     routing_sender: mpsc::Sender<RoutingCommand>,
     registry_updates: Option<Arc<AsyncReceiver<RegistrySnapshot>>>,
-    audio_frames: Option<Arc<AsyncReceiver<Vec<f32>>>>,
+    audio_frames: Option<Arc<AsyncReceiver<AudioBatch>>>,
 }
 
 impl UiConfig {
@@ -65,7 +65,7 @@ impl UiConfig {
         }
     }
 
-    pub fn with_audio_stream(mut self, rx: Arc<AsyncReceiver<Vec<f32>>>) -> Self {
+    pub fn with_audio_stream(mut self, rx: Arc<AsyncReceiver<AudioBatch>>) -> Self {
         self.audio_frames = Some(rx);
         self
     }
@@ -113,7 +113,7 @@ struct UiApp {
     visuals_page: VisualsPage,
     visual_manager: VisualManagerHandle,
     settings_handle: SettingsHandle,
-    audio_frames: Option<Arc<AsyncReceiver<Vec<f32>>>>,
+    audio_frames: Option<Arc<AsyncReceiver<AudioBatch>>>,
     drawer_open: bool,
     drawer_width_ratio: f32,
     drawer_resizing: bool,

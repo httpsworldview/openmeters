@@ -3,7 +3,7 @@
 
 use super::widgets::clipped_text;
 use crate::ui::theme::{self, Palette};
-use crate::ui::widgets::scroll_glow::ScrollGlow;
+use crate::ui::widgets::{scroll_delta_lines, scroll_glow::ScrollGlow};
 use crate::util::color::{
     EPSILON, colors_equal, default_spreads, f32_to_u8, find_segment, lerp_color,
     sanitize_stop_positions, sanitize_stop_spreads, with_alpha,
@@ -412,7 +412,7 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for GradientBar<'_> {
                 if let Some(pos) = cursor.position().filter(|p| bounds.contains(*p))
                     && let Some(i) = nearest_handle(0..n, self.positions, &bounds, pos.x)
                 {
-                    let dy = scroll_delta(*delta);
+                    let dy = scroll_delta_lines(*delta);
                     let current = self.spreads.get(i).copied().unwrap_or(1.0);
                     let new_spread = (current + dy * 0.2).clamp(0.2, 5.0);
                     shell.publish(PaletteEvent::AdjustSpread {
@@ -519,14 +519,6 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for GradientBar<'_> {
                 Background::Color(fill),
             );
         }
-    }
-}
-
-#[inline]
-fn scroll_delta(delta: mouse::ScrollDelta) -> f32 {
-    match delta {
-        mouse::ScrollDelta::Lines { y, .. } => y,
-        mouse::ScrollDelta::Pixels { y, .. } => y / 50.0,
     }
 }
 

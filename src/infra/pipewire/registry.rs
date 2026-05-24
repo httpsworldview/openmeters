@@ -129,6 +129,41 @@ mod tests {
     }
 
     #[test]
+    fn capture_device_tokens_prefer_names_then_descriptions_and_fallbacks() {
+        let snapshot = RegistrySnapshot {
+            nodes: vec![
+                NodeInfo {
+                    id: 7,
+                    name: Some("alsa_output.usb".into()),
+                    description: Some("External DAC".into()),
+                    media_class: Some("Audio/Sink".into()),
+                    ..Default::default()
+                },
+                NodeInfo {
+                    id: 8,
+                    name: Some("external dac".into()),
+                    description: Some("Desk speakers".into()),
+                    media_class: Some("Audio/Sink".into()),
+                    ..Default::default()
+                },
+                NodeInfo {
+                    id: 9,
+                    media_class: Some("Audio/Source".into()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let id = |token| snapshot.find_capture_device_by_token(token).map(|n| n.id);
+
+        assert_eq!(id("alsa_output.usb"), Some(7));
+        assert_eq!(id("External DAC"), Some(8));
+        assert_eq!(id("Desk speakers"), Some(8));
+        assert_eq!(id("NODE#9"), Some(9));
+        assert_eq!(id("missing"), None);
+    }
+
+    #[test]
     fn metadata_defaults_reconcile_matches_by_name() {
         use std::collections::HashMap;
 

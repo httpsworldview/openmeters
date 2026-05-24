@@ -25,7 +25,7 @@ use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
 use crate::util::audio::{
     DB_FLOOR, DEFAULT_SAMPLE_RATE, FrequencyScale, LN_TO_DB, WindowKind,
     compute_fft_bin_normalization, copy_dc_removed_from_deque, db_to_power, mixdown_into_deque,
-    window_coefficients,
+    power_to_db, window_coefficients,
 };
 use bytemuck::{Pod, Zeroable};
 use rustfft::num_complex::Complex32;
@@ -370,12 +370,7 @@ impl SpectrogramProcessor {
     fn compute_classic_bins(spectrum: &[Complex32], bin_norm: &[f32], bins: &mut [u16]) {
         for (i, c) in spectrum.iter().enumerate() {
             let power = (c.re * c.re + c.im * c.im) * bin_norm[i];
-            let db = if power > 1.0e-20 {
-                (power.ln() * LN_TO_DB).max(DB_FLOOR)
-            } else {
-                DB_FLOOR
-            };
-            bins[i] = pack_classic_db(db);
+            bins[i] = pack_classic_db(power_to_db(power, DB_FLOOR));
         }
     }
 

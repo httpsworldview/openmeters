@@ -2,7 +2,10 @@
 // Copyright (C) 2026 Maika Namuo
 
 use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
-use crate::util::audio::{BAND_SPLITS_HZ, DEFAULT_SAMPLE_RATE, power_to_db};
+use crate::util::audio::{
+    BAND_SPLITS_HZ, DEFAULT_SAMPLE_RATE, WindowKind, apply_window, power_to_db,
+    window_coefficients,
+};
 use realfft::{RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex32;
 use std::sync::Arc;
@@ -191,13 +194,8 @@ impl FrequencyAnalyzer {
         let n = self.sample_history.len().min(self.size);
         self.input_buffer[n..].fill(0.0);
         self.input_buffer[..n].copy_from_slice(&self.sample_history[..n]);
-        if n <= 1 {
-            return;
-        }
-        let step = core::f32::consts::TAU / (n - 1) as f32;
-        for (i, sample) in self.input_buffer[..n].iter_mut().enumerate() {
-            *sample *= 0.5 - 0.5 * (i as f32 * step).cos();
-        }
+        let window = window_coefficients(WindowKind::Hann, n);
+        apply_window(&mut self.input_buffer[..n], &window);
     }
 
     fn spectral_centroid(&self) -> f32 {
@@ -563,7 +561,7 @@ mod tests {
     }
 
     #[test]
-    fn frequency_analyzer_windows_partial_history_without_extra_cache() {
+    fn frequency_analyzer_windows_partial_history() {
         let mut analyzer = FrequencyAnalyzer::new(RATE);
         analyzer.sample_history = vec![1.0; 5];
         analyzer.apply_hann_window();

@@ -149,7 +149,6 @@ struct RoutingManager {
     disabled_nodes: HashSet<u32>,
     routed_to: HashMap<u32, u32>,
     capture_mode: CaptureMode,
-    preferred_device: Option<String>,
     device_target: DeviceSelection,
     hw_sink_cache: Option<(u32, String)>,
     current_links: Vec<registry::LinkSpec>,
@@ -169,8 +168,10 @@ impl RoutingManager {
             disabled_nodes: HashSet::default(),
             routed_to: HashMap::default(),
             capture_mode: routing_config.capture_mode,
-            preferred_device: routing_config.preferred_device,
-            device_target: DeviceSelection::Default,
+            device_target: routing_config
+                .preferred_device
+                .map(DeviceSelection::Device)
+                .unwrap_or_default(),
             hw_sink_cache: None,
             current_links: Vec::new(),
             warned_sink_missing: false,
@@ -189,18 +190,12 @@ impl RoutingManager {
                         self.disabled_nodes.insert(node_id)
                     }
                 }
-                RoutingCommand::SetCaptureMode(mode) if self.capture_mode != mode => {
+                RoutingCommand::SetCaptureState(mode, device) => {
+                    let changed = self.capture_mode != mode || self.device_target != device;
                     self.capture_mode = mode;
-                    true
+                    self.device_target = device;
+                    changed
                 }
-                RoutingCommand::SelectCaptureDevice(sel) if self.device_target != sel => {
-                    if sel == DeviceSelection::Default {
-                        self.preferred_device = None;
-                    }
-                    self.device_target = sel;
-                    true
-                }
-                _ => false,
             };
         }
         changed
@@ -294,10 +289,7 @@ impl RoutingManager {
 
         let (source, target) = match self.capture_mode {
             CaptureMode::Applications => (om_sink, self.hw_sink(snapshot)?),
-            CaptureMode::Device => match self.device_target {
-                DeviceSelection::Node(id) => (snapshot.nodes.iter().find(|n| n.id == id)?, om_sink),
-                DeviceSelection::Default => self.device_source(snapshot, om_sink)?,
-            },
+            CaptureMode::Device => (self.device_source(snapshot)?, om_sink),
         };
 
         let (src_ports, tgt_ports) = (
@@ -329,31 +321,20 @@ impl RoutingManager {
     fn device_source<'a>(
         &mut self,
         snapshot: &'a registry::RegistrySnapshot,
-        om_sink: &'a registry::NodeInfo,
-    ) -> Option<(&'a registry::NodeInfo, &'a registry::NodeInfo)> {
-        if let Some(device) = self.resolve_preferred_device(snapshot) {
-            self.warned_device_missing = false;
-            return Some((device, om_sink));
-        }
-        if self.preferred_device.is_some() {
-            if !self.warned_device_missing {
-                warn!("[router] preferred capture device unavailable; waiting");
-                self.warned_device_missing = true;
-            }
-            return None;
-        }
-        Some((self.hw_sink(snapshot)?, om_sink))
-    }
-
-    fn resolve_preferred_device<'a>(
-        &self,
-        snapshot: &'a registry::RegistrySnapshot,
     ) -> Option<&'a registry::NodeInfo> {
-        let token = self.preferred_device.as_deref()?;
-        snapshot
-            .nodes
-            .iter()
-            .find(|n| n.name.as_deref() == Some(token) || n.matches_label(token))
+        match &self.device_target {
+            DeviceSelection::Default => self.hw_sink(snapshot),
+            DeviceSelection::Device(token) => {
+                let device = snapshot.find_capture_device_by_token(token);
+                if device.is_some() {
+                    self.warned_device_missing = false;
+                } else if !self.warned_device_missing {
+                    warn!("[router] preferred capture device unavailable; waiting");
+                    self.warned_device_missing = true;
+                }
+                device
+            }
+        }
     }
 }
 
