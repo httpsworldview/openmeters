@@ -1,12 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-// Note: This processor intentionally diverges from project patterns by
-// omitting `config()` and `update_config()` methods. this is because
-// loudness settings are not user-configurable
-use super::processor::{
-    LoudnessConfig, LoudnessProcessor as CoreLoudnessProcessor, LoudnessSnapshot, MAX_CHANNELS,
-};
+use super::processor::{LoudnessSnapshot, MAX_CHANNELS};
 use super::render::{LoudnessParams, LoudnessPrimitive, MeterFill};
 use crate::persistence::settings::LoudnessSettings;
 use crate::visuals::options::MeterMode;
@@ -32,14 +27,6 @@ const VALUE_FONT_SIZE: f32 = 12.0;
 const LEFT_CHANNEL_INDICES: &[usize] = &[0, 4, 6];
 const RIGHT_CHANNEL_INDICES: &[usize] = &[1, 5, 7];
 const CENTER_CHANNEL_INDEX: usize = 2;
-
-crate::visuals::vis_processor!(
-    LoudnessProcessor,
-    CoreLoudnessProcessor,
-    LoudnessConfig,
-    LoudnessSnapshot,
-    no_config
-);
 
 pub const LOUDNESS_PALETTE_SIZE: usize = palettes::loudness::COLORS.len();
 

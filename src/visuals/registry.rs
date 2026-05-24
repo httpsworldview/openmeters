@@ -10,6 +10,7 @@ use super::{
 };
 pub use crate::domain::visuals::VisualKind;
 use crate::{
+    dsp::AudioBlock,
     infra::pipewire::meter_tap::MeterFormat,
     persistence::settings::{
         self as settings_cfg, ModuleSettings, PaletteSettings, ThemeFile, VisualSettings,
@@ -34,7 +35,6 @@ fn resolve_palette<const N: usize>(
         .unwrap_or(*default)
 }
 
-// dear future me/future maintainers: I'm sorry for this macro.
 macro_rules! visuals {
     (@export_palette $state:expr, $default:expr) => {
         PaletteSettings::if_differs_from($state, $default)
@@ -48,14 +48,14 @@ macro_rules! visuals {
         $st.set_palette(&resolve_palette($settings.palette.as_ref(), $default))
     };
     ($($variant:ident($name:expr, $width:expr, $height:expr, $min_w:expr) =>
-       $module:ident :: $processor:ident, $state:ident;
-       $settings_ty:ty, $default_palette:expr;
+       $module:ident :: $processor:ident, $config:ident, $state:ident;
+       $settings_ty:ty;
        $(pre_ingest($pip:ident, $pis:ident) $pre_ingest_body:expr;)?
        apply($ap:ident, $as:ident, $aset:ident) $apply_body:expr;
        export($ep:ident, $es:ident) $export_body:expr;
     )*) => {
         #[derive(Clone)]
-        pub struct VisualContent(VisualContentInner);
+        pub(crate) struct VisualContent(VisualContentInner);
 
         #[derive(Clone)]
         enum VisualContentInner {
@@ -63,11 +63,14 @@ macro_rules! visuals {
         }
 
         impl VisualContent {
-            pub fn render<M: 'static>(&self, meta: VisualMetadata) -> Element<'_, M> {
-                let elem: Element<'_, M> = match &self.0 {
+            pub(crate) fn render<M: 'static>(&self) -> Element<'_, M> {
+                container(match &self.0 {
                     $(VisualContentInner::$variant(s) => $module::widget(s)),*
-                };
-                meta.wrap(elem)
+                })
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .center(Length::Fill)
+                .into()
             }
         }
 
@@ -80,7 +83,10 @@ macro_rules! visuals {
                 min_width: $min_w,
             },
             build: || Box::new(Visual {
-                processor: $module::$processor::new(DEFAULT_SAMPLE_RATE),
+                processor: $module::$processor::new($module::$config {
+                    sample_rate: DEFAULT_SAMPLE_RATE,
+                    ..Default::default()
+                }),
                 state: Rc::new(RefCell::new($module::$state::new())),
             }),
         }),*];
@@ -91,7 +97,11 @@ macro_rules! visuals {
                     let ($pip, $pis) = (&mut self.processor, &self.state);
                     $pre_ingest_body
                 })?
-                if let Some(snap) = self.processor.ingest(samples, fmt) {
+                if let Some(snap) = self.processor.process_block(&AudioBlock::now(
+                    samples,
+                    fmt.channels.max(1),
+                    fmt.sample_rate.max(1.0),
+                )) {
                     self.state.borrow_mut().apply_snapshot(snap);
                 }
             }
@@ -116,8 +126,8 @@ macro_rules! visuals {
 
 visuals! {
     Loudness("Loudness", 140.0, 300.0, 80.0) =>
-        loudness::LoudnessProcessor, LoudnessState;
-        settings_cfg::LoudnessSettings, &palettes::loudness::COLORS;
+        loudness::LoudnessProcessor, LoudnessConfig, LoudnessState;
+        settings_cfg::LoudnessSettings;
         apply(_p, s, set) { let mut st = s.borrow_mut();
             st.set_modes(set.left_mode, set.right_mode);
             visuals!(@apply_palette st, set, &palettes::loudness::COLORS); };
@@ -125,8 +135,8 @@ visuals! {
             palette: visuals!(@export_palette &st.palette, &palettes::loudness::COLORS) } };
 
     Oscilloscope("Oscilloscope", 150.0, 160.0, 100.0) =>
-        oscilloscope::OscilloscopeProcessor, OscilloscopeState;
-        settings_cfg::OscilloscopeSettings, &palettes::oscilloscope::COLORS;
+        oscilloscope::OscilloscopeProcessor, OscilloscopeConfig, OscilloscopeState;
+        settings_cfg::OscilloscopeSettings;
         apply(p, s, set) { visuals!(@apply_config p, set); let mut st = s.borrow_mut();
             st.update_view_settings(set.persistence, set.channel_1, set.channel_2);
             visuals!(@apply_palette st, set, &palettes::oscilloscope::COLORS); };
@@ -135,8 +145,8 @@ visuals! {
             out.palette = visuals!(@export_palette &st.style.colors, &palettes::oscilloscope::COLORS); out };
 
     Waveform("Waveform", 220.0, 180.0, 220.0) =>
-        waveform::WaveformProcessor, WaveformState;
-        settings_cfg::WaveformSettings, &palettes::waveform::COLORS;
+        waveform::WaveformProcessor, WaveformConfig, WaveformState;
+        settings_cfg::WaveformSettings;
         apply(p, s, set) { visuals!(@apply_config p, set);
             let mut st = s.borrow_mut(); st.set_channels(set.channel_1, set.channel_2);
             st.color_mode = set.color_mode; st.show_peak_history = set.show_peak_history;
@@ -147,8 +157,8 @@ visuals! {
             out.palette = visuals!(@export_palette &st.style.palette, &palettes::waveform::COLORS); out };
 
     Spectrogram("Spectrogram", 320.0, 220.0, 300.0) =>
-        spectrogram::SpectrogramProcessor, SpectrogramState;
-        settings_cfg::SpectrogramSettings, &palettes::spectrogram::COLORS;
+        spectrogram::SpectrogramProcessor, SpectrogramConfig, SpectrogramState;
+        settings_cfg::SpectrogramSettings;
         pre_ingest(p, s) {
             let vw = { s.borrow().view_width };
             if vw > 0 {
@@ -181,8 +191,8 @@ visuals! {
             out.rotation = st.rotation; out };
 
     Spectrum("Spectrum analyzer", 400.0, 180.0, 400.0) =>
-        spectrum::SpectrumProcessor, SpectrumState;
-        settings_cfg::SpectrumSettings, &palettes::spectrum::COLORS;
+        spectrum::SpectrumProcessor, SpectrumConfig, SpectrumState;
+        settings_cfg::SpectrumSettings;
         apply(p, s, set) { visuals!(@apply_config p, set); let cfg = p.config(); let mut st = s.borrow_mut();
             visuals!(@apply_palette st, set, &palettes::spectrum::COLORS);
             let style = st.style_mut(); style.frequency_scale = set.frequency_scale;
@@ -190,8 +200,8 @@ visuals! {
             style.smoothing_passes = set.smoothing_passes; style.highlight_threshold = set.highlight_threshold;
             style.display_mode = set.display_mode; style.weighting_mode = set.weighting_mode;
             style.min_db = cfg.floor_db; style.show_secondary_line = set.show_secondary_line;
-            style.bar_count = set.bar_count; style.bar_gap = set.bar_gap;
-            st.update_show_grid(set.show_grid); st.update_show_peak_label(set.show_peak_label); };
+            style.bar_count = set.bar_count; style.bar_gap = set.bar_gap; style.show_grid = set.show_grid;
+            st.update_show_peak_label(set.show_peak_label); };
         export(p, s) { let st = s.borrow(); let style = st.style(); let cfg = p.config();
             let mut out = settings_cfg::SpectrumSettings::from_config(&cfg);
             out.palette = visuals!(@export_palette &style.spectrum_palette, &palettes::spectrum::COLORS);
@@ -204,8 +214,8 @@ visuals! {
             out.bar_count = style.bar_count; out.bar_gap = style.bar_gap; out };
 
     Stereometer("Stereometer", 150.0, 220.0, 100.0) =>
-        stereometer::StereometerProcessor, StereometerState;
-        settings_cfg::StereometerSettings, &palettes::stereometer::COLORS;
+        stereometer::StereometerProcessor, StereometerConfig, StereometerState;
+        settings_cfg::StereometerSettings;
         apply(p, s, set) {
             let mut cfg = p.config();
             set.apply_to(&mut cfg);
@@ -237,16 +247,6 @@ pub struct VisualMetadata {
     pub preferred_width: f32,
     pub preferred_height: f32,
     pub min_width: f32,
-}
-
-impl VisualMetadata {
-    pub(crate) fn wrap<'a, M: 'static>(&self, elem: Element<'a, M>) -> Element<'a, M> {
-        container(elem)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .center(Length::Fill)
-            .into()
-    }
 }
 
 pub trait VisualModule {
@@ -366,10 +366,11 @@ impl VisualManager {
         })
     }
     pub fn apply_module_settings(&mut self, kind: VisualKind, settings: &ModuleSettings) -> bool {
-        self.by_kind_mut(kind).is_some_and(|entry| {
-            entry.apply_settings(settings);
-            true
-        })
+        let Some(entry) = self.by_kind_mut(kind) else {
+            return false;
+        };
+        entry.apply_settings(settings);
+        true
     }
     pub fn set_enabled_by_kind(&mut self, kind: VisualKind, enabled: bool) {
         if let Some(entry) = self.by_kind_mut(kind) {

@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::processor::{
-    OscilloscopeConfig, OscilloscopeProcessor as CoreOscilloscopeProcessor, OscilloscopeSnapshot,
-};
+use super::processor::OscilloscopeSnapshot;
 use super::render::{OscilloscopeParams, OscilloscopePrimitive};
 use crate::persistence::settings::OscilloscopeSettings;
 use crate::util::audio::{Channel, project_planar_channels};
@@ -14,14 +12,6 @@ use iced::Color;
 const OSCILLOSCOPE_PALETTE_SIZE: usize = 1;
 const MAX_PERSISTENCE: f32 = 0.98;
 const FILL_ALPHA: f32 = 0.15;
-
-crate::visuals::vis_processor!(
-    OscilloscopeProcessor,
-    CoreOscilloscopeProcessor,
-    OscilloscopeConfig,
-    OscilloscopeSnapshot,
-    sync_rate
-);
 
 #[derive(Debug, Clone)]
 pub(crate) struct OscilloscopeState {

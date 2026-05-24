@@ -88,10 +88,8 @@ pub type ResizeWidths = Vec<(Pane, f32)>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DragEvent {
-    Picked { pane: Pane },
     Moved { pane: Pane, target: Pane },
-    Dropped { pane: Pane },
-    Canceled { pane: Pane },
+    Dropped,
 }
 
 #[allow(missing_debug_implementations)]
@@ -526,11 +524,8 @@ where
             let dragging = interaction.dragging.take();
             interaction.last_x = None;
             self.publish_hover(interaction, None, shell);
-            let Some((pane, _)) = dragging else {
+            if dragging.is_none() {
                 return false;
-            };
-            if let Some(on_drag) = &self.on_drag {
-                shell.publish(on_drag(DragEvent::Canceled { pane }));
             }
             shell.capture_event();
             return true;
@@ -573,7 +568,7 @@ where
                     interaction.dragging = None;
                     interaction.last_x = None;
                     if let Some(on_drag) = &self.on_drag {
-                        shell.publish(on_drag(DragEvent::Dropped { pane }));
+                        shell.publish(on_drag(DragEvent::Dropped));
                     }
                 }
                 _ => {}
@@ -605,13 +600,12 @@ where
                     shell.request_redraw();
                     return true;
                 }
-                if let Some(on_drag) = &self.on_drag
+                if self.on_drag.is_some()
                     && let Some(pane) = self.pane_at(layout, position)
                 {
                     let interaction = tree.state.downcast_mut::<Interaction>();
                     interaction.dragging = Some((pane, position));
                     interaction.last_x = Some(position.x);
-                    shell.publish(on_drag(DragEvent::Picked { pane }));
                     shell.capture_event();
                     return true;
                 }

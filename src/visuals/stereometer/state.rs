@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::processor::{
-    BandCorrelation, StereometerConfig, StereometerProcessor as CoreProcessor, StereometerSnapshot,
-};
+use super::processor::{BandCorrelation, StereometerSnapshot};
 use super::render::{StereometerParams, StereometerPrimitive, scale_point};
 use crate::persistence::settings::StereometerSettings;
 use crate::util::color::color_to_rgba;
@@ -17,13 +15,6 @@ use std::collections::VecDeque;
 const TRAIL_LEN: usize = 32;
 const CORRELATION_SMOOTHING: f32 = 0.85;
 const MAX_PERSISTENCE: f32 = 0.9;
-
-crate::visuals::vis_processor!(
-    StereometerProcessor,
-    CoreProcessor,
-    StereometerConfig,
-    StereometerSnapshot
-);
 
 #[derive(Debug, Clone)]
 pub(crate) struct StereometerState {

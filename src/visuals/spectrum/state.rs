@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::processor::{
-    SpectrumConfig, SpectrumProcessor as CoreSpectrumProcessor, SpectrumSnapshot,
-};
+use super::processor::SpectrumSnapshot;
 use super::render::{MIN_BAR_COUNT, SpectrumParams, SpectrumPeakParams, SpectrumPrimitive};
 use crate::persistence::settings::SpectrumSettings;
 use crate::visuals::options::{SpectrumDisplayMode, SpectrumWeightingMode};
@@ -31,14 +29,6 @@ static GRID_LABEL_SLOT: LazyLock<Size> = LazyLock::new(|| {
             Size::new(a.width.max(s.width), a.height.max(s.height))
         })
 });
-
-crate::visuals::vis_processor!(
-    SpectrumProcessor,
-    CoreSpectrumProcessor,
-    SpectrumConfig,
-    SpectrumSnapshot,
-    sync_rate
-);
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SpectrumStyle {
@@ -138,10 +128,6 @@ impl SpectrumState {
     }
     pub fn style_mut(&mut self) -> &mut SpectrumStyle {
         &mut self.style
-    }
-
-    pub fn update_show_grid(&mut self, show: bool) {
-        self.style.show_grid = show;
     }
 
     pub fn update_show_peak_label(&mut self, show: bool) {

@@ -60,10 +60,6 @@ impl ThemeStore {
         }
     }
 
-    fn ensure_dir(&self) -> io::Result<()> {
-        fs::create_dir_all(&self.dir)
-    }
-
     pub fn list(&self) -> Vec<ThemeChoice> {
         let mut choices = vec![ThemeChoice {
             name: BUILTIN_THEME.to_owned(),
@@ -99,7 +95,7 @@ impl ThemeStore {
     }
 
     pub fn save(&self, name: &str, theme: &ThemeFile) -> io::Result<()> {
-        self.ensure_dir()?;
+        fs::create_dir_all(&self.dir)?;
         let path = self.theme_path(name);
         let json = serde_json::to_string_pretty(theme)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
@@ -166,7 +162,6 @@ mod tests {
         let loaded = store.load("test").unwrap();
         assert_eq!(loaded.name.as_deref(), Some("Test"));
         assert!(loaded.palettes.contains_key(&VisualKind::Spectrum));
-        // missing visuals get None
         assert!(!loaded.palettes.contains_key(&VisualKind::Oscilloscope));
     }
 

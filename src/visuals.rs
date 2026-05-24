@@ -2,67 +2,14 @@
 // Copyright (C) 2026 Maika Namuo
 
 macro_rules! visual_modules {
-    ($($module:ident { $processor:ident, $state:ident }),+ $(,)?) => {
+    ($($module:ident { $processor:ident, $config:ident, $state:ident }),+ $(,)?) => {
         $(pub mod $module {
             pub mod processor;
             pub mod render;
             pub mod state;
-            pub(crate) use state::{widget, $processor, $state};
+            pub(crate) use processor::{$config, $processor};
+            pub(crate) use state::{widget, $state};
         })+
-    };
-}
-
-macro_rules! vis_processor {
-    (@struct_new $name:ident, $core:ty, $config:ident) => {
-        pub(crate) struct $name { inner: $core }
-        impl $name {
-            pub fn new(sample_rate: f32) -> Self {
-                Self { inner: <$core>::new($config { sample_rate, ..Default::default() }) }
-            }
-        }
-    };
-    (@config $name:ident, $config:ident) => {
-        impl $name {
-            pub fn config(&self) -> $config { self.inner.config() }
-            pub fn update_config(&mut self, c: $config) {
-                use $crate::dsp::Reconfigurable as _;
-                self.inner.update_config(c);
-            }
-        }
-    };
-    (@sync_rate $self_:ident, $sr:ident) => {
-        use $crate::dsp::Reconfigurable as _;
-        let mut cfg = $self_.inner.config();
-        if !cfg.sample_rate.is_finite() || (cfg.sample_rate - $sr).abs() > f32::EPSILON {
-            cfg.sample_rate = $sr;
-            $self_.inner.update_config(cfg);
-        }
-    };
-    (@ingest $name:ident, $output:ty $(, $sync:ident)?) => {
-        impl $name {
-            pub fn ingest(
-                &mut self,
-                samples: &[f32],
-                format: $crate::infra::pipewire::meter_tap::MeterFormat,
-            ) -> Option<$output> {
-                use $crate::dsp::AudioProcessor as _;
-                if samples.is_empty() { return None; }
-                let sr = format.sample_rate.max(1.0);
-                $($crate::visuals::vis_processor!(@$sync self, sr);)?
-                self.inner.process_block(&$crate::dsp::AudioBlock::now(
-                    samples, format.channels.max(1), sr,
-                ))
-            }
-        }
-    };
-    ($name:ident, $core:ty, $config:ident, $output:ty, no_config) => {
-        $crate::visuals::vis_processor!(@struct_new $name, $core, $config);
-        $crate::visuals::vis_processor!(@ingest $name, $output);
-    };
-    ($name:ident, $core:ty, $config:ident, $output:ty $(, $sync:ident)?) => {
-        $crate::visuals::vis_processor!(@struct_new $name, $core, $config);
-        $crate::visuals::vis_processor!(@config $name, $config);
-        $crate::visuals::vis_processor!(@ingest $name, $output $(, $sync)?);
     };
 }
 
@@ -134,16 +81,15 @@ macro_rules! visualization_widget {
     };
 }
 
-pub(crate) use vis_processor;
 pub(crate) use visualization_widget;
 
 visual_modules! {
-    loudness { LoudnessProcessor, LoudnessState },
-    oscilloscope { OscilloscopeProcessor, OscilloscopeState },
-    spectrogram { SpectrogramProcessor, SpectrogramState },
-    spectrum { SpectrumProcessor, SpectrumState },
-    stereometer { StereometerProcessor, StereometerState },
-    waveform { WaveformProcessor, WaveformState },
+    loudness { LoudnessProcessor, LoudnessConfig, LoudnessState },
+    oscilloscope { OscilloscopeProcessor, OscilloscopeConfig, OscilloscopeState },
+    spectrogram { SpectrogramProcessor, SpectrogramConfig, SpectrogramState },
+    spectrum { SpectrumProcessor, SpectrumConfig, SpectrumState },
+    stereometer { StereometerProcessor, StereometerConfig, StereometerState },
+    waveform { WaveformProcessor, WaveformConfig, WaveformState },
 }
 
 pub mod options;

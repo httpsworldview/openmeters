@@ -139,7 +139,6 @@ impl SpectrumSettingsPane {
         .into()
     }
 
-
     fn sync_avg(&mut self) {
         self.settings.averaging = match self.avg_mode {
             AvgMode::None => AveragingMode::None,

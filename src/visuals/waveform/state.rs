@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::processor::{
-    MAX_COLUMN_CAPACITY, NUM_BANDS, WaveformConfig, WaveformPreview,
-    WaveformProcessor as CoreWaveformProcessor, WaveformSnapshot,
-};
+use super::processor::{MAX_COLUMN_CAPACITY, NUM_BANDS, WaveformPreview, WaveformSnapshot};
 use super::render::{PreviewSample, WaveformParams, WaveformPrimitive};
 use crate::persistence::settings::WaveformSettings;
 use crate::util::audio::{Channel, project_planar_channels};
@@ -18,13 +15,6 @@ use std::sync::Arc;
 const COLUMN_WIDTH_PIXELS: f32 = 1.0;
 
 type SampleColorData = (Arc<[[f32; 2]]>, Arc<[[f32; 4]]>);
-
-crate::visuals::vis_processor!(
-    WaveformProcessor,
-    CoreWaveformProcessor,
-    WaveformConfig,
-    WaveformSnapshot
-);
 
 #[derive(Debug, Clone)]
 pub(crate) struct WaveformState {

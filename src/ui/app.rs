@@ -51,17 +51,20 @@ pub struct UiConfig {
     routing_sender: mpsc::Sender<RoutingCommand>,
     registry_updates: Option<Arc<AsyncReceiver<RegistrySnapshot>>>,
     audio_frames: Option<Arc<AsyncReceiver<AudioBatch>>>,
+    settings_handle: SettingsHandle,
 }
 
 impl UiConfig {
     pub fn new(
         routing_sender: mpsc::Sender<RoutingCommand>,
         registry_updates: Option<Arc<AsyncReceiver<RegistrySnapshot>>>,
+        settings_handle: SettingsHandle,
     ) -> Self {
         Self {
             routing_sender,
             registry_updates,
             audio_frames: None,
+            settings_handle,
         }
     }
 
@@ -138,8 +141,8 @@ impl UiApp {
             routing_sender,
             registry_updates,
             audio_frames,
+            settings_handle,
         } = config;
-        let settings_handle = SettingsHandle::load_or_default();
         let (visual_settings, use_decorations, bar_settings, theme_file) = {
             let guard = settings_handle.borrow();
             let settings = guard.settings();
@@ -284,7 +287,7 @@ impl UiApp {
             .map(|s| {
                 let alignment = self.settings_handle.borrow().settings().bar.alignment;
                 self.settings_handle
-                    .update(|settings| settings.set_bar_height(s.pending_height));
+                    .update(|settings| settings.data.bar.height = s.pending_height);
                 self.apply_bar_layout(alignment, s.pending_height)
             })
             .unwrap_or_else(Task::none)
@@ -305,7 +308,7 @@ impl UiApp {
         let content = self.visuals_with_toasts();
         let content = self.wrap_drawer(content);
         let content = self.wrap_bar_resize(content, &bar);
-        self.wrap_window_resize(content, use_decorations, &bar)
+        Self::wrap_window_resize(content, use_decorations, &bar)
     }
 
     fn visuals_with_toasts(&self) -> Element<'_, Message> {
@@ -410,7 +413,6 @@ impl UiApp {
     }
 
     fn wrap_window_resize<'a>(
-        &'a self,
         content: Element<'a, Message>,
         use_decorations: bool,
         bar: &BarSettings,

@@ -21,7 +21,7 @@
 // 7. D.J. Nelson, "Cross-spectral methods for processing speech",
 //    JASA, vol. 110, no. 5, pp. 2575-2592, Nov 2001.
 
-use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
+use crate::dsp::AudioBlock;
 use crate::util::audio::{
     DB_FLOOR, DEFAULT_SAMPLE_RATE, FrequencyScale, LN_TO_DB, WindowKind,
     compute_fft_bin_normalization, copy_dc_removed_from_deque, db_to_power, mixdown_into_deque,
@@ -421,10 +421,8 @@ impl SpectrogramProcessor {
     }
 }
 
-impl AudioProcessor for SpectrogramProcessor {
-    type Output = SpectrogramUpdate;
-
-    fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<Self::Output> {
+impl SpectrogramProcessor {
+    pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<SpectrogramUpdate> {
         if block.frame_count() == 0 || block.channels == 0 {
             return None;
         }
@@ -458,14 +456,10 @@ impl AudioProcessor for SpectrogramProcessor {
         }
     }
 
-    fn reset(&mut self) {
-        self.audio_buffer.clear();
-        self.reset = true;
-    }
 }
 
-impl Reconfigurable<SpectrogramConfig> for SpectrogramProcessor {
-    fn update_config(&mut self, mut cfg: SpectrogramConfig) {
+impl SpectrogramProcessor {
+    pub fn update_config(&mut self, mut cfg: SpectrogramConfig) {
         cfg.normalize();
         let prev = self.config;
         self.config = cfg;

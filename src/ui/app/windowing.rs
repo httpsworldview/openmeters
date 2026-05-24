@@ -154,14 +154,14 @@ impl PopoutWindow {
     }
 
     pub fn view(&self) -> Element<'_, VisualsMessage> {
-        let Some((meta, content)) = &self.cached else {
+        let Some((_, content)) = &self.cached else {
             return fill!(text("")).into();
         };
         let msg = VisualsMessage::SettingsRequested {
             visual_id: self.visual_id,
             kind: self.kind,
         };
-        mouse_area(fill!(content.render(*meta)))
+        mouse_area(fill!(content.render()))
             .on_right_press(msg)
             .into()
     }
@@ -172,7 +172,7 @@ impl UiApp {
         let Some((_, panel)) = self.settings_window.as_mut() else {
             return;
         };
-        let visual_id = panel.visual_id();
+        let visual_id = panel.visual_id;
         let snapshot = self.visual_manager.snapshot();
         let Some(kind) = snapshot
             .slots
@@ -194,7 +194,7 @@ impl UiApp {
         let previous = self.settings_window.take();
         if previous
             .as_ref()
-            .is_some_and(|(_, panel)| panel.visual_id() == visual_id)
+            .is_some_and(|(_, panel)| panel.visual_id == visual_id)
         {
             self.settings_window = previous.map(|(id, _)| (id, new_panel));
             return Task::none();
@@ -268,7 +268,7 @@ impl UiApp {
                 !snapshot
                     .slots
                     .iter()
-                    .any(|slot| slot.id == panel.visual_id() && slot.enabled)
+                    .any(|slot| slot.id == panel.visual_id && slot.enabled)
             })
             .map(|(id, _)| window::close::<Message>(id));
         self.popout_windows
@@ -300,7 +300,7 @@ impl UiApp {
             .as_ref()
             .filter(|(id, _)| *id == window_id)
         {
-            (panel.visual_id(), " settings")
+            (panel.visual_id, " settings")
         } else if let Some(popout) = self.popout_windows.get(&window_id) {
             (popout.visual_id, "")
         } else {
@@ -345,8 +345,13 @@ impl UiApp {
                 .restore_position(popout.visual_id, popout.original_index);
             self.sync_visuals_page();
             self.settings_handle.update(|settings| {
-                settings
-                    .set_visual_order(self.visual_manager.snapshot().slots.iter().map(|s| s.kind));
+                settings.data.visuals.order = self
+                    .visual_manager
+                    .snapshot()
+                    .slots
+                    .iter()
+                    .map(|s| s.kind)
+                    .collect();
             });
             return window::close(source_window);
         }
@@ -400,7 +405,7 @@ impl UiApp {
             let height = clamp_bar_height(new_size.height.round().max(1.0) as u32);
             let current_height = self.settings_handle.borrow().settings().bar.height;
             if current_height != height {
-                self.settings_handle.update(|s| s.set_bar_height(height));
+                self.settings_handle.update(|s| s.data.bar.height = height);
             }
             return Task::batch([
                 Task::done(Message::ExclusiveZoneChange {
@@ -501,7 +506,7 @@ impl UiApp {
         let Some((old_id, panel)) = self.settings_window.take() else {
             return Task::none();
         };
-        let visual_id = panel.visual_id();
+        let visual_id = panel.visual_id;
         let snapshot = self.visual_manager.snapshot();
         let Some(slot) = snapshot.slots.iter().find(|s| s.id == visual_id) else {
             return window::close(old_id);

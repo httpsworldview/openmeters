@@ -35,14 +35,3 @@ impl<'a> AudioBlock<'a> {
         self.samples.len() / self.channels.max(1)
     }
 }
-
-pub trait AudioProcessor {
-    type Output;
-
-    fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<Self::Output>;
-    fn reset(&mut self);
-}
-
-pub trait Reconfigurable<Cfg> {
-    fn update_config(&mut self, config: Cfg);
-}

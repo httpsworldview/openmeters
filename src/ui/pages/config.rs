@@ -188,14 +188,15 @@ impl ConfigPage {
                 self.visual_manager
                     .borrow_mut()
                     .set_enabled_by_kind(kind, enabled);
-                self.settings
-                    .update(|settings| settings.set_visual_enabled(kind, enabled));
+                self.settings.update(|s| {
+                    s.data.visuals.modules.entry(kind).or_default().enabled = Some(enabled);
+                });
             }
             ConfigMessage::CaptureModeChanged(mode) => {
                 if self.capture_mode != mode {
                     self.capture_mode = mode;
                     self.dispatch_capture_state();
-                    self.settings.update(|s| s.set_capture_mode(mode));
+                    self.settings.update(|s| s.data.capture_mode = mode);
                 }
             }
             ConfigMessage::CaptureDeviceChanged(selection) => {
@@ -203,34 +204,36 @@ impl ConfigPage {
                     let token = selection.token().map(str::to_owned);
                     self.selected_device = selection;
                     self.dispatch_capture_state();
-                    self.settings.update(|s| s.set_last_device_name(token));
+                    self.settings.update(|s| s.data.last_device_name = token);
                 }
             }
             ConfigMessage::BgPalette(event) => {
                 if self.bg_palette.update(event) {
                     let color = self.bg_palette.colors().first().copied();
                     self.settings.update(|s| {
-                        s.set_background_color(color);
-                        s.update_active_theme(|theme| {
-                            theme.background = color.map(Into::into);
-                        });
+                        s.data.background_color = color.map(Into::into);
+                        s.update_active_theme(|theme| theme.background = color.map(Into::into));
                     });
                     self.sync_active_theme();
                 }
             }
-            ConfigMessage::DecorationsToggled(v) => self.settings.update(|s| s.set_decorations(v)),
-            ConfigMessage::BarModeToggled(v) => self.settings.update(|s| s.set_bar_enabled(v)),
-            ConfigMessage::BarAlignmentChanged(v) => {
-                self.settings.update(|s| s.set_bar_alignment(v))
+            ConfigMessage::DecorationsToggled(v) => {
+                self.settings.update(|s| s.data.decorations = v)
             }
-            ConfigMessage::BarHeightChanged(v) => self.settings.update(|s| s.set_bar_height(v)),
-            ConfigMessage::BarMonitorChanged(v) => self.settings.update(|s| s.set_bar_monitor(v)),
+            ConfigMessage::BarModeToggled(v) => self.settings.update(|s| s.data.bar.enabled = v),
+            ConfigMessage::BarAlignmentChanged(v) => {
+                self.settings.update(|s| s.data.bar.alignment = v)
+            }
+            ConfigMessage::BarHeightChanged(v) => self.settings.update(|s| s.data.bar.height = v),
+            ConfigMessage::BarMonitorChanged(v) => {
+                self.settings.update(|s| s.data.bar.monitor = Some(v))
+            }
             ConfigMessage::ThemeChanged(name) => self.apply_theme(&name),
             ConfigMessage::SaveTheme(name) => {
                 self.save_current_as_theme(&name);
                 if self.active_theme != name {
                     self.active_theme = name.clone();
-                    self.settings.update(|s| s.set_theme(Some(name)));
+                    self.settings.update(|s| s.data.theme = Some(name));
                 }
                 self.save_theme_name.clear();
             }
@@ -446,8 +449,8 @@ impl ConfigPage {
         self.bg_palette.set_colors(&[bg]);
         let theme_val = (name != BUILTIN_THEME).then(|| name.to_owned());
         self.settings.update(|s| {
-            s.set_background_color(Some(bg));
-            s.set_theme(theme_val);
+            s.data.background_color = Some(bg.into());
+            s.data.theme = theme_val;
         });
         self.active_theme = name.to_owned();
     }
@@ -489,7 +492,7 @@ impl ConfigPage {
         if let Some(monitor) = snapshot.current
             && self.settings.borrow().settings().bar.monitor.as_ref() != Some(&monitor)
         {
-            self.settings.update(|s| s.set_bar_monitor(monitor));
+            self.settings.update(|s| s.data.bar.monitor = Some(monitor));
         }
     }
 
@@ -579,7 +582,7 @@ impl ConfigPage {
         let mut choices = self.build_device_choices(&snapshot);
         if sync_selected_device_with_choices(&mut self.selected_device, &mut choices, &snapshot) {
             let token = self.selected_device.token().map(str::to_owned);
-            self.settings.update(|s| s.set_last_device_name(token));
+            self.settings.update(|s| s.data.last_device_name = token);
             self.dispatch_capture_state();
         }
         self.device_choices = choices;
@@ -598,7 +601,7 @@ impl ConfigPage {
             })
             .collect();
         self.preferences.retain(|id, _| seen.contains(id));
-        entries.sort_unstable_by(|a, b| a.sort_key().cmp(b.sort_key()));
+        entries.sort_unstable_by(|a, b| a.sort_key.cmp(&b.sort_key));
         self.applications = entries;
     }
 

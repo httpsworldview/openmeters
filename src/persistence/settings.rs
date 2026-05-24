@@ -9,7 +9,7 @@ mod visuals;
 
 pub use bar::{BAR_MAX_HEIGHT, BAR_MIN_HEIGHT, BarAlignment, BarSettings, clamp_bar_height};
 pub use palette::{HasPalette, PaletteSettings};
-pub use store::{SettingsHandle, SettingsManager};
+pub use store::SettingsHandle;
 pub use theme::{BUILTIN_THEME, ThemeChoice, ThemeFile};
 pub use visuals::{
     LoudnessSettings, ModuleSettings, OscilloscopeSettings, SpectrogramSettings, SpectrumSettings,

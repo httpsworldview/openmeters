@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
+use crate::dsp::AudioBlock;
 use crate::util::audio::{DEFAULT_SAMPLE_RATE, extend_interleaved_history};
 use realfft::{RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex;
@@ -496,10 +496,8 @@ impl OscilloscopeProcessor {
     }
 }
 
-impl AudioProcessor for OscilloscopeProcessor {
-    type Output = OscilloscopeSnapshot;
-
-    fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<Self::Output> {
+impl OscilloscopeProcessor {
+    pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<OscilloscopeSnapshot> {
         let channel_count = block.channels.max(1);
         if block.frame_count() == 0 {
             return None;
@@ -636,8 +634,8 @@ impl AudioProcessor for OscilloscopeProcessor {
     }
 }
 
-impl Reconfigurable<OscilloscopeConfig> for OscilloscopeProcessor {
-    fn update_config(&mut self, config: OscilloscopeConfig) {
+impl OscilloscopeProcessor {
+    pub fn update_config(&mut self, config: OscilloscopeConfig) {
         self.config = config;
         self.reset();
     }

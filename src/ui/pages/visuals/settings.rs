@@ -38,8 +38,11 @@ macro_rules! settings_modules {
             kind: VisualKind,
             visual_manager: &VisualManagerHandle,
         ) -> ActiveSettings {
-            match kind {
-                $(VisualKind::$variant => Box::new($module::create(visual_id, visual_manager)),)+
+            ActiveSettings {
+                visual_id,
+                pane: match kind {
+                    $(VisualKind::$variant => Box::new($module::create(visual_manager)),)+
+                },
             }
         }
     };
@@ -52,29 +55,27 @@ macro_rules! settings_pane {
         $(init_palette($p:ident) $init_body:block)?
     ) => {
         pub struct $pane {
-            visual_id: super::VisualId,
             settings: $settings_ty,
             palette: super::palette::PaletteEditor,
             $($field: $ty,)*
         }
 
-        pub fn create(visual_id: super::VisualId, visual_manager: &super::VisualManagerHandle) -> $pane {
+        pub fn create(visual_manager: &super::VisualManagerHandle) -> $pane {
             let ($s, mut _palette) = super::load_settings_and_palette::<$settings_ty>(
                 visual_manager, $kind,
             );
             $(let $field: $ty = $init;)*
             $(let $p = &mut _palette; $init_body)?
-            $pane { visual_id, settings: $s, palette: _palette, $($field,)* }
+            $pane { settings: $s, palette: _palette, $($field,)* }
         }
 
         impl super::ModuleSettingsPane for $pane {
-            fn visual_id(&self) -> super::VisualId { self.visual_id }
             fn view(&self) -> iced::Element<'_, super::SettingsMessage> {
                 $pane::view(self).map(super::SettingsMessage::$variant)
             }
             fn handle(
                 &mut self,
-                message: &super::SettingsMessage,
+                message: super::SettingsMessage,
                 visual_manager: &super::VisualManagerHandle,
                 settings_handle: &crate::persistence::settings::SettingsHandle,
             ) {
@@ -99,9 +100,9 @@ macro_rules! settings_messages {
         pub enum Message { $($variant($ty),)+ Palette(super::palette::PaletteEvent) }
 
         impl $pane {
-            fn handle(&mut self, msg: &Message) -> bool {
+            fn handle(&mut self, msg: Message) -> bool {
                 let $this = self;
-                match (*msg).clone() {
+                match msg {
                     $(Message::$variant($value) => $handler,)+
                     Message::Palette($value) => $this.palette.update($value),
                 }
@@ -133,17 +134,34 @@ settings_modules! {
 }
 
 pub trait ModuleSettingsPane: 'static {
-    fn visual_id(&self) -> VisualId;
     fn view(&self) -> Element<'_, SettingsMessage>;
     fn handle(
         &mut self,
-        message: &SettingsMessage,
+        message: SettingsMessage,
         visual_manager: &VisualManagerHandle,
         settings_handle: &SettingsHandle,
     );
 }
 
-pub type ActiveSettings = Box<dyn ModuleSettingsPane>;
+pub struct ActiveSettings {
+    pub(crate) visual_id: VisualId,
+    pane: Box<dyn ModuleSettingsPane>,
+}
+
+impl ActiveSettings {
+    pub(crate) fn view(&self) -> Element<'_, SettingsMessage> {
+        self.pane.view()
+    }
+
+    pub(crate) fn handle(
+        &mut self,
+        message: SettingsMessage,
+        visual_manager: &VisualManagerHandle,
+        settings_handle: &SettingsHandle,
+    ) {
+        self.pane.handle(message, visual_manager, settings_handle);
+    }
+}
 
 pub(super) fn load_settings_and_palette<T: DeserializeOwned + Default + HasPalette>(
     visual_manager: &VisualManagerHandle,
@@ -194,7 +212,12 @@ pub(super) fn persist_with_palette<T: Clone + Serialize + HasPalette>(
         .apply_module_settings(kind, &ModuleSettings::with_config(&stored));
     if applied {
         settings_handle.update(move |s| {
-            s.set_module_config(kind, &stored);
+            s.data
+                .visuals
+                .modules
+                .entry(kind)
+                .or_default()
+                .set_config(&stored);
             if palette_settings.is_some() || s.active_theme() != BUILTIN_THEME {
                 s.update_active_theme(|theme| {
                     if let Some(ps) = palette_settings {
