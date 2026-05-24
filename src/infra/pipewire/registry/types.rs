@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
+use crate::infra::pipewire::VIRTUAL_SINK_NAME;
 use pipewire as pw;
 use pw::keys::*;
 use pw::registry::GlobalObject;
@@ -237,7 +238,7 @@ impl NodeInfo {
             .cloned();
         let media_class = props.get(*MEDIA_CLASS).cloned();
         let is_virtual = props.get("node.virtual").map_or_else(
-            || name.as_deref() == Some("openmeters.sink"),
+            || name.as_deref() == Some(VIRTUAL_SINK_NAME),
             |v| v == "true",
         );
 

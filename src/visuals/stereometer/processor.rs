@@ -39,17 +39,6 @@ pub struct BandCorrelation {
     pub high: f32,
 }
 
-impl std::ops::Index<usize> for BandCorrelation {
-    type Output = f32;
-    fn index(&self, i: usize) -> &f32 {
-        match i {
-            0 => &self.low,
-            1 => &self.mid,
-            _ => &self.high,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct StereometerSnapshot {
     pub xy_points: Vec<(f32, f32)>,
@@ -81,7 +70,6 @@ impl LR4 {
         }
     }
 
-    #[inline]
     fn process(&mut self, sample: f32) -> f32 {
         let mut signal = sample;
         for i in 0..2 {
@@ -105,7 +93,6 @@ struct Correlator {
 }
 
 impl Correlator {
-    #[inline]
     fn update(&mut self, left: f32, right: f32) {
         let (left, right) = (left as f64, right as f64);
         self.cross += self.alpha * (left * right - self.cross);
@@ -113,7 +100,6 @@ impl Correlator {
         self.right_power += self.alpha * (right * right - self.right_power);
     }
 
-    #[inline]
     fn value(&self) -> f32 {
         let denom = (self.left_power * self.right_power).sqrt();
         if denom < 1e-12 {
@@ -124,7 +110,7 @@ impl Correlator {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct StereometerProcessor {
     config: StereometerConfig,
     snapshot: StereometerSnapshot,
@@ -170,13 +156,7 @@ impl StereometerProcessor {
     pub fn config(&self) -> StereometerConfig {
         self.config
     }
-}
 
-fn ema_alpha(sample_rate: f32, window: f32) -> f64 {
-    1.0 - (-1.0 / (sample_rate as f64 * window as f64).max(1.0)).exp()
-}
-
-impl StereometerProcessor {
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<StereometerSnapshot> {
         let channel_count = block.channels.max(1);
         if block.frame_count() == 0 || channel_count < 2 {
@@ -279,16 +259,8 @@ impl StereometerProcessor {
     }
 
     fn reset(&mut self) {
-        self.snapshot = StereometerSnapshot::default();
-        self.history = VecDeque::new();
-        self.band_history = Default::default();
-        self.history_channels = 0;
-        self.crossovers = Self::build_crossovers(self.config.sample_rate);
-        self.correlators = Self::fresh_correlators(self.config);
+        *self = Self::new(self.config);
     }
-}
-
-impl StereometerProcessor {
     pub fn update_config(&mut self, config: StereometerConfig) {
         let sample_rate_changed =
             (self.config.sample_rate - config.sample_rate).abs() > f32::EPSILON;
@@ -309,4 +281,8 @@ impl StereometerProcessor {
             self.snapshot.band_points = Default::default();
         }
     }
+}
+
+fn ema_alpha(sample_rate: f32, window: f32) -> f64 {
+    1.0 - (-1.0 / (sample_rate as f64 * window as f64).max(1.0)).exp()
 }

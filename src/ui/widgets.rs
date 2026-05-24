@@ -3,7 +3,6 @@
 pub mod pane_grid;
 pub mod scroll_glow;
 
-#[inline]
 pub fn scroll_delta_lines(delta: iced::advanced::mouse::ScrollDelta) -> f32 {
     match delta {
         iced::advanced::mouse::ScrollDelta::Lines { y, .. } => y,

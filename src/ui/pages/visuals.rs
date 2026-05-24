@@ -4,14 +4,13 @@
 use crate::persistence::settings::SettingsHandle;
 use crate::ui::widgets::pane_grid::{self, Content as PaneContent, Pane};
 use crate::visuals::registry::{
-    VisualContent, VisualId, VisualKind, VisualManagerHandle, VisualSlotSnapshot, VisualSnapshot,
+    VisualContent, VisualId, VisualKind, VisualManagerHandle, VisualSlotSnapshot,
 };
 pub mod settings;
 pub use settings::{ActiveSettings, SettingsMessage, create_panel as create_settings_panel};
 
 use iced::widget::{container, mouse_area, text};
 use iced::{Element, Length, Task};
-use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub enum VisualsMessage {
@@ -59,7 +58,7 @@ impl VisualsPage {
             hovered_pane: None,
         };
         let snapshot = page.visual_manager.snapshot();
-        page.apply_snapshot_excluding(snapshot, &[]);
+        page.apply_snapshot_excluding(&snapshot, &[]);
         page
     }
 
@@ -87,7 +86,6 @@ impl VisualsPage {
                     s.data.visuals.order = self
                         .visual_manager
                         .snapshot()
-                        .slots
                         .iter()
                         .map(|s| s.kind)
                         .collect();
@@ -147,11 +145,10 @@ impl VisualsPage {
 
     pub(crate) fn apply_snapshot_excluding(
         &mut self,
-        snapshot: VisualSnapshot,
+        snapshot: &[VisualSlotSnapshot],
         exclude: &[VisualId],
     ) {
         let slots: Vec<_> = snapshot
-            .slots
             .iter()
             .filter(|s| s.enabled && !exclude.contains(&s.id))
             .collect();
@@ -199,24 +196,19 @@ impl VisualsPage {
 
     fn build_panes(&self, slots: &[&VisualSlotSnapshot]) -> Option<pane_grid::State<VisualPane>> {
         let settings = self.settings.borrow();
-        let saved_width_basis = &settings.settings().visuals.width_basis;
-        pane_grid::State::from_iter(slots.iter().map(|&slot| VisualPane {
-            id: slot.id,
-            kind: slot.kind,
-            content: slot.content.clone(),
-            min_width: slot.metadata.min_width,
-            width_basis: Self::width_basis_from_settings(slot, saved_width_basis),
+        let saved_width_basis = &settings.data.visuals.width_basis;
+        pane_grid::State::from_iter(slots.iter().map(|&slot| {
+            VisualPane {
+                id: slot.id,
+                kind: slot.kind,
+                content: slot.content.clone(),
+                min_width: slot.metadata.min_width,
+                width_basis: saved_width_basis
+                    .get(&slot.kind)
+                    .copied()
+                    .filter(|basis| basis.is_finite() && *basis > 0.0)
+                    .unwrap_or(slot.metadata.preferred_width),
+            }
         }))
-    }
-
-    fn width_basis_from_settings(
-        slot: &VisualSlotSnapshot,
-        saved_width_basis: &HashMap<VisualKind, f32>,
-    ) -> f32 {
-        saved_width_basis
-            .get(&slot.kind)
-            .copied()
-            .filter(|basis| basis.is_finite() && *basis > 0.0)
-            .unwrap_or(slot.metadata.preferred_width)
     }
 }

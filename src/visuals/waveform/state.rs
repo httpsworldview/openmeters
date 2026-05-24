@@ -60,12 +60,19 @@ impl WaveformState {
     }
 
     pub fn visual_params(&self, bounds: iced::Rectangle) -> Option<WaveformParams> {
-        if !self.has_renderable_data(bounds.width) {
+        let channels = self.snapshot.channels;
+        let total_columns = self.snapshot.columns;
+        let expected_len = total_columns * channels;
+        if bounds.width <= 0.0
+            || total_columns == 0
+            || channels == 0
+            || self.snapshot.min_values.len() != expected_len
+            || self.snapshot.max_values.len() != expected_len
+            || self.snapshot.frequency_normalized.len() != expected_len
+        {
             return None;
         }
 
-        let channels = self.snapshot.channels;
-        let total_columns = self.snapshot.columns;
         let needed =
             ((bounds.width / COLUMN_WIDTH_PIXELS).ceil() as usize).clamp(1, MAX_COLUMN_CAPACITY);
 
@@ -99,15 +106,6 @@ impl WaveformState {
         })
     }
 
-    fn has_renderable_data(&self, width: f32) -> bool {
-        if width <= 0.0 || self.snapshot.columns == 0 || self.snapshot.channels == 0 {
-            return false;
-        }
-        let expected_len = self.snapshot.columns * self.snapshot.channels;
-        self.snapshot.min_values.len() == expected_len
-            && self.snapshot.max_values.len() == expected_len
-            && self.snapshot.frequency_normalized.len() == expected_len
-    }
 
     fn color_intensity(&self, min_sample: f32, max_sample: f32, frequency: f32) -> f32 {
         match self.color_mode {

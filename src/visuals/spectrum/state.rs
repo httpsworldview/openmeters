@@ -18,6 +18,12 @@ use iced::{Color, Point, Rectangle, Size};
 use std::sync::{Arc, LazyLock};
 
 const EPSILON: f32 = 1e-6;
+const MIN_FREQUENCY: f32 = 20.0;
+const MAX_FREQUENCY: f32 = 20_000.0;
+const MAX_DB: f32 = 0.0;
+const SPECTRUM_RESOLUTION: usize = 1024;
+const LINE_THICKNESS: f32 = 1.0;
+const SECONDARY_LINE_THICKNESS: f32 = 0.75;
 const GRID_LABEL_SIZE: f32 = 10.0;
 const GRID_LABEL_GAP: f32 = 6.0;
 
@@ -33,12 +39,6 @@ static GRID_LABEL_SLOT: LazyLock<Size> = LazyLock::new(|| {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SpectrumStyle {
     pub min_db: f32,
-    pub max_db: f32,
-    pub min_frequency: f32,
-    pub max_frequency: f32,
-    pub resolution: usize,
-    pub line_thickness: f32,
-    pub secondary_line_thickness: f32,
     pub smoothing_radius: usize,
     pub smoothing_passes: usize,
     pub highlight_threshold: f32,
@@ -59,12 +59,6 @@ impl Default for SpectrumStyle {
         let defaults = SpectrumSettings::default();
         Self {
             min_db: defaults.floor_db,
-            max_db: 0.0,
-            min_frequency: 20.0,
-            max_frequency: 20_000.0,
-            resolution: 1024,
-            line_thickness: 1.0,
-            secondary_line_thickness: 0.75,
             smoothing_radius: defaults.smoothing_radius,
             smoothing_passes: defaults.smoothing_passes,
             highlight_threshold: defaults.highlight_threshold,
@@ -151,10 +145,7 @@ impl SpectrumState {
             return;
         }
         let nyq = snap.frequency_bins[bins - 1];
-        let (min_f, mut max_f) = (
-            self.style.min_frequency.max(EPSILON),
-            self.style.max_frequency.min(nyq),
-        );
+        let (min_f, mut max_f) = (MIN_FREQUENCY, MAX_FREQUENCY.min(nyq));
         if max_f <= min_f {
             max_f = nyq.max(min_f * 1.02);
         }
@@ -163,7 +154,7 @@ impl SpectrumState {
             return;
         }
 
-        let res = self.style.resolution.max(32);
+        let res = SPECTRUM_RESOLUTION;
         let (mut w, mut u) = build_points(&self.style, res, min_f, max_f, &snap);
 
         if self.style.smoothing_radius > 0 && self.style.smoothing_passes > 0 {
@@ -216,7 +207,7 @@ impl SpectrumState {
             return None;
         }
         let pos = [x.clamp(0.0, 1.0), y.clamp(0.0, 1.0)];
-        let m = lerp(self.style.min_db, self.style.max_db, pos[1]);
+        let m = lerp(self.style.min_db, MAX_DB, pos[1]);
         let unit = match self.style.weighting_mode {
             SpectrumWeightingMode::AWeighted => "dBFS(A)",
             SpectrumWeightingMode::Raw => "dBFS",
@@ -295,9 +286,9 @@ impl SpectrumState {
             secondary_points: Arc::clone(secondary),
             key: self.key,
             line_color: color_to_rgba(with_alpha(pal.background.base.text, 0.92)),
-            line_width: self.style.line_thickness,
+            line_width: LINE_THICKNESS,
             secondary_line_color: color_to_rgba(with_alpha(pal.secondary.weak.text, 0.32)),
-            secondary_line_width: self.style.secondary_line_thickness,
+            secondary_line_width: SECONDARY_LINE_THICKNESS,
             highlight_threshold: self.style.highlight_threshold,
             spectrum_palette: self.style.spectrum_palette.map(color_to_rgba),
             display_mode: self.style.display_mode,
@@ -334,14 +325,14 @@ crate::visuals::visualization_widget!(Spectrum, SpectrumState, |this, r, th, b| 
 
 fn interp_at(bins: &[f32], mags: &[f32], t: f32, i: usize) -> f32 {
     if i == 0 {
-        return mags.first().copied().unwrap_or(0.0);
+        return mags[0];
     }
     if i >= bins.len() {
-        return mags.last().copied().unwrap_or(0.0);
+        return mags[bins.len() - 1];
     }
     lerp(
-        mags.get(i - 1).copied().unwrap_or(0.0),
-        mags.get(i).copied().unwrap_or(0.0),
+        mags[i - 1],
+        mags[i],
         (t - bins[i - 1]) / (bins[i] - bins[i - 1]).max(EPSILON),
     )
 }
@@ -378,7 +369,7 @@ fn build_points(
         snap.magnitudes_db.as_slice(),
         snap.magnitudes_unweighted_db.as_slice(),
     );
-    let dr = (style.max_db - style.min_db).max(EPSILON);
+    let dr = (MAX_DB - style.min_db).max(EPSILON);
     let denom = res.saturating_sub(1).max(1) as f32;
     let y = |m: f32| ((m - style.min_db) / dr).clamp(0.0, 1.0);
     let (mut weighted, mut unweighted) = (Vec::with_capacity(res), Vec::with_capacity(res));

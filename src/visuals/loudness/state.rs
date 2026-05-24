@@ -75,7 +75,6 @@ pub(crate) struct LoudnessState {
     rms_slow_db: [f32; MAX_CHANNELS],
     true_peak_db: [f32; MAX_CHANNELS],
     channel_count: usize,
-    range: (f32, f32),
     pub(crate) left_mode: MeterMode,
     pub(crate) right_mode: MeterMode,
     pub(crate) palette: [Color; LOUDNESS_PALETTE_SIZE],
@@ -95,7 +94,6 @@ impl LoudnessState {
             rms_slow_db: [DEFAULT_RANGE.0; MAX_CHANNELS],
             true_peak_db: [DEFAULT_RANGE.0; MAX_CHANNELS],
             channel_count: 2,
-            range: DEFAULT_RANGE,
             left_mode: defaults.left_mode,
             right_mode: defaults.right_mode,
             palette: palettes::loudness::COLORS,
@@ -136,7 +134,7 @@ impl LoudnessState {
 
     fn get_value(&self, mode: MeterMode, channel: usize) -> f32 {
         let per_channel =
-            |buf: &[f32; MAX_CHANNELS]| buf.get(channel).copied().unwrap_or(self.range.0);
+            |buf: &[f32; MAX_CHANNELS]| buf.get(channel).copied().unwrap_or(DEFAULT_RANGE.0);
         match mode {
             MeterMode::LufsShortTerm => self.short_term_loudness,
             MeterMode::LufsMomentary => self.momentary_loudness,
@@ -147,7 +145,7 @@ impl LoudnessState {
     }
 
     fn visual_params(&self, bounds: Rectangle) -> LoudnessParams {
-        let (min, max) = self.range;
+        let (min, max) = DEFAULT_RANGE;
         let guide_color = color_to_rgba(self.palette[PAL_GUIDE]);
         let bg_color = color_to_rgba(with_alpha(self.palette[PAL_BACKGROUND], 1.0));
         let values = self.visible_values();
@@ -187,7 +185,7 @@ impl LoudnessState {
             .filter(|&ch| ch < self.channel_count)
             .chain((self.channel_count > CENTER_CHANNEL_INDEX).then_some(CENTER_CHANNEL_INDEX))
             .map(|ch| self.get_value(mode, ch))
-            .fold(self.range.0, f32::max)
+            .fold(DEFAULT_RANGE.0, f32::max)
     }
 
     fn visible_values(&self) -> [f32; VISIBLE_METER_COUNT] {
@@ -203,7 +201,7 @@ impl LoudnessState {
         MeterFill {
             db,
             segments: self.meter_segments(mode),
-            peak: (peak_db > self.range.0).then(|| {
+            peak: (peak_db > DEFAULT_RANGE.0).then(|| {
                 let color = self.palette[if is_danger_zone(mode, peak_db) {
                     PAL_DANGER
                 } else {
@@ -220,17 +218,17 @@ impl LoudnessState {
             (low, color_to_rgba(self.palette[PAL_LOW])),
             (mid, color_to_rgba(self.palette[PAL_MID])),
             (high, color_to_rgba(self.palette[PAL_HIGH])),
-            (self.range.1, color_to_rgba(self.palette[PAL_DANGER])),
+            (DEFAULT_RANGE.1, color_to_rgba(self.palette[PAL_DANGER])),
         ]
     }
 
     fn reset_peaks(&mut self, now: Instant) {
-        self.peaks.fill(PeakHold::new(self.range.0, now));
+        self.peaks.fill(PeakHold::new(DEFAULT_RANGE.0, now));
     }
 
     fn update_peak_holds(&mut self, now: Instant) {
         let values = self.visible_values();
-        let (min, max) = self.range;
+        let (min, max) = DEFAULT_RANGE;
         for (peak, value) in self.peaks.iter_mut().zip(values) {
             peak.update(value.clamp(min, max), now);
         }
@@ -244,15 +242,12 @@ fn zone_thresholds(mode: MeterMode) -> [f32; 3] {
     }
 }
 
-fn zone_index(mode: MeterMode, db: f32) -> usize {
+fn is_danger_zone(mode: MeterMode, db: f32) -> bool {
     zone_thresholds(mode)
         .iter()
         .take_while(|&&threshold| db >= threshold)
         .count()
-}
-
-fn is_danger_zone(mode: MeterMode, db: f32) -> bool {
-    zone_index(mode, db) == DANGER_ZONE_INDEX
+        == DANGER_ZONE_INDEX
 }
 
 crate::visuals::visualization_widget!(Loudness, LoudnessState, |this, renderer, theme, bounds| {

@@ -72,10 +72,10 @@ impl SampleBatcher {
             return None;
         }
 
+        let format = self.format.take()?;
         let total_samples = std::mem::take(&mut self.total_samples);
-        let format = self.format.take().expect("batch format set");
         let samples = if self.chunks.len() == 1 {
-            self.chunks.pop().expect("single chunk present")
+            self.chunks.pop()?
         } else {
             let mut batch = self.reuse_buffer(total_samples);
             for chunk in self.chunks.drain(..) {
@@ -211,7 +211,7 @@ mod tests {
     };
 
     #[test]
-    fn batches_and_reuses_buffers() {
+    fn batches_chunks() {
         let mut batcher = SampleBatcher::new(4);
         batcher.push(vec![0.0, 1.0], STEREO_48K);
         assert!(!batcher.should_flush());

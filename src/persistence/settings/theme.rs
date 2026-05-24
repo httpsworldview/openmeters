@@ -66,7 +66,7 @@ impl ThemeStore {
             builtin: true,
         }];
         if let Ok(entries) = fs::read_dir(&self.dir) {
-            choices.extend(entries.filter_map(Result::ok).filter_map(|entry| {
+            choices.extend(entries.flatten().filter_map(|entry| {
                 let path = entry.path();
                 let stem = path.file_stem()?.to_str()?;
                 (path.extension().is_some_and(|e| e == "json") && stem != BUILTIN_THEME).then(
@@ -175,13 +175,12 @@ mod tests {
         fs::write(themes_dir.join("alpha.json"), "{}").unwrap();
 
         let names = store.list();
-        let mk = |n: &str, b| ThemeChoice {
-            name: n.to_owned(),
-            builtin: b,
-        };
         assert_eq!(
-            names,
-            vec![mk("default", true), mk("alpha", false), mk("zebra", false)]
+            names
+                .iter()
+                .map(|choice| (choice.name.as_str(), choice.builtin))
+                .collect::<Vec<_>>(),
+            vec![("default", true), ("alpha", false), ("zebra", false)]
         );
     }
 

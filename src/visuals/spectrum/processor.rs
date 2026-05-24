@@ -223,8 +223,6 @@ impl SpectrumProcessor {
         let floor = self.config.floor_db;
         let mut produced = false;
 
-        self.weighted.ensure_scratch(bins, floor);
-        self.unweighted.ensure_scratch(bins, floor);
         if self.a_weighting_db.len() != bins {
             self.a_weighting_db = self
                 .snapshot
@@ -283,9 +281,6 @@ impl SpectrumProcessor {
 
         produced
     }
-}
-
-impl SpectrumProcessor {
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<SpectrumSnapshot> {
         if block.frame_count() == 0 {
             return None;
@@ -307,9 +302,6 @@ impl SpectrumProcessor {
             None
         }
     }
-}
-
-impl SpectrumProcessor {
     pub fn update_config(&mut self, mut config: SpectrumConfig) {
         let old = self.config;
         config.normalize();
@@ -336,12 +328,6 @@ impl SpectrumLevelBuffers {
         reset_to_floor(&mut self.averaged, bins, floor);
         reset_to_floor(&mut self.peak_hold, bins, floor);
         reset_to_floor(&mut self.scratch, bins, floor);
-    }
-
-    fn ensure_scratch(&mut self, bins: usize, floor: f32) {
-        if self.scratch.len() != bins {
-            self.scratch.resize(bins, floor);
-        }
     }
 
     fn update_output(
@@ -423,6 +409,8 @@ fn a_weight(freq_hz: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::{SpectrumConfig, SpectrumProcessor, a_weight};
+    use crate::dsp::AudioBlock;
+    use std::time::Instant;
 
     #[test]
     fn floor_change_reseeds_state_buffers_without_clearing_pending_audio() {
@@ -440,10 +428,38 @@ mod tests {
         ] {
             assert!(output.iter().all(|&v| v == cfg.floor_db));
         }
+        let bins = cfg.fft_size / 2 + 1;
         for buffers in [&p.weighted, &p.unweighted] {
+            assert_eq!(buffers.scratch.len(), bins);
+            assert!(buffers.scratch.iter().all(|&v| v == cfg.floor_db));
             assert!(buffers.averaged.iter().all(|&v| v == cfg.floor_db));
             assert!(buffers.peak_hold.iter().all(|&v| v == cfg.floor_db));
         }
+    }
+
+    #[test]
+    fn fft_size_update_resizes_scratch_before_processing() {
+        let mut p = SpectrumProcessor::new(SpectrumConfig {
+            fft_size: 128,
+            hop_size: 128,
+            ..Default::default()
+        });
+        let mut cfg = p.config();
+        cfg.fft_size = 256;
+        cfg.hop_size = 256;
+        p.update_config(cfg);
+
+        let cfg = p.config();
+        let bins = cfg.fft_size / 2 + 1;
+        for buffers in [&p.weighted, &p.unweighted] {
+            assert_eq!(buffers.scratch.len(), bins);
+        }
+
+        let samples = vec![0.0; cfg.fft_size];
+        let lengths = p
+            .process_block(&AudioBlock::new(&samples, 1, cfg.sample_rate, Instant::now()))
+            .map(|s| (s.magnitudes_db.len(), s.magnitudes_unweighted_db.len()));
+        assert_eq!(lengths, Some((bins, bins)));
     }
 
     #[test]

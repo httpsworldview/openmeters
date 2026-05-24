@@ -419,9 +419,6 @@ impl SpectrogramProcessor {
 
         points
     }
-}
-
-impl SpectrogramProcessor {
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<SpectrogramUpdate> {
         if block.frame_count() == 0 || block.channels == 0 {
             return None;
@@ -456,9 +453,6 @@ impl SpectrogramProcessor {
         }
     }
 
-}
-
-impl SpectrogramProcessor {
     pub fn update_config(&mut self, mut cfg: SpectrogramConfig) {
         cfg.normalize();
         let prev = self.config;

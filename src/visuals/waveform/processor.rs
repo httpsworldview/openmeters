@@ -98,7 +98,6 @@ fn sample_extrema(samples: &[f32]) -> (f32, f32) {
     }
 }
 
-#[derive(Clone)]
 struct FrequencyAnalyzer {
     fft: Arc<dyn RealToComplex<f32>>,
     size: usize,
@@ -230,7 +229,6 @@ impl FrequencyAnalyzer {
     }
 }
 
-#[derive(Clone)]
 pub struct WaveformProcessor {
     config: WaveformConfig,
     snapshot: WaveformSnapshot,
@@ -439,9 +437,6 @@ impl WaveformProcessor {
             preview.max_values[channel] = max;
         }
     }
-}
-
-impl WaveformProcessor {
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<WaveformSnapshot> {
         if block.frame_count() == 0 {
             return None;
@@ -470,9 +465,6 @@ impl WaveformProcessor {
         Some(self.snapshot.clone())
     }
 
-}
-
-impl WaveformProcessor {
     pub fn update_config(&mut self, config: WaveformConfig) {
         let normalized = config.normalized();
         let rebuild = self.config.sample_rate != normalized.sample_rate

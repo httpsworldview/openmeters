@@ -49,7 +49,6 @@ impl WaveformParams {
     }
 }
 
-#[inline]
 fn normalize_sample(min: f32, max: f32) -> (f32, f32) {
     let (lo, hi) = (min.min(max), min.max(max));
     (lo.clamp(-1.0, 1.0), hi.clamp(-1.0, 1.0))
@@ -90,6 +89,7 @@ impl WaveformPrimitive {
             params.channel_gap,
             params.amplitude_scale,
         );
+        let band_expected = channels * NUM_BANDS * columns;
 
         let mut vertices = Vec::with_capacity(channels * (columns + 1) * 6);
 
@@ -112,10 +112,7 @@ impl WaveformPrimitive {
                 let idx = ch * columns + i;
                 let x = column_x(i);
                 let (min, max) = normalize_sample(params.samples[idx][0], params.samples[idx][1]);
-                let color = rgba_with_alpha(
-                    params.colors.get(idx).copied().unwrap_or([1.0; 4]),
-                    params.fill_alpha,
-                );
+                let color = rgba_with_alpha(params.colors[idx], params.fill_alpha);
                 vertices.extend(quad_vertices(
                     x,
                     center_y - max * layout.amplitude_scale,
@@ -143,7 +140,6 @@ impl WaveformPrimitive {
                 ));
             }
 
-            let band_expected = channels * NUM_BANDS * columns;
             if !params.band_levels.is_empty()
                 && params.band_levels.len() >= band_expected
                 && columns >= 2

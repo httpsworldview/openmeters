@@ -27,9 +27,7 @@ const TARGET_NODE_KEY: &str = "target.node";
 const LINK_FACTORY_NAME: &str = "link-factory";
 const PREFERRED_METADATA_NAMES: &[&str] = &["settings", "default"];
 
-type SyncCompleter = mpsc::Sender<()>;
-type PendingSync = (AsyncSeq, SyncCompleter);
-type PendingSyncs = Vec<PendingSync>;
+type PendingSyncs = Vec<(AsyncSeq, mpsc::Sender<()>)>;
 
 static RUNTIME: OnceLock<RegistryRuntime> = OnceLock::new();
 
@@ -555,10 +553,8 @@ impl RegistryContext {
         let bindings = self.metadata_bindings.borrow();
         bindings
             .iter()
-            .filter(|(_, binding)| binding.is_preferred)
+            .max_by_key(|&(&id, binding)| (binding.is_preferred, id))
             .map(|(&id, _)| id)
-            .max()
-            .or_else(|| bindings.keys().copied().max())
     }
 
     fn select_routing_metadata(&self, metadata_id: Option<u32>) {

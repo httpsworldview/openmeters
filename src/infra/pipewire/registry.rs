@@ -40,9 +40,7 @@ pub fn pair_ports_by_channel(
     let mut pairs = Vec::with_capacity(sources.len().min(targets.len()));
     for src in sources {
         if let Some(idx) = targets.iter().position(|target| matches(&src, target)) {
-            let target = targets.remove(idx);
-            targets.retain(|t| t.port_id != target.port_id);
-            pairs.push((src, target));
+            pairs.push((src, targets.remove(idx)));
         }
     }
     pairs

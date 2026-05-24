@@ -22,7 +22,6 @@ impl ClipTransform {
         Self::new(s.width, s.height)
     }
 
-    #[inline]
     pub fn to_clip(self, x: f32, y: f32) -> [f32; 2] {
         [x * self.0 - 1.0, 1.0 - y * self.1]
     }
@@ -50,7 +49,6 @@ impl ChannelLayout {
         }
     }
 
-    #[inline]
     pub fn center_y(self, channel: usize) -> f32 {
         self.top + channel as f32 * self.stride + self.channel_height * 0.5
     }
@@ -137,7 +135,6 @@ impl SdfVertex {
         }
     }
 
-    #[inline]
     pub fn solid(pos: [f32; 2], color: [f32; 4]) -> Self {
         Self {
             position: pos,
@@ -146,7 +143,6 @@ impl SdfVertex {
         }
     }
 
-    #[inline]
     fn antialiased(pos: [f32; 2], color: [f32; 4], dist: f32, radius: f32) -> Self {
         Self {
             position: pos,
@@ -156,7 +152,6 @@ impl SdfVertex {
     }
 }
 
-#[inline]
 pub fn quad_vertices(
     x0: f32,
     y0: f32,
@@ -168,7 +163,6 @@ pub fn quad_vertices(
     gradient_quad_vertices(x0, y0, x1, y1, clip, color, color)
 }
 
-#[inline]
 pub(crate) fn gradient_quad_vertices(
     x0: f32,
     y0: f32,
@@ -194,7 +188,6 @@ pub(crate) fn gradient_quad_vertices(
     ]
 }
 
-#[inline]
 pub(crate) fn baseline_segment_vertices(
     p0: (f32, f32),
     p1: (f32, f32),
@@ -216,7 +209,6 @@ pub(crate) fn baseline_segment_vertices(
     .map(|(x, y, c)| SdfVertex::solid(clip.to_clip(x, y), c))
 }
 
-#[inline]
 pub fn line_vertices(
     p0: (f32, f32),
     p1: (f32, f32),
@@ -240,7 +232,6 @@ pub fn line_vertices(
     ]
 }
 
-#[inline]
 pub fn dot_vertices(
     cx: f32,
     cy: f32,
@@ -325,14 +316,13 @@ pub fn decimate_line(pts: &[(f32, f32)], max_points: usize) -> Cow<'_, [(f32, f3
     Cow::Owned(result)
 }
 
-pub struct InstanceBuffer<V: Pod> {
+pub struct InstanceBuffer {
     pub vertex_buffer: wgpu::Buffer,
     pub capacity: wgpu::BufferAddress,
     pub vertex_count: u32,
-    _marker: std::marker::PhantomData<V>,
 }
 
-impl<V: Pod> InstanceBuffer<V> {
+impl InstanceBuffer {
     pub fn new(device: &wgpu::Device, label: &'static str, size: wgpu::BufferAddress) -> Self {
         let size = size.max(1);
         Self {
@@ -344,7 +334,6 @@ impl<V: Pod> InstanceBuffer<V> {
             }),
             capacity: size,
             vertex_count: 0,
-            _marker: std::marker::PhantomData,
         }
     }
 
@@ -359,16 +348,15 @@ impl<V: Pod> InstanceBuffer<V> {
         }
     }
 
-    pub fn write(&mut self, queue: &wgpu::Queue, vertices: &[V]) {
+    pub fn write(&mut self, queue: &wgpu::Queue, vertices: &[SdfVertex]) {
         self.vertex_count = vertices.len() as u32;
         if !vertices.is_empty() {
             queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(vertices));
         }
     }
 
-    #[inline]
     pub fn used_bytes(&self) -> wgpu::BufferAddress {
-        self.vertex_count as wgpu::BufferAddress * size_of::<V>() as wgpu::BufferAddress
+        self.vertex_count as wgpu::BufferAddress * size_of::<SdfVertex>() as wgpu::BufferAddress
     }
 }
 
@@ -393,7 +381,6 @@ impl CacheTracker {
     }
 }
 
-#[inline]
 pub fn create_shader_module(
     device: &wgpu::Device,
     label: &'static str,
@@ -502,7 +489,7 @@ fn create_sdf_pipeline(
 }
 
 struct CachedInstance {
-    buffer: InstanceBuffer<SdfVertex>,
+    buffer: InstanceBuffer,
     last_used: u64,
 }
 
@@ -538,23 +525,18 @@ impl<K: std::hash::Hash + Eq + Copy> SdfPipeline<K> {
         let required =
             size_of::<SdfVertex>() as wgpu::BufferAddress * vertices.len() as wgpu::BufferAddress;
         let entry = self.instances.entry(key).or_insert_with(|| CachedInstance {
-            buffer: InstanceBuffer::new(device, label, required.max(1)),
+            buffer: InstanceBuffer::new(device, label, required),
             last_used: frame,
         });
         entry.last_used = frame;
-        if vertices.is_empty() {
-            entry.buffer.vertex_count = 0;
-        } else {
-            entry.buffer.ensure_capacity(device, label, required);
-            entry.buffer.write(queue, vertices);
-        }
+        entry.buffer.ensure_capacity(device, label, required);
+        entry.buffer.write(queue, vertices);
         if let Some(t) = threshold {
             self.instances.retain(|_, e| e.last_used >= t);
         }
     }
 
-    #[inline]
-    pub fn instance(&self, key: K) -> Option<&InstanceBuffer<SdfVertex>> {
+    pub fn instance(&self, key: K) -> Option<&InstanceBuffer> {
         self.instances.get(&key).map(|e| &e.buffer)
     }
 }

@@ -20,7 +20,6 @@ impl SliderRange {
     pub const fn new(min: f32, max: f32, step: f32) -> Self {
         Self { min, max, step }
     }
-    #[inline]
     pub fn snap(self, value: f32) -> f32 {
         debug_assert!(self.step > 0.0, "SliderRange::snap expects a positive step");
         if self.step <= 0.0 {
@@ -30,7 +29,6 @@ impl SliderRange {
     }
 }
 
-#[inline]
 pub fn set_if_changed<T: PartialEq>(target: &mut T, value: T) -> bool {
     let changed = *target != value;
     if changed {
@@ -41,7 +39,6 @@ pub fn set_if_changed<T: PartialEq>(target: &mut T, value: T) -> bool {
 
 // Bits comparison so a write of a value with identical bits (e.g. the same NaN
 // payload) is elided, avoiding spurious change notifications.
-#[inline]
 pub fn update_f32_range(target: &mut f32, value: f32, range: SliderRange) -> bool {
     let snapped = range.snap(value);
     let changed = target.to_bits() != snapped.to_bits();
@@ -51,7 +48,6 @@ pub fn update_f32_range(target: &mut f32, value: f32, range: SliderRange) -> boo
     changed
 }
 
-#[inline]
 pub fn update_usize_from_f32(target: &mut usize, value: f32, range: SliderRange) -> bool {
     debug_assert!(
         [range.min, range.max, range.step]

@@ -29,7 +29,6 @@ impl Palette {
         }
     }
 
-    #[inline]
     pub fn colors(&self) -> &[Color] {
         if self.colors.is_empty() {
             self.defaults
@@ -38,12 +37,10 @@ impl Palette {
         }
     }
 
-    #[inline]
     pub fn labels(&self) -> &'static [&'static str] {
         self.labels
     }
 
-    #[inline]
     pub fn len(&self) -> usize {
         self.defaults.len()
     }
@@ -60,7 +57,6 @@ impl Palette {
         self.colors.clear();
     }
 
-    #[inline]
     pub fn is_default(&self) -> bool {
         palettes_equal(self.colors(), self.defaults)
     }

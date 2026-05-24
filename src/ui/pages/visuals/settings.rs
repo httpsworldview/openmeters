@@ -197,14 +197,12 @@ pub(super) fn persist_with_palette<T: Clone + Serialize + HasPalette>(
     palette: &PaletteEditor,
 ) -> bool {
     let mut stored = config.clone();
-    let positions = palette.positions();
-    let spreads = palette.spreads();
     let palette_settings = PaletteSettings::from_state(
         palette.colors(),
         palette.defaults(),
-        positions,
+        palette.positions(),
         palette.default_positions(),
-        spreads,
+        palette.spreads(),
     );
     stored.set_palette(palette_settings.clone());
     let applied = visual_manager
