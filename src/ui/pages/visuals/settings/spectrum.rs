@@ -49,9 +49,9 @@ settings_messages!(SpectrumSettingsPane as pane, value {
     DisplayMode(SpectrumDisplayMode) => set_if_changed(&mut pane.settings.display_mode, value);
     WeightingMode(SpectrumWeightingMode) => set_if_changed(&mut pane.settings.weighting_mode, value);
     ShowSecondary(bool) => set_if_changed(&mut pane.settings.show_secondary_line, value);
-    Averaging(AvgMode) => set_if_changed(&mut pane.avg_mode, value).then(|| pane.sync_avg()).is_some();
-    AvgFactor(f32) => update_f32_range(&mut pane.avg_factor, value, EXP_R).then(|| pane.sync_avg()).is_some();
-    PeakDecay(f32) => update_f32_range(&mut pane.peak_decay, value, DECAY_R).then(|| pane.sync_avg()).is_some();
+    Averaging(AvgMode) => pane.update_avg(|pane| set_if_changed(&mut pane.avg_mode, value));
+    AvgFactor(f32) => pane.update_avg(|pane| update_f32_range(&mut pane.avg_factor, value, EXP_R));
+    PeakDecay(f32) => pane.update_avg(|pane| update_f32_range(&mut pane.peak_decay, value, DECAY_R));
     SmoothRadius(f32) => update_usize_from_f32(&mut pane.settings.smoothing_radius, value, SRAD_R);
     SmoothPasses(f32) => update_usize_from_f32(&mut pane.settings.smoothing_passes, value, SPAS_R);
     ShowGrid(bool) => set_if_changed(&mut pane.settings.show_grid, value);
@@ -137,6 +137,17 @@ impl SpectrumSettingsPane {
         ]
         .spacing(12)
         .into()
+    }
+
+    fn update_avg<F>(&mut self, update: F) -> bool
+    where
+        F: FnOnce(&mut Self) -> bool,
+    {
+        let changed = update(self);
+        if changed {
+            self.sync_avg();
+        }
+        changed
     }
 
     fn sync_avg(&mut self) {

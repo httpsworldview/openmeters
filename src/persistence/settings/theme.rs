@@ -14,16 +14,14 @@ const THEMES_DIR: &str = "themes";
 const AUTO_THEME_BASE: &str = "default-custom";
 pub const BUILTIN_THEME: &str = "default";
 
-#[derive(Debug, Clone, Eq)]
+pub(crate) fn canonical_theme_name(name: &str) -> String {
+    name.replace(['/', '\\', '\0'], "")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThemeChoice {
     pub name: String,
     pub builtin: bool,
-}
-
-impl PartialEq for ThemeChoice {
-    fn eq(&self, other: &Self) -> bool {
-        self.name == other.name
-    }
 }
 
 impl std::fmt::Display for ThemeChoice {
@@ -77,7 +75,7 @@ impl ThemeStore {
                 )
             }));
         }
-        choices.sort_by_key(|choice| (!choice.builtin, choice.name.to_lowercase()));
+        choices.sort_by_cached_key(|choice| (!choice.builtin, choice.name.to_lowercase()));
         choices
     }
 
@@ -99,9 +97,7 @@ impl ThemeStore {
         let path = self.theme_path(name);
         let json = serde_json::to_string_pretty(theme)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        let temp = path.with_extension("json.tmp");
-        fs::write(&temp, json)?;
-        fs::rename(&temp, &path)
+        super::write_json_atomic(&path, &json)
     }
 
     pub fn update(&self, name: &str, mutate: impl FnOnce(&mut ThemeFile)) -> io::Result<()> {
@@ -130,7 +126,7 @@ impl ThemeStore {
     }
 
     fn theme_path(&self, name: &str) -> PathBuf {
-        let safe = name.replace(['/', '\\', '\0'], "");
+        let safe = canonical_theme_name(name);
         self.dir.join(format!("{safe}.json"))
     }
 }
@@ -182,6 +178,24 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![("default", true), ("alpha", false), ("zebra", false)]
         );
+    }
+
+    #[test]
+    fn canonical_names_match_saved_file_stems() -> io::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let store = ThemeStore::new(dir.path());
+        let raw = " custom/theme\\name\0 ";
+        let name = canonical_theme_name(raw);
+
+        assert_eq!(name, " customthemename ");
+        store.save(raw, &ThemeFile::default())?;
+        assert!(
+            store
+                .list()
+                .iter()
+                .any(|choice| choice.name == name && !choice.builtin)
+        );
+        Ok(())
     }
 
     #[test]

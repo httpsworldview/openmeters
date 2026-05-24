@@ -252,12 +252,15 @@ impl UiApp {
         if !self.main_window_is_layer {
             return;
         }
-        let bar = self.settings_handle.borrow().data.bar.clone();
-        if !bar.enabled {
+        let (enabled, height, alignment) = {
+            let settings = self.settings_handle.borrow();
+            let bar = &settings.data.bar;
+            (bar.enabled, clamp_bar_height(bar.height), bar.alignment)
+        };
+        if !enabled {
             return;
         }
-        let height = clamp_bar_height(bar.height);
-        let start_y = match bar.alignment {
+        let start_y = match alignment {
             BarAlignment::Top => height as f32,
             BarAlignment::Bottom => 0.0,
         };
@@ -284,13 +287,12 @@ impl UiApp {
         self.bar_resize_state
             .take()
             .filter(|s| s.pending_height != s.start_height)
-            .map(|s| {
+            .map_or_else(Task::none, |s| {
                 let alignment = self.settings_handle.borrow().data.bar.alignment;
                 self.settings_handle
                     .update(|settings| settings.data.bar.height = s.pending_height);
                 self.apply_bar_layout(alignment, s.pending_height)
             })
-            .unwrap_or_else(Task::none)
     }
 
     fn pending_bar_resize(&self) -> Option<(u32, u32)> {

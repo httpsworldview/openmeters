@@ -16,7 +16,7 @@ use pw::types::ObjectType;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use std::sync::{Arc, OnceLock, RwLock, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, mpsc};
 use std::thread;
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
@@ -30,21 +30,21 @@ const PREFERRED_METADATA_NAMES: &[&str] = &["settings", "default"];
 type PendingSyncs = Vec<(AsyncSeq, mpsc::Sender<()>)>;
 
 static RUNTIME: OnceLock<RegistryRuntime> = OnceLock::new();
+static RUNTIME_INIT: Mutex<()> = Mutex::new(());
 
 pub fn spawn_registry() -> Result<AudioRegistryHandle> {
     if let Some(runtime) = RUNTIME.get().cloned() {
         return Ok(AudioRegistryHandle { runtime });
     }
 
-    let runtime = RegistryRuntime::default();
-    if RUNTIME.set(runtime.clone()).is_err() {
-        let runtime = RUNTIME
-            .get()
-            .context("registry runtime unavailable after initialization race")?
-            .clone();
+    let _init = RUNTIME_INIT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(runtime) = RUNTIME.get().cloned() {
         return Ok(AudioRegistryHandle { runtime });
     }
 
+    let runtime = RegistryRuntime::default();
     let thread_runtime = runtime.clone();
     thread::Builder::new()
         .name(REGISTRY_THREAD_NAME.into())
@@ -54,6 +54,7 @@ pub fn spawn_registry() -> Result<AudioRegistryHandle> {
             }
         })
         .context("failed to spawn PipeWire registry thread")?;
+    let _ = RUNTIME.set(runtime.clone());
 
     Ok(AudioRegistryHandle { runtime })
 }
@@ -129,7 +130,6 @@ struct RegistryRuntime {
     commands: Arc<RwLock<Option<mpsc::Sender<RegistryCommand>>>>,
 }
 
-// locks cannot be poisoned as panic is set to abort in cargo.toml.
 impl RegistryRuntime {
     fn set_command_sender(&self, sender: mpsc::Sender<RegistryCommand>) {
         *self.commands.write().unwrap() = Some(sender);

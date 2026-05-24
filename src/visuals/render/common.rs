@@ -4,7 +4,6 @@
 use bytemuck::{Pod, Zeroable};
 use iced::advanced::graphics::Viewport;
 use iced::{Border, Color, Rectangle, Renderer, Size};
-use iced_wgpu::wgpu;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::mem::size_of;
@@ -550,8 +549,8 @@ macro_rules! sdf_primitive {
             fn prepare(
                 &$self,
                 pipeline: &mut Self::Pipeline,
-                device: &iced_wgpu::wgpu::Device,
-                queue: &iced_wgpu::wgpu::Queue,
+                device: &wgpu::Device,
+                queue: &wgpu::Queue,
                 _bounds: &iced::Rectangle,
                 viewport: &iced::advanced::graphics::Viewport,
             ) {
@@ -562,8 +561,8 @@ macro_rules! sdf_primitive {
             fn render(
                 &$self,
                 pipeline: &Self::Pipeline,
-                encoder: &mut iced_wgpu::wgpu::CommandEncoder,
-                target: &iced_wgpu::wgpu::TextureView,
+                encoder: &mut wgpu::CommandEncoder,
+                target: &wgpu::TextureView,
                 clip: &iced::Rectangle<u32>,
             ) {
                 let key: $key_ty = $key_expr;
@@ -581,8 +580,8 @@ macro_rules! sdf_primitive {
         pub struct $pipeline { inner: $crate::visuals::render::common::SdfPipeline<$key_ty> }
 
         impl iced_wgpu::primitive::Pipeline for $pipeline {
-            fn new(device: &iced_wgpu::wgpu::Device, _queue: &iced_wgpu::wgpu::Queue, format: iced_wgpu::wgpu::TextureFormat) -> Self {
-                Self { inner: $crate::visuals::render::common::SdfPipeline::new(device, format, $label, iced_wgpu::wgpu::PrimitiveTopology::$topology) }
+            fn new(device: &wgpu::Device, _queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
+                Self { inner: $crate::visuals::render::common::SdfPipeline::new(device, format, $label, wgpu::PrimitiveTopology::$topology) }
             }
         }
     };

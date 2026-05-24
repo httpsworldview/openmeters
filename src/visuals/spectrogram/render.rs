@@ -5,7 +5,6 @@ use bytemuck::{Pod, Zeroable};
 use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
 use iced_wgpu::primitive::{self, Primitive};
-use iced_wgpu::wgpu;
 use std::collections::{HashMap, VecDeque};
 
 use crate::util::color::f32_to_u8;

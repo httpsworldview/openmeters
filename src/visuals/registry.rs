@@ -328,16 +328,6 @@ impl VisualManager {
             self.entries.insert(target, entry);
         }
     }
-    pub fn swap_entries(&mut self, first: VisualId, second: VisualId) {
-        let (Some(first_index), Some(second_index)) =
-            (self.entry_index(first), self.entry_index(second))
-        else {
-            return;
-        };
-        if first_index != second_index {
-            self.entries.swap(first_index, second_index);
-        }
-    }
     pub fn snapshot(&self) -> Vec<VisualSlotSnapshot> {
         self.entries
             .iter()

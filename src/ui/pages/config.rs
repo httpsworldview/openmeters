@@ -7,6 +7,7 @@ use crate::infra::pipewire::registry::RegistrySnapshot;
 use crate::persistence::settings::SettingsHandle;
 use crate::persistence::settings::{
     BAR_MAX_HEIGHT, BAR_MIN_HEIGHT, BUILTIN_THEME, BarAlignment, ThemeChoice, ThemeFile,
+    canonical_theme_name,
 };
 use crate::ui::pages::visuals::settings::palette::{PaletteEditor, PaletteEvent};
 use crate::ui::subscription::channel_subscription;
@@ -230,10 +231,11 @@ impl ConfigPage {
             }
             ConfigMessage::ThemeChanged(name) => self.apply_theme(&name),
             ConfigMessage::SaveTheme(name) => {
-                self.save_current_as_theme(&name);
-                if self.active_theme != name {
-                    self.active_theme = name.clone();
-                    self.settings.update(|s| s.data.theme = Some(name));
+                if let Some(saved_name) = self.save_current_as_theme(&name)
+                    && self.active_theme != saved_name
+                {
+                    self.active_theme = saved_name.clone();
+                    self.settings.update(|s| s.data.theme = Some(saved_name));
                 }
                 self.save_theme_name.clear();
             }
@@ -442,12 +444,9 @@ impl ConfigPage {
     }
 
     fn apply_theme(&mut self, name: &str) {
-        let theme_file = self
-            .settings
-            .borrow()
-            .theme_store()
-            .load(name)
-            .unwrap_or_default();
+        let Some(theme_file) = self.settings.borrow().theme_store().load(name) else {
+            return;
+        };
         self.visual_manager.borrow_mut().apply_theme(&theme_file);
         let bg = theme_file.background.map_or(theme::BG_BASE, Into::into);
         self.bg_palette.set_colors(&[bg]);
@@ -459,14 +458,22 @@ impl ConfigPage {
         self.active_theme = name.to_owned();
     }
 
-    fn save_current_as_theme(&mut self, name: &str) {
-        let theme_file = self.export_theme(name);
+    fn save_current_as_theme(&mut self, name: &str) -> Option<String> {
+        let name = canonical_theme_name(name);
+        if name.is_empty() || name == BUILTIN_THEME {
+            tracing::warn!("[theme] invalid theme name {name:?}");
+            return None;
+        }
+
+        let theme_file = self.export_theme(&name);
         let guard = self.settings.borrow();
         let store = guard.theme_store();
-        if let Err(e) = store.save(name, &theme_file) {
+        if let Err(e) = store.save(&name, &theme_file) {
             tracing::warn!("[theme] failed to save theme {name:?}: {e}");
+            return None;
         }
         self.theme_choices = store.list();
+        Some(name)
     }
 
     fn export_theme(&self, name: &str) -> ThemeFile {
@@ -623,9 +630,11 @@ fn sync_selected_device_with_choices(
     let DeviceSelection::Device(token) = selected else {
         return false;
     };
-    let old_token = token.clone();
+    let mut changed = false;
     if let Some(node) = snapshot.find_capture_device_by_token(token) {
-        *token = node.capture_device_token();
+        let canonical = node.capture_device_token();
+        changed = token.as_str() != canonical;
+        *token = canonical;
     }
     if !choices
         .iter()
@@ -636,7 +645,7 @@ fn sync_selected_device_with_choices(
             selection: DeviceSelection::Device(token.clone()),
         });
     }
-    *token != old_token
+    changed
 }
 
 fn divider<'a>() -> Rule<'a> {

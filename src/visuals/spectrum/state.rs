@@ -213,10 +213,10 @@ impl SpectrumState {
             SpectrumWeightingMode::Raw => "dBFS",
         };
         let freq = fmt_freq(f);
-        let text = NoteInfo::from_frequency(f).map_or_else(
-            || [freq.clone(), format!("{:.1} {unit}", m)],
-            |ni| [ni.fmt_note_cents(), format!("{freq}   {:.1} {unit}", m)],
-        );
+        let text = match NoteInfo::from_frequency(f) {
+            Some(ni) => [ni.fmt_note_cents(), format!("{freq}   {:.1} {unit}", m)],
+            None => [freq, format!("{:.1} {unit}", m)],
+        };
         Some(PeakUpdate {
             text,
             label_pos: pos,
