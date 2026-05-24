@@ -151,7 +151,7 @@ impl PitchDetector {
             }
         }
 
-        // Fallback: absolute minimum if good enough
+        // Accept the absolute minimum for periodic signals that miss the first local minimum.
         let (best_tau, best_val) = (min_period..max_period)
             .map(|t| (t, self.cumulative_mean_normalized[t]))
             .min_by(|a, b| a.1.total_cmp(&b.1))?;

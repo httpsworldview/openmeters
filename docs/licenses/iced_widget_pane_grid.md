@@ -1,7 +1,6 @@
 # Iced pane_grid licensing
 
-The files under `src/ui/widgets/pane_grid/` and the file
-`src/ui/widgets/pane_grid.rs` are adapted from the `pane_grid` widget
+The file `src/ui/widgets/pane_grid.rs` is adapted from the `pane_grid` widget
 in [`iced_widget` v0.13.4](https://github.com/iced-rs/iced). The
 original code is licensed under the MIT License and should be
 attributed to Héctor Ramón and the Iced contributors.

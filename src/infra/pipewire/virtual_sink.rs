@@ -100,6 +100,14 @@ fn bytes_per_sample(format: spa::param::audio::AudioFormat) -> Option<usize> {
     }
 }
 
+fn audio_chunk(bytes: &[u8], offset: u32, size: u32, frame_bytes: usize) -> Option<&[u8]> {
+    let frame_bytes = frame_bytes.max(1);
+    let start = offset as usize;
+    let end = start.saturating_add(size as usize).min(bytes.len());
+    let len = end.checked_sub(start)? / frame_bytes * frame_bytes;
+    (len > 0).then(|| &bytes[start..start + len])
+}
+
 fn convert_samples_to_f32(
     bytes: &[u8],
     format: spa::param::audio::AudioFormat,
@@ -125,10 +133,12 @@ fn convert_samples_to_f32(
             bytes
                 .chunks_exact(size_of::<$ty>())
                 .map(|chunk| {
+                    let mut bytes = [0; size_of::<$ty>()];
+                    bytes.copy_from_slice(chunk);
                     let raw = if little_endian {
-                        <$ty>::from_le_bytes(chunk.try_into().unwrap())
+                        <$ty>::from_le_bytes(bytes)
                     } else {
-                        <$ty>::from_be_bytes(chunk.try_into().unwrap())
+                        <$ty>::from_be_bytes(bytes)
                     };
                     $to_f32(raw)
                 })
@@ -268,15 +278,18 @@ fn run_virtual_sink() -> Result<(), Box<dyn Error + Send + Sync>> {
             };
 
             for data in buffer.datas_mut() {
-                let used = data.chunk().size() as usize;
+                let chunk = data.chunk();
+                let (offset, size) = (chunk.offset(), chunk.size());
 
-                if used == 0 {
+                if size == 0 {
                     continue;
                 }
 
-                if let Some(samples) = data.data().and_then(|slice| {
-                    convert_samples_to_f32(&slice[..used.min(slice.len())], state.format)
-                }) {
+                if let Some(samples) = data
+                    .data()
+                    .and_then(|bytes| audio_chunk(bytes, offset, size, state.frame_bytes))
+                    .and_then(|bytes| convert_samples_to_f32(bytes, state.format))
+                {
                     capture_buffer.try_push(CapturedAudio {
                         samples,
                         channels: state.channels,
@@ -286,7 +299,7 @@ fn run_virtual_sink() -> Result<(), Box<dyn Error + Send + Sync>> {
 
                 let chunk_mut = data.chunk_mut();
                 *chunk_mut.offset_mut() = 0;
-                *chunk_mut.size_mut() = used as u32;
+                *chunk_mut.size_mut() = size;
                 *chunk_mut.stride_mut() = state.frame_bytes as i32;
             }
         })
@@ -356,6 +369,16 @@ mod tests {
             "{fmt:?}[{index}] = {}, expected {expected}",
             out[index]
         );
+    }
+
+    #[test]
+    fn audio_chunk_respects_offset_and_frame_alignment() {
+        let bytes: Vec<_> = (0_u8..16).collect();
+
+        assert_eq!(audio_chunk(&bytes, 4, 8, 4), Some(&bytes[4..12]));
+        assert_eq!(audio_chunk(&bytes, 4, 10, 4), Some(&bytes[4..12]));
+        assert_eq!(audio_chunk(&bytes, 14, 4, 4), None);
+        assert_eq!(audio_chunk(&bytes, 20, 4, 4), None);
     }
 
     #[test]

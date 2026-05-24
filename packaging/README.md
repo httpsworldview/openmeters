@@ -39,10 +39,10 @@ Version is parsed from the root `Cargo.toml`.
 
 ```
 dist/
-  openmeters-0.1.0-x86_64-linux-gnu/          staging tree for the tarball
-  openmeters-0.1.0-x86_64-linux-gnu.tar.xz
-  openmeters_0.1.0-1_amd64.deb
-  openmeters-0.1.0-1.x86_64.rpm
+  openmeters-<version>-x86_64-linux-gnu/      staging tree for the tarball
+  openmeters-<version>-x86_64-linux-gnu.tar.xz
+  openmeters_<version>-1_amd64.deb
+  openmeters-<version>-1.x86_64.rpm
   SHA256SUMS
 ```
 

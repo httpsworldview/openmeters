@@ -471,9 +471,7 @@ impl SpectrogramProcessor {
                 self.audio_buffer.clear();
             }
         }
-        let reset = rebuild
-            || prev.use_reassignment != cfg.use_reassignment
-            || prev.hop_size != cfg.hop_size;
+        let reset = rebuild || prev.hop_size != cfg.hop_size;
         if reset {
             self.reset = true;
         }

@@ -80,7 +80,7 @@ impl Palette {
 
 // Spectrogram heat map: quiet -> loud (5 stops)
 pub mod spectrogram {
-    use super::*;
+    use super::{Color, hex};
     pub const COLORS: [Color; 5] = [
         hex(0x00, 0x00, 0x00, 0x00),
         hex(0x38, 0x00, 0xAD, 0xFF),
@@ -96,7 +96,7 @@ pub mod spectrogram {
 }
 
 pub mod spectrum {
-    use super::*;
+    use super::{Color, hex};
     pub const COLORS: [Color; 6] = [
         hex(0x00, 0x00, 0x00, 0x00),
         hex(0x38, 0x00, 0xAD, 0xFF),
@@ -111,7 +111,7 @@ pub mod spectrum {
 
 // dark red (low) -> orange -> green -> cyan -> blue (high)
 pub mod waveform {
-    use super::*;
+    use super::{Color, hex};
     pub const GRADIENT_STOPS: usize = 6;
     pub const COLORS: [Color; 9] = [
         hex(0x8B, 0x00, 0x00, 0xFF),
@@ -141,7 +141,7 @@ pub mod waveform {
 
 // Oscilloscope trace color (1 stop)
 pub mod oscilloscope {
-    use super::*;
+    use super::{Color, hex};
     pub const COLORS: [Color; 1] = [hex(0xFF, 0xFF, 0xFF, 0xFF)];
     pub const LABELS: &[&str] = &["Trace"];
     pub const DEFAULT_POSITIONS: [f32; COLORS.len()] = [0.0];
@@ -149,7 +149,7 @@ pub mod oscilloscope {
 
 // Stereometer (9 stops)
 pub mod stereometer {
-    use super::*;
+    use super::{Color, hex};
     pub const COLORS: [Color; 9] = [
         hex(0xFF, 0xFF, 0xFF, 0xFF),
         hex(0x1A, 0x1A, 0x1A, 0xFF),
@@ -178,7 +178,7 @@ pub mod stereometer {
 
 // Loudness meter: background, level zones, peak hold, guide line (7 stops)
 pub mod loudness {
-    use super::*;
+    use super::{Color, hex};
     pub const COLORS: [Color; 7] = [
         hex(0x29, 0x29, 0x29, 0xFF),
         hex(0xA0, 0xAA, 0xAD, 0xFF),
@@ -202,7 +202,7 @@ pub mod loudness {
 
 // App background color (1 stop)
 pub mod background {
-    use super::*;
+    use super::{BG_BASE, Color};
     pub const COLORS: [Color; 1] = [BG_BASE];
     pub const LABELS: &[&str] = &["Background"];
     pub const DEFAULT_POSITIONS: [f32; COLORS.len()] = [0.0];
