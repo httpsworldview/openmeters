@@ -2,9 +2,8 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::virtual_sink::{self, CaptureBuffer};
-use crate::util::audio::DEFAULT_SAMPLE_RATE;
 use async_channel::{Receiver as AsyncReceiver, Sender as AsyncSender};
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
@@ -15,28 +14,18 @@ const TARGET_BATCH_SAMPLES: usize = 2_048;
 const MAX_BATCH_LATENCY: Duration = Duration::from_millis(25);
 const DROP_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 
-static AUDIO_STREAM: OnceLock<Arc<AsyncReceiver<Vec<f32>>>> = OnceLock::new();
-// this lock cannot be poisoned because panic is set to abort in
-// cargo.toml.
-static FORMAT_STATE: RwLock<MeterFormat> = RwLock::new(MeterFormat::new());
+static AUDIO_STREAM: OnceLock<Arc<AsyncReceiver<AudioBatch>>> = OnceLock::new();
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
+pub struct AudioBatch {
+    pub samples: Vec<f32>,
+    pub format: MeterFormat,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MeterFormat {
     pub channels: usize,
     pub sample_rate: f32,
-}
-
-impl MeterFormat {
-    const fn new() -> Self {
-        Self {
-            channels: 2,
-            sample_rate: DEFAULT_SAMPLE_RATE,
-        }
-    }
-
-    fn differs_from(&self, channels: usize, sample_rate: f32) -> bool {
-        self.channels != channels || (self.sample_rate - sample_rate).abs() > f32::EPSILON
-    }
 }
 
 const MAX_RECYCLED_BUFFERS: usize = 4;
@@ -48,6 +37,7 @@ struct SampleBatcher {
     total_samples: usize,
     chunks: Vec<Vec<f32>>,
     recycle: Vec<Vec<f32>>,
+    format: Option<MeterFormat>,
 }
 
 impl SampleBatcher {
@@ -58,12 +48,14 @@ impl SampleBatcher {
         }
     }
 
-    fn is_empty(&self) -> bool {
-        self.total_samples == 0
-    }
-
-    fn push(&mut self, chunk: Vec<f32>) {
-        self.total_samples = self.total_samples.saturating_add(chunk.len());
+    fn push(&mut self, chunk: Vec<f32>, format: MeterFormat) {
+        if chunk.is_empty() {
+            return;
+        }
+        if self.total_samples == 0 {
+            self.format = Some(format);
+        }
+        self.total_samples += chunk.len();
         self.chunks.push(chunk);
     }
 
@@ -71,25 +63,29 @@ impl SampleBatcher {
         self.total_samples >= self.target_samples
     }
 
-    fn take(&mut self) -> Option<Vec<f32>> {
+    fn has_different_format(&self, format: MeterFormat) -> bool {
+        self.format.is_some_and(|f| f != format)
+    }
+
+    fn take(&mut self) -> Option<AudioBatch> {
         if self.total_samples == 0 {
             return None;
         }
 
         let total_samples = std::mem::take(&mut self.total_samples);
+        let format = self.format.take().expect("batch format set");
+        let samples = if self.chunks.len() == 1 {
+            self.chunks.pop().expect("single chunk present")
+        } else {
+            let mut batch = self.reuse_buffer(total_samples);
+            for chunk in self.chunks.drain(..) {
+                batch.extend_from_slice(&chunk);
+                Self::stash_recycle(&mut self.recycle, chunk);
+            }
+            batch
+        };
 
-        if self.chunks.len() == 1 {
-            return self.chunks.pop();
-        }
-
-        let mut batch = self.reuse_buffer(total_samples);
-
-        for chunk in self.chunks.drain(..) {
-            batch.extend_from_slice(&chunk);
-            Self::stash_recycle(&mut self.recycle, chunk);
-        }
-
-        Some(batch)
+        Some(AudioBatch { samples, format })
     }
 
     fn reuse_buffer(&mut self, needed: usize) -> Vec<f32> {
@@ -109,11 +105,7 @@ impl SampleBatcher {
     }
 }
 
-pub fn current_format() -> MeterFormat {
-    *FORMAT_STATE.read().unwrap()
-}
-
-pub fn audio_sample_stream() -> Arc<AsyncReceiver<Vec<f32>>> {
+pub fn audio_sample_stream() -> Arc<AsyncReceiver<AudioBatch>> {
     AUDIO_STREAM
         .get_or_init(|| {
             let (sender, receiver) = async_channel::bounded(CHANNEL_CAPACITY);
@@ -123,7 +115,7 @@ pub fn audio_sample_stream() -> Arc<AsyncReceiver<Vec<f32>>> {
         .clone()
 }
 
-fn spawn_forwarder(sender: AsyncSender<Vec<f32>>, buffer: Arc<CaptureBuffer>) {
+fn spawn_forwarder(sender: AsyncSender<AudioBatch>, buffer: Arc<CaptureBuffer>) {
     if let Err(err) = thread::Builder::new()
         .name("openmeters-audio-meter-tap".into())
         .spawn(move || forward_loop(sender, buffer))
@@ -132,7 +124,7 @@ fn spawn_forwarder(sender: AsyncSender<Vec<f32>>, buffer: Arc<CaptureBuffer>) {
     }
 }
 
-fn forward_loop(sender: AsyncSender<Vec<f32>>, buffer: Arc<CaptureBuffer>) {
+fn forward_loop(sender: AsyncSender<AudioBatch>, buffer: Arc<CaptureBuffer>) {
     let mut batcher = SampleBatcher::new(TARGET_BATCH_SAMPLES);
     let mut last_flush = Instant::now();
     let mut last_drop_check = Instant::now();
@@ -165,29 +157,16 @@ fn forward_loop(sender: AsyncSender<Vec<f32>>, buffer: Arc<CaptureBuffer>) {
 
         match buffer.pop_wait_timeout(POLL_BACKOFF) {
             Ok(Some(packet)) => {
-                let (channels, sample_rate) = (
-                    packet.channels.max(1) as usize,
-                    packet.sample_rate.max(1) as f32,
-                );
+                let format = MeterFormat {
+                    channels: packet.channels.max(1) as usize,
+                    sample_rate: packet.sample_rate.max(1) as f32,
+                };
 
-                if !batcher.is_empty()
-                    && FORMAT_STATE
-                        .read()
-                        .unwrap()
-                        .differs_from(channels, sample_rate)
-                    && flush(&mut batcher, &mut last_flush)
-                {
+                if batcher.has_different_format(format) && flush(&mut batcher, &mut last_flush) {
                     break;
                 }
 
-                *FORMAT_STATE.write().unwrap() = MeterFormat {
-                    channels,
-                    sample_rate,
-                };
-
-                if !packet.samples.is_empty() {
-                    batcher.push(packet.samples);
-                }
+                batcher.push(packet.samples, format);
 
                 if (batcher.should_flush() || should_time_flush)
                     && flush(&mut batcher, &mut last_flush)
@@ -220,23 +199,54 @@ fn forward_loop(sender: AsyncSender<Vec<f32>>, buffer: Arc<CaptureBuffer>) {
 
 #[cfg(test)]
 mod tests {
-    use super::SampleBatcher;
+    use super::{MeterFormat, SampleBatcher};
+
+    const STEREO_48K: MeterFormat = MeterFormat {
+        channels: 2,
+        sample_rate: 48_000.0,
+    };
+    const MONO_44K: MeterFormat = MeterFormat {
+        channels: 1,
+        sample_rate: 44_100.0,
+    };
 
     #[test]
     fn batches_and_reuses_buffers() {
         let mut batcher = SampleBatcher::new(4);
-        batcher.push(vec![0.0, 1.0]);
+        batcher.push(vec![0.0, 1.0], STEREO_48K);
         assert!(!batcher.should_flush());
-        batcher.push(vec![2.0, 3.0]);
+        batcher.push(vec![2.0, 3.0], STEREO_48K);
         assert!(batcher.should_flush());
 
         let batch = batcher.take().expect("batch should be available");
-        assert_eq!(batch, vec![0.0, 1.0, 2.0, 3.0]);
+        assert_eq!(batch.samples, vec![0.0, 1.0, 2.0, 3.0]);
+        assert_eq!(batch.format, STEREO_48K);
         assert!(batcher.take().is_none());
 
-        batcher.push(vec![4.0, 5.0]);
-        batcher.push(vec![6.0, 7.0]);
+        batcher.push(vec![4.0, 5.0], STEREO_48K);
+        batcher.push(vec![6.0, 7.0], STEREO_48K);
         let second = batcher.take().expect("second batch available");
-        assert_eq!(second, vec![4.0, 5.0, 6.0, 7.0]);
+        assert_eq!(second.samples, vec![4.0, 5.0, 6.0, 7.0]);
+        assert_eq!(second.format, STEREO_48K);
+    }
+
+    #[test]
+    fn format_changes_flush_without_mixing_batches() {
+        let mut batcher = SampleBatcher::new(8);
+
+        batcher.push(vec![0.0, 1.0], STEREO_48K);
+        assert!(!batcher.has_different_format(STEREO_48K));
+        assert!(batcher.has_different_format(MONO_44K));
+
+        let first = batcher.take().expect("old-format batch should flush");
+        assert_eq!(first.samples, vec![0.0, 1.0]);
+        assert_eq!(first.format, STEREO_48K);
+
+        batcher.push(vec![2.0, 3.0], MONO_44K);
+        let second = batcher
+            .take()
+            .expect("new-format batch should remain separate");
+        assert_eq!(second.samples, vec![2.0, 3.0]);
+        assert_eq!(second.format, MONO_44K);
     }
 }

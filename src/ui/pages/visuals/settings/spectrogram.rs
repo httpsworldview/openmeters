@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::palette::PaletteEvent;
 use super::widgets::{
     FFT_OPTIONS, HOP_DIVISORS, SliderRange, get_closest_hop_divisor, pick, section, set_if_changed,
     slide, toggle, update_f32_range, update_fft_size, update_hop_divisor,
@@ -37,7 +36,6 @@ settings_messages!(SpectrogramSettingsPane as pane, value {
     Rotation(f32) => set_if_changed(&mut pane.settings.rotation, value.round() as i8);
     ZeroPadding(usize) => set_if_changed(&mut pane.settings.zero_padding_factor, value);
     PianoRoll(PianoRollOverlay) => set_if_changed(&mut pane.settings.piano_roll_overlay, value);
-    Palette(PaletteEvent) => pane.palette.update(value);
 });
 
 impl SpectrogramSettingsPane {

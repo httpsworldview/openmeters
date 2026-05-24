@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::{TOAST_DISPLAY_DURATION, UiApp};
+use crate::infra::pipewire::meter_tap::AudioBatch;
 use crate::ui::pages::config::ConfigMessage;
 use crate::ui::pages::visuals::{SettingsMessage, VisualsMessage};
 use crate::ui::theme;
@@ -20,7 +21,7 @@ use std::time::Instant;
 pub(super) enum Message {
     Config(ConfigMessage),
     Visuals(VisualsMessage),
-    AudioFrame(Vec<f32>),
+    AudioFrame(AudioBatch),
     BarOutputResolved(window::Id, Option<OutputSnapshot>),
     ToggleDrawer,
     TogglePause,
@@ -170,8 +171,10 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
         Message::Resize if !app.main_window_is_layer => {
             window::drag_resize(app.main_window_id, window::Direction::SouthEast)
         }
-        Message::AudioFrame(samples) if !app.rendering_paused => {
-            app.visual_manager.borrow_mut().ingest_samples(&samples);
+        Message::AudioFrame(AudioBatch { samples, format }) if !app.rendering_paused => {
+            app.visual_manager
+                .borrow_mut()
+                .ingest_samples(&samples, format);
             app.sync_all_windows()
         }
         Message::BarOutputResolved(id, Some(snapshot))

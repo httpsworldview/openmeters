@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::palette::PaletteEvent;
 use super::widgets::{SliderRange, pick, set_if_changed, slide, update_f32_range};
 use crate::persistence::settings::OscilloscopeSettings;
 use crate::util::audio::Channel;
@@ -43,7 +42,6 @@ settings_messages!(OscilloscopeSettingsPane as pane, value {
     };
     Channel1(Channel) => set_if_changed(&mut pane.settings.channel_1, value);
     Channel2(Channel) => set_if_changed(&mut pane.settings.channel_2, value);
-    Palette(PaletteEvent) => pane.palette.update(value);
 });
 
 impl OscilloscopeSettingsPane {

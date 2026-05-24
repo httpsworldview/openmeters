@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::palette::PaletteEvent;
 use super::widgets::{
     FFT_OPTIONS, HOP_DIVISORS, SliderRange, get_closest_hop_divisor, pick, section, set_if_changed,
     slide, toggle, update_f32_range, update_fft_size, update_hop_divisor, update_usize_from_f32,
@@ -61,7 +60,6 @@ settings_messages!(SpectrumSettingsPane as pane, value {
     BarCount(f32) => update_usize_from_f32(&mut pane.settings.bar_count, value, BARS_R);
     BarGap(f32) => update_f32_range(&mut pane.settings.bar_gap, value, GAP_R);
     Highlight(f32) => update_f32_range(&mut pane.settings.highlight_threshold, value, HIGH_R);
-    Palette(PaletteEvent) => pane.palette.update(value);
 });
 
 impl SpectrumSettingsPane {

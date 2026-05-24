@@ -11,6 +11,7 @@ use super::render::{
 };
 use crate::visuals::options::PianoRollOverlay;
 use crate::ui::theme::BORDER_SUBTLE;
+use crate::ui::widgets::scroll_delta_lines;
 use crate::util::audio::musical::{MusicalNote, NoteInfo};
 use crate::util::audio::{DB_FLOOR, FrequencyScale, fmt_duration, fmt_freq};
 use crate::util::color::{color_to_rgba, lerp_color, rgba_with_alpha, with_alpha};
@@ -697,13 +698,9 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
             iced::Event::Mouse(mouse::Event::WheelScrolled { delta }) if st.modifiers.control() => {
                 if let Some(pos) = st.cursor.filter(|p| b.contains(*p)) {
                     let freq_norm = self.state.borrow().freq_axis_norm(pos, b).unwrap_or(0.5);
-                    let scroll_y = match *delta {
-                        mouse::ScrollDelta::Lines { y, .. } => y,
-                        mouse::ScrollDelta::Pixels { y, .. } => y / 50.0,
-                    };
                     self.state
                         .borrow_mut()
-                        .zoom_at(freq_norm, ZOOM_STEP.powf(scroll_y));
+                        .zoom_at(freq_norm, ZOOM_STEP.powf(scroll_delta_lines(*delta)));
                     shell.request_redraw();
                     shell.capture_event();
                 }

@@ -188,6 +188,28 @@ impl RegistrySnapshot {
         self.nodes.iter().find(|n| n.matches_label(label))
     }
 
+    pub fn find_capture_device_by_token(&self, token: &str) -> Option<&NodeInfo> {
+        let candidates = || {
+            self.nodes
+                .iter()
+                .filter(|n| n.is_capture_device_candidate())
+        };
+        candidates()
+            .find(|n| {
+                n.name
+                    .as_deref()
+                    .is_some_and(|name| name.eq_ignore_ascii_case(token))
+            })
+            .or_else(|| {
+                candidates().find(|n| {
+                    n.description
+                        .as_deref()
+                        .is_some_and(|desc| desc.eq_ignore_ascii_case(token))
+                        || n.capture_device_token().eq_ignore_ascii_case(token)
+                })
+            })
+    }
+
     pub fn route_candidates(&self, sink: &NodeInfo) -> impl Iterator<Item = &NodeInfo> {
         self.nodes.iter().filter(|n| n.should_route_to(sink))
     }
@@ -233,6 +255,10 @@ impl NodeInfo {
     }
 
     pub fn display_name(&self) -> String {
+        self.capture_device_token()
+    }
+
+    pub fn capture_device_token(&self) -> String {
         self.name
             .as_deref()
             .or(self.description.as_deref())
@@ -253,6 +279,17 @@ impl NodeInfo {
             .into_iter()
             .flatten()
             .any(|v| v.eq_ignore_ascii_case(label))
+    }
+
+    pub fn is_capture_device_candidate(&self) -> bool {
+        let contains = |opt: Option<&String>, pattern| {
+            opt.is_some_and(|s| s.to_ascii_lowercase().contains(pattern))
+        };
+        !self.is_virtual
+            && self.app_name().is_none()
+            && (contains(self.media_class.as_ref(), "audio")
+                || contains(self.name.as_ref(), "monitor")
+                || contains(self.description.as_ref(), "monitor"))
     }
 
     pub fn should_route_to(&self, sink: &Self) -> bool {

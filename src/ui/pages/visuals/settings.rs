@@ -96,13 +96,14 @@ macro_rules! settings_pane {
 macro_rules! settings_messages {
     ($pane:ident as $this:ident, $value:ident { $($variant:ident($ty:ty) => $handler:expr;)+ }) => {
         #[derive(Debug, Clone)]
-        pub enum Message { $($variant($ty),)+ }
+        pub enum Message { $($variant($ty),)+ Palette(super::palette::PaletteEvent) }
 
         impl $pane {
             fn handle(&mut self, msg: &Message) -> bool {
                 let $this = self;
                 match (*msg).clone() {
                     $(Message::$variant($value) => $handler,)+
+                    Message::Palette($value) => $this.palette.update($value),
                 }
             }
         }
