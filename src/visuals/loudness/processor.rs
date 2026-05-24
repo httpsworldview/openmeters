@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
+use crate::dsp::AudioBlock;
 use crate::util::audio::{DEFAULT_SAMPLE_RATE, power_to_db};
 use std::{f64::consts::PI, sync::LazyLock};
 
@@ -323,10 +323,8 @@ impl LoudnessProcessor {
     }
 }
 
-impl AudioProcessor for LoudnessProcessor {
-    type Output = LoudnessSnapshot;
-
-    fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<Self::Output> {
+impl LoudnessProcessor {
+    pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<LoudnessSnapshot> {
         if block.channels == 0 || block.frame_count() == 0 {
             return None;
         }
@@ -366,20 +364,6 @@ impl AudioProcessor for LoudnessProcessor {
         Some(self.snapshot)
     }
 
-    fn reset(&mut self) {
-        self.channels.clear();
-        self.snapshot = LoudnessSnapshot::with_floor(self.config.floor_db);
-    }
-}
-
-impl Reconfigurable<LoudnessConfig> for LoudnessProcessor {
-    fn update_config(&mut self, config: LoudnessConfig) {
-        self.config = config;
-        let channels = self.channels.len();
-        if channels > 0 {
-            self.rebuild_state(channels);
-        }
-    }
 }
 
 #[cfg(test)]
@@ -408,7 +392,6 @@ mod tests {
         window.push(16.0);
         window.push(25.0);
         window.push(36.0);
-        // Now should hold 9,16,25,36
         assert!((window.mean(0) - 21.5).abs() < f64::EPSILON);
         assert!((window.mean(1) - 30.5).abs() < f64::EPSILON);
         assert!((window.mean(2) - 36.0).abs() < f64::EPSILON);

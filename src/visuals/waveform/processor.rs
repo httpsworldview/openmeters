@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
+use crate::dsp::AudioBlock;
 use crate::util::audio::{
     BAND_SPLITS_HZ, DEFAULT_SAMPLE_RATE, WindowKind, apply_window, power_to_db,
     window_coefficients,
@@ -441,10 +441,8 @@ impl WaveformProcessor {
     }
 }
 
-impl AudioProcessor for WaveformProcessor {
-    type Output = WaveformSnapshot;
-
-    fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<Self::Output> {
+impl WaveformProcessor {
+    pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<WaveformSnapshot> {
         if block.frame_count() == 0 {
             return None;
         }
@@ -472,14 +470,10 @@ impl AudioProcessor for WaveformProcessor {
         Some(self.snapshot.clone())
     }
 
-    fn reset(&mut self) {
-        self.snapshot = WaveformSnapshot::default();
-        self.rebuild();
-    }
 }
 
-impl Reconfigurable<WaveformConfig> for WaveformProcessor {
-    fn update_config(&mut self, config: WaveformConfig) {
+impl WaveformProcessor {
+    pub fn update_config(&mut self, config: WaveformConfig) {
         let normalized = config.normalized();
         let rebuild = self.config.sample_rate != normalized.sample_rate
             || self.config.max_columns != normalized.max_columns;

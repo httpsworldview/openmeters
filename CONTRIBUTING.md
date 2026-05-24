@@ -116,8 +116,8 @@ Shared render helpers and WGSL shaders live under `visuals/render/`.
 
 - **Adding a new visual?** Use an existing visual as a template. Add the
   `VisualKind`, settings, palette defaults, registry descriptor, and a
-  settings panel if needed. The `visuals!`, `vis_processor!`, and
-  `visualization_widget!` macros handle most boilerplate.
+  settings panel if needed. The `visuals!` and `visualization_widget!`
+  macros handle most boilerplate.
 - **UI changes?** Pages live in `ui/pages/`; the main app is in
   `ui/app.rs`; window/layer-shell behavior is in `ui/app/windowing.rs`.
 - **PipeWire plumbing?** Everything lives under `infra/pipewire/`.

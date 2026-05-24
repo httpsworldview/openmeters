@@ -7,7 +7,7 @@ use crate::infra::pipewire::registry::NodeInfo;
 pub(crate) struct ApplicationRow {
     pub(crate) node_id: u32,
     pub(crate) label: String,
-    sort_key: (String, String, u32),
+    pub(super) sort_key: (String, String, u32),
     pub(crate) enabled: bool,
 }
 
@@ -34,9 +34,5 @@ impl ApplicationRow {
             ),
             enabled,
         }
-    }
-
-    pub(crate) fn sort_key(&self) -> &(String, String, u32) {
-        &self.sort_key
     }
 }

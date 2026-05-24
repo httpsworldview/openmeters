@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
+use crate::dsp::AudioBlock;
 use crate::util::audio::{BAND_SPLITS_HZ, DEFAULT_SAMPLE_RATE, extend_interleaved_history};
 use std::collections::VecDeque;
 
@@ -176,10 +176,8 @@ fn ema_alpha(sample_rate: f32, window: f32) -> f64 {
     1.0 - (-1.0 / (sample_rate as f64 * window as f64).max(1.0)).exp()
 }
 
-impl AudioProcessor for StereometerProcessor {
-    type Output = StereometerSnapshot;
-
-    fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<Self::Output> {
+impl StereometerProcessor {
+    pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<StereometerSnapshot> {
         let channel_count = block.channels.max(1);
         if block.frame_count() == 0 || channel_count < 2 {
             return None;
@@ -290,8 +288,8 @@ impl AudioProcessor for StereometerProcessor {
     }
 }
 
-impl Reconfigurable<StereometerConfig> for StereometerProcessor {
-    fn update_config(&mut self, config: StereometerConfig) {
+impl StereometerProcessor {
+    pub fn update_config(&mut self, config: StereometerConfig) {
         let sample_rate_changed =
             (self.config.sample_rate - config.sample_rate).abs() > f32::EPSILON;
         let window_changed =

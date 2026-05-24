@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::dsp::{AudioBlock, AudioProcessor, Reconfigurable};
+use crate::dsp::AudioBlock;
 use crate::util::audio::{
     DB_FLOOR, DEFAULT_SAMPLE_RATE, FrequencyScale, WindowKind, apply_window,
     compute_fft_bin_normalization, copy_dc_removed_from_deque, mixdown_into_deque, power_to_db,
@@ -285,10 +285,8 @@ impl SpectrumProcessor {
     }
 }
 
-impl AudioProcessor for SpectrumProcessor {
-    type Output = SpectrumSnapshot;
-
-    fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<Self::Output> {
+impl SpectrumProcessor {
+    pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<SpectrumSnapshot> {
         if block.frame_count() == 0 {
             return None;
         }
@@ -309,15 +307,10 @@ impl AudioProcessor for SpectrumProcessor {
             None
         }
     }
-
-    fn reset(&mut self) {
-        self.reset_buffers();
-        self.last_update_at = None;
-    }
 }
 
-impl Reconfigurable<SpectrumConfig> for SpectrumProcessor {
-    fn update_config(&mut self, mut config: SpectrumConfig) {
+impl SpectrumProcessor {
+    pub fn update_config(&mut self, mut config: SpectrumConfig) {
         let old = self.config;
         config.normalize();
         self.config = config;
@@ -430,18 +423,6 @@ fn a_weight(freq_hz: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::{SpectrumConfig, SpectrumProcessor, a_weight};
-    use crate::dsp::{AudioProcessor, Reconfigurable};
-
-    #[test]
-    fn reset_keeps_frequency_axis_initialized() {
-        let mut p = SpectrumProcessor::new(SpectrumConfig::default());
-        p.reset();
-
-        let bins = p.snapshot.frequency_bins.len();
-        assert!(bins > 0);
-        assert_eq!(p.snapshot.magnitudes_db.len(), bins);
-        assert_eq!(p.snapshot.magnitudes_unweighted_db.len(), bins);
-    }
 
     #[test]
     fn floor_change_reseeds_state_buffers_without_clearing_pending_audio() {

@@ -3,7 +3,7 @@
 
 use super::processor::{
     MAX_SPECTROGRAM_HISTORY_COLUMNS, SPECTROGRAM_HISTORY_BYTE_BUDGET, SpectrogramColumn,
-    SpectrogramConfig, SpectrogramProcessor as CoreSpectrogramProcessor, SpectrogramUpdate,
+    SpectrogramConfig, SpectrogramUpdate,
 };
 use super::render::{
     ColumnKind, PendingUpload, RingCopyPlan, SPECTROGRAM_PALETTE_SIZE, SpectrogramParams,
@@ -49,14 +49,6 @@ fn display_axis(sample_rate: f32) -> (f32, f32) {
     let nyq = (sample_rate / 2.0).max(1.0);
     (DISPLAY_MIN_HZ.min(nyq * 0.5), nyq)
 }
-
-crate::visuals::vis_processor!(
-    SpectrogramProcessor,
-    CoreSpectrogramProcessor,
-    SpectrogramConfig,
-    SpectrogramUpdate,
-    sync_rate
-);
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct SpectrogramStyle {
@@ -436,7 +428,7 @@ impl<'a> Spectrogram<'a> {
         Self { state }
     }
 
-    fn draw_crosshair(&self, renderer: &mut iced::Renderer, bounds: Rectangle, cursor: Point) {
+    fn draw_crosshair(renderer: &mut iced::Renderer, bounds: Rectangle, cursor: Point) {
         for rect in [
             Rectangle::new(
                 Point::new(cursor.x, bounds.y),
@@ -780,7 +772,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
             && bounds.contains(c)
         {
             renderer.with_layer(bounds, |r| {
-                self.draw_crosshair(r, bounds, c);
+                Self::draw_crosshair(r, bounds, c);
                 self.draw_tooltip(r, theme, bounds, c, uv_y_range);
             });
         }

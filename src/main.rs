@@ -11,7 +11,7 @@ mod util;
 mod visuals;
 use domain::routing::{RoutingCommand, RoutingConfig};
 use infra::pipewire::{monitor, registry, virtual_sink};
-use persistence::settings::SettingsManager;
+use persistence::settings::SettingsHandle;
 use std::sync::{Arc, mpsc};
 use ui::UiConfig;
 use util::telemetry;
@@ -25,11 +25,14 @@ fn main() {
     let (routing_tx, routing_rx) = mpsc::channel::<RoutingCommand>();
     let (snapshot_tx, snapshot_rx) = async_channel::bounded::<registry::RegistrySnapshot>(64);
 
-    let settings = SettingsManager::load_or_default();
-    let app_settings = settings.settings();
-    let routing_config = RoutingConfig {
-        capture_mode: app_settings.capture_mode,
-        preferred_device: app_settings.last_device_name.clone(),
+    let settings_handle = SettingsHandle::load_or_default();
+    let routing_config = {
+        let guard = settings_handle.borrow();
+        let settings = guard.settings();
+        RoutingConfig {
+            capture_mode: settings.capture_mode,
+            preferred_device: settings.last_device_name.clone(),
+        }
     };
 
     let registry_thread =
@@ -39,8 +42,8 @@ fn main() {
 
     let audio_stream = infra::pipewire::meter_tap::audio_sample_stream();
 
-    let ui_config =
-        UiConfig::new(routing_tx, Some(Arc::new(snapshot_rx))).with_audio_stream(audio_stream);
+    let ui_config = UiConfig::new(routing_tx, Some(Arc::new(snapshot_rx)), settings_handle)
+        .with_audio_stream(audio_stream);
 
     drop(snapshot_tx);
 

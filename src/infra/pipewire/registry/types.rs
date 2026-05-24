@@ -122,8 +122,7 @@ pub(crate) fn format_target_metadata(
     let target_object = object_serial
         .map(str::trim)
         .filter(|raw| !raw.is_empty())
-        .map(str::to_owned)
-        .unwrap_or_else(|| node_id.to_string());
+        .map_or_else(|| node_id.to_string(), str::to_owned);
     (target_object, node_id.to_string())
 }
 
@@ -262,8 +261,7 @@ impl NodeInfo {
         self.name
             .as_deref()
             .or(self.description.as_deref())
-            .map(str::to_owned)
-            .unwrap_or_else(|| format!("node#{}", self.id))
+            .map_or_else(|| format!("node#{}", self.id), str::to_owned)
     }
 
     pub fn app_name(&self) -> Option<&str> {

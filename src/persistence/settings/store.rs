@@ -2,14 +2,9 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::{
-    bar::{BarAlignment, clamp_bar_height},
     schema::UiSettings,
     theme::{BUILTIN_THEME, ThemeFile, ThemeStore},
 };
-use crate::domain::routing::CaptureMode;
-use crate::domain::visuals::VisualKind;
-use iced::Color;
-use serde::Serialize;
 use std::{
     cell::{Ref, RefCell},
     fs,
@@ -90,54 +85,6 @@ impl SettingsManager {
         } else {
             self.data.theme = Some(name);
         }
-    }
-    pub fn set_visual_enabled(&mut self, kind: VisualKind, enabled: bool) {
-        self.data.visuals.modules.entry(kind).or_default().enabled = Some(enabled);
-    }
-    pub fn set_module_config<T: Serialize>(&mut self, kind: VisualKind, config: &T) {
-        self.data
-            .visuals
-            .modules
-            .entry(kind)
-            .or_default()
-            .set_config(config);
-    }
-    pub fn set_visual_order(&mut self, order: impl IntoIterator<Item = VisualKind>) {
-        self.data.visuals.order = order.into_iter().collect();
-    }
-    pub fn set_visual_width_basis(&mut self, bases: impl IntoIterator<Item = (VisualKind, f32)>) {
-        self.data.visuals.width_basis.extend(
-            bases
-                .into_iter()
-                .filter(|(_, basis)| basis.is_finite() && *basis > 0.0),
-        );
-    }
-    pub fn set_background_color(&mut self, c: Option<Color>) {
-        self.data.background_color = c.map(Into::into);
-    }
-    pub fn set_decorations(&mut self, e: bool) {
-        self.data.decorations = e;
-    }
-    pub fn set_bar_enabled(&mut self, enabled: bool) {
-        self.data.bar.enabled = enabled;
-    }
-    pub fn set_bar_alignment(&mut self, alignment: BarAlignment) {
-        self.data.bar.alignment = alignment;
-    }
-    pub fn set_bar_height(&mut self, height: u32) {
-        self.data.bar.height = clamp_bar_height(height);
-    }
-    pub fn set_bar_monitor(&mut self, monitor: String) {
-        self.data.bar.monitor = Some(monitor);
-    }
-    pub fn set_capture_mode(&mut self, m: CaptureMode) {
-        self.data.capture_mode = m;
-    }
-    pub fn set_last_device_name(&mut self, name: Option<String>) {
-        self.data.last_device_name = name;
-    }
-    pub fn set_theme(&mut self, name: Option<String>) {
-        self.data.theme = name;
     }
 }
 

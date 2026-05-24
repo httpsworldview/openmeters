@@ -188,7 +188,7 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
             if let Some((wid, panel)) = app.settings_window.as_mut()
                 && *wid == window_id
             {
-                panel.handle(&settings_msg, &app.visual_manager, &app.settings_handle);
+                panel.handle(settings_msg, &app.visual_manager, &app.settings_handle);
                 app.config_page.sync_active_theme();
             }
             Task::none()

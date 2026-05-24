@@ -32,6 +32,12 @@ const CORR_PAD: f32 = 4.0;
 const CORR_VPAD: f32 = 16.0;
 const CORR_EDGE: f32 = 6.0;
 const BAND_GAP: f32 = 2.0;
+const GRID_RINGS: usize = 3;
+const GRID_SEGMENTS: usize = 16;
+const GRID_LINE_WIDTH: f32 = 1.0;
+const GRID_CORNERS: [(f32, f32); 4] = [(1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0)];
+const GRID_AXES: [((f32, f32), (f32, f32)); 2] =
+    [((1.0, 1.0), (-1.0, -1.0)), ((1.0, -1.0), (-1.0, 1.0))];
 
 #[derive(Debug, Clone)]
 pub struct StereometerParams {
@@ -73,7 +79,7 @@ impl VecTransform {
             bounds.x + bounds.width * 0.5,
             bounds.y + bounds.height * 0.5,
         );
-        let (sin_t, cos_t) = ((p.rotation as f32) * std::f32::consts::FRAC_PI_4).sin_cos();
+        let (sin_t, cos_t) = (f32::from(p.rotation) * std::f32::consts::FRAC_PI_4).sin_cos();
         let corner_k = match p.scale {
             StereometerScale::Linear => 1.0,
             StereometerScale::Exponential => {
@@ -99,7 +105,7 @@ impl VecTransform {
     }
 
     fn project(&self, l: f32, r: f32) -> (f32, f32) {
-        let (l, r) = self.apply_scale(l, r);
+        let (l, r) = scale_point(self.scale, l, r, self.scale_range);
         self.apply_rotation(l, r)
     }
 
@@ -112,10 +118,6 @@ impl VecTransform {
             self.cx + (l * self.cos_t + r * self.sin_t) * self.radius,
             self.cy + (l * self.sin_t - r * self.cos_t) * self.radius,
         )
-    }
-
-    fn apply_scale(&self, x: f32, y: f32) -> (f32, f32) {
-        scale_point(self.scale, x, y, self.scale_range)
     }
 }
 
@@ -130,138 +132,128 @@ impl StereometerPrimitive {
             return Vec::new();
         }
 
-        const RINGS: usize = 3;
-        const SEGMENTS: usize = 16;
-        const WIDTH: f32 = 1.0;
-        const CORNERS: [(f32, f32); 4] = [(1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0)];
-        const AXES: [((f32, f32), (f32, f32)); 2] =
-            [((1.0, 1.0), (-1.0, -1.0)), ((1.0, -1.0), (-1.0, 1.0))];
-
-        let mut v = Vec::new();
+        let mut vertices = Vec::new();
         let mut draw_line = |(ax, ay): (f32, f32), (bx, by): (f32, f32)| {
-            for seg in 0..SEGMENTS {
-                let t0 = seg as f32 / SEGMENTS as f32;
-                let t1 = (seg + 1) as f32 / SEGMENTS as f32;
+            for seg in 0..GRID_SEGMENTS {
+                let t0 = seg as f32 / GRID_SEGMENTS as f32;
+                let t1 = (seg + 1) as f32 / GRID_SEGMENTS as f32;
                 let p0 = t.project(ax + (bx - ax) * t0, ay + (by - ay) * t0);
                 let p1 = t.project(ax + (bx - ax) * t1, ay + (by - ay) * t1);
-                v.extend(line_vertices(p0, p1, grid_color, grid_color, WIDTH, clip));
+                vertices.extend(line_vertices(
+                    p0,
+                    p1,
+                    grid_color,
+                    grid_color,
+                    GRID_LINE_WIDTH,
+                    clip,
+                ));
             }
         };
 
-        for ring in 1..=RINGS {
-            let r = match t.scale {
-                StereometerScale::Linear => ring as f32 / RINGS as f32,
-                // invert log scale to place rings at even intervals
-                StereometerScale::Exponential => {
-                    let frac = ring as f32 / RINGS as f32;
-                    (t.scale_range * (frac - 1.0)).exp2()
-                }
+        for ring in 1..=GRID_RINGS {
+            let frac = ring as f32 / GRID_RINGS as f32;
+            let radius = match t.scale {
+                StereometerScale::Linear => frac,
+                StereometerScale::Exponential => (t.scale_range * (frac - 1.0)).exp2(),
             };
-            for edge in 0..4 {
-                let next = CORNERS[(edge + 1) % 4];
-                draw_line(
-                    (CORNERS[edge].0 * r, CORNERS[edge].1 * r),
-                    (next.0 * r, next.1 * r),
-                );
+            for (edge, &(x, y)) in GRID_CORNERS.iter().enumerate() {
+                let (nx, ny) = GRID_CORNERS[(edge + 1) % GRID_CORNERS.len()];
+                draw_line((x * radius, y * radius), (nx * radius, ny * radius));
             }
         }
-        for (start, end) in AXES {
+        for (start, end) in GRID_AXES {
             draw_line(start, end);
         }
 
-        v
+        vertices
     }
 
-    fn build_vertices(&self, viewport: &Viewport) -> Vec<SdfVertex> {
-        let clip = ClipTransform::from_viewport(viewport);
-        let p = &self.0;
-
-        let is_single = p.correlation_meter == CorrelationMeterMode::SingleBand;
+    fn meter_bounds(p: &StereometerParams) -> (Rectangle, Option<Rectangle>) {
         let has_corr = p.correlation_meter != CorrelationMeterMode::Off;
+        let left = p.correlation_meter_side == CorrelationMeterSide::Left;
         let margin = if has_corr {
             CORR_W + CORR_PAD + CORR_EDGE
         } else {
             0.0
         };
-
-        let (vec_bounds, corr_bounds) = {
-            let left = p.correlation_meter_side == CorrelationMeterSide::Left;
-            let vb = Rectangle {
-                x: p.bounds.x + if left { margin } else { 0.0 },
-                width: (p.bounds.width - margin).max(0.0),
-                ..p.bounds
-            };
-            let cb = if has_corr {
-                let cx = if left {
-                    p.bounds.x + CORR_EDGE
-                } else {
-                    (p.bounds.x + p.bounds.width - CORR_W - CORR_EDGE).max(p.bounds.x)
-                };
-                Rectangle {
-                    x: cx,
-                    y: p.bounds.y + CORR_VPAD,
-                    width: CORR_W,
-                    height: (p.bounds.height - 2.0 * CORR_VPAD).max(0.0),
-                }
-            } else {
-                Rectangle::default()
-            };
-            (vb, cb)
+        let vec_bounds = Rectangle {
+            x: p.bounds.x + if left { margin } else { 0.0 },
+            width: (p.bounds.width - margin).max(0.0),
+            ..p.bounds
         };
+        let corr_bounds = has_corr.then(|| {
+            let x = if left {
+                p.bounds.x + CORR_EDGE
+            } else {
+                (p.bounds.x + p.bounds.width - CORR_W - CORR_EDGE).max(p.bounds.x)
+            };
+            Rectangle {
+                x,
+                y: p.bounds.y + CORR_VPAD,
+                width: CORR_W,
+                height: (p.bounds.height - 2.0 * CORR_VPAD).max(0.0),
+            }
+        });
+        (vec_bounds, corr_bounds)
+    }
 
-        let t = VecTransform::new(p, vec_bounds);
+    fn add_trace_vertices(
+        out: &mut Vec<SdfVertex>,
+        p: &StereometerParams,
+        t: &VecTransform,
+        clip: ClipTransform,
+    ) {
         let [cr, cg, cb, ca] = p.palette[0];
         let dot_r = p.dot_radius;
 
-        let mut v = self.grid_vertices(&t, clip);
-
         match p.mode {
             StereometerMode::DotCloud => {
-                let nf = p.points.len() as f32;
-                v.extend(p.points.iter().enumerate().flat_map(|(i, &(l, r))| {
+                let count = p.points.len() as f32;
+                out.extend(p.points.iter().enumerate().flat_map(|(i, &(l, r))| {
                     let (px, py) = t.apply_rotation(l, r);
-                    let a = ca * (i + 1) as f32 / nf;
-                    dot_vertices(px, py, dot_r, [cr, cg, cb, a], clip, false)
+                    let alpha = ca * (i + 1) as f32 / count;
+                    dot_vertices(px, py, dot_r, [cr, cg, cb, alpha], clip, false)
                 }));
             }
             StereometerMode::Lissajous if p.points.len() >= 2 => {
-                let nm1 = (p.points.len() - 1) as f32;
-                v.extend(p.points.windows(2).enumerate().flat_map(|(i, w)| {
-                    let (p0, p1) = (
-                        t.apply_rotation(w[0].0, w[0].1),
-                        t.apply_rotation(w[1].0, w[1].1),
-                    );
-                    let (t0, t1) = (i as f32 / nm1, (i + 1) as f32 / nm1);
-                    let (c0, c1) = ([cr, cg, cb, ca * t0], [cr, cg, cb, ca * t1]);
-                    line_vertices(p0, p1, c0, c1, 1.5, clip)
+                let last = (p.points.len() - 1) as f32;
+                out.extend(p.points.windows(2).enumerate().flat_map(|(i, w)| {
+                    let p0 = t.apply_rotation(w[0].0, w[0].1);
+                    let p1 = t.apply_rotation(w[1].0, w[1].1);
+                    let (t0, t1) = (i as f32 / last, (i + 1) as f32 / last);
+                    line_vertices(p0, p1, [cr, cg, cb, ca * t0], [cr, cg, cb, ca * t1], 1.5, clip)
                 }));
             }
             StereometerMode::DotCloudBands => {
                 for (band, pts) in p.band_points.iter().enumerate() {
-                    let nf = pts.len() as f32;
+                    let count = pts.len() as f32;
                     let [cr, cg, cb, ca] = p.palette[5 + band];
-                    v.extend(pts.iter().enumerate().flat_map(|(i, &(l, r))| {
+                    out.extend(pts.iter().enumerate().flat_map(|(i, &(l, r))| {
                         let (px, py) = t.apply_rotation(l, r);
-                        let f = ca * (i + 1) as f32 / nf;
-                        dot_vertices(px, py, dot_r, [cr * f, cg * f, cb * f, 0.0], clip, true)
+                        let factor = ca * (i + 1) as f32 / count;
+                        dot_vertices(px, py, dot_r, [cr * factor, cg * factor, cb * factor, 0.0], clip, true)
                     }));
                 }
             }
-            _ => {}
+            StereometerMode::Lissajous => {}
         }
+    }
 
-        if !has_corr {
-            return v;
-        }
-
+    fn add_correlation_vertices(
+        out: &mut Vec<SdfVertex>,
+        p: &StereometerParams,
+        bounds: Rectangle,
+        clip: ClipTransform,
+    ) {
+        let is_single = p.correlation_meter == CorrelationMeterMode::SingleBand;
         let (bars, gap) = if is_single { (1, 0.0) } else { (3, BAND_GAP) };
         let bar_w = (CORR_W - gap * (bars - 1) as f32) / bars as f32;
-        let corr_cy = corr_bounds.y + corr_bounds.height * 0.5;
-        let half_h = corr_bounds.height * 0.5;
+        let corr_cy = bounds.y + bounds.height * 0.5;
+        let half_h = bounds.height * 0.5;
         let val_y = |val: f32| corr_cy - val.clamp(-1.0, 1.0) * half_h;
 
-        let y_min = corr_bounds.y as i32;
-        let height = (corr_bounds.height as i32 + 1).max(0) as usize;
+        let y_min = bounds.y as i32;
+        let height = (bounds.height as i32 + 1).max(0) as usize;
         let y_max = y_min + height as i32 - 1;
         let mut alpha = vec![0.0f32; height];
 
@@ -286,18 +278,18 @@ impl StereometerPrimitive {
         };
 
         for band in 0..bars {
-            let bx = corr_bounds.x + band as f32 * (bar_w + gap);
+            let bx = bounds.x + band as f32 * (bar_w + gap);
             let (x0, x1) = (bx + 1.0, bx + bar_w - 1.0);
 
-            v.extend(quad_vertices(
+            out.extend(quad_vertices(
                 bx,
-                corr_bounds.y,
+                bounds.y,
                 bx + bar_w,
-                corr_bounds.y + corr_bounds.height,
+                bounds.y + bounds.height,
                 clip,
                 p.palette[1],
             ));
-            v.extend(quad_vertices(
+            out.extend(quad_vertices(
                 bx,
                 corr_cy - 0.5,
                 bx + bar_w,
@@ -327,7 +319,7 @@ impl StereometerPrimitive {
                         c0[3] *= w[0];
                         c1[3] *= w[1];
                         let y = (y_min + k as i32) as f32;
-                        v.extend(gradient_quad_vertices(x0, y, x1, y + 1.0, clip, c0, c1));
+                        out.extend(gradient_quad_vertices(x0, y, x1, y + 1.0, clip, c0, c1));
                     }
                 }
             }
@@ -335,7 +327,7 @@ impl StereometerPrimitive {
             if trail_len > 0 {
                 let current = val(band, 0);
                 let y = val_y(current);
-                v.extend(quad_vertices(
+                out.extend(quad_vertices(
                     x0,
                     y - 1.0,
                     x1,
@@ -345,8 +337,21 @@ impl StereometerPrimitive {
                 ));
             }
         }
+    }
 
-        v
+    fn build_vertices(&self, viewport: &Viewport) -> Vec<SdfVertex> {
+        let clip = ClipTransform::from_viewport(viewport);
+        let p = &self.0;
+        let (vec_bounds, corr_bounds) = Self::meter_bounds(p);
+        let transform = VecTransform::new(p, vec_bounds);
+        let mut vertices = self.grid_vertices(&transform, clip);
+
+        Self::add_trace_vertices(&mut vertices, p, &transform, clip);
+        if let Some(bounds) = corr_bounds {
+            Self::add_correlation_vertices(&mut vertices, p, bounds, clip);
+        }
+
+        vertices
     }
 }
 

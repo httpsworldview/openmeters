@@ -4,8 +4,7 @@
 use crate::persistence::settings::SettingsHandle;
 use crate::ui::widgets::pane_grid::{self, Content as PaneContent, Pane};
 use crate::visuals::registry::{
-    VisualContent, VisualId, VisualKind, VisualManagerHandle, VisualMetadata, VisualSlotSnapshot,
-    VisualSnapshot,
+    VisualContent, VisualId, VisualKind, VisualManagerHandle, VisualSlotSnapshot, VisualSnapshot,
 };
 pub mod settings;
 pub use settings::{ActiveSettings, SettingsMessage, create_panel as create_settings_panel};
@@ -31,24 +30,14 @@ pub enum VisualsMessage {
 struct VisualPane {
     id: VisualId,
     kind: VisualKind,
-    metadata: VisualMetadata,
     content: VisualContent,
+    min_width: f32,
     width_basis: f32,
 }
 
 impl VisualPane {
-    fn from_snapshot(s: &VisualSlotSnapshot, width_basis: f32) -> Self {
-        Self {
-            id: s.id,
-            kind: s.kind,
-            metadata: s.metadata,
-            content: s.content.clone(),
-            width_basis,
-        }
-    }
     fn view(&self) -> PaneContent<'_, VisualsMessage> {
-        PaneContent::new(self.content.render(self.metadata))
-            .with_width_basis(self.metadata.min_width, self.width_basis)
+        PaneContent::new(self.content.render()).with_width_basis(self.min_width, self.width_basis)
     }
 }
 
@@ -79,7 +68,8 @@ impl VisualsPage {
             VisualsMessage::PaneResized(widths) => {
                 let bases = self.apply_resize_width_basis(&widths);
                 if !bases.is_empty() {
-                    self.settings.update(|s| s.set_visual_width_basis(bases));
+                    self.settings
+                        .update(|s| s.data.visuals.width_basis.extend(bases));
                 }
             }
             VisualsMessage::PaneDragged(pane_grid::DragEvent::Moved { pane, target }) => {
@@ -92,9 +82,15 @@ impl VisualsPage {
                     self.order = panes.iter().map(|(_, p)| p.id).collect();
                 }
             }
-            VisualsMessage::PaneDragged(pane_grid::DragEvent::Dropped { .. }) => {
+            VisualsMessage::PaneDragged(pane_grid::DragEvent::Dropped) => {
                 self.settings.update(|s| {
-                    s.set_visual_order(self.visual_manager.snapshot().slots.iter().map(|s| s.kind));
+                    s.data.visuals.order = self
+                        .visual_manager
+                        .snapshot()
+                        .slots
+                        .iter()
+                        .map(|s| s.kind)
+                        .collect();
                 });
             }
             VisualsMessage::PaneContextRequested(pane) => {
@@ -106,9 +102,7 @@ impl VisualsPage {
                 }
             }
             VisualsMessage::PaneHovered(pane) => self.hovered_pane = pane,
-            VisualsMessage::PaneDragged(_)
-            | VisualsMessage::SettingsRequested { .. }
-            | VisualsMessage::WindowDragRequested => {}
+            VisualsMessage::SettingsRequested { .. } | VisualsMessage::WindowDragRequested => {}
         }
         Task::none()
     }
@@ -181,7 +175,7 @@ impl VisualsPage {
                     .find(|s| s.id == p.id)
                     .expect("pane id should exist in current visual snapshot");
                 p.content = s.content.clone();
-                p.metadata = s.metadata;
+                p.min_width = s.metadata.min_width;
             });
         }
     }
@@ -206,13 +200,13 @@ impl VisualsPage {
     fn build_panes(&self, slots: &[&VisualSlotSnapshot]) -> Option<pane_grid::State<VisualPane>> {
         let settings = self.settings.borrow();
         let saved_width_basis = &settings.settings().visuals.width_basis;
-        let visual_pane = |slot: &VisualSlotSnapshot| {
-            VisualPane::from_snapshot(
-                slot,
-                Self::width_basis_from_settings(slot, saved_width_basis),
-            )
-        };
-        pane_grid::State::from_iter(slots.iter().map(|&slot| visual_pane(slot)))
+        pane_grid::State::from_iter(slots.iter().map(|&slot| VisualPane {
+            id: slot.id,
+            kind: slot.kind,
+            content: slot.content.clone(),
+            min_width: slot.metadata.min_width,
+            width_basis: Self::width_basis_from_settings(slot, saved_width_basis),
+        }))
     }
 
     fn width_basis_from_settings(
