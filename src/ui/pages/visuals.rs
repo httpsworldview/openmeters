@@ -75,10 +75,8 @@ impl VisualsPage {
                 if let Some(panes) = self.panes.as_mut()
                     && panes.move_to(pane, target)
                 {
-                    if let (Some(a), Some(b)) = (panes.get(pane), panes.get(target)) {
-                        self.visual_manager.borrow_mut().swap_entries(a.id, b.id);
-                    }
                     self.order = panes.iter().map(|(_, p)| p.id).collect();
+                    self.visual_manager.borrow_mut().reorder(&self.order);
                 }
             }
             VisualsMessage::PaneDragged(pane_grid::DragEvent::Dropped) => {
@@ -157,23 +155,30 @@ impl VisualsPage {
         if slots.is_empty() {
             self.order.clear();
             self.panes = None;
+            self.hovered_pane = None;
             return;
         }
         if self.panes.is_none() || new_order != self.order {
             self.order = new_order;
             self.panes = self.build_panes(&slots);
+            self.hovered_pane = None;
             return;
         }
         if let Some(panes) = self.panes.as_mut() {
+            let mut stale = false;
             panes.for_each_mut(|_, p| {
-                let s = slots
-                    .iter()
-                    .copied()
-                    .find(|s| s.id == p.id)
-                    .expect("pane id should exist in current visual snapshot");
-                p.content = s.content.clone();
-                p.min_width = s.metadata.min_width;
+                if let Some(s) = slots.iter().copied().find(|s| s.id == p.id) {
+                    p.content = s.content.clone();
+                    p.min_width = s.metadata.min_width;
+                } else {
+                    stale = true;
+                }
             });
+            if stale {
+                self.order = new_order;
+                self.panes = self.build_panes(&slots);
+                self.hovered_pane = None;
+            }
         }
     }
 

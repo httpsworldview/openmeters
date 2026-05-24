@@ -85,8 +85,11 @@ impl SettingsManager {
     }
 }
 
+type PersistRequest = (PathBuf, UiSettings);
+const PERSIST_DEBOUNCE: Duration = Duration::from_millis(500);
+
 fn schedule_persist(mut path: PathBuf, mut settings: UiSettings) {
-    static SENDER: Mutex<Option<mpsc::Sender<(PathBuf, UiSettings)>>> = Mutex::new(None);
+    static SENDER: Mutex<Option<mpsc::Sender<PersistRequest>>> = Mutex::new(None);
 
     settings.visuals.strip_all_palettes();
 
@@ -99,41 +102,42 @@ fn schedule_persist(mut path: PathBuf, mut settings: UiSettings) {
         *sender = None;
     }
 
-    let (tx, rx) = mpsc::channel::<(PathBuf, UiSettings)>();
+    let (tx, rx) = mpsc::channel::<PersistRequest>();
     match std::thread::Builder::new()
         .name("openmeters-settings-saver".into())
-        .spawn(move || {
-            let mut last_written: Option<String> = None;
-            while let Ok((mut dest, mut data)) = rx.recv() {
-                // Coalesce rapid updates by draining pending messages.
-                while let Ok((new_dest, new_data)) = rx.recv_timeout(Duration::from_millis(500)) {
-                    dest = new_dest;
-                    data = new_data;
-                }
-                let Ok(json) = serde_json::to_string_pretty(&data) else {
-                    tracing::warn!("[settings] serialization failed");
-                    continue;
-                };
-                if last_written.as_deref() == Some(&json) {
-                    continue;
-                }
-                if let Some(parent) = dest.parent()
-                    && let Err(err) = fs::create_dir_all(parent)
-                {
-                    tracing::warn!("[settings] failed to create config dir: {err}");
-                }
-                let temp_path = dest.with_extension("json.tmp");
-                match fs::write(&temp_path, &json).and_then(|()| fs::rename(&temp_path, &dest)) {
-                    Ok(()) => last_written = Some(json),
-                    Err(err) => tracing::warn!("[settings] failed to write settings: {err}"),
-                }
-            }
-        }) {
+        .spawn(move || settings_saver_loop(rx))
+    {
         Ok(_) => {
             let _ = tx.send((path, settings));
             *sender = Some(tx);
         }
         Err(err) => tracing::error!("[settings] failed to spawn saver thread: {err}"),
+    }
+}
+
+fn settings_saver_loop(rx: mpsc::Receiver<PersistRequest>) {
+    let mut last_written: Option<String> = None;
+    while let Ok((mut dest, mut data)) = rx.recv() {
+        while let Ok(next) = rx.recv_timeout(PERSIST_DEBOUNCE) {
+            (dest, data) = next;
+        }
+
+        let Ok(json) = serde_json::to_string_pretty(&data) else {
+            tracing::warn!("[settings] serialization failed");
+            continue;
+        };
+        if last_written.as_deref() == Some(&json) {
+            continue;
+        }
+        if let Some(parent) = dest.parent()
+            && let Err(err) = fs::create_dir_all(parent)
+        {
+            tracing::warn!("[settings] failed to create config dir: {err}");
+        }
+        match super::write_json_atomic(&dest, &json) {
+            Ok(()) => last_written = Some(json),
+            Err(err) => tracing::warn!("[settings] failed to write settings: {err}"),
+        }
     }
 }
 

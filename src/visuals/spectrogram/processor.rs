@@ -611,14 +611,14 @@ mod tests {
     fn classic_mags(col: &SpectrogramColumn) -> &[u16] {
         match col {
             SpectrogramColumn::Classic(v) => v,
-            _ => panic!("expected classic column"),
+            SpectrogramColumn::Reassigned(_) => panic!("expected classic column"),
         }
     }
 
     fn reassigned_points(col: &SpectrogramColumn) -> &[SpectrogramPoint] {
         match col {
             SpectrogramColumn::Reassigned(v) => v,
-            _ => panic!("expected reassigned column"),
+            SpectrogramColumn::Classic(_) => panic!("expected reassigned column"),
         }
     }
 

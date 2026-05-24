@@ -20,18 +20,23 @@ impl ApplicationRow {
             .unwrap_or_else(|| node.display_name());
         let node_label = node.display_name();
         let secondary = (!primary.eq_ignore_ascii_case(&node_label)).then_some(node_label);
-        let label = secondary
-            .as_ref()
-            .map_or_else(|| primary.clone(), |s| format!("{primary} ({s})"));
+        let sort_key = (
+            primary.to_ascii_lowercase(),
+            secondary
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase(),
+            node.id,
+        );
+        let label = match secondary {
+            Some(secondary) => format!("{primary} ({secondary})"),
+            None => primary,
+        };
 
         Self {
             node_id: node.id,
             label,
-            sort_key: (
-                primary.to_ascii_lowercase(),
-                secondary.unwrap_or_default().to_ascii_lowercase(),
-                node.id,
-            ),
+            sort_key,
             enabled,
         }
     }

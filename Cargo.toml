@@ -9,7 +9,8 @@ pipewire = "0.10.0"
 anyhow = "1.0.102"
 serde_json = "1.0.149"
 async-channel = "2.5"
-iced_wgpu = "0.14.0"
+iced_wgpu = { version = "0.14.0", default-features = false }
+wgpu = { version = "27.0.1", default-features = false, features = [ "std", "wgsl", "vulkan" ] }
 rustfft = "6.4.1"
 realfft = "3.5"
 tracing = "0.1.44"
@@ -22,7 +23,7 @@ wayland-client = "0.31.14"
   [dependencies.iced]
   version = "0.14.0"
   default-features = false
-  features = [ "advanced", "wgpu", "wayland", "x11", "thread-pool", "web-colors" ]
+  features = [ "advanced", "wgpu-bare", "wayland", "x11", "thread-pool", "web-colors" ]
 
   [dependencies.bytemuck]
   version = "1.25.0"
@@ -30,11 +31,12 @@ wayland-client = "0.31.14"
 
   [dependencies.tracing-subscriber]
   version = "0.3.23"
+  default-features = false
   features = [ "env-filter", "fmt" ]
 
   [dependencies.iced_layershell]
   git = "https://github.com/httpsworldview/exwlshelleventloop"
-  branch = "output-snapshot"
+  rev = "a0e177a18810f2fcff1bfc800c9f2f63b653844e"
   default-features = false
 
 [dev-dependencies]

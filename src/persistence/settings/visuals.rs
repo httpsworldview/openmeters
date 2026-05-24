@@ -107,7 +107,7 @@ impl ModuleSettings {
         self.config
             .as_ref()
             .and_then(|v| v.get("palette"))
-            .and_then(|pal| serde_json::from_value(pal.clone()).ok())
+            .and_then(|pal| PaletteSettings::deserialize(pal).ok())
     }
 
     /// Removes palette data from the config JSON (for clean settings.json persistence).

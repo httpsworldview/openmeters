@@ -310,11 +310,14 @@ impl UiApp {
         let is_settings = matches!(&self.settings_window, Some((w, _)) if *w == window_id);
         // Settings window forces opaque alpha: it has no wgpu visual backdrop, so a
         // translucent user background would let the desktop bleed through the chrome.
-        let custom_bg = (is_settings
+        let custom_bg = if is_settings
             || window_id == self.main_window_id
-            || self.popout_windows.contains_key(&window_id))
-        .then(|| self.settings_handle.borrow().data.background_color)
-        .flatten()
+            || self.popout_windows.contains_key(&window_id)
+        {
+            self.settings_handle.borrow().data.background_color
+        } else {
+            None
+        }
         .map(|c| {
             let c: iced::Color = c.into();
             if is_settings {
@@ -449,7 +452,15 @@ impl UiApp {
         &mut self,
         config_msg: &ConfigMessage,
     ) -> Task<Message> {
-        if !self.use_layershell {
+        if !self.use_layershell
+            || !matches!(
+                config_msg,
+                ConfigMessage::BarModeToggled(_)
+                    | ConfigMessage::BarAlignmentChanged(_)
+                    | ConfigMessage::BarHeightChanged(_)
+                    | ConfigMessage::BarMonitorChanged(_)
+            )
+        {
             return Task::none();
         }
         let (bar, decorations) = {
@@ -479,11 +490,16 @@ impl UiApp {
                 self.apply_bar_layout(bar.alignment, *height)
             }
             ConfigMessage::BarMonitorChanged(monitor) if self.main_window_is_layer => {
-                let monitor = Some(monitor.clone());
-                if bar.monitor == monitor {
+                if bar.monitor.as_deref() == Some(monitor.as_str()) {
                     Task::none()
                 } else {
-                    self.recreate_main_window(BarSettings { monitor, ..bar }, decorations)
+                    self.recreate_main_window(
+                        BarSettings {
+                            monitor: Some(monitor.clone()),
+                            ..bar
+                        },
+                        decorations,
+                    )
                 }
             }
             _ => Task::none(),
