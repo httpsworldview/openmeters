@@ -92,6 +92,7 @@ pub enum DragEvent {
     Dropped,
 }
 
+// Element internals do not implement Debug; this mirrors iced's widget types.
 #[allow(missing_debug_implementations)]
 pub struct Content<'a, Message, Theme = iced::Theme, Renderer = iced::Renderer>
 where
@@ -121,6 +122,7 @@ where
     }
 }
 
+// Callback closures do not implement Debug; this mirrors iced's widget types.
 #[allow(missing_debug_implementations)]
 pub struct PaneGrid<'a, Message, Theme = iced::Theme, Renderer = iced::Renderer>
 where

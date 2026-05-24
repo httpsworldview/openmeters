@@ -13,8 +13,8 @@ hesitate to reach out.
 OpenMeters is licensed under the GNU General Public License version
 3.0 or later. See the [LICENSE](LICENSE) file for more information,
 but you knew that already. Code contributed to this project is also
-licensed under GPLv3, but the contributor retains copyright to their
-contributions.
+licensed under GPL-3.0-or-later, but the contributor retains copyright
+to their contributions.
 
 ## Commit message format
 

@@ -213,10 +213,10 @@ who came before me.
 
 ## Credits
 
-Thank *you* for checking out my shitty passion project. If you think
-OpenMeters is useful, please consider starring the repository and
-sharing it with others. I appreciate any and all criticism and
-feedback, so feel free to reach out to me.
+Thank *you* for checking out OpenMeters. If you think it is useful,
+please consider starring the repository and sharing it with others. I
+appreciate any and all criticism and feedback, so feel free to reach
+out to me.
 
 ### References
 
