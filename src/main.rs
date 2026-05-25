@@ -9,7 +9,7 @@ mod persistence;
 mod ui;
 mod util;
 mod visuals;
-use domain::routing::{RoutingCommand, RoutingConfig};
+use domain::routing::{DeviceSelection, RoutingCommand, RoutingConfig};
 use infra::pipewire::{monitor, registry, virtual_sink};
 use persistence::settings::SettingsHandle;
 use std::sync::{Arc, mpsc};
@@ -31,7 +31,7 @@ fn main() {
         let settings = &guard.data;
         RoutingConfig {
             capture_mode: settings.capture_mode,
-            preferred_device: settings.last_device_name.clone(),
+            preferred_device: DeviceSelection::from_token(settings.last_device_name.clone()),
         }
     };
 

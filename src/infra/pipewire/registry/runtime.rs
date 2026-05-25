@@ -32,14 +32,24 @@ type PendingSyncs = Vec<(AsyncSeq, mpsc::Sender<()>)>;
 static RUNTIME: OnceLock<RegistryRuntime> = OnceLock::new();
 static RUNTIME_INIT: Mutex<()> = Mutex::new(());
 
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+fn read_lock<T>(rwlock: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
+    rwlock.read().unwrap_or_else(|p| p.into_inner())
+}
+
+fn write_lock<T>(rwlock: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
+    rwlock.write().unwrap_or_else(|p| p.into_inner())
+}
+
 pub fn spawn_registry() -> Result<AudioRegistryHandle> {
     if let Some(runtime) = RUNTIME.get().cloned() {
         return Ok(AudioRegistryHandle { runtime });
     }
 
-    let _init = RUNTIME_INIT
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _init = lock(&RUNTIME_INIT);
     if let Some(runtime) = RUNTIME.get().cloned() {
         return Ok(AudioRegistryHandle { runtime });
     }
@@ -126,17 +136,17 @@ impl RegistryUpdates {
 #[derive(Clone, Default)]
 struct RegistryRuntime {
     state: Arc<RwLock<RegistryState>>,
-    watchers: Arc<RwLock<Vec<mpsc::Sender<RegistrySnapshot>>>>,
-    commands: Arc<RwLock<Option<mpsc::Sender<RegistryCommand>>>>,
+    watchers: Arc<Mutex<Vec<mpsc::Sender<RegistrySnapshot>>>>,
+    commands: Arc<Mutex<Option<mpsc::Sender<RegistryCommand>>>>,
 }
 
 impl RegistryRuntime {
     fn set_command_sender(&self, sender: mpsc::Sender<RegistryCommand>) {
-        *self.commands.write().unwrap() = Some(sender);
+        *lock(&self.commands) = Some(sender);
     }
 
     fn send_command(&self, command: RegistryCommand) -> bool {
-        let Some(sender) = self.commands.read().unwrap().clone() else {
+        let Some(sender) = lock(&self.commands).clone() else {
             warn!("[registry] command channel not initialised");
             return false;
         };
@@ -147,12 +157,12 @@ impl RegistryRuntime {
     }
 
     fn snapshot(&self) -> RegistrySnapshot {
-        self.state.read().unwrap().snapshot()
+        read_lock(&self.state).snapshot()
     }
 
     fn subscribe(&self) -> RegistryUpdates {
         let (tx, rx) = mpsc::channel();
-        self.watchers.write().unwrap().push(tx);
+        lock(&self.watchers).push(tx);
         RegistryUpdates {
             initial: Some(self.snapshot()),
             receiver: rx,
@@ -160,7 +170,10 @@ impl RegistryRuntime {
     }
 
     fn mutate<F: FnOnce(&mut RegistryState) -> bool>(&self, f: F) -> bool {
-        let changed = f(&mut self.state.write().unwrap());
+        let changed = {
+            let mut state = write_lock(&self.state);
+            f(&mut state)
+        };
         if changed {
             self.notify_watchers();
         }
@@ -168,11 +181,8 @@ impl RegistryRuntime {
     }
 
     fn notify_watchers(&self) {
-        let snapshot = self.state.read().unwrap().snapshot();
-        self.watchers
-            .write()
-            .unwrap()
-            .retain(|tx| tx.send(snapshot.clone()).is_ok());
+        let snapshot = read_lock(&self.state).snapshot();
+        lock(&self.watchers).retain(|tx| tx.send(snapshot.clone()).is_ok());
     }
 }
 
@@ -293,7 +303,7 @@ fn registry_thread_main(runtime: RegistryRuntime) -> Result<()> {
         thread::sleep(backoff);
     }
 
-    *runtime.commands.write().unwrap() = None;
+    *lock(&runtime.commands) = None;
     info!("[registry] PipeWire registry loop exited");
 
     drop(registry);

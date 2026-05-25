@@ -91,9 +91,14 @@ const PERSIST_DEBOUNCE: Duration = Duration::from_millis(500);
 fn schedule_persist(mut path: PathBuf, mut settings: UiSettings) {
     static SENDER: Mutex<Option<mpsc::Sender<PersistRequest>>> = Mutex::new(None);
 
-    settings.visuals.strip_all_palettes();
+    // Theme files own palettes; settings.json stores module config only.
+    for module in settings.visuals.modules.values_mut() {
+        module.strip_palette();
+    }
 
-    let mut sender = SENDER.lock().unwrap();
+    let mut sender = SENDER
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(tx) = sender.as_ref() {
         match tx.send((path, settings)) {
             Ok(()) => return,

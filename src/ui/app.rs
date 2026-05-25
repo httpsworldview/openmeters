@@ -34,7 +34,7 @@ use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 use windowing::{
     APP_ID, BarResizeState, MAIN_WINDOW_INITIAL_SIZE, PopoutWindow, layershell_available,
-    namespace, open_main_window,
+    open_main_window,
 };
 
 const TOAST_DISPLAY_DURATION: Duration = Duration::from_secs(2);
@@ -43,8 +43,6 @@ const MIN_DRAWER_RATIO: f32 = 0.10;
 const MAX_DRAWER_RATIO: f32 = 0.50;
 const BAR_RESIZE_HANDLE_THICKNESS: f32 = 6.0;
 const DRAWER_RESIZE_HANDLE_WIDTH: f32 = 6.0;
-
-pub type UiResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
 #[derive(Clone)]
 pub struct UiConfig {
@@ -74,7 +72,7 @@ impl UiConfig {
     }
 }
 
-pub fn run(config: UiConfig) -> UiResult {
+pub fn run(config: UiConfig) -> anyhow::Result<()> {
     if layershell_available() {
         let layer_settings = LayerShellSettings {
             start_mode: StartMode::Background,
@@ -83,7 +81,7 @@ pub fn run(config: UiConfig) -> UiResult {
         };
         iced_layershell::daemon(
             move || UiApp::new(config.clone(), true),
-            namespace,
+            || APP_ID.to_string(),
             update,
             view,
         )
@@ -95,8 +93,7 @@ pub fn run(config: UiConfig) -> UiResult {
         .subscription(UiApp::subscription)
         .title(|app, window_id| Some(app.title(window_id)))
         .theme(|app: &UiApp, window_id| Some(app.theme(window_id)))
-        .run()
-        .map_err(|e| Box::new(e) as _)
+        .run()?;
     } else {
         iced_daemon(move || UiApp::new(config.clone(), false), update, view)
             .settings(IcedSettings {
@@ -106,9 +103,9 @@ pub fn run(config: UiConfig) -> UiResult {
             .subscription(UiApp::subscription)
             .title(UiApp::title)
             .theme(UiApp::theme)
-            .run()
-            .map_err(|e| Box::new(e) as _)
+            .run()?;
     }
+    Ok(())
 }
 
 struct UiApp {

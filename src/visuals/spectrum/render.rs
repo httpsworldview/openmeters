@@ -85,9 +85,6 @@ impl SpectrumPrimitive {
     fn build_line_vertices(&self, clip: ClipTransform, bounds: Rectangle) -> Vec<SdfVertex> {
         let pixel_budget = bounds.width.ceil().max(1.0) as usize * 2;
         let positions = to_cartesian_positions(bounds, self.params.normalized_points.as_ref());
-        if positions.len() < 2 {
-            return Vec::new();
-        }
 
         let highlight_segments = positions.len().saturating_sub(1);
         let line_segments = positions.len().min(pixel_budget).saturating_sub(1);

@@ -139,9 +139,7 @@ impl ConfigPage {
             applications_expanded: false,
             capture_mode,
             device_choices: Vec::new(),
-            selected_device: last_device_name
-                .map(DeviceSelection::Device)
-                .unwrap_or_default(),
+            selected_device: DeviceSelection::from_token(last_device_name),
             bg_palette,
             scroll: ScrollGlow::default(),
             active_theme,
