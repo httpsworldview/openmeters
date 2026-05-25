@@ -191,13 +191,18 @@ impl PaletteEditor {
 
     pub fn view(&self) -> Element<'_, PaletteEvent> {
         let colors = self.palette.colors();
-        let indices: Vec<usize> = self.visible_indices.as_ref().map_or_else(
-            || (0..colors.len()).collect(),
-            |v| v.iter().copied().filter(|&i| i < colors.len()).collect(),
-        );
-        let row = indices.iter().fold(Row::new().spacing(12.0), |r, &i| {
-            r.push(self.color_picker(i, colors[i]))
-        });
+        let mut row = Row::new().spacing(12.0);
+        if let Some(indices) = &self.visible_indices {
+            for &i in indices {
+                if let Some(&color) = colors.get(i) {
+                    row = row.push(self.color_picker(i, color));
+                }
+            }
+        } else {
+            for (i, &color) in colors.iter().enumerate() {
+                row = row.push(self.color_picker(i, color));
+            }
+        }
         let mut col = Column::new().spacing(12.0);
         if self.show_ramp && colors.len() >= 2 {
             let positions = self.positions();

@@ -38,7 +38,7 @@ const PAL_DANGER: usize = 4;
 const PAL_PEAK: usize = 5;
 const PAL_GUIDE: usize = 6;
 const ZONE_COUNT: usize = 4;
-const DANGER_ZONE_INDEX: usize = ZONE_COUNT - 1;
+const DANGER_THRESHOLD_INDEX: usize = ZONE_COUNT - 2;
 const VISIBLE_METER_COUNT: usize = 3;
 
 #[derive(Debug, Clone, Copy)]
@@ -164,9 +164,8 @@ impl LoudnessState {
                 vec![self.meter_fill(2, self.right_mode, values[2])],
             ],
             guides: GUIDE_LEVELS
-                .iter()
-                .filter(|&&l| l >= min && l <= max)
-                .copied()
+                .into_iter()
+                .filter(|level| (min..=max).contains(level))
                 .collect(),
             guide_color,
             threshold_db: Some(0.0),
@@ -243,11 +242,7 @@ fn zone_thresholds(mode: MeterMode) -> [f32; 3] {
 }
 
 fn is_danger_zone(mode: MeterMode, db: f32) -> bool {
-    zone_thresholds(mode)
-        .iter()
-        .take_while(|&&threshold| db >= threshold)
-        .count()
-        == DANGER_ZONE_INDEX
+    db >= zone_thresholds(mode)[DANGER_THRESHOLD_INDEX]
 }
 
 crate::visuals::visualization_widget!(Loudness, LoudnessState, |this, renderer, theme, bounds| {

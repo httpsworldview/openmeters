@@ -87,7 +87,11 @@ pub fn button_style(theme: &Theme, base: Color, status: button::Status) -> butto
 
 pub fn tab_button_style(theme: &Theme, active: bool, status: button::Status) -> button::Style {
     let pal = theme.extended_palette();
-    let base = [pal.background.weak.color, pal.primary.base.color][active as usize];
+    let base = if active {
+        pal.primary.base.color
+    } else {
+        pal.background.weak.color
+    };
     button_style(theme, base, status)
 }
 
