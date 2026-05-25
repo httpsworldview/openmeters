@@ -16,6 +16,8 @@ is not built here.
 
 - `Makefile` - driver.
 - `nfpm.yaml` - deb/rpm spec.
+- `copyright` - Debian copyright/license metadata, also shipped in
+  tarballs.
 
 ## Building
 
@@ -64,6 +66,9 @@ openmeters-<version>-x86_64-linux-gnu/
   bin/openmeters
   share/applications/openmeters.desktop
   share/icons/hicolor/scalable/apps/openmeters.svg
+  share/doc/openmeters/copyright
+  share/licenses/openmeters/LICENSE
+  share/licenses/openmeters/iced_widget_pane_grid.md
   LICENSE
   README.md
 ```

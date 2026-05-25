@@ -179,8 +179,9 @@ packages for Debian or Fedora.
   guarantees are made. The public API for settings is mostly stable as
   of now, so breaking changes should be infrequent.
 - If you encounter a bug that causes OpenMeters to misbehave, the
-  application settings can be reset by deleting `settings.json`. Please
-  consider reporting any such bugs you encounter.
+  application settings can be reset by deleting
+  `settings.json`. Please consider reporting any such bugs you
+  encounter.
 
 ### theming
 

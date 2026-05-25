@@ -11,6 +11,7 @@ use std::{
     path::PathBuf,
     rc::Rc,
     sync::{Mutex, mpsc},
+    thread::JoinHandle,
     time::Duration,
 };
 use tracing::warn;
@@ -86,25 +87,30 @@ impl SettingsManager {
 }
 
 type PersistRequest = (PathBuf, UiSettings);
+type SaverThread = (mpsc::Sender<PersistRequest>, JoinHandle<()>);
 const PERSIST_DEBOUNCE: Duration = Duration::from_millis(500);
 
-fn schedule_persist(mut path: PathBuf, mut settings: UiSettings) {
-    static SENDER: Mutex<Option<mpsc::Sender<PersistRequest>>> = Mutex::new(None);
+static SAVER: Mutex<Option<SaverThread>> = Mutex::new(None);
 
+fn schedule_persist(mut path: PathBuf, mut settings: UiSettings) {
     // Theme files own palettes; settings.json stores module config only.
     for module in settings.visuals.modules.values_mut() {
         module.strip_palette();
     }
 
-    let mut sender = SENDER
+    let mut saver = SAVER
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(tx) = sender.as_ref() {
+    if let Some((tx, _)) = saver.as_ref() {
         match tx.send((path, settings)) {
             Ok(()) => return,
             Err(mpsc::SendError(failed)) => (path, settings) = failed,
         }
-        *sender = None;
+    }
+
+    if let Some((tx, join)) = saver.take() {
+        drop(tx);
+        let _ = join.join();
     }
 
     let (tx, rx) = mpsc::channel::<PersistRequest>();
@@ -112,11 +118,28 @@ fn schedule_persist(mut path: PathBuf, mut settings: UiSettings) {
         .name("openmeters-settings-saver".into())
         .spawn(move || settings_saver_loop(rx))
     {
-        Ok(_) => {
-            let _ = tx.send((path, settings));
-            *sender = Some(tx);
+        Ok(join) => {
+            if tx.send((path, settings)).is_ok() {
+                *saver = Some((tx, join));
+            } else {
+                let _ = join.join();
+            }
         }
         Err(err) => tracing::error!("[settings] failed to spawn saver thread: {err}"),
+    }
+}
+
+fn flush_persist() {
+    let Some((tx, join)) = SAVER
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .take()
+    else {
+        return;
+    };
+    drop(tx);
+    if join.join().is_err() {
+        tracing::warn!("[settings] saver thread panicked during flush");
     }
 }
 
@@ -164,6 +187,10 @@ impl SettingsHandle {
         schedule_persist(manager.path.clone(), manager.data.clone());
         result
     }
+
+    pub fn flush(&self) {
+        flush_persist();
+    }
 }
 
 #[cfg(test)]
@@ -195,5 +222,23 @@ mod tests {
                 .as_deref(),
             Some("OpenMeters")
         );
+    }
+
+    #[test]
+    fn flush_writes_pending_settings_without_waiting_for_debounce() {
+        flush_persist();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let handle = SettingsHandle(Rc::new(RefCell::new(SettingsManager {
+            path: path.clone(),
+            data: UiSettings::default(),
+            theme_store: ThemeStore::new(dir.path()),
+        })));
+
+        handle.update(|settings| settings.data.decorations = true);
+        handle.flush();
+
+        let saved: UiSettings = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+        assert!(saved.decorations);
     }
 }

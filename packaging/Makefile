@@ -40,10 +40,15 @@ tarball: | $(DIST)
 	mkdir -p $(STAGE)/bin
 	mkdir -p $(STAGE)/share/applications
 	mkdir -p $(STAGE)/share/icons/hicolor/scalable/apps
+	mkdir -p $(STAGE)/share/doc/openmeters
+	mkdir -p $(STAGE)/share/licenses/openmeters
 	install -m 0755 $(RELEASE_BIN)                         $(STAGE)/bin/openmeters
 	install -m 0644 $(REPO_ROOT)/misc/openmeters.desktop   $(STAGE)/share/applications/openmeters.desktop
 	install -m 0644 $(REPO_ROOT)/misc/openmeters.svg       $(STAGE)/share/icons/hicolor/scalable/apps/openmeters.svg
 	install -m 0644 $(REPO_ROOT)/LICENSE                   $(STAGE)/LICENSE
+	install -m 0644 $(REPO_ROOT)/packaging/copyright       $(STAGE)/share/doc/openmeters/copyright
+	install -m 0644 $(REPO_ROOT)/LICENSE                   $(STAGE)/share/licenses/openmeters/LICENSE
+	install -m 0644 $(REPO_ROOT)/docs/licenses/iced_widget_pane_grid.md $(STAGE)/share/licenses/openmeters/iced_widget_pane_grid.md
 	install -m 0644 $(REPO_ROOT)/README.md                 $(STAGE)/README.md
 	tar $(TAR_REPRO_FLAGS) -cJf $(TARBALL) -C $(DIST) openmeters-$(VERSION)-$(TRIPLE)
 	@echo "==> $(TARBALL)"

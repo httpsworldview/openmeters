@@ -10,7 +10,7 @@ use std::collections::VecDeque;
 use std::error::Error;
 use std::io::Cursor;
 use std::mem::size_of;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
@@ -18,6 +18,9 @@ use tracing::{error, info, warn};
 
 const VIRTUAL_SINK_SAMPLE_RATE: u32 = DEFAULT_SAMPLE_RATE as u32;
 const CAPTURE_BUFFER_CAPACITY: usize = 256;
+const CAPTURE_POOL_INITIAL_SAMPLES: usize = 4_096;
+const CAPTURE_POOL_MAX_SAMPLES: usize = 65_536;
+const CAPTURE_POOL_SPARE_BUFFERS: usize = 8;
 const DESIRED_LATENCY_FRAMES: u32 = 256;
 
 static SINK_THREAD: Mutex<Option<thread::JoinHandle<()>>> = Mutex::new(None);
@@ -32,29 +35,43 @@ pub struct CapturedAudio {
 
 pub struct CaptureBuffer {
     inner: Mutex<VecDeque<CapturedAudio>>,
+    recycled: Mutex<Vec<Vec<f32>>>,
     capacity: usize,
+    pool_capacity: usize,
     available: Condvar,
     dropped_frames: AtomicU64,
+    requested_pool_samples: AtomicUsize,
 }
 
 impl CaptureBuffer {
     fn new(capacity: usize) -> Self {
+        let pool_capacity = capacity.saturating_add(CAPTURE_POOL_SPARE_BUFFERS);
         Self {
             inner: Mutex::new(VecDeque::with_capacity(capacity)),
+            recycled: Mutex::new(
+                (0..pool_capacity)
+                    .map(|_| Vec::with_capacity(CAPTURE_POOL_INITIAL_SAMPLES))
+                    .collect(),
+            ),
             capacity,
+            pool_capacity,
             available: Condvar::new(),
             dropped_frames: AtomicU64::new(0),
+            requested_pool_samples: AtomicUsize::new(0),
         }
     }
 
     pub fn try_push(&self, frame: CapturedAudio) {
         let Ok(mut guard) = self.inner.try_lock() else {
-            self.dropped_frames.fetch_add(1, Ordering::Relaxed);
+            self.note_dropped_frame();
+            self.recycle_samples(frame.samples);
             return;
         };
         if guard.len() >= self.capacity {
-            guard.pop_front();
-            self.dropped_frames.fetch_add(1, Ordering::Relaxed);
+            if let Some(old) = guard.pop_front() {
+                self.recycle_samples(old.samples);
+            }
+            self.note_dropped_frame();
         }
         guard.push_back(frame);
         self.available.notify_one();
@@ -78,6 +95,85 @@ impl CaptureBuffer {
 
     pub fn dropped_frames(&self) -> u64 {
         self.dropped_frames.load(Ordering::Relaxed)
+    }
+
+    pub fn try_acquire_samples(&self, needed: usize) -> Option<Vec<f32>> {
+        if !(1..=CAPTURE_POOL_MAX_SAMPLES).contains(&needed) {
+            self.note_dropped_frame();
+            return None;
+        }
+
+        let Ok(mut recycled) = self.recycled.try_lock() else {
+            self.note_dropped_frame();
+            return None;
+        };
+        let Some(index) = recycled.iter().rposition(|buf| buf.capacity() >= needed) else {
+            self.request_pool_growth(needed);
+            self.note_dropped_frame();
+            return None;
+        };
+        let mut samples = recycled.swap_remove(index);
+        samples.clear();
+        Some(samples)
+    }
+
+    pub fn recycle_samples(&self, samples: Vec<f32>) {
+        if let Ok(mut recycled) = self.recycled.try_lock() {
+            self.recycle_samples_locked(samples, &mut recycled);
+        }
+    }
+
+    pub fn recycle_samples_blocking(&self, samples: Vec<f32>) {
+        let mut recycled = self
+            .recycled
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.recycle_samples_locked(samples, &mut recycled);
+    }
+
+    fn recycle_samples_locked(&self, mut samples: Vec<f32>, recycled: &mut Vec<Vec<f32>>) {
+        if samples.capacity() <= CAPTURE_POOL_MAX_SAMPLES && recycled.len() < self.pool_capacity {
+            samples.clear();
+            recycled.push(samples);
+        }
+    }
+
+    pub fn grow_recycle_pool(&self) {
+        let Some(requested) = self.requested_pool_capacity() else {
+            return;
+        };
+        let mut recycled = self
+            .recycled
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if recycled.iter().all(|b| b.capacity() >= requested) {
+            return;
+        }
+        for buffer in recycled.iter_mut().filter(|b| b.capacity() < requested) {
+            if let Err(err) = buffer.try_reserve_exact(requested) {
+                warn!("[virtual-sink] failed to grow capture buffer pool: {err}");
+                return;
+            }
+        }
+        info!("[virtual-sink] grew capture buffer pool to {requested} samples per packet");
+    }
+
+    fn request_pool_growth(&self, needed: usize) {
+        self.requested_pool_samples
+            .fetch_max(needed, Ordering::Relaxed);
+    }
+
+    fn requested_pool_capacity(&self) -> Option<usize> {
+        let requested = self.requested_pool_samples.swap(0, Ordering::Relaxed);
+        (requested > 0).then(|| {
+            requested
+                .next_power_of_two()
+                .clamp(CAPTURE_POOL_INITIAL_SAMPLES, CAPTURE_POOL_MAX_SAMPLES)
+        })
+    }
+
+    fn note_dropped_frame(&self) {
+        self.dropped_frames.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -108,21 +204,26 @@ fn audio_chunk(bytes: &[u8], offset: u32, size: u32, frame_bytes: usize) -> Opti
     (len > 0).then(|| &bytes[start..start + len])
 }
 
-fn convert_samples_to_f32(
+fn converted_sample_count(bytes: &[u8], format: spa::param::audio::AudioFormat) -> Option<usize> {
+    let sample_bytes = bytes_per_sample(format)?;
+    bytes
+        .len()
+        .is_multiple_of(sample_bytes)
+        .then_some(bytes.len() / sample_bytes)
+}
+
+fn convert_samples_to_f32_into(
     bytes: &[u8],
     format: spa::param::audio::AudioFormat,
-) -> Option<Vec<f32>> {
+    out: &mut Vec<f32>,
+) -> Option<()> {
     use spa::param::audio::AudioFormat as Fmt;
 
-    let sample_bytes = bytes_per_sample(format)?;
-    if !bytes.len().is_multiple_of(sample_bytes) {
-        warn!(
-            "[virtual-sink] buffer length {} is not aligned to {:?}",
-            bytes.len(),
-            format
-        );
+    let sample_count = converted_sample_count(bytes, format)?;
+    if out.capacity() < sample_count {
         return None;
     }
+    out.clear();
 
     let little_endian = matches!(
         format,
@@ -130,25 +231,22 @@ fn convert_samples_to_f32(
     );
     macro_rules! convert {
         ($ty:ty, $to_f32:expr) => {{
-            bytes
-                .chunks_exact(size_of::<$ty>())
-                .map(|chunk| {
-                    let mut bytes = [0; size_of::<$ty>()];
-                    bytes.copy_from_slice(chunk);
-                    let raw = if little_endian {
-                        <$ty>::from_le_bytes(bytes)
-                    } else {
-                        <$ty>::from_be_bytes(bytes)
-                    };
-                    $to_f32(raw)
-                })
-                .collect()
+            out.extend(bytes.chunks_exact(size_of::<$ty>()).map(|chunk| {
+                let mut bytes = [0; size_of::<$ty>()];
+                bytes.copy_from_slice(chunk);
+                let raw = if little_endian {
+                    <$ty>::from_le_bytes(bytes)
+                } else {
+                    <$ty>::from_be_bytes(bytes)
+                };
+                $to_f32(raw)
+            }));
         }};
     }
     const I16_DIV: f32 = i16::MAX as f32;
     const I32_DIV: f32 = i32::MAX as f32;
 
-    Some(match format {
+    match format {
         Fmt::F32LE | Fmt::F32BE => convert!(f32, |v| v),
         Fmt::F64LE | Fmt::F64BE => convert!(f64, |v| v as f32),
         Fmt::S16LE | Fmt::S16BE => convert!(i16, |v| v as f32 / I16_DIV),
@@ -159,13 +257,11 @@ fn convert_samples_to_f32(
         Fmt::U32LE | Fmt::U32BE => {
             convert!(u32, |v| (v as f64 / u32::MAX as f64 * 2.0 - 1.0) as f32)
         }
-        Fmt::U8 => bytes.iter().map(|&b| (b as f32 - 128.0) / 128.0).collect(),
-        Fmt::S8 => bytes
-            .iter()
-            .map(|&b| (b as i8) as f32 / i8::MAX as f32)
-            .collect(),
+        Fmt::U8 => out.extend(bytes.iter().map(|&b| (b as f32 - 128.0) / 128.0)),
+        Fmt::S8 => out.extend(bytes.iter().map(|&b| (b as i8) as f32 / i8::MAX as f32)),
         _ => return None,
-    })
+    }
+    Some(())
 }
 
 pub fn run() {
@@ -231,6 +327,26 @@ impl VirtualSinkState {
     }
 }
 
+fn capture_audio_chunk(capture_buffer: &CaptureBuffer, bytes: &[u8], state: &VirtualSinkState) {
+    let Some(sample_count) = converted_sample_count(bytes, state.format) else {
+        capture_buffer.note_dropped_frame();
+        return;
+    };
+    let Some(mut samples) = capture_buffer.try_acquire_samples(sample_count) else {
+        return;
+    };
+    if convert_samples_to_f32_into(bytes, state.format, &mut samples).is_none() {
+        capture_buffer.recycle_samples(samples);
+        capture_buffer.note_dropped_frame();
+        return;
+    }
+    capture_buffer.try_push(CapturedAudio {
+        samples,
+        channels: state.channels,
+        sample_rate: state.sample_rate,
+    });
+}
+
 fn run_virtual_sink() -> Result<(), Box<dyn Error + Send + Sync>> {
     pw::init();
 
@@ -275,7 +391,6 @@ fn run_virtual_sink() -> Result<(), Box<dyn Error + Send + Sync>> {
         })
         .process(move |stream, state| {
             let Some(mut buffer) = stream.dequeue_buffer() else {
-                warn!("[virtual-sink] no buffer available to dequeue");
                 return;
             };
 
@@ -287,16 +402,11 @@ fn run_virtual_sink() -> Result<(), Box<dyn Error + Send + Sync>> {
                     continue;
                 }
 
-                if let Some(samples) = data
+                if let Some(bytes) = data
                     .data()
                     .and_then(|bytes| audio_chunk(bytes, offset, size, state.frame_bytes))
-                    .and_then(|bytes| convert_samples_to_f32(bytes, state.format))
                 {
-                    capture_buffer.try_push(CapturedAudio {
-                        samples,
-                        channels: state.channels,
-                        sample_rate: state.sample_rate,
-                    });
+                    capture_audio_chunk(&capture_buffer, bytes, state);
                 }
 
                 let chunk_mut = data.chunk_mut();
@@ -364,7 +474,8 @@ mod tests {
         expected: f32,
         eps: f32,
     ) {
-        let out = convert_samples_to_f32(bytes, fmt).unwrap();
+        let mut out = Vec::with_capacity(converted_sample_count(bytes, fmt).unwrap());
+        convert_samples_to_f32_into(bytes, fmt, &mut out).unwrap();
         assert_eq!(out.len(), expected_len);
         assert!(
             (out[index] - expected).abs() < eps,
@@ -381,6 +492,33 @@ mod tests {
         assert_eq!(audio_chunk(&bytes, 4, 10, 4), Some(&bytes[4..12]));
         assert_eq!(audio_chunk(&bytes, 14, 4, 4), None);
         assert_eq!(audio_chunk(&bytes, 20, 4, 4), None);
+    }
+
+    #[test]
+    fn capture_buffer_recycles_and_grows_sample_storage() {
+        let buffer = CaptureBuffer::new(1);
+        let mut samples = buffer.try_acquire_samples(4).unwrap();
+        let capacity = samples.capacity();
+        samples.extend_from_slice(&[0.0, 1.0, 2.0, 3.0]);
+
+        buffer.try_push(CapturedAudio {
+            samples,
+            channels: 2,
+            sample_rate: 48_000,
+        });
+        let packet = buffer
+            .pop_wait_timeout(Duration::ZERO)
+            .unwrap()
+            .expect("packet");
+        assert_eq!(packet.samples, [0.0, 1.0, 2.0, 3.0]);
+
+        buffer.recycle_samples(packet.samples);
+        assert_eq!(buffer.try_acquire_samples(4).unwrap().capacity(), capacity);
+
+        let requested = CAPTURE_POOL_INITIAL_SAMPLES + 1;
+        assert!(buffer.try_acquire_samples(requested).is_none());
+        buffer.grow_recycle_pool();
+        assert!(buffer.try_acquire_samples(requested).is_some());
     }
 
     #[test]
@@ -416,7 +554,7 @@ mod tests {
         assert_sample(&val.to_le_bytes(), Fmt::F32LE, 1, 0, val, f32::EPSILON);
         assert_sample(&i32::MAX.to_le_bytes(), Fmt::S32LE, 1, 0, 1.0, f32::EPSILON);
 
-        assert!(convert_samples_to_f32(&[0u8; 4], Fmt::Unknown).is_none());
-        assert!(convert_samples_to_f32(&[0u8; 3], Fmt::S16LE).is_none());
+        assert!(converted_sample_count(&[0u8; 4], Fmt::Unknown).is_none());
+        assert!(converted_sample_count(&[0u8; 3], Fmt::S16LE).is_none());
     }
 }
