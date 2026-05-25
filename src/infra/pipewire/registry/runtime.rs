@@ -14,7 +14,7 @@ use pw::spa::utils::dict::DictRef;
 use pw::spa::utils::result::AsyncSeq;
 use pw::types::ObjectType;
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, OnceLock, RwLock, mpsc};
 use std::thread;
@@ -235,11 +235,10 @@ fn registry_thread_main(runtime: RegistryRuntime) -> Result<()> {
 
     let loop_ref = mainloop.loop_();
     let mut commands_disconnected = false;
-    let mut shutdown_requested = false;
     let mut consecutive_errors = 0u32;
     const MAX_CONSECUTIVE_ERRORS: u32 = 10;
 
-    while !shutdown_requested {
+    'registry_loop: loop {
         if !commands_disconnected {
             loop {
                 match command_rx.try_recv() {
@@ -252,8 +251,7 @@ fn registry_thread_main(runtime: RegistryRuntime) -> Result<()> {
                             &mainloop,
                             &pending_syncs,
                         ) {
-                            shutdown_requested = true;
-                            break;
+                            break 'registry_loop;
                         }
                     }
                     Err(mpsc::TryRecvError::Empty) => break,
@@ -263,10 +261,6 @@ fn registry_thread_main(runtime: RegistryRuntime) -> Result<()> {
                     }
                 }
             }
-        }
-
-        if shutdown_requested {
-            break;
         }
 
         let result = loop_ref.iterate(pw::loop_::Timeout::Finite(Duration::from_millis(50)));
@@ -333,9 +327,9 @@ impl LinkState {
         });
 
         for spec in desired {
-            if self.active_links.contains_key(&spec) {
+            let Entry::Vacant(entry) = self.active_links.entry(spec) else {
                 continue;
-            }
+            };
             match create_passive_audio_link(
                 &self.core,
                 spec.output_node,
@@ -345,7 +339,7 @@ impl LinkState {
             ) {
                 Ok(link) => {
                     debug!("[registry] linked {:?}", spec);
-                    self.active_links.insert(spec, link);
+                    entry.insert(link);
                 }
                 Err(err) => error!("[registry] link failed {:?}: {err}", spec),
             }
