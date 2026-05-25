@@ -53,10 +53,6 @@ pub(super) fn layershell_available() -> bool {
     })
 }
 
-pub(super) fn namespace() -> String {
-    APP_ID.into()
-}
-
 pub(super) fn bar_anchor(alignment: BarAlignment) -> Anchor {
     match alignment {
         BarAlignment::Top => Anchor::Top | Anchor::Left | Anchor::Right,

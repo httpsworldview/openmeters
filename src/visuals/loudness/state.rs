@@ -163,10 +163,7 @@ impl LoudnessState {
                 ],
                 vec![self.meter_fill(2, self.right_mode, values[2])],
             ],
-            guides: GUIDE_LEVELS
-                .into_iter()
-                .filter(|level| (min..=max).contains(level))
-                .collect(),
+            guides: &GUIDE_LEVELS,
             guide_color,
             threshold_db: Some(0.0),
             left_padding: LEFT_PADDING,
@@ -257,7 +254,7 @@ crate::visuals::visualization_widget!(Loudness, LoudnessState, |this, renderer, 
     if let Some((meter_x, bar_width, stride)) = params.meter_bounds() {
         let y_of = |db| bounds.y + bounds.height * (1.0 - params.db_to_ratio(db));
 
-        for &db in &params.guides {
+        for &db in params.guides {
             let y = y_of(db);
             let label = if db == 0.0 {
                 "0".into()

@@ -44,7 +44,6 @@ pub struct VisualsPage {
     visual_manager: VisualManagerHandle,
     settings: SettingsHandle,
     panes: Option<pane_grid::State<VisualPane>>,
-    order: Vec<VisualId>,
     hovered_pane: Option<Pane>,
 }
 
@@ -54,7 +53,6 @@ impl VisualsPage {
             visual_manager,
             settings,
             panes: None,
-            order: Vec::new(),
             hovered_pane: None,
         };
         let snapshot = page.visual_manager.snapshot();
@@ -75,8 +73,8 @@ impl VisualsPage {
                 if let Some(panes) = self.panes.as_mut()
                     && panes.move_to(pane, target)
                 {
-                    self.order = panes.iter().map(|(_, p)| p.id).collect();
-                    self.visual_manager.borrow_mut().reorder(&self.order);
+                    let order: Vec<_> = panes.iter().map(|(_, p)| p.id).collect();
+                    self.visual_manager.borrow_mut().reorder(&order);
                 }
             }
             VisualsMessage::PaneDragged(pane_grid::DragEvent::Dropped) => {
@@ -150,35 +148,28 @@ impl VisualsPage {
             .iter()
             .filter(|s| s.enabled && !exclude.contains(&s.id))
             .collect();
-        let new_order: Vec<_> = slots.iter().map(|s| s.id).collect();
-
         if slots.is_empty() {
-            self.order.clear();
             self.panes = None;
             self.hovered_pane = None;
             return;
         }
-        if self.panes.is_none() || new_order != self.order {
-            self.order = new_order;
+        if self.panes.as_ref().is_none_or(|panes| {
+            panes
+                .iter()
+                .map(|(_, p)| p.id)
+                .ne(slots.iter().map(|s| s.id))
+        }) {
             self.panes = self.build_panes(&slots);
             self.hovered_pane = None;
             return;
         }
         if let Some(panes) = self.panes.as_mut() {
-            let mut stale = false;
             panes.for_each_mut(|_, p| {
                 if let Some(s) = slots.iter().copied().find(|s| s.id == p.id) {
                     p.content = s.content.clone();
                     p.min_width = s.metadata.min_width;
-                } else {
-                    stale = true;
                 }
             });
-            if stale {
-                self.order = new_order;
-                self.panes = self.build_panes(&slots);
-                self.hovered_pane = None;
-            }
         }
     }
 

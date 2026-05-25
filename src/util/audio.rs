@@ -103,12 +103,17 @@ pub(crate) fn window_coefficients(kind: WindowKind, len: usize) -> Arc<[f32]> {
         return Arc::from([]);
     }
     let key = (kind, len);
-    if let Some(window) = CACHE.read().unwrap().get(&key).cloned() {
+    if let Some(window) = CACHE
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&key)
+        .cloned()
+    {
         return window;
     }
     CACHE
         .write()
-        .unwrap()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
         .entry(key)
         .or_insert_with(|| Arc::from(kind.coefficients(len)))
         .clone()
@@ -204,7 +209,11 @@ pub fn apply_window(buffer: &mut [f32], window: &[f32]) {
     }
 }
 
-pub fn copy_from_deque(dst: &mut [f32], src: &VecDeque<f32>) {
+/// Copies the front of `src` into `dst` and removes the copied window's DC offset.
+pub fn copy_dc_removed_from_deque(dst: &mut [f32], src: &VecDeque<f32>) {
+    if dst.is_empty() {
+        return;
+    }
     assert!(
         dst.len() <= src.len(),
         "destination longer than source deque"
@@ -216,15 +225,7 @@ pub fn copy_from_deque(dst: &mut [f32], src: &VecDeque<f32>) {
     if split < len {
         dst[split..].copy_from_slice(&tail[..len - split]);
     }
-}
-
-/// Copies the front of `src` into `dst` and removes the copied window's DC offset.
-pub fn copy_dc_removed_from_deque(dst: &mut [f32], src: &VecDeque<f32>) {
-    if dst.is_empty() {
-        return;
-    }
-    copy_from_deque(dst, src);
-    let mean = dst.iter().sum::<f32>() / dst.len() as f32;
+    let mean = dst.iter().sum::<f32>() / len as f32;
     dst.iter_mut().for_each(|sample| *sample -= mean);
 }
 

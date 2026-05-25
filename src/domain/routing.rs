@@ -19,6 +19,10 @@ pub enum DeviceSelection {
 }
 
 impl DeviceSelection {
+    pub fn from_token(token: Option<String>) -> Self {
+        token.map(Self::Device).unwrap_or_default()
+    }
+
     pub fn token(&self) -> Option<&str> {
         match self {
             Self::Device(token) => Some(token),
@@ -30,5 +34,5 @@ impl DeviceSelection {
 #[derive(Debug, Clone)]
 pub struct RoutingConfig {
     pub capture_mode: CaptureMode,
-    pub preferred_device: Option<String>,
+    pub preferred_device: DeviceSelection,
 }

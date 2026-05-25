@@ -33,7 +33,7 @@ pub struct LoudnessParams {
     pub max_db: f32,
     pub bg_color: [f32; 4],
     pub bars: Vec<MeterBar>,
-    pub guides: Vec<f32>,
+    pub guides: &'static [f32],
     pub guide_color: [f32; 4],
     pub threshold_db: Option<f32>,
     pub left_padding: f32,
@@ -164,7 +164,7 @@ impl LoudnessPrimitive {
         }
 
         let guide_anchor = meter_x - GUIDE_PADDING;
-        for &db in &self.params.guides {
+        for &db in self.params.guides {
             let cy = y_of(db);
             vertices.extend(line_vertices(
                 (guide_anchor - GUIDE_LENGTH, cy),

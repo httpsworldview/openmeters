@@ -100,9 +100,9 @@ impl DefaultTarget {
     }
 }
 
-pub(crate) fn parse_metadata_name(type_hint: Option<&str>, value: Option<&str>) -> Option<String> {
+pub(crate) fn parse_metadata_name(type_hint: Option<&str>, value: &str) -> Option<String> {
     use serde_json::Value;
-    let trimmed = value?.trim();
+    let trimmed = value.trim();
     let is_json = matches!(type_hint, Some(h) if h.eq_ignore_ascii_case("Spa:String:JSON"))
         || trimmed.starts_with('{');
     if !is_json {
@@ -189,6 +189,12 @@ impl RegistrySnapshot {
     }
 
     pub fn find_capture_device_by_token(&self, token: &str) -> Option<&NodeInfo> {
+        let node_token_id = token
+            .get(..5)
+            .filter(|prefix| prefix.eq_ignore_ascii_case("node#"))
+            .and_then(|_| token.get(5..))
+            .and_then(|id| id.parse::<u32>().ok())
+            .filter(|id| format!("node#{id}").eq_ignore_ascii_case(token));
         let candidates = || {
             self.nodes
                 .iter()
@@ -205,7 +211,9 @@ impl RegistrySnapshot {
                     n.description
                         .as_deref()
                         .is_some_and(|desc| desc.eq_ignore_ascii_case(token))
-                        || n.capture_device_token().eq_ignore_ascii_case(token)
+                        || (n.name.is_none()
+                            && n.description.is_none()
+                            && node_token_id == Some(n.id))
                 })
             })
     }
@@ -351,7 +359,7 @@ impl MetadataDefaults {
 
         match value {
             Some(val) => {
-                let parsed_name = parse_metadata_name(type_hint, Some(val));
+                let parsed_name = parse_metadata_name(type_hint, val);
                 let name_ref = parsed_name.as_deref().or(Some(val));
                 let target = DefaultTarget::new(metadata_id, subject, type_hint, name_ref);
                 let changed = slot.as_ref() != Some(&target);

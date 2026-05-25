@@ -168,10 +168,7 @@ impl RoutingManager {
             disabled_nodes: HashSet::default(),
             routed_to: HashMap::default(),
             capture_mode: routing_config.capture_mode,
-            device_target: routing_config
-                .preferred_device
-                .map(DeviceSelection::Device)
-                .unwrap_or_default(),
+            device_target: routing_config.preferred_device,
             hw_sink_cache: None,
             current_links: Vec::new(),
             warned_sink_missing: false,

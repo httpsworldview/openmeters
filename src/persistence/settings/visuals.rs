@@ -47,13 +47,6 @@ impl VisualSettings {
         self.width_basis
             .retain(|_, basis| basis.is_finite() && *basis > 0.0);
     }
-
-    /// Strips palette data from all module configs (theme owns palettes, not settings.json).
-    pub fn strip_all_palettes(&mut self) {
-        for ms in self.modules.values_mut() {
-            ms.strip_palette();
-        }
-    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

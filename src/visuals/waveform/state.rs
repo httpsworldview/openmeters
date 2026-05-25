@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 const COLUMN_WIDTH_PIXELS: f32 = 1.0;
 
-type SampleColorData = (Arc<[[f32; 2]]>, Arc<[[f32; 4]]>);
+type SampleBuffers = (Arc<[[f32; 2]]>, Arc<[[f32; 4]]>);
 
 #[derive(Debug, Clone)]
 pub(crate) struct WaveformState {
@@ -121,7 +121,7 @@ impl WaveformState {
         total_columns: usize,
         start: usize,
         visible: usize,
-    ) -> SampleColorData {
+    ) -> SampleBuffers {
         let mut samples = Vec::with_capacity(visible * channels);
         let mut colors = Vec::with_capacity(visible * channels);
 

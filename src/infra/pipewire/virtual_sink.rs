@@ -171,7 +171,9 @@ fn convert_samples_to_f32(
 pub fn run() {
     ensure_capture_buffer();
 
-    let mut sink_thread = SINK_THREAD.lock().unwrap();
+    let mut sink_thread = SINK_THREAD
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if sink_thread.is_none() {
         *sink_thread = thread::Builder::new()
             .name("openmeters-pw-virtual-sink".into())

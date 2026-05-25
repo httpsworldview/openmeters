@@ -217,7 +217,7 @@ pub fn line_vertices(
     clip: ClipTransform,
 ) -> [SdfVertex; 6] {
     let (dx, dy) = (p1.0 - p0.0, p1.1 - p0.1);
-    let inv = (dx * dx + dy * dy).sqrt().max(1e-6).recip();
+    let inv = dx.hypot(dy).max(1e-6).recip();
     let (half, outer) = (width * 0.5, width * 0.5 + 1.0);
     let (ox, oy) = (-dy * inv * outer, dx * inv * outer);
     let v = |px, py, c, d| SdfVertex::antialiased(clip.to_clip(px, py), c, d, half);
