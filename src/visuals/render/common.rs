@@ -322,8 +322,12 @@ pub struct InstanceBuffer {
 }
 
 impl InstanceBuffer {
+    fn capacity_for(size: wgpu::BufferAddress) -> wgpu::BufferAddress {
+        size.max(1).next_power_of_two()
+    }
+
     pub fn new(device: &wgpu::Device, label: &'static str, size: wgpu::BufferAddress) -> Self {
-        let size = size.max(1);
+        let size = Self::capacity_for(size);
         Self {
             vertex_buffer: device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(label),
@@ -342,8 +346,9 @@ impl InstanceBuffer {
         label: &'static str,
         size: wgpu::BufferAddress,
     ) {
-        if size > self.capacity {
-            *self = Self::new(device, label, size.next_power_of_two());
+        let target = Self::capacity_for(size);
+        if target > self.capacity || (size > 0 && self.capacity > target.saturating_mul(4)) {
+            *self = Self::new(device, label, target);
         }
     }
 

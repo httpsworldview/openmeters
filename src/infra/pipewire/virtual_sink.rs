@@ -17,7 +17,7 @@ use std::time::Duration;
 use tracing::{error, info, warn};
 
 const VIRTUAL_SINK_SAMPLE_RATE: u32 = DEFAULT_SAMPLE_RATE as u32;
-const CAPTURE_BUFFER_CAPACITY: usize = 256;
+const CAPTURE_BUFFER_CAPACITY: usize = 64;
 const CAPTURE_POOL_INITIAL_SAMPLES: usize = 4_096;
 const CAPTURE_POOL_MAX_SAMPLES: usize = 65_536;
 const CAPTURE_POOL_SPARE_BUFFERS: usize = 8;
