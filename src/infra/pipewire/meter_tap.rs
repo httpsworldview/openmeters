@@ -28,15 +28,9 @@ pub struct MeterFormat {
     pub sample_rate: f32,
 }
 
-const MAX_RECYCLED_BUFFERS: usize = 4;
-const MAX_RECYCLED_BUFFER_SAMPLES: usize = TARGET_BATCH_SAMPLES * 4;
-
-#[derive(Default)]
 struct SampleBatcher {
     target_samples: usize,
-    total_samples: usize,
-    chunks: Vec<Vec<f32>>,
-    recycle: Vec<Vec<f32>>,
+    samples: Vec<f32>,
     format: Option<MeterFormat>,
 }
 
@@ -44,7 +38,8 @@ impl SampleBatcher {
     fn new(target_samples: usize) -> Self {
         Self {
             target_samples,
-            ..Self::default()
+            samples: Vec::with_capacity(target_samples),
+            format: None,
         }
     }
 
@@ -52,17 +47,18 @@ impl SampleBatcher {
         if samples.is_empty() {
             return;
         }
-        if self.total_samples == 0 {
+        if self.samples.is_empty() {
             self.format = Some(format);
         }
-        let mut chunk = self.reuse_buffer(samples.len());
-        chunk.extend_from_slice(samples);
-        self.total_samples += chunk.len();
-        self.chunks.push(chunk);
+        self.samples.extend_from_slice(samples);
+    }
+
+    fn is_empty(&self) -> bool {
+        self.samples.is_empty()
     }
 
     fn should_flush(&self) -> bool {
-        self.total_samples >= self.target_samples
+        self.samples.len() >= self.target_samples
     }
 
     fn has_different_format(&self, format: MeterFormat) -> bool {
@@ -70,42 +66,14 @@ impl SampleBatcher {
     }
 
     fn take(&mut self) -> Option<AudioBatch> {
-        if self.total_samples == 0 {
+        if self.samples.is_empty() {
             return None;
         }
-
         let format = self.format.take()?;
-        let total_samples = std::mem::take(&mut self.total_samples);
-        let samples = if self.chunks.len() == 1 {
-            self.chunks.pop()?
-        } else {
-            let mut batch = self.reuse_buffer(total_samples);
-            for chunk in self.chunks.drain(..) {
-                batch.extend_from_slice(&chunk);
-                Self::stash_recycle(&mut self.recycle, chunk);
-            }
-            batch
-        };
-
+        let max_capacity = self.target_samples.saturating_mul(4);
+        let next_capacity = self.samples.len().clamp(self.target_samples, max_capacity);
+        let samples = std::mem::replace(&mut self.samples, Vec::with_capacity(next_capacity));
         Some(AudioBatch { samples, format })
-    }
-
-    fn reuse_buffer(&mut self, needed: usize) -> Vec<f32> {
-        let Some(mut recycled) = self.recycle.pop() else {
-            return Vec::with_capacity(needed);
-        };
-        recycled.clear();
-        if recycled.capacity() < needed {
-            recycled.reserve(needed);
-        }
-        recycled
-    }
-
-    fn stash_recycle(recycle: &mut Vec<Vec<f32>>, mut chunk: Vec<f32>) {
-        if recycle.len() < MAX_RECYCLED_BUFFERS && chunk.capacity() <= MAX_RECYCLED_BUFFER_SAMPLES {
-            chunk.clear();
-            recycle.push(chunk);
-        }
     }
 }
 
@@ -130,16 +98,17 @@ fn spawn_forwarder(sender: AsyncSender<AudioBatch>, buffer: Arc<CaptureBuffer>) 
 
 fn forward_loop(sender: AsyncSender<AudioBatch>, buffer: Arc<CaptureBuffer>) {
     let mut batcher = SampleBatcher::new(TARGET_BATCH_SAMPLES);
-    let mut last_flush = Instant::now();
+    let mut batch_started_at = Instant::now();
     let mut last_drop_check = Instant::now();
     let mut drop_baseline = buffer.dropped_frames();
 
     // Returns true when the downstream channel is closed (caller should stop).
-    let flush = |batcher: &mut SampleBatcher, last_flush: &mut Instant| -> bool {
-        let closed = batcher
-            .take()
-            .is_some_and(|b| sender.send_blocking(b).is_err());
-        *last_flush = Instant::now();
+    let flush = |batcher: &mut SampleBatcher, batch_started_at: &mut Instant| -> bool {
+        let Some(batch) = batcher.take() else {
+            return false;
+        };
+        let closed = sender.send_blocking(batch).is_err();
+        *batch_started_at = Instant::now();
         closed
     };
 
@@ -159,32 +128,46 @@ fn forward_loop(sender: AsyncSender<AudioBatch>, buffer: Arc<CaptureBuffer>) {
             last_drop_check = Instant::now();
         }
 
-        let should_time_flush = last_flush.elapsed() >= MAX_BATCH_LATENCY;
+        let timeout = if batcher.is_empty() {
+            POLL_BACKOFF
+        } else {
+            MAX_BATCH_LATENCY
+                .saturating_sub(batch_started_at.elapsed())
+                .min(POLL_BACKOFF)
+        };
 
-        match buffer.pop_wait_timeout(POLL_BACKOFF) {
+        match buffer.pop_wait_timeout(timeout) {
             Ok(Some(packet)) => {
                 let format = MeterFormat {
                     channels: packet.channels.max(1) as usize,
                     sample_rate: packet.sample_rate.max(1) as f32,
                 };
 
-                if batcher.has_different_format(format) && flush(&mut batcher, &mut last_flush) {
+                let batch_expired =
+                    !batcher.is_empty() && batch_started_at.elapsed() >= MAX_BATCH_LATENCY;
+                if (batch_expired || batcher.has_different_format(format))
+                    && flush(&mut batcher, &mut batch_started_at)
+                {
                     buffer.recycle_samples_blocking(packet.samples);
                     break;
                 }
 
+                let starts_batch = batcher.is_empty();
                 batcher.push(&packet.samples, format);
+                if starts_batch {
+                    batch_started_at = Instant::now();
+                }
                 buffer.recycle_samples_blocking(packet.samples);
 
-                if (batcher.should_flush() || should_time_flush)
-                    && flush(&mut batcher, &mut last_flush)
+                if (batcher.should_flush() || batch_started_at.elapsed() >= MAX_BATCH_LATENCY)
+                    && flush(&mut batcher, &mut batch_started_at)
                 {
                     break;
                 }
             }
             Ok(None) if sender.is_closed() => break,
-            Ok(None) if should_time_flush => {
-                if flush(&mut batcher, &mut last_flush) {
+            Ok(None) if !batcher.is_empty() && batch_started_at.elapsed() >= MAX_BATCH_LATENCY => {
+                if flush(&mut batcher, &mut batch_started_at) {
                     break;
                 }
             }
