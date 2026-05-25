@@ -61,3 +61,13 @@ contents:
     dst: /usr/share/licenses/openmeters/LICENSE
     file_info:
       mode: 0644
+
+  - src: ../docs/licenses/iced_widget_pane_grid.md
+    dst: /usr/share/licenses/openmeters/iced_widget_pane_grid.md
+    file_info:
+      mode: 0644
+
+  - src: copyright
+    dst: /usr/share/doc/openmeters/copyright
+    file_info:
+      mode: 0644

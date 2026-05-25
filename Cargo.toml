@@ -2,7 +2,13 @@
 name = "openmeters"
 version = "1.3.1"
 edition = "2024"
+rust-version = "1.89"
 license = "GPL-3.0-or-later"
+publish = false
+description = "Fast and professional audio metering application for Linux."
+repository = "https://github.com/httpsworldview/openmeters"
+homepage = "https://github.com/httpsworldview/openmeters"
+readme = "README.md"
 
 [dependencies]
 pipewire = "0.10.0"
@@ -35,9 +41,12 @@ wayland-client = "0.31.14"
   features = [ "env-filter", "fmt" ]
 
   [dependencies.iced_layershell]
-  git = "https://github.com/httpsworldview/exwlshelleventloop"
-  rev = "a0e177a18810f2fcff1bfc800c9f2f63b653844e"
+  version = "0.18.1"
   default-features = false
+
+[patch.crates-io.iced_layershell]
+git = "https://github.com/httpsworldview/exwlshelleventloop"
+rev = "a0e177a18810f2fcff1bfc800c9f2f63b653844e"
 
 [dev-dependencies]
 ebur128 = "0.1.10"

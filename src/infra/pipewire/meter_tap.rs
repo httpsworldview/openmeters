@@ -48,13 +48,15 @@ impl SampleBatcher {
         }
     }
 
-    fn push(&mut self, chunk: Vec<f32>, format: MeterFormat) {
-        if chunk.is_empty() {
+    fn push(&mut self, samples: &[f32], format: MeterFormat) {
+        if samples.is_empty() {
             return;
         }
         if self.total_samples == 0 {
             self.format = Some(format);
         }
+        let mut chunk = self.reuse_buffer(samples.len());
+        chunk.extend_from_slice(samples);
         self.total_samples += chunk.len();
         self.chunks.push(chunk);
     }
@@ -93,7 +95,9 @@ impl SampleBatcher {
             return Vec::with_capacity(needed);
         };
         recycled.clear();
-        recycled.reserve(needed.saturating_sub(recycled.capacity()));
+        if recycled.capacity() < needed {
+            recycled.reserve(needed);
+        }
         recycled
     }
 
@@ -140,6 +144,8 @@ fn forward_loop(sender: AsyncSender<AudioBatch>, buffer: Arc<CaptureBuffer>) {
     };
 
     loop {
+        buffer.grow_recycle_pool();
+
         if last_drop_check.elapsed() >= DROP_CHECK_INTERVAL {
             let dropped = buffer.dropped_frames();
             if dropped > drop_baseline {
@@ -163,10 +169,12 @@ fn forward_loop(sender: AsyncSender<AudioBatch>, buffer: Arc<CaptureBuffer>) {
                 };
 
                 if batcher.has_different_format(format) && flush(&mut batcher, &mut last_flush) {
+                    buffer.recycle_samples_blocking(packet.samples);
                     break;
                 }
 
-                batcher.push(packet.samples, format);
+                batcher.push(&packet.samples, format);
+                buffer.recycle_samples_blocking(packet.samples);
 
                 if (batcher.should_flush() || should_time_flush)
                     && flush(&mut batcher, &mut last_flush)
@@ -213,9 +221,9 @@ mod tests {
     #[test]
     fn batches_chunks() {
         let mut batcher = SampleBatcher::new(4);
-        batcher.push(vec![0.0, 1.0], STEREO_48K);
+        batcher.push(&[0.0, 1.0], STEREO_48K);
         assert!(!batcher.should_flush());
-        batcher.push(vec![2.0, 3.0], STEREO_48K);
+        batcher.push(&[2.0, 3.0], STEREO_48K);
         assert!(batcher.should_flush());
 
         let batch = batcher.take().expect("batch should be available");
@@ -223,8 +231,8 @@ mod tests {
         assert_eq!(batch.format, STEREO_48K);
         assert!(batcher.take().is_none());
 
-        batcher.push(vec![4.0, 5.0], STEREO_48K);
-        batcher.push(vec![6.0, 7.0], STEREO_48K);
+        batcher.push(&[4.0, 5.0], STEREO_48K);
+        batcher.push(&[6.0, 7.0], STEREO_48K);
         let second = batcher.take().expect("second batch available");
         assert_eq!(second.samples, vec![4.0, 5.0, 6.0, 7.0]);
         assert_eq!(second.format, STEREO_48K);
@@ -234,7 +242,7 @@ mod tests {
     fn format_changes_flush_without_mixing_batches() {
         let mut batcher = SampleBatcher::new(8);
 
-        batcher.push(vec![0.0, 1.0], STEREO_48K);
+        batcher.push(&[0.0, 1.0], STEREO_48K);
         assert!(!batcher.has_different_format(STEREO_48K));
         assert!(batcher.has_different_format(MONO_44K));
 
@@ -242,7 +250,7 @@ mod tests {
         assert_eq!(first.samples, vec![0.0, 1.0]);
         assert_eq!(first.format, STEREO_48K);
 
-        batcher.push(vec![2.0, 3.0], MONO_44K);
+        batcher.push(&[2.0, 3.0], MONO_44K);
         let second = batcher
             .take()
             .expect("new-format batch should remain separate");

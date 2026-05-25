@@ -26,6 +26,7 @@ fn main() {
     let (snapshot_tx, snapshot_rx) = async_channel::bounded::<registry::RegistrySnapshot>(64);
 
     let settings_handle = SettingsHandle::load_or_default();
+    let settings_for_shutdown = settings_handle.clone();
     let routing_config = {
         let guard = settings_handle.borrow();
         let settings = &guard.data;
@@ -47,6 +48,7 @@ fn main() {
     if let Err(err) = ui::run(ui_config) {
         error!("[ui] failed: {err}");
     }
+    settings_for_shutdown.flush();
 
     if let Some((_, handle)) = registry_thread {
         info!("[main] shutdown requested; waiting for registry monitor to exit...");
