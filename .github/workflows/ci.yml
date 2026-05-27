@@ -2,7 +2,15 @@ name: CI
 
 on:
   push:
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE*'
+      - 'COPYING*'
   pull_request:
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE*'
+      - 'COPYING*'
 
 permissions:
   contents: read

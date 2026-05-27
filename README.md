@@ -172,12 +172,8 @@ packages for Debian or Fedora.
 - Invalid JSON will be ignored and default settings will be used
   instead. Your configuration file will not be overwritten unless you
   change settings in the GUI.
-- The internal structure of this file will likely change often during
-  development, so be aware that your settings **may be reset
-  inexplicably after updates**. As this project grows, I will try to
-  maintain backwards compatibility as much as possible, but no
-  guarantees are made. The public API for settings is mostly stable as
-  of now, so breaking changes should be infrequent.
+- The internal structure of this file is stable as of now, and any
+  changes will be documented.
 - If you encounter a bug that causes OpenMeters to misbehave, the
   application settings can be reset by deleting
   `settings.json`. Please consider reporting any such bugs you
