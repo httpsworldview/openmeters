@@ -1,0 +1,184 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+    paths: [Cargo.toml]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-24.04
+    container:
+      image: debian:13
+
+    steps:
+      - name: Install workflow prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl git
+          rm -rf /var/lib/apt/lists/*
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect version bump and prepare release notes
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cargo_value() {
+            local key="$1"
+            awk -F'"' -v key="$key" '
+              /^\[package\]/ { in_pkg = 1; next }
+              /^\[/ { in_pkg = 0 }
+              in_pkg && $0 ~ "^" key "[[:space:]]*=" { print $2; exit }
+            '
+          }
+
+          current_version="$(cargo_value version < Cargo.toml)"
+          if [ -z "$current_version" ]; then
+            echo "Could not parse package.version from Cargo.toml" >&2
+            exit 1
+          fi
+
+          rust_toolchain="$(cargo_value rust-version < Cargo.toml)"
+          rust_toolchain="${rust_toolchain:-stable}"
+
+          previous_sha="${{ github.event.before }}"
+          if [ -z "$previous_sha" ] || [ "$previous_sha" = "0000000000000000000000000000000000000000" ]; then
+            previous_sha="${GITHUB_SHA}^"
+          fi
+
+          previous_version=""
+          if git rev-parse "$previous_sha" >/dev/null 2>&1; then
+            previous_version="$(git show "$previous_sha:Cargo.toml" | cargo_value version)"
+          fi
+
+          echo "current_version=${current_version}" >> "$GITHUB_OUTPUT"
+          echo "rust_toolchain=${rust_toolchain}" >> "$GITHUB_OUTPUT"
+
+          manual_release="${{ github.event_name == 'workflow_dispatch' }}"
+          if [ "$manual_release" != "true" ] && [ "$current_version" = "$previous_version" ]; then
+            echo "run_release=false" >> "$GITHUB_OUTPUT"
+            echo "No version bump in Cargo.toml; skipping release."
+            exit 0
+          fi
+
+          changelog_base="$previous_sha"
+          if [ -n "$previous_version" ] && git rev-parse "v${previous_version}^{commit}" >/dev/null 2>&1; then
+            changelog_base="v${previous_version}"
+          fi
+          if ! git rev-parse "${changelog_base}^{commit}" >/dev/null 2>&1; then
+            changelog_base="${GITHUB_SHA}^"
+          fi
+
+          changelog_range="${GITHUB_SHA}"
+          if git rev-parse "${changelog_base}^{commit}" >/dev/null 2>&1; then
+            changelog_range="${changelog_base}..${GITHUB_SHA}"
+          fi
+
+          changelog="$(git log --no-merges --pretty=format:'%h %s' "$changelog_range" 2>/dev/null || true)"
+          if [ -z "$changelog" ]; then
+            changelog="(no changelog entries)"
+          fi
+
+          notes_file="${RUNNER_TEMP}/release-notes.md"
+          {
+            echo "## Changelog"
+            echo
+            echo '```'
+            printf '%s\n' "$changelog"
+            echo '```'
+          } > "$notes_file"
+
+          echo "run_release=true" >> "$GITHUB_OUTPUT"
+          echo "notes_file=${notes_file}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Rust toolchain
+        if: steps.release.outputs.run_release == 'true'
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: ${{ steps.release.outputs.rust_toolchain }}
+
+      - name: Build and publish release
+        if: steps.release.outputs.run_release == 'true'
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          glibc_version="$(ldd --version | awk 'NR==1 {print $NF}')"
+          echo "glibc version: ${glibc_version}"
+          if ! dpkg --compare-versions "${glibc_version}" ge 2.41; then
+            echo "Debian release pipeline requires glibc >= 2.41"
+            exit 1
+          fi
+
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential \
+            gh \
+            golang-go \
+            libpipewire-0.3-dev \
+            libwayland-dev \
+            libx11-dev \
+            libx11-xcb-dev \
+            libxext-dev \
+            libxfixes-dev \
+            libxrandr-dev \
+            libxcursor-dev \
+            libxi-dev \
+            libxinerama-dev \
+            libxkbcommon-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            libvulkan-dev \
+            make \
+            pkg-config \
+            xz-utils
+          rm -rf /var/lib/apt/lists/*
+
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+          export PATH="${HOME}/go/bin:${PATH}"
+
+          cargo build --locked --release
+          make -C packaging all
+
+          version="${{ steps.release.outputs.current_version }}"
+          tag="v${version}"
+          notes_file="${{ steps.release.outputs.notes_file }}"
+          dist_dir="${PWD}/dist"
+
+          shopt -s nullglob
+          assets=(
+            "${dist_dir}"/openmeters-"${version}"-*.tar.xz
+            "${dist_dir}"/openmeters_"${version}"-*.deb
+            "${dist_dir}"/openmeters-"${version}"-*.rpm
+            "${dist_dir}"/SHA256SUMS
+          )
+          shopt -u nullglob
+
+          if [ "${#assets[@]}" -ne 4 ]; then
+            echo "Expected 4 release artifacts in ${dist_dir}, found ${#assets[@]}."
+            for asset in "${assets[@]}"; do
+              echo "  ${asset}"
+            done
+            exit 1
+          fi
+
+          if gh release view "${tag}" > /dev/null 2>&1; then
+            gh release edit "${tag}" --title "openmeters ${version}" --notes-file "${notes_file}" >/dev/null
+            gh release upload "${tag}" "${assets[@]}" --clobber
+          else
+            gh release create "${tag}" --target "${GITHUB_SHA}" --title "openmeters ${version}" --notes-file "${notes_file}" "${assets[@]}"
+          fi
