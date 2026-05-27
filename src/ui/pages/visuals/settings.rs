@@ -131,6 +131,7 @@ settings_modules! {
     spectrum => Spectrum,
     stereometer => Stereometer,
     waveform => Waveform,
+    chroma => Chroma,
 }
 
 pub trait ModuleSettingsPane: 'static {

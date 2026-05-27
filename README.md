@@ -79,6 +79,15 @@ pull request!
     - [x] Based on frequency
     - [x] Based on Loudness
     - [x] A single static color.
+- [x] **chromagram**
+  - [x] Displays the energy distribution across the 12 pitch classes of
+        Western music (C, C#, D, D#, E, F, F#, G, G#, A, A#, B),
+        accumulated across all audible octaves.
+  - [x] Each pitch class rendered in a distinct hue for instant visual
+        identification of tonal content.
+  - [x] Peak hold per pitch class with configurable decay.
+  - [x] Adjustable smoothing and noise floor.
+  - [x] Adjustable color map.
 
 ## Installation
 

@@ -10,5 +10,6 @@ crate::macros::choice_enum!(no_default
         Spectrogram => "Spectrogram",
         Spectrum => "Spectrum",
         Stereometer => "Stereometer",
+        Chroma => "Chromagram",
     }
 );

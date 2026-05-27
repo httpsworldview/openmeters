@@ -9,6 +9,7 @@ use crate::visuals::options::{
     SpectrumWeightingMode, StereometerMode, StereometerScale, WaveformColorMode,
 };
 use crate::visuals::{
+    chroma::processor::ChromaConfig,
     oscilloscope::processor::{OscilloscopeConfig, TriggerMode},
     spectrogram::processor::SpectrogramConfig,
     spectrum::processor::{AveragingMode, SpectrumConfig},
@@ -38,7 +39,8 @@ impl VisualSettings {
         }
         let valid = check!(Spectrogram => SpectrogramSettings, Spectrum => SpectrumSettings,
             Oscilloscope => OscilloscopeSettings, Waveform => WaveformSettings,
-            Loudness => LoudnessSettings, Stereometer => StereometerSettings);
+            Loudness => LoudnessSettings, Stereometer => StereometerSettings,
+            Chroma => ChromaSettings);
         self.modules.retain(valid);
         self.sanitize_layout();
     }
@@ -188,4 +190,11 @@ visual_settings!(StereometerSettings from StereometerConfig {
 visual_settings!(LoudnessSettings {
     left_mode: MeterMode = MeterMode::TruePeak,
     right_mode: MeterMode = MeterMode::LufsShortTerm,
+});
+
+visual_settings!(ChromaSettings from ChromaConfig {
+    fft_size: usize, hop_size: usize, min_freq_hz: f32, max_freq_hz: f32,
+    smoothing: f32, floor_db: f32, peak_decay: f32,
+} extra {
+    show_peak_hold: bool = true,
 });

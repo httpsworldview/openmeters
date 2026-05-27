@@ -21,6 +21,6 @@ pub use store::SettingsHandle;
 pub(crate) use theme::canonical_theme_name;
 pub use theme::{BUILTIN_THEME, ThemeChoice, ThemeFile};
 pub use visuals::{
-    LoudnessSettings, ModuleSettings, OscilloscopeSettings, SpectrogramSettings, SpectrumSettings,
-    StereometerSettings, VisualSettings, WaveformSettings,
+    ChromaSettings, LoudnessSettings, ModuleSettings, OscilloscopeSettings, SpectrogramSettings,
+    SpectrumSettings, StereometerSettings, VisualSettings, WaveformSettings,
 };

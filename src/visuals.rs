@@ -90,6 +90,7 @@ visual_modules! {
     spectrum { SpectrumProcessor, SpectrumConfig, SpectrumState },
     stereometer { StereometerProcessor, StereometerConfig, StereometerState },
     waveform { WaveformProcessor, WaveformConfig, WaveformState },
+    chroma { ChromaProcessor, ChromaConfig, ChromaState },
 }
 
 pub mod options;

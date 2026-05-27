@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::{
-    loudness,
+    chroma, loudness,
     options::StereometerMode,
     oscilloscope, palettes,
     spectrogram::{self, processor::MAX_SPECTROGRAM_HISTORY_COLUMNS},
@@ -231,6 +231,23 @@ visuals! {
             out.target_sample_count = cfg.target_sample_count;
             out.correlation_window = cfg.correlation_window;
             out.palette = visuals!(@export_palette &st.palette, &palettes::stereometer::COLORS); out };
+
+    Chroma("Chromagram", 300.0, 180.0, 220.0) =>
+        chroma::ChromaProcessor, ChromaConfig, ChromaState;
+        settings_cfg::ChromaSettings;
+        apply(p, s, set) {
+            visuals!(@apply_config p, set);
+            let mut st = s.borrow_mut();
+            st.show_peak_hold = set.show_peak_hold;
+            visuals!(@apply_palette st, set, &palettes::chroma::COLORS);
+        };
+        export(p, s) {
+            let st = s.borrow();
+            let mut out = settings_cfg::ChromaSettings::from_config(&p.config());
+            out.show_peak_hold = st.show_peak_hold;
+            out.palette = visuals!(@export_palette &st.palette, &palettes::chroma::COLORS);
+            out
+        };
 }
 
 struct Visual<P, S> {

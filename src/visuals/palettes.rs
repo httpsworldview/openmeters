@@ -73,6 +73,7 @@ impl Palette {
             VisualKind::Oscilloscope => p!(oscilloscope),
             VisualKind::Stereometer => p!(stereometer),
             VisualKind::Loudness => p!(loudness),
+            VisualKind::Chroma => p!(chroma),
         }
     }
 }
@@ -205,4 +206,42 @@ pub mod background {
     pub const COLORS: [Color; 1] = [BG_BASE];
     pub const LABELS: &[&str] = &["Background"];
     pub const DEFAULT_POSITIONS: [f32; COLORS.len()] = [0.0];
+}
+
+// Chromagram: 12 pitch-class colors (C–B) + 1 peak-hold color
+pub mod chroma {
+    use super::{Color, hex};
+    pub const COLORS: [Color; 13] = [
+        hex(0xFF, 0x30, 0x30, 0xFF), // C  – red
+        hex(0xFF, 0x70, 0x10, 0xFF), // C# – red-orange
+        hex(0xFF, 0xA8, 0x00, 0xFF), // D  – orange
+        hex(0xD4, 0xD4, 0x00, 0xFF), // D# – yellow
+        hex(0x80, 0xFF, 0x00, 0xFF), // E  – yellow-green
+        hex(0x00, 0xFF, 0x50, 0xFF), // F  – green
+        hex(0x00, 0xFF, 0xC0, 0xFF), // F# – cyan-green
+        hex(0x00, 0xC0, 0xFF, 0xFF), // G  – sky blue
+        hex(0x00, 0x60, 0xFF, 0xFF), // G# – blue
+        hex(0x80, 0x00, 0xFF, 0xFF), // A  – violet
+        hex(0xC0, 0x00, 0xFF, 0xFF), // A# – purple
+        hex(0xFF, 0x00, 0x90, 0xFF), // B  – magenta
+        hex(0xFF, 0xFF, 0xFF, 0xFF), // Peak hold marker
+    ];
+    pub const LABELS: &[&str] = &[
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B", "Peak",
+    ];
+    pub const DEFAULT_POSITIONS: [f32; COLORS.len()] = [
+        0.0,
+        1.0 / 12.0,
+        2.0 / 12.0,
+        3.0 / 12.0,
+        4.0 / 12.0,
+        5.0 / 12.0,
+        6.0 / 12.0,
+        7.0 / 12.0,
+        8.0 / 12.0,
+        9.0 / 12.0,
+        10.0 / 12.0,
+        11.0 / 12.0,
+        1.0,
+    ];
 }
