@@ -133,7 +133,7 @@ impl WaveformState {
                 let freq = self.snapshot.frequency_normalized[idx];
                 let intensity = self.color_intensity(min, max, freq);
 
-                samples.push([min.min(max), min.max(max)]);
+                samples.push([min, max]);
                 colors.push(color_to_rgba(self.style.sample_color(intensity)));
             }
         }
@@ -157,8 +157,8 @@ impl WaveformState {
                 let intensity = self.color_intensity(min, max, freq);
 
                 PreviewSample {
-                    min: min.min(max).clamp(-1.0, 1.0),
-                    max: min.max(max).clamp(-1.0, 1.0),
+                    min,
+                    max,
                     color: color_to_rgba(self.style.sample_color(intensity)),
                 }
             })

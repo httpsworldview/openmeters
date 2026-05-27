@@ -113,16 +113,17 @@ impl ThemeStore {
     }
 
     pub(super) fn next_auto_name(&self) -> String {
-        (1..)
-            .map(|i| {
-                if i == 1 {
-                    AUTO_THEME_BASE.to_owned()
-                } else {
-                    format!("{AUTO_THEME_BASE}-{i}")
-                }
-            })
-            .find(|name| !self.theme_path(name).exists())
-            .expect("auto theme name sequence is unbounded")
+        let mut i = 1_u64;
+        loop {
+            let name = match i {
+                1 => AUTO_THEME_BASE.to_owned(),
+                _ => format!("{AUTO_THEME_BASE}-{i}"),
+            };
+            if !self.theme_path(&name).exists() {
+                return name;
+            }
+            i += 1;
+        }
     }
 
     fn theme_path(&self, name: &str) -> PathBuf {

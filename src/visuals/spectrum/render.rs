@@ -93,13 +93,8 @@ impl SpectrumPrimitive {
         } else {
             0
         };
-        let peak_vertices = self
-            .params
-            .peak
-            .map_or(0, |peak| 6 + 6 * usize::from(peak.leader_anchor.is_some()));
-        let mut vertices = Vec::with_capacity(
-            (highlight_segments + line_segments + secondary_segments) * 6 + peak_vertices,
-        );
+        let mut vertices =
+            Vec::with_capacity((highlight_segments + line_segments + secondary_segments) * 6);
         let baseline = bounds.y + bounds.height;
 
         push_highlight_columns(

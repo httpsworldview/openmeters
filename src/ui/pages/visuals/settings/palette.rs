@@ -19,6 +19,8 @@ const SWATCH_SIZE: (f32, f32) = (56.0, 28.0);
 const GRADIENT_BAR_HEIGHT: f32 = 24.0;
 const MARKER_HEIGHT: f32 = 8.0;
 const MIN_STOP_GAP: f32 = 0.01;
+const MIN_SPREAD: f32 = 0.2;
+const MAX_SPREAD: f32 = 5.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PaletteEvent {
@@ -107,7 +109,7 @@ impl PaletteEditor {
     }
 
     pub fn set_colors(&mut self, colors: &[Color]) {
-        self.palette.set(colors);
+        self.palette.set_colors(colors);
     }
 
     pub fn update(&mut self, event: PaletteEvent) -> bool {
@@ -129,7 +131,7 @@ impl PaletteEditor {
                 }
                 let mut colors = colors.to_vec();
                 colors[index] = color;
-                self.palette.set(&colors);
+                self.palette.set_colors(&colors);
                 true
             }
             PaletteEvent::AdjustPosition { index, position } => {
@@ -153,7 +155,7 @@ impl PaletteEditor {
                 if index >= self.palette.len() {
                     return false;
                 }
-                let next = spread.clamp(0.2, 5.0);
+                let next = spread.clamp(MIN_SPREAD, MAX_SPREAD);
                 if (self.spreads[index] - next).abs() < EPSILON {
                     return false;
                 }
@@ -417,11 +419,13 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for GradientBar<'_> {
                 {
                     let dy = scroll_delta_lines(*delta);
                     let current = self.spreads.get(i).copied().unwrap_or(1.0);
-                    let new_spread = (current + dy * 0.2).clamp(0.2, 5.0);
-                    shell.publish(PaletteEvent::AdjustSpread {
-                        index: i,
-                        spread: new_spread,
-                    });
+                    let new_spread = (current + dy * 0.2).clamp(MIN_SPREAD, MAX_SPREAD);
+                    if (current - new_spread).abs() >= EPSILON {
+                        shell.publish(PaletteEvent::AdjustSpread {
+                            index: i,
+                            spread: new_spread,
+                        });
+                    }
                     shell.capture_event();
                 }
             }

@@ -114,51 +114,52 @@ impl LoudnessPrimitive {
             let x1 = x0 + bar_width;
 
             vertices.extend(quad_vertices(x0, y0, x1, y1, clip, self.params.bg_color));
-            let fill_count = bar.len();
-            if fill_count > 0 {
-                let inner_gap = sub_bar_gap(bar_width, fill_count);
-                let total_inner = inner_gap * (fill_count - 1) as f32;
-                let seg_width = ((bar_width - total_inner) / fill_count as f32).max(0.0);
+            if bar.is_empty() {
+                continue;
+            }
+            let sub_bar_count = bar.len();
+            let inner_gap = sub_bar_gap(bar_width, sub_bar_count);
+            let total_inner = inner_gap * (sub_bar_count - 1) as f32;
+            let seg_width = ((bar_width - total_inner) / sub_bar_count as f32).max(0.0);
 
-                for (j, fill) in bar.iter().enumerate() {
-                    let sx0 = x0 + j as f32 * (seg_width + inner_gap);
-                    let sx1 = if j + 1 == fill_count {
-                        x1
-                    } else {
-                        sx0 + seg_width
-                    };
-                    let value = fill.db.clamp(self.params.min_db, self.params.max_db);
-                    let mut lower = self.params.min_db;
-                    for &(ceiling, color) in &fill.segments {
-                        let ceiling = ceiling.clamp(self.params.min_db, self.params.max_db);
-                        let upper = value.min(ceiling);
-                        if upper > lower {
-                            vertices.extend(quad_vertices(
-                                sx0,
-                                y_of(upper),
-                                sx1,
-                                y_of(lower),
-                                clip,
-                                color,
-                            ));
-                        }
-                        lower = lower.max(ceiling);
-                        if value <= ceiling {
-                            break;
-                        }
-                    }
-
-                    if let Some((db, color)) = fill.peak {
-                        let cy = y_of(db);
-                        vertices.extend(line_vertices(
-                            (sx0, cy),
-                            (sx1, cy),
-                            color,
-                            color,
-                            PEAK_THICKNESS,
+            for (j, fill) in bar.iter().enumerate() {
+                let sx0 = x0 + j as f32 * (seg_width + inner_gap);
+                let sx1 = if j + 1 == sub_bar_count {
+                    x1
+                } else {
+                    sx0 + seg_width
+                };
+                let value = fill.db.clamp(self.params.min_db, self.params.max_db);
+                let mut lower = self.params.min_db;
+                for &(ceiling, color) in &fill.segments {
+                    let ceiling = ceiling.clamp(self.params.min_db, self.params.max_db);
+                    let upper = value.min(ceiling);
+                    if upper > lower {
+                        vertices.extend(quad_vertices(
+                            sx0,
+                            y_of(upper),
+                            sx1,
+                            y_of(lower),
                             clip,
+                            color,
                         ));
                     }
+                    lower = lower.max(ceiling);
+                    if value <= ceiling {
+                        break;
+                    }
+                }
+
+                if let Some((db, color)) = fill.peak {
+                    let cy = y_of(db);
+                    vertices.extend(line_vertices(
+                        (sx0, cy),
+                        (sx1, cy),
+                        color,
+                        color,
+                        PEAK_THICKNESS,
+                        clip,
+                    ));
                 }
             }
         }

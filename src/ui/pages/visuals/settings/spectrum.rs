@@ -32,12 +32,16 @@ crate::macros::choice_enum!(all pub(crate) enum AvgMode {
     PeakHold => "Peak hold",
 });
 
+struct AveragingControls {
+    mode: AvgMode,
+    factor: f32,
+    peak_decay: f32,
+}
+
 settings_pane!(
     SpectrumSettingsPane, SpectrumSettings, VisualKind::Spectrum, Spectrum,
     extra_from_settings(settings) {
-        avg_mode: AvgMode = split_averaging(settings.averaging).0,
-        avg_factor: f32 = split_averaging(settings.averaging).1,
-        peak_decay: f32 = split_averaging(settings.averaging).2,
+        averaging: AveragingControls = split_averaging(settings.averaging),
     }
 );
 
@@ -49,9 +53,9 @@ settings_messages!(SpectrumSettingsPane as pane, value {
     DisplayMode(SpectrumDisplayMode) => set_if_changed(&mut pane.settings.display_mode, value);
     WeightingMode(SpectrumWeightingMode) => set_if_changed(&mut pane.settings.weighting_mode, value);
     ShowSecondary(bool) => set_if_changed(&mut pane.settings.show_secondary_line, value);
-    Averaging(AvgMode) => pane.update_avg(|pane| set_if_changed(&mut pane.avg_mode, value));
-    AvgFactor(f32) => pane.update_avg(|pane| update_f32_range(&mut pane.avg_factor, value, EXP_R));
-    PeakDecay(f32) => pane.update_avg(|pane| update_f32_range(&mut pane.peak_decay, value, DECAY_R));
+    Averaging(AvgMode) => pane.update_avg(|avg| set_if_changed(&mut avg.mode, value));
+    AvgFactor(f32) => pane.update_avg(|avg| update_f32_range(&mut avg.factor, value, EXP_R));
+    PeakDecay(f32) => pane.update_avg(|avg| update_f32_range(&mut avg.peak_decay, value, DECAY_R));
     SmoothRadius(f32) => update_usize_from_f32(&mut pane.settings.smoothing_radius, value, SRAD_R);
     SmoothPasses(f32) => update_usize_from_f32(&mut pane.settings.smoothing_passes, value, SPAS_R);
     ShowGrid(bool) => set_if_changed(&mut pane.settings.show_grid, value);
@@ -80,16 +84,16 @@ impl SpectrumSettingsPane {
         .width(Length::Fill);
         let right = controls!(8.0;
             pick("Freq scale", FrequencyScale::ALL, s.frequency_scale, FreqScale);
-            pick("Averaging", AvgMode::ALL, self.avg_mode, Averaging);
+            pick("Averaging", AvgMode::ALL, self.averaging.mode, Averaging);
             pick("Hop divisor", &HOP_DIVISORS, hop_divisor, HopDivisor);
         )
         .width(Length::Fill);
-        let avg_ctrl = match self.avg_mode {
+        let avg_ctrl = match self.averaging.mode {
             AvgMode::Exponential => controls!(8.0;
-                slider!("Exp factor", self.avg_factor, EXP_R, AvgFactor, "{:.2}");
+                slider!("Exp factor", self.averaging.factor, EXP_R, AvgFactor, "{:.2}");
             ),
             AvgMode::PeakHold => controls!(8.0;
-                slider!("Peak decay", self.peak_decay, DECAY_R, PeakDecay, "{:.1} dB/s");
+                slider!("Peak decay", self.averaging.peak_decay, DECAY_R, PeakDecay, "{:.1} dB/s");
             ),
             AvgMode::None => column![],
         };
@@ -139,39 +143,39 @@ impl SpectrumSettingsPane {
         .into()
     }
 
-    fn update_avg<F>(&mut self, update: F) -> bool
-    where
-        F: FnOnce(&mut Self) -> bool,
-    {
-        let changed = update(self);
-        if changed {
-            self.sync_avg();
+    fn update_avg(&mut self, update: impl FnOnce(&mut AveragingControls) -> bool) -> bool {
+        if !update(&mut self.averaging) {
+            return false;
         }
-        changed
-    }
-
-    fn sync_avg(&mut self) {
-        self.settings.averaging = match self.avg_mode {
+        self.settings.averaging = match self.averaging.mode {
             AvgMode::None => AveragingMode::None,
             AvgMode::Exponential => AveragingMode::Exponential {
-                factor: self.avg_factor,
+                factor: self.averaging.factor,
             },
             AvgMode::PeakHold => AveragingMode::PeakHold {
-                decay_per_second: self.peak_decay,
+                decay_per_second: self.averaging.peak_decay,
             },
         }
         .normalized();
+        true
     }
 }
 
-fn split_averaging(avg: AveragingMode) -> (AvgMode, f32, f32) {
-    let (df, dd) = (
-        AveragingMode::default_exponential_factor(),
-        AveragingMode::default_peak_decay(),
-    );
-    match avg.normalized() {
-        AveragingMode::None => (AvgMode::None, df, dd),
-        AveragingMode::Exponential { factor } => (AvgMode::Exponential, factor, dd),
-        AveragingMode::PeakHold { decay_per_second } => (AvgMode::PeakHold, df, decay_per_second),
+fn split_averaging(avg: AveragingMode) -> AveragingControls {
+    let default_factor = AveragingMode::default_exponential_factor();
+    let default_peak_decay = AveragingMode::default_peak_decay();
+    let (mode, factor, peak_decay) = match avg.normalized() {
+        AveragingMode::None => (AvgMode::None, default_factor, default_peak_decay),
+        AveragingMode::Exponential { factor } => {
+            (AvgMode::Exponential, factor, default_peak_decay)
+        }
+        AveragingMode::PeakHold { decay_per_second } => {
+            (AvgMode::PeakHold, default_factor, decay_per_second)
+        }
+    };
+    AveragingControls {
+        mode,
+        factor,
+        peak_decay,
     }
 }
