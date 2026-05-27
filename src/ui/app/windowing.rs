@@ -76,11 +76,22 @@ fn bar_layershell_settings(bar: &BarSettings, height: u32) -> NewLayerShellSetti
     }
 }
 
-pub(super) fn open_base_window(
+fn base_window_settings(size: Size, with_decorations: bool) -> window::Settings {
+    window::Settings {
+        size,
+        min_size: Some(WINDOW_MIN_SIZE),
+        resizable: true,
+        decorations: with_decorations,
+        // Keep one alpha mode across base windows; visual windows need it for background opacity.
+        transparent: true,
+        ..Default::default()
+    }
+}
+
+fn open_base_window(
     use_layershell: bool,
     size: Size,
     with_decorations: bool,
-    transparent: bool,
 ) -> (window::Id, Task<Message>) {
     if use_layershell {
         let settings = iced_layershell::actions::IcedXdgWindowSettings {
@@ -89,16 +100,13 @@ pub(super) fn open_base_window(
         };
         message::base_window_open(settings)
     } else {
-        let (id, task) = window::open(window::Settings {
-            size,
-            min_size: Some(WINDOW_MIN_SIZE),
-            resizable: true,
-            decorations: with_decorations,
-            transparent,
-            ..Default::default()
-        });
+        let (id, task) = window::open(base_window_settings(size, with_decorations));
         (id, task.discard())
     }
+}
+
+fn open_settings_base_window(use_layershell: bool) -> (window::Id, Task<Message>) {
+    open_base_window(use_layershell, SETTINGS_WINDOW_SIZE, true)
 }
 
 pub(super) fn open_main_window(
@@ -115,7 +123,7 @@ pub(super) fn open_main_window(
         return (id, task, true, new_size);
     }
 
-    let (id, task) = open_base_window(use_layershell, base_size, with_decorations, true);
+    let (id, task) = open_base_window(use_layershell, base_size, with_decorations);
     (id, task, false, base_size)
 }
 
@@ -189,8 +197,7 @@ impl UiApp {
             self.settings_window = previous.map(|(id, _)| (id, new_panel));
             return Task::none();
         }
-        let (new_id, open_task) =
-            open_base_window(self.use_layershell, SETTINGS_WINDOW_SIZE, true, false);
+        let (new_id, open_task) = open_settings_base_window(self.use_layershell);
         self.settings_scroll = Default::default();
         self.settings_window = Some((new_id, new_panel));
         match previous {
@@ -219,7 +226,7 @@ impl UiApp {
         let window_size = popout_window_size(&slot.metadata);
         let use_decorations = self.settings_handle.borrow().data.decorations;
         let (new_id, open_task) =
-            open_base_window(self.use_layershell, window_size, use_decorations, true);
+            open_base_window(self.use_layershell, window_size, use_decorations);
         let mut popout = PopoutWindow {
             visual_id,
             kind,
@@ -511,8 +518,7 @@ impl UiApp {
         let Some(slot) = snapshot.iter().find(|s| s.id == visual_id) else {
             return window::close(old_id);
         };
-        let (new_id, open_task) =
-            open_base_window(self.use_layershell, SETTINGS_WINDOW_SIZE, true, false);
+        let (new_id, open_task) = open_settings_base_window(self.use_layershell);
         self.settings_window = Some((
             new_id,
             create_settings_panel(visual_id, slot.kind, &self.visual_manager),
@@ -531,7 +537,7 @@ impl UiApp {
                     popout_window_size(meta)
                 });
             let (new_id, open_task) =
-                open_base_window(self.use_layershell, window_size, use_decorations, true);
+                open_base_window(self.use_layershell, window_size, use_decorations);
             self.popout_windows.insert(new_id, popout);
             tasks.push(open_task);
             tasks.push(window::close(old_id));
@@ -541,12 +547,8 @@ impl UiApp {
 
     pub(super) fn recreate_windows(&mut self, use_decorations: bool) -> Task<Message> {
         let old_main_id = self.main_window_id;
-        let (new_main_id, open_main) = open_base_window(
-            self.use_layershell,
-            self.main_window_size,
-            use_decorations,
-            true,
-        );
+        let (new_main_id, open_main) =
+            open_base_window(self.use_layershell, self.main_window_size, use_decorations);
         self.main_window_id = new_main_id;
         self.main_window_is_layer = false;
         let settings_task = self.recreate_settings_window();
@@ -556,5 +558,16 @@ impl UiApp {
             settings_task,
             self.recreate_popout_windows(use_decorations),
         ])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base_windows_request_transparent_surfaces() {
+        assert!(base_window_settings(MAIN_WINDOW_INITIAL_SIZE, false).transparent);
+        assert!(base_window_settings(SETTINGS_WINDOW_SIZE, true).transparent);
     }
 }
