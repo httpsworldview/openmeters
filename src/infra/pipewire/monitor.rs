@@ -60,9 +60,10 @@ fn run_monitor_loop(
     let mut pending_ui_snapshot: Option<registry::RegistrySnapshot> = None;
 
     let flush_pending = |pending: &mut Option<registry::RegistrySnapshot>| -> bool {
-        let closed = pending
-            .take()
-            .is_some_and(|s| try_send_or_queue(&snapshot_tx, s, pending));
+        let Some(snapshot) = pending.take() else {
+            return false;
+        };
+        let closed = try_send_or_queue(&snapshot_tx, snapshot, pending);
         if closed {
             info!("{CLOSED_MSG}");
         }
@@ -95,12 +96,12 @@ fn run_monitor_loop(
                     break;
                 }
             }
-            Ok(None) | Err(mpsc::RecvTimeoutError::Timeout) => {
+            Ok(None) => {
                 if flush_pending(&mut pending_ui_snapshot) {
                     break;
                 }
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(_) => break,
         }
     }
 

@@ -529,6 +529,9 @@ where
             if dragging.is_none() {
                 return false;
             }
+            if let Some(on_drag) = &self.on_drag {
+                shell.publish(on_drag(DragEvent::Dropped));
+            }
             shell.capture_event();
             return true;
         }
@@ -633,12 +636,11 @@ where
         event: &Event,
         shell: &mut Shell<'_, Message>,
     ) -> bool {
-        let interaction = tree.state.downcast_mut::<Interaction>();
-        let Some(mut resizing) = interaction.resizing.take() else {
+        let Event::Mouse(mouse_event) = event else {
             return false;
         };
-        let Event::Mouse(mouse_event) = event else {
-            interaction.resizing = Some(resizing);
+        let interaction = tree.state.downcast_mut::<Interaction>();
+        let Some(mut resizing) = interaction.resizing.take() else {
             return false;
         };
         use mouse::Button;

@@ -33,7 +33,10 @@ settings_messages!(SpectrogramSettingsPane as pane, value {
     UseReassignment(bool) => set_if_changed(&mut pane.settings.use_reassignment, value);
     FloorDb(f32) => update_f32_range(&mut pane.settings.floor_db, value, FLOOR_DB_RANGE);
     TiltDb(f32) => update_f32_range(&mut pane.settings.tilt_db, value, TILT_DB_RANGE);
-    Rotation(f32) => set_if_changed(&mut pane.settings.rotation, value.round() as i8);
+    Rotation(f32) => set_if_changed(
+        &mut pane.settings.rotation,
+        ROTATION_RANGE.snap(value).round() as i8,
+    );
     ZeroPadding(usize) => set_if_changed(&mut pane.settings.zero_padding_factor, value);
     PianoRoll(PianoRollOverlay) => set_if_changed(&mut pane.settings.piano_roll_overlay, value);
 });

@@ -30,22 +30,21 @@ impl SliderRange {
 }
 
 pub fn set_if_changed<T: PartialEq>(target: &mut T, value: T) -> bool {
-    let changed = *target != value;
-    if changed {
-        *target = value;
+    if *target == value {
+        return false;
     }
-    changed
+    *target = value;
+    true
 }
 
-// Bits comparison so a write of a value with identical bits (e.g. the same NaN
-// payload) is elided, avoiding spurious change notifications.
+// Compare bits to avoid spurious writes for identical NaN payloads.
 pub fn update_f32_range(target: &mut f32, value: f32, range: SliderRange) -> bool {
     let snapped = range.snap(value);
-    let changed = target.to_bits() != snapped.to_bits();
-    if changed {
-        *target = snapped;
+    if target.to_bits() == snapped.to_bits() {
+        return false;
     }
-    changed
+    *target = snapped;
+    true
 }
 
 pub fn update_usize_from_f32(target: &mut usize, value: f32, range: SliderRange) -> bool {
@@ -74,16 +73,14 @@ pub fn get_closest_hop_divisor(fft_size: usize, hop_size: usize) -> usize {
         .unwrap_or(8)
 }
 
-// Preserves the current hop:fft ratio when fft_size changes, so power-of-two
-// FFT size edits don't silently drift hop_size off the slider's divisor grid.
+// Preserve the hop:fft ratio when fft_size changes.
 pub fn update_fft_size(fft_size: &mut usize, hop_size: &mut usize, new: usize) -> bool {
     let hop_div = get_closest_hop_divisor(*fft_size, *hop_size).max(1);
-    if set_if_changed(fft_size, new) {
-        *hop_size = (new / hop_div).max(1);
-        true
-    } else {
-        false
+    if !set_if_changed(fft_size, new) {
+        return false;
     }
+    *hop_size = (new / hop_div).max(1);
+    true
 }
 
 pub fn update_hop_divisor(fft_size: usize, hop_size: &mut usize, divisor: usize) -> bool {

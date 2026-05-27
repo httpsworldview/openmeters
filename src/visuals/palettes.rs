@@ -45,8 +45,7 @@ impl Palette {
         self.defaults.len()
     }
 
-    // Sets colors, only stores if different from defaults.
-    pub fn set(&mut self, colors: &[Color]) {
+    pub fn set_colors(&mut self, colors: &[Color]) {
         self.colors.clear();
         if colors.len() == self.defaults.len() && !palettes_equal(colors, self.defaults) {
             self.colors.extend_from_slice(colors);

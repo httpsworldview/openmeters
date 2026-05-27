@@ -11,7 +11,7 @@ use std::error::Error;
 use std::io::Cursor;
 use std::mem::size_of;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
 use std::thread;
 use std::time::Duration;
 use tracing::{error, info, warn};
@@ -124,10 +124,7 @@ impl CaptureBuffer {
     }
 
     pub fn recycle_samples_blocking(&self, samples: Vec<f32>) {
-        let mut recycled = self
-            .recycled
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut recycled = self.recycled.lock().unwrap_or_else(PoisonError::into_inner);
         self.recycle_samples_locked(samples, &mut recycled);
     }
 
@@ -142,10 +139,7 @@ impl CaptureBuffer {
         let Some(requested) = self.requested_pool_capacity() else {
             return;
         };
-        let mut recycled = self
-            .recycled
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut recycled = self.recycled.lock().unwrap_or_else(PoisonError::into_inner);
         if recycled.iter().all(|b| b.capacity() >= requested) {
             return;
         }
@@ -155,6 +149,7 @@ impl CaptureBuffer {
                 return;
             }
         }
+        drop(recycled);
         info!("[virtual-sink] grew capture buffer pool to {requested} samples per packet");
     }
 
@@ -243,6 +238,7 @@ fn convert_samples_to_f32_into(
             }));
         }};
     }
+    const I8_DIV: f32 = i8::MAX as f32;
     const I16_DIV: f32 = i16::MAX as f32;
     const I32_DIV: f32 = i32::MAX as f32;
 
@@ -258,7 +254,7 @@ fn convert_samples_to_f32_into(
             convert!(u32, |v| (v as f64 / u32::MAX as f64 * 2.0 - 1.0) as f32)
         }
         Fmt::U8 => out.extend(bytes.iter().map(|&b| (b as f32 - 128.0) / 128.0)),
-        Fmt::S8 => out.extend(bytes.iter().map(|&b| (b as i8) as f32 / i8::MAX as f32)),
+        Fmt::S8 => convert!(i8, |v| f32::from(v) / I8_DIV),
         _ => return None,
     }
     Some(())
@@ -267,9 +263,7 @@ fn convert_samples_to_f32_into(
 pub fn run() {
     ensure_capture_buffer();
 
-    let mut sink_thread = SINK_THREAD
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut sink_thread = SINK_THREAD.lock().unwrap_or_else(PoisonError::into_inner);
     if sink_thread.is_none() {
         *sink_thread = thread::Builder::new()
             .name("openmeters-pw-virtual-sink".into())
@@ -556,5 +550,12 @@ mod tests {
 
         assert!(converted_sample_count(&[0u8; 4], Fmt::Unknown).is_none());
         assert!(converted_sample_count(&[0u8; 3], Fmt::S16LE).is_none());
+    }
+
+    #[test]
+    fn signed_8_bit_sample_conversion() {
+        let bytes = [0x80, 0x7F];
+        assert_sample(&bytes, Fmt::S8, 2, 0, i8::MIN as f32 / i8::MAX as f32, 1e-5);
+        assert_sample(&bytes, Fmt::S8, 2, 1, 1.0, f32::EPSILON);
     }
 }

@@ -10,7 +10,7 @@ use std::{
     fs,
     path::PathBuf,
     rc::Rc,
-    sync::{Mutex, mpsc},
+    sync::{Mutex, PoisonError, mpsc},
     thread::JoinHandle,
     time::Duration,
 };
@@ -98,9 +98,7 @@ fn schedule_persist(mut path: PathBuf, mut settings: UiSettings) {
         module.strip_palette();
     }
 
-    let mut saver = SAVER
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut saver = SAVER.lock().unwrap_or_else(PoisonError::into_inner);
     if let Some((tx, _)) = saver.as_ref() {
         match tx.send((path, settings)) {
             Ok(()) => return,
@@ -130,11 +128,7 @@ fn schedule_persist(mut path: PathBuf, mut settings: UiSettings) {
 }
 
 fn flush_persist() {
-    let Some((tx, join)) = SAVER
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .take()
-    else {
+    let Some((tx, join)) = SAVER.lock().unwrap_or_else(PoisonError::into_inner).take() else {
         return;
     };
     drop(tx);

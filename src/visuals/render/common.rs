@@ -560,7 +560,8 @@ macro_rules! sdf_primitive {
                 viewport: &iced::advanced::graphics::Viewport,
             ) {
                 let key: $key_ty = $key_expr;
-                pipeline.inner.prepare_instance(device, queue, $label, key, &$self.build_vertices(viewport));
+                let vertices = $self.build_vertices(viewport);
+                pipeline.inner.prepare_instance(device, queue, $label, key, &vertices);
             }
 
             fn render(

@@ -16,7 +16,7 @@ use pw::types::ObjectType;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::rc::Rc;
-use std::sync::{Arc, Mutex, OnceLock, RwLock, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock, mpsc};
 use std::thread;
 use std::time::Duration;
 use tracing::{debug, error, info, warn};
@@ -33,15 +33,15 @@ static RUNTIME: OnceLock<RegistryRuntime> = OnceLock::new();
 static RUNTIME_INIT: Mutex<()> = Mutex::new(());
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|p| p.into_inner())
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 fn read_lock<T>(rwlock: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
-    rwlock.read().unwrap_or_else(|p| p.into_inner())
+    rwlock.read().unwrap_or_else(PoisonError::into_inner)
 }
 
 fn write_lock<T>(rwlock: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
-    rwlock.write().unwrap_or_else(|p| p.into_inner())
+    rwlock.write().unwrap_or_else(PoisonError::into_inner)
 }
 
 pub fn spawn_registry() -> Result<AudioRegistryHandle> {
@@ -120,7 +120,7 @@ impl RegistryUpdates {
     pub fn recv_timeout(
         &mut self,
         timeout: Duration,
-    ) -> Result<Option<RegistrySnapshot>, mpsc::RecvTimeoutError> {
+    ) -> Result<Option<RegistrySnapshot>, mpsc::RecvError> {
         if let Some(snapshot) = self.initial.take() {
             return Ok(Some(snapshot));
         }
@@ -128,7 +128,7 @@ impl RegistryUpdates {
         match self.receiver.recv_timeout(timeout) {
             Ok(snapshot) => Ok(Some(snapshot)),
             Err(mpsc::RecvTimeoutError::Timeout) => Ok(None),
-            Err(err) => Err(err),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(mpsc::RecvError),
         }
     }
 }

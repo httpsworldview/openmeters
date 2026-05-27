@@ -53,9 +53,6 @@ impl VisualSettings {
 #[serde(default)]
 pub struct ModuleSettings {
     pub enabled: Option<bool>,
-    // Module configuration payload.
-    //
-    // Persisted format is `{ "enabled": bool?, "config": <json>? }`.
     config: Option<Value>,
 }
 
@@ -86,10 +83,10 @@ impl ModuleSettings {
     pub fn override_palette(&mut self, palette: Option<&PaletteSettings>) {
         let obj = self
             .config
-            .get_or_insert_with(|| Value::Object(Default::default()));
+            .get_or_insert_with(|| Value::Object(serde_json::Map::new()));
         if let Value::Object(map) = obj {
             match palette.and_then(|p| serde_json::to_value(p).ok()) {
-                Some(v) => map.insert("palette".into(), v),
+                Some(value) => map.insert("palette".into(), value),
                 None => map.remove("palette"),
             };
         }
