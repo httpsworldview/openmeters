@@ -94,32 +94,31 @@ main.rs               - wires telemetry/settings, routing monitor, virtual sink/
 
 Keep dependencies shallow and one-way where possible. `domain` and
 `dsp` should stay UI- and PipeWire-free; `util` should remain
-low-level shared helpers rather than a place for app
-orchestration. `infra` stays PipeWire-focused: it receives
+low-level shared helpers. `infra` stays PipeWire-related: it receives
 `RoutingCommand`s, manages routing and the virtual sink, and emits
 registry snapshots/audio samples. `persistence` owns serialized
-settings and theme files; visual settings intentionally mirror visual
-processor config types. `visuals/registry.rs` owns visual descriptors,
+settings and theme files; visual settings mirror visual processor
+config types. `visuals/registry.rs` owns visual descriptors,
 `VisualManager`, settings/theme application, ordering, enablement, and
-delivery of meter-tap samples into enabled visual modules.  `ui`
-composes the app: it owns settings and visual manager handles,
-persists user changes, sends routing commands, subscribes to PipeWire
-registry/audio updates, and syncs the main window, popouts, config
-drawer, settings window, and layer-shell bar mode.
+delivery of samples into enabled visual modules. `ui` composes the
+app: it owns settings and visual manager handles, persists user
+changes, sends routing commands, subscribes to PipeWire registry/audio
+updates, and syncs the main window, popouts, config drawer, settings
+window, and bar mode.
 
 Each visual has `visuals/<name>.rs` plus
-`visuals/<name>/{processor,state,render}.rs`: core processors stay
-UI-free and turn `AudioBlock`s into snapshots, state owns
-visual/widget state and render parameters, and render files own custom
-wgpu primitives.  Shared render helpers and WGSL shaders live under
-`visuals/render/`.
+`visuals/<name>/{processor,state,render}.rs`: processors
+turn`AudioBlock`s into snapshots, state owns visual/widget state and
+render parameters, and render files own custom wgpu primitives.
+Shared render helpers and WGSL shaders live under `visuals/render/`
+and should be utilized whenever possible.
 
 ## Where to start
 
 - **Adding a new visual?** Use an existing visual as a template. Add
   the `VisualKind`, settings, palette defaults, registry descriptor,
   and a settings panel if needed. The `visuals!` and
-  `visualization_widget!`  macros handle most boilerplate.
+  `visualization_widget!` macros handle most boilerplate.
 - **UI changes?** Pages live in `ui/pages/`; the main app is in
   `ui/app.rs`; window/layer-shell behavior is in
   `ui/app/windowing.rs`.
