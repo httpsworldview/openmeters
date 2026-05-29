@@ -8,6 +8,37 @@ myself. So, thank you for being here. I hope you find this software
 useful, and if you have any feedback or suggestions, please don't
 hesitate to reach out.
 
+## What is OpenMeters?
+
+OpenMeters is, at its core, the code within
+`src/visuals/<name>/processor.rs`. The quality, rigor, and correctness
+of that code is the most important part of this entire project. To
+illustrate that importance I should be able to gesture towards any of
+the existing visuals, but in short:
+
+1. The spectrogram faithfully implements linear, log, and ERB
+   frequency scaling, and most importantly Auger and Flandrin's method
+   of spectral reassignment as described in their 1995 paper.
+2. The spectrum analyzer implements A-weighting according to IEC
+   61672:2003, and shares the same linear, log, and ERB frequency
+   scaling.
+3. Although there is no direct standard for generating audio waveforms
+   (as far as I am aware), our waveform's implementation takes
+   inspiration from Audacity and Chris Needham's `audiowaveform`.
+4. The oscilloscope implements steps 1-5 of Cheveigne and Kawahara's
+   YIN algorithm as presented in their 2002 paper, along with FFT
+   based autocorrelation and a strided coarse-fine searching approach.
+5. The stereometer separates bands using LR4 butterworth filters,
+   along with linear and log scaling. The correlation meter uses those
+   same Butterworth crossings.
+6. The loudness meter implements K-weighting relative to full
+   scale/LUFS momentary/short-term, True Peak, and RMS
+   fast/slow. Standards used include ITU-R BS.1770.
+
+The point of this section is not to discourage engagement with the
+project, rather it is to emphasize the expected level at which
+contributions are to operate.
+
 ## Licensing information
 
 OpenMeters is licensed under the GNU General Public License version
@@ -18,8 +49,7 @@ to their contributions.
 
 ## Commit message format
 
-There are no strict rules for commit messages, but I try to follow the
-general format of:
+Try to follow the general format of:
 
 ```text
 <type>(<scope>): <subject>
@@ -39,11 +69,13 @@ Where:
   for the body.
 - `<body>` is an optional longer description of the change, which can
   include motivation, implementation, etc.
-- `<DCO>` is the Developer Certificate of Origin, a sign-off
-  indicating that the contributor agrees to the terms of the
-  license. Use git's `--signoff` (`-s`) flag to automatically add this
-  to your commit messages (e.g. `git commit -s -m "chore: bump
-  dependencies"`).
+- `<DCO>` is a `Signed-off by:` footer certifying that you have the
+  right to submit the contribution under this project's license. Use
+  git's `--signoff` (`-s`) flag to add it automatically:
+  
+  ```bash
+  $ git commit -s -m "fix(spectrum): correct a-weighting calculation"
+  ```
 
 ## Quick start - GitHub
 
