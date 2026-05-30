@@ -79,7 +79,7 @@ impl AudioRegistryHandle {
         self.runtime.subscribe()
     }
 
-    pub fn send_command(&self, command: RegistryCommand) -> bool {
+    fn send_command(&self, command: RegistryCommand) -> bool {
         self.runtime.send_command(command)
     }
 

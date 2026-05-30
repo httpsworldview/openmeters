@@ -268,11 +268,9 @@ impl UiApp {
             .for_each(|popout| popout.sync_from_snapshot(&snapshot));
         let stale_windows: Vec<_> = self
             .popout_windows
-            .iter()
-            .filter_map(|(id, popout)| popout.cached.is_none().then_some(*id))
+            .extract_if(|_, popout| popout.cached.is_none())
+            .map(|(id, _)| id)
             .collect();
-        self.popout_windows
-            .retain(|_, popout| popout.cached.is_some());
         self.visuals_page
             .apply_snapshot_excluding(&snapshot, &self.popped_out_ids());
         Task::batch(

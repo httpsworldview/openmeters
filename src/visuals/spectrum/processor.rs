@@ -223,14 +223,7 @@ impl SpectrumProcessor {
         let floor = self.config.floor_db;
         let mut produced = false;
 
-        if self.a_weighting_db.len() != bins {
-            self.a_weighting_db = self
-                .snapshot
-                .frequency_bins
-                .iter()
-                .map(|&f| a_weight(f))
-                .collect();
-        }
+        debug_assert_eq!(self.a_weighting_db.len(), bins);
 
         while self.pcm_buffer.len() >= fft_size {
             copy_dc_removed_from_deque(&mut self.real_buffer[..fft_size], &self.pcm_buffer);

@@ -4,6 +4,8 @@
 use iced::Color;
 
 pub const EPSILON: f32 = 1e-4;
+pub const STOP_SPREAD_MIN: f32 = 0.2;
+pub const STOP_SPREAD_MAX: f32 = 5.0;
 
 pub fn f32_to_u8(v: f32) -> u8 {
     (v.clamp(0.0, 1.0) * 255.0).round() as u8
@@ -116,7 +118,7 @@ pub fn sanitize_stop_spreads(raw: Option<&[f32]>, count: usize) -> Vec<f32> {
     };
     for (dst, &value) in out.iter_mut().zip(raw.iter()) {
         *dst = if value.is_finite() {
-            value.clamp(0.2, 5.0)
+            value.clamp(STOP_SPREAD_MIN, STOP_SPREAD_MAX)
         } else {
             1.0
         };

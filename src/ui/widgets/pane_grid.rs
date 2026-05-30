@@ -18,13 +18,13 @@ pub struct State<T> {
 }
 
 impl<T> State<T> {
-    pub fn from_iter(items: impl IntoIterator<Item = T>) -> Option<Self> {
+    pub fn from_iter(items: impl IntoIterator<Item = T>) -> Self {
         let panes = items
             .into_iter()
             .enumerate()
             .map(|(id, item)| (Pane(id), item))
-            .collect::<Vec<_>>();
-        (!panes.is_empty()).then_some(Self { panes })
+            .collect();
+        Self { panes }
     }
 
     pub fn get(&self, pane: Pane) -> Option<&T> {
@@ -452,7 +452,7 @@ where
                 );
             });
             if interaction.dragging.is_some_and(|(p, _)| p == *pane) {
-                let accent = crate::ui::theme::accent_primary();
+                let accent = crate::ui::theme::ACCENT_PRIMARY;
                 renderer.fill_quad(
                     Quad {
                         bounds: child_layout.bounds(),
@@ -482,7 +482,7 @@ where
                     shadow: Default::default(),
                     snap: true,
                 },
-                Background::Color(with_alpha(crate::ui::theme::accent_primary(), 0.75)),
+                Background::Color(with_alpha(crate::ui::theme::ACCENT_PRIMARY, 0.75)),
             );
         }
     }

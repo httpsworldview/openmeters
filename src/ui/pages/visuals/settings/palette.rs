@@ -5,8 +5,8 @@ use super::widgets::clipped_text;
 use crate::ui::theme::{self, Palette};
 use crate::ui::widgets::{scroll_delta_lines, scroll_glow::ScrollGlow};
 use crate::util::color::{
-    EPSILON, colors_equal, f32_to_u8, find_segment, lerp_color, sanitize_stop_positions,
-    sanitize_stop_spreads, with_alpha,
+    EPSILON, STOP_SPREAD_MAX, STOP_SPREAD_MIN, colors_equal, f32_to_u8, find_segment, lerp_color,
+    sanitize_stop_positions, sanitize_stop_spreads, with_alpha,
 };
 use iced::advanced::renderer::{self, Quad};
 use iced::advanced::widget::{Tree, tree};
@@ -19,8 +19,6 @@ const SWATCH_SIZE: (f32, f32) = (56.0, 28.0);
 const GRADIENT_BAR_HEIGHT: f32 = 24.0;
 const MARKER_HEIGHT: f32 = 8.0;
 const MIN_STOP_GAP: f32 = 0.01;
-const MIN_SPREAD: f32 = 0.2;
-const MAX_SPREAD: f32 = 5.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PaletteEvent {
@@ -155,7 +153,7 @@ impl PaletteEditor {
                 if index >= self.palette.len() {
                     return false;
                 }
-                let next = spread.clamp(MIN_SPREAD, MAX_SPREAD);
+                let next = spread.clamp(STOP_SPREAD_MIN, STOP_SPREAD_MAX);
                 if (self.spreads[index] - next).abs() < EPSILON {
                     return false;
                 }
@@ -419,7 +417,7 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for GradientBar<'_> {
                 {
                     let dy = scroll_delta_lines(*delta);
                     let current = self.spreads.get(i).copied().unwrap_or(1.0);
-                    let new_spread = (current + dy * 0.2).clamp(MIN_SPREAD, MAX_SPREAD);
+                    let new_spread = (current + dy * 0.2).clamp(STOP_SPREAD_MIN, STOP_SPREAD_MAX);
                     if (current - new_spread).abs() >= EPSILON {
                         shell.publish(PaletteEvent::AdjustSpread {
                             index: i,

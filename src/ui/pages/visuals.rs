@@ -159,7 +159,7 @@ impl VisualsPage {
                 .map(|(_, p)| p.id)
                 .ne(slots.iter().map(|s| s.id))
         }) {
-            self.panes = self.build_panes(&slots);
+            self.panes = Some(self.build_panes(&slots));
             self.hovered_pane = None;
             return;
         }
@@ -190,7 +190,7 @@ impl VisualsPage {
             .collect()
     }
 
-    fn build_panes(&self, slots: &[&VisualSlotSnapshot]) -> Option<pane_grid::State<VisualPane>> {
+    fn build_panes(&self, slots: &[&VisualSlotSnapshot]) -> pane_grid::State<VisualPane> {
         let settings = self.settings.borrow();
         let saved_width_basis = &settings.data.visuals.width_basis;
         pane_grid::State::from_iter(slots.iter().map(|&slot| {

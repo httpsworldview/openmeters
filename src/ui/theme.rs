@@ -19,7 +19,7 @@ const TEXT_DARK: Color = Color::from_rgba(0.10, 0.10, 0.10, 1.0);
 pub const BORDER_SUBTLE: Color = Color::from_rgba(0.280, 0.288, 0.304, 1.0);
 const BORDER_FOCUS: Color = Color::from_rgba(0.520, 0.536, 0.560, 1.0);
 
-const ACCENT_PRIMARY: Color = Color::from_rgba(0.157, 0.157, 0.157, 1.0);
+pub(crate) const ACCENT_PRIMARY: Color = Color::from_rgba(0.157, 0.157, 0.157, 1.0);
 const ACCENT_SUCCESS: Color = Color::from_rgba(0.478, 0.557, 0.502, 1.0);
 const ACCENT_DANGER: Color = Color::from_rgba(0.557, 0.478, 0.478, 1.0);
 
@@ -65,7 +65,7 @@ pub fn focus_border() -> Border {
     border(BORDER_FOCUS)
 }
 
-pub fn button_style(theme: &Theme, base: Color, status: button::Status) -> button::Style {
+fn button_style(theme: &Theme, base: Color, status: button::Status) -> button::Style {
     use button::Status::{Hovered, Pressed};
     let bg = if status == Hovered {
         palette::deviate(base, 0.05)
@@ -140,10 +140,6 @@ pub fn resize_overlay(theme: &Theme) -> container::Style {
         text_color: Some(palette.background.base.text),
         ..Default::default()
     }
-}
-
-pub fn accent_primary() -> Color {
-    ACCENT_PRIMARY
 }
 
 pub fn slider_style(theme: &Theme, status: slider::Status) -> slider::Style {
