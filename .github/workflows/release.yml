@@ -25,7 +25,7 @@ jobs:
           rm -rf /var/lib/apt/lists/*
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
 
@@ -105,7 +105,7 @@ jobs:
 
       - name: Set up Rust toolchain
         if: steps.release.outputs.run_release == 'true'
-        uses: dtolnay/rust-toolchain@v1
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
           toolchain: ${{ steps.release.outputs.rust_toolchain }}
 
@@ -148,7 +148,7 @@ jobs:
             xz-utils
           rm -rf /var/lib/apt/lists/*
 
-          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.46.3
           export PATH="${HOME}/go/bin:${PATH}"
 
           cargo build --locked --release

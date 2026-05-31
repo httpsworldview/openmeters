@@ -23,15 +23,6 @@ pub struct BarSettings {
     pub monitor: Option<String>,
 }
 
-impl BarSettings {
-    pub fn sanitize(&mut self) {
-        self.height = clamp_bar_height(self.height);
-        if !self.enabled {
-            self.monitor = None;
-        }
-    }
-}
-
 impl Default for BarSettings {
     fn default() -> Self {
         Self {

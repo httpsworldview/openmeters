@@ -37,13 +37,11 @@ impl SettingsManager {
         let mut data: UiSettings = fs::read_to_string(&path)
             .ok()
             .and_then(|s| {
-                serde_json::from_str(&s)
+                UiSettings::from_json_lossy(&s)
                     .inspect_err(|e| warn!("[settings] parse error {path:?}: {e}"))
                     .ok()
             })
             .unwrap_or_default();
-        data.visuals.sanitize();
-        data.bar.sanitize();
         let theme_store = ThemeStore::new(&dir);
         // Populate background color from the active theme (settings.json no longer stores it).
         if let Some(theme_file) = theme_store.load(data.theme.as_deref().unwrap_or(BUILTIN_THEME))
@@ -176,8 +174,6 @@ impl SettingsHandle {
     pub fn update<F: FnOnce(&mut SettingsManager) -> R, R>(&self, mutate: F) -> R {
         let mut manager = self.0.borrow_mut();
         let result = mutate(&mut manager);
-        manager.data.visuals.sanitize_layout();
-        manager.data.bar.sanitize();
         schedule_persist(manager.path.clone(), manager.data.clone());
         result
     }

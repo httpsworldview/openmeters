@@ -22,7 +22,6 @@ pub const MIN_SPECTRUM_DB_FLOOR: f32 = DB_FLOOR;
 pub const MAX_SPECTRUM_DB_FLOOR: f32 = -1.0;
 pub const DEFAULT_SPECTRUM_DB_FLOOR: f32 = -80.0;
 
-const MIN_SPECTRUM_FFT_SIZE: usize = 128;
 const DEFAULT_SPECTRUM_HOP_DIVISOR: usize = 8;
 const DEFAULT_SPECTRUM_FFT_SIZE: usize = 4096;
 const DEFAULT_SPECTRUM_EXP_FACTOR: f32 = 0.5;
@@ -79,17 +78,13 @@ impl SpectrumConfig {
         if !self.sample_rate.is_finite() || self.sample_rate <= 0.0 {
             self.sample_rate = DEFAULT_SAMPLE_RATE;
         }
-
-        self.fft_size = self.fft_size.max(MIN_SPECTRUM_FFT_SIZE);
-
-        self.hop_size = if self.hop_size == 0 {
-            (self.fft_size / DEFAULT_SPECTRUM_HOP_DIVISOR).max(1)
-        } else {
-            self.hop_size.clamp(1, self.fft_size)
-        };
-
-        self.averaging = self.averaging.normalized();
-        self.floor_db = clamp_finite(self.floor_db, MIN_SPECTRUM_DB_FLOOR, MAX_SPECTRUM_DB_FLOOR);
+        self.fft_size = self.fft_size.max(1);
+        if self.hop_size == 0 {
+            self.hop_size = (self.fft_size / DEFAULT_SPECTRUM_HOP_DIVISOR).max(1);
+        }
+        if !self.floor_db.is_finite() || self.floor_db >= 0.0 {
+            self.floor_db = DEFAULT_SPECTRUM_DB_FLOOR;
+        }
     }
 }
 
@@ -102,36 +97,12 @@ pub enum AveragingMode {
 }
 
 impl AveragingMode {
-    pub fn normalized(self) -> Self {
-        match self {
-            AveragingMode::None => AveragingMode::None,
-            AveragingMode::Exponential { factor } => AveragingMode::Exponential {
-                factor: clamp_finite(factor, MIN_SPECTRUM_EXP_FACTOR, MAX_SPECTRUM_EXP_FACTOR),
-            },
-            AveragingMode::PeakHold { decay_per_second } => AveragingMode::PeakHold {
-                decay_per_second: clamp_finite(
-                    decay_per_second,
-                    MIN_SPECTRUM_PEAK_DECAY,
-                    MAX_SPECTRUM_PEAK_DECAY,
-                ),
-            },
-        }
-    }
-
     pub const fn default_exponential_factor() -> f32 {
         DEFAULT_SPECTRUM_EXP_FACTOR
     }
 
     pub const fn default_peak_decay() -> f32 {
         DEFAULT_SPECTRUM_PEAK_DECAY
-    }
-}
-
-fn clamp_finite(value: f32, min: f32, max: f32) -> f32 {
-    if value.is_finite() {
-        value.clamp(min, max)
-    } else {
-        min
     }
 }
 
@@ -267,7 +238,7 @@ impl SpectrumProcessor {
 
             self.last_update_at = Some(timestamp);
 
-            self.pcm_buffer.drain(..hop);
+            self.pcm_buffer.drain(..hop.min(self.pcm_buffer.len()));
 
             produced = true;
         }
@@ -401,9 +372,36 @@ fn a_weight(freq_hz: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{SpectrumConfig, SpectrumProcessor, a_weight};
+    use super::*;
     use crate::dsp::AudioBlock;
     use std::time::Instant;
+
+    #[test]
+    fn normalization_bounds_runtime_values_without_enforcing_gui_ranges() {
+        let mut invalid = SpectrumConfig {
+            sample_rate: f32::NAN,
+            fft_size: 0,
+            hop_size: 0,
+            floor_db: f32::INFINITY,
+            ..Default::default()
+        };
+        invalid.normalize();
+        assert_eq!(invalid.fft_size, 1);
+        assert_eq!(invalid.hop_size, 1);
+        assert_eq!(invalid.floor_db, DEFAULT_SPECTRUM_DB_FLOOR);
+
+        for (floor_db, expected) in [
+            (1.0, DEFAULT_SPECTRUM_DB_FLOOR),
+            (MIN_SPECTRUM_DB_FLOOR * 2.0, MIN_SPECTRUM_DB_FLOOR * 2.0),
+        ] {
+            let mut config = SpectrumConfig {
+                floor_db,
+                ..Default::default()
+            };
+            config.normalize();
+            assert_eq!(config.floor_db, expected);
+        }
+    }
 
     #[test]
     fn floor_change_reseeds_state_buffers_without_clearing_pending_audio() {

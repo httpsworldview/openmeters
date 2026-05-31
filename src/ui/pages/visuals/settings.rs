@@ -116,13 +116,13 @@ mod widgets;
 
 use self::palette::{PaletteEditor, PaletteEvent};
 use crate::persistence::settings::{
-    BUILTIN_THEME, HasPalette, ModuleSettings, PaletteSettings, SettingsHandle,
+    BUILTIN_THEME, HasPalette, ModuleSettings, PaletteSettings, SettingsConfig, SettingsHandle,
 };
 use crate::ui::theme::Palette;
 use crate::visuals::registry::{VisualId, VisualKind, VisualManagerHandle};
 use iced::widget::column;
 use iced::{Color, Element};
-use serde::{Serialize, de::DeserializeOwned};
+use serde::Serialize;
 
 settings_modules! {
     loudness => Loudness,
@@ -163,7 +163,7 @@ impl ActiveSettings {
     }
 }
 
-pub(super) fn load_settings_and_palette<T: DeserializeOwned + Default + HasPalette>(
+pub(super) fn load_settings_and_palette<T: SettingsConfig + HasPalette>(
     visual_manager: &VisualManagerHandle,
     kind: VisualKind,
 ) -> (T, PaletteEditor) {

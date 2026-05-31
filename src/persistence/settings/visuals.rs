@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::palette::{HasPalette, PaletteSettings};
+use super::{
+    lossy,
+    palette::{HasPalette, PaletteSettings},
+};
 use crate::domain::visuals::VisualKind;
 use crate::util::audio::{Channel, FrequencyScale, WindowKind};
 use crate::visuals::options::{
@@ -15,7 +18,7 @@ use crate::visuals::{
     stereometer::processor::StereometerConfig,
     waveform::processor::WaveformConfig,
 };
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use tracing::warn;
@@ -30,23 +33,61 @@ pub struct VisualSettings {
 }
 
 impl VisualSettings {
-    pub fn sanitize(&mut self) {
-        macro_rules! check {
-            ($($k:ident => $t:ty),+) => {|k: &VisualKind, m: &mut ModuleSettings| match k {
-                $(VisualKind::$k => m.config.as_ref().is_none_or(|v| <$t>::deserialize(v).is_ok())),+
-            }};
-        }
-        let valid = check!(Spectrogram => SpectrogramSettings, Spectrum => SpectrumSettings,
-            Oscilloscope => OscilloscopeSettings, Waveform => WaveformSettings,
-            Loudness => LoudnessSettings, Stereometer => StereometerSettings);
-        self.modules.retain(valid);
-        self.sanitize_layout();
+    pub(super) fn from_value_lossy(value: Value) -> Self {
+        lossy::settings(value, "visuals", Self::default(), |map, out| {
+            if let Some(value) = map.remove("modules") {
+                out.modules =
+                    visual_map(value, "visuals.modules", ModuleSettings::from_value_lossy);
+            }
+            if let Some(value) = map.remove("order") {
+                out.order = visual_order(value);
+            }
+            if let Some(value) = map.remove("width_basis") {
+                out.width_basis = visual_map(value, "visuals.width_basis", width_basis);
+            }
+        })
     }
+}
 
-    pub fn sanitize_layout(&mut self) {
-        self.width_basis
-            .retain(|_, basis| basis.is_finite() && *basis > 0.0);
+fn visual_map<T>(
+    value: Value,
+    scope: &str,
+    mut parse: impl FnMut(Value, &str) -> Option<T>,
+) -> HashMap<VisualKind, T> {
+    lossy::object(value, scope)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(key, value)| {
+            let scope = format!("{scope}.{key}");
+            let kind = lossy::value(Value::String(key), &scope)?;
+            parse(value, &scope).map(|value| (kind, value))
+        })
+        .collect()
+}
+
+fn visual_order(value: Value) -> Vec<VisualKind> {
+    let Value::Array(items) = value else {
+        warn!("[settings] visuals.order must be an array");
+        return Vec::new();
+    };
+    items
+        .into_iter()
+        .filter_map(|value| lossy::value(value, "visuals.order item"))
+        .collect()
+}
+
+fn width_basis(value: Value, scope: &str) -> Option<f32> {
+    let basis: f32 = lossy::value(value, scope)?;
+    if basis.is_finite() && basis > 0.0 {
+        Some(basis)
+    } else {
+        warn!("[settings] invalid {scope}: must be finite and greater than zero");
+        None
     }
+}
+
+pub(crate) trait SettingsConfig: Default {
+    fn from_value_lossy(value: &Value, scope: &str) -> Self;
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -57,30 +98,35 @@ pub struct ModuleSettings {
 }
 
 impl ModuleSettings {
-    pub fn with_config<T: Serialize>(config: &T) -> Self {
+    fn from_value_lossy(value: Value, scope: &str) -> Option<Self> {
+        let mut map = lossy::object(value, scope)?;
+        let mut out = Self::default();
+        lossy::field(&mut map, "enabled", &mut out.enabled, scope);
+        out.config = map.remove("config");
+        lossy::unknown(scope, &map);
+        Some(out)
+    }
+
+    pub(crate) fn with_config<T: Serialize>(config: &T) -> Self {
         Self {
             enabled: None,
             config: serde_json::to_value(config).ok(),
         }
     }
-    pub fn set_config<T: Serialize>(&mut self, config: &T) {
+    pub(crate) fn set_config<T: Serialize>(&mut self, config: &T) {
         self.config = serde_json::to_value(config).ok();
     }
-    pub fn parse_config<T: DeserializeOwned>(&self) -> Option<T> {
-        self.config.as_ref().and_then(|v| T::deserialize(v).ok())
-    }
-    pub fn config_or_default<T: DeserializeOwned + Default>(&self) -> T {
+    pub(crate) fn parse_config<T: SettingsConfig>(&self) -> Option<T> {
         self.config
             .as_ref()
-            .and_then(|v| {
-                T::deserialize(v)
-                    .inspect_err(|e| warn!("[settings] config parse error: {e}"))
-                    .ok()
-            })
-            .unwrap_or_default()
+            .filter(|value| !value.is_null())
+            .map(|value| T::from_value_lossy(value, "config"))
+    }
+    pub(crate) fn config_or_default<T: SettingsConfig>(&self) -> T {
+        self.parse_config().unwrap_or_default()
     }
     /// Replaces the palette field inside the config JSON without touching other fields.
-    pub fn override_palette(&mut self, palette: Option<&PaletteSettings>) {
+    pub(crate) fn override_palette(&mut self, palette: Option<&PaletteSettings>) {
         let obj = self
             .config
             .get_or_insert_with(|| Value::Object(serde_json::Map::new()));
@@ -93,7 +139,7 @@ impl ModuleSettings {
     }
 
     /// Extracts palette data from the config JSON without consuming it.
-    pub fn extract_palette(&self) -> Option<PaletteSettings> {
+    pub(crate) fn extract_palette(&self) -> Option<PaletteSettings> {
         self.config
             .as_ref()
             .and_then(|v| v.get("palette"))
@@ -101,7 +147,7 @@ impl ModuleSettings {
     }
 
     /// Removes palette data from the config JSON (for clean settings.json persistence).
-    pub fn strip_palette(&mut self) {
+    pub(crate) fn strip_palette(&mut self) {
         if let Some(Value::Object(map)) = &mut self.config {
             map.remove("palette");
         }
@@ -109,10 +155,17 @@ impl ModuleSettings {
 }
 
 macro_rules! visual_settings {
-    (@has_palette $name:ident) => {
+    (@impls $name:ident { $($field:ident),* $(,)? }) => {
         impl HasPalette for $name {
             fn palette(&self) -> Option<&PaletteSettings> { self.palette.as_ref() }
             fn set_palette(&mut self, palette: Option<PaletteSettings>) { self.palette = palette; }
+        }
+        impl SettingsConfig for $name {
+            fn from_value_lossy(value: &Value, scope: &str) -> Self {
+                lossy::settings(value.clone(), scope, Self::default(), |map, out| {
+                    lossy::fields!(map, out, scope; $($field),*);
+                })
+            }
         }
     };
     ($name:ident from $config_ty:ty { $($field:ident : $ty:ty),* $(,)? } $(extra { $($extra:ident : $extra_ty:ty = $default:expr),* $(,)? })?) => {
@@ -126,14 +179,14 @@ macro_rules! visual_settings {
             }
             pub fn apply_to(&self, cfg: &mut $config_ty) { $(cfg.$field = self.$field;)* }
         }
-        visual_settings!(@has_palette $name);
+        visual_settings!(@impls $name { $($field,)* $($($extra,)*)? palette });
     };
     ($name:ident { $($field:ident : $ty:ty = $default:expr),* $(,)? }) => {
         #[derive(Debug, Clone, Serialize, Deserialize)]
         #[serde(default)]
         pub struct $name { $(pub $field: $ty,)* pub palette: Option<PaletteSettings> }
         impl Default for $name { fn default() -> Self { Self { $($field: $default,)* palette: None } } }
-        visual_settings!(@has_palette $name);
+        visual_settings!(@impls $name { $($field,)* palette });
     };
 }
 

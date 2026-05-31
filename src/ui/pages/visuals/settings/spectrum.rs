@@ -155,8 +155,7 @@ impl SpectrumSettingsPane {
             AvgMode::PeakHold => AveragingMode::PeakHold {
                 decay_per_second: self.averaging.peak_decay,
             },
-        }
-        .normalized();
+        };
         true
     }
 }
@@ -164,7 +163,7 @@ impl SpectrumSettingsPane {
 fn split_averaging(avg: AveragingMode) -> AveragingControls {
     let default_factor = AveragingMode::default_exponential_factor();
     let default_peak_decay = AveragingMode::default_peak_decay();
-    let (mode, factor, peak_decay) = match avg.normalized() {
+    let (mode, factor, peak_decay) = match avg {
         AveragingMode::None => (AvgMode::None, default_factor, default_peak_decay),
         AveragingMode::Exponential { factor } => {
             (AvgMode::Exponential, factor, default_peak_decay)

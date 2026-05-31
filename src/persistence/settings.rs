@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 mod bar;
+mod lossy;
 mod palette;
 mod schema;
 mod store;
@@ -20,6 +21,7 @@ pub use palette::{HasPalette, PaletteSettings};
 pub use store::SettingsHandle;
 pub(crate) use theme::canonical_theme_name;
 pub use theme::{BUILTIN_THEME, ThemeChoice, ThemeFile};
+pub(crate) use visuals::SettingsConfig;
 pub use visuals::{
     LoudnessSettings, ModuleSettings, OscilloscopeSettings, SpectrogramSettings, SpectrumSettings,
     StereometerSettings, VisualSettings, WaveformSettings,

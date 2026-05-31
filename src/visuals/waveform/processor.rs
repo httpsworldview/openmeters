@@ -14,6 +14,9 @@ pub const MIN_SCROLL_SPEED: f32 = 10.0;
 pub const MAX_SCROLL_SPEED: f32 = 1000.0;
 pub const MAX_COLUMN_CAPACITY: usize = 8_192;
 
+const DEFAULT_SCROLL_SPEED: f32 = 300.0;
+const DEFAULT_BAND_DB_FLOOR: f32 = -60.0;
+const MIN_RUNTIME_SCROLL_SPEED: f32 = 1.0;
 const FREQUENCY_FFT_SIZE: usize = 2048;
 
 const MIN_FREQ_HZ: f32 = 20.0;
@@ -41,25 +44,32 @@ impl Default for WaveformConfig {
     fn default() -> Self {
         Self {
             sample_rate: DEFAULT_SAMPLE_RATE,
-            scroll_speed: 300.0,
+            scroll_speed: DEFAULT_SCROLL_SPEED,
             max_columns: MAX_COLUMN_CAPACITY,
-            band_db_floor: -60.0,
+            band_db_floor: DEFAULT_BAND_DB_FLOOR,
         }
     }
 }
 
 impl WaveformConfig {
     fn normalized(mut self) -> Self {
-        self.sample_rate = self.sample_rate.max(1.0);
-        self.scroll_speed = self.scroll_speed.clamp(MIN_SCROLL_SPEED, MAX_SCROLL_SPEED);
+        if !self.sample_rate.is_finite() || self.sample_rate <= 0.0 {
+            self.sample_rate = DEFAULT_SAMPLE_RATE;
+        }
+        if !self.scroll_speed.is_finite() || self.scroll_speed <= 0.0 {
+            self.scroll_speed = DEFAULT_SCROLL_SPEED;
+        } else {
+            self.scroll_speed = self.scroll_speed.max(MIN_RUNTIME_SCROLL_SPEED);
+        }
+        if !self.band_db_floor.is_finite() || self.band_db_floor >= 0.0 {
+            self.band_db_floor = DEFAULT_BAND_DB_FLOOR;
+        }
         self.max_columns = self.max_columns.clamp(1, MAX_COLUMN_CAPACITY);
-        self.band_db_floor = self
-            .band_db_floor
-            .clamp(MIN_BAND_DB_FLOOR, MAX_BAND_DB_FLOOR);
         self
     }
     fn samples_per_column(&self) -> usize {
-        ((self.sample_rate / self.scroll_speed).round() as usize).max(1)
+        let speed = self.scroll_speed.max(MIN_RUNTIME_SCROLL_SPEED);
+        ((self.sample_rate / speed).round() as usize).max(1)
     }
 }
 
@@ -508,6 +518,39 @@ mod tests {
 
     fn extract_snapshot(update: Option<WaveformSnapshot>) -> WaveformSnapshot {
         update.expect("expected snapshot")
+    }
+
+    #[test]
+    fn normalization_bounds_runtime_values_without_enforcing_gui_ranges() {
+        let invalid = WaveformConfig {
+            sample_rate: f32::NAN,
+            scroll_speed: 0.0,
+            max_columns: 0,
+            band_db_floor: f32::INFINITY,
+        }
+        .normalized();
+
+        assert_eq!(invalid.sample_rate, DEFAULT_SAMPLE_RATE);
+        assert_eq!(invalid.scroll_speed, DEFAULT_SCROLL_SPEED);
+        assert_eq!(invalid.max_columns, 1);
+        assert_eq!(invalid.band_db_floor, DEFAULT_BAND_DB_FLOOR);
+
+        let too_many = WaveformConfig {
+            max_columns: MAX_COLUMN_CAPACITY + 1,
+            ..Default::default()
+        }
+        .normalized();
+        assert_eq!(too_many.max_columns, MAX_COLUMN_CAPACITY);
+
+        let mut slow = config(0.25, MAX_COLUMN_CAPACITY).normalized();
+        assert_eq!(slow.scroll_speed, MIN_RUNTIME_SCROLL_SPEED);
+        assert_eq!(slow.samples_per_column(), RATE as usize);
+
+        slow.scroll_speed = MAX_SCROLL_SPEED * 2.0;
+        slow.band_db_floor = MIN_BAND_DB_FLOOR * 2.0;
+        let custom = slow.normalized();
+        assert_eq!(custom.scroll_speed, MAX_SCROLL_SPEED * 2.0);
+        assert_eq!(custom.band_db_floor, MIN_BAND_DB_FLOOR * 2.0);
     }
 
     fn centroid_for(frequency: f32, scroll_speed: f32) -> f32 {

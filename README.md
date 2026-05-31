@@ -169,7 +169,10 @@ packages for Debian or Fedora.
 - **Configurations are saved to
   `~/.config/openmeters/settings.json`.**
 
-- Invalid JSON will be ignored and default settings will be used
+- `settings.json` is intentionally editable: GUI ranges are not hard
+  limits, and unsupported keys or structurally invalid values are logged
+  and ignored at the narrowest possible scope.
+- Invalid JSON syntax will be ignored and default settings will be used
   instead. Your configuration file will not be overwritten unless you
   change settings in the GUI.
 - The internal structure of this file is stable as of now, and any
