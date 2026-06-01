@@ -668,7 +668,7 @@ mod tests {
     }
 
     #[test]
-    fn ring_buffer_wraps_correctly() {
+    fn snapshot_retains_latest_columns_after_history_exceeds_capacity() {
         let config = config(200.0, 512);
         let mut processor = WaveformProcessor::new(config);
         for batch in 0..512 + 10 {
@@ -678,9 +678,24 @@ mod tests {
                 RATE,
             ));
         }
+
         assert_eq!(
             processor.snapshot.columns, 512,
-            "ring buffer should cap at max_columns"
+            "snapshot should cap at max_columns"
         );
+        assert_eq!(processor.snapshot.max_values.len(), 512);
+        let expected = (11..=522).map(|n| n as f32 * 0.001);
+        for (idx, (actual, expected)) in processor
+            .snapshot
+            .max_values
+            .iter()
+            .zip(expected)
+            .enumerate()
+        {
+            assert!(
+                (*actual - expected).abs() < f32::EPSILON,
+                "column {idx}: expected {expected}, got {actual}"
+            );
+        }
     }
 }

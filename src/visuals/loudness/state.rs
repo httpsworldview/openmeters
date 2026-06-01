@@ -127,11 +127,6 @@ impl LoudnessState {
         self.palette = *palette;
     }
 
-    #[cfg(test)]
-    pub fn short_term_average(&self) -> f32 {
-        self.short_term_loudness
-    }
-
     fn get_value(&self, mode: MeterMode, channel: usize) -> f32 {
         let per_channel =
             |buf: &[f32; MAX_CHANNELS]| buf.get(channel).copied().unwrap_or(DEFAULT_RANGE.0);
@@ -322,26 +317,31 @@ crate::visuals::visualization_widget!(Loudness, LoudnessState, |this, renderer, 
 mod tests {
     use super::*;
 
+    fn visible_bar_values(state: &LoudnessState) -> Vec<Vec<f32>> {
+        state
+            .visual_params(Rectangle::new(Point::ORIGIN, Size::new(200.0, 100.0)))
+            .bars
+            .iter()
+            .map(|bar| bar.iter().map(|fill| fill.db).collect())
+            .collect()
+    }
+
     #[test]
-    fn state_aggregates_channels() {
+    fn visible_bars_use_configured_modes_and_channel_aggregation() {
         let mut state = LoudnessState::new();
         state.apply_snapshot(LoudnessSnapshot {
             short_term_loudness: -9.0,
             momentary_loudness: -7.5,
-            rms_fast_db: [-15.0, -9.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-            rms_slow_db: [-14.0, -8.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-            true_peak_db: [-1.0, -3.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-            channel_count: 2,
+            rms_fast_db: [-15.0, -12.0, -20.0, -60.0, -6.0, -3.0, 0.0, 0.0],
+            rms_slow_db: [-14.0, -8.0, -20.0, -60.0, -6.0, -3.0, 0.0, 0.0],
+            true_peak_db: [-12.0, -18.0, -2.0, -60.0, -9.0, -6.0, 0.0, 0.0],
+            channel_count: 6,
         });
 
-        assert!((state.short_term_average() + 9.0).abs() < f32::EPSILON);
-        assert_eq!(state.true_peak_db[0], -1.0);
-        assert_eq!(state.true_peak_db[1], -3.0);
+        assert_eq!(visible_bar_values(&state), vec![vec![-2.0, -2.0], vec![-9.0]]);
 
-        let params = state.visual_params(Rectangle::new(Point::ORIGIN, Size::new(200.0, 100.0)));
-        assert_eq!(params.bars.len(), 2);
-        assert_eq!(params.bars[0].len(), 2);
-        assert_eq!(params.bars[1].len(), 1);
+        state.set_modes(MeterMode::RmsFast, MeterMode::LufsMomentary);
+        assert_eq!(visible_bar_values(&state), vec![vec![-6.0, -3.0], vec![-7.5]]);
     }
 
     #[test]

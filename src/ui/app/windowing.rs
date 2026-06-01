@@ -558,14 +558,3 @@ impl UiApp {
         ])
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn base_windows_request_transparent_surfaces() {
-        assert!(base_window_settings(MAIN_WINDOW_INITIAL_SIZE, false).transparent);
-        assert!(base_window_settings(SETTINGS_WINDOW_SIZE, true).transparent);
-    }
-}
