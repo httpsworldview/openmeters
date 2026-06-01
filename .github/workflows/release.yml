@@ -13,12 +13,16 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build-and-publish:
+  build-and-package:
     runs-on: ubuntu-24.04
     permissions:
-      contents: write
+      contents: read
     container:
-      image: debian:13
+      image: debian:13@sha256:2477d9ee0ead4370c778ce3aa42258a0b07684d1a84ded8f4af518383fbc3f2d # debian:13 linux/amd64
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+      commit: ${{ steps.release.outputs.commit }}
 
     steps:
       - name: Install workflow prerequisites
@@ -26,19 +30,43 @@ jobs:
         run: |
           set -euo pipefail
           apt-get update
-          apt-get install -y --no-install-recommends ca-certificates curl gh git
+          apt-get install -y --no-install-recommends \
+            build-essential \
+            ca-certificates \
+            curl \
+            git \
+            golang-go \
+            libpipewire-0.3-dev \
+            libwayland-dev \
+            libx11-dev \
+            libx11-xcb-dev \
+            libxext-dev \
+            libxfixes-dev \
+            libxrandr-dev \
+            libxcursor-dev \
+            libxi-dev \
+            libxinerama-dev \
+            libxkbcommon-dev \
+            libfontconfig1-dev \
+            libfreetype6-dev \
+            libvulkan-dev \
+            make \
+            pkg-config \
+            xz-utils
           rm -rf /var/lib/apt/lists/*
 
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Validate release tag and prepare notes
         id: release
         shell: bash
         env:
           TAG_NAME: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
 
@@ -64,16 +92,34 @@ jobs:
             exit 1
           fi
 
+          head_commit="$(git rev-parse HEAD)"
+          tag_commit="$(git rev-parse "${tag}^{commit}")"
+          if [ "$tag_commit" != "$head_commit" ]; then
+            echo "Release tag ${tag} points at ${tag_commit}, but checkout is ${head_commit}." >&2
+            exit 1
+          fi
+
+          default_branch="${DEFAULT_BRANCH:-main}"
+          default_branch_ref="origin/${default_branch}"
+          if ! git rev-parse --verify "${default_branch_ref}^{commit}" >/dev/null; then
+            echo "Default branch ref ${default_branch_ref} is unavailable from checkout." >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$head_commit" "$default_branch_ref"; then
+            echo "Release commit ${head_commit} is not contained in ${default_branch_ref}." >&2
+            exit 1
+          fi
+
           rust_toolchain="$(cargo_value rust-version < Cargo.toml)"
           rust_toolchain="${rust_toolchain:-stable}"
 
-          previous_tag="$(git tag --merged HEAD --sort=-v:refname --list 'v[0-9]*.[0-9]*.[0-9]*' \
+          previous_tag="$(git tag --merged "$head_commit" --sort=-v:refname --list 'v[0-9]*.[0-9]*.[0-9]*' \
             | grep -Fvx "$tag" \
             | head -n 1 || true)"
 
-          changelog_range="${GITHUB_SHA}"
+          changelog_range="${head_commit}"
           if [ -n "$previous_tag" ] && git rev-parse "${previous_tag}^{commit}" >/dev/null 2>&1; then
-            changelog_range="${previous_tag}..${GITHUB_SHA}"
+            changelog_range="${previous_tag}..${head_commit}"
           fi
 
           changelog="$(git log --no-merges --pretty=format:'%h %s' "$changelog_range" 2>/dev/null || true)"
@@ -81,7 +127,7 @@ jobs:
             changelog="(no changelog entries)"
           fi
 
-          notes_file="${RUNNER_TEMP}/release-notes.md"
+          notes_file="release-notes.md"
           {
             echo "## Changelog"
             echo
@@ -94,31 +140,27 @@ jobs:
             echo "version=${version}"
             echo "rust_toolchain=${rust_toolchain}"
             echo "tag=${tag}"
+            echo "commit=${head_commit}"
             echo "notes_file=${notes_file}"
           } >> "$GITHUB_OUTPUT"
-
-      - name: Ensure release does not already exist
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG_NAME: ${{ steps.release.outputs.tag }}
-        run: |
-          set -euo pipefail
-
-          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
-            echo "Release ${TAG_NAME} already exists; refusing to overwrite it." >&2
-            exit 1
-          fi
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
           toolchain: ${{ steps.release.outputs.rust_toolchain }}
+          components: rustfmt, clippy
 
-      - name: Build and publish release
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint
+        run: cargo clippy --workspace --locked --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace --locked --all-targets
+
+      - name: Build and package release assets
         shell: bash
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
 
@@ -129,29 +171,6 @@ jobs:
             exit 1
           fi
 
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            build-essential \
-            golang-go \
-            libpipewire-0.3-dev \
-            libwayland-dev \
-            libx11-dev \
-            libx11-xcb-dev \
-            libxext-dev \
-            libxfixes-dev \
-            libxrandr-dev \
-            libxcursor-dev \
-            libxi-dev \
-            libxinerama-dev \
-            libxkbcommon-dev \
-            libfontconfig1-dev \
-            libfreetype6-dev \
-            libvulkan-dev \
-            make \
-            pkg-config \
-            xz-utils
-          rm -rf /var/lib/apt/lists/*
-
           go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.46.3
           export PATH="${HOME}/go/bin:${PATH}"
 
@@ -159,8 +178,6 @@ jobs:
           make -C packaging all
 
           version="${{ steps.release.outputs.version }}"
-          tag="${{ steps.release.outputs.tag }}"
-          notes_file="${{ steps.release.outputs.notes_file }}"
           dist_dir="${PWD}/dist"
 
           shopt -s nullglob
@@ -173,11 +190,150 @@ jobs:
           shopt -u nullglob
 
           if [ "${#assets[@]}" -ne 4 ]; then
-            echo "Expected 4 release artifacts in ${dist_dir}, found ${#assets[@]}."
+            echo "Expected 4 release artifacts in ${dist_dir}, found ${#assets[@]}." >&2
             for asset in "${assets[@]}"; do
-              echo "  ${asset}"
+              echo "  ${asset}" >&2
             done
             exit 1
           fi
 
-          gh release create "$tag" --target "$GITHUB_SHA" --title "openmeters ${version}" --notes-file "$notes_file" --verify-tag "${assets[@]}"
+      - name: Upload release assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-assets
+          path: |
+            dist/openmeters-${{ steps.release.outputs.version }}-*.tar.xz
+            dist/openmeters_${{ steps.release.outputs.version }}-*.deb
+            dist/openmeters-${{ steps.release.outputs.version }}-*.rpm
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload release notes
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-notes
+          path: ${{ steps.release.outputs.notes_file }}
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build-and-package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.build-and-package.outputs.version }}
+      TAG_NAME: ${{ needs.build-and-package.outputs.tag }}
+      COMMIT: ${{ needs.build-and-package.outputs.commit }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      GH_REPO: ${{ github.repository }}
+
+    steps:
+      - name: Validate remote release target
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          tag_ref="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG_NAME}" --jq '.object.type + " " + .object.sha')"
+          read -r object_type object_sha <<< "$tag_ref"
+
+          case "$object_type" in
+            commit)
+              tag_commit="$object_sha"
+              ;;
+            tag)
+              tag_target="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${object_sha}" --jq '.object.type + " " + .object.sha')"
+              read -r target_type tag_commit <<< "$tag_target"
+              if [ "$target_type" != "commit" ]; then
+                echo "Release tag ${TAG_NAME} ultimately points at a ${target_type}, not a commit." >&2
+                exit 1
+              fi
+              ;;
+            *)
+              echo "Release tag ${TAG_NAME} points at unsupported git object type ${object_type}." >&2
+              exit 1
+              ;;
+          esac
+
+          if [ "$tag_commit" != "$COMMIT" ]; then
+            echo "Remote release tag ${TAG_NAME} points at ${tag_commit}, but validated build commit is ${COMMIT}." >&2
+            exit 1
+          fi
+
+          default_branch="${DEFAULT_BRANCH:-main}"
+          compare_status="$(gh api "repos/${GITHUB_REPOSITORY}/compare/${COMMIT}...${default_branch}" --jq '.status')"
+          case "$compare_status" in
+            identical|ahead)
+              ;;
+            *)
+              echo "Default branch ${default_branch} does not contain release commit ${COMMIT}; compare status: ${compare_status}." >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Download release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-assets
+          path: dist
+
+      - name: Download release notes
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-notes
+          path: release-notes
+
+      - name: Publish GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          notes_file="${PWD}/release-notes/release-notes.md"
+          if [ ! -s "$notes_file" ]; then
+            echo "Release notes file ${notes_file} is missing or empty." >&2
+            exit 1
+          fi
+
+          dist_dir="${PWD}/dist"
+          (cd "$dist_dir" && sha256sum --check SHA256SUMS)
+
+          shopt -s nullglob
+          assets=(
+            "${dist_dir}"/openmeters-"${VERSION}"-*.tar.xz
+            "${dist_dir}"/openmeters_"${VERSION}"-*.deb
+            "${dist_dir}"/openmeters-"${VERSION}"-*.rpm
+            "${dist_dir}"/SHA256SUMS
+          )
+          shopt -u nullglob
+
+          if [ "${#assets[@]}" -ne 4 ]; then
+            echo "Expected 4 downloaded release artifacts in ${dist_dir}, found ${#assets[@]}." >&2
+            for asset in "${assets[@]}"; do
+              echo "  ${asset}" >&2
+            done
+            exit 1
+          fi
+
+          if is_draft="$(gh release view "$TAG_NAME" --json isDraft --jq .isDraft 2>/dev/null)"; then
+            if [ "$is_draft" = "true" ]; then
+              echo "Deleting existing draft release ${TAG_NAME} before recreating it."
+              gh release delete "$TAG_NAME" --yes
+            else
+              echo "Release ${TAG_NAME} already exists and is not a draft; refusing to overwrite it." >&2
+              exit 1
+            fi
+          fi
+
+          gh release create "$TAG_NAME" \
+            --draft \
+            --target "$COMMIT" \
+            --title "openmeters ${VERSION}" \
+            --notes-file "$notes_file" \
+            --verify-tag
+          gh release upload "$TAG_NAME" "${assets[@]}"
+          gh release edit "$TAG_NAME" --draft=false
