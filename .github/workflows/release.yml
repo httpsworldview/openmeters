@@ -2,16 +2,21 @@ name: Release
 
 on:
   push:
-    branches: [main]
-    paths: [Cargo.toml]
-  workflow_dispatch:
+    tags:
+      - 'v*'
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build-and-publish:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     container:
       image: debian:13
 
@@ -21,7 +26,7 @@ jobs:
         run: |
           set -euo pipefail
           apt-get update
-          apt-get install -y --no-install-recommends ca-certificates curl git
+          apt-get install -y --no-install-recommends ca-certificates curl gh git
           rm -rf /var/lib/apt/lists/*
 
       - name: Checkout
@@ -29,61 +34,46 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Detect version bump and prepare release notes
+      - name: Validate release tag and prepare notes
         id: release
         shell: bash
+        env:
+          TAG_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
 
           cargo_value() {
             local key="$1"
             awk -F'"' -v key="$key" '
-              /^\[package\]/ { in_pkg = 1; next }
-              /^\[/ { in_pkg = 0 }
-              in_pkg && $0 ~ "^" key "[[:space:]]*=" { print $2; exit }
+              /^[[:space:]]*\[package\][[:space:]]*$/ { in_pkg = 1; next }
+              /^[[:space:]]*\[/ { in_pkg = 0 }
+              in_pkg && $0 ~ "^[[:space:]]*" key "[[:space:]]*=" { print $2; exit }
             '
           }
 
-          current_version="$(cargo_value version < Cargo.toml)"
-          if [ -z "$current_version" ]; then
+          version="$(cargo_value version < Cargo.toml)"
+          if [ -z "$version" ]; then
             echo "Could not parse package.version from Cargo.toml" >&2
+            exit 1
+          fi
+
+          tag="${TAG_NAME}"
+          expected_tag="v${version}"
+          if [ "$tag" != "$expected_tag" ]; then
+            echo "Release tag ${tag} does not match Cargo.toml package.version (${version}); expected ${expected_tag}." >&2
             exit 1
           fi
 
           rust_toolchain="$(cargo_value rust-version < Cargo.toml)"
           rust_toolchain="${rust_toolchain:-stable}"
 
-          previous_sha="${{ github.event.before }}"
-          if [ -z "$previous_sha" ] || [ "$previous_sha" = "0000000000000000000000000000000000000000" ]; then
-            previous_sha="${GITHUB_SHA}^"
-          fi
-
-          previous_version=""
-          if git rev-parse "$previous_sha" >/dev/null 2>&1; then
-            previous_version="$(git show "$previous_sha:Cargo.toml" | cargo_value version)"
-          fi
-
-          echo "current_version=${current_version}" >> "$GITHUB_OUTPUT"
-          echo "rust_toolchain=${rust_toolchain}" >> "$GITHUB_OUTPUT"
-
-          manual_release="${{ github.event_name == 'workflow_dispatch' }}"
-          if [ "$manual_release" != "true" ] && [ "$current_version" = "$previous_version" ]; then
-            echo "run_release=false" >> "$GITHUB_OUTPUT"
-            echo "No version bump in Cargo.toml; skipping release."
-            exit 0
-          fi
-
-          changelog_base="$previous_sha"
-          if [ -n "$previous_version" ] && git rev-parse "v${previous_version}^{commit}" >/dev/null 2>&1; then
-            changelog_base="v${previous_version}"
-          fi
-          if ! git rev-parse "${changelog_base}^{commit}" >/dev/null 2>&1; then
-            changelog_base="${GITHUB_SHA}^"
-          fi
+          previous_tag="$(git tag --merged HEAD --sort=-v:refname --list 'v[0-9]*.[0-9]*.[0-9]*' \
+            | grep -Fvx "$tag" \
+            | head -n 1 || true)"
 
           changelog_range="${GITHUB_SHA}"
-          if git rev-parse "${changelog_base}^{commit}" >/dev/null 2>&1; then
-            changelog_range="${changelog_base}..${GITHUB_SHA}"
+          if [ -n "$previous_tag" ] && git rev-parse "${previous_tag}^{commit}" >/dev/null 2>&1; then
+            changelog_range="${previous_tag}..${GITHUB_SHA}"
           fi
 
           changelog="$(git log --no-merges --pretty=format:'%h %s' "$changelog_range" 2>/dev/null || true)"
@@ -100,17 +90,32 @@ jobs:
             echo '```'
           } > "$notes_file"
 
-          echo "run_release=true" >> "$GITHUB_OUTPUT"
-          echo "notes_file=${notes_file}" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=${version}"
+            echo "rust_toolchain=${rust_toolchain}"
+            echo "tag=${tag}"
+            echo "notes_file=${notes_file}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Ensure release does not already exist
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            echo "Release ${TAG_NAME} already exists; refusing to overwrite it." >&2
+            exit 1
+          fi
 
       - name: Set up Rust toolchain
-        if: steps.release.outputs.run_release == 'true'
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
           toolchain: ${{ steps.release.outputs.rust_toolchain }}
 
       - name: Build and publish release
-        if: steps.release.outputs.run_release == 'true'
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -127,7 +132,6 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             build-essential \
-            gh \
             golang-go \
             libpipewire-0.3-dev \
             libwayland-dev \
@@ -154,8 +158,8 @@ jobs:
           cargo build --locked --release
           make -C packaging all
 
-          version="${{ steps.release.outputs.current_version }}"
-          tag="v${version}"
+          version="${{ steps.release.outputs.version }}"
+          tag="${{ steps.release.outputs.tag }}"
           notes_file="${{ steps.release.outputs.notes_file }}"
           dist_dir="${PWD}/dist"
 
@@ -176,9 +180,4 @@ jobs:
             exit 1
           fi
 
-          if gh release view "${tag}" > /dev/null 2>&1; then
-            gh release edit "${tag}" --title "openmeters ${version}" --notes-file "${notes_file}" >/dev/null
-            gh release upload "${tag}" "${assets[@]}" --clobber
-          else
-            gh release create "${tag}" --target "${GITHUB_SHA}" --title "openmeters ${version}" --notes-file "${notes_file}" "${assets[@]}"
-          fi
+          gh release create "$tag" --target "$GITHUB_SHA" --title "openmeters ${version}" --notes-file "$notes_file" --verify-tag "${assets[@]}"
