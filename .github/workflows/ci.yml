@@ -47,6 +47,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential \
+            libclang-dev \
             libpipewire-0.3-dev \
             libwayland-dev \
             libx11-dev \

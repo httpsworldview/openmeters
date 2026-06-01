@@ -36,6 +36,7 @@ jobs:
             curl \
             git \
             golang-go \
+            libclang-dev \
             libpipewire-0.3-dev \
             libwayland-dev \
             libx11-dev \
