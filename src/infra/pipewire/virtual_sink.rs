@@ -8,7 +8,7 @@ use pw::{properties::properties, spa};
 use spa::pod::Pod;
 use std::collections::VecDeque;
 use std::error::Error;
-use std::io::Cursor;
+use std::io::{self, Cursor};
 use std::mem::size_of;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
@@ -77,20 +77,16 @@ impl CaptureBuffer {
         self.available.notify_one();
     }
 
-    pub fn pop_wait_timeout(&self, timeout: Duration) -> Result<Option<CapturedAudio>, ()> {
-        let mut guard = self.inner.lock().map_err(|_| {
-            error!("[virtual-sink] capture buffer lock poisoned");
-        })?;
-
+    pub fn pop_wait_timeout(&self, timeout: Duration) -> Option<CapturedAudio> {
+        let mut guard = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         if guard.is_empty() && !timeout.is_zero() {
-            let (new_guard, _) = self
+            guard = self
                 .available
                 .wait_timeout_while(guard, timeout, |queue| queue.is_empty())
-                .map_err(|_| ())?;
-            guard = new_guard;
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
         }
-
-        Ok(guard.pop_front())
+        guard.pop_front()
     }
 
     pub fn dropped_frames(&self) -> u64 {
@@ -193,8 +189,10 @@ fn bytes_per_sample(format: spa::param::audio::AudioFormat) -> Option<usize> {
 
 fn audio_chunk(bytes: &[u8], offset: u32, size: u32, frame_bytes: usize) -> Option<&[u8]> {
     let frame_bytes = frame_bytes.max(1);
-    let start = offset as usize;
-    let end = start.saturating_add(size as usize).min(bytes.len());
+    let start = usize::try_from(offset).ok()?;
+    let end = start
+        .saturating_add(usize::try_from(size).ok()?)
+        .min(bytes.len());
     let len = end.checked_sub(start)? / frame_bytes * frame_bytes;
     (len > 0).then(|| &bytes[start..start + len])
 }
@@ -412,7 +410,8 @@ fn run_virtual_sink() -> Result<(), Box<dyn Error + Send + Sync>> {
         .register()?;
 
     let format_bytes = build_format_pod(VIRTUAL_SINK_SAMPLE_RATE)?;
-    let mut params = [Pod::from_bytes(&format_bytes).ok_or(pw::Error::CreationFailed)?];
+    let mut params = [Pod::from_bytes(&format_bytes)
+        .ok_or_else(|| io::Error::other("serialized PipeWire format pod was invalid"))?];
 
     stream.connect(
         spa::utils::Direction::Input,
@@ -423,9 +422,7 @@ fn run_virtual_sink() -> Result<(), Box<dyn Error + Send + Sync>> {
         &mut params,
     )?;
 
-    if let Err(err) = stream.set_active(true) {
-        error!("[virtual-sink] failed to activate stream: {err}");
-    }
+    stream.set_active(true)?;
 
     info!("[virtual-sink] PipeWire sink active");
     mainloop.run();
@@ -500,10 +497,7 @@ mod tests {
             channels: 2,
             sample_rate: 48_000,
         });
-        let packet = buffer
-            .pop_wait_timeout(Duration::ZERO)
-            .unwrap()
-            .expect("packet");
+        let packet = buffer.pop_wait_timeout(Duration::ZERO).expect("packet");
         assert_eq!(packet.samples, [0.0, 1.0, 2.0, 3.0]);
 
         buffer.recycle_samples(packet.samples);

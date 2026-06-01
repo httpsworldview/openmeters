@@ -72,7 +72,7 @@ impl UiConfig {
     }
 }
 
-pub fn run(config: UiConfig) -> anyhow::Result<()> {
+pub fn run(config: UiConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if layershell_available() {
         let layer_settings = LayerShellSettings {
             start_mode: StartMode::Background,

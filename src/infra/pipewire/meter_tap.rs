@@ -6,7 +6,7 @@ use async_channel::{Receiver as AsyncReceiver, Sender as AsyncSender};
 use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 const CHANNEL_CAPACITY: usize = 64;
 const POLL_BACKOFF: Duration = Duration::from_millis(50);
@@ -102,7 +102,6 @@ fn forward_loop(sender: AsyncSender<AudioBatch>, buffer: Arc<CaptureBuffer>) {
     let mut last_drop_check = Instant::now();
     let mut drop_baseline = buffer.dropped_frames();
 
-    // Returns true when the downstream channel is closed (caller should stop).
     let flush = |batcher: &mut SampleBatcher, batch_started_at: &mut Instant| -> bool {
         let Some(batch) = batcher.take() else {
             return false;
@@ -137,7 +136,7 @@ fn forward_loop(sender: AsyncSender<AudioBatch>, buffer: Arc<CaptureBuffer>) {
         };
 
         match buffer.pop_wait_timeout(timeout) {
-            Ok(Some(packet)) => {
+            Some(packet) => {
                 let format = MeterFormat {
                     channels: packet.channels.max(1) as usize,
                     sample_rate: packet.sample_rate.max(1) as f32,
@@ -165,17 +164,14 @@ fn forward_loop(sender: AsyncSender<AudioBatch>, buffer: Arc<CaptureBuffer>) {
                     break;
                 }
             }
-            Ok(None) if sender.is_closed() => break,
-            Ok(None) if !batcher.is_empty() && batch_started_at.elapsed() >= MAX_BATCH_LATENCY => {
-                if flush(&mut batcher, &mut batch_started_at) {
-                    break;
-                }
-            }
-            Ok(None) => {}
-            Err(_) => {
-                error!("[meter-tap] capture buffer unavailable; stopping tap");
+            None if sender.is_closed() => break,
+            None if !batcher.is_empty()
+                && batch_started_at.elapsed() >= MAX_BATCH_LATENCY
+                && flush(&mut batcher, &mut batch_started_at) =>
+            {
                 break;
             }
+            None => {}
         }
     }
 

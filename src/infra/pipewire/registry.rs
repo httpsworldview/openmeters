@@ -9,7 +9,7 @@ pub use runtime::{AudioRegistryHandle, spawn_registry};
 pub use types::{GraphPort, LinkSpec, NodeInfo, RegistrySnapshot};
 
 #[cfg(test)]
-use types::{DefaultTarget, MetadataDefaults, PortDirection};
+use types::{AudioChannel, DefaultTarget, MetadataDefaults, PortDirection};
 
 pub fn pair_ports_by_channel(
     mut sources: Vec<GraphPort>,
@@ -18,23 +18,11 @@ pub fn pair_ports_by_channel(
     sources.sort_by_key(|p| p.port_id);
     targets.sort_by_key(|p| p.port_id);
 
-    const KNOWN_CHANNELS: [&str; 9] = ["FL", "FR", "FC", "LFE", "RL", "RR", "SL", "SR", "MONO"];
-    let valid_channel = |ch: Option<&str>| {
-        ch.is_some_and(|c| KNOWN_CHANNELS.iter().any(|k| c.eq_ignore_ascii_case(k)))
-    };
-
-    let use_channel = sources.iter().all(|p| valid_channel(p.channel.as_deref()))
-        && targets.iter().all(|p| valid_channel(p.channel.as_deref()));
+    let use_channel = sources.iter().chain(&targets).all(|p| p.channel.is_some());
 
     let matches = |src: &GraphPort, target: &GraphPort| {
-        if use_channel {
-            src.channel
-                .as_deref()
-                .zip(target.channel.as_deref())
-                .is_some_and(|(a, b)| a.eq_ignore_ascii_case(b))
-        } else {
-            src.port_id == target.port_id
-        }
+        (use_channel && src.channel == target.channel)
+            || (!use_channel && src.port_id == target.port_id)
     };
 
     let mut pairs = Vec::with_capacity(sources.len().min(targets.len()));
@@ -55,7 +43,7 @@ mod tests {
             global_id: 100 + id,
             port_id: id,
             node_id: 1,
-            channel: channel.map(String::from),
+            channel: channel.and_then(AudioChannel::parse),
             direction: PortDirection::Output,
             is_monitor: false,
         }

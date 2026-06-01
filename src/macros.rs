@@ -8,10 +8,12 @@ macro_rules! choice_enum {
         $(#[$attr])*
         $vis enum $name { $($(#[$var_attr])* $variant,)+ }
 
+        impl $name {
+            pub const fn label(self) -> &'static str { match self { $(Self::$variant => $label),+ } }
+        }
+
         impl std::fmt::Display for $name {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str(match self { $(Self::$variant => $label),+ })
-            }
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(self.label()) }
         }
     };
     (@build_all [$($default:ident)?] $(#[$attr:meta])* $vis:vis enum $name:ident { $($(#[$var_attr:meta])* $variant:ident => $label:expr),+ $(,)? }) => {

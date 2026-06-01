@@ -15,6 +15,23 @@ pub(crate) fn dict_to_map(dict: Option<&DictRef>) -> HashMap<String, String> {
         .collect()
 }
 
+crate::macros::choice_enum!(no_default all
+    #[derive(Hash)]
+    pub enum AudioChannel {
+        FrontLeft => "FL", FrontRight => "FR", FrontCenter => "FC", LowFrequency => "LFE",
+        RearLeft => "RL", RearRight => "RR", SideLeft => "SL", SideRight => "SR", Mono => "MONO",
+    }
+);
+
+impl AudioChannel {
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|channel| channel.label().eq_ignore_ascii_case(value))
+    }
+}
+
 crate::macros::choice_enum!(pub enum PortDirection {
     Input => "Input",
     Output => "Output",
@@ -26,7 +43,7 @@ pub struct GraphPort {
     pub global_id: u32,
     pub port_id: u32,
     pub node_id: u32,
-    pub channel: Option<String>,
+    pub channel: Option<AudioChannel>,
     pub direction: PortDirection,
     pub is_monitor: bool,
 }
@@ -46,7 +63,7 @@ impl GraphPort {
                 Some(s) if s.eq_ignore_ascii_case("out") => PortDirection::Output,
                 _ => PortDirection::Unknown,
             },
-            channel: get(*AUDIO_CHANNEL, "audio.channel").cloned(),
+            channel: get(*AUDIO_CHANNEL, "audio.channel").and_then(|v| AudioChannel::parse(v)),
             is_monitor: get(*PORT_MONITOR, "port.monitor")
                 .is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1"),
         })

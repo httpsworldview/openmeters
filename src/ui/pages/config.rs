@@ -7,7 +7,7 @@ use crate::infra::pipewire::registry::RegistrySnapshot;
 use crate::persistence::settings::SettingsHandle;
 use crate::persistence::settings::{
     BAR_MAX_HEIGHT, BAR_MIN_HEIGHT, BUILTIN_THEME, BarAlignment, ThemeChoice, ThemeFile,
-    canonical_theme_name,
+    ThemeOrigin, canonical_theme_name,
 };
 use crate::ui::pages::visuals::settings::palette::{PaletteEditor, PaletteEvent};
 use crate::ui::subscription::channel_subscription;
@@ -391,7 +391,7 @@ impl ConfigPage {
             .theme_choices
             .iter()
             .find(|c| c.name == self.active_theme);
-        let is_builtin = selected.is_some_and(|c| c.builtin);
+        let is_builtin = selected.is_some_and(|c| c.origin == ThemeOrigin::BuiltIn);
 
         let picker = pick_list(
             self.theme_choices.as_slice(),

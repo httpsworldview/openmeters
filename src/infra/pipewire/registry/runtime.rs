@@ -5,7 +5,6 @@ use super::state::RegistryState;
 use super::types::{
     GraphPort, LinkSpec, NodeInfo, RegistryCommand, RegistrySnapshot, format_target_metadata,
 };
-use anyhow::{Context, Result};
 use pipewire as pw;
 use pw::metadata::{Metadata, MetadataListener};
 use pw::properties::properties;
@@ -44,7 +43,7 @@ fn write_lock<T>(rwlock: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
     rwlock.write().unwrap_or_else(PoisonError::into_inner)
 }
 
-pub fn spawn_registry() -> Result<AudioRegistryHandle> {
+pub fn spawn_registry() -> std::io::Result<AudioRegistryHandle> {
     if let Some(runtime) = RUNTIME.get().cloned() {
         return Ok(AudioRegistryHandle { runtime });
     }
@@ -62,8 +61,7 @@ pub fn spawn_registry() -> Result<AudioRegistryHandle> {
             if let Err(err) = registry_thread_main(thread_runtime) {
                 error!("[registry] thread terminated: {err:?}");
             }
-        })
-        .context("failed to spawn PipeWire registry thread")?;
+        })?;
     let _ = RUNTIME.set(runtime.clone());
 
     Ok(AudioRegistryHandle { runtime })
@@ -186,19 +184,13 @@ impl RegistryRuntime {
     }
 }
 
-fn registry_thread_main(runtime: RegistryRuntime) -> Result<()> {
+fn registry_thread_main(runtime: RegistryRuntime) -> Result<(), pw::Error> {
     pw::init();
 
-    let mainloop =
-        pw::main_loop::MainLoopRc::new(None).context("failed to create PipeWire main loop")?;
-    let context = pw::context::ContextRc::new(&mainloop, None)
-        .context("failed to create PipeWire context")?;
-    let core = context
-        .connect_rc(None)
-        .context("failed to connect to PipeWire core")?;
-    let registry = core
-        .get_registry_rc()
-        .context("failed to obtain PipeWire registry")?;
+    let mainloop = pw::main_loop::MainLoopRc::new(None)?;
+    let context = pw::context::ContextRc::new(&mainloop, None)?;
+    let core = context.connect_rc(None)?;
+    let registry = core.get_registry_rc()?;
 
     let (command_tx, command_rx) = mpsc::channel::<RegistryCommand>();
     runtime.set_command_sender(command_tx);

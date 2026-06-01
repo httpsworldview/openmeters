@@ -125,7 +125,6 @@ impl ModuleSettings {
     pub(crate) fn config_or_default<T: SettingsConfig>(&self) -> T {
         self.parse_config().unwrap_or_default()
     }
-    /// Replaces the palette field inside the config JSON without touching other fields.
     pub(crate) fn override_palette(&mut self, palette: Option<&PaletteSettings>) {
         let obj = self
             .config
@@ -138,7 +137,6 @@ impl ModuleSettings {
         }
     }
 
-    /// Extracts palette data from the config JSON without consuming it.
     pub(crate) fn extract_palette(&self) -> Option<PaletteSettings> {
         self.config
             .as_ref()
@@ -146,7 +144,6 @@ impl ModuleSettings {
             .and_then(|pal| PaletteSettings::deserialize(pal).ok())
     }
 
-    /// Removes palette data from the config JSON (for clean settings.json persistence).
     pub(crate) fn strip_palette(&mut self) {
         if let Some(Value::Object(map)) = &mut self.config {
             map.remove("palette");

@@ -33,7 +33,6 @@ pub fn init_registry_monitor(
     Some((handle, thread_handle))
 }
 
-// Returns true when the channel closed and the loop should stop.
 fn try_send_or_queue(
     tx: &Sender<registry::RegistrySnapshot>,
     snapshot: registry::RegistrySnapshot,
@@ -323,14 +322,15 @@ impl RoutingManager {
         match &self.device_target {
             DeviceSelection::Default => self.hw_sink(snapshot),
             DeviceSelection::Device(token) => {
-                let device = snapshot.find_capture_device_by_token(token);
-                if device.is_some() {
-                    self.warned_device_missing = false;
-                } else if !self.warned_device_missing {
-                    warn!("[router] preferred capture device unavailable; waiting");
-                    self.warned_device_missing = true;
-                }
-                device
+                let Some(device) = snapshot.find_capture_device_by_token(token) else {
+                    if !self.warned_device_missing {
+                        warn!("[router] preferred capture device unavailable; waiting");
+                        self.warned_device_missing = true;
+                    }
+                    return None;
+                };
+                self.warned_device_missing = false;
+                Some(device)
             }
         }
     }

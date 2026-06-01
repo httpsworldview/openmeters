@@ -18,18 +18,23 @@ pub(crate) fn canonical_theme_name(name: &str) -> String {
     name.replace(['/', '\\', '\0'], "")
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ThemeOrigin {
+    BuiltIn,
+    User,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThemeChoice {
     pub name: String,
-    pub builtin: bool,
+    pub origin: ThemeOrigin,
 }
 
 impl std::fmt::Display for ThemeChoice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.builtin {
-            write!(f, "{} (built-in)", self.name)
-        } else {
-            f.write_str(&self.name)
+        match self.origin {
+            ThemeOrigin::BuiltIn => write!(f, "{} (built-in)", self.name),
+            ThemeOrigin::User => f.write_str(&self.name),
         }
     }
 }
@@ -61,7 +66,7 @@ impl ThemeStore {
     pub fn list(&self) -> Vec<ThemeChoice> {
         let mut choices = vec![ThemeChoice {
             name: BUILTIN_THEME.to_owned(),
-            builtin: true,
+            origin: ThemeOrigin::BuiltIn,
         }];
         if let Ok(entries) = fs::read_dir(&self.dir) {
             choices.extend(entries.flatten().filter_map(|entry| {
@@ -70,12 +75,12 @@ impl ThemeStore {
                 (path.extension().is_some_and(|e| e == "json") && stem != BUILTIN_THEME).then(
                     || ThemeChoice {
                         name: stem.to_owned(),
-                        builtin: false,
+                        origin: ThemeOrigin::User,
                     },
                 )
             }));
         }
-        choices.sort_by_cached_key(|choice| (!choice.builtin, choice.name.to_lowercase()));
+        choices.sort_by_cached_key(|choice| (choice.origin, choice.name.to_lowercase()));
         choices
     }
 
@@ -175,7 +180,7 @@ mod tests {
         assert_eq!(
             names
                 .iter()
-                .map(|choice| (choice.name.as_str(), choice.builtin))
+                .map(|choice| (choice.name.as_str(), choice.origin == ThemeOrigin::BuiltIn))
                 .collect::<Vec<_>>(),
             vec![("default", true), ("alpha", false), ("zebra", false)]
         );
@@ -194,7 +199,7 @@ mod tests {
             store
                 .list()
                 .iter()
-                .any(|choice| choice.name == name && !choice.builtin)
+                .any(|choice| choice.name == name && choice.origin == ThemeOrigin::User)
         );
         Ok(())
     }

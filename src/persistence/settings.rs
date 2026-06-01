@@ -20,7 +20,7 @@ pub use bar::{BAR_MAX_HEIGHT, BAR_MIN_HEIGHT, BarAlignment, BarSettings, clamp_b
 pub use palette::{HasPalette, PaletteSettings};
 pub use store::SettingsHandle;
 pub(crate) use theme::canonical_theme_name;
-pub use theme::{BUILTIN_THEME, ThemeChoice, ThemeFile};
+pub use theme::{BUILTIN_THEME, ThemeChoice, ThemeFile, ThemeOrigin};
 pub(crate) use visuals::SettingsConfig;
 pub use visuals::{
     LoudnessSettings, ModuleSettings, OscilloscopeSettings, SpectrogramSettings, SpectrumSettings,

@@ -374,9 +374,7 @@ impl VisualManager {
             .iter()
             .filter_map(|kind| self.by_kind(*kind).map(|entry| entry.id))
             .collect();
-        if !ids.is_empty() {
-            self.reorder(&ids);
-        }
+        self.reorder(&ids);
     }
     pub fn reorder(&mut self, order: &[VisualId]) {
         for (position, id) in order.iter().copied().take(self.entries.len()).enumerate() {
