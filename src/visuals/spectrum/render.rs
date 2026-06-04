@@ -42,16 +42,7 @@ pub struct SpectrumParams {
     pub peak: Option<SpectrumPeakParams>,
 }
 
-#[derive(Debug)]
-pub struct SpectrumPrimitive {
-    params: SpectrumParams,
-}
-
 impl SpectrumPrimitive {
-    pub fn new(params: SpectrumParams) -> Self {
-        Self { params }
-    }
-
     fn build_vertices(&self, viewport: &Viewport) -> Vec<SdfVertex> {
         let bounds = self.params.bounds;
         let clip = ClipTransform::from_viewport(viewport);
@@ -243,7 +234,7 @@ fn sample_lerp(pts: &[[f32; 2]], t: f32) -> f32 {
 }
 
 sdf_primitive!(
-    SpectrumPrimitive,
+    SpectrumPrimitive(SpectrumParams),
     Pipeline,
     u64,
     "Spectrum",

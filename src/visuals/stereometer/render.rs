@@ -58,9 +58,6 @@ pub struct StereometerParams {
     pub band_trail: Vec<BandCorrelation>,
 }
 
-#[derive(Debug)]
-pub struct StereometerPrimitive(StereometerParams);
-
 struct VecTransform {
     cx: f32,
     cy: f32,
@@ -122,12 +119,8 @@ impl VecTransform {
 }
 
 impl StereometerPrimitive {
-    pub fn new(params: StereometerParams) -> Self {
-        Self(params)
-    }
-
     fn grid_vertices(&self, t: &VecTransform, clip: ClipTransform) -> Vec<SdfVertex> {
-        let grid_color = self.0.palette[8];
+        let grid_color = self.params.palette[8];
         if grid_color[3] < f32::EPSILON {
             return Vec::new();
         }
@@ -345,7 +338,7 @@ impl StereometerPrimitive {
 
     fn build_vertices(&self, viewport: &Viewport) -> Vec<SdfVertex> {
         let clip = ClipTransform::from_viewport(viewport);
-        let p = &self.0;
+        let p = &self.params;
         let (vec_bounds, corr_bounds) = Self::meter_bounds(p);
         let transform = VecTransform::new(p, vec_bounds);
         let mut vertices = self.grid_vertices(&transform, clip);
@@ -360,10 +353,10 @@ impl StereometerPrimitive {
 }
 
 sdf_primitive!(
-    StereometerPrimitive,
+    StereometerPrimitive(StereometerParams),
     Pipeline,
     u64,
     "Stereometer",
     TriangleList,
-    |self| self.0.key
+    |self| self.params.key
 );

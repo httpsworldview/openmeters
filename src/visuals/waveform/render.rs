@@ -54,16 +54,7 @@ fn normalize_sample(min: f32, max: f32) -> (f32, f32) {
     (lo.clamp(-1.0, 1.0), hi.clamp(-1.0, 1.0))
 }
 
-#[derive(Debug)]
-pub struct WaveformPrimitive {
-    params: WaveformParams,
-}
-
 impl WaveformPrimitive {
-    pub fn new(params: WaveformParams) -> Self {
-        Self { params }
-    }
-
     fn build_vertices(&self, viewport: &Viewport) -> Vec<SdfVertex> {
         let params = &self.params;
         let (channels, columns) = (params.channels.max(1), params.columns);
@@ -180,7 +171,7 @@ impl WaveformPrimitive {
 }
 
 sdf_primitive!(
-    WaveformPrimitive,
+    WaveformPrimitive(WaveformParams),
     Pipeline,
     u64,
     "Waveform",

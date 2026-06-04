@@ -83,16 +83,7 @@ fn sub_bar_gap(bar_width: f32, fill_count: usize) -> f32 {
     desired.min(max_gap)
 }
 
-#[derive(Debug)]
-pub struct LoudnessPrimitive {
-    pub params: LoudnessParams,
-}
-
 impl LoudnessPrimitive {
-    pub fn new(params: LoudnessParams) -> Self {
-        Self { params }
-    }
-
     fn build_vertices(&self, viewport: &Viewport) -> Vec<SdfVertex> {
         let clip = ClipTransform::from_viewport(viewport);
         let Some((meter_x, bar_width, stride)) = self.params.meter_bounds() else {
@@ -198,7 +189,7 @@ impl LoudnessPrimitive {
 }
 
 sdf_primitive!(
-    LoudnessPrimitive,
+    LoudnessPrimitive(LoudnessParams),
     Pipeline,
     u64,
     "Loudness",

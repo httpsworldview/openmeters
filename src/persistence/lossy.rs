@@ -48,7 +48,7 @@ pub(super) fn value<T: DeserializeOwned>(value: Value, scope: &str) -> Option<T>
 
 macro_rules! fields {
     ($map:expr, $out:expr, $scope:expr; $($field:ident),+ $(,)?) => {
-        $($crate::persistence::settings::lossy::field($map, stringify!($field), &mut $out.$field, $scope);)+
+        $($crate::persistence::lossy::field($map, stringify!($field), &mut $out.$field, $scope);)+
     };
 }
 pub(super) use fields;

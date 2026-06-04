@@ -21,16 +21,7 @@ pub struct OscilloscopeParams {
     pub fill_alpha: f32,
 }
 
-#[derive(Debug)]
-pub struct OscilloscopePrimitive {
-    params: OscilloscopeParams,
-}
-
 impl OscilloscopePrimitive {
-    pub fn new(params: OscilloscopeParams) -> Self {
-        Self { params }
-    }
-
     fn build_vertices(&self, viewport: &Viewport) -> Vec<SdfVertex> {
         let samples_per_channel = self.params.samples_per_channel;
         let channels = self.params.channels.max(1);
@@ -97,7 +88,7 @@ impl OscilloscopePrimitive {
 }
 
 sdf_primitive!(
-    OscilloscopePrimitive,
+    OscilloscopePrimitive(OscilloscopeParams),
     Pipeline,
     u64,
     "Oscilloscope",

@@ -547,7 +547,13 @@ impl<K: std::hash::Hash + Eq + Copy> SdfPipeline<K> {
 
 // Spectrogram has different requirements, so it does not use this macro.
 macro_rules! sdf_primitive {
-    ($primitive:ident, $pipeline:ident, $key_ty:ty, $label:expr, $topology:ident, |$self:ident| $key_expr:expr) => {
+    ($primitive:ident($params:ty), $($rest:tt)+) => {
+        #[derive(Debug)]
+        pub struct $primitive { params: $params }
+        impl $primitive { pub fn new(params: $params) -> Self { Self { params } } }
+        $crate::visuals::render::common::sdf_primitive!(@impl $primitive, $($rest)+);
+    };
+    (@impl $primitive:ident, $pipeline:ident, $key_ty:ty, $label:expr, $topology:ident, |$self:ident| $key_expr:expr) => {
         impl iced_wgpu::primitive::Primitive for $primitive {
             type Pipeline = $pipeline;
 
