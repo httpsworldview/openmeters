@@ -620,7 +620,7 @@ impl<'a> Spectrogram<'a> {
                             * 0.5;
                     let pt = orient_point(fp, tp);
                     renderer.fill_text(
-                        make_text(&s, PIANO_LABEL_SIZE, tsz),
+                        make_text(s, PIANO_LABEL_SIZE, tsz),
                         pt,
                         black,
                         Rectangle::new(pt, tsz),

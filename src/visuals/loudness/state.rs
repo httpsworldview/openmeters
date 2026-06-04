@@ -151,13 +151,14 @@ impl LoudnessState {
             min_db: min,
             max_db: max,
             bg_color,
-            bars: vec![
-                vec![
+            bars: [
+                [
                     self.meter_fill(0, self.left_mode, values[0]),
                     self.meter_fill(1, self.left_mode, values[1]),
                 ],
-                vec![self.meter_fill(2, self.right_mode, values[2])],
+                [self.meter_fill(2, self.right_mode, values[2]); 2],
             ],
+            fill_counts: [2, 1],
             guides: &GUIDE_LEVELS,
             guide_color,
             threshold_db: Some(0.0),
@@ -251,13 +252,9 @@ crate::visuals::visualization_widget!(Loudness, LoudnessState, |this, renderer, 
 
         for &db in params.guides {
             let y = y_of(db);
-            let label = if db == 0.0 {
-                "0".into()
-            } else {
-                format!("{db:+.0}")
-            };
+            let label = if db == 0.0 { "0".to_owned() } else { format!("{db:+.0}") };
 
-            let mut text = make_text(&label, LABEL_FONT_SIZE, Size::new(LEFT_PADDING, 20.0));
+            let mut text = make_text(label, LABEL_FONT_SIZE, Size::new(LEFT_PADDING, 20.0));
             text.align_x = Horizontal::Right.into();
             text.align_y = Vertical::Center;
             text::Renderer::fill_text(
@@ -290,7 +287,7 @@ crate::visuals::visualization_widget!(Loudness, LoudnessState, |this, renderer, 
         );
 
         let mut text = make_text(
-            &label,
+            label,
             VALUE_FONT_SIZE,
             Size::new(label_rect.width, label_rect.height),
         );
@@ -318,11 +315,12 @@ mod tests {
     use super::*;
 
     fn visible_bar_values(state: &LoudnessState) -> Vec<Vec<f32>> {
-        state
-            .visual_params(Rectangle::new(Point::ORIGIN, Size::new(200.0, 100.0)))
+        let params = state.visual_params(Rectangle::new(Point::ORIGIN, Size::new(200.0, 100.0)));
+        params
             .bars
             .iter()
-            .map(|bar| bar.iter().map(|fill| fill.db).collect())
+            .zip(params.fill_counts)
+            .map(|(bar, n)| bar.iter().take(n).map(|fill| fill.db).collect())
             .collect()
     }
 

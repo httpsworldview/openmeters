@@ -3,8 +3,8 @@
 
 use bytemuck::{Pod, Zeroable};
 use iced::advanced::graphics::Viewport;
+use iced::advanced::text::Text as IcedText;
 use iced::{Border, Color, Rectangle, Renderer, Size};
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::mem::size_of;
 
@@ -53,7 +53,7 @@ impl ChannelLayout {
     }
 }
 
-fn text<C>(content: C, px: f32, bounds: Size) -> iced::advanced::text::Text<C> {
+fn text<C>(content: C, px: f32, bounds: Size) -> IcedText<C> {
     use iced::advanced::text;
     text::Text {
         content,
@@ -74,8 +74,8 @@ pub(crate) fn measure_text(s: &str, px: f32) -> Size {
     Paragraph::with_text(text(s, px, Size::INFINITE)).min_bounds()
 }
 
-pub(crate) fn make_text(s: &str, px: f32, bounds: Size) -> iced::advanced::text::Text<String> {
-    text(s.to_string(), px, bounds)
+pub(crate) fn make_text(s: impl Into<String>, px: f32, bounds: Size) -> IcedText<String> {
+    text(s.into(), px, bounds)
 }
 
 fn fill_rect_quad(r: &mut Renderer, bounds: Rectangle, color: Color, border: Border, snap: bool) {
@@ -291,28 +291,46 @@ pub fn extend_filled_line(
     extend_aa_line_list(out, pts, stroke, line, clip);
 }
 
-pub fn decimate_line(pts: &[(f32, f32)], max_points: usize) -> Cow<'_, [(f32, f32)]> {
-    if pts.len() <= max_points {
-        return Cow::Borrowed(pts);
+#[derive(Default)]
+pub struct GeometryScratch {
+    pub vertices: Vec<SdfVertex>,
+    pub points: Vec<(f32, f32)>,
+    pub points2: Vec<(f32, f32)>,
+    pub scalars: Vec<f32>,
+}
+
+impl GeometryScratch {
+    pub fn clear(&mut self) {
+        self.vertices.clear();
+        self.points.clear();
+        self.points2.clear();
+        self.scalars.clear();
     }
-    let buckets = max_points / 2;
-    let len = pts.len();
-    let mut result = Vec::with_capacity(max_points);
+}
+
+pub fn decimate_line_in_place(pts: &mut Vec<(f32, f32)>, max_points: usize) {
+    if pts.len() <= max_points {
+        return;
+    }
+    let (buckets, len) = (max_points / 2, pts.len());
+    let mut out = 0;
     for b in 0..buckets {
         let lo = b * len / buckets;
-        let hi = (b + 1) * len / buckets;
-        let (mut mn_i, mut mx_i) = (0, 0);
-        for (i, &(_, y)) in pts[lo..hi].iter().enumerate() {
-            if y < pts[lo + mn_i].1 {
+        let (mut mn_i, mut mx_i) = (lo, lo);
+        for i in lo..(b + 1) * len / buckets {
+            if pts[i].1 < pts[mn_i].1 {
                 mn_i = i;
             }
-            if y > pts[lo + mx_i].1 {
+            if pts[i].1 > pts[mx_i].1 {
                 mx_i = i;
             }
         }
-        result.extend([pts[lo + mn_i.min(mx_i)], pts[lo + mn_i.max(mx_i)]]);
+        for i in [mn_i.min(mx_i), mn_i.max(mx_i)] {
+            pts[out] = pts[i];
+            out += 1;
+        }
     }
-    Cow::Owned(result)
+    pts.truncate(out);
 }
 
 pub struct InstanceBuffer {
@@ -566,8 +584,9 @@ macro_rules! sdf_primitive {
                 viewport: &iced::advanced::graphics::Viewport,
             ) {
                 let key: $key_ty = $key_expr;
-                let vertices = $self.build_vertices(viewport);
-                pipeline.inner.prepare_instance(device, queue, $label, key, &vertices);
+                pipeline.scratch.clear();
+                $self.build_vertices(viewport, &mut pipeline.scratch);
+                pipeline.inner.prepare_instance(device, queue, $label, key, &pipeline.scratch.vertices);
             }
 
             fn render(
@@ -589,11 +608,22 @@ macro_rules! sdf_primitive {
             }
         }
 
-        pub struct $pipeline { inner: $crate::visuals::render::common::SdfPipeline<$key_ty> }
+        pub struct $pipeline {
+            inner: $crate::visuals::render::common::SdfPipeline<$key_ty>,
+            scratch: $crate::visuals::render::common::GeometryScratch,
+        }
 
         impl iced_wgpu::primitive::Pipeline for $pipeline {
             fn new(device: &wgpu::Device, _queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
-                Self { inner: $crate::visuals::render::common::SdfPipeline::new(device, format, $label, wgpu::PrimitiveTopology::$topology) }
+                Self {
+                    inner: $crate::visuals::render::common::SdfPipeline::new(
+                        device,
+                        format,
+                        $label,
+                        wgpu::PrimitiveTopology::$topology,
+                    ),
+                    scratch: Default::default(),
+                }
             }
         }
     };

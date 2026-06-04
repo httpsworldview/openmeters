@@ -498,7 +498,7 @@ fn draw_grid(
             }
             last_right = tx + slot.width + GRID_LABEL_GAP;
 
-            let mut text = make_text(&fmt_freq(f), GRID_LABEL_SIZE, slot);
+            let mut text = make_text(fmt_freq(f), GRID_LABEL_SIZE, slot);
             text.align_x = iced::alignment::Horizontal::Center.into();
             r.fill_text(
                 text,

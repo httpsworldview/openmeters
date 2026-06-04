@@ -8,7 +8,7 @@ use std::sync::Arc;
 use crate::visuals::render::common::sdf_primitive;
 use crate::util::color::rgba_with_alpha;
 use crate::visuals::render::common::{
-    ChannelLayout, ClipTransform, SdfVertex, extend_filled_line, quad_vertices,
+    ChannelLayout, ClipTransform, GeometryScratch, extend_filled_line, quad_vertices,
 };
 use crate::visuals::waveform::processor::NUM_BANDS;
 
@@ -55,7 +55,7 @@ fn normalize_sample(min: f32, max: f32) -> (f32, f32) {
 }
 
 impl WaveformPrimitive {
-    fn build_vertices(&self, viewport: &Viewport) -> Vec<SdfVertex> {
+    fn build_vertices(&self, viewport: &Viewport, scratch: &mut GeometryScratch) {
         let params = &self.params;
         let (channels, columns) = (params.channels.max(1), params.columns);
         let total = channels * columns;
@@ -65,7 +65,7 @@ impl WaveformPrimitive {
             || (params.samples.len() >= total && params.colors.len() >= total))
             && (columns > 0 || preview_active);
         if !valid {
-            return Vec::new();
+            return;
         }
 
         let clip = ClipTransform::from_viewport(viewport);
@@ -82,7 +82,8 @@ impl WaveformPrimitive {
         );
         let band_expected = channels * NUM_BANDS * columns;
 
-        let mut vertices = Vec::with_capacity(channels * (columns + 1) * 6);
+        let vertices = &mut scratch.vertices;
+        vertices.reserve(channels * (columns + 1) * 6);
 
         let scroll_offset = if preview_active {
             params.preview_progress * col_width
@@ -137,7 +138,7 @@ impl WaveformPrimitive {
             {
                 let baseline = center_y + layout.channel_height * 0.5;
                 let band_height = layout.channel_height;
-                let mut pts = Vec::with_capacity(columns + 1);
+                let pts = &mut scratch.points;
                 for band in 0..NUM_BANDS {
                     let band_base = (ch * NUM_BANDS + band) * columns;
                     let color = params.band_colors[band];
@@ -148,14 +149,12 @@ impl WaveformPrimitive {
                         let level = params.band_levels[band_base + i].clamp(0.0, 1.0);
                         (column_x(i), baseline - level * band_height)
                     }));
-
                     if let Some(&last) = pts.last() {
                         pts.push((right_edge, last.1));
                     }
-
                     extend_filled_line(
-                        &mut vertices,
-                        &pts,
+                        vertices,
+                        pts,
                         baseline,
                         BAND_LINE_WIDTH,
                         color,
@@ -165,8 +164,6 @@ impl WaveformPrimitive {
                 }
             }
         }
-
-        vertices
     }
 }
 

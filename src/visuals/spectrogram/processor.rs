@@ -356,7 +356,7 @@ impl SpectrogramProcessor {
             self.audio_buffer
                 .drain(..hop_size.min(self.audio_buffer.len()));
         }
-        self.shrink_audio_buffer(read_len.saturating_mul(2));
+        self.shrink_audio_buffer(read_len.saturating_mul(4));
         output
     }
 

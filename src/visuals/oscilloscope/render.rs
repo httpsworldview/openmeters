@@ -7,7 +7,7 @@ use iced::advanced::graphics::Viewport;
 use crate::visuals::render::common::sdf_primitive;
 use crate::util::color::rgba_with_alpha;
 use crate::visuals::render::common::{
-    ChannelLayout, ClipTransform, SdfVertex, decimate_line, extend_filled_line,
+    ChannelLayout, ClipTransform, GeometryScratch, decimate_line_in_place, extend_filled_line,
 };
 
 #[derive(Debug, Clone)]
@@ -22,12 +22,12 @@ pub struct OscilloscopeParams {
 }
 
 impl OscilloscopePrimitive {
-    fn build_vertices(&self, viewport: &Viewport) -> Vec<SdfVertex> {
+    fn build_vertices(&self, viewport: &Viewport, scratch: &mut GeometryScratch) {
         let samples_per_channel = self.params.samples_per_channel;
         let channels = self.params.channels.max(1);
 
         if samples_per_channel < 2 || self.params.samples.len() < channels * samples_per_channel {
-            return Vec::new();
+            return;
         }
 
         let bounds = self.params.bounds;
@@ -48,7 +48,8 @@ impl OscilloscopePrimitive {
         let step = bounds.width.max(1.0) / (samples_per_channel.saturating_sub(1) as f32).max(1.0);
         let pixel_width = bounds.width.ceil().max(1.0) as usize;
 
-        let mut vertices = Vec::new();
+        let vertices = &mut scratch.vertices;
+        let positions = &mut scratch.points;
 
         for (channel_idx, channel_samples) in self
             .params
@@ -60,21 +61,18 @@ impl OscilloscopePrimitive {
             let color = self.params.color;
             let center = layout.center_y(channel_idx);
 
-            let positions: Vec<_> = channel_samples
-                .iter()
-                .enumerate()
-                .map(|(i, &s)| {
-                    (
-                        bounds.x + i as f32 * step,
-                        center - s.clamp(-1.0, 1.0) * layout.amplitude_scale,
-                    )
-                })
-                .collect();
-            let positions = decimate_line(&positions, pixel_width * 2);
+            positions.clear();
+            positions.extend(channel_samples.iter().enumerate().map(|(i, &s)| {
+                (
+                    bounds.x + i as f32 * step,
+                    center - s.clamp(-1.0, 1.0) * layout.amplitude_scale,
+                )
+            }));
+            decimate_line_in_place(positions, pixel_width * 2);
 
             extend_filled_line(
-                &mut vertices,
-                &positions,
+                vertices,
+                positions,
                 center,
                 STROKE_WIDTH,
                 rgba_with_alpha(color, 1.0),
@@ -82,8 +80,6 @@ impl OscilloscopePrimitive {
                 clip,
             );
         }
-
-        vertices
     }
 }
 

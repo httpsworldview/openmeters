@@ -10,7 +10,8 @@ use crate::visuals::options::{
     CorrelationMeterMode, CorrelationMeterSide, StereometerMode, StereometerScale,
 };
 use crate::visuals::render::common::{
-    ClipTransform, SdfVertex, dot_vertices, gradient_quad_vertices, line_vertices, quad_vertices,
+    ClipTransform, GeometryScratch, SdfVertex, dot_vertices, gradient_quad_vertices, line_vertices,
+    quad_vertices,
 };
 
 pub fn scale_point(scale: StereometerScale, x: f32, y: f32, range: f32) -> (f32, f32) {
@@ -119,13 +120,11 @@ impl VecTransform {
 }
 
 impl StereometerPrimitive {
-    fn grid_vertices(&self, t: &VecTransform, clip: ClipTransform) -> Vec<SdfVertex> {
+    fn add_grid_vertices(&self, vertices: &mut Vec<SdfVertex>, t: &VecTransform, clip: ClipTransform) {
         let grid_color = self.params.palette[8];
         if grid_color[3] < f32::EPSILON {
-            return Vec::new();
+            return;
         }
-
-        let mut vertices = Vec::new();
         let mut draw_line = |(ax, ay): (f32, f32), (bx, by): (f32, f32)| {
             for seg in 0..GRID_SEGMENTS {
                 let t0 = seg as f32 / GRID_SEGMENTS as f32;
@@ -157,8 +156,6 @@ impl StereometerPrimitive {
         for (start, end) in GRID_AXES {
             draw_line(start, end);
         }
-
-        vertices
     }
 
     fn meter_bounds(p: &StereometerParams) -> (Rectangle, Option<Rectangle>) {
@@ -234,6 +231,7 @@ impl StereometerPrimitive {
 
     fn add_correlation_vertices(
         out: &mut Vec<SdfVertex>,
+        alpha: &mut Vec<f32>,
         p: &StereometerParams,
         bounds: Rectangle,
         clip: ClipTransform,
@@ -248,7 +246,6 @@ impl StereometerPrimitive {
         let y_min = bounds.y as i32;
         let height = (bounds.height as i32 + 1).max(0) as usize;
         let y_max = y_min + height as i32 - 1;
-        let mut alpha = vec![0.0f32; height];
 
         let trail_len = if is_single {
             p.corr_trail.len()
@@ -296,6 +293,7 @@ impl StereometerPrimitive {
             ));
 
             if trail_len > 1 {
+                alpha.resize(height, 0.0);
                 alpha.fill(0.0);
                 for j in 0..trail_len - 1 {
                     let a = (1.0 - (j + 1) as f32 / trail_len as f32).powf(2.4);
@@ -336,19 +334,17 @@ impl StereometerPrimitive {
         }
     }
 
-    fn build_vertices(&self, viewport: &Viewport) -> Vec<SdfVertex> {
+    fn build_vertices(&self, viewport: &Viewport, scratch: &mut GeometryScratch) {
         let clip = ClipTransform::from_viewport(viewport);
         let p = &self.params;
         let (vec_bounds, corr_bounds) = Self::meter_bounds(p);
         let transform = VecTransform::new(p, vec_bounds);
-        let mut vertices = self.grid_vertices(&transform, clip);
-
-        Self::add_trace_vertices(&mut vertices, p, &transform, clip);
+        let vertices = &mut scratch.vertices;
+        self.add_grid_vertices(vertices, &transform, clip);
+        Self::add_trace_vertices(vertices, p, &transform, clip);
         if let Some(bounds) = corr_bounds {
-            Self::add_correlation_vertices(&mut vertices, p, bounds, clip);
+            Self::add_correlation_vertices(vertices, &mut scratch.scalars, p, bounds, clip);
         }
-
-        vertices
     }
 }
 
