@@ -29,7 +29,9 @@ use iced::{
 };
 use iced_layershell::settings::{LayerShellSettings, Settings as LayerSettings, StartMode};
 use message::{Message, keyboard_shortcut, update, view};
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 use windowing::{
@@ -155,7 +157,7 @@ impl UiApp {
         if let Some(theme_file) = theme_file {
             manager.apply_theme(&theme_file);
         }
-        let visual_manager = VisualManagerHandle::new(manager);
+        let visual_manager = Rc::new(RefCell::new(manager));
         let config_page = ConfigPage::new(
             routing_sender,
             registry_updates,

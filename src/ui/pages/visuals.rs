@@ -51,7 +51,7 @@ impl VisualsPage {
             panes: None,
             hovered_pane: None,
         };
-        let snapshot = page.visual_manager.snapshot();
+        let snapshot = page.visual_manager.borrow().snapshot();
         page.apply_snapshot_excluding(&snapshot, &[]);
         page
     }
@@ -77,6 +77,7 @@ impl VisualsPage {
                 self.settings.update(|s| {
                     s.data.visuals.order = self
                         .visual_manager
+                        .borrow()
                         .snapshot()
                         .iter()
                         .map(|s| s.kind)
@@ -157,7 +158,6 @@ impl VisualsPage {
             panes.for_each_mut(|_, p| {
                 if let Some(s) = slots.iter().copied().find(|s| s.kind == p.kind) {
                     p.content = s.content.clone();
-                    p.min_width = s.metadata.min_width;
                 }
             });
         }

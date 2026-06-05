@@ -199,7 +199,7 @@ impl UiApp {
         {
             return Task::none();
         }
-        let snapshot = self.visual_manager.snapshot();
+        let snapshot = self.visual_manager.borrow().snapshot();
         let Some((index, slot)) = snapshot.iter().enumerate().find(|(_, s)| s.kind == kind) else {
             return Task::none();
         };
@@ -233,7 +233,7 @@ impl UiApp {
     }
 
     pub(super) fn sync_all_windows(&mut self) -> Task<Message> {
-        let snapshot = self.visual_manager.snapshot();
+        let snapshot = self.visual_manager.borrow().snapshot();
         let close_settings_task = self
             .settings_window
             .take_if(|(_, panel)| {
@@ -276,14 +276,7 @@ impl UiApp {
             return "OpenMeters".into();
         };
 
-        self.visual_manager
-            .snapshot()
-            .iter()
-            .find(|s| s.kind == kind)
-            .map_or_else(
-                || "OpenMeters".into(),
-                |s| format!("{}{} - OpenMeters", s.metadata.display_name, suffix),
-            )
+        format!("{}{} - OpenMeters", kind.label(), suffix)
     }
 
     pub(super) fn theme(&self, window_id: window::Id) -> iced::Theme {
@@ -318,6 +311,7 @@ impl UiApp {
             self.settings_handle.update(|settings| {
                 settings.data.visuals.order = self
                     .visual_manager
+                    .borrow()
                     .snapshot()
                     .iter()
                     .map(|s| s.kind)
@@ -334,7 +328,7 @@ impl UiApp {
     }
 
     pub(super) fn sync_visuals_page(&mut self) {
-        let snapshot = self.visual_manager.snapshot();
+        let snapshot = self.visual_manager.borrow().snapshot();
         self.visuals_page
             .apply_snapshot_excluding(&snapshot, &self.popped_out_kinds());
     }

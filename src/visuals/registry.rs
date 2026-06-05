@@ -19,10 +19,7 @@ use crate::{
     util::color::{sanitize_stop_positions, sanitize_stop_spreads},
 };
 use iced::{Color, Element, Length, widget::container};
-use std::{
-    cell::{Ref, RefCell, RefMut},
-    rc::Rc,
-};
+use std::{cell::RefCell, rc::Rc};
 
 type Shared<T> = Rc<RefCell<T>>;
 
@@ -47,7 +44,7 @@ macro_rules! visuals {
     (@apply_palette $st:expr, $settings:ident, $default:expr) => {
         $st.set_palette(&resolve_palette($settings.palette.as_ref(), $default))
     };
-    ($($variant:ident($name:expr, $width:expr, $height:expr, $min_w:expr) =>
+    ($($variant:ident($width:expr, $height:expr, $min_w:expr) =>
        $module:ident :: $processor:ident, $config:ident, $state:ident;
        $settings_ty:ty;
        $(pre_ingest($pip:ident, $pis:ident) $pre_ingest_body:expr;)?
@@ -77,7 +74,6 @@ macro_rules! visuals {
         const DESCRIPTORS: &[Descriptor] = &[$(Descriptor {
             kind: VisualKind::$variant,
             meta: VisualMetadata {
-                display_name: $name,
                 preferred_width: $width,
                 preferred_height: $height,
                 min_width: $min_w,
@@ -125,7 +121,7 @@ macro_rules! visuals {
 }
 
 visuals! {
-    Loudness("Loudness", 140.0, 300.0, 80.0) =>
+    Loudness(140.0, 300.0, 80.0) =>
         loudness::LoudnessProcessor, LoudnessConfig, LoudnessState;
         settings_cfg::LoudnessSettings;
         apply(_p, s, set) { let mut st = s.borrow_mut();
@@ -134,7 +130,7 @@ visuals! {
         export(_p, s) { let st = s.borrow(); settings_cfg::LoudnessSettings { left_mode: st.left_mode, right_mode: st.right_mode,
             palette: visuals!(@export_palette &st.palette, &palettes::loudness::COLORS) } };
 
-    Oscilloscope("Oscilloscope", 150.0, 160.0, 100.0) =>
+    Oscilloscope(150.0, 160.0, 100.0) =>
         oscilloscope::OscilloscopeProcessor, OscilloscopeConfig, OscilloscopeState;
         settings_cfg::OscilloscopeSettings;
         apply(p, s, set) { visuals!(@apply_config p, set); let mut st = s.borrow_mut();
@@ -144,7 +140,7 @@ visuals! {
             out.persistence = st.persistence; out.channel_1 = st.channel_1; out.channel_2 = st.channel_2;
             out.palette = visuals!(@export_palette &st.colors, &palettes::oscilloscope::COLORS); out };
 
-    Waveform("Waveform", 220.0, 180.0, 220.0) =>
+    Waveform(220.0, 180.0, 220.0) =>
         waveform::WaveformProcessor, WaveformConfig, WaveformState;
         settings_cfg::WaveformSettings;
         apply(p, s, set) { visuals!(@apply_config p, set);
@@ -156,7 +152,7 @@ visuals! {
             out.show_peak_history = st.show_peak_history;
             out.palette = visuals!(@export_palette &st.style.palette, &palettes::waveform::COLORS); out };
 
-    Spectrogram("Spectrogram", 320.0, 220.0, 300.0) =>
+    Spectrogram(320.0, 220.0, 300.0) =>
         spectrogram::SpectrogramProcessor, SpectrogramConfig, SpectrogramState;
         settings_cfg::SpectrogramSettings;
         pre_ingest(p, s) {
@@ -190,7 +186,7 @@ visuals! {
             out.tilt_db = st.style.tilt_db;
             out.rotation = st.rotation; out };
 
-    Spectrum("Spectrum analyzer", 400.0, 180.0, 400.0) =>
+    Spectrum(400.0, 180.0, 400.0) =>
         spectrum::SpectrumProcessor, SpectrumConfig, SpectrumState;
         settings_cfg::SpectrumSettings;
         apply(p, s, set) { visuals!(@apply_config p, set); let cfg = p.config(); let mut st = s.borrow_mut();
@@ -213,7 +209,7 @@ visuals! {
             out.show_secondary_line = style.show_secondary_line;
             out.bar_count = style.bar_count; out.bar_gap = style.bar_gap; out };
 
-    Stereometer("Stereometer", 150.0, 220.0, 100.0) =>
+    Stereometer(150.0, 220.0, 100.0) =>
         stereometer::StereometerProcessor, StereometerConfig, StereometerState;
         settings_cfg::StereometerSettings;
         apply(p, s, set) {
@@ -240,7 +236,6 @@ struct Visual<P, S> {
 
 #[derive(Debug, Clone, Copy)]
 pub struct VisualMetadata {
-    pub display_name: &'static str,
     pub preferred_width: f32,
     pub preferred_height: f32,
     pub min_width: f32,
@@ -382,19 +377,4 @@ impl VisualManager {
     }
 }
 
-#[derive(Clone)]
-pub(crate) struct VisualManagerHandle(Rc<RefCell<VisualManager>>);
-impl VisualManagerHandle {
-    pub fn new(m: VisualManager) -> Self {
-        Self(Rc::new(RefCell::new(m)))
-    }
-    pub fn borrow(&self) -> Ref<'_, VisualManager> {
-        self.0.borrow()
-    }
-    pub fn borrow_mut(&self) -> RefMut<'_, VisualManager> {
-        self.0.borrow_mut()
-    }
-    pub fn snapshot(&self) -> Vec<VisualSlotSnapshot> {
-        self.0.borrow().snapshot()
-    }
-}
+pub(crate) type VisualManagerHandle = Shared<VisualManager>;

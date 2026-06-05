@@ -48,7 +48,7 @@ pub mod visuals {
             Oscilloscope => "Oscilloscope",
             Waveform => "Waveform",
             Spectrogram => "Spectrogram",
-            Spectrum => "Spectrum",
+            Spectrum => "Spectrum analyzer",
             Stereometer => "Stereometer",
         }
     );

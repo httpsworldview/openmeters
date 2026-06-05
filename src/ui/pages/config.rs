@@ -249,7 +249,7 @@ impl ConfigPage {
             .spacing(14)
             .padding(8)
             .push(self.render_capture_section())
-            .push(self.render_visuals_section(&self.visual_manager.snapshot()))
+            .push(self.render_visuals_section(&self.visual_manager.borrow().snapshot()))
             .push(self.render_theme_section())
             .push(self.render_global_section());
         if self.bar_supported {
@@ -555,7 +555,7 @@ impl ConfigPage {
         } else {
             render_toggle_grid(snapshot, |slot| {
                 (
-                    slot.metadata.display_name,
+                    slot.kind.label(),
                     slot.enabled,
                     ConfigMessage::VisualToggled {
                         kind: slot.kind,
