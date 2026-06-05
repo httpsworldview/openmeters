@@ -4,7 +4,7 @@
 use crate::dsp::AudioBlock;
 use crate::util::audio::{
     BAND_SPLITS_HZ, DEFAULT_SAMPLE_RATE, WindowKind, apply_window, power_to_db,
-    window_coefficients,
+    sanitize_sample_rate, window_coefficients,
 };
 use realfft::{RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex32;
@@ -53,9 +53,7 @@ impl Default for WaveformConfig {
 
 impl WaveformConfig {
     fn normalized(mut self) -> Self {
-        if !self.sample_rate.is_finite() || self.sample_rate <= 0.0 {
-            self.sample_rate = DEFAULT_SAMPLE_RATE;
-        }
+        self.sample_rate = sanitize_sample_rate(self.sample_rate);
         if !self.scroll_speed.is_finite() || self.scroll_speed <= 0.0 {
             self.scroll_speed = DEFAULT_SCROLL_SPEED;
         } else {
@@ -452,7 +450,7 @@ impl WaveformProcessor {
             return None;
         }
 
-        let (channels, sample_rate) = (block.channels.max(1), block.sample_rate.max(1.0));
+        let (channels, sample_rate) = (block.channels, block.sample_rate);
         let needs_reconfigure = channels != self.channel_count
             || (self.config.sample_rate - sample_rate).abs() > f32::EPSILON;
 

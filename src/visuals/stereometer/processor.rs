@@ -158,12 +158,12 @@ impl StereometerProcessor {
     }
 
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<StereometerSnapshot> {
-        let channel_count = block.channels.max(1);
+        let channel_count = block.channels;
         if block.frame_count() == 0 || channel_count < 2 {
             return None;
         }
 
-        let sample_rate = block.sample_rate.max(1.0);
+        let sample_rate = block.sample_rate;
         if (self.config.sample_rate - sample_rate).abs() > f32::EPSILON {
             let mut config = self.config;
             config.sample_rate = sample_rate;

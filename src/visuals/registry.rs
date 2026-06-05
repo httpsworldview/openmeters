@@ -95,8 +95,8 @@ macro_rules! visuals {
                 })?
                 if let Some(snap) = self.processor.process_block(&AudioBlock::now(
                     samples,
-                    fmt.channels.max(1),
-                    fmt.sample_rate.max(1.0),
+                    fmt.channels,
+                    fmt.sample_rate,
                 )) {
                     self.state.borrow_mut().apply_snapshot(snap);
                 }

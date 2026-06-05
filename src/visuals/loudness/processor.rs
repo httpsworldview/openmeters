@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Maika Namuo
 
 use crate::dsp::AudioBlock;
-use crate::util::audio::{DEFAULT_SAMPLE_RATE, power_to_db};
+use crate::util::audio::{DEFAULT_SAMPLE_RATE, power_to_db, sanitize_sample_rate};
 use std::{f64::consts::PI, sync::LazyLock};
 
 const MIN_MEAN_SQUARE: f64 = 1e-12;
@@ -289,9 +289,8 @@ impl LoudnessProcessor {
 
     fn ensure_state(&mut self, requested_channels: usize, sample_rate: f32) {
         let channels = requested_channels.clamp(1, MAX_CHANNELS);
-        let rate_changed = sample_rate.is_finite()
-            && sample_rate > 0.0
-            && (self.config.sample_rate - sample_rate).abs() > f32::EPSILON;
+        let sample_rate = sanitize_sample_rate(sample_rate);
+        let rate_changed = (self.config.sample_rate - sample_rate).abs() > f32::EPSILON;
 
         if rate_changed {
             self.config.sample_rate = sample_rate;
@@ -314,7 +313,7 @@ impl LoudnessProcessor {
         self.snapshot = LoudnessSnapshot::with_floor(self.config.floor_db);
     }
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<LoudnessSnapshot> {
-        if block.channels == 0 || block.frame_count() == 0 {
+        if block.frame_count() == 0 {
             return None;
         }
 

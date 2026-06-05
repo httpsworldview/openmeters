@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
+use crate::util::audio::sanitize_sample_rate;
 use std::time::Instant;
 
 #[derive(Debug, Clone, Copy)]
@@ -16,8 +17,8 @@ impl<'a> AudioBlock<'a> {
     pub fn new(samples: &'a [f32], channels: usize, sample_rate: f32, timestamp: Instant) -> Self {
         Self {
             samples,
-            channels,
-            sample_rate,
+            channels: channels.max(1),
+            sample_rate: sanitize_sample_rate(sample_rate),
             timestamp,
         }
     }
@@ -25,8 +26,8 @@ impl<'a> AudioBlock<'a> {
     pub fn now(samples: &'a [f32], channels: usize, sample_rate: f32) -> Self {
         Self {
             samples,
-            channels,
-            sample_rate,
+            channels: channels.max(1),
+            sample_rate: sanitize_sample_rate(sample_rate),
             timestamp: Instant::now(),
         }
     }

@@ -488,12 +488,12 @@ impl OscilloscopeProcessor {
         }
     }
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<OscilloscopeSnapshot> {
-        let channel_count = block.channels.max(1);
         if block.frame_count() == 0 {
             return None;
         }
 
-        let sample_rate = block.sample_rate.max(1.0);
+        let channel_count = block.channels;
+        let sample_rate = block.sample_rate;
         if (self.config.sample_rate - sample_rate).abs() > f32::EPSILON {
             let mut config = self.config;
             config.sample_rate = sample_rate;

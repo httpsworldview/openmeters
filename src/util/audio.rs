@@ -10,6 +10,14 @@ use std::{
 
 pub const DEFAULT_SAMPLE_RATE: f32 = 48_000.0;
 
+pub fn sanitize_sample_rate(sample_rate: f32) -> f32 {
+    if sample_rate.is_finite() && sample_rate > 0.0 {
+        sample_rate
+    } else {
+        DEFAULT_SAMPLE_RATE
+    }
+}
+
 pub const DB_FLOOR: f32 = -140.0;
 
 pub const BAND_SPLITS_HZ: [f32; 2] = [250.0, 4000.0];

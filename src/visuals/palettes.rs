@@ -7,6 +7,8 @@ use iced::Color;
 
 pub const BG_BASE: Color = hex(0x00, 0x00, 0x00, 0xFF);
 
+const POSITIONS_9: [f32; 9] = [0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0];
+
 #[derive(Debug, Clone)]
 pub struct Palette {
     colors: Vec<Color>,
@@ -110,7 +112,7 @@ pub mod spectrum {
 
 // dark red (low) -> orange -> green -> cyan -> blue (high)
 pub mod waveform {
-    use super::{Color, hex};
+    use super::{Color, POSITIONS_9, hex};
     pub const GRADIENT_STOPS: usize = 6;
     pub const COLORS: [Color; 9] = [
         hex(0x8B, 0x00, 0x00, 0xFF),
@@ -134,8 +136,7 @@ pub mod waveform {
         "Mid Band",
         "High Band",
     ];
-    pub const DEFAULT_POSITIONS: [f32; COLORS.len()] =
-        [0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0];
+    pub const DEFAULT_POSITIONS: [f32; COLORS.len()] = POSITIONS_9;
 }
 
 // Oscilloscope trace color (1 stop)
@@ -148,7 +149,7 @@ pub mod oscilloscope {
 
 // Stereometer (9 stops)
 pub mod stereometer {
-    use super::{Color, hex};
+    use super::{Color, POSITIONS_9, hex};
     pub const COLORS: [Color; 9] = [
         hex(0xFF, 0xFF, 0xFF, 0xFF),
         hex(0x1A, 0x1A, 0x1A, 0xFF),
@@ -171,8 +172,7 @@ pub mod stereometer {
         "High",
         "Grid",
     ];
-    pub const DEFAULT_POSITIONS: [f32; COLORS.len()] =
-        [0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0];
+    pub const DEFAULT_POSITIONS: [f32; COLORS.len()] = POSITIONS_9;
 }
 
 // Loudness meter: background, level zones, peak hold, guide line (7 stops)

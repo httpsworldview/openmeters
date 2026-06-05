@@ -5,7 +5,7 @@ use crate::dsp::AudioBlock;
 use crate::util::audio::{
     DB_FLOOR, DEFAULT_SAMPLE_RATE, FrequencyScale, WindowKind, apply_window,
     compute_fft_bin_normalization, copy_dc_removed_from_deque, mixdown_into_deque, power_to_db,
-    window_coefficients,
+    sanitize_sample_rate, window_coefficients,
 };
 use realfft::{RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex32;
@@ -75,9 +75,7 @@ impl Default for SpectrumConfig {
 
 impl SpectrumConfig {
     pub fn normalize(&mut self) {
-        if !self.sample_rate.is_finite() || self.sample_rate <= 0.0 {
-            self.sample_rate = DEFAULT_SAMPLE_RATE;
-        }
+        self.sample_rate = sanitize_sample_rate(self.sample_rate);
         self.fft_size = self.fft_size.max(1);
         if self.hop_size == 0 {
             self.hop_size = (self.fft_size / DEFAULT_SPECTRUM_HOP_DIVISOR).max(1);

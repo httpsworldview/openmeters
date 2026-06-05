@@ -25,7 +25,7 @@ use crate::dsp::AudioBlock;
 use crate::util::audio::{
     DB_FLOOR, DEFAULT_SAMPLE_RATE, FrequencyScale, LN_TO_DB, WindowKind,
     compute_fft_bin_normalization, copy_dc_removed_from_deque, db_to_power, mixdown_into_deque,
-    power_to_db, window_coefficients,
+    power_to_db, sanitize_sample_rate, window_coefficients,
 };
 use bytemuck::{Pod, Zeroable};
 use rustfft::num_complex::Complex32;
@@ -90,9 +90,7 @@ impl Default for SpectrogramConfig {
 
 impl SpectrogramConfig {
     fn normalize(&mut self) {
-        if !self.sample_rate.is_finite() || self.sample_rate <= 0.0 {
-            self.sample_rate = DEFAULT_SAMPLE_RATE;
-        }
+        self.sample_rate = sanitize_sample_rate(self.sample_rate);
         if self.fft_size == 0 {
             self.fft_size = DEFAULT_SPECTROGRAM_FFT_SIZE;
         }
@@ -420,14 +418,10 @@ impl SpectrogramProcessor {
         points
     }
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<SpectrogramUpdate> {
-        if block.frame_count() == 0 || block.channels == 0 {
+        if block.frame_count() == 0 {
             return None;
         }
-        let sample_rate = if block.sample_rate.is_finite() && block.sample_rate > 0.0 {
-            block.sample_rate
-        } else {
-            DEFAULT_SAMPLE_RATE
-        };
+        let sample_rate = block.sample_rate;
         if (self.config.sample_rate - sample_rate).abs() > f32::EPSILON {
             self.config.sample_rate = sample_rate;
             self.rebuild_fft();
