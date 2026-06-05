@@ -34,12 +34,11 @@ macro_rules! settings_modules {
         }
 
         pub fn create_panel(
-            visual_id: VisualId,
             kind: VisualKind,
             visual_manager: &VisualManagerHandle,
         ) -> ActiveSettings {
             ActiveSettings {
-                visual_id,
+                kind,
                 pane: match kind {
                     $(VisualKind::$variant => Box::new($module::create(visual_manager)),)+
                 },
@@ -119,7 +118,7 @@ use crate::persistence::settings::{
     BUILTIN_THEME, HasPalette, ModuleSettings, PaletteSettings, SettingsConfig, SettingsHandle,
 };
 use crate::ui::theme::Palette;
-use crate::visuals::registry::{VisualId, VisualKind, VisualManagerHandle};
+use crate::visuals::registry::{VisualKind, VisualManagerHandle};
 use iced::widget::column;
 use iced::{Color, Element};
 use serde::Serialize;
@@ -144,7 +143,7 @@ pub trait ModuleSettingsPane: 'static {
 }
 
 pub struct ActiveSettings {
-    pub(crate) visual_id: VisualId,
+    pub(crate) kind: VisualKind,
     pane: Box<dyn ModuleSettingsPane>,
 }
 
@@ -195,7 +194,7 @@ pub(super) fn persist_with_palette<T: Clone + Serialize + HasPalette>(
     kind: VisualKind,
     config: &T,
     palette: &PaletteEditor,
-) -> bool {
+) {
     let mut stored = config.clone();
     let palette_settings = PaletteSettings::from_state(
         palette.colors(),
@@ -205,27 +204,27 @@ pub(super) fn persist_with_palette<T: Clone + Serialize + HasPalette>(
         palette.spreads(),
     );
     stored.set_palette(palette_settings.clone());
-    let applied = visual_manager
+    if !visual_manager
         .borrow_mut()
-        .apply_module_settings(kind, &ModuleSettings::with_config(&stored));
-    if applied {
-        settings_handle.update(move |s| {
-            s.data
-                .visuals
-                .modules
-                .entry(kind)
-                .or_default()
-                .set_config(&stored);
-            if palette_settings.is_some() || s.active_theme() != BUILTIN_THEME {
-                s.update_active_theme(|theme| {
-                    if let Some(ps) = palette_settings {
-                        theme.palettes.insert(kind, ps);
-                    } else {
-                        theme.palettes.remove(&kind);
-                    }
-                });
-            }
-        });
+        .apply_module_settings(kind, &ModuleSettings::with_config(&stored))
+    {
+        return;
     }
-    applied
+    settings_handle.update(move |s| {
+        s.data
+            .visuals
+            .modules
+            .entry(kind)
+            .or_default()
+            .set_config(&stored);
+        if palette_settings.is_some() || s.active_theme() != BUILTIN_THEME {
+            s.update_active_theme(|theme| {
+                if let Some(ps) = palette_settings {
+                    theme.palettes.insert(kind, ps);
+                } else {
+                    theme.palettes.remove(&kind);
+                }
+            });
+        }
+    });
 }

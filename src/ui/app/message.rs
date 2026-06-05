@@ -121,9 +121,7 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
                 app.sync_all_windows(),
             ])
         }
-        Message::Visuals(VisualsMessage::SettingsRequested { visual_id, kind }) => {
-            app.open_settings_window(visual_id, kind)
-        }
+        Message::Visuals(VisualsMessage::SettingsRequested(kind)) => app.open_settings_window(kind),
         Message::Visuals(VisualsMessage::WindowDragRequested) if !app.main_window_is_layer => {
             window::drag(app.main_window_id)
         }

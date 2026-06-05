@@ -7,9 +7,7 @@ use crate::persistence::settings::{BarAlignment, BarSettings, clamp_bar_height};
 use crate::ui::pages::config::ConfigMessage;
 use crate::ui::pages::visuals::{VisualsMessage, create_settings_panel};
 use crate::ui::theme;
-use crate::visuals::registry::{
-    VisualContent, VisualId, VisualKind, VisualMetadata, VisualSlotSnapshot,
-};
+use crate::visuals::registry::{VisualContent, VisualKind, VisualMetadata, VisualSlotSnapshot};
 use iced::widget::{container, mouse_area, text};
 use iced::{Element, Length, Size, Task, exit, window};
 use iced_layershell::actions::OutputSnapshotCallback;
@@ -142,7 +140,6 @@ pub(super) struct BarResizeState {
 }
 
 pub(super) struct PopoutWindow {
-    pub visual_id: VisualId,
     pub kind: VisualKind,
     pub original_index: usize,
     pub cached: Option<(VisualMetadata, VisualContent)>,
@@ -152,7 +149,7 @@ impl PopoutWindow {
     pub fn sync_from_snapshot(&mut self, snapshot: &[VisualSlotSnapshot]) {
         self.cached = snapshot
             .iter()
-            .find(|slot| slot.id == self.visual_id && slot.enabled)
+            .find(|slot| slot.kind == self.kind && slot.enabled)
             .map(|slot| (slot.metadata, slot.content.clone()));
     }
 
@@ -160,10 +157,7 @@ impl PopoutWindow {
         let Some((_, content)) = &self.cached else {
             return fill!(text("")).into();
         };
-        let msg = VisualsMessage::SettingsRequested {
-            visual_id: self.visual_id,
-            kind: self.kind,
-        };
+        let msg = VisualsMessage::SettingsRequested(self.kind);
         mouse_area(fill!(content.render()))
             .on_right_press(msg)
             .into()
@@ -175,24 +169,15 @@ impl UiApp {
         let Some((_, panel)) = self.settings_window.as_mut() else {
             return;
         };
-        let visual_id = panel.visual_id;
-        let snapshot = self.visual_manager.snapshot();
-        let Some(kind) = snapshot.iter().find(|s| s.id == visual_id).map(|s| s.kind) else {
-            return;
-        };
-        *panel = create_settings_panel(visual_id, kind, &self.visual_manager);
+        *panel = create_settings_panel(panel.kind, &self.visual_manager);
     }
 
-    pub(super) fn open_settings_window(
-        &mut self,
-        visual_id: VisualId,
-        kind: VisualKind,
-    ) -> Task<Message> {
-        let new_panel = create_settings_panel(visual_id, kind, &self.visual_manager);
+    pub(super) fn open_settings_window(&mut self, kind: VisualKind) -> Task<Message> {
+        let new_panel = create_settings_panel(kind, &self.visual_manager);
         let previous = self.settings_window.take();
         if previous
             .as_ref()
-            .is_some_and(|(_, panel)| panel.visual_id == visual_id)
+            .is_some_and(|(_, panel)| panel.kind == kind)
         {
             self.settings_window = previous.map(|(id, _)| (id, new_panel));
             return Task::none();
@@ -206,21 +191,16 @@ impl UiApp {
         }
     }
 
-    pub(super) fn open_popout_window(
-        &mut self,
-        visual_id: VisualId,
-        kind: VisualKind,
-    ) -> Task<Message> {
+    pub(super) fn open_popout_window(&mut self, kind: VisualKind) -> Task<Message> {
         if self
             .popout_windows
             .values()
-            .any(|popout| popout.visual_id == visual_id)
+            .any(|popout| popout.kind == kind)
         {
             return Task::none();
         }
         let snapshot = self.visual_manager.snapshot();
-        let Some((index, slot)) = snapshot.iter().enumerate().find(|(_, s)| s.id == visual_id)
-        else {
+        let Some((index, slot)) = snapshot.iter().enumerate().find(|(_, s)| s.kind == kind) else {
             return Task::none();
         };
         let window_size = popout_window_size(&slot.metadata);
@@ -228,7 +208,6 @@ impl UiApp {
         let (new_id, open_task) =
             open_base_window(self.use_layershell, window_size, use_decorations);
         let mut popout = PopoutWindow {
-            visual_id,
             kind,
             original_index: index,
             cached: None,
@@ -249,8 +228,8 @@ impl UiApp {
         Task::none()
     }
 
-    pub(super) fn popped_out_ids(&self) -> Vec<VisualId> {
-        self.popout_windows.values().map(|w| w.visual_id).collect()
+    pub(super) fn popped_out_kinds(&self) -> Vec<VisualKind> {
+        self.popout_windows.values().map(|w| w.kind).collect()
     }
 
     pub(super) fn sync_all_windows(&mut self) -> Task<Message> {
@@ -260,7 +239,7 @@ impl UiApp {
             .take_if(|(_, panel)| {
                 !snapshot
                     .iter()
-                    .any(|slot| slot.id == panel.visual_id && slot.enabled)
+                    .any(|slot| slot.kind == panel.kind && slot.enabled)
             })
             .map(|(id, _)| window::close::<Message>(id));
         self.popout_windows
@@ -272,7 +251,7 @@ impl UiApp {
             .map(|(id, _)| id)
             .collect();
         self.visuals_page
-            .apply_snapshot_excluding(&snapshot, &self.popped_out_ids());
+            .apply_snapshot_excluding(&snapshot, &self.popped_out_kinds());
         Task::batch(
             close_settings_task
                 .into_iter()
@@ -285,14 +264,14 @@ impl UiApp {
             return "OpenMeters".into();
         }
 
-        let (visual_id, suffix) = if let Some((_, panel)) = self
+        let (kind, suffix) = if let Some((_, panel)) = self
             .settings_window
             .as_ref()
             .filter(|(id, _)| *id == window_id)
         {
-            (panel.visual_id, " settings")
+            (panel.kind, " settings")
         } else if let Some(popout) = self.popout_windows.get(&window_id) {
-            (popout.visual_id, "")
+            (popout.kind, "")
         } else {
             return "OpenMeters".into();
         };
@@ -300,7 +279,7 @@ impl UiApp {
         self.visual_manager
             .snapshot()
             .iter()
-            .find(|s| s.id == visual_id)
+            .find(|s| s.kind == kind)
             .map_or_else(
                 || "OpenMeters".into(),
                 |s| format!("{}{} - OpenMeters", s.metadata.display_name, suffix),
@@ -334,7 +313,7 @@ impl UiApp {
         if let Some(popout) = self.popout_windows.remove(&source_window) {
             self.visual_manager
                 .borrow_mut()
-                .restore_position(popout.visual_id, popout.original_index);
+                .move_to(popout.kind, popout.original_index);
             self.sync_visuals_page();
             self.settings_handle.update(|settings| {
                 settings.data.visuals.order = self
@@ -346,10 +325,10 @@ impl UiApp {
             });
             return window::close(source_window);
         }
-        let Some((id, kind)) = self.visuals_page.hovered_visual() else {
+        let Some(kind) = self.visuals_page.hovered_visual() else {
             return Task::none();
         };
-        let task = self.open_popout_window(id, kind);
+        let task = self.open_popout_window(kind);
         self.sync_visuals_page();
         task
     }
@@ -357,7 +336,7 @@ impl UiApp {
     pub(super) fn sync_visuals_page(&mut self) {
         let snapshot = self.visual_manager.snapshot();
         self.visuals_page
-            .apply_snapshot_excluding(&snapshot, &self.popped_out_ids());
+            .apply_snapshot_excluding(&snapshot, &self.popped_out_kinds());
     }
 
     pub(super) fn apply_bar_layout(
@@ -511,15 +490,10 @@ impl UiApp {
         let Some((old_id, panel)) = self.settings_window.take() else {
             return Task::none();
         };
-        let visual_id = panel.visual_id;
-        let snapshot = self.visual_manager.snapshot();
-        let Some(slot) = snapshot.iter().find(|s| s.id == visual_id) else {
-            return window::close(old_id);
-        };
         let (new_id, open_task) = open_settings_base_window(self.use_layershell);
         self.settings_window = Some((
             new_id,
-            create_settings_panel(visual_id, slot.kind, &self.visual_manager),
+            create_settings_panel(panel.kind, &self.visual_manager),
         ));
         Task::batch([open_task, window::close(old_id)])
     }

@@ -4,7 +4,7 @@
 use crate::persistence::settings::SettingsHandle;
 use crate::ui::widgets::pane_grid::{self, Content as PaneContent, Pane};
 use crate::visuals::registry::{
-    VisualContent, VisualId, VisualKind, VisualManagerHandle, VisualSlotSnapshot,
+    VisualContent, VisualKind, VisualManagerHandle, VisualSlotSnapshot,
 };
 pub mod settings;
 pub use settings::{ActiveSettings, SettingsMessage, create_panel as create_settings_panel};
@@ -18,16 +18,12 @@ pub enum VisualsMessage {
     PaneResized(pane_grid::ResizeWidths),
     PaneContextRequested(Pane),
     PaneHovered(Option<Pane>),
-    SettingsRequested {
-        visual_id: VisualId,
-        kind: VisualKind,
-    },
+    SettingsRequested(VisualKind),
     WindowDragRequested,
 }
 
 #[derive(Clone)]
 struct VisualPane {
-    id: VisualId,
     kind: VisualKind,
     content: VisualContent,
     min_width: f32,
@@ -73,7 +69,7 @@ impl VisualsPage {
                 if let Some(panes) = self.panes.as_mut()
                     && panes.move_to(pane, target)
                 {
-                    let order: Vec<_> = panes.iter().map(|(_, p)| p.id).collect();
+                    let order: Vec<_> = panes.iter().map(|(_, p)| p.kind).collect();
                     self.visual_manager.borrow_mut().reorder(&order);
                 }
             }
@@ -89,23 +85,17 @@ impl VisualsPage {
             }
             VisualsMessage::PaneContextRequested(pane) => {
                 if let Some(p) = self.panes.as_ref().and_then(|ps| ps.get(pane)) {
-                    return Task::done(VisualsMessage::SettingsRequested {
-                        visual_id: p.id,
-                        kind: p.kind,
-                    });
+                    return Task::done(VisualsMessage::SettingsRequested(p.kind));
                 }
             }
             VisualsMessage::PaneHovered(pane) => self.hovered_pane = pane,
-            VisualsMessage::SettingsRequested { .. } | VisualsMessage::WindowDragRequested => {}
+            VisualsMessage::SettingsRequested(_) | VisualsMessage::WindowDragRequested => {}
         }
         Task::none()
     }
 
-    pub fn hovered_visual(&self) -> Option<(VisualId, VisualKind)> {
-        self.panes
-            .as_ref()?
-            .get(self.hovered_pane?)
-            .map(|p| (p.id, p.kind))
+    pub fn hovered_visual(&self) -> Option<VisualKind> {
+        self.panes.as_ref()?.get(self.hovered_pane?).map(|p| p.kind)
     }
 
     pub fn view(&self, controls_visible: bool) -> Element<'_, VisualsMessage> {
@@ -142,11 +132,11 @@ impl VisualsPage {
     pub(crate) fn apply_snapshot_excluding(
         &mut self,
         snapshot: &[VisualSlotSnapshot],
-        exclude: &[VisualId],
+        exclude: &[VisualKind],
     ) {
         let slots: Vec<_> = snapshot
             .iter()
-            .filter(|s| s.enabled && !exclude.contains(&s.id))
+            .filter(|s| s.enabled && !exclude.contains(&s.kind))
             .collect();
         if slots.is_empty() {
             self.panes = None;
@@ -156,8 +146,8 @@ impl VisualsPage {
         if self.panes.as_ref().is_none_or(|panes| {
             panes
                 .iter()
-                .map(|(_, p)| p.id)
-                .ne(slots.iter().map(|s| s.id))
+                .map(|(_, p)| p.kind)
+                .ne(slots.iter().map(|s| s.kind))
         }) {
             self.panes = Some(self.build_panes(&slots));
             self.hovered_pane = None;
@@ -165,7 +155,7 @@ impl VisualsPage {
         }
         if let Some(panes) = self.panes.as_mut() {
             panes.for_each_mut(|_, p| {
-                if let Some(s) = slots.iter().copied().find(|s| s.id == p.id) {
+                if let Some(s) = slots.iter().copied().find(|s| s.kind == p.kind) {
                     p.content = s.content.clone();
                     p.min_width = s.metadata.min_width;
                 }
@@ -195,7 +185,6 @@ impl VisualsPage {
         let saved_width_basis = &settings.data.visuals.width_basis;
         pane_grid::State::from_iter(slots.iter().map(|&slot| {
             VisualPane {
-                id: slot.id,
                 kind: slot.kind,
                 content: slot.content.clone(),
                 min_width: slot.metadata.min_width,

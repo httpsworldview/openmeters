@@ -238,9 +238,6 @@ struct Visual<P, S> {
     state: S,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct VisualId(u32);
-
 #[derive(Debug, Clone, Copy)]
 pub struct VisualMetadata {
     pub display_name: &'static str,
@@ -263,16 +260,14 @@ struct Descriptor {
 }
 
 struct Entry {
-    id: VisualId,
     kind: VisualKind,
     enabled: bool,
     meta: VisualMetadata,
     module: Box<dyn VisualModule>,
 }
 impl Entry {
-    fn new(id: VisualId, descriptor: &Descriptor) -> Self {
+    fn new(descriptor: &Descriptor) -> Self {
         Self {
-            id,
             kind: descriptor.kind,
             enabled: false,
             meta: descriptor.meta,
@@ -289,7 +284,6 @@ impl Entry {
 
 #[derive(Clone)]
 pub(crate) struct VisualSlotSnapshot {
-    pub id: VisualId,
     pub kind: VisualKind,
     pub enabled: bool,
     pub metadata: VisualMetadata,
@@ -302,11 +296,7 @@ pub(crate) struct VisualManager {
 impl VisualManager {
     pub fn new() -> Self {
         Self {
-            entries: DESCRIPTORS
-                .iter()
-                .zip(1..)
-                .map(|(descriptor, id)| Entry::new(VisualId(id), descriptor))
-                .collect(),
+            entries: DESCRIPTORS.iter().map(Entry::new).collect(),
         }
     }
     fn by_kind(&self, kind: VisualKind) -> Option<&Entry> {
@@ -315,11 +305,8 @@ impl VisualManager {
     fn by_kind_mut(&mut self, kind: VisualKind) -> Option<&mut Entry> {
         self.entries.iter_mut().find(|entry| entry.kind == kind)
     }
-    fn entry_index(&self, id: VisualId) -> Option<usize> {
-        self.entries.iter().position(|entry| entry.id == id)
-    }
-    fn move_entry_to(&mut self, id: VisualId, target: usize) {
-        let Some(current) = self.entry_index(id) else {
+    pub fn move_to(&mut self, kind: VisualKind, target: usize) {
+        let Some(current) = self.entries.iter().position(|entry| entry.kind == kind) else {
             return;
         };
         let target = target.min(self.entries.len().saturating_sub(1));
@@ -332,7 +319,6 @@ impl VisualManager {
         self.entries
             .iter()
             .map(|entry| VisualSlotSnapshot {
-                id: entry.id,
                 kind: entry.kind,
                 enabled: entry.enabled,
                 metadata: entry.meta,
@@ -369,20 +355,12 @@ impl VisualManager {
                     .unwrap_or(&default_settings),
             );
         }
-        let ids: Vec<_> = settings
-            .order
-            .iter()
-            .filter_map(|kind| self.by_kind(*kind).map(|entry| entry.id))
-            .collect();
-        self.reorder(&ids);
+        self.reorder(&settings.order);
     }
-    pub fn reorder(&mut self, order: &[VisualId]) {
-        for (position, id) in order.iter().copied().take(self.entries.len()).enumerate() {
-            self.move_entry_to(id, position);
+    pub fn reorder(&mut self, order: &[VisualKind]) {
+        for (position, kind) in order.iter().copied().take(self.entries.len()).enumerate() {
+            self.move_to(kind, position);
         }
-    }
-    pub fn restore_position(&mut self, id: VisualId, target: usize) {
-        self.move_entry_to(id, target);
     }
     pub fn apply_theme(&mut self, theme: &ThemeFile) {
         for entry in &mut self.entries {
