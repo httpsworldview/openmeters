@@ -2,8 +2,9 @@
 
 https://github.com/user-attachments/assets/52d0202e-f6e7-47aa-9952-e3a0be975f42
 
-OpenMeters is an audio metering application for Linux. It can monitor
-individual PipeWire applications, capture from devices, and display
+OpenMeters is an audio metering application for Linux. It monitors
+individual PipeWire applications through a virtual sink, can capture
+selected PipeWire devices or the current default sink, and displays
 the signal through a set of practical meters: loudness, oscilloscope,
 spectrogram, spectrum analyzer, stereometer, and waveform.
 
@@ -27,65 +28,71 @@ enough to want to keep running.
 
 ## Features
 
-If you have ideas for the next thing OpenMeters should do, please feel
+Everything below describes behavior implemented in this repository. If
+you have ideas for the next thing OpenMeters should do, please feel
 free to open an issue or pull request.
 
 ### General
 
 - PipeWire audio capture
-  - Per-application capture through a virtual sink.
-  - Per-device capture for monitoring selected devices or the system
-    default.
-  - Application routing is restored on clean shutdown.
+  - Per-application capture through a PipeWire virtual sink.
+  - Device/default-sink capture by linking a selected PipeWire audio
+    device/source, or the current default sink, into the OpenMeters
+    sink.
+  - Application routes touched by OpenMeters are reset on clean
+    shutdown.
 - Windowing
   - Normal desktop windows on X11 or Wayland.
-  - Wayland bar mode, placing OpenMeters at the top or bottom of the
+  - Wayland layer-shell bar mode when the compositor exposes
+    `zwlr_layer_shell_v1`, anchored to the top or bottom of the
     selected monitor.
   - Pop-out windows for individual visuals.
   - Optional window decorations.
 - Appearance and persistence
-  - Adjustable background color and opacity.
-  - Editable settings stored as JSON.
+  - Configurable RGBA background color.
+  - Editable JSON settings with lossy loading for unknown or invalid
+    fields.
   - User themes stored as separate JSON files.
 
 ### Visuals
 
 - **Loudness**
-  - LUFS short-term and momentary metering according to ITU-R
-    BS.1770-5.
-  - Fast and slow per-channel RMS meters.
-  - Per-channel true peak metering.
+  - BS.1770-5 K-weighted short-term and momentary LUFS meter modes.
+  - Fast and slow K-weighted RMS dB meter modes.
+  - True-peak dBTP meter mode.
 - **Oscilloscope**
-  - Left, right, and summed-channel views.
-  - Stable triggering based on pitch estimation and phase correlation.
-  - Zero-crossing triggering for traditional scope behavior.
-  - Selectable cycle count in stable mode.
+  - Selectable left, right, mid/mono, side, or hidden channel traces.
+  - Stable trigger using YIN pitch estimation and phase correlation.
+  - Zero-crossing trigger for traditional scope behavior.
+  - Selectable cycle count in stable trigger mode.
 - **Spectrogram**
-  - Classic STFT mode.
+  - Classic STFT rendering.
   - Time-frequency reassignment.
-  - Note and frequency tooltips.
+  - Click-and-hold crosshair with frequency, note, and time tooltip.
   - Piano-roll overlay.
-  - Vertical zoom and pan.
+  - Frequency-axis zoom and pan.
   - ERB, logarithmic, and linear frequency scales.
-  - Adjustable color map.
+  - Adjustable color map, stop positions, and stop spreads.
 - **Spectrum analyzer**
-  - Windowed real FFT analysis.
-  - IEC 61672-1 A-weighting.
-  - Peak frequency label.
-  - Exponential averaging, peak hold, or no averaging.
+  - Windowed real FFT analysis with selectable FFT size, hop divisor,
+    and window.
+  - Raw or IEC 61672-1 A-weighted display.
+  - Peak label with frequency, note, and level.
+  - No averaging, exponential averaging, or peak hold.
   - ERB, logarithmic, and linear frequency scales.
-  - Bar mode and adjustable color map.
+  - Line or bar display with adjustable color map.
 - **Stereometer**
-  - X/Y vector scope and M/S monitoring controls.
-  - Single-band or multi-band correlation meter.
+  - L/R vector display in Lissajous or dot-cloud modes.
+  - Frequency-band dot-cloud mode with low/mid/high bands.
+  - Single-band or low/mid/high correlation meter.
   - Adjustable correlation window.
-  - Lissajous, dot-cloud, and frequency-band dot-cloud modes.
-  - Adjustable scale, rotation, channel flip, and grid overlay.
+  - Adjustable scale, rotation, channel flip, dot size, persistence,
+    and themeable grid.
 - **Waveform**
-  - Left, right, and summed-channel views.
+  - Selectable left, right, mid/mono, side, or hidden channel lanes.
   - Adjustable scroll speed.
-  - Peak-history overlay.
-  - Color by spectral content, loudness, or a static color.
+  - Optional low/mid/high band-level history overlay.
+  - Color by spectral centroid, amplitude, or a static color.
 
 ## Installation
 
@@ -97,11 +104,12 @@ OpenMeters requires:
 2. PipeWire installed and running.
 3. Vulkan support through your distribution's Vulkan loader and driver
    stack.
-4. **Pre-built** packages currently target `glibc` >= v2.41 (Debian 13
-   or later, Fedora 44 or later).
+4. For pre-built release artifacts: x86_64 GNU/Linux with `glibc` >=
+   v2.41. The release workflow builds these artifacts in Debian 13.
 
-Wayland is required for bar mode. Normal application windows are
-available on both X11 and Wayland.
+Normal application windows are available on both X11 and Wayland. Bar
+mode additionally requires a Wayland compositor that exposes
+`zwlr_layer_shell_v1`.
 
 ### Arch Linux
 
@@ -131,8 +139,10 @@ an issue and I will try to help.
 
 ### Building from source
 
-1. Install PipeWire, PipeWire development headers, Vulkan, and a Rust
-   toolchain. The recommended way to install Rust is
+1. Install a Rust toolchain, a C toolchain, `pkg-config`, `libclang`,
+   and native development packages for PipeWire, Wayland/X11,
+   xkbcommon, fontconfig/freetype, and the Vulkan loader/development
+   headers. The recommended way to install Rust is
    [rustup](https://rustup.rs/). OpenMeters currently requires the
    Rust version declared in `Cargo.toml` or newer.
 2. Clone the repository:
@@ -167,33 +177,39 @@ Fedora, and tarball artifacts.
 | Binding | Action |
 | --- | --- |
 | `ctrl+shift+h` | Show or hide the global configuration drawer. |
-| `p` | Pause or resume rendering. |
+| right click on a visual | Open that visual's settings window. |
+| `p` | Pause or resume meter updates. |
 | `q` twice | Quit the application. |
-| `ctrl+space` | Pop out or dock the hovered visual. |
+| `ctrl+space` | Pop out the hovered visual, or dock the focused pop-out. |
 
 ### Spectrogram
 
 | Binding | Action |
 | --- | --- |
-| `ctrl+scroll up/down` | Zoom vertically. |
-| `middle click+drag` | Pan vertically. |
+| left click+hold | Show the crosshair and frequency/note/time tooltip. |
+| `ctrl+scroll up/down` | Zoom the frequency axis. |
+| `middle click+drag` | Pan the frequency axis. |
 
 ## Configuration
 
-Application settings are saved to:
+Application settings are saved to
+`$XDG_CONFIG_HOME/openmeters/settings.json`, or to:
 
 ```text
 ~/.config/openmeters/settings.json
 ```
 
-`settings.json` is intentionally editable. GUI ranges are not hard
-limits, and unsupported keys or structurally invalid values are logged
-and ignored at the narrowest practical scope.
+when `XDG_CONFIG_HOME` is unset.
 
-Invalid JSON syntax is ignored and default settings are used instead.
-Your configuration file will not be overwritten unless you change
-settings in the GUI. The settings schema is intended to remain
-compatible; any changes will be documented or migrated.
+`settings.json` is intentionally editable. GUI ranges are not hard
+limits; processors normalize only the values they need for safe
+runtime behavior. Unsupported keys or structurally invalid values are
+logged and ignored at the narrowest practical scope.
+
+Invalid JSON syntax is ignored and default settings are used for that
+run. Your configuration file will not be overwritten unless you change
+settings in the GUI. Unknown keys are not preserved when the file is
+next written.
 
 If a bug causes OpenMeters to misbehave, you can reset application
 settings by deleting `settings.json`. Please consider reporting the
@@ -201,18 +217,23 @@ bug if you run into this.
 
 ### Theming
 
-Themes are saved as separate JSON files in:
+Themes are saved as separate JSON files in
+`$XDG_CONFIG_HOME/openmeters/themes/`, or in:
 
 ```text
 ~/.config/openmeters/themes/
 ```
 
+when `XDG_CONFIG_HOME` is unset. Theme files own palettes and
+background color; `settings.json` stores the selected theme name and
+non-palette module settings.
+
 You can create and switch between themes in the **Theme** tab of the
 configuration page. Saving a theme refreshes the list of available
 themes, including any files that appeared in the theme directory while
-OpenMeters was running. The built-in theme is read-only and cannot be
-overwritten or deleted. Feel free to share custom themes by sharing
-the corresponding JSON files.
+OpenMeters was running. The built-in theme is read-only in the UI and
+cannot be overwritten. Feel free to share custom themes by sharing the
+corresponding JSON files.
 
 ## Contributing
 
@@ -223,7 +244,7 @@ greatly appreciate your interest in the project. Every bit helps.
 ### Reuse and license
 
 OpenMeters is GPL-3.0-or-later software. You may reuse code under the
-GPL's terms. If you wan tto discuss other arrangements or have
+GPL's terms. If you want to discuss other arrangements or have
 licensing questions, feel free to email me at
 <httpworldview@gmail.com>. You are also free to draw inspiration from
 the ideas and methods used here, provided you respect the GPL.
