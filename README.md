@@ -2,98 +2,110 @@
 
 https://github.com/user-attachments/assets/52d0202e-f6e7-47aa-9952-e3a0be975f42
 
-OpenMeters is a fast and professional audio metering application for
-Linux, built with Rust and PipeWire.
+OpenMeters is an audio metering application for Linux. It can monitor
+individual PipeWire applications, capture from devices, and display
+the signal through a set of practical meters: loudness, oscilloscope,
+spectrogram, spectrum analyzer, stereometer, and waveform.
+
+My goal is to provide a free, open source desktop meter that is clear
+at a glance, rigorous and correct about what it computes, and pleasant
+enough to want to keep running.
+
+## Quick links
+
+- [Features](#features)
+- [Installation](#installation)
+  - [Arch Linux](#arch-linux)
+  - [Debian](#debian)
+  - [Fedora](#fedora)
+  - [Build from source](#building-from-source)
+- [Usage and key bindings](#usage-and-key-bindings)
+- [Configuration and theming](#configuration)
+- [Contributing](#contributing)
+- [Credits](#credits)
+- [License](#license)
 
 ## Features
 
-Checked items are implemented; unchecked items are planned. If you
-have ideas for more features, please feel free to open an issue or
-pull request!
+If you have ideas for the next thing OpenMeters should do, please feel
+free to open an issue or pull request.
 
 ### General
 
-- [x] Bar mode
-  - Places the application at the top or bottom of the screen,
-    spanning the entire width.
-  - (requires a Wayland compositor, unavailable on X11 as of now)
-- [x] Per-application capture
-- [x] Per-device capture
-- [x] Pop-out windows for individual visuals
-- [x] Adjustable background color & opacity
-- [x] Ability to enable/disable window decorations
+- PipeWire audio capture
+  - Per-application capture through a virtual sink.
+  - Per-device capture for monitoring selected devices or the system
+    default.
+  - Application routing is restored on clean shutdown.
+- Windowing
+  - Normal desktop windows on X11 or Wayland.
+  - Wayland bar mode, placing OpenMeters at the top or bottom of the
+    selected monitor.
+  - Pop-out windows for individual visuals.
+  - Optional window decorations.
+- Appearance and persistence
+  - Adjustable background color and opacity.
+  - Editable settings stored as JSON.
+  - User themes stored as separate JSON files.
 
 ### Visuals
 
-- [x] **loudness**
-  - [x] LUFS (ITU-R BS.1770-5)
-    - [x] Short-term
-    - [x] Momentary
-  - [x] RMS
-    - [x] Fast
-    - [x] Slow
-  - [x] True Peak
-- [x] **oscilloscope**
-  - [x] Channel selection (L, R, L+R)
-  - [x] Stable mode - Estimates the fundamental pitch of a given
-        signal and autocorrelates it against reference sine and cosine
-        waves to find a stable trigger point.
-    - [x] Ability to select the number of cycles to display (1-4)
-  - [x] Zero-crossing - A more traditional zero-crossing trigger.
-- [x] **spectrogram**
-  - [x] Spectral reassignment for exceptionally sharp time and
-        frequency resolution.
-  - [x] Note & frequency tool tips
-  - [x] Piano roll overlay
-  - [x] Ability to zoom & pan vertically
-  - [x] ERB, log, and linear scales
-  - [x] Adjustable color map
-- [x] **spectrum analyzer**
-  - [x] A-weighting
-  - [x] Peak frequency label
-  - [x] Averaging modes
-    - [x] Exponential
-    - [x] Peak hold
-    - [x] None
-  - [x] ERB, log, and linear scales
-  - [x] Bar mode
-  - [x] Adjustable color map
-- [x] **stereometer** (X/Y vector scope, M/S goniometer)
-  - [x] Correlation meter
-    - [x] Single or multi-band
-    - [x] Adjustable time window
-  - [x] Three visual modes:
-    - [x] Lissajous - draws lines between samples
-    - [x] Dot Cloud - plots samples as points
-    - [x] Dot Cloud (Bands) - same as above, but colors dots based on
-          frequency band
-  - [x] Ability to flip L/R channels (for M/S monitoring)
-  - [x] Adjustable scale (linear/exponential)
-  - [x] Adjustable rotation
-  - [x] Grid overlay
-- [x] **waveform**
-  - [x] Channel selection (L, R, L+R)
-  - [x] Adjustable scroll speed
-  - [x] Peak history overlay
-  - [x] Adjustable color map
-    - [x] Based on frequency
-    - [x] Based on Loudness
-    - [x] A single static color.
+- **Loudness**
+  - LUFS short-term and momentary metering according to ITU-R
+    BS.1770-5.
+  - Fast and slow per-channel RMS meters.
+  - Per-channel true peak metering.
+- **Oscilloscope**
+  - Left, right, and summed-channel views.
+  - Stable triggering based on pitch estimation and phase correlation.
+  - Zero-crossing triggering for traditional scope behavior.
+  - Selectable cycle count in stable mode.
+- **Spectrogram**
+  - Classic STFT mode.
+  - Time-frequency reassignment.
+  - Note and frequency tooltips.
+  - Piano-roll overlay.
+  - Vertical zoom and pan.
+  - ERB, logarithmic, and linear frequency scales.
+  - Adjustable color map.
+- **Spectrum analyzer**
+  - Windowed real FFT analysis.
+  - IEC 61672-1 A-weighting.
+  - Peak frequency label.
+  - Exponential averaging, peak hold, or no averaging.
+  - ERB, logarithmic, and linear frequency scales.
+  - Bar mode and adjustable color map.
+- **Stereometer**
+  - X/Y vector scope and M/S monitoring controls.
+  - Single-band or multi-band correlation meter.
+  - Adjustable correlation window.
+  - Lissajous, dot-cloud, and frequency-band dot-cloud modes.
+  - Adjustable scale, rotation, channel flip, and grid overlay.
+- **Waveform**
+  - Left, right, and summed-channel views.
+  - Adjustable scroll speed.
+  - Peak-history overlay.
+  - Color by spectral content, loudness, or a static color.
 
 ## Installation
 
 ### Prerequisites
 
-In order for things to work properly, you must have the following:
+OpenMeters requires:
 
-0. A graphical Linux host (X11 or Wayland)
-1. PipeWire installed and running.
-2. Vulkan available on your system (usually packaged as
-   `vulkan-loader` or `vulkan-icd`)
+1. A graphical Linux session on X11 or Wayland.
+2. PipeWire installed and running.
+3. Vulkan support through your distribution's Vulkan loader and driver
+   stack.
+4. **Pre-built** packages currently target `glibc` >= v2.41 (Debian 13
+   or later, Fedora 44 or later).
+
+Wayland is required for bar mode. Normal application windows are
+available on both X11 and Wayland.
 
 ### Arch Linux
 
-Install the `openmeters-git` package via the AUR.
+Install the `openmeters-git` package from the AUR:
 
 ```bash
 yay -S openmeters-git
@@ -101,145 +113,165 @@ yay -S openmeters-git
 
 ### Debian
 
-Download the latest `.deb` package from
-[GitHub](https://github.com/httpsworldview/openmeters/releases)
+Download the latest `.deb` package from [GitHub
+Releases](https://github.com/httpsworldview/openmeters/releases).
 
 ### Fedora
 
-Download the latest `.rpm` package from
-[GitHub](https://github.com/httpsworldview/openmeters/releases)
+Download the latest `.rpm` package from [GitHub
+Releases](https://github.com/httpsworldview/openmeters/releases).
 
-### Other Distributions
+### Other distributions
 
 Tarballs are available under tagged releases, or you can build
-OpenMeters yourself from source. I cannot guarantee OpenMeters will
-work on every distribution, although it is quite distro-agnostic. If
-you have trouble getting things working, open an issue and I'll try to
-help.
+OpenMeters from source. I cannot guarantee OpenMeters will work on
+every distribution, although it is designed to stay fairly
+distro-agnostic. If you have trouble getting it running, please open
+an issue and I will try to help.
 
 ### Building from source
 
-1. You'll need a graphical Linux system with PipeWire installed and
-   running, plus PipeWire's development package for your particular
-   distribution.
-2. Ensure you have a working Rust toolchain. The recommended way is
-   via [rustup](https://rustup.rs/).
-3. Clone the repository:
+1. Install PipeWire, PipeWire development headers, Vulkan, and a Rust
+   toolchain. The recommended way to install Rust is
+   [rustup](https://rustup.rs/). OpenMeters currently requires the
+   Rust version declared in `Cargo.toml` or newer.
+2. Clone the repository:
 
    ```bash
    git clone https://github.com/httpsworldview/openmeters/
    cd openmeters
    ```
 
-4. Build and run the application in release mode:
+3. Build and run the release binary:
 
    ```bash
-   cargo build -r
+   cargo build --release
    ./target/release/openmeters
    ```
 
-   or run it directly with Cargo:
+   Or run it directly through Cargo:
 
    ```bash
-   cargo run -r
+   cargo run --release
    ```
 
 #### Packaging
 
-See [`packaging/`](./packaging/) for instructions on how to build
-packages for Debian or Fedora.
+See [`packaging/`](./packaging/) for instructions on building Debian,
+Fedora, and tarball artifacts.
 
-## Usage & key binds
+## Usage and key bindings
 
 ### Global
 
-- `ctrl+shift+h`: Show/hide global configuration drawer
-- `p`: Pause/resume rendering.
-- `q` twice: Quit the application.
-- `ctrl+space`: Move a hovered visual to a new window, or back to the
-  main window.
+| Binding | Action |
+| --- | --- |
+| `ctrl+shift+h` | Show or hide the global configuration drawer. |
+| `p` | Pause or resume rendering. |
+| `q` twice | Quit the application. |
+| `ctrl+space` | Pop out or dock the hovered visual. |
 
 ### Spectrogram
 
-- `ctrl+scroll up/down`: Zoom vertically
-- `middle click+drag`: Pan vertically
+| Binding | Action |
+| --- | --- |
+| `ctrl+scroll up/down` | Zoom vertically. |
+| `middle click+drag` | Pan vertically. |
 
 ## Configuration
 
-- **Configurations are saved to
-  `~/.config/openmeters/settings.json`.**
+Application settings are saved to:
 
-- `settings.json` is intentionally editable: GUI ranges are not hard
-  limits, and unsupported keys or structurally invalid values are logged
-  and ignored at the narrowest possible scope.
-- Invalid JSON syntax will be ignored and default settings will be used
-  instead. Your configuration file will not be overwritten unless you
-  change settings in the GUI.
-- The internal structure of this file is stable as of now, and any
-  changes will be documented.
-- If you encounter a bug that causes OpenMeters to misbehave, the
-  application settings can be reset by deleting
-  `settings.json`. Please consider reporting any such bugs you
-  encounter.
+```text
+~/.config/openmeters/settings.json
+```
 
-### theming
+`settings.json` is intentionally editable. GUI ranges are not hard
+limits, and unsupported keys or structurally invalid values are logged
+and ignored at the narrowest practical scope.
 
-- **Themes are saved to `~/.config/openmeters/themes/` as separate
-  JSON files.**
+Invalid JSON syntax is ignored and default settings are used instead.
+Your configuration file will not be overwritten unless you change
+settings in the GUI. The settings schema is intended to remain
+compatible; any changes will be documented or migrated.
 
-You can create and switch between themes in the "Theme" tab of the
-configuration page. Saving a theme will refresh the list of available
-themes, if any have spawned in the `themes/` directory. The built-in
-theme is read-only and cannot be overwritten or deleted. Feel free to
-share your custom themes with others by sharing the corresponding JSON
-files.
+If a bug causes OpenMeters to misbehave, you can reset application
+settings by deleting `settings.json`. Please consider reporting the
+bug if you run into this.
 
-## Contributing & Referencing
+### Theming
+
+Themes are saved as separate JSON files in:
+
+```text
+~/.config/openmeters/themes/
+```
+
+You can create and switch between themes in the **Theme** tab of the
+configuration page. Saving a theme refreshes the list of available
+themes, including any files that appeared in the theme directory while
+OpenMeters was running. The built-in theme is read-only and cannot be
+overwritten or deleted. Feel free to share custom themes by sharing
+the corresponding JSON files.
+
+## Contributing
 
 Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to
-contribute to this project, and how one might get started. No matter
-what you have to offer, I greatly appreciate you and your interest in
-contributing to this project. Every bit helps.
+contribute and how to get started. No matter what you have to offer, I
+greatly appreciate your interest in the project. Every bit helps.
 
-If you would like to utilize some part of this project directly in
-your own application I would be more than happy to discuss the use of
-my code over E-mail; just reach out to me at
-<httpworldview@gmail.com>. You are free to draw inspiration from this
-project and the methods used herein (given you do not violate the
-terms of the GPL). It would be unfair to ask for attribution over
-ideas or implementations when this project has only been possible
-thanks to the thousands of researchers and open-source contributors
-who came before me.
+### Reuse and license
+
+OpenMeters is GPL-3.0-or-later software. You may reuse code under the
+GPL's terms. If you wan tto discuss other arrangements or have
+licensing questions, feel free to email me at
+<httpworldview@gmail.com>. You are also free to draw inspiration from
+the ideas and methods used here, provided you respect the GPL.
+
+It would be unfair to ask for attribution over ideas alone when this
+project exists thanks to the countless researchers and open-source
+contributors who came before me.
 
 ## Credits
 
-Thank *you* for checking out OpenMeters. If you think it is useful,
+Thank you for checking out OpenMeters. If you think it is useful,
 please consider starring the repository and sharing it with others. I
-appreciate any and all criticism and feedback, so feel free to reach
-out to me.
+appreciate criticism, bug reports, and feedback, so feel free to reach
+out.
 
-### References
+### Projects
 
-- **MiniMeters** (<https://minimeters.app/>) Inspired this entire
-  project and does it better than I ever could. If you can, please
-  support their work!
-- **EasyEffects** (<https://github.com/wwmm/easyeffects>) Has been a
-  great reference from the beginning. I specifically adopted their
-  approach of using a virtual sink to capture audio as I loved the
-  ability to enable and disable processing per-application.
+- **MiniMeters** (<https://minimeters.app/>) inspired this project. If
+  you can, please support their work.
+- **EasyEffects** (<https://github.com/wwmm/easyeffects>) has been a
+  valuable reference, especially for the virtual-sink approach to
+  per-application capture.
 - **Ardura's Scrolloscope** (<https://github.com/ardura/Scrollscope>)
 - **Tim Strasser's Oszilloskop**
   (<https://github.com/timstr/oszilloskop>)
 - **Audacity** (<https://www.audacityteam.org/>)
-- (Per-module academic references can be found in the headers of some
-  source files, namely our spectrogram.)
 
-### Libraries used
+### Papers and Standards
+
+- ITU-R BS.1770-5, loudness and true peak measurement.
+- IEC 61672-1, A-weighting reference curve.
+- A. de Cheveigné and H. Kawahara, "YIN, a fundamental frequency
+  estimator for speech and music".
+- F. Auger and P. Flandrin, "Improving the readability of
+  time-frequency and time-scale representations by the reassignment
+  method".
+- K. Kodera, R. Gendrin, and C. de Villedary, "Analysis of
+  time-varying signals with small BT values".
+- S. Fulop and K. Fitz, "Algorithms for computing the time-corrected
+  instantaneous frequency (reassigned) spectrogram, with
+  applications".
+
+### Libraries
 
 - **iced_layershell** and related crates
   (<https://github.com/waycrate/exwlshelleventloop>)
   - Special thanks to Decodetalkers for reviewing and merging my
-      patches, and for maintaining such a useful library.
+    patches, and for maintaining such a useful library.
 - **Iced** (<https://github.com/iced-rs/iced>)
 - **RustFFT** (<https://github.com/ejmahler/RustFFT>)
 - **RealFFT** (<https://github.com/HEnquist/realfft>)
@@ -247,5 +279,5 @@ out to me.
 
 ## License
 
-OpenMeters is licensed under the GNU General Public License v3.0. See
-[LICENSE](LICENSE) for more details.
+OpenMeters is licensed under the GNU General Public License v3.0 or
+later. See [LICENSE](LICENSE) for more details.
