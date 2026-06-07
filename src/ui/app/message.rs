@@ -110,16 +110,11 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
             };
             let bar_task = app.handle_bar_config_message(&config_msg);
             let theme_changed = matches!(config_msg, ConfigMessage::ThemeChanged(_));
-            let config_task = app.config_page.update(config_msg).map(Message::Config);
+            app.config_page.update(config_msg);
             if theme_changed {
                 app.refresh_settings_panel();
             }
-            Task::batch([
-                config_task,
-                decoration_task,
-                bar_task,
-                app.sync_all_windows(),
-            ])
+            Task::batch([decoration_task, bar_task, app.sync_all_windows()])
         }
         Message::Visuals(VisualsMessage::SettingsRequested(kind)) => app.open_settings_window(kind),
         Message::Visuals(VisualsMessage::WindowDragRequested) if !app.main_window_is_layer => {

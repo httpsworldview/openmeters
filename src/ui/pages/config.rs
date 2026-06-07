@@ -4,10 +4,9 @@
 use crate::domain::routing::{CaptureMode, DeviceSelection, RoutingCommand};
 use crate::infra::pipewire::VIRTUAL_SINK_NAME;
 use crate::infra::pipewire::registry::RegistrySnapshot;
-use crate::persistence::settings::SettingsHandle;
 use crate::persistence::settings::{
-    BAR_MAX_HEIGHT, BAR_MIN_HEIGHT, BUILTIN_THEME, BarAlignment, ThemeChoice, ThemeFile,
-    ThemeOrigin, canonical_theme_name,
+    BAR_MAX_HEIGHT, BAR_MIN_HEIGHT, BUILTIN_THEME, BarAlignment, SettingsHandle, ThemeChoice,
+    ThemeFile, ThemeOrigin, canonical_theme_name,
 };
 use crate::ui::pages::visuals::settings::palette::{PaletteEditor, PaletteEvent};
 use crate::ui::subscription::channel_subscription;
@@ -23,7 +22,7 @@ use iced::widget::text::Wrapping;
 use iced::widget::{
     Column, Row, Rule, Space, button, container, pick_list, radio, rule, slider, text, text_input,
 };
-use iced::{Element, Length, Subscription, Task};
+use iced::{Element, Length, Subscription};
 use iced_layershell::actions::OutputSnapshot;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, mpsc};
@@ -156,7 +155,7 @@ impl ConfigPage {
             })
     }
 
-    pub fn update(&mut self, message: ConfigMessage) -> Task<ConfigMessage> {
+    pub fn update(&mut self, message: ConfigMessage) {
         match message {
             ConfigMessage::RegistryUpdated(snapshot) => {
                 self.registry_ready = true;
@@ -240,8 +239,6 @@ impl ConfigPage {
             ConfigMessage::ThemeNameInput(val) => self.save_theme_name = val,
             ConfigMessage::Scrolled(g) => self.scroll = g,
         }
-
-        Task::none()
     }
 
     pub fn view(&self) -> Element<'_, ConfigMessage> {
