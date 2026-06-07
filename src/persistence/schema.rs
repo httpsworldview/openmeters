@@ -1,8 +1,39 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
-use super::{bar::BarSettings, lossy, palette::ColorSetting, visuals::VisualSettings};
+use super::{lossy, palette::ColorSetting, visuals::VisualSettings};
 use crate::domain::routing::CaptureMode;
 use serde::{Deserialize, Serialize};
+
+pub const BAR_MIN_HEIGHT: u32 = 24;
+pub const BAR_MAX_HEIGHT: u32 = 800;
+pub const BAR_DEFAULT_HEIGHT: u32 = 180;
+
+pub fn clamp_bar_height(height: u32) -> u32 {
+    height.clamp(BAR_MIN_HEIGHT, BAR_MAX_HEIGHT)
+}
+
+crate::macros::choice_enum!(all pub enum BarAlignment { #[default] Top => "Top", Bottom => "Bottom" });
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BarSettings {
+    pub enabled: bool,
+    pub alignment: BarAlignment,
+    pub height: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub monitor: Option<String>,
+}
+
+impl Default for BarSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            alignment: BarAlignment::default(),
+            height: BAR_DEFAULT_HEIGHT,
+            monitor: None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -42,7 +73,6 @@ impl UiSettings {
 
 #[cfg(test)]
 mod tests {
-    use super::super::bar::{BAR_DEFAULT_HEIGHT, BarAlignment};
     use super::super::visuals::SpectrumSettings;
     use super::*;
     use crate::domain::visuals::VisualKind;
