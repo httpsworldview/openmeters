@@ -47,6 +47,11 @@ but you knew that already. Code contributed to this project is also
 licensed under GPL-3.0-or-later, but the contributor retains copyright
 to their contributions.
 
+Project-owned Rust files generally include an SPDX license header for
+GPL-3.0-or-later. Follow the nearby file style. If you adapt
+third-party code, keep the required notice and license information
+with the code and update packaged license documentation when needed.
+
 ## Commit message format
 
 Try to follow the general format of:
@@ -77,87 +82,165 @@ Where:
   $ git commit -s -m "fix(spectrum): correct a-weighting calculation"
   ```
 
-## Quick start - GitHub
+## Development environment
 
-Setting up a development environment is pretty straightforward. Make
-sure you have Rust installed, fork & clone the repository, then poke
-around a bit. In general, your workflow should look something like
-this:
+OpenMeters is a Rust 2024 project. Use the Rust version declared in
+`Cargo.toml` (`rust-version`) or newer. CI currently uses Rust 1.95
+with `rustfmt` and `clippy` installed.
+
+```bash
+rustup toolchain install 1.95
+rustup component add rustfmt clippy --toolchain 1.95
+```
+
+You also need native development packages for PipeWire, Wayland/X11,
+xkbcommon, fontconfig/freetype, libclang, pkg-config, and Vulkan. On
+Ubuntu/Debian-like systems, the CI dependency set is:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y --no-install-recommends \
+  build-essential \
+  libclang-dev \
+  libpipewire-0.3-dev \
+  libwayland-dev \
+  libx11-dev \
+  libx11-xcb-dev \
+  libxext-dev \
+  libxfixes-dev \
+  libxrandr-dev \
+  libxcursor-dev \
+  libxi-dev \
+  libxinerama-dev \
+  libxkbcommon-dev \
+  libfontconfig1-dev \
+  libfreetype6-dev \
+  libvulkan-dev \
+  pkg-config
+```
+
+Many of these come preinstalled, but if you run into issues, perhaps
+that will help.
+
+## Getting started
+
+Fork and clone the repository, then create a topic branch:
 
 ```bash
 git clone https://github.com/your-username/openmeters.git
 cd openmeters
-git checkout -b my-awesome-thing
+git switch -c my-change
 ```
 
-Make a change, then consider running the following (in no particular
-order):
+Useful commands while iterating:
 
 ```bash
-cargo check          # verify everything compiles
-cargo test           # run the test suite
-cargo clippy         # lint
-cargo run            # build & run in dev mode to test your changes*
-cargo fmt            # format your code
+cargo check --workspace --locked
+cargo run
+cargo run --release
+RUST_LOG=openmeters=debug cargo run
 ```
 
-(*dev builds will be a tad slower, but they build orders of magnitude
-faster and contain debug symbols, framepointers, etc. that are helpful
-during development)
+Development builds are faster and include debug information. For
+performance work you may use the `profiling` profile, which is the
+same as `release` except for the fact that it includes debug symbols.
 
-That's it. If `cargo clippy` passes, you're good to go.
+## Verification before opening a pull request
 
-## Architecture
+The CI workflow currently runs these checks:
 
-OpenMeters is split into coarse modules. `domain`, `dsp`, and `util`
-form the shared base:
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --locked --all-targets -- -D warnings
+cargo test --workspace --locked --all-targets
+```
+
+Please run the same checks locally when practical. For
+documentation-only changes, a full build is usually not necessary, but
+please still check formatting, links, examples, and spelling as
+appropriate.
+
+For changes that affect runtime behavior, test:
+
+- DSP/visual processors: test generated signals or known references
+  and cover edge cases with unit tests.
+- UI changes: run the app and check the affected
+  panel/window/pop-out/bar/etc. behavior.
+- PipeWire changes: verify capture, route enable/disable,
+  default-device/etc. behavior, and clean shutdown.
+- Settings changes: test loading existing settings, invalid values,
+  unknown keys, saving through the UI, and theme interactions.
+- Packaging changes: build the release binary first, then run the
+  relevant `packaging/` target.
+
+## Repository layout
 
 ```text
-domain/               - app-level shared enums/types (VisualKind, routing/capture commands)
-dsp.rs                - AudioBlock and processor/reconfiguration traits
-util/                 - audio math, channel/frequency/window helpers, color, telemetry
-infra/pipewire/       - PipeWire registry/monitor runtime, routing, virtual sink, meter tap
-persistence/settings/ - settings schema/store/handle, theme files, palettes, visual/bar/capture config
-visuals/              - visual modules, VisualManager registry, palettes, render helpers/WGSL shaders
-ui/                   - iced daemon/layer-shell app, subscriptions, config drawer, panes/popouts,
-                        settings windows, widgets, theme styling
-main.rs               - wires telemetry/settings, routing monitor, virtual sink/meter tap, and UI
+src/domain.rs              shared application enums and routing/visual identifiers
+src/dsp.rs                 AudioBlock and small DSP types
+src/util/                  low-level audio math, color, musical, and telemetry helpers
+src/infra/pipewire/        PipeWire registry monitor, routing, virtual sink, tap.
+src/persistence/           settings schema, lossy loading, store, themes, visual config
+src/visuals.rs             visual module declarations, option enums, widget macros
+src/visuals/               visual processors, state, render primitives, palettes, registry
+src/visuals/render/        shared render helpers and WGSL shaders
+src/ui/                    iced app, subscriptions, pages, widgets, theme, windowing
+src/main.rs                application wiring and shutdown flow
+packaging/                 Debian/RPM/tarball packaging things
 ```
 
-Keep dependencies shallow and one-way where possible. `domain` and
-`dsp` should stay UI- and PipeWire-free; `util` should remain
-low-level shared helpers. `infra` stays PipeWire-related: it receives
-`RoutingCommand`s, manages routing and the virtual sink, and emits
-registry snapshots/audio samples. `persistence` owns serialized
-settings and theme files; visual settings mirror visual processor
-config types. `visuals/registry.rs` owns visual descriptors,
-`VisualManager`, settings/theme application, ordering, enablement, and
-delivery of samples into enabled visual modules. `ui` composes the
-app: it owns settings and visual manager handles, persists user
-changes, sends routing commands, subscribes to PipeWire registry/audio
-updates, and syncs the main window, popouts, config drawer, settings
-window, and bar mode.
+Keep dependencies between these areas shallow and one-way where
+possible:
 
-Each visual has `visuals/<name>.rs` plus
-`visuals/<name>/{processor,state,render}.rs`: processors
-turn`AudioBlock`s into snapshots, state owns visual/widget state and
-render parameters, and render files own custom wgpu primitives.
-Shared render helpers and WGSL shaders live under `visuals/render/`
-and should be utilized whenever possible.
+- `domain`, `dsp`, and `util` should not depend on UI or PipeWire.
+- `infra` should stay focused on PipeWire integration and routing.
+- `persistence` owns serialized settings and theme file behavior.
+- `visuals` owns processor/state/render code and the visual registry.
+- `ui` composes application state, settings handles, subscriptions,
+  windows, pages, and widgets.
 
-## Where to start
+## Working on visuals
 
-- **Adding a new visual?** Use an existing visual as a template. Add
-  the `VisualKind`, settings, palette defaults, registry descriptor,
-  and a settings panel if needed. The `visuals!` and
-  `visualization_widget!` macros handle most boilerplate.
-- **UI changes?** Pages live in `ui/pages/`; the main app is in
-  `ui/app.rs`; window/layer-shell behavior is in
-  `ui/app/windowing.rs`.
-- **PipeWire plumbing?** Everything lives under `infra/pipewire/`.
-- **Settings?** Start with `persistence/settings/schema.rs`,
-  `store.rs`, and `visuals.rs`.
-- **Shaders?** WGSL files are in `visuals/render/shaders/`.
+Each visual lives under `src/visuals/<name>/`:
+
+- `processor.rs` converts `AudioBlock`s into snapshots. This is the
+  most important part to test carefully.
+- `state.rs` owns user facing visual state and maps snapshots into
+  render parameters.
+- `render.rs` owns custom iced/wgpu drawing primitives.
+
+When adding or changing a visual, also check the related wiring:
+
+- `src/domain.rs` for `VisualKind`.
+- `src/visuals.rs` for module declarations and option enums.
+- `src/visuals/palettes.rs` for default palettes.
+- `src/visuals/registry.rs` for descriptors, settings application,
+  export, enablement, ordering, and sample delivery.
+- `src/persistence/visuals.rs` for serializable visual settings and
+  lossy parsing.
+- `src/ui/pages/visuals/settings/` for settings panels.
+- `README.md` if the user-visible behavior changes.
+
+Use existing visuals as templates and always use shared render helpers
+in `src/visuals/render/common.rs`; add new render code only when they
+don't fit.
+
+## Testing expectations
+
+Add or update tests when a change has behavior that can
+regress. Existing unit tests live beside the code they exercise.
+
+Tests for this project usually:
+
+- exercise public or module-level behavior rather than incidental
+  implementation details;
+- use generated audio signals, reference values, tolerances, and edge
+  cases for DSP; and
+- include a regression case for every bug fix that can be reproduced
+  in a small test.
+
+If a behavior is impractical to automate, describe the manual checks
+you performed instead.
 
 ## Pull requests
 
