@@ -75,13 +75,7 @@ impl VisualsPage {
             }
             VisualsMessage::PaneDragged(pane_grid::DragEvent::Dropped) => {
                 self.settings.update(|s| {
-                    s.data.visuals.order = self
-                        .visual_manager
-                        .borrow()
-                        .snapshot()
-                        .iter()
-                        .map(|s| s.kind)
-                        .collect();
+                    s.data.visuals.order = self.visual_manager.borrow().order();
                 });
             }
             VisualsMessage::PaneContextRequested(pane) => {

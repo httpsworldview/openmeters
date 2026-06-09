@@ -321,6 +321,9 @@ impl VisualManager {
             })
             .collect()
     }
+    pub fn order(&self) -> Vec<VisualKind> {
+        self.entries.iter().map(|entry| entry.kind).collect()
+    }
     pub fn module_settings(&self, kind: VisualKind) -> Option<ModuleSettings> {
         self.by_kind(kind).map(|entry| {
             let mut settings = entry.module.export();

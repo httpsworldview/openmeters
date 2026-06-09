@@ -309,13 +309,7 @@ impl UiApp {
                 .move_to(popout.kind, popout.original_index);
             self.sync_visuals_page();
             self.settings_handle.update(|settings| {
-                settings.data.visuals.order = self
-                    .visual_manager
-                    .borrow()
-                    .snapshot()
-                    .iter()
-                    .map(|s| s.kind)
-                    .collect();
+                settings.data.visuals.order = self.visual_manager.borrow().order();
             });
             return window::close(source_window);
         }
