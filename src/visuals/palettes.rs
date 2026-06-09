@@ -8,6 +8,13 @@ use iced::Color;
 pub const BG_BASE: Color = hex(0x00, 0x00, 0x00, 0xFF);
 
 const POSITIONS_9: [f32; 9] = [0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0];
+const HEAT_RAMP: [Color; 5] = [
+    hex(0x00, 0x00, 0x00, 0x00),
+    hex(0x38, 0x00, 0xAD, 0xFF),
+    hex(0xFF, 0x00, 0x00, 0xFF),
+    hex(0xFF, 0xFF, 0x21, 0xFF),
+    hex(0xFF, 0xFF, 0xFF, 0xFF),
+];
 
 #[derive(Debug, Clone)]
 pub struct Palette {
@@ -81,14 +88,8 @@ impl Palette {
 
 // Spectrogram heat map: quiet -> loud (5 stops)
 pub mod spectrogram {
-    use super::{Color, hex};
-    pub const COLORS: [Color; 5] = [
-        hex(0x00, 0x00, 0x00, 0x00),
-        hex(0x38, 0x00, 0xAD, 0xFF),
-        hex(0xFF, 0x00, 0x00, 0xFF),
-        hex(0xFF, 0xFF, 0x21, 0xFF),
-        hex(0xFF, 0xFF, 0xFF, 0xFF),
-    ];
+    use super::{Color, HEAT_RAMP};
+    pub const COLORS: [Color; 5] = HEAT_RAMP;
     pub const LABELS: &[&str] = &["Quietest", "->", "->", "->", "Loud"];
 
     // Exponential pos(t) = (1-e^-1.5t)/(1-e^-1.5): peak colors only for the loudest signals.
@@ -97,15 +98,11 @@ pub mod spectrogram {
 }
 
 pub mod spectrum {
-    use super::{Color, hex};
-    pub const COLORS: [Color; 6] = [
-        hex(0x00, 0x00, 0x00, 0x00),
-        hex(0x38, 0x00, 0xAD, 0xFF),
-        hex(0xFF, 0x00, 0x00, 0xFF),
-        hex(0xFF, 0xFF, 0x21, 0xFF),
-        hex(0xFF, 0xFF, 0xFF, 0xFF),
-        hex(0xFF, 0xFF, 0xFF, 0xFF),
-    ];
+    use super::{Color, HEAT_RAMP};
+    pub const COLORS: [Color; 6] = {
+        let [floor, low, low_mid, mid, high] = HEAT_RAMP;
+        [floor, low, low_mid, mid, high, high]
+    };
     pub const LABELS: &[&str] = &["Floor", "Low", "Low-Mid", "Mid", "High", "Peak"];
     pub const DEFAULT_POSITIONS: [f32; COLORS.len()] = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0];
 }
