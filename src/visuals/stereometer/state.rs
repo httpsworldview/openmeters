@@ -5,9 +5,6 @@ use super::processor::{BandCorrelation, StereometerSnapshot};
 use super::render::{StereometerParams, StereometerPrimitive, scale_point};
 use crate::persistence::settings::StereometerSettings;
 use crate::util::color::color_to_rgba;
-use crate::visuals::options::{
-    CorrelationMeterMode, CorrelationMeterSide, StereometerMode, StereometerScale,
-};
 use crate::visuals::palettes;
 use iced::Color;
 use std::collections::VecDeque;
@@ -23,15 +20,7 @@ pub(crate) struct StereometerState {
     corr_trail: VecDeque<f32>,
     band_trail: VecDeque<BandCorrelation>,
     pub(crate) palette: [Color; 9],
-    persistence: f32,
-    mode: StereometerMode,
-    scale: StereometerScale,
-    scale_range: f32,
-    dot_radius: f32,
-    rotation: i8,
-    flip: bool,
-    correlation_meter: CorrelationMeterMode,
-    correlation_meter_side: CorrelationMeterSide,
+    settings: StereometerSettings,
     key: u64,
 }
 
@@ -61,29 +50,18 @@ impl StereometerState {
             corr_trail: VecDeque::with_capacity(TRAIL_LEN),
             band_trail: VecDeque::with_capacity(TRAIL_LEN),
             palette: palettes::stereometer::COLORS,
-            persistence: defaults.persistence,
-            mode: defaults.mode,
-            scale: defaults.scale,
-            scale_range: defaults.scale_range,
-            dot_radius: defaults.dot_radius,
-            rotation: defaults.rotation,
-            flip: defaults.flip,
-            correlation_meter: defaults.correlation_meter,
-            correlation_meter_side: defaults.correlation_meter_side,
+            settings: defaults,
             key: crate::visuals::next_key(),
         }
     }
 
     pub fn update_view_settings(&mut self, s: &StereometerSettings) {
-        self.persistence = s.persistence.clamp(0.0, MAX_PERSISTENCE);
-        self.mode = s.mode;
-        self.scale = s.scale;
-        self.scale_range = s.scale_range;
-        self.dot_radius = s.dot_radius.clamp(0.5, 8.0);
-        self.rotation = s.rotation.clamp(-4, 4);
-        self.flip = s.flip;
-        self.correlation_meter = s.correlation_meter;
-        self.correlation_meter_side = s.correlation_meter_side;
+        self.settings = StereometerSettings {
+            persistence: s.persistence.clamp(0.0, MAX_PERSISTENCE),
+            dot_radius: s.dot_radius.clamp(0.5, 8.0),
+            rotation: s.rotation.clamp(-4, 4),
+            ..s.clone()
+        };
     }
 
     pub fn set_palette(&mut self, palette: &[Color; 9]) {
@@ -91,18 +69,7 @@ impl StereometerState {
     }
 
     pub fn export_settings(&self) -> StereometerSettings {
-        StereometerSettings {
-            persistence: self.persistence,
-            mode: self.mode,
-            scale: self.scale,
-            scale_range: self.scale_range,
-            dot_radius: self.dot_radius,
-            rotation: self.rotation,
-            flip: self.flip,
-            correlation_meter: self.correlation_meter,
-            correlation_meter_side: self.correlation_meter_side,
-            ..Default::default()
-        }
+        self.settings.clone()
     }
 
     pub fn apply_snapshot(&mut self, snap: StereometerSnapshot) {
@@ -114,15 +81,11 @@ impl StereometerState {
             return;
         }
 
-        let scale_fn = |x: f32, y: f32| scale_point(self.scale, x, y, self.scale_range);
-        blend_points(
-            &mut self.points,
-            &snap.xy_points,
-            scale_fn,
-            self.persistence,
-        );
+        let s = &self.settings;
+        let scale_fn = |x: f32, y: f32| scale_point(s.scale, x, y, s.scale_range);
+        blend_points(&mut self.points, &snap.xy_points, scale_fn, s.persistence);
         for (dst, src) in self.band_points.iter_mut().zip(&snap.band_points) {
-            blend_points(dst, src, scale_fn, self.persistence);
+            blend_points(dst, src, scale_fn, s.persistence);
         }
 
         let sm =
@@ -150,20 +113,21 @@ impl StereometerState {
         if self.points.is_empty() {
             return None;
         }
+        let s = &self.settings;
         Some(StereometerParams {
             key: self.key,
             bounds,
             points: self.points.clone(),
             band_points: self.band_points.clone(),
             palette: self.palette.map(color_to_rgba),
-            mode: self.mode,
-            scale: self.scale,
-            scale_range: self.scale_range,
-            dot_radius: self.dot_radius,
-            rotation: self.rotation,
-            flip: self.flip,
-            correlation_meter: self.correlation_meter,
-            correlation_meter_side: self.correlation_meter_side,
+            mode: s.mode,
+            scale: s.scale,
+            scale_range: s.scale_range,
+            dot_radius: s.dot_radius,
+            rotation: s.rotation,
+            flip: s.flip,
+            correlation_meter: s.correlation_meter,
+            correlation_meter_side: s.correlation_meter_side,
             corr_trail: self.corr_trail.iter().copied().collect(),
             band_trail: self.band_trail.iter().copied().collect(),
         })
