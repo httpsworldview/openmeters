@@ -188,9 +188,10 @@ macro_rules! visual_settings {
 }
 
 visual_settings!(OscilloscopeSettings from OscilloscopeConfig {
-    segment_duration: f32, trigger_mode: TriggerMode,
+    segment_duration: f32, trigger_mode: TriggerMode, trigger_source: Channel,
+    channel_1: Channel, channel_2: Channel,
 } extra {
-    persistence: f32 = 0.0, channel_1: Channel = Channel::Mid, channel_2: Channel = Channel::None,
+    persistence: f32 = 0.0,
 });
 
 visual_settings!(WaveformSettings from WaveformConfig {

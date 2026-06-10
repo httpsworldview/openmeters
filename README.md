@@ -59,8 +59,11 @@ open an issue or pull request.
   - Fast and slow K-weighted RMS dB meter modes.
 - **Oscilloscope**
   - Selectable left, right, mid/mono, side, or `none` channel traces.
-  - A pitch-locked trigger using YIN fundamental frequency estimation
-    and phase correlation.
+  - Selectable trigger source, including channel-dependent triggering
+    for independently stable traces.
+  - A stable waveform trigger that uses autocorrelation period
+    estimation and waveform template correlation. (Often referred to
+    as "pitch-following" or "phase-locking" in other applications.)
   - Selectable cycle count in stable trigger mode.
   - Zero-crossing trigger for traditional scope behavior.
 - **Spectrogram**
@@ -262,6 +265,8 @@ out.
 
 - **MiniMeters** (<https://minimeters.app/>) inspired this project. If
   you can, please support their work.
+- **Corrscope** (<https://github.com/corrscope/corrscope>) was a key
+  reference for correlation-triggered oscilloscope stability.
 - **EasyEffects** (<https://github.com/wwmm/easyeffects>) has been a
   valuable reference, especially for the virtual-sink approach to
   per-application capture.
@@ -276,6 +281,8 @@ out.
 - IEC 61672-1, A-weighting reference curve.
 - A. de Cheveigné and H. Kawahara, "YIN, a fundamental frequency
   estimator for speech and music".
+  - Historically, the algorithm within this paper was implemented by
+    our oscilloscope.
 - F. Auger and P. Flandrin, "Improving the readability of
   time-frequency and time-scale representations by the reassignment
   method".

@@ -25,9 +25,9 @@ the existing visuals, but in short:
 3. Although there is no direct standard for generating audio waveforms
    (as far as I am aware), our waveform's implementation takes
    inspiration from Audacity and Chris Needham's `audiowaveform`.
-4. The oscilloscope implements steps 1-5 of Cheveigne and Kawahara's
-   YIN algorithm as presented in their 2002 paper, along with FFT
-   based autocorrelation and a strided coarse-fine searching approach.
+4. The oscilloscope uses normalized autocorrelation period estimation
+   and waveform-template correlation to keep traces stable across
+   complex periodic signals and visible channel selections.
 5. The stereometer separates bands using LR4 butterworth filters,
    along with linear and log scaling. The correlation meter uses those
    same Butterworth crossings.

@@ -114,6 +114,7 @@ struct FrequencyAnalyzer {
     scratch: Vec<Complex32>,
     sample_history: Vec<f32>,
     bin_hz: f32,
+    window_power_sum: f32,
     smoothed: f32,
     smoothed_bands: [f32; NUM_BANDS],
     band_bin_ranges: [(usize, usize); NUM_BANDS],
@@ -133,6 +134,7 @@ impl FrequencyAnalyzer {
             output_spectrum: fft.make_output_vec(),
             sample_history: Vec::with_capacity(size),
             bin_hz,
+            window_power_sum: 1.0,
             smoothed: 0.1,
             smoothed_bands: [0.0; NUM_BANDS],
             band_bin_ranges,
@@ -180,16 +182,22 @@ impl FrequencyAnalyzer {
     }
 
     fn update_band_levels(&mut self) {
-        let inv_n_sq = 1.0 / (self.size as f32 * self.size as f32);
+        let nyquist_bin = self.size / 2;
+        let denom = (self.size as f32 * self.window_power_sum).max(f32::MIN_POSITIVE);
         for (&(lo_bin, hi_bin), smoothed) in
             self.band_bin_ranges.iter().zip(&mut self.smoothed_bands)
         {
             let rms = if lo_bin < hi_bin {
                 let power: f32 = self.output_spectrum[lo_bin..hi_bin]
                     .iter()
-                    .map(realfft::num_complex::Complex::norm_sqr)
+                    .enumerate()
+                    .map(|(offset, c)| {
+                        let bin = lo_bin + offset;
+                        let one_sided = if bin == 0 || bin == nyquist_bin { 1.0 } else { 2.0 };
+                        one_sided * c.norm_sqr()
+                    })
                     .sum();
-                (2.0 * power * inv_n_sq).sqrt()
+                (power / denom).sqrt()
             } else {
                 0.0
             };
@@ -202,19 +210,24 @@ impl FrequencyAnalyzer {
         self.input_buffer[n..].fill(0.0);
         self.input_buffer[..n].copy_from_slice(&self.sample_history[..n]);
         let window = window_coefficients(WindowKind::Hann, n);
+        self.window_power_sum = window
+            .iter()
+            .map(|&weight| weight * weight)
+            .sum::<f32>()
+            .max(f32::MIN_POSITIVE);
         apply_window(&mut self.input_buffer[..n], &window);
     }
 
     fn spectral_centroid(&self) -> f32 {
         let min_bin = (MIN_FREQ_HZ / self.bin_hz).ceil() as usize;
-        let max_bin =
-            ((MAX_FREQ_HZ / self.bin_hz).floor() as usize).min(self.output_spectrum.len());
+        let max_bin = ((MAX_FREQ_HZ / self.bin_hz).floor() as usize)
+            .min(self.output_spectrum.len().saturating_sub(1));
 
-        if min_bin >= max_bin {
+        if min_bin > max_bin {
             return 0.5;
         }
 
-        let (weighted_sum, power_sum) = self.output_spectrum[min_bin..max_bin]
+        let (weighted_sum, power_sum) = self.output_spectrum[min_bin..=max_bin]
             .iter()
             .enumerate()
             .fold((0.0_f64, 0.0_f64), |(ws, ps), (i, c)| {
@@ -231,9 +244,13 @@ impl FrequencyAnalyzer {
     }
 
     fn hz_to_normalized(hz: f32) -> f32 {
-        const LOG_MIN: f32 = 4.382_026_7; // 70.0_f32.ln()
-        const LOG_RANGE: f32 = 4.135_166_6; // 5000.0_f32.ln() - LOG_MIN
-        ((hz.max(MIN_FREQ_HZ).ln() - LOG_MIN) / LOG_RANGE).clamp(0.0, 1.0)
+        if !hz.is_finite() {
+            return 0.5;
+        }
+        let lo = MIN_FREQ_HZ.ln();
+        let hi = MAX_FREQ_HZ.ln();
+        let range = (hi - lo).max(f32::EPSILON);
+        ((hz.clamp(MIN_FREQ_HZ, MAX_FREQ_HZ).ln() - lo) / range).clamp(0.0, 1.0)
     }
 }
 
@@ -599,6 +616,34 @@ mod tests {
         analyzer.sample_history.truncate(1);
         analyzer.apply_hann_window();
         assert_eq!(analyzer.input_buffer[0], 1.0);
+    }
+
+    #[test]
+    fn centroid_normalization_uses_declared_frequency_bounds() {
+        assert!((FrequencyAnalyzer::hz_to_normalized(MIN_FREQ_HZ) - 0.0).abs() < 1e-6);
+        assert!((FrequencyAnalyzer::hz_to_normalized(MAX_FREQ_HZ) - 1.0).abs() < 1e-6);
+        assert!(
+            (FrequencyAnalyzer::hz_to_normalized((MIN_FREQ_HZ * MAX_FREQ_HZ).sqrt()) - 0.5)
+                .abs()
+                < 1e-6
+        );
+        assert_eq!(FrequencyAnalyzer::hz_to_normalized(f32::NAN), 0.5);
+    }
+
+    #[test]
+    fn band_levels_are_window_power_normalized_rms() {
+        let mut analyzer = FrequencyAnalyzer::new(RATE);
+        let freq = analyzer.bin_hz * 64.0;
+        let samples: Vec<f32> = (0..FREQUENCY_FFT_SIZE)
+            .map(|n| (2.0 * PI * freq * n as f32 / RATE).sin())
+            .collect();
+
+        for _ in 0..20 {
+            analyzer.analyze(&samples);
+        }
+
+        let expected = std::f32::consts::FRAC_1_SQRT_2;
+        assert!((analyzer.smoothed_bands[1] - expected).abs() < 0.02);
     }
 
     #[test]

@@ -2,27 +2,30 @@
 // Copyright (C) 2026 Maika Namuo
 
 use crate::dsp::AudioBlock;
-use crate::util::audio::{DEFAULT_SAMPLE_RATE, extend_interleaved_history};
+use crate::util::audio::{Channel, DEFAULT_SAMPLE_RATE, extend_interleaved_history};
 use realfft::{RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-const PITCH_MIN_HZ: f32 = 20.0;
-const PITCH_MAX_HZ: f32 = 8000.0;
-
-// YIN cumulative mean normalized difference (CMND) threshold. A lag
-// is accepted as a pitch period when its CMND value drops below
-// this. Lower values reject more ambiguous signals; higher values
-// accept weaker periodicity.
-const PITCH_THRESHOLD: f32 = 0.15;
-
-// Sample count above which the difference function switches from
-// O(n*tau) direct computation to O(n log n) FFT-based
-// autocorrelation. Below this, the direct method is faster and avoids
-// FFT autocorrelation edge differences on short buffers.
-const FFT_AUTOCORR_THRESHOLD: usize = 512;
+const TRACE_COUNT: usize = 2;
+const CYCLE_RATE_MIN_HZ: f32 = 20.0;
+const CYCLE_RATE_MAX_HZ: f32 = 8000.0;
+const PERIOD_PROBE_SECONDS: f32 = 0.1;
+const TRIGGER_WINDOW_SECONDS: f32 = 0.04;
+const TRIGGER_MIN_CYCLES: f32 = 2.0;
+const TRIGGER_SEARCH_PERIODS: f32 = 1.5;
+const MIN_SIGNAL_PEAK: f32 = 0.001;
+const MIN_PERIOD_CORRELATION: f32 = 0.3;
+const NORMALIZE_FLOOR: f32 = 0.01;
+const MEAN_RESPONSIVENESS: f32 = 0.25;
+const EDGE_STRENGTH: f32 = 1.0;
+const BUFFER_STRENGTH: f32 = 1.0;
+const BUFFER_RESPONSIVENESS: f32 = 0.5;
+const BUFFER_FALLOFF_PERIODS: f32 = 0.5;
+const SLOPE_WIDTH_PERIODS: f32 = 0.25;
+const RESET_BELOW_MATCH: f32 = 0.3;
 
 fn parabolic_refine(y_prev: f32, y_curr: f32, y_next: f32, tau: usize) -> f32 {
     let denom = y_prev - 2.0 * y_curr + y_next;
@@ -45,11 +48,14 @@ impl Default for TriggerMode {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OscilloscopeConfig {
     pub sample_rate: f32,
     pub segment_duration: f32,
     pub trigger_mode: TriggerMode,
+    pub trigger_source: Channel,
+    pub channel_1: Channel,
+    pub channel_2: Channel,
 }
 
 impl Default for OscilloscopeConfig {
@@ -58,14 +64,18 @@ impl Default for OscilloscopeConfig {
             sample_rate: DEFAULT_SAMPLE_RATE,
             segment_duration: 0.02,
             trigger_mode: TriggerMode::default(),
+            trigger_source: Channel::Mid,
+            channel_1: Channel::Mid,
+            channel_2: Channel::None,
         }
     }
 }
 
-struct PitchDetector {
-    difference_function: Vec<f32>,
-    cumulative_mean_normalized: Vec<f32>,
-    last_cmnd_min: f32,
+#[derive(Default)]
+struct PeriodEstimator {
+    autocorrelation: Vec<f32>,
+    energy_prefix: Vec<f32>,
+    last_peak: f32,
     fft_size: usize,
     fft_forward: Option<Arc<dyn RealToComplex<f32>>>,
     fft_inverse: Option<Arc<dyn realfft::ComplexToReal<f32>>>,
@@ -75,22 +85,7 @@ struct PitchDetector {
     fft_scratch: Vec<Complex<f32>>,
 }
 
-impl PitchDetector {
-    fn new() -> Self {
-        Self {
-            difference_function: Vec::new(),
-            cumulative_mean_normalized: Vec::new(),
-            last_cmnd_min: 1.0,
-            fft_size: 0,
-            fft_forward: None,
-            fft_inverse: None,
-            fft_input: Vec::new(),
-            fft_spectrum: Vec::new(),
-            fft_output: Vec::new(),
-            fft_scratch: Vec::new(),
-        }
-    }
-
+impl PeriodEstimator {
     fn rebuild_fft(&mut self, size: usize) {
         if self.fft_size == size && self.fft_forward.is_some() {
             return;
@@ -111,298 +106,415 @@ impl PitchDetector {
         self.fft_inverse = Some(inverse);
     }
 
-    fn detect_pitch(&mut self, samples: &[f32], rate: f32) -> Option<f32> {
-        if samples.is_empty() {
-            return None;
-        }
-        let min_period = (rate / PITCH_MAX_HZ).max(2.0) as usize;
-        let max_period = (rate / PITCH_MIN_HZ).min(samples.len() as f32 / 2.0) as usize;
-        if max_period <= min_period || samples.len() < max_period * 2 {
+    fn estimate_period(&mut self, samples: &[f32], rate: f32) -> Option<f32> {
+        self.last_peak = 0.0;
+        if samples.len() < 3 {
             return None;
         }
 
-        // Compute difference function (YIN step 2)
-        self.difference_function.resize(max_period, 0.0);
-        let use_fft = samples.len() >= FFT_AUTOCORR_THRESHOLD;
-        if !use_fft || !self.compute_diff_fft(samples, max_period) {
-            self.compute_diff_direct(samples, max_period);
+        let mean = samples.iter().sum::<f32>() / samples.len() as f32;
+        self.last_peak = samples
+            .iter()
+            .map(|sample| (sample - mean).abs())
+            .fold(0.0, f32::max);
+        if self.last_peak < MIN_SIGNAL_PEAK {
+            return None;
         }
 
-        // Cumulative mean normalized difference (YIN step 3)
-        self.cumulative_mean_normalized.resize(max_period, 0.0);
-        self.cumulative_mean_normalized[0] = 1.0;
-        let mut sum = 0.0;
-        for tau in 1..max_period {
-            sum += self.difference_function[tau];
-            self.cumulative_mean_normalized[tau] = if sum > f32::EPSILON {
-                self.difference_function[tau] * tau as f32 / sum
+        let min_period = (rate / CYCLE_RATE_MAX_HZ).round().max(2.0) as usize;
+        let max_period = ((rate / CYCLE_RATE_MIN_HZ).round() as usize).min(samples.len() / 2);
+        if max_period <= min_period + 1 {
+            return None;
+        }
+        self.compute_autocorrelation(samples, mean, max_period)?;
+
+        let corr = &self.autocorrelation[..=max_period];
+        let zero_crossing = (1..=max_period).find(|&tau| corr[tau] < 0.0)?;
+        let min_tau = min_period.max(zero_crossing);
+        if min_tau >= max_period {
+            return None;
+        }
+
+        let peak = (min_tau..=max_period).max_by(|&a, &b| corr[a].total_cmp(&corr[b]))?;
+        let threshold = corr[peak] * 0.8;
+        let peak = if corr[min_tau] >= threshold && corr[min_tau] >= corr[min_tau + 1] {
+            min_tau
+        } else {
+            (min_tau + 1..max_period)
+                .find(|&tau| {
+                    corr[tau] >= threshold
+                        && corr[tau] >= corr[tau - 1]
+                        && corr[tau] >= corr[tau + 1]
+                })
+                .unwrap_or(peak)
+        };
+        (corr[peak] >= MIN_PERIOD_CORRELATION).then(|| {
+            if peak > 0 && peak + 1 < corr.len() {
+                parabolic_refine(corr[peak - 1], corr[peak], corr[peak + 1], peak)
             } else {
-                1.0
-            };
-        }
-
-        // Find first minimum below threshold (YIN step 4)
-        for tau in min_period..max_period - 1 {
-            if self.cumulative_mean_normalized[tau] < PITCH_THRESHOLD
-                && self.cumulative_mean_normalized[tau] < self.cumulative_mean_normalized[tau + 1]
-            {
-                self.last_cmnd_min = self.cumulative_mean_normalized[tau];
-                return Some(rate / self.refine_tau(tau, max_period));
+                peak as f32
             }
-        }
-
-        // Accept the absolute minimum for periodic signals that miss the first local minimum.
-        let (best_tau, best_val) = (min_period..max_period)
-            .map(|t| (t, self.cumulative_mean_normalized[t]))
-            .min_by(|a, b| a.1.total_cmp(&b.1))?;
-        if best_val < 0.6 {
-            self.last_cmnd_min = best_val;
-            Some(rate / self.refine_tau(best_tau, max_period))
-        } else {
-            None
-        }
+        })
     }
 
-    fn refine_tau(&self, tau: usize, max_period: usize) -> f32 {
-        if tau > 0 && tau + 1 < max_period {
-            parabolic_refine(
-                self.cumulative_mean_normalized[tau - 1],
-                self.cumulative_mean_normalized[tau],
-                self.cumulative_mean_normalized[tau + 1],
-                tau,
-            )
-        } else {
-            tau as f32
-        }
-    }
-
-    fn compute_diff_fft(&mut self, samples: &[f32], max_period: usize) -> bool {
+    fn compute_autocorrelation(&mut self, samples: &[f32], mean: f32, max_lag: usize) -> Option<()> {
         let fft_size = (samples.len() * 2).next_power_of_two();
         self.rebuild_fft(fft_size);
 
         let (Some(forward), Some(inverse)) = (self.fft_forward.as_ref(), self.fft_inverse.as_ref())
         else {
-            return false;
+            return None;
         };
 
-        self.fft_input[..samples.len()].copy_from_slice(samples);
+        self.energy_prefix.resize(samples.len() + 1, 0.0);
+        self.energy_prefix[0] = 0.0;
+        for (i, (dst, &sample)) in self.fft_input[..samples.len()]
+            .iter_mut()
+            .zip(samples)
+            .enumerate()
+        {
+            let centered = sample - mean;
+            *dst = centered;
+            self.energy_prefix[i + 1] = centered.mul_add(centered, self.energy_prefix[i]);
+        }
         self.fft_input[samples.len()..].fill(0.0);
 
-        if forward
-            .process_with_scratch(
-                &mut self.fft_input,
-                &mut self.fft_spectrum,
-                &mut self.fft_scratch,
-            )
-            .is_err()
-        {
-            return false;
+        forward
+            .process_with_scratch(&mut self.fft_input, &mut self.fft_spectrum, &mut self.fft_scratch)
+            .ok()?;
+
+        for bin in &mut self.fft_spectrum {
+            *bin = Complex::new(bin.norm_sqr(), 0.0);
         }
 
-        // Power spectrum: |X(f)|^2 -> IFFT gives autocorrelation
-        for c in &mut self.fft_spectrum {
-            *c = Complex::new(c.norm_sqr(), 0.0);
-        }
-
-        if inverse
-            .process_with_scratch(
-                &mut self.fft_spectrum,
-                &mut self.fft_output,
-                &mut self.fft_scratch,
-            )
-            .is_err()
-        {
-            return false;
-        }
+        inverse
+            .process_with_scratch(&mut self.fft_spectrum, &mut self.fft_output, &mut self.fft_scratch)
+            .ok()?;
 
         let norm = 1.0 / fft_size as f32;
-        let acf_0 = self.fft_output[0] * norm;
-        for tau in 0..max_period {
-            self.difference_function[tau] = 2.0 * (acf_0 - self.fft_output[tau] * norm);
+        self.autocorrelation.resize(max_lag + 1, 0.0);
+        let total_energy = self.energy_prefix[samples.len()];
+        if total_energy <= f32::EPSILON {
+            return None;
         }
-        true
+        for tau in 0..=max_lag {
+            let left_energy = self.energy_prefix[samples.len() - tau];
+            let right_energy = total_energy - self.energy_prefix[tau];
+            let denom = (left_energy * right_energy).sqrt();
+            self.autocorrelation[tau] = if denom > f32::EPSILON {
+                self.fft_output[tau] * norm / denom
+            } else {
+                0.0
+            };
+        }
+        Some(())
+    }
+}
+
+fn trigger_kernel_len(period: f32, rate: f32) -> usize {
+    (rate * TRIGGER_WINDOW_SECONDS)
+        .max(period * TRIGGER_MIN_CYCLES)
+        .round()
+        .max(2.0) as usize
+}
+
+fn normalize_peak(data: &mut [f32]) {
+    let peak = data.iter().map(|sample| sample.abs()).fold(0.0, f32::max);
+    let scale = 1.0 / peak.max(NORMALIZE_FLOOR);
+    data.iter_mut().for_each(|sample| *sample *= scale);
+}
+
+fn gaussian(len: usize, index: usize, std: f32) -> f32 {
+    if len <= 1 || std <= f32::EPSILON {
+        return 0.0;
+    }
+    let center = (len - 1) as f32 * 0.5;
+    let x = index as f32 - center;
+    (-0.5 * (x / std).powi(2)).exp()
+}
+
+fn energy(data: &[f32]) -> f32 {
+    data.iter().map(|sample| sample * sample).sum()
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Capture {
+    frames: usize,
+    start: usize,
+    frac_offset: f32,
+}
+
+#[derive(Default)]
+struct StableTrigger {
+    estimator: PeriodEstimator,
+    period: Option<f32>,
+    octave_streak: u32,
+    reference: Vec<f32>,
+    kernel: Vec<f32>,
+    work: Vec<f32>,
+    candidate: Vec<f32>,
+    mean: f32,
+}
+
+impl StableTrigger {
+    fn unlock(&mut self) {
+        self.period = None;
+        self.octave_streak = 0;
+        self.reference.clear();
+        self.kernel.clear();
+        self.work.clear();
+        self.candidate.clear();
+        self.mean = 0.0;
     }
 
-    fn compute_diff_direct(&mut self, samples: &[f32], max_period: usize) {
-        let len = samples.len() - max_period;
-        for tau in 0..max_period {
-            let mut sum = 0.0_f32;
-            for i in 0..len {
-                let delta = samples[i] - samples[i + tau];
-                sum += delta * delta;
+    fn capture(
+        &mut self,
+        trace: &[f32],
+        sample_rate: f32,
+        probe_frames: usize,
+        fallback_frames: usize,
+        cycles: usize,
+    ) -> Capture {
+        let probe_len = probe_frames.min(trace.len());
+        let detected = if probe_len >= 3 {
+            self.estimator
+                .estimate_period(&trace[trace.len() - probe_len..], sample_rate)
+        } else {
+            self.estimator.last_peak = 0.0;
+            None
+        };
+
+        if probe_len > 0 && self.estimator.last_peak < MIN_SIGNAL_PEAK {
+            self.unlock();
+        }
+
+        self.stabilize(detected)
+            .and_then(|period| self.locate(trace, period, cycles, sample_rate))
+            .unwrap_or(Capture {
+                frames: fallback_frames,
+                start: trace.len().saturating_sub(fallback_frames),
+                frac_offset: 0.0,
+            })
+    }
+
+    fn stabilize(&mut self, detected: Option<f32>) -> Option<f32> {
+        let Some(mut period) = detected else {
+            return self.period;
+        };
+
+        if let Some(prev) = self.period {
+            let corrected = octave_correct_period(period, prev);
+            let was_corrected = (corrected - period).abs() > f32::EPSILON;
+            self.octave_streak = if was_corrected { self.octave_streak + 1 } else { 0 };
+            if !was_corrected || self.octave_streak < 3 {
+                period = corrected;
+            } else {
+                self.octave_streak = 0;
             }
-            self.difference_function[tau] = sum;
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-struct TriggerScratch {
-    sine_prefix_sum: Vec<f32>,
-    cosine_prefix_sum: Vec<f32>,
-    phase_sine: Vec<f32>,
-    phase_cosine: Vec<f32>,
-}
-
-impl TriggerScratch {
-    fn clear(&mut self) {
-        self.sine_prefix_sum.clear();
-        self.cosine_prefix_sum.clear();
-        self.phase_sine.clear();
-        self.phase_cosine.clear();
-    }
-
-    fn prepare(&mut self, data: &[f32], period: f32) {
-        let len = data.len();
-        let n = len + 1;
-        self.clear();
-        self.sine_prefix_sum.resize(n, 0.0);
-        self.cosine_prefix_sum.resize(n, 0.0);
-        self.phase_sine.resize(n, 0.0);
-        self.phase_cosine.resize(n, 0.0);
-
-        let step = std::f32::consts::TAU / period;
-        let (step_sine, step_cosine) = step.sin_cos();
-
-        let mut sine_value = 0.0_f32;
-        let mut cosine_value = 1.0_f32;
-
-        self.phase_sine[0] = sine_value;
-        self.phase_cosine[0] = cosine_value;
-
-        for (i, &sample) in data.iter().enumerate() {
-            self.sine_prefix_sum[i + 1] = self.sine_prefix_sum[i] + sample * sine_value;
-            self.cosine_prefix_sum[i + 1] = self.cosine_prefix_sum[i] + sample * cosine_value;
-
-            let mut next_sine = sine_value * step_cosine + cosine_value * step_sine;
-            let mut next_cosine = cosine_value * step_cosine - sine_value * step_sine;
-
-            // Periodically reset to exact values to prevent phase and magnitude drift
-            if (i & 127) == 127 {
-                let exact_angle = step * (i + 1) as f32;
-                (next_sine, next_cosine) = exact_angle.sin_cos();
+            if (0.9..=1.1).contains(&(period / prev)) {
+                period = prev + 0.35 * (period - prev);
             }
-
-            sine_value = next_sine;
-            cosine_value = next_cosine;
-
-            self.phase_sine[i + 1] = sine_value;
-            self.phase_cosine[i + 1] = cosine_value;
         }
+
+        self.period = Some(period);
+        self.period
     }
 
-    fn correlation(&self, offset: usize, length: usize) -> f32 {
-        debug_assert!(offset + length < self.sine_prefix_sum.len());
-        debug_assert!(offset < self.phase_cosine.len());
-
-        let ss = self.sine_prefix_sum[offset + length] - self.sine_prefix_sum[offset];
-        let sc = self.cosine_prefix_sum[offset + length] - self.cosine_prefix_sum[offset];
-        self.phase_cosine[offset] * ss - self.phase_sine[offset] * sc
-    }
-}
-
-/// Snaps `new_f` to the octave of `prev_f` when YIN jumps by a
-/// factor of ~2 or ~0.5.
-fn octave_correct(new_f: f32, prev_f: f32) -> f32 {
-    let ratio = new_f / prev_f;
-    if (1.9..=2.1).contains(&ratio) {
-        new_f * 0.5
-    } else if (0.48..=0.52).contains(&ratio) {
-        new_f * 2.0
-    } else {
-        new_f
-    }
-}
-
-fn find_trigger(
-    period: f32,
-    cycles: usize,
-    available: usize,
-    mono: &[f32],
-    scratch: &mut TriggerScratch,
-) -> (usize, usize, f32) {
-    let cycles = cycles.max(1);
-    let len = (period * cycles as f32).round() as usize;
-    let guard = period.ceil() as usize;
-    let window = len.saturating_add(guard);
-    let start = available.saturating_sub(window);
-
-    let data = &mono[start..];
-    if period < 1.0 || len == 0 {
-        return (0, available, 0.0);
-    }
-
-    if data.len() <= len {
-        return (len, start, 0.0);
-    }
-
-    scratch.prepare(data, period);
-
-    let range = data.len() - len;
-    let stride = ((period / 4.0) as usize).max(1);
-
-    let mut best = f32::NEG_INFINITY;
-    let mut pos = 0;
-
-    // Coarse sweep right-to-left to prioritize newer data.
-    let num_steps = range / stride;
-    for step in (0..=num_steps).rev() {
-        let i = step * stride;
-        let corr = scratch.correlation(i, len);
-        if corr > best {
-            best = corr;
-            pos = i;
+    fn locate(
+        &mut self,
+        trace: &[f32],
+        period: f32,
+        cycles: usize,
+        rate: f32,
+    ) -> Option<Capture> {
+        let period = period.max(1.0);
+        let frames = (period * cycles.max(1) as f32).round().max(1.0) as usize;
+        let len = trigger_kernel_len(period, rate);
+        let before = len / 2;
+        let after = len - before;
+        let right = trace.len().checked_sub(frames.max(after))?;
+        if right < before {
+            return None;
         }
+
+        let search = ((period * TRIGGER_SEARCH_PERIODS).round() as usize)
+            .max(1)
+            .min(len / 2)
+            .min(right - before);
+        let left = right - search;
+        self.prepare(&trace[left - before..right + after], len, period);
+
+        let use_reference = self.reference.iter().any(|sample| sample.abs() > 1.0e-3);
+        let (mut offset, mut frac_offset) = self.find_best(search, period, use_reference);
+        let segment = |offset| &trace[left + offset - before..left + offset - before + len];
+        if use_reference && self.write_candidate(segment(offset), period) < RESET_BELOW_MATCH {
+            self.reference.fill(0.0);
+            (offset, frac_offset) = self.find_best(search, period, false);
+        }
+        self.write_candidate(segment(offset), period);
+        self.update_reference();
+
+        let mut start = left + offset;
+        if frac_offset < 0.0 && start > 0 {
+            start -= 1;
+            frac_offset += 1.0;
+        }
+        Some(Capture {
+            frames,
+            start,
+            frac_offset,
+        })
     }
 
-    let refine_start = pos.saturating_sub(stride);
-    let refine_end = (pos + stride).min(range);
+    fn prepare(&mut self, data: &[f32], len: usize, period: f32) {
+        if self.reference.len() != len {
+            self.reference.clear();
+            self.reference.resize(len, 0.0);
+        }
 
-    for i in (refine_start..=refine_end).rev() {
-        if i == pos || i % stride == 0 {
-            continue;
+        self.kernel.resize(len, 0.0);
+        let midpoint = len / 2;
+        let max_width = (midpoint.max(1) as f32 / 3.0).max(1.0);
+        let width = (SLOPE_WIDTH_PERIODS * period).clamp(1.0, max_width);
+        for (i, value) in self.kernel.iter_mut().enumerate() {
+            let side = if i < midpoint { -0.5 } else { 0.5 };
+            *value = side * EDGE_STRENGTH * 2.0 * gaussian(len, i, width);
         }
-        let corr = scratch.correlation(i, len);
-        if corr > best {
-            best = corr;
-            pos = i;
-        }
+
+        let mean = data.iter().sum::<f32>() / data.len().max(1) as f32;
+        self.mean += MEAN_RESPONSIVENESS * (mean - self.mean);
+        self.work.clear();
+        self.work.extend(data.iter().map(|sample| sample - self.mean));
     }
 
-    let frac = if period > 40.0 && pos > 0 && pos < range {
-        let c0 = scratch.correlation(pos - 1, len);
-        let c1 = scratch.correlation(pos, len);
-        let c2 = scratch.correlation(pos + 1, len);
-        let denom = c0 - 2.0 * c1 + c2;
-        if denom.abs() > f32::EPSILON {
-            (0.5 * (c0 - c2) / denom).clamp(-0.5, 0.5)
+    fn find_best(&self, search: usize, period: f32, use_reference: bool) -> (usize, f32) {
+        let stride = ((period / 16.0).round() as usize).clamp(1, 128).min(search.max(1));
+        let mut best = (search / 2, f32::NEG_INFINITY);
+        for offset in (0..=search).rev().step_by(stride).chain([0]) {
+            let score = self.score_at(offset, use_reference);
+            if score > best.1 {
+                best = (offset, score);
+            }
+        }
+        for offset in (best.0.saturating_sub(stride)..=(best.0 + stride).min(search)).rev() {
+            let score = self.score_at(offset, use_reference);
+            if score > best.1 {
+                best = (offset, score);
+            }
+        }
+
+        let frac_offset = if best.0 > 0 && best.0 < search {
+            (parabolic_refine(
+                self.score_at(best.0 - 1, use_reference),
+                self.score_at(best.0, use_reference),
+                self.score_at(best.0 + 1, use_reference),
+                best.0,
+            ) - best.0 as f32)
+                .clamp(-0.5, 0.5)
         } else {
             0.0
-        }
-    } else {
-        0.0
-    };
+        };
+        (best.0, frac_offset)
+    }
 
-    (len, start + pos, frac)
+    fn score_at(&self, offset: usize, use_reference: bool) -> f32 {
+        let reference_gain = if use_reference { BUFFER_STRENGTH } else { 0.0 };
+        self.work[offset..offset + self.kernel.len()]
+            .iter()
+            .zip(&self.kernel)
+            .zip(&self.reference)
+            .map(|((&sample, &slope), &reference)| sample * (slope + reference * reference_gain))
+            .sum()
+    }
+
+    fn update_reference(&mut self) {
+        normalize_peak(&mut self.reference);
+        for (reference, &candidate) in self.reference.iter_mut().zip(&self.candidate) {
+            *reference += BUFFER_RESPONSIVENESS * (candidate - *reference);
+        }
+    }
+
+    fn write_candidate(&mut self, segment: &[f32], period: f32) -> f32 {
+        let mean = segment.iter().sum::<f32>() / segment.len().max(1) as f32;
+        self.candidate.clear();
+        self.candidate.extend(segment.iter().map(|sample| sample - mean));
+        normalize_peak(&mut self.candidate);
+
+        let std = (period * BUFFER_FALLOFF_PERIODS).max(1.0);
+        let len = self.candidate.len();
+        for (i, sample) in self.candidate.iter_mut().enumerate() {
+            *sample *= gaussian(len, i, std);
+        }
+
+        let reference_energy = energy(&self.reference);
+        let candidate_energy = energy(&self.candidate);
+        if reference_energy <= f32::EPSILON || candidate_energy <= f32::EPSILON {
+            return 1.0;
+        }
+        let dot: f32 = self.reference.iter().zip(&self.candidate).map(|(a, b)| a * b).sum();
+        dot / (reference_energy * candidate_energy).sqrt()
+    }
+}
+
+fn octave_correct_period(new_period: f32, prev_period: f32) -> f32 {
+    let ratio = new_period / prev_period;
+    if (1.9..=2.1).contains(&ratio) {
+        new_period * 0.5
+    } else if (0.48..=0.52).contains(&ratio) {
+        new_period * 2.0
+    } else {
+        new_period
+    }
+}
+
+fn channel_sample(frame: &[f32], channel: Channel) -> Option<f32> {
+    match channel {
+        Channel::Left => frame.first().copied(),
+        Channel::Right => frame.get(1).or_else(|| frame.first()).copied(),
+        Channel::Mid => {
+            (!frame.is_empty()).then(|| frame.iter().sum::<f32>() / frame.len() as f32)
+        }
+        Channel::Side => frame.first().map(|&left| {
+            let right = frame.get(1).copied().unwrap_or(left);
+            (left - right) * 0.5
+        }),
+        Channel::None => None,
+    }
+}
+
+fn fill_trace_buffer(
+    output: &mut Vec<f32>,
+    interleaved: &[f32],
+    channels: usize,
+    frames: usize,
+    channel: Channel,
+) -> bool {
+    output.clear();
+    if channels == 0 {
+        return false;
+    }
+    output.reserve(frames);
+    for frame in interleaved.chunks_exact(channels).take(frames) {
+        let Some(sample) = channel_sample(frame, channel) else {
+            output.clear();
+            return false;
+        };
+        output.push(sample);
+    }
+    !output.is_empty()
 }
 
 fn find_rising_zero_crossing(
-    interleaved: &[f32],
-    channels: usize,
+    samples: &[f32],
     frames: impl Iterator<Item = usize>,
 ) -> Option<usize> {
-    let scale = 1.0 / channels.max(1) as f32;
-    let mono = |f: usize| {
-        let b = f * channels;
-        (0..channels).map(|c| interleaved[b + c]).sum::<f32>() * scale
-    };
+    let sample = |f: usize| samples.get(f).copied();
     let mut it = frames;
     let first = it.next()?;
-    let mut prev_val = mono(first);
+    let mut prev_val = sample(first)?;
     let mut prev_idx = first;
     for f in it {
-        let cur = mono(f);
-        // Always check in temporal order regardless of iteration direction
+        let cur = sample(f)?;
         let (lo_val, hi_idx, hi_val) = if f > prev_idx {
             (prev_val, f, cur)
         } else {
@@ -419,6 +531,7 @@ fn find_rising_zero_crossing(
 
 #[derive(Debug, Clone, Default)]
 pub struct OscilloscopeSnapshot {
+    pub epoch: u64,
     pub channels: usize,
     pub samples: Vec<f32>,
     pub samples_per_channel: usize,
@@ -427,12 +540,13 @@ pub struct OscilloscopeSnapshot {
 pub struct OscilloscopeProcessor {
     config: OscilloscopeConfig,
     snapshot: OscilloscopeSnapshot,
+    epoch: u64,
     history: VecDeque<f32>,
-    pitch_detector: PitchDetector,
-    last_pitch: Option<f32>,
-    mono_buffer: Vec<f32>,
-    trigger_scratch: TriggerScratch,
-    octave_streak: u32,
+    history_channels: Option<usize>,
+    trace_buffers: [Vec<f32>; TRACE_COUNT],
+    trigger_buffer: Vec<f32>,
+    stable_triggers: [StableTrigger; TRACE_COUNT],
+    source_trigger: StableTrigger,
 }
 
 impl OscilloscopeProcessor {
@@ -440,12 +554,13 @@ impl OscilloscopeProcessor {
         Self {
             config,
             snapshot: OscilloscopeSnapshot::default(),
+            epoch: 0,
             history: VecDeque::new(),
-            pitch_detector: PitchDetector::new(),
-            last_pitch: None,
-            mono_buffer: Vec::new(),
-            trigger_scratch: TriggerScratch::default(),
-            octave_streak: 0,
+            history_channels: None,
+            trace_buffers: std::array::from_fn(|_| Vec::new()),
+            trigger_buffer: Vec::new(),
+            stable_triggers: std::array::from_fn(|_| StableTrigger::default()),
+            source_trigger: StableTrigger::default(),
         }
     }
 
@@ -453,201 +568,220 @@ impl OscilloscopeProcessor {
         self.config
     }
 
-    fn stabilize_pitch(&mut self, detected: Option<f32>) -> Option<f32> {
-        match (detected, self.last_pitch) {
-            (Some(new_f), Some(prev_f)) => {
-                let corrected = octave_correct(new_f, prev_f);
-                let was_corrected = (corrected - new_f).abs() > f32::EPSILON;
-                self.octave_streak = if was_corrected {
-                    self.octave_streak + 1
-                } else {
-                    0
-                };
-
-                // After 3+ consecutive octave corrections the signal
-                // has probably actually changed, so accept it.
-                let pitch = if was_corrected && self.octave_streak >= 3 {
-                    self.octave_streak = 0;
-                    new_f
-                } else {
-                    corrected
-                };
-
-                let ratio = pitch / prev_f;
-                if (0.9..=1.1).contains(&ratio) {
-                    let cmnd = self.pitch_detector.last_cmnd_min;
-                    let confidence = (1.0 - cmnd).clamp(0.0, 1.0);
-                    let alpha = 0.15 + 0.50 * confidence;
-                    Some(prev_f + alpha * (pitch - prev_f))
-                } else {
-                    Some(pitch)
-                }
-            }
-            (Some(f), None) => Some(f),
-            (None, prev) => prev,
-        }
+    fn trace_channels(&self) -> [Channel; TRACE_COUNT] {
+        [self.config.channel_1, self.config.channel_2]
     }
+
+    #[cfg(test)]
+    fn last_cycle_rate(&self) -> Option<f32> {
+        self.source_trigger
+            .period
+            .or_else(|| self.stable_triggers.iter().find_map(|trigger| trigger.period))
+            .map(|period| self.config.sample_rate / period)
+    }
+
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<OscilloscopeSnapshot> {
         if block.frame_count() == 0 {
             return None;
         }
 
-        let channel_count = block.channels;
-        let sample_rate = block.sample_rate;
-        if (self.config.sample_rate - sample_rate).abs() > f32::EPSILON {
-            let mut config = self.config;
-            config.sample_rate = sample_rate;
-            self.update_config(config);
+        if (self.config.sample_rate - block.sample_rate).abs() > f32::EPSILON {
+            self.update_config(OscilloscopeConfig {
+                sample_rate: block.sample_rate,
+                ..self.config
+            });
         }
+
+        let channel_count = block.channels;
+        if self.history_channels.is_some_and(|channels| channels != channel_count)
+            || (!self.history.is_empty() && !self.history.len().is_multiple_of(channel_count))
+        {
+            self.clear_history();
+        }
+        self.history_channels = Some(channel_count);
 
         let base_frames = (self.config.sample_rate * self.config.segment_duration)
             .round()
             .max(1.0) as usize;
-
-        let detection_frames = (self.config.sample_rate * 0.1) as usize;
-        let search_range = (self.config.sample_rate / PITCH_MIN_HZ).ceil() as usize;
+        let max_period = (self.config.sample_rate / CYCLE_RATE_MIN_HZ).ceil() as usize;
+        let probe_frames = ((self.config.sample_rate * PERIOD_PROBE_SECONDS).round() as usize)
+            .max(max_period * 2);
         let trigger_frames = match self.config.trigger_mode {
-            TriggerMode::ZeroCrossing => base_frames + search_range,
+            TriggerMode::ZeroCrossing => base_frames + max_period,
             TriggerMode::Stable { num_cycles } => {
-                let max_period = (self.config.sample_rate / PITCH_MIN_HZ) as usize;
-                max_period * (num_cycles.max(1) + 1)
+                stable_history_frames(max_period, num_cycles, self.config.sample_rate)
             }
         };
-        let capacity = detection_frames.max(base_frames).max(trigger_frames) * channel_count;
-
-        if !self.history.is_empty() && !self.history.len().is_multiple_of(channel_count) {
-            self.history.clear();
-            self.last_pitch = None;
-        }
-        extend_interleaved_history(&mut self.history, block.samples, capacity, channel_count);
-
-        let available = self.history.len() / channel_count;
-
-        let (frames, start, frac_offset) = match self.config.trigger_mode {
-            TriggerMode::ZeroCrossing => {
-                let frames = base_frames.min(available);
-                if frames == 0 {
-                    return None;
-                }
-
-                let data = self.history.make_contiguous();
-                let end = available.saturating_sub(1);
-                let right_lo = end.saturating_sub(search_range);
-                let right = find_rising_zero_crossing(data, channel_count, (right_lo..=end).rev())
-                    .unwrap_or(available);
-
-                let left_lo = right.saturating_sub(frames);
-                let left_hi = (left_lo + search_range).min(right.saturating_sub(2));
-                let left = find_rising_zero_crossing(data, channel_count, left_lo..=left_hi)
-                    .unwrap_or(left_lo);
-
-                (right.saturating_sub(left).max(1), left, 0.0)
-            }
-            TriggerMode::Stable { num_cycles } => {
-                if available < base_frames {
-                    return None;
-                }
-
-                let data = self.history.make_contiguous();
-                self.mono_buffer.clear();
-                let scale = 1.0 / channel_count as f32;
-                self.mono_buffer.extend(
-                    data.chunks_exact(channel_count)
-                        .take(available)
-                        .map(|frame| frame.iter().sum::<f32>() * scale),
-                );
-
-                let detected = self
-                    .pitch_detector
-                    .detect_pitch(&self.mono_buffer, self.config.sample_rate);
-
-                // Retry on the most recent portion when full-buffer detection fails
-                // (e.g. buffer spans a signal transition).
-                let detected = detected.or_else(|| {
-                    let min_len = (self.config.sample_rate / PITCH_MIN_HZ) as usize * 2;
-                    if self.mono_buffer.len() > min_len {
-                        let start = self.mono_buffer.len() - min_len;
-                        self.pitch_detector
-                            .detect_pitch(&self.mono_buffer[start..], self.config.sample_rate)
-                    } else {
-                        None
-                    }
-                });
-
-                let freq = self.stabilize_pitch(detected);
-
-                if let Some(f) = freq {
-                    self.last_pitch = Some(f);
-                    let period = (self.config.sample_rate / f).max(1.0);
-                    find_trigger(
-                        period,
-                        num_cycles,
-                        available,
-                        &self.mono_buffer,
-                        &mut self.trigger_scratch,
-                    )
-                } else {
-                    (base_frames, available.saturating_sub(base_frames), 0.0)
-                }
-            }
-        };
-
-        const TARGET: usize = 4096;
-        let target = TARGET.clamp(1, frames);
-        let data = self.history.make_contiguous();
-        let extract_start = (start * channel_count).min(data.len());
-        let extract_len = (frames * channel_count).min(data.len().saturating_sub(extract_start));
-
-        self.snapshot.samples.clear();
-        downsample_interleaved(
-            &mut self.snapshot.samples,
-            &data[extract_start..extract_start + extract_len],
-            frames.min(extract_len / channel_count),
+        let trace_channels = self.trace_channels();
+        let trigger_source = self.config.trigger_source;
+        let samples = &block.samples[..block.frame_count() * channel_count];
+        extend_interleaved_history(
+            &mut self.history,
+            samples,
+            probe_frames.max(base_frames).max(trigger_frames) * channel_count,
             channel_count,
-            target,
-            frac_offset,
         );
-        self.snapshot.channels = channel_count;
-        self.snapshot.samples_per_channel = target;
+        let available = self.history.len() / channel_count;
+        let data = self.history.make_contiguous();
+        let mode = self.config.trigger_mode;
+        let sample_rate = self.config.sample_rate;
+        let capture = |trace: &[f32], trigger: &mut StableTrigger| match mode {
+            TriggerMode::ZeroCrossing => {
+                zero_crossing_capture(trace, available, base_frames, max_period)
+            }
+            TriggerMode::Stable { num_cycles } => (available >= base_frames).then(|| {
+                trigger.capture(trace, sample_rate, probe_frames, base_frames, num_cycles)
+            }),
+        };
+        let linked_capture = if trigger_source == Channel::None {
+            None
+        } else if fill_trace_buffer(
+            &mut self.trigger_buffer,
+            data,
+            channel_count,
+            available,
+            trigger_source,
+        ) {
+            capture(&self.trigger_buffer, &mut self.source_trigger)
+        } else {
+            None
+        };
+        let mut captures = [None; TRACE_COUNT];
 
+        for (slot, channel) in trace_channels.into_iter().enumerate() {
+            if channel == Channel::None
+                || !fill_trace_buffer(
+                    &mut self.trace_buffers[slot],
+                    data,
+                    channel_count,
+                    available,
+                    channel,
+                )
+            {
+                continue;
+            }
+
+            captures[slot] = linked_capture.or_else(|| {
+                capture(
+                    &self.trace_buffers[slot],
+                    &mut self.stable_triggers[slot],
+                )
+            });
+        }
+
+        if captures.iter().all(Option::is_none) {
+            return None;
+        }
+
+        self.write_snapshot(&captures);
         Some(self.snapshot.clone())
     }
 
+    fn clear_history(&mut self) {
+        self.epoch = self.epoch.wrapping_add(1);
+        self.history.clear();
+        self.trace_buffers.iter_mut().for_each(Vec::clear);
+        self.trigger_buffer.clear();
+        self.stable_triggers
+            .iter_mut()
+            .for_each(StableTrigger::unlock);
+        self.source_trigger.unlock();
+    }
+
+    fn write_snapshot(&mut self, captures: &[Option<Capture>; TRACE_COUNT]) {
+        const TARGET: usize = 4096;
+
+        let target = captures
+            .iter()
+            .filter_map(|capture| capture.map(|capture| capture.frames))
+            .max()
+            .unwrap_or(1)
+            .clamp(1, TARGET);
+
+        self.snapshot.epoch = self.epoch;
+        self.snapshot.samples.clear();
+        self.snapshot.channels = 0;
+        for (slot, capture) in captures.iter().copied().enumerate() {
+            let Some(capture) = capture else { continue };
+            if downsample_trace(
+                &mut self.snapshot.samples,
+                &self.trace_buffers[slot],
+                capture,
+                target,
+            ) {
+                self.snapshot.channels += 1;
+            }
+        }
+        self.snapshot.samples_per_channel = if self.snapshot.channels == 0 { 0 } else { target };
+    }
+
     pub fn update_config(&mut self, config: OscilloscopeConfig) {
-        *self = Self::new(config);
+        if self.config != config {
+            let epoch = self.epoch.wrapping_add(1);
+            *self = Self::new(config);
+            self.epoch = epoch;
+        }
     }
 }
 
-fn downsample_interleaved(
-    output: &mut Vec<f32>,
-    data: &[f32],
+fn stable_history_frames(max_period: usize, cycles: usize, sample_rate: f32) -> usize {
+    let max_period_f = max_period as f32;
+    let max_kernel = trigger_kernel_len(max_period_f, sample_rate);
+    let max_tail = (max_period * cycles.max(1)).max(max_kernel - max_kernel / 2);
+    let max_search = (max_period_f * TRIGGER_SEARCH_PERIODS).ceil() as usize;
+    max_kernel / 2 + max_tail + max_search + 2
+}
+
+fn zero_crossing_capture(
+    samples: &[f32],
+    available: usize,
     frames: usize,
-    channel_count: usize,
-    target: usize,
-    frac_offset: f32,
-) {
-    if frames == 0 || channel_count == 0 || target == 0 {
-        return;
+    search_range: usize,
+) -> Option<Capture> {
+    let frames = frames.min(available);
+    if frames == 0 {
+        return None;
+    }
+
+    let end = available.saturating_sub(1);
+    let right_lo = end.saturating_sub(search_range);
+    let right = find_rising_zero_crossing(samples, (right_lo..=end).rev()).unwrap_or(available);
+
+    let left_lo = right.saturating_sub(frames);
+    let left_hi = (left_lo + search_range).min(right.saturating_sub(2));
+    let left = find_rising_zero_crossing(samples, left_lo..=left_hi).unwrap_or(left_lo);
+
+    Some(Capture {
+        frames: right.saturating_sub(left).max(1),
+        start: left,
+        frac_offset: 0.0,
+    })
+}
+
+fn downsample_trace(output: &mut Vec<f32>, data: &[f32], capture: Capture, target: usize) -> bool {
+    if target == 0 {
+        return false;
+    }
+
+    let start = capture.start.min(data.len());
+    let frames = capture.frames.min(data.len().saturating_sub(start));
+    if frames == 0 {
+        return false;
     }
 
     let step = frames as f32 / target as f32;
-
-    for channel in 0..channel_count {
-        for i in 0..target {
-            let pos = (frac_offset + i as f32 * step).max(0.0);
-            let idx = (pos as usize).min(frames - 1);
-            let frac = pos - idx as f32;
-
-            let base = idx * channel_count + channel;
-            let sample = if frac > f32::EPSILON && idx + 1 < frames {
-                crate::util::audio::lerp(data[base], data[base + channel_count], frac)
-            } else {
-                data[base]
-            };
-
-            output.push(sample);
-        }
+    for i in 0..target {
+        let pos = (capture.frac_offset + i as f32 * step).max(0.0);
+        let idx = (pos as usize).min(frames - 1);
+        let frac = pos - idx as f32;
+        let sample = if frac > f32::EPSILON && idx + 1 < frames {
+            crate::util::audio::lerp(data[start + idx], data[start + idx + 1], frac)
+        } else {
+            data[start + idx]
+        };
+        output.push(sample);
     }
+    true
 }
 
 #[cfg(test)]
@@ -669,13 +803,16 @@ mod tests {
             sample_rate: RATE,
             segment_duration: 0.02,
             trigger_mode: TriggerMode::Stable { num_cycles: 2 },
+            ..Default::default()
         }
     }
 
+    fn periodic_samples(freq: f32, rate: f32, frames: usize, f: impl Fn(f32) -> f32) -> Vec<f32> {
+        (0..frames).map(|n| f(freq * n as f32 / rate)).collect()
+    }
+
     fn sine_samples(freq: f32, rate: f32, frames: usize) -> Vec<f32> {
-        (0..frames)
-            .map(|n| (TAU * freq * n as f32 / rate).sin())
-            .collect()
+        periodic_samples(freq, rate, frames, |cycles| (TAU * cycles).sin())
     }
 
     fn feed_blocks(processor: &mut OscilloscopeProcessor, signal: &[f32], blocks: Range<usize>) {
@@ -711,7 +848,7 @@ mod tests {
         assert!(took <= limit, "{label} within {limit} blocks, took {took}");
     }
 
-    fn frequency_switch_signal(from: f32, to: f32, warmup: usize, after: usize) -> Vec<f32> {
+    fn cycle_rate_switch_signal(from: f32, to: f32, warmup: usize, after: usize) -> Vec<f32> {
         let switch = warmup * BLOCK;
         (0..BLOCK * (warmup + after))
             .map(|n| {
@@ -740,30 +877,73 @@ mod tests {
             .collect()
     }
 
-    fn assert_detects_pitch(
-        detector: &mut PitchDetector,
-        freq: f32,
-        frames: usize,
-        max_error: f32,
-    ) {
-        let samples = sine_samples(freq, RATE, frames);
-        let detected = detector.detect_pitch(&samples, RATE).expect("pitch");
-        let error = (detected - freq).abs() / freq;
-        assert!(error < max_error, "got {detected}Hz, expected {freq}Hz");
+    fn two_channel_correlation(snap: &OscilloscopeSnapshot) -> f32 {
+        assert_eq!(snap.channels, 2);
+        let n = snap.samples_per_channel;
+        assert_eq!(snap.samples.len(), n * 2);
+        let (a, b) = snap.samples.split_at(n);
+        let dot: f32 = a.iter().zip(b).map(|(a, b)| a * b).sum();
+        dot / (energy(a) * energy(b)).sqrt()
     }
 
-    #[test]
-    fn pitch_detection() {
-        let mut detector = PitchDetector::new();
-        for freq in [41.0, 110.0, 440.0, 1000.0, 4000.0] {
-            assert_detects_pitch(&mut detector, freq, (RATE * 0.1) as usize, 0.02);
+    fn inverted_stereo_capture(config: OscilloscopeConfig) -> (f32, f32) {
+        let mut processor = OscilloscopeProcessor::new(config);
+        let mono = sine_samples(440.0, RATE, BLOCK * 20);
+        let stereo: Vec<f32> = mono.iter().flat_map(|&s| [s, -s]).collect();
+        let mut snap = None;
+        for block in 0..20 {
+            let offset = block * BLOCK * 2;
+            snap = processor.process_block(&make_block(
+                &stereo[offset..offset + BLOCK * 2],
+                2,
+                RATE,
+            ));
         }
+        (
+            processor.last_cycle_rate().expect("trigger should lock"),
+            two_channel_correlation(&snap.expect("snapshot")),
+        )
     }
 
     #[test]
-    fn short_buffer_pitch_detection_uses_direct_difference() {
-        let mut detector = PitchDetector::new();
-        assert_detects_pitch(&mut detector, 1000.0, 256, 0.03);
+    fn period_estimation() {
+        let mut estimator = PeriodEstimator::default();
+        let long = (RATE * 0.1) as usize;
+        for (freq, frames, max_error) in [
+            (41.0, long, 0.02),
+            (110.0, long, 0.02),
+            (440.0, long, 0.02),
+            (1000.0, long, 0.02),
+            (4000.0, long, 0.02),
+            (8000.0, long, 0.02),
+            (1000.0, 256, 0.03),
+        ] {
+            let period = estimator
+                .estimate_period(&sine_samples(freq, RATE, frames), RATE)
+                .expect("period");
+            let detected = RATE / period;
+            let error = (detected - freq).abs() / freq;
+            assert!(error < max_error, "got {detected}Hz, expected {freq}Hz");
+        }
+
+        for (freq, samples) in [
+            (110.0, periodic_samples(110.0, RATE, long, |c| 2.0 * c.fract() - 1.0)),
+            (440.0, periodic_samples(440.0, RATE, long, |c| {
+                if c.fract() < 0.5 { 1.0 } else { -1.0 }
+            })),
+        ] {
+            let period = estimator.estimate_period(&samples, RATE).expect("period");
+            let detected = RATE / period;
+            assert!((detected - freq).abs() / freq < 0.03);
+        }
+
+        let noise: Vec<f32> = (0..long)
+            .scan(1_u32, |seed, _| {
+                *seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                Some((*seed as f32 / u32::MAX as f32) * 2.0 - 1.0)
+            })
+            .collect();
+        assert!(estimator.estimate_period(&noise, RATE).is_none());
     }
 
     #[test]
@@ -775,19 +955,49 @@ mod tests {
     #[test]
     fn zero_crossing_both_directions_and_stereo() {
         let mono = sine_samples(440.0, RATE, 4800);
-        let backward = find_rising_zero_crossing(&mono, 1, (0..=3840).rev()).unwrap();
-        let forward = find_rising_zero_crossing(&mono, 1, 0..=4799).unwrap();
+        let backward = find_rising_zero_crossing(&mono, (0..=3840).rev()).unwrap();
+        let forward = find_rising_zero_crossing(&mono, 0..=4799).unwrap();
         for c in [backward, forward] {
             assert!(mono[c] > 0.0 && mono[c - 1] <= 0.0);
         }
 
         let stereo: Vec<f32> = mono.iter().flat_map(|&s| [s, s]).collect();
-        let c = find_rising_zero_crossing(&stereo, 2, (0..=3840).rev()).unwrap();
-        let (m, p) = (
-            (stereo[c * 2] + stereo[c * 2 + 1]) * 0.5,
-            (stereo[(c - 1) * 2] + stereo[(c - 1) * 2 + 1]) * 0.5,
-        );
-        assert!(m > 0.0 && p <= 0.0);
+        let mut mid = Vec::new();
+        assert!(fill_trace_buffer(
+            &mut mid,
+            &stereo,
+            2,
+            mono.len(),
+            Channel::Mid,
+        ));
+        let c = find_rising_zero_crossing(&mid, (0..=3840).rev()).unwrap();
+        assert!(mid[c] > 0.0 && mid[c - 1] <= 0.0);
+    }
+
+    #[test]
+    fn zero_crossing_uses_active_channel_selection() {
+        let mono = sine_samples(440.0, RATE, 4800);
+        let stereo: Vec<f32> = mono.iter().flat_map(|&s| [s, -s]).collect();
+        let mut projected = Vec::new();
+
+        assert!(fill_trace_buffer(
+            &mut projected,
+            &stereo,
+            2,
+            mono.len(),
+            Channel::Mid,
+        ));
+        assert!(find_rising_zero_crossing(&projected, 0..=4799).is_none());
+
+        assert!(fill_trace_buffer(
+            &mut projected,
+            &stereo,
+            2,
+            mono.len(),
+            Channel::Left,
+        ));
+        let c = find_rising_zero_crossing(&projected, 0..=4799).unwrap();
+        assert!(projected[c] > 0.0 && projected[c - 1] <= 0.0);
     }
 
     #[test]
@@ -795,6 +1005,8 @@ mod tests {
         let config = OscilloscopeConfig {
             segment_duration: 0.01,
             trigger_mode: TriggerMode::ZeroCrossing,
+            channel_1: Channel::Left,
+            channel_2: Channel::Right,
             ..Default::default()
         };
         let mut processor = OscilloscopeProcessor::new(config);
@@ -817,7 +1029,37 @@ mod tests {
     }
 
     #[test]
-    fn lock_acquisition_and_frequency_transitions() {
+    fn input_channel_count_change_resets_history_and_trigger_lock() {
+        let mut processor = OscilloscopeProcessor::new(stable_config());
+        let signal = sine_samples(440.0, RATE, BLOCK * 20);
+        feed_blocks(&mut processor, &signal, 0..20);
+        assert!(processor.last_cycle_rate().is_some());
+
+        let silence = vec![0.0; BLOCK * 2];
+        processor.process_block(&make_block(&silence, 2, RATE));
+
+        assert_eq!(processor.history.len(), silence.len());
+        assert!(processor.last_cycle_rate().is_none());
+    }
+
+    #[test]
+    fn fixed_trigger_source_preserves_visible_channel_phase() {
+        let config = OscilloscopeConfig {
+            trigger_source: Channel::Left,
+            channel_1: Channel::Left,
+            channel_2: Channel::Right,
+            ..stable_config()
+        };
+        let (detected, corr) = inverted_stereo_capture(config);
+        assert!((detected - 440.0).abs() < 20.0, "detected {detected}");
+        assert!(
+            corr < -0.9,
+            "linked trigger should preserve inverted stereo phase, got {corr}"
+        );
+    }
+
+    #[test]
+    fn lock_acquisition_and_cycle_rate_transitions() {
         let mut processor = OscilloscopeProcessor::new(stable_config());
         let signal = sine_samples(440.0, RATE, BLOCK * 20);
         assert_lock_within(
@@ -826,17 +1068,17 @@ mod tests {
             0..20,
             10,
             "lock on clean sine",
-            |p| p.last_pitch.is_some(),
+            |p| p.last_cycle_rate().is_some(),
         );
 
         let mut processor = OscilloscopeProcessor::new(stable_config());
         let (warmup, after) = (20, 20);
-        let signal = frequency_switch_signal(440.0, 880.0, warmup, after);
+        let signal = cycle_rate_switch_signal(440.0, 880.0, warmup, after);
         feed_blocks(&mut processor, &signal, 0..warmup);
-        let pre = processor.last_pitch.expect("pitch after warmup");
+        let pre = processor.last_cycle_rate().expect("cycle rate after warmup");
         assert!(
             (pre - 440.0).abs() < 20.0,
-            "pre-transition pitch was {pre:.1}"
+            "pre-transition cycle rate was {pre:.1}"
         );
         assert_lock_within(
             &mut processor,
@@ -845,8 +1087,8 @@ mod tests {
             10,
             "adapt to 880Hz",
             |p| {
-                p.last_pitch
-                    .is_some_and(|pitch| (pitch - 880.0).abs() < 50.0)
+                p.last_cycle_rate()
+                    .is_some_and(|cycle_rate| (cycle_rate - 880.0).abs() < 50.0)
             },
         );
 
@@ -855,8 +1097,8 @@ mod tests {
         let signal = delayed_sine(440.0, silence, signal_blocks);
         feed_blocks(&mut processor, &signal, 0..silence);
         assert!(
-            processor.last_pitch.is_none(),
-            "should have no pitch during silence"
+            processor.last_cycle_rate().is_none(),
+            "should have no cycle rate during silence"
         );
         assert_lock_within(
             &mut processor,
@@ -864,7 +1106,7 @@ mod tests {
             silence..silence + signal_blocks,
             10,
             "lock after signal onset",
-            |p| p.last_pitch.is_some(),
+            |p| p.last_cycle_rate().is_some(),
         );
     }
 }

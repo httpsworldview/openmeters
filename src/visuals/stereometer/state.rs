@@ -56,9 +56,14 @@ impl StereometerState {
     }
 
     pub fn update_view_settings(&mut self, s: &StereometerSettings) {
+        let defaults = StereometerSettings::default();
+        let finite_or = |value: f32, fallback: f32| {
+            if value.is_finite() { value } else { fallback }
+        };
         self.settings = StereometerSettings {
-            persistence: s.persistence.clamp(0.0, MAX_PERSISTENCE),
-            dot_radius: s.dot_radius.clamp(0.5, 8.0),
+            persistence: finite_or(s.persistence, defaults.persistence).clamp(0.0, MAX_PERSISTENCE),
+            dot_radius: finite_or(s.dot_radius, defaults.dot_radius).clamp(0.5, 8.0),
+            scale_range: finite_or(s.scale_range, defaults.scale_range).clamp(1.0, 30.0),
             rotation: s.rotation.clamp(-4, 4),
             ..s.clone()
         };

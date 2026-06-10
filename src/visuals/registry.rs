@@ -133,11 +133,11 @@ visuals! {
     Oscilloscope(150.0, 160.0, 100.0) =>
         oscilloscope::OscilloscopeProcessor, OscilloscopeConfig, OscilloscopeState;
         settings_cfg::OscilloscopeSettings;
-        apply(p, s, set) { visuals!(@apply_config p, set); let mut st = s.borrow_mut();
-            st.update_view_settings(set.persistence, set.channel_1, set.channel_2);
+        apply(p, s, set) { let before = p.config(); visuals!(@apply_config p, set); let reset = p.config() != before;
+            let mut st = s.borrow_mut(); st.update_view_settings(set.persistence, reset);
             visuals!(@apply_palette st, set, &palettes::oscilloscope::COLORS); };
         export(p, s) { let st = s.borrow(); let mut out = settings_cfg::OscilloscopeSettings::from_config(&p.config());
-            out.persistence = st.persistence; out.channel_1 = st.channel_1; out.channel_2 = st.channel_2;
+            out.persistence = st.persistence;
             out.palette = visuals!(@export_palette &st.colors, &palettes::oscilloscope::COLORS); out };
 
     Waveform(220.0, 180.0, 220.0) =>

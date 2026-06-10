@@ -7,6 +7,7 @@ use crate::util::audio::Channel;
 use crate::visuals::oscilloscope::processor::TriggerMode;
 use crate::visuals::registry::VisualKind;
 use iced::Element;
+use std::fmt;
 
 settings_pane!(
     OscilloscopeSettingsPane, OscilloscopeSettings, VisualKind::Oscilloscope, Oscilloscope,
@@ -21,6 +22,28 @@ settings_pane!(
 const SEGMENT_DURATION_RANGE: SliderRange = SliderRange::new(0.005, 0.1, 0.001);
 const PERSISTENCE_RANGE: SliderRange = SliderRange::new(0.0, 1.0, 0.01);
 const NUM_CYCLES_RANGE: SliderRange = SliderRange::new(1.0, 4.0, 1.0);
+
+#[derive(Clone, Copy, PartialEq)]
+struct TriggerSourceChoice(Channel);
+
+impl TriggerSourceChoice {
+    const ALL: &'static [Self] = &[
+        Self(Channel::None),
+        Self(Channel::Left),
+        Self(Channel::Right),
+        Self(Channel::Mid),
+        Self(Channel::Side),
+    ];
+}
+
+impl fmt::Display for TriggerSourceChoice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self.0 {
+            Channel::None => "Channel-dependent",
+            channel => channel.label(),
+        })
+    }
+}
 
 settings_messages!(OscilloscopeSettingsPane as pane, value {
     SegmentDuration(f32) => update_f32_range(&mut pane.settings.segment_duration, value, SEGMENT_DURATION_RANGE);
@@ -40,6 +63,7 @@ settings_messages!(OscilloscopeSettingsPane as pane, value {
         }
         TriggerMode::ZeroCrossing => false,
     };
+    TriggerSource(Channel) => set_if_changed(&mut pane.settings.trigger_source, value);
     Channel1(Channel) => set_if_changed(&mut pane.settings.channel_1, value);
     Channel2(Channel) => set_if_changed(&mut pane.settings.channel_2, value);
 });
@@ -53,6 +77,12 @@ impl OscilloscopeSettingsPane {
         };
         let mut content = controls!(16.0;
             pick("Mode", TriggerPreset::ALL, preset, Message::TriggerMode);
+            pick(
+                "Trigger source",
+                TriggerSourceChoice::ALL,
+                TriggerSourceChoice(self.settings.trigger_source),
+                |choice| Message::TriggerSource(choice.0)
+            );
             pick("Channel 1", Channel::ALL, self.settings.channel_1, Message::Channel1);
             pick("Channel 2", Channel::ALL, self.settings.channel_2, Message::Channel2);
         );

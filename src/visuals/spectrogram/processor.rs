@@ -119,7 +119,9 @@ fn resize_trim<T: Clone>(buf: &mut Vec<T>, len: usize, value: T) {
 
 pub(super) fn pack_classic_db(db: f32) -> u16 {
     const SCALE: f32 = 65535.0 / CLASSIC_DB_STORE_RANGE;
-    ((db - CLASSIC_DB_STORE_LO) * SCALE).clamp(0.0, 65535.0) as u16
+    ((db - CLASSIC_DB_STORE_LO) * SCALE)
+        .round()
+        .clamp(0.0, 65535.0) as u16
 }
 
 impl ReassignmentBuffers {
@@ -612,6 +614,13 @@ mod tests {
             SpectrogramColumn::Reassigned(v) => v,
             SpectrogramColumn::Classic(_) => panic!("expected reassigned column"),
         }
+    }
+
+    #[test]
+    fn classic_db_packing_rounds_to_nearest_code() {
+        let step = CLASSIC_DB_STORE_RANGE / 65535.0;
+        assert_eq!(pack_classic_db(CLASSIC_DB_STORE_LO + step * 1234.49), 1234);
+        assert_eq!(pack_classic_db(CLASSIC_DB_STORE_LO + step * 1234.50), 1235);
     }
 
     #[test]
