@@ -10,22 +10,6 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 const TRACE_COUNT: usize = 2;
-const CYCLE_RATE_MIN_HZ: f32 = 20.0;
-const CYCLE_RATE_MAX_HZ: f32 = 8000.0;
-const PERIOD_PROBE_SECONDS: f32 = 0.1;
-const TRIGGER_WINDOW_SECONDS: f32 = 0.04;
-const TRIGGER_MIN_CYCLES: f32 = 2.0;
-const TRIGGER_SEARCH_PERIODS: f32 = 1.5;
-const MIN_SIGNAL_PEAK: f32 = 0.001;
-const MIN_PERIOD_CORRELATION: f32 = 0.3;
-const NORMALIZE_FLOOR: f32 = 0.01;
-const MEAN_RESPONSIVENESS: f32 = 0.25;
-const EDGE_STRENGTH: f32 = 1.0;
-const BUFFER_STRENGTH: f32 = 1.0;
-const BUFFER_RESPONSIVENESS: f32 = 0.5;
-const BUFFER_FALLOFF_PERIODS: f32 = 0.5;
-const SLOPE_WIDTH_PERIODS: f32 = 0.25;
-const RESET_BELOW_MATCH: f32 = 0.3;
 
 fn parabolic_refine(y_prev: f32, y_curr: f32, y_next: f32, tau: usize) -> f32 {
     let denom = y_prev - 2.0 * y_curr + y_next;
@@ -69,6 +53,16 @@ impl Default for OscilloscopeConfig {
             channel_2: Channel::None,
         }
     }
+}
+
+enum PeriodTuning {}
+
+impl PeriodTuning {
+    const MIN_HZ: f32 = 20.0;
+    const MAX_HZ: f32 = 8000.0;
+    const PROBE_SECONDS: f32 = 0.1;
+    const MIN_SIGNAL_PEAK: f32 = 0.001;
+    const MIN_CORRELATION: f32 = 0.3;
 }
 
 #[derive(Default)]
@@ -117,12 +111,12 @@ impl PeriodEstimator {
             .iter()
             .map(|sample| (sample - mean).abs())
             .fold(0.0, f32::max);
-        if self.last_peak < MIN_SIGNAL_PEAK {
+        if self.last_peak < PeriodTuning::MIN_SIGNAL_PEAK {
             return None;
         }
 
-        let min_period = (rate / CYCLE_RATE_MAX_HZ).round().max(2.0) as usize;
-        let max_period = ((rate / CYCLE_RATE_MIN_HZ).round() as usize).min(samples.len() / 2);
+        let min_period = (rate / PeriodTuning::MAX_HZ).round().max(2.0) as usize;
+        let max_period = ((rate / PeriodTuning::MIN_HZ).round() as usize).min(samples.len() / 2);
         if max_period <= min_period + 1 {
             return None;
         }
@@ -148,7 +142,7 @@ impl PeriodEstimator {
                 })
                 .unwrap_or(peak)
         };
-        (corr[peak] >= MIN_PERIOD_CORRELATION).then(|| {
+        (corr[peak] >= PeriodTuning::MIN_CORRELATION).then(|| {
             if peak > 0 && peak + 1 < corr.len() {
                 parabolic_refine(corr[peak - 1], corr[peak], corr[peak + 1], peak)
             } else {
@@ -211,16 +205,33 @@ impl PeriodEstimator {
     }
 }
 
+enum StableTuning {}
+
+impl StableTuning {
+    const WINDOW_SECONDS: f32 = 0.04;
+    const MIN_CYCLES: f32 = 2.0;
+    const SEARCH_PERIODS: f32 = 1.5;
+    const NORMALIZE_FLOOR: f32 = 0.01;
+    const MEAN_RESPONSIVENESS: f32 = 0.25;
+    const EDGE_STRENGTH: f32 = 1.0;
+    const BUFFER_STRENGTH: f32 = 1.0;
+    const BUFFER_RESPONSIVENESS: f32 = 0.5;
+    const BUFFER_FALLOFF_PERIODS: f32 = 0.5;
+    const BUFFER_RETUNE_SEMITONES: f32 = 1.0;
+    const SLOPE_WIDTH_PERIODS: f32 = 0.25;
+    const RESET_BELOW_MATCH: f32 = 0.3;
+}
+
 fn trigger_kernel_len(period: f32, rate: f32) -> usize {
-    (rate * TRIGGER_WINDOW_SECONDS)
-        .max(period * TRIGGER_MIN_CYCLES)
+    (rate * StableTuning::WINDOW_SECONDS)
+        .max(period * StableTuning::MIN_CYCLES)
         .round()
         .max(2.0) as usize
 }
 
 fn normalize_peak(data: &mut [f32]) {
     let peak = data.iter().map(|sample| sample.abs()).fold(0.0, f32::max);
-    let scale = 1.0 / peak.max(NORMALIZE_FLOOR);
+    let scale = 1.0 / peak.max(StableTuning::NORMALIZE_FLOOR);
     data.iter_mut().for_each(|sample| *sample *= scale);
 }
 
@@ -237,6 +248,35 @@ fn energy(data: &[f32]) -> f32 {
     data.iter().map(|sample| sample * sample).sum()
 }
 
+fn sample_linear_zero(data: &[f32], pos: f32) -> f32 {
+    if data.is_empty() || pos < 0.0 || pos > (data.len() - 1) as f32 {
+        return 0.0;
+    }
+    let idx = pos as usize;
+    let frac = pos - idx as f32;
+    if frac > f32::EPSILON && idx + 1 < data.len() {
+        crate::util::audio::lerp(data[idx], data[idx + 1], frac)
+    } else {
+        data[idx]
+    }
+}
+
+fn retune_reference(reference: &[f32], old_period: f32, new_period: f32, len: usize) -> Vec<f32> {
+    let ratio = new_period / old_period;
+    if len == 0 || !ratio.is_finite() || ratio <= f32::EPSILON {
+        return vec![0.0; len];
+    }
+
+    let old_center = reference.len().saturating_sub(1) as f32 * 0.5;
+    let new_center = len.saturating_sub(1) as f32 * 0.5;
+    (0..len)
+        .map(|i| {
+            let pos = old_center + (i as f32 - new_center) / ratio;
+            sample_linear_zero(reference, pos)
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Capture {
     frames: usize,
@@ -250,6 +290,7 @@ struct StableTrigger {
     period: Option<f32>,
     octave_streak: u32,
     reference: Vec<f32>,
+    reference_period: Option<f32>,
     kernel: Vec<f32>,
     work: Vec<f32>,
     candidate: Vec<f32>,
@@ -261,6 +302,7 @@ impl StableTrigger {
         self.period = None;
         self.octave_streak = 0;
         self.reference.clear();
+        self.reference_period = None;
         self.kernel.clear();
         self.work.clear();
         self.candidate.clear();
@@ -284,7 +326,7 @@ impl StableTrigger {
             None
         };
 
-        if probe_len > 0 && self.estimator.last_peak < MIN_SIGNAL_PEAK {
+        if probe_len > 0 && self.estimator.last_peak < PeriodTuning::MIN_SIGNAL_PEAK {
             self.unlock();
         }
 
@@ -337,7 +379,7 @@ impl StableTrigger {
             return None;
         }
 
-        let search = ((period * TRIGGER_SEARCH_PERIODS).round() as usize)
+        let search = ((period * StableTuning::SEARCH_PERIODS).round() as usize)
             .max(1)
             .min(len / 2)
             .min(right - before);
@@ -347,12 +389,12 @@ impl StableTrigger {
         let use_reference = self.reference.iter().any(|sample| sample.abs() > 1.0e-3);
         let (mut offset, mut frac_offset) = self.find_best(search, period, use_reference);
         let segment = |offset| &trace[left + offset - before..left + offset - before + len];
-        if use_reference && self.write_candidate(segment(offset), period) < RESET_BELOW_MATCH {
+        if use_reference && self.write_candidate(segment(offset), period) < StableTuning::RESET_BELOW_MATCH {
             self.reference.fill(0.0);
             (offset, frac_offset) = self.find_best(search, period, false);
         }
         self.write_candidate(segment(offset), period);
-        self.update_reference();
+        self.update_reference(period);
 
         let mut start = left + offset;
         if frac_offset < 0.0 && start > 0 {
@@ -367,22 +409,19 @@ impl StableTrigger {
     }
 
     fn prepare(&mut self, data: &[f32], len: usize, period: f32) {
-        if self.reference.len() != len {
-            self.reference.clear();
-            self.reference.resize(len, 0.0);
-        }
+        self.retune_reference(len, period);
 
         self.kernel.resize(len, 0.0);
         let midpoint = len / 2;
         let max_width = (midpoint.max(1) as f32 / 3.0).max(1.0);
-        let width = (SLOPE_WIDTH_PERIODS * period).clamp(1.0, max_width);
+        let width = (StableTuning::SLOPE_WIDTH_PERIODS * period).clamp(1.0, max_width);
         for (i, value) in self.kernel.iter_mut().enumerate() {
             let side = if i < midpoint { -0.5 } else { 0.5 };
-            *value = side * EDGE_STRENGTH * 2.0 * gaussian(len, i, width);
+            *value = side * StableTuning::EDGE_STRENGTH * 2.0 * gaussian(len, i, width);
         }
 
         let mean = data.iter().sum::<f32>() / data.len().max(1) as f32;
-        self.mean += MEAN_RESPONSIVENESS * (mean - self.mean);
+        self.mean += StableTuning::MEAN_RESPONSIVENESS * (mean - self.mean);
         self.work.clear();
         self.work.extend(data.iter().map(|sample| sample - self.mean));
     }
@@ -418,7 +457,7 @@ impl StableTrigger {
     }
 
     fn score_at(&self, offset: usize, use_reference: bool) -> f32 {
-        let reference_gain = if use_reference { BUFFER_STRENGTH } else { 0.0 };
+        let reference_gain = if use_reference { StableTuning::BUFFER_STRENGTH } else { 0.0 };
         self.work[offset..offset + self.kernel.len()]
             .iter()
             .zip(&self.kernel)
@@ -427,11 +466,31 @@ impl StableTrigger {
             .sum()
     }
 
-    fn update_reference(&mut self) {
+    fn retune_reference(&mut self, len: usize, period: f32) {
+        let Some(old_period) = self.reference_period else {
+            self.reference.resize(len, 0.0);
+            self.reference_period = Some(period);
+            return;
+        };
+
+        let ratio = period / old_period;
+        let semitones = ratio.log2() * 12.0;
+        if self.reference.len() != len || semitones.abs() >= StableTuning::BUFFER_RETUNE_SEMITONES {
+            self.reference = retune_reference(&self.reference, old_period, period, len);
+            self.reference_period = Some(period);
+        }
+    }
+
+    fn update_reference(&mut self, period: f32) {
         normalize_peak(&mut self.reference);
         for (reference, &candidate) in self.reference.iter_mut().zip(&self.candidate) {
-            *reference += BUFFER_RESPONSIVENESS * (candidate - *reference);
+            *reference += StableTuning::BUFFER_RESPONSIVENESS * (candidate - *reference);
         }
+        self.reference_period = Some(
+            self.reference_period
+                .map(|prev| prev + StableTuning::BUFFER_RESPONSIVENESS * (period - prev))
+                .unwrap_or(period),
+        );
     }
 
     fn write_candidate(&mut self, segment: &[f32], period: f32) -> f32 {
@@ -440,7 +499,7 @@ impl StableTrigger {
         self.candidate.extend(segment.iter().map(|sample| sample - mean));
         normalize_peak(&mut self.candidate);
 
-        let std = (period * BUFFER_FALLOFF_PERIODS).max(1.0);
+        let std = (period * StableTuning::BUFFER_FALLOFF_PERIODS).max(1.0);
         let len = self.candidate.len();
         for (i, sample) in self.candidate.iter_mut().enumerate() {
             *sample *= gaussian(len, i, std);
@@ -603,8 +662,8 @@ impl OscilloscopeProcessor {
         let base_frames = (self.config.sample_rate * self.config.segment_duration)
             .round()
             .max(1.0) as usize;
-        let max_period = (self.config.sample_rate / CYCLE_RATE_MIN_HZ).ceil() as usize;
-        let probe_frames = ((self.config.sample_rate * PERIOD_PROBE_SECONDS).round() as usize)
+        let max_period = (self.config.sample_rate / PeriodTuning::MIN_HZ).ceil() as usize;
+        let probe_frames = ((self.config.sample_rate * PeriodTuning::PROBE_SECONDS).round() as usize)
             .max(max_period * 2);
         let trigger_frames = match self.config.trigger_mode {
             TriggerMode::ZeroCrossing => base_frames + max_period,
@@ -728,7 +787,7 @@ fn stable_history_frames(max_period: usize, cycles: usize, sample_rate: f32) -> 
     let max_period_f = max_period as f32;
     let max_kernel = trigger_kernel_len(max_period_f, sample_rate);
     let max_tail = (max_period * cycles.max(1)).max(max_kernel - max_kernel / 2);
-    let max_search = (max_period_f * TRIGGER_SEARCH_PERIODS).ceil() as usize;
+    let max_search = (max_period_f * StableTuning::SEARCH_PERIODS).ceil() as usize;
     max_kernel / 2 + max_tail + max_search + 2
 }
 
@@ -769,17 +828,12 @@ fn downsample_trace(output: &mut Vec<f32>, data: &[f32], capture: Capture, targe
         return false;
     }
 
+    let data = &data[start..start + frames];
     let step = frames as f32 / target as f32;
+    let last = (frames - 1) as f32;
     for i in 0..target {
-        let pos = (capture.frac_offset + i as f32 * step).max(0.0);
-        let idx = (pos as usize).min(frames - 1);
-        let frac = pos - idx as f32;
-        let sample = if frac > f32::EPSILON && idx + 1 < frames {
-            crate::util::audio::lerp(data[start + idx], data[start + idx + 1], frac)
-        } else {
-            data[start + idx]
-        };
-        output.push(sample);
+        let pos = (capture.frac_offset + i as f32 * step).clamp(0.0, last);
+        output.push(sample_linear_zero(data, pos));
     }
     true
 }
@@ -950,6 +1004,29 @@ mod tests {
     fn parabolic_interpolation() {
         let y = |x: f32| (x - 5.3_f32).powi(2);
         assert!((parabolic_refine(y(4.0), y(5.0), y(6.0), 5) - 5.3).abs() < 0.001);
+    }
+
+    #[test]
+    fn stable_trigger_retunes_reference_around_center() {
+        let peak = |data: &[f32]| {
+            data.iter()
+                .enumerate()
+                .max_by(|(_, a), (_, b)| a.total_cmp(b))
+                .map(|(index, _)| index)
+                .unwrap()
+        };
+        let mut trigger = StableTrigger {
+            reference: vec![0.0; 17],
+            reference_period: Some(4.0),
+            ..Default::default()
+        };
+        trigger.reference[8] = 0.25;
+        trigger.reference[10] = 1.0;
+
+        trigger.retune_reference(17, 8.0);
+        assert_eq!(peak(&trigger.reference), 12);
+        assert!((trigger.reference[8] - 0.25).abs() < f32::EPSILON);
+        assert_eq!(trigger.reference_period, Some(8.0));
     }
 
     #[test]
