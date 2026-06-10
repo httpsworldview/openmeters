@@ -2,15 +2,12 @@
 
 https://github.com/user-attachments/assets/52d0202e-f6e7-47aa-9952-e3a0be975f42
 
-OpenMeters is an audio metering application for Linux. It monitors
-individual PipeWire applications through a virtual sink, can capture
-selected PipeWire devices or the current default sink, and displays
-the signal through a set of practical meters: loudness, oscilloscope,
-spectrogram, spectrum analyzer, stereometer, and waveform.
+OpenMeters is an audio metering application for Linux. It currently
+consists of six meters: loudness , oscilloscope, spectrogram, spectrum
+analyzer, stereometer, and waveform.
 
-My goal is to provide a free, open source desktop meter that is clear
-at a glance, rigorous and correct about what it computes, and pleasant
-enough to want to keep running.
+My goal is to provide a free, open source desktop meter that is
+rigorous and correct about what it computes and pleasant to look at.
 
 ## Quick links
 
@@ -28,9 +25,9 @@ enough to want to keep running.
 
 ## Features
 
-Everything below describes behavior implemented in this repository. If
-you have ideas for the next thing OpenMeters should do, please feel
-free to open an issue or pull request.
+Everything below describes behavior implemented thus far. If you have
+ideas for the next thing OpenMeters should do, please feel free to
+open an issue or pull request.
 
 ### General
 
@@ -58,14 +55,16 @@ free to open an issue or pull request.
 
 - **Loudness**
   - BS.1770-5 K-weighted short-term and momentary LUFS meter modes.
+  - True Peak meter modes.
   - Fast and slow K-weighted RMS dB meter modes.
-  - True-peak dBTP meter mode.
 - **Oscilloscope**
-  - Selectable left, right, mid/mono, side, or hidden channel traces.
-  - Stable trigger using YIN pitch estimation and phase correlation.
-  - Zero-crossing trigger for traditional scope behavior.
+  - Selectable left, right, mid/mono, side, or `none` channel traces.
+  - A pitch-locked trigger using YIN fundamental frequency estimation
+    and phase correlation.
   - Selectable cycle count in stable trigger mode.
+  - Zero-crossing trigger for traditional scope behavior.
 - **Spectrogram**
+  - A multitude of window types, lengths, and hop sizes.
   - Classic STFT rendering.
   - Time-frequency reassignment.
   - Click-and-hold crosshair with frequency, note, and time tooltip.
@@ -74,8 +73,7 @@ free to open an issue or pull request.
   - ERB, logarithmic, and linear frequency scales.
   - Adjustable color map, stop positions, and stop spreads.
 - **Spectrum analyzer**
-  - Windowed real FFT analysis with selectable FFT size, hop divisor,
-    and window.
+  - A multitude of window types, lengths, and hop sizes.
   - Raw or IEC 61672-1 A-weighted display.
   - Peak label with frequency, note, and level.
   - No averaging, exponential averaging, or peak hold.
@@ -87,9 +85,9 @@ free to open an issue or pull request.
   - Single-band or low/mid/high correlation meter.
   - Adjustable correlation window.
   - Adjustable scale, rotation, channel flip, dot size, persistence,
-    and themeable grid.
+    and grid.
 - **Waveform**
-  - Selectable left, right, mid/mono, side, or hidden channel lanes.
+  - Selectable left, right, mid/mono, side, or `none` channel lanes.
   - Adjustable scroll speed.
   - Optional low/mid/high band-level history overlay.
   - Color by spectral centroid, amplitude, or a static color.
