@@ -15,7 +15,7 @@ use crate::{
     persistence::settings::{
         self as settings_cfg, ModuleSettings, PaletteSettings, ThemeFile, VisualSettings,
     },
-    util::audio::DEFAULT_SAMPLE_RATE,
+    util::audio::{Channel, DEFAULT_SAMPLE_RATE},
     util::color::{sanitize_stop_positions, sanitize_stop_spreads},
 };
 use iced::{Color, Element, Length, widget::container};
@@ -133,7 +133,7 @@ visuals! {
     Oscilloscope(150.0, 160.0, 100.0) =>
         oscilloscope::OscilloscopeProcessor, OscilloscopeConfig, OscilloscopeState;
         settings_cfg::OscilloscopeSettings;
-        apply(p, s, set) { let before = p.config(); visuals!(@apply_config p, set); let reset = p.config() != before;
+        apply(p, s, set) { visuals!(@apply_config p, set); let reset = [set.channel_1, set.channel_2] == [Channel::None; 2];
             let mut st = s.borrow_mut(); st.update_view_settings(set.persistence, reset);
             visuals!(@apply_palette st, set, &palettes::oscilloscope::COLORS); };
         export(p, s) { let st = s.borrow(); let mut out = settings_cfg::OscilloscopeSettings::from_config(&p.config());
