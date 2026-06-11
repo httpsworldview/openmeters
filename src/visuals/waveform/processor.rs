@@ -3,8 +3,8 @@
 
 use crate::dsp::AudioBlock;
 use crate::util::audio::{
-    BAND_SPLITS_HZ, DEFAULT_SAMPLE_RATE, WindowKind, apply_window, power_to_db,
-    sanitize_sample_rate, window_coefficients,
+    BAND_SPLITS_HZ, DEFAULT_SAMPLE_RATE, WindowKind, apply_window, power_to_db, sample_rates_differ,
+    sanitize_negative_db, sanitize_sample_rate, window_coefficients,
 };
 use realfft::{RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex32;
@@ -54,14 +54,10 @@ impl Default for WaveformConfig {
 impl WaveformConfig {
     fn normalized(mut self) -> Self {
         self.sample_rate = sanitize_sample_rate(self.sample_rate);
-        if !self.scroll_speed.is_finite() || self.scroll_speed <= 0.0 {
-            self.scroll_speed = DEFAULT_SCROLL_SPEED;
-        } else {
-            self.scroll_speed = self.scroll_speed.max(MIN_RUNTIME_SCROLL_SPEED);
-        }
-        if !self.band_db_floor.is_finite() || self.band_db_floor >= 0.0 {
-            self.band_db_floor = DEFAULT_BAND_DB_FLOOR;
-        }
+        self.scroll_speed = crate::util::finite_positive(self.scroll_speed)
+            .map(|speed| speed.max(MIN_RUNTIME_SCROLL_SPEED))
+            .unwrap_or(DEFAULT_SCROLL_SPEED);
+        self.band_db_floor = sanitize_negative_db(self.band_db_floor, DEFAULT_BAND_DB_FLOOR);
         self.max_columns = self.max_columns.clamp(1, MAX_COLUMN_CAPACITY);
         self
     }
@@ -144,9 +140,7 @@ impl FrequencyAnalyzer {
     }
 
     fn analyze(&mut self, samples: &[f32]) -> f32 {
-        if samples.is_empty() {
-            return self.smoothed;
-        }
+        if samples.is_empty() { return self.smoothed; }
 
         self.sample_history.extend_from_slice(samples);
         if self.sample_history.len() > self.size {
@@ -154,9 +148,7 @@ impl FrequencyAnalyzer {
                 .drain(..self.sample_history.len() - self.size);
         }
 
-        if self.sample_history.len() < self.size / 4 {
-            return self.smoothed;
-        }
+        if self.sample_history.len() < self.size / 4 { return self.smoothed; }
 
         self.apply_hann_window();
 
@@ -223,9 +215,7 @@ impl FrequencyAnalyzer {
         let max_bin = ((MAX_FREQ_HZ / self.bin_hz).floor() as usize)
             .min(self.output_spectrum.len().saturating_sub(1));
 
-        if min_bin > max_bin {
-            return 0.5;
-        }
+        if min_bin > max_bin { return 0.5; }
 
         let (weighted_sum, power_sum) = self.output_spectrum[min_bin..=max_bin]
             .iter()
@@ -236,17 +226,13 @@ impl FrequencyAnalyzer {
                 (ws + hz * power, ps + power)
             });
 
-        if power_sum <= f64::EPSILON {
-            return 0.5;
-        }
+        if power_sum <= f64::EPSILON { return 0.5; }
 
         Self::hz_to_normalized((weighted_sum / power_sum) as f32)
     }
 
     fn hz_to_normalized(hz: f32) -> f32 {
-        if !hz.is_finite() {
-            return 0.5;
-        }
+        if !hz.is_finite() { return 0.5; }
         let lo = MIN_FREQ_HZ.ln();
         let hi = MAX_FREQ_HZ.ln();
         let range = (hi - lo).max(f32::EPSILON);
@@ -463,13 +449,11 @@ impl WaveformProcessor {
         }
     }
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<WaveformSnapshot> {
-        if block.frame_count() == 0 {
-            return None;
-        }
+        if block.is_empty() { return None; }
 
         let (channels, sample_rate) = (block.channels, block.sample_rate);
-        let needs_reconfigure = channels != self.channel_count
-            || (self.config.sample_rate - sample_rate).abs() > f32::EPSILON;
+        let rate_changed = sample_rates_differ(self.config.sample_rate, sample_rate);
+        let needs_reconfigure = channels != self.channel_count || rate_changed;
 
         if needs_reconfigure {
             self.channel_count = channels;
@@ -492,7 +476,7 @@ impl WaveformProcessor {
 
     pub fn update_config(&mut self, config: WaveformConfig) {
         let normalized = config.normalized();
-        let rebuild = self.config.sample_rate != normalized.sample_rate
+        let rebuild = sample_rates_differ(self.config.sample_rate, normalized.sample_rate)
             || self.config.max_columns != normalized.max_columns;
         let old_scroll_speed = self.config.scroll_speed;
         let old_samples_per_column = self.samples_per_column;

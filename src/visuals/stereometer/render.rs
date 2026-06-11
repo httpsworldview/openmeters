@@ -19,9 +19,7 @@ pub fn scale_point(scale: StereometerScale, x: f32, y: f32, range: f32) -> (f32,
         StereometerScale::Linear => (x, y),
         StereometerScale::Exponential => {
             let len = x.hypot(y);
-            if len < f32::EPSILON {
-                return (0.0, 0.0);
-            }
+            if len < f32::EPSILON { return (0.0, 0.0); }
             let k = (len.max((-range).exp2()).log2() + range) / (range * len);
             (k * x, k * y)
         }

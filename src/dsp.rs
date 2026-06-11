@@ -35,4 +35,8 @@ impl<'a> AudioBlock<'a> {
     pub fn frame_count(&self) -> usize {
         self.samples.len() / self.channels.max(1)
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.frame_count() == 0
+    }
 }

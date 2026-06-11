@@ -69,15 +69,11 @@ impl OscilloscopeState {
 
     pub fn visual_params(&self, bounds: iced::Rectangle) -> Option<OscilloscopeParams> {
         let channels = self.snapshot.channels;
-        if channels == 0 {
-            return None;
-        }
+        if channels == 0 { return None; }
         let samples_per_channel = self.snapshot.samples_per_channel;
         let required = channels.saturating_mul(samples_per_channel);
 
-        if samples_per_channel < 2 || self.snapshot.samples.len() < required {
-            return None;
-        }
+        if samples_per_channel < 2 || self.snapshot.samples.len() < required { return None; }
 
         Some(OscilloscopeParams {
             key: self.key,

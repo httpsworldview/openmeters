@@ -4,9 +4,11 @@
 use super::processor::{MAX_COLUMN_CAPACITY, NUM_BANDS, WaveformPreview, WaveformSnapshot};
 use super::render::{PreviewSample, WaveformParams, WaveformPrimitive};
 use crate::persistence::settings::WaveformSettings;
-use crate::util::audio::{Channel, project_planar_channels};
+use crate::util::{
+    audio::{Channel, project_planar_channels},
+    color::{color_to_rgba, sample_gradient},
+};
 use crate::visuals::options::WaveformColorMode;
-use crate::util::color::{color_to_rgba, sample_gradient};
 use crate::visuals::palettes;
 use crate::visuals::palettes::waveform::GRADIENT_STOPS;
 use iced::Color;
@@ -146,9 +148,7 @@ impl WaveformState {
             && preview.min_values.len() >= channels
             && preview.max_values.len() >= channels;
 
-        if !valid {
-            return (Arc::from([]), 0.0);
-        }
+        if !valid { return (Arc::from([]), 0.0); }
 
         let result: Vec<_> = (0..channels)
             .map(|ch| {
@@ -175,9 +175,7 @@ impl WaveformState {
         visible: usize,
     ) -> Arc<[f32]> {
         let expected = channels * NUM_BANDS * total_columns;
-        if self.snapshot.band_levels.len() < expected {
-            return Arc::from([]);
-        }
+        if self.snapshot.band_levels.len() < expected { return Arc::from([]); }
         let mut out = Vec::with_capacity(channels * NUM_BANDS * visible);
         for channel in 0..channels {
             for band in 0..NUM_BANDS {
@@ -195,7 +193,7 @@ impl WaveformState {
         self.snapshot
             .frequency_normalized
             .get(channel * cols..(channel + 1) * cols)
-            .and_then(|r| r.iter().rev().copied().find(|&v| v.is_finite() && v > 0.0))
+            .and_then(|r| r.iter().rev().copied().find_map(crate::util::finite_positive))
             .unwrap_or(0.0)
     }
 
@@ -207,9 +205,7 @@ impl WaveformState {
             && source.max_values.len() >= expected
             && source.frequency_normalized.len() >= expected;
 
-        if !valid {
-            return WaveformSnapshot::default();
-        }
+        if !valid { return WaveformSnapshot::default(); }
 
         let remap =
             |data: &[f32], stride| project_planar_channels([ch1, ch2], data, stride, channels);

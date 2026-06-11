@@ -52,6 +52,15 @@ pub fn with_alpha(color: Color, alpha: f32) -> Color {
     }
 }
 
+pub fn premultiply_rgb(color: Color) -> Color {
+    Color {
+        r: color.r * color.a,
+        g: color.g * color.a,
+        b: color.b * color.a,
+        ..color
+    }
+}
+
 pub fn rgba_with_alpha(color: [f32; 4], alpha: f32) -> [f32; 4] {
     [color[0], color[1], color[2], alpha]
 }

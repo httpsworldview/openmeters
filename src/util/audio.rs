@@ -3,6 +3,7 @@
 
 pub mod musical;
 
+use super::finite_positive;
 use std::{
     collections::{HashMap, VecDeque},
     sync::{Arc, LazyLock, RwLock},
@@ -11,10 +12,18 @@ use std::{
 pub const DEFAULT_SAMPLE_RATE: f32 = 48_000.0;
 
 pub fn sanitize_sample_rate(sample_rate: f32) -> f32 {
-    if sample_rate.is_finite() && sample_rate > 0.0 {
-        sample_rate
+    finite_positive(sample_rate).unwrap_or(DEFAULT_SAMPLE_RATE)
+}
+
+pub fn sample_rates_differ(a: f32, b: f32) -> bool {
+    (a - b).abs() > f32::EPSILON
+}
+
+pub fn sanitize_negative_db(db: f32, default: f32) -> f32 {
+    if db.is_finite() && db < 0.0 {
+        db
     } else {
-        DEFAULT_SAMPLE_RATE
+        default
     }
 }
 
@@ -143,8 +152,6 @@ pub fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
 
-// Projects planar channel data laid out as `[ch0 samples..., ch1 samples..., ...]`.
-// Invalid or `None` selections are skipped; `Right` falls back to `Left` for mono.
 pub(crate) fn project_planar_channels<const N: usize>(
     selection: [Channel; N],
     data: &[f32],
@@ -190,7 +197,30 @@ pub(crate) fn project_planar_channels<const N: usize>(
     out
 }
 
-// Mixes interleaved frames into mono and appends them to `buffer`.
+pub(crate) fn project_interleaved_channel_into(
+    output: &mut Vec<f32>,
+    interleaved: &[f32],
+    channels: usize,
+    frames: usize,
+    channel: Channel,
+) -> bool {
+    output.clear();
+    if channels == 0 || channel == Channel::None {
+        return false;
+    }
+    output.reserve(frames);
+    for frame in interleaved.chunks_exact(channels).take(frames) {
+        output.push(match channel {
+            Channel::Left => frame[0],
+            Channel::Right => frame.get(1).copied().unwrap_or(frame[0]),
+            Channel::Mid => frame.iter().sum::<f32>() / channels as f32,
+            Channel::Side => (frame[0] - frame.get(1).copied().unwrap_or(frame[0])) * 0.5,
+            Channel::None => unreachable!(),
+        });
+    }
+    !output.is_empty()
+}
+
 pub fn mixdown_into_deque(buffer: &mut VecDeque<f32>, samples: &[f32], channels: usize) {
     if channels == 0 || samples.is_empty() {
         return;

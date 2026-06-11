@@ -205,9 +205,7 @@ fn palette_color(palette: &[[f32; 4]], amp: f32, threshold: f32) -> [f32; 4] {
 
 pub(crate) fn sample_max(pts: &[[f32; 2]], t0: f32, t1: f32) -> f32 {
     let n = pts.len().saturating_sub(1);
-    if n == 0 {
-        return pts.first().map_or(0.0, |p| p[1]);
-    }
+    if n == 0 { return pts.first().map_or(0.0, |p| p[1]); }
     let i0 = (t0.clamp(0.0, 1.0) * n as f32) as usize;
     let i1 = ((t1.clamp(0.0, 1.0) * n as f32) as usize + 1).min(n);
     pts.get(i0..=i1)

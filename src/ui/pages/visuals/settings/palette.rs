@@ -6,7 +6,7 @@ use crate::ui::theme::{self, Palette};
 use crate::ui::widgets::{scroll_delta_lines, scroll_glow::ScrollGlow};
 use crate::util::color::{
     EPSILON, STOP_SPREAD_MAX, STOP_SPREAD_MIN, colors_equal, f32_to_u8, find_segment, lerp_color,
-    sanitize_stop_positions, sanitize_stop_spreads, with_alpha,
+    premultiply_rgb, sanitize_stop_positions, sanitize_stop_spreads, with_alpha,
 };
 use iced::advanced::renderer::{self, Quad};
 use iced::advanced::widget::{Tree, tree};
@@ -274,15 +274,8 @@ impl PaletteEditor {
 }
 
 fn swatch_style(color: Color, active: bool) -> container::Style {
-    let a = color.a;
-    let d = Color {
-        r: color.r * a,
-        g: color.g * a,
-        b: color.b * a,
-        a,
-    };
     container::Style::default()
-        .background(Background::Color(d))
+        .background(Background::Color(premultiply_rgb(color)))
         .border(if active {
             theme::focus_border()
         } else {
@@ -464,19 +457,13 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for GradientBar<'_> {
             let t = i as f32 / (steps - 1).max(1) as f32;
             let (lo, hi, f) = find_segment(self.positions, self.spreads, t, stop_count);
             let c = lerp_color(self.colors[lo], self.colors[hi], f);
-            let premul = Color {
-                r: c.r * c.a,
-                g: c.g * c.a,
-                b: c.b * c.a,
-                a: 1.0,
-            };
             paint(
                 Rectangle::new(
                     Point::new(bounds.x + i as f32 * step_w, bounds.y),
                     Size::new(step_w + 0.5, GRADIENT_BAR_HEIGHT),
                 ),
                 Default::default(),
-                Background::Color(premul),
+                Background::Color(with_alpha(premultiply_rgb(c), 1.0)),
             );
         }
         paint(

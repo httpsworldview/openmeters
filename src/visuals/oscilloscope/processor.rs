@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Maika Namuo
 
 use crate::dsp::AudioBlock;
-use crate::util::audio::{Channel, DEFAULT_SAMPLE_RATE, extend_interleaved_history};
+use crate::util::audio::{self, Channel, DEFAULT_SAMPLE_RATE};
 use realfft::{RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex;
 use serde::{Deserialize, Serialize};
@@ -13,9 +13,7 @@ const TRACE_COUNT: usize = 2;
 
 fn parabolic_refine(y_prev: f32, y_curr: f32, y_next: f32, tau: usize) -> f32 {
     let denom = y_prev - 2.0 * y_curr + y_next;
-    if denom.abs() < f32::EPSILON {
-        return tau as f32;
-    }
+    if denom.abs() < f32::EPSILON { return tau as f32; }
     let delta = 0.5 * (y_prev - y_next) / denom;
     (tau as f32 + delta.clamp(-1.0, 1.0)).max(1.0)
 }
@@ -102,32 +100,24 @@ impl PeriodEstimator {
 
     fn estimate_period(&mut self, samples: &[f32], rate: f32) -> Option<f32> {
         self.last_peak = 0.0;
-        if samples.len() < 3 {
-            return None;
-        }
+        if samples.len() < 3 { return None; }
 
         let mean = samples.iter().sum::<f32>() / samples.len() as f32;
         self.last_peak = samples
             .iter()
             .map(|sample| (sample - mean).abs())
             .fold(0.0, f32::max);
-        if self.last_peak < PeriodTuning::MIN_SIGNAL_PEAK {
-            return None;
-        }
+        if self.last_peak < PeriodTuning::MIN_SIGNAL_PEAK { return None; }
 
         let min_period = (rate / PeriodTuning::MAX_HZ).round().max(2.0) as usize;
         let max_period = ((rate / PeriodTuning::MIN_HZ).round() as usize).min(samples.len() / 2);
-        if max_period <= min_period + 1 {
-            return None;
-        }
+        if max_period <= min_period + 1 { return None; }
         self.compute_autocorrelation(samples, mean, max_period)?;
 
         let corr = &self.autocorrelation[..=max_period];
         let zero_crossing = (1..=max_period).find(|&tau| corr[tau] < 0.0)?;
         let min_tau = min_period.max(zero_crossing);
-        if min_tau >= max_period {
-            return None;
-        }
+        if min_tau >= max_period { return None; }
 
         let peak = (min_tau..=max_period).max_by(|&a, &b| corr[a].total_cmp(&corr[b]))?;
         let threshold = corr[peak] * 0.8;
@@ -188,9 +178,7 @@ impl PeriodEstimator {
         let norm = 1.0 / fft_size as f32;
         self.autocorrelation.resize(max_lag + 1, 0.0);
         let total_energy = self.energy_prefix[samples.len()];
-        if total_energy <= f32::EPSILON {
-            return None;
-        }
+        if total_energy <= f32::EPSILON { return None; }
         for tau in 0..=max_lag {
             let left_energy = self.energy_prefix[samples.len() - tau];
             let right_energy = total_energy - self.energy_prefix[tau];
@@ -236,9 +224,7 @@ fn normalize_peak(data: &mut [f32]) {
 }
 
 fn gaussian(len: usize, index: usize, std: f32) -> f32 {
-    if len <= 1 || std <= f32::EPSILON {
-        return 0.0;
-    }
+    if len <= 1 || std <= f32::EPSILON { return 0.0; }
     let center = (len - 1) as f32 * 0.5;
     let x = index as f32 - center;
     (-0.5 * (x / std).powi(2)).exp()
@@ -249,9 +235,7 @@ fn energy(data: &[f32]) -> f32 {
 }
 
 fn sample_linear_zero(data: &[f32], pos: f32) -> f32 {
-    if data.is_empty() || pos < 0.0 || pos > (data.len() - 1) as f32 {
-        return 0.0;
-    }
+    if data.is_empty() || pos < 0.0 || pos > (data.len() - 1) as f32 { return 0.0; }
     let idx = pos as usize;
     let frac = pos - idx as f32;
     if frac > f32::EPSILON && idx + 1 < data.len() {
@@ -375,9 +359,7 @@ impl StableTrigger {
         let before = len / 2;
         let after = len - before;
         let right = trace.len().checked_sub(frames.max(after))?;
-        if right < before {
-            return None;
-        }
+        if right < before { return None; }
 
         let search = ((period * StableTuning::SEARCH_PERIODS).round() as usize)
             .max(1)
@@ -507,9 +489,7 @@ impl StableTrigger {
 
         let reference_energy = energy(&self.reference);
         let candidate_energy = energy(&self.candidate);
-        if reference_energy <= f32::EPSILON || candidate_energy <= f32::EPSILON {
-            return 1.0;
-        }
+        if reference_energy <= f32::EPSILON || candidate_energy <= f32::EPSILON { return 1.0; }
         let dot: f32 = self.reference.iter().zip(&self.candidate).map(|(a, b)| a * b).sum();
         dot / (reference_energy * candidate_energy).sqrt()
     }
@@ -524,43 +504,6 @@ fn octave_correct_period(new_period: f32, prev_period: f32) -> f32 {
     } else {
         new_period
     }
-}
-
-fn channel_sample(frame: &[f32], channel: Channel) -> Option<f32> {
-    match channel {
-        Channel::Left => frame.first().copied(),
-        Channel::Right => frame.get(1).or_else(|| frame.first()).copied(),
-        Channel::Mid => {
-            (!frame.is_empty()).then(|| frame.iter().sum::<f32>() / frame.len() as f32)
-        }
-        Channel::Side => frame.first().map(|&left| {
-            let right = frame.get(1).copied().unwrap_or(left);
-            (left - right) * 0.5
-        }),
-        Channel::None => None,
-    }
-}
-
-fn fill_trace_buffer(
-    output: &mut Vec<f32>,
-    interleaved: &[f32],
-    channels: usize,
-    frames: usize,
-    channel: Channel,
-) -> bool {
-    output.clear();
-    if channels == 0 {
-        return false;
-    }
-    output.reserve(frames);
-    for frame in interleaved.chunks_exact(channels).take(frames) {
-        let Some(sample) = channel_sample(frame, channel) else {
-            output.clear();
-            return false;
-        };
-        output.push(sample);
-    }
-    !output.is_empty()
 }
 
 fn find_rising_zero_crossing(
@@ -579,9 +522,7 @@ fn find_rising_zero_crossing(
         } else {
             (cur, prev_idx, prev_val)
         };
-        if hi_val > 0.0 && lo_val <= 0.0 {
-            return Some(hi_idx);
-        }
+        if hi_val > 0.0 && lo_val <= 0.0 { return Some(hi_idx); }
         prev_val = cur;
         prev_idx = f;
     }
@@ -640,11 +581,9 @@ impl OscilloscopeProcessor {
     }
 
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<OscilloscopeSnapshot> {
-        if block.frame_count() == 0 {
-            return None;
-        }
+        if block.is_empty() { return None; }
 
-        if (self.config.sample_rate - block.sample_rate).abs() > f32::EPSILON {
+        if audio::sample_rates_differ(self.config.sample_rate, block.sample_rate) {
             self.update_config(OscilloscopeConfig {
                 sample_rate: block.sample_rate,
                 ..self.config
@@ -674,7 +613,7 @@ impl OscilloscopeProcessor {
         let trace_channels = self.trace_channels();
         let trigger_source = self.config.trigger_source;
         let samples = &block.samples[..block.frame_count() * channel_count];
-        extend_interleaved_history(
+        audio::extend_interleaved_history(
             &mut self.history,
             samples,
             probe_frames.max(base_frames).max(trigger_frames) * channel_count,
@@ -692,9 +631,7 @@ impl OscilloscopeProcessor {
                 trigger.capture(trace, sample_rate, probe_frames, base_frames, num_cycles)
             }),
         };
-        let linked_capture = if trigger_source == Channel::None {
-            None
-        } else if fill_trace_buffer(
+        let linked_capture = if audio::project_interleaved_channel_into(
             &mut self.trigger_buffer,
             data,
             channel_count,
@@ -708,15 +645,13 @@ impl OscilloscopeProcessor {
         let mut captures = [None; TRACE_COUNT];
 
         for (slot, channel) in trace_channels.into_iter().enumerate() {
-            if channel == Channel::None
-                || !fill_trace_buffer(
-                    &mut self.trace_buffers[slot],
-                    data,
-                    channel_count,
-                    available,
-                    channel,
-                )
-            {
+            if !audio::project_interleaved_channel_into(
+                &mut self.trace_buffers[slot],
+                data,
+                channel_count,
+                available,
+                channel,
+            ) {
                 continue;
             }
 
@@ -728,9 +663,7 @@ impl OscilloscopeProcessor {
             });
         }
 
-        if captures.iter().all(Option::is_none) {
-            return None;
-        }
+        if captures.iter().all(Option::is_none) { return None; }
 
         self.write_snapshot(&captures);
         Some(self.snapshot.clone())
@@ -798,9 +731,7 @@ fn zero_crossing_capture(
     search_range: usize,
 ) -> Option<Capture> {
     let frames = frames.min(available);
-    if frames == 0 {
-        return None;
-    }
+    if frames == 0 { return None; }
 
     let end = available.saturating_sub(1);
     let right_lo = end.saturating_sub(search_range);
@@ -818,15 +749,11 @@ fn zero_crossing_capture(
 }
 
 fn downsample_trace(output: &mut Vec<f32>, data: &[f32], capture: Capture, target: usize) -> bool {
-    if target == 0 {
-        return false;
-    }
+    if target == 0 { return false; }
 
     let start = capture.start.min(data.len());
     let frames = capture.frames.min(data.len().saturating_sub(start));
-    if frames == 0 {
-        return false;
-    }
+    if frames == 0 { return false; }
 
     let data = &data[start..start + frames];
     let step = frames as f32 / target as f32;
@@ -883,9 +810,7 @@ mod tests {
         for block in blocks {
             let offset = block * BLOCK;
             processor.process_block(&make_block(&signal[offset..offset + BLOCK], 1, RATE));
-            if predicate(processor) {
-                return Some(block - start);
-            }
+            if predicate(processor) { return Some(block - start); }
         }
         None
     }
@@ -1040,7 +965,7 @@ mod tests {
 
         let stereo: Vec<f32> = mono.iter().flat_map(|&s| [s, s]).collect();
         let mut mid = Vec::new();
-        assert!(fill_trace_buffer(
+        assert!(audio::project_interleaved_channel_into(
             &mut mid,
             &stereo,
             2,
@@ -1057,7 +982,7 @@ mod tests {
         let stereo: Vec<f32> = mono.iter().flat_map(|&s| [s, -s]).collect();
         let mut projected = Vec::new();
 
-        assert!(fill_trace_buffer(
+        assert!(audio::project_interleaved_channel_into(
             &mut projected,
             &stereo,
             2,
@@ -1066,7 +991,7 @@ mod tests {
         ));
         assert!(find_rising_zero_crossing(&projected, 0..=4799).is_none());
 
-        assert!(fill_trace_buffer(
+        assert!(audio::project_interleaved_channel_into(
             &mut projected,
             &stereo,
             2,

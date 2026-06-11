@@ -5,7 +5,7 @@ use crate::dsp::AudioBlock;
 use crate::util::audio::{
     DB_FLOOR, DEFAULT_SAMPLE_RATE, FrequencyScale, WindowKind, apply_window,
     compute_fft_bin_normalization, copy_dc_removed_from_deque, mixdown_into_deque, power_to_db,
-    sanitize_sample_rate, window_coefficients,
+    sample_rates_differ, sanitize_negative_db, sanitize_sample_rate, window_coefficients,
 };
 use realfft::{RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex32;
@@ -80,9 +80,7 @@ impl SpectrumConfig {
         if self.hop_size == 0 {
             self.hop_size = (self.fft_size / DEFAULT_SPECTRUM_HOP_DIVISOR).max(1);
         }
-        if !self.floor_db.is_finite() || self.floor_db >= 0.0 {
-            self.floor_db = DEFAULT_SPECTRUM_DB_FLOOR;
-        }
+        self.floor_db = sanitize_negative_db(self.floor_db, DEFAULT_SPECTRUM_DB_FLOOR);
     }
 }
 
@@ -244,11 +242,9 @@ impl SpectrumProcessor {
         produced
     }
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<SpectrumSnapshot> {
-        if block.frame_count() == 0 {
-            return None;
-        }
+        if block.is_empty() { return None; }
 
-        if (block.sample_rate - self.config.sample_rate).abs() > f32::EPSILON {
+        if sample_rates_differ(block.sample_rate, self.config.sample_rate) {
             self.config.sample_rate = block.sample_rate;
             self.reset_buffers();
         }
@@ -270,7 +266,7 @@ impl SpectrumProcessor {
         self.config = config;
         if old.fft_size != config.fft_size || old.window != config.window {
             self.rebuild_fft();
-        } else if (old.sample_rate - config.sample_rate).abs() > f32::EPSILON {
+        } else if sample_rates_differ(old.sample_rate, config.sample_rate) {
             self.reset_buffers();
         } else if (old.floor_db - config.floor_db).abs() > f32::EPSILON {
             self.reset_level_buffers();
@@ -344,9 +340,7 @@ fn reset_to_floor(buf: &mut Vec<f32>, bins: usize, floor: f32) {
 
 fn a_weight(freq_hz: f32) -> f32 {
     const MIN_DB: f32 = -80.0;
-    if freq_hz <= 0.0 {
-        return MIN_DB;
-    }
+    if freq_hz <= 0.0 { return MIN_DB; }
 
     // IEC 61672-1:2013 reference frequencies.
     const C1: f64 = 20.598_997 * 20.598_997;
@@ -359,9 +353,7 @@ fn a_weight(freq_hz: f32) -> f32 {
     let numerator = C4 * f2 * f2;
     let denom = (f2 + C1) * ((f2 + C2) * (f2 + C3)).sqrt() * (f2 + C4);
 
-    if denom <= 0.0 || numerator <= 0.0 {
-        return MIN_DB;
-    }
+    if denom <= 0.0 || numerator <= 0.0 { return MIN_DB; }
 
     let ra = numerator / denom;
     let db = 20.0 * ra.log10() + 2.0;

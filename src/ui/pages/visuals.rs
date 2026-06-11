@@ -164,9 +164,7 @@ impl VisualsPage {
         widths
             .iter()
             .filter_map(|&(pane, basis)| {
-                if !basis.is_finite() || basis <= 0.0 {
-                    return None;
-                }
+                let basis = crate::util::finite_positive(basis)?;
                 let visual = panes.get_mut(pane)?;
                 visual.width_basis = basis;
                 Some((visual.kind, basis))
@@ -185,7 +183,7 @@ impl VisualsPage {
                 width_basis: saved_width_basis
                     .get(&slot.kind)
                     .copied()
-                    .filter(|basis| basis.is_finite() && *basis > 0.0)
+                    .and_then(crate::util::finite_positive)
                     .unwrap_or(slot.metadata.preferred_width),
             }
         }))

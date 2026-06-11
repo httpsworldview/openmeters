@@ -42,9 +42,7 @@ pub struct LoudnessParams {
 impl LoudnessParams {
     pub fn db_to_ratio(&self, db: f32) -> f32 {
         let range = self.max_db - self.min_db;
-        if range <= f32::EPSILON {
-            return 0.0;
-        }
+        if range <= f32::EPSILON { return 0.0; }
         let raw = ((db - self.min_db) / range).clamp(0.0, 1.0);
         raw.powf(0.9)
     }
@@ -52,9 +50,7 @@ impl LoudnessParams {
     pub fn meter_bounds(&self) -> Option<(f32, f32, f32)> {
         let bar_count = self.bars.len();
         let meter_width = (self.bounds.width - self.left_padding - self.right_padding).max(0.0);
-        if meter_width <= 0.0 {
-            return None;
-        }
+        if meter_width <= 0.0 { return None; }
 
         let gap = meter_width * GAP_FRACTION;
         let total_gap = gap * (bar_count - 1) as f32;
@@ -69,9 +65,7 @@ impl LoudnessParams {
 }
 
 fn sub_bar_gap(bar_width: f32, fill_count: usize) -> f32 {
-    if fill_count <= 1 || bar_width <= 2.0 {
-        return 0.0;
-    }
+    if fill_count <= 1 || bar_width <= 2.0 { return 0.0; }
 
     let desired = (bar_width * INNER_GAP_RATIO).max(0.5);
     let max_gap = bar_width / (fill_count - 1) as f32 * 0.5;

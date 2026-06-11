@@ -12,9 +12,11 @@ use super::render::{
 use crate::visuals::options::PianoRollOverlay;
 use crate::ui::theme::BORDER_SUBTLE;
 use crate::ui::widgets::scroll_delta_lines;
-use crate::util::audio::musical::{MusicalNote, NoteInfo};
-use crate::util::audio::{DB_FLOOR, FrequencyScale, fmt_duration, fmt_freq};
-use crate::util::color::{color_to_rgba, lerp_color, rgba_with_alpha, with_alpha};
+use crate::util::{
+    audio::musical::{MusicalNote, NoteInfo},
+    audio::{DB_FLOOR, FrequencyScale, fmt_duration, fmt_freq},
+    color::{color_to_rgba, lerp_color, rgba_with_alpha, with_alpha},
+};
 use crate::visuals::palettes;
 use crate::visuals::render::common::{fill_bordered_rect, fill_rect, make_text, measure_text};
 use iced::advanced::renderer;
@@ -262,9 +264,7 @@ impl SpectrogramState {
         bounds: Rectangle,
         uv_y_range: [f32; 2],
     ) -> Option<SpectrogramParams> {
-        if self.col_count == 0 && self.pending.is_empty() {
-            return None;
-        }
+        if self.col_count == 0 && self.pending.is_empty() { return None; }
         let op = self.style.opacity.clamp(0.0, 1.0);
         let to_rgba = |c: Color| rgba_with_alpha(color_to_rgba(c), c.a * op);
         let bin_hz = self.sample_rate / (self.fft_size.max(1) as f32);
@@ -307,12 +307,9 @@ impl SpectrogramState {
     ) -> Option<f32> {
         let freq_norm = self.freq_axis_norm(cursor, bounds)?;
         let tex_uv = uv_range[0] + freq_norm * (uv_range[1] - uv_range[0]);
-        if self.fft_size == 0 || self.sample_rate <= 0.0 {
-            return None;
-        }
+        if self.fft_size == 0 || self.sample_rate <= 0.0 { return None; }
         let (min_f, nyq) = display_axis(self.sample_rate);
-        let freq = self.freq_scale.freq_at(min_f, nyq, tex_uv);
-        (freq.is_finite() && freq > 0.0).then_some(freq)
+        crate::util::finite_positive(self.freq_scale.freq_at(min_f, nyq, tex_uv))
     }
 
     // Normalized rotation (0..3) matching the shader's rotate_uv convention
@@ -327,9 +324,7 @@ impl SpectrogramState {
     // Maps a screen point to the frequency-axis UV (0..1), matching
     // the shader's rotate_uv so CPU-side interactions stay consistent.
     fn freq_axis_norm(&self, cursor: Point, bounds: Rectangle) -> Option<f32> {
-        if !bounds.contains(cursor) {
-            return None;
-        }
+        if !bounds.contains(cursor) { return None; }
         let norm = match self.rotation_index() {
             1 => (cursor.x - bounds.x) / bounds.width,
             2 => (cursor.y - bounds.y) / bounds.height,
@@ -355,9 +350,7 @@ impl SpectrogramState {
             3 => cursor.y - bounds.y,
             _ => return None,
         };
-        if age < 0.0 || age >= self.col_count as f32 {
-            return None;
-        }
+        if age < 0.0 || age >= self.col_count as f32 { return None; }
         let secs = age * (self.hop_size as f32 / self.sample_rate);
         secs.is_finite().then_some(secs)
     }

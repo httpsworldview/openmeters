@@ -203,9 +203,7 @@ impl SpectrumState {
         }
         .clamp(0.0, 1.0);
         let f = self.style.frequency_scale.freq_at(min_f, max_f, t);
-        if !f.is_finite() {
-            return None;
-        }
+        if !f.is_finite() { return None; }
         let pos = [x.clamp(0.0, 1.0), y.clamp(0.0, 1.0)];
         let m = lerp(self.style.min_db, MAX_DB, pos[1]);
         let unit = match self.style.weighting_mode {
@@ -268,9 +266,7 @@ impl SpectrumState {
         theme: &iced::Theme,
         peak_layout: Option<PeakLayout>,
     ) -> Option<SpectrumParams> {
-        if self.weighted.len() < 2 {
-            return None;
-        }
+        if self.weighted.len() < 2 { return None; }
         let pal = theme.extended_palette();
 
         let (primary, secondary) = match self.style.weighting_mode {
@@ -324,12 +320,8 @@ crate::visuals::visualization_widget!(Spectrum, SpectrumState, |this, r, th, b| 
 });
 
 fn interp_at(bins: &[f32], mags: &[f32], t: f32, i: usize) -> f32 {
-    if i == 0 {
-        return mags[0];
-    }
-    if i >= bins.len() {
-        return mags[bins.len() - 1];
-    }
+    if i == 0 { return mags[0]; }
+    if i >= bins.len() { return mags[bins.len() - 1]; }
     lerp(
         mags[i - 1],
         mags[i],
@@ -448,9 +440,7 @@ fn draw_grid(
         }
     };
     let tick_x = |f: f32| -> Option<f32> {
-        if !(min_f..=max_f).contains(&f) {
-            return None;
-        }
+        if !(min_f..=max_f).contains(&f) { return None; }
         let pos = style
             .frequency_scale
             .pos_of(min_f, max_f, f)
@@ -528,9 +518,7 @@ fn point_to_normalized(b: Rectangle, p: Point) -> [f32; 2] {
 }
 
 fn peak_label_layout(b: Rectangle, pk: &PeakLabel) -> Option<PeakLayout> {
-    if pk.opacity < 0.01 || b.width < 8.0 || b.height < 8.0 {
-        return None;
-    }
+    if pk.opacity < 0.01 || b.width < 8.0 || b.height < 8.0 { return None; }
     let (title, detail) = (pk.title_size, pk.detail_size);
     let [px, py] = pk.label_pos;
     let p = Point::new(b.x + b.width * px, b.y + b.height * (1.0 - py));

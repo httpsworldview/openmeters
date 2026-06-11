@@ -18,9 +18,7 @@ pub struct MusicalNote {
 }
 
 fn freq_to_midi(freq_hz: f32) -> Option<f32> {
-    if freq_hz <= 0.0 || !freq_hz.is_finite() {
-        return None;
-    }
+    let freq_hz = crate::util::finite_positive(freq_hz)?;
     let m = A440_MIDI as f32 + SEMITONES_PER_OCTAVE as f32 * (freq_hz / A440_HZ).log2();
     m.is_finite().then_some(m)
 }

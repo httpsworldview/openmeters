@@ -2,6 +2,11 @@
 // Copyright (C) 2026 Maika Namuo
 pub mod audio;
 pub mod color;
+
+pub fn finite_positive(value: f32) -> Option<f32> {
+    (value.is_finite() && value > 0.0).then_some(value)
+}
+
 pub mod telemetry {
     use std::sync::OnceLock;
     use tracing::Level;

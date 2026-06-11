@@ -686,7 +686,7 @@ where
 }
 
 fn solve_widths(specs: &[(f32, f32)], available: f32) -> Vec<f32> {
-    let available = finite_positive(available);
+    let available = finite_nonnegative(available);
     let mut min = fit_mins(specs, available);
     let min_sum = min.iter().sum::<f32>();
     if min_sum >= available - EPS {
@@ -719,7 +719,10 @@ fn solve_widths(specs: &[(f32, f32)], available: f32) -> Vec<f32> {
 }
 
 fn fit_mins(specs: &[(f32, f32)], available: f32) -> Vec<f32> {
-    let mut min: Vec<_> = specs.iter().map(|(min, _)| finite_positive(*min)).collect();
+    let mut min: Vec<_> = specs
+        .iter()
+        .map(|(min, _)| finite_nonnegative(*min))
+        .collect();
     let sum = min.iter().sum::<f32>();
     if sum > available && sum > EPS {
         let scale = available / sum;
@@ -729,15 +732,11 @@ fn fit_mins(specs: &[(f32, f32)], available: f32) -> Vec<f32> {
 }
 
 fn width_basis(spec: (f32, f32), min: f32) -> f64 {
-    f64::from(finite_positive(spec.1).max(min).max(1.0))
+    f64::from(finite_nonnegative(spec.1).max(min).max(1.0))
 }
 
-fn finite_positive(value: f32) -> f32 {
-    if value.is_finite() {
-        value.max(0.0)
-    } else {
-        0.0
-    }
+fn finite_nonnegative(value: f32) -> f32 {
+    crate::util::finite_positive(value).unwrap_or(0.0)
 }
 
 fn fit_sum(mut widths: Vec<f32>, available: f32) -> Vec<f32> {

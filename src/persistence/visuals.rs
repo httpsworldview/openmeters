@@ -78,7 +78,7 @@ fn visual_order(value: Value) -> Vec<VisualKind> {
 
 fn width_basis(value: Value, scope: &str) -> Option<f32> {
     let basis: f32 = lossy::value(value, scope)?;
-    if basis.is_finite() && basis > 0.0 {
+    if let Some(basis) = crate::util::finite_positive(basis) {
         Some(basis)
     } else {
         warn!("[settings] invalid {scope}: must be finite and greater than zero");

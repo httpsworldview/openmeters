@@ -144,9 +144,7 @@ impl SpectrumSettingsPane {
     }
 
     fn update_avg(&mut self, update: impl FnOnce(&mut AveragingControls) -> bool) -> bool {
-        if !update(&mut self.averaging) {
-            return false;
-        }
+        if !update(&mut self.averaging) { return false; }
         self.settings.averaging = match self.averaging.mode {
             AvgMode::None => AveragingMode::None,
             AvgMode::Exponential => AveragingMode::Exponential {
