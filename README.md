@@ -134,7 +134,7 @@ Releases](https://github.com/httpsworldview/openmeters/releases).
 
 ### NixOS
 
-OpenMeters is available as a flake thanks to
+OpenMeters is available in `nixpkgs` thanks to
 [@magnetophon](https://github.com/magnetophon) and
 [@bitbloxhub](https://github.com/bitbloxhub). Add it to your nix
 config with:
