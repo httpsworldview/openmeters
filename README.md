@@ -16,6 +16,7 @@ rigorous and correct about what it computes and pleasant to look at.
   - [Arch Linux](#arch-linux)
   - [Debian](#debian)
   - [Fedora](#fedora)
+  - [NixOS](#nixos)
   - [Build from source](#building-from-source)
 - [Usage and key bindings](#usage-and-key-bindings)
 - [Configuration and theming](#configuration)
