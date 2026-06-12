@@ -285,7 +285,7 @@ fn retune_reference(reference: &[f32], old_period: f32, new_period: f32, len: us
 
 #[derive(Debug, Clone, Copy)]
 struct Capture {
-    frames: usize,
+    span: f32,
     start: usize,
     frac_offset: f32,
 }
@@ -294,7 +294,6 @@ struct Capture {
 struct StableTrigger {
     estimator: PeriodEstimator,
     period: Option<f32>,
-    octave_streak: u32,
     missed_periods: u8,
     reference: Vec<f32>,
     reference_period: Option<f32>,
@@ -307,7 +306,6 @@ struct StableTrigger {
 impl StableTrigger {
     fn unlock(&mut self) {
         self.period = None;
-        self.octave_streak = 0;
         self.missed_periods = 0;
         self.reference.clear();
         self.reference_period = None;
@@ -341,7 +339,7 @@ impl StableTrigger {
         self.stabilize(detected)
             .and_then(|estimate| self.locate(trace, estimate, cycles, sample_rate))
             .unwrap_or(Capture {
-                frames: fallback_frames,
+                span: fallback_frames.saturating_sub(1).max(1) as f32,
                 start: trace.len().saturating_sub(fallback_frames),
                 frac_offset: 0.0,
             })
@@ -359,18 +357,10 @@ impl StableTrigger {
         };
         self.missed_periods = 0;
 
-        if let Some(prev) = self.period {
-            let corrected = octave_correct_period(estimate.period, prev);
-            let was_corrected = (corrected - estimate.period).abs() > f32::EPSILON;
-            self.octave_streak = if was_corrected { self.octave_streak + 1 } else { 0 };
-            if !was_corrected || self.octave_streak < 3 {
-                estimate.period = corrected;
-            } else {
-                self.octave_streak = 0;
-            }
-            if (0.9..=1.1).contains(&(estimate.period / prev)) {
-                estimate.period = prev + 0.35 * (estimate.period - prev);
-            }
+        if let Some(prev) = self.period
+            && (0.9..=1.1).contains(&(estimate.period / prev))
+        {
+            estimate.period = prev + 0.35 * (estimate.period - prev);
         }
 
         self.period = Some(estimate.period);
@@ -385,7 +375,8 @@ impl StableTrigger {
         rate: f32,
     ) -> Option<Capture> {
         let period = estimate.period.max(1.0);
-        let frames = (period * cycles.max(1) as f32).round().max(1.0) as usize;
+        let span = period * cycles.max(1) as f32;
+        let frames = span.ceil() as usize + 1;
         let len = trigger_kernel_len(period, rate);
         let before = len / 2;
         let after = len - before;
@@ -423,7 +414,7 @@ impl StableTrigger {
             frac_offset += 1.0;
         }
         Some(Capture {
-            frames,
+            span,
             start,
             frac_offset,
         })
@@ -536,17 +527,6 @@ impl StableTrigger {
         }
 
         normalized_correlation(self.reference.iter().copied().zip(self.candidate.iter().copied()))
-    }
-}
-
-fn octave_correct_period(new_period: f32, prev_period: f32) -> f32 {
-    let ratio = new_period / prev_period;
-    if (1.9..=2.1).contains(&ratio) {
-        new_period * 0.5
-    } else if (0.48..=0.52).contains(&ratio) {
-        new_period * 2.0
-    } else {
-        new_period
     }
 }
 
@@ -729,10 +709,10 @@ impl OscilloscopeProcessor {
 
         let target = captures
             .iter()
-            .filter_map(|capture| capture.map(|capture| capture.frames))
+            .filter_map(|capture| capture.map(|capture| capture.span.round().max(1.0) as usize + 1))
             .max()
-            .unwrap_or(1)
-            .clamp(1, TARGET);
+            .unwrap_or(2)
+            .clamp(2, TARGET);
 
         self.snapshot.epoch = self.epoch;
         self.snapshot.samples.clear();
@@ -763,7 +743,7 @@ impl OscilloscopeProcessor {
 fn stable_history_frames(max_period: usize, cycles: usize, sample_rate: f32) -> usize {
     let max_period_f = max_period as f32;
     let max_kernel = trigger_kernel_len(max_period_f, sample_rate);
-    let max_tail = (max_period * cycles.max(1)).max(max_kernel - max_kernel / 2);
+    let max_tail = (max_period * cycles.max(1) + 1).max(max_kernel - max_kernel / 2);
     let max_search = (max_period_f * StableTuning::SEARCH_PERIODS).ceil() as usize;
     max_kernel / 2 + max_tail + max_search + 2
 }
@@ -779,32 +759,34 @@ fn zero_crossing_capture(
 
     let end = available.saturating_sub(1);
     let right_lo = end.saturating_sub(search_range);
-    let right = find_rising_zero_crossing(samples, (right_lo..=end).rev()).unwrap_or(available);
+    let right = find_rising_zero_crossing(samples, (right_lo..=end).rev()).unwrap_or(end);
 
     let left_lo = right.saturating_sub(frames);
     let left_hi = (left_lo + search_range).min(right.saturating_sub(2));
     let left = find_rising_zero_crossing(samples, left_lo..=left_hi).unwrap_or(left_lo);
 
     Some(Capture {
-        frames: right.saturating_sub(left).max(1),
+        span: right.saturating_sub(left).max(1) as f32,
         start: left,
         frac_offset: 0.0,
     })
 }
 
 fn downsample_trace(output: &mut Vec<f32>, data: &[f32], capture: Capture, target: usize) -> bool {
-    if target == 0 { return false; }
+    if target < 2 { return false; }
 
     let start = capture.start.min(data.len());
-    let frames = capture.frames.min(data.len().saturating_sub(start));
-    if frames == 0 { return false; }
+    let data = &data[start..];
+    if data.len() < 2 { return false; }
 
-    let data = &data[start..start + frames];
-    let step = frames as f32 / target as f32;
-    let last = (frames - 1) as f32;
+    let last = (data.len() - 1) as f32;
+    let start_offset = capture.frac_offset.clamp(0.0, last);
+    let span = capture.span.min(last - start_offset);
+    if !span.is_finite() || span <= 0.0 { return false; }
+
+    let step = span / (target - 1) as f32;
     for i in 0..target {
-        let pos = (capture.frac_offset + i as f32 * step).clamp(0.0, last);
-        output.push(sample_linear_zero(data, pos));
+        output.push(sample_linear_zero(data, start_offset + i as f32 * step));
     }
     true
 }
@@ -992,6 +974,9 @@ mod tests {
             (110.0, periodic_samples(110.0, RATE, long, |c| 2.0 * c.fract() - 1.0)),
             (440.0, periodic_samples(440.0, RATE, long, |c| {
                 if c.fract() < 0.5 { 1.0 } else { -1.0 }
+            })),
+            (440.0, periodic_samples(440.0, RATE, long, |c| {
+                (TAU * c).sin() + 2.0 * (TAU * 2.0 * c).sin()
             })),
         ] {
             let estimate = estimator.estimate_period(&samples, RATE).expect("period");
