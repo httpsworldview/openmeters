@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-// Scrollable wrapper that replaces scrollbars with subtle gradient edge glows,
-// indicating when content overflows above/below or left/right.
-
 use crate::util::color::with_alpha;
 use iced::gradient;
 use iced::widget::{Space, column, container, row, scrollable, scrollable::Scrollbar, stack};

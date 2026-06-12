@@ -105,7 +105,6 @@ impl VecTransform {
         self.apply_rotation(l, r)
     }
 
-    // Data points arrive pre-scaled from the visualization layer.
     fn apply_rotation(&self, l: f32, r: f32) -> (f32, f32) {
         let (l, r) = if self.flip { (r, l) } else { (l, r) };
         let l = l * self.rot_scale;

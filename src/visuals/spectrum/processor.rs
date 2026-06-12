@@ -389,7 +389,6 @@ fn a_weight(freq_hz: f32) -> f32 {
     const MIN_DB: f32 = -80.0;
     if freq_hz <= 0.0 { return MIN_DB; }
 
-    // IEC 61672-1:2013 reference frequencies.
     const C1: f64 = 20.598_997 * 20.598_997;
     const C2: f64 = 107.652_65 * 107.652_65;
     const C3: f64 = 737.862_23 * 737.862_23;

@@ -40,8 +40,6 @@ pub(super) enum Message {
     SettingsScrolled(ScrollGlow),
 }
 
-// Forwarding functions for macro-generated private methods on Message,
-// so sibling modules can access them.
 pub(super) fn base_window_open(settings: IcedXdgWindowSettings) -> (window::Id, Task<Message>) {
     Message::base_window_open(settings)
 }
@@ -194,7 +192,6 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
         Message::SizeChange { id, size } => {
             app.handle_main_window_resize(id, Size::new(size.0 as f32, size.1 as f32))
         }
-        // Layer shell infrastructure messages - handled internally by iced_layershell
         _ => Task::none(),
     }
 }

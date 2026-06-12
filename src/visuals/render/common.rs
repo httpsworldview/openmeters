@@ -603,7 +603,6 @@ impl<K: std::hash::Hash + Eq + Copy> SdfPipeline<K> {
     }
 }
 
-// Spectrogram has different requirements, so it does not use this macro.
 macro_rules! sdf_primitive {
     ($primitive:ident($params:ty), $($rest:tt)+) => {
         #[derive(Debug)]

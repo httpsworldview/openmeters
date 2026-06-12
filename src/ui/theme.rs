@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-// Theme colors are sRGB CSS floats. Under iced `web-colors` no gamma
-// conversion happens anywhere: sRGB flows raw to a non-sRGB framebuffer.
-
 use iced::border::Border;
 use iced::theme::palette::{self, Extended};
 use iced::widget::{button, container, slider, text};

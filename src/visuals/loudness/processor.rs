@@ -16,9 +16,7 @@ const WIN_MOMENTARY: usize = 1;
 const WIN_RMS_FAST: usize = 2;
 const WIN_RMS_SLOW: usize = 3;
 
-// ITU-R BS.1770-5 K-weighting
 fn k_weighting_coefficients(fs: f64) -> ([f64; 5], [f64; 5]) {
-    // High-shelf (pre-filter): f0=1681.97Hz, G=+4dB, Q=0.7072
     let (f0, g, q) = (
         1_681.974_450_955_533,
         3.999_843_853_973_347,
@@ -35,14 +33,12 @@ fn k_weighting_coefficients(fs: f64) -> ([f64; 5], [f64; 5]) {
     ];
     let pa = [1.0, 2.0 * (k * k - 1.0) / a0, (1.0 - k / q + k * k) / a0];
 
-    // Highpass: f0=38.14Hz, Q=0.5003
     let (f0, q) = (38.135_470_876_024_44, 0.500_327_037_323_877_3);
     let k = (PI * f0 / fs).tan();
     let a0 = 1.0 + k / q + k * k;
     let rb = [1.0, -2.0, 1.0];
     let ra = [1.0, 2.0 * (k * k - 1.0) / a0, (1.0 - k / q + k * k) / a0];
 
-    // Convolve biquad coefficients to 4th-order
     let conv = |p: [f64; 3], r: [f64; 3]| {
         [
             p[0] * r[0],
@@ -71,7 +67,6 @@ const fn window_length(sample_rate: f32, window_secs: f32) -> usize {
     if len < 1.0 { 1 } else { len as usize }
 }
 
-// True peak (ITU-R BS.1770-5 Annex 2)
 const TAPS: usize = 48;
 const PHASES: usize = 4;
 const TAPS_PER_PHASE: usize = TAPS / PHASES;
@@ -223,7 +218,6 @@ impl ChannelState {
 
 pub const MAX_CHANNELS: usize = 8;
 
-// L/R/C = 1.0 (0 dB), LFE = 0.0 (excluded), Ls/Rs/Lb/Rb = 1.41 (+1.5 dB).
 fn channel_weight(channel_index: usize, total_channels: usize) -> f64 {
     match total_channels {
         1 | 2 => 1.0,
@@ -461,11 +455,9 @@ mod tests {
     #[test]
     fn true_peak_meter_detects_inter_sample_peaks() {
         let mut meter = TruePeakMeter::new();
-        // Fill the 12-tap filter buffer before measuring.
         for _ in 0..20 {
             meter.process(0.0);
         }
-        // Alternating +/- 0.7 at Nyquist reconstructs to ~1.21x sample amplitude.
         for _ in 0..20 {
             meter.process(0.7);
             meter.process(-0.7);

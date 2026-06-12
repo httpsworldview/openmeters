@@ -5,10 +5,7 @@ use crate::dsp::AudioBlock;
 use crate::util::audio::{self, BAND_SPLITS_HZ, DEFAULT_SAMPLE_RATE, extend_interleaved_history};
 use std::collections::VecDeque;
 
-// Band histories store interleaved L/R only, independent of input channel count.
 const BAND_CHANNELS: usize = 2;
-// LR4 passbands can transiently exceed the input envelope; scale a
-// tad to prevent.
 const BAND_DISPLAY_GAIN: f32 = 0.8;
 
 #[derive(Debug, Clone, Copy)]
@@ -47,7 +44,6 @@ pub struct StereometerSnapshot {
     pub band_points: [Vec<(f32, f32)>; 3],
 }
 
-// Linkwitz-Riley 4th-order crossover (two cascaded 2nd-order Butterworth).
 #[derive(Debug, Clone, Copy, Default)]
 struct LR4 {
     feedforward: [[f32; 3]; 2],
@@ -117,9 +113,7 @@ pub struct StereometerProcessor {
     history: VecDeque<f32>,
     band_history: [VecDeque<f32>; 3],
     history_channels: usize,
-    // [left low/mid, right low/mid, left mid/high, right mid/high]
     crossovers: [LR4; 4],
-    // [full, low, mid, high]
     correlators: [Correlator; 4],
 }
 

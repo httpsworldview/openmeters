@@ -22,8 +22,6 @@ const FREQUENCY_FFT_SIZE: usize = 2048;
 const MIN_FREQ_HZ: f32 = 20.0;
 const MAX_FREQ_HZ: f32 = 5_000.0;
 
-// EMA coefficient for smoothing the spectral centroid.
-// lower = more smoothing, higher = more responsive.
 const CENTROID_EMA_ALPHA: f32 = 0.4;
 
 const BAND_EMA_ALPHA: f32 = 0.35;

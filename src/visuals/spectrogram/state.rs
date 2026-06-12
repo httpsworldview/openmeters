@@ -364,7 +364,7 @@ const ZOOM_STEP: f32 = 1.15;
 struct InteractionState {
     cursor: Option<Point>,
     modifiers: keyboard::Modifiers,
-    drag: Option<(f32, f32)>, // (freq_axis_origin, start_pan)
+    drag: Option<(f32, f32)>,
     left_held: bool,
 }
 

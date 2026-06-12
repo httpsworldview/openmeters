@@ -43,7 +43,6 @@ impl SettingsManager {
             })
             .unwrap_or_default();
         let theme_store = ThemeStore::new(&dir);
-        // Populate background color from the active theme (settings.json no longer stores it).
         if let Some(theme_file) = theme_store.load(data.theme.as_deref().unwrap_or(BUILTIN_THEME))
             && let Some(bg) = theme_file.background
         {
@@ -91,7 +90,6 @@ const PERSIST_DEBOUNCE: Duration = Duration::from_millis(500);
 static SAVER: Mutex<Option<SaverThread>> = Mutex::new(None);
 
 fn schedule_persist(mut path: PathBuf, mut settings: UiSettings) {
-    // Theme files own palettes; settings.json stores module config only.
     for module in settings.visuals.modules.values_mut() {
         module.strip_palette();
     }

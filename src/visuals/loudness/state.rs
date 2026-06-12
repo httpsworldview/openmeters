@@ -22,8 +22,6 @@ const RIGHT_PADDING: f32 = 64.0;
 const LABEL_FONT_SIZE: f32 = 10.0;
 const VALUE_FONT_SIZE: f32 = 12.0;
 
-// Standard channel map assumptions for stereo/surround downmix
-// 0: FL, 1: FR, 2: FC, 3: LFE, 4: BL, 5: BR, 6: SL, 7: SR
 const LEFT_CHANNEL_INDICES: &[usize] = &[0, 4, 6];
 const RIGHT_CHANNEL_INDICES: &[usize] = &[1, 5, 7];
 const CENTER_CHANNEL_INDEX: usize = 2;

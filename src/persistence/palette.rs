@@ -75,7 +75,6 @@ impl PaletteSettings {
     pub fn to_array<const N: usize>(&self) -> Option<[Color; N]> {
         (self.stops.len() == N).then(|| array::from_fn(|idx| self.stops[idx].into()))
     }
-    // Returns `Some` only if colors differ from defaults (avoids persisting unchanged palettes).
     pub fn if_differs_from(colors: &[Color], defaults: &[Color]) -> Option<Self> {
         color_stops_if_differ(colors, defaults).map(|stops| Self {
             stops,

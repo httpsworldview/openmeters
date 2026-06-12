@@ -440,7 +440,6 @@ impl UiApp {
             ConfigMessage::BarModeToggled(true) if self.main_window_is_layer => {
                 self.apply_bar_layout(bar.alignment, bar.height)
             }
-            // Already in the requested state (false/false); no-op.
             ConfigMessage::BarModeToggled(enabled) if *enabled == self.main_window_is_layer => {
                 Task::none()
             }
