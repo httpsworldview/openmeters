@@ -456,11 +456,19 @@ impl StableTrigger {
                 best = (offset, score);
             }
         }
-        for offset in (best.0.saturating_sub(stride)..=(best.0 + stride).min(search)).rev() {
-            let score = self.score_at(offset, use_reference);
-            if score > best.1 {
-                best = (offset, score);
+        let mut step = stride;
+        while step > 1 {
+            let next = (step / 4).max(1);
+            for offset in (best.0.saturating_sub(step)..=(best.0 + step).min(search))
+                .rev()
+                .step_by(next)
+            {
+                let score = self.score_at(offset, use_reference);
+                if score > best.1 {
+                    best = (offset, score);
+                }
             }
+            step = next;
         }
 
         let frac_offset = if best.0 > 0 && best.0 < search {

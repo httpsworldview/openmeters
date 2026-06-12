@@ -392,17 +392,14 @@ impl SpectrogramProcessor {
             let t = self.reassign.time_weighted_spectrum[i];
             let energy_scale = self.bin_norm[i];
             let pow = base.re * base.re + base.im * base.im;
+            let scaled_power = pow * energy_scale;
             let inv_pow = 1.0 / pow.max(f32::MIN_POSITIVE);
             let d_omega = -(d.im * base.re - d.re * base.im) * inv_pow;
             let freq_hz = i as f32 * bin_hz + d_omega * inv_2pi;
             let time_offset = (t.re * base.re + t.im * base.im) * inv_pow * inv_hop
                 - latency_samples as f32 * inv_hop;
-            let magnitude_db = ((pow.max(f32::MIN_POSITIVE) * energy_scale.max(f32::MIN_POSITIVE))
-                .ln()
-                * LN_TO_DB)
-                .max(DB_FLOOR);
 
-            if pow * energy_scale >= floor_linear
+            if scaled_power >= floor_linear
                 && energy_scale > 0.0
                 && freq_hz > 0.0
                 && max_hz - freq_hz > 0.0
@@ -410,7 +407,7 @@ impl SpectrogramProcessor {
                 *point = SpectrogramPoint {
                     time_offset,
                     freq_hz,
-                    magnitude_db,
+                    magnitude_db: (scaled_power.ln() * LN_TO_DB).max(DB_FLOOR),
                 };
             }
         }

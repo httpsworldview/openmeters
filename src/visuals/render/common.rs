@@ -198,14 +198,13 @@ pub(crate) fn baseline_segment_vertices(
     let (t1, b1) = (p1.1.min(baseline), p1.1.max(baseline));
     let [c0, c1] = colors;
     [
-        (p0.0, t0, c0),
-        (p0.0, b0, c0),
-        (p1.0, b1, c1),
-        (p0.0, t0, c0),
-        (p1.0, b1, c1),
-        (p1.0, t1, c1),
+        SdfVertex::solid(clip.to_clip(p0.0, t0), c0),
+        SdfVertex::solid(clip.to_clip(p0.0, b0), c0),
+        SdfVertex::solid(clip.to_clip(p1.0, b1), c1),
+        SdfVertex::solid(clip.to_clip(p0.0, t0), c0),
+        SdfVertex::solid(clip.to_clip(p1.0, b1), c1),
+        SdfVertex::solid(clip.to_clip(p1.0, t1), c1),
     ]
-    .map(|(x, y, c)| SdfVertex::solid(clip.to_clip(x, y), c))
 }
 
 pub fn line_vertices(
@@ -217,7 +216,7 @@ pub fn line_vertices(
     clip: ClipTransform,
 ) -> [SdfVertex; 6] {
     let (dx, dy) = (p1.0 - p0.0, p1.1 - p0.1);
-    let inv = dx.hypot(dy).max(1e-6).recip();
+    let inv = (dx * dx + dy * dy).max(1e-12).sqrt().recip();
     let (half, outer) = (width * 0.5, width * 0.5 + 1.0);
     let (ox, oy) = (-dy * inv * outer, dx * inv * outer);
     let v = |px, py, c, d| SdfVertex::antialiased(clip.to_clip(px, py), c, d, half);
@@ -241,19 +240,19 @@ pub fn dot_vertices(
 ) -> [SdfVertex; 6] {
     let outer = radius + 1.0;
     let flag = if additive { 1.0 } else { 0.0 };
-    [
-        (-outer, -outer),
-        (-outer, outer),
-        (outer, -outer),
-        (outer, -outer),
-        (-outer, outer),
-        (outer, outer),
-    ]
-    .map(|(ox, oy)| SdfVertex {
+    let v = |ox, oy| SdfVertex {
         position: clip.to_clip(cx + ox, cy + oy),
         color,
         params: [ox, oy, radius, flag],
-    })
+    };
+    [
+        v(-outer, -outer),
+        v(-outer, outer),
+        v(outer, -outer),
+        v(outer, -outer),
+        v(-outer, outer),
+        v(outer, outer),
+    ]
 }
 
 pub fn extend_aa_line_list(

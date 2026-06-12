@@ -115,20 +115,23 @@ impl TruePeakMeter {
     }
 
     fn process(&mut self, sample: f32) {
-        self.write_position = self
-            .write_position
-            .checked_sub(1)
-            .unwrap_or(TAPS_PER_PHASE - 1);
-        self.delay_buffer[self.write_position] = sample;
-        self.delay_buffer[self.write_position + TAPS_PER_PHASE] = sample;
+        self.write_position = if self.write_position == 0 {
+            TAPS_PER_PHASE
+        } else {
+            self.write_position
+        } - 1;
+        let pos = self.write_position;
+        self.delay_buffer[pos] = sample;
+        self.delay_buffer[pos + TAPS_PER_PHASE] = sample;
+
         let mut out = [0.0_f32; PHASES];
-        for (s, h) in self.delay_buffer[self.write_position..self.write_position + TAPS_PER_PHASE]
-            .iter()
-            .zip(self.fir.iter())
-        {
-            for (o, &c) in out.iter_mut().zip(h) {
-                *o += s * c;
-            }
+        for i in 0..TAPS_PER_PHASE {
+            let s = self.delay_buffer[pos + i];
+            let h = self.fir[i];
+            out[0] += s * h[0];
+            out[1] += s * h[1];
+            out[2] += s * h[2];
+            out[3] += s * h[3];
         }
         self.peak = out.into_iter().map(f32::abs).fold(self.peak, f32::max);
     }
@@ -319,8 +322,8 @@ impl LoudnessProcessor {
 
         for frame in block.samples.chunks_exact(block.channels) {
             for (channel, &sample) in self.channels.iter_mut().zip(frame) {
-                let energy = f64::from(channel.filter.process(sample)).powi(2);
-                channel.windows.push(energy);
+                let filtered = f64::from(channel.filter.process(sample));
+                channel.windows.push(filtered * filtered);
                 channel.true_peak.process(sample);
             }
         }

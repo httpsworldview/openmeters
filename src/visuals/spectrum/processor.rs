@@ -3,9 +3,9 @@
 
 use crate::dsp::AudioBlock;
 use crate::util::audio::{
-    Channel, DB_FLOOR, DEFAULT_SAMPLE_RATE, FrequencyScale, WindowKind, apply_window,
+    Channel, DB_FLOOR, DEFAULT_SAMPLE_RATE, FrequencyScale, LN_TO_DB, WindowKind, apply_window,
     compute_fft_bin_normalization, copy_dc_removed_from_deque, db_to_power,
-    power_to_db, project_interleaved_channel_into, sample_rates_differ, sanitize_negative_db,
+    project_interleaved_channel_into, sample_rates_differ, sanitize_negative_db,
     sanitize_sample_rate, window_coefficients,
 };
 use realfft::{RealFftPlanner, RealToComplex};
@@ -125,7 +125,7 @@ pub struct SpectrumProcessor {
     pcm_buffers: [VecDeque<f32>; TRACE_COUNT],
     source_scratch: Vec<f32>,
     levels: [SpectrumLevelBuffers; TRACE_COUNT],
-    a_weighting_gain: Vec<f32>,
+    a_weighting_db: Vec<f32>,
     last_update_at: Option<Instant>,
 }
 
@@ -148,7 +148,7 @@ impl SpectrumProcessor {
             pcm_buffers: [VecDeque::new(), VecDeque::new()],
             source_scratch: Vec::new(),
             levels: Default::default(),
-            a_weighting_gain: Vec::new(),
+            a_weighting_db: Vec::new(),
             last_update_at: None,
         };
         processor.rebuild_fft();
@@ -174,11 +174,11 @@ impl SpectrumProcessor {
     fn reset_buffers(&mut self) {
         self.snapshot.frequency_bins =
             frequency_bins(self.config.sample_rate, self.config.fft_size);
-        self.a_weighting_gain = self
+        self.a_weighting_db = self
             .snapshot
             .frequency_bins
             .iter()
-            .map(|&f| db_to_power(a_weight(f)))
+            .map(|&f| a_weight(f))
             .collect();
         self.reset_level_buffers();
         self.pcm_buffers.iter_mut().for_each(VecDeque::clear);
@@ -210,7 +210,7 @@ impl SpectrumProcessor {
         let active = self.active_traces();
         let mut produced = false;
 
-        debug_assert_eq!(self.a_weighting_gain.len(), bins);
+        debug_assert_eq!(self.a_weighting_db.len(), bins);
         if !active.iter().any(|&active| active) { return false; }
 
         while (0..TRACE_COUNT).all(|trace| !active[trace] || self.pcm_buffers[trace].len() >= fft_size) {
@@ -265,7 +265,7 @@ impl SpectrumProcessor {
         level.update_outputs(
             self.config.averaging,
             snapshot,
-            &self.a_weighting_gain,
+            &self.a_weighting_db,
             dt_seconds,
             floor,
         );
@@ -342,12 +342,12 @@ impl SpectrumLevelBuffers {
         &mut self,
         mode: AveragingMode,
         outputs: &mut [Vec<f32>; WEIGHTING_COUNT],
-        weighting_gain: &[f32],
+        weighting_db: &[f32],
         dt_seconds: f32,
         floor: f32,
     ) {
         let bins = self.scratch_power.len();
-        debug_assert_eq!(weighting_gain.len(), bins);
+        debug_assert_eq!(weighting_db.len(), bins);
         for output in outputs.iter_mut() {
             if output.len() != bins {
                 output.resize(bins, floor);
@@ -373,8 +373,9 @@ impl SpectrumLevelBuffers {
         let (weighted, raw) = outputs.split_at_mut(RAW);
         let (weighted_out, raw_out) = (&mut weighted[A_WEIGHTED], &mut raw[0]);
         for i in 0..bins {
-            raw_out[i] = power_to_db(powers[i], floor);
-            weighted_out[i] = power_to_db(powers[i] * weighting_gain[i], floor);
+            let db = powers[i].ln() * LN_TO_DB;
+            raw_out[i] = db.max(floor);
+            weighted_out[i] = (db + weighting_db[i]).max(floor);
         }
     }
 }

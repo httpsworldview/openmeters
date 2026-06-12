@@ -83,7 +83,13 @@ pub fn sample_gradient(palette: &[Color], t: f32) -> Color {
 pub fn sample_rgba_gradient(palette: &[[f32; 4]], t: f32) -> [f32; 4] {
     match gradient_segment(palette.len(), t) {
         Some((i, f)) => {
-            std::array::from_fn(|c| (palette[i + 1][c] - palette[i][c]).mul_add(f, palette[i][c]))
+            let [a, b] = [palette[i], palette[i + 1]];
+            [
+                a[0] + (b[0] - a[0]) * f,
+                a[1] + (b[1] - a[1]) * f,
+                a[2] + (b[2] - a[2]) * f,
+                a[3] + (b[3] - a[3]) * f,
+            ]
         }
         None => palette.first().copied().unwrap_or([0.0; 4]),
     }
