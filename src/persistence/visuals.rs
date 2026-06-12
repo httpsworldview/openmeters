@@ -204,13 +204,13 @@ visual_settings!(WaveformSettings from WaveformConfig {
 
 visual_settings!(SpectrumSettings from SpectrumConfig {
     fft_size: usize, hop_size: usize, window: WindowKind, averaging: AveragingMode,
+    source: Channel, secondary_source: Channel,
     frequency_scale: FrequencyScale, reverse_frequency: bool, show_grid: bool, show_peak_label: bool,
     floor_db: f32,
 } extra {
-    smoothing_radius: usize = 0, smoothing_passes: usize = 0,
     display_mode: SpectrumDisplayMode = SpectrumDisplayMode::default(),
     weighting_mode: SpectrumWeightingMode = SpectrumWeightingMode::default(),
-    show_secondary_line: bool = true,
+    secondary_weighting_mode: SpectrumWeightingMode = SpectrumWeightingMode::default(),
     bar_count: usize = 64,
     bar_gap: f32 = 0.16,
     highlight_threshold: f32 = 0.52,

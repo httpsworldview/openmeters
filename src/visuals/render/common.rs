@@ -309,25 +309,66 @@ impl GeometryScratch {
 }
 
 pub fn decimate_line_in_place(pts: &mut Vec<(f32, f32)>, max_points: usize) {
-    if pts.len() <= max_points {
+    pts.retain(|p| p.0.is_finite() && p.1.is_finite());
+    if max_points < 2 {
+        pts.truncate(max_points);
         return;
     }
-    let (buckets, len) = (max_points / 2, pts.len());
-    let mut out = 0;
-    for b in 0..buckets {
-        let lo = b * len / buckets;
-        let (mut mn_i, mut mx_i) = (lo, lo);
-        for i in lo..(b + 1) * len / buckets {
-            if pts[i].1 < pts[mn_i].1 {
-                mn_i = i;
+    if pts.len() <= 1 {
+        return;
+    }
+
+    debug_assert!(pts.windows(2).all(|w| w[0].0 <= w[1].0));
+    let (x0, width) = (pts[0].0, pts.last().unwrap().0 - pts[0].0);
+    let bucketed = width.is_finite() && width > 0.0;
+    let buckets = if bucketed {
+        (max_points / 2).min(width.ceil().max(1.0) as usize)
+    } else {
+        1
+    };
+    let (mut read, mut out) = (0, 0);
+
+    while read < pts.len() {
+        let start = read;
+        let bucket = if bucketed {
+            (((pts[start].0 - x0) / width) * buckets as f32)
+                .floor()
+                .clamp(0.0, (buckets - 1) as f32) as usize
+        } else {
+            0
+        };
+        let end_x = if bucketed {
+            x0 + width * (bucket + 1) as f32 / buckets as f32
+        } else {
+            f32::INFINITY
+        };
+        while read < pts.len() && pts[read].0 <= end_x {
+            read += 1;
+        }
+
+        let (mut mn, mut mx) = (start, start);
+        for i in start + 1..read {
+            if pts[i].1 < pts[mn].1 {
+                mn = i;
             }
-            if pts[i].1 > pts[mx_i].1 {
-                mx_i = i;
+            if pts[i].1 > pts[mx].1 {
+                mx = i;
             }
         }
-        for i in [mn_i.min(mx_i), mn_i.max(mx_i)] {
-            pts[out] = pts[i];
-            out += 1;
+        let push = |pts: &mut [(f32, f32)], out: &mut usize, p| {
+            if *out == 0 || pts[*out - 1] != p {
+                pts[*out] = p;
+                *out += 1;
+            }
+        };
+        if pts[read - 1].0 - pts[start].0 <= 1.0 {
+            let (x, lo, hi) = ((pts[start].0 + pts[read - 1].0) * 0.5, pts[mn].1, pts[mx].1);
+            push(pts, &mut out, (x, lo));
+            push(pts, &mut out, (x, hi));
+        } else {
+            for p in [pts[mn.min(mx)], pts[mn.max(mx)]] {
+                push(pts, &mut out, p);
+            }
         }
     }
     pts.truncate(out);

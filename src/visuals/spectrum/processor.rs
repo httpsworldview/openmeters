@@ -3,9 +3,10 @@
 
 use crate::dsp::AudioBlock;
 use crate::util::audio::{
-    DB_FLOOR, DEFAULT_SAMPLE_RATE, FrequencyScale, WindowKind, apply_window,
-    compute_fft_bin_normalization, copy_dc_removed_from_deque, mixdown_into_deque, power_to_db,
-    sample_rates_differ, sanitize_negative_db, sanitize_sample_rate, window_coefficients,
+    Channel, DB_FLOOR, DEFAULT_SAMPLE_RATE, FrequencyScale, WindowKind, apply_window,
+    compute_fft_bin_normalization, copy_dc_removed_from_deque, db_to_power,
+    power_to_db, project_interleaved_channel_into, sample_rates_differ, sanitize_negative_db,
+    sanitize_sample_rate, window_coefficients,
 };
 use realfft::{RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex32;
@@ -26,6 +27,10 @@ const DEFAULT_SPECTRUM_HOP_DIVISOR: usize = 8;
 const DEFAULT_SPECTRUM_FFT_SIZE: usize = 4096;
 const DEFAULT_SPECTRUM_EXP_FACTOR: f32 = 0.5;
 const DEFAULT_SPECTRUM_PEAK_DECAY: f32 = 12.0;
+const TRACE_COUNT: usize = 2;
+const WEIGHTING_COUNT: usize = 2;
+const A_WEIGHTED: usize = 0;
+const RAW: usize = 1;
 
 fn frequency_bins(sample_rate: f32, fft_size: usize) -> Vec<f32> {
     let bins = fft_size / 2 + 1;
@@ -33,11 +38,12 @@ fn frequency_bins(sample_rate: f32, fft_size: usize) -> Vec<f32> {
     (0..bins).map(|i| i as f32 * bin_hz).collect()
 }
 
+pub type SpectrumTraceSnapshot = [Vec<f32>; WEIGHTING_COUNT];
+
 #[derive(Debug, Clone, Default)]
 pub struct SpectrumSnapshot {
     pub frequency_bins: Vec<f32>,
-    pub magnitudes_db: Vec<f32>,
-    pub magnitudes_unweighted_db: Vec<f32>,
+    pub traces: [SpectrumTraceSnapshot; TRACE_COUNT],
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -47,6 +53,8 @@ pub struct SpectrumConfig {
     pub hop_size: usize,
     pub window: WindowKind,
     pub averaging: AveragingMode,
+    pub source: Channel,
+    pub secondary_source: Channel,
     pub frequency_scale: FrequencyScale,
     pub reverse_frequency: bool,
     pub show_grid: bool,
@@ -64,6 +72,8 @@ impl Default for SpectrumConfig {
             averaging: AveragingMode::Exponential {
                 factor: DEFAULT_SPECTRUM_EXP_FACTOR,
             },
+            source: Channel::Mid,
+            secondary_source: Channel::None,
             frequency_scale: FrequencyScale::Logarithmic,
             reverse_frequency: false,
             show_grid: true,
@@ -112,10 +122,10 @@ pub struct SpectrumProcessor {
     spectrum_buffer: Vec<Complex32>,
     scratch_buffer: Vec<Complex32>,
     bin_normalization: Vec<f32>,
-    pcm_buffer: VecDeque<f32>,
-    weighted: SpectrumLevelBuffers,
-    unweighted: SpectrumLevelBuffers,
-    a_weighting_db: Vec<f32>,
+    pcm_buffers: [VecDeque<f32>; TRACE_COUNT],
+    source_scratch: Vec<f32>,
+    levels: [SpectrumLevelBuffers; TRACE_COUNT],
+    a_weighting_gain: Vec<f32>,
     last_update_at: Option<Instant>,
 }
 
@@ -135,10 +145,10 @@ impl SpectrumProcessor {
             spectrum_buffer: Vec::new(),
             scratch_buffer: Vec::new(),
             bin_normalization: Vec::new(),
-            pcm_buffer: VecDeque::new(),
-            weighted: SpectrumLevelBuffers::default(),
-            unweighted: SpectrumLevelBuffers::default(),
-            a_weighting_db: Vec::new(),
+            pcm_buffers: [VecDeque::new(), VecDeque::new()],
+            source_scratch: Vec::new(),
+            levels: Default::default(),
+            a_weighting_gain: Vec::new(),
             last_update_at: None,
         };
         processor.rebuild_fft();
@@ -164,23 +174,32 @@ impl SpectrumProcessor {
     fn reset_buffers(&mut self) {
         self.snapshot.frequency_bins =
             frequency_bins(self.config.sample_rate, self.config.fft_size);
-        self.a_weighting_db = self
+        self.a_weighting_gain = self
             .snapshot
             .frequency_bins
             .iter()
-            .map(|&f| a_weight(f))
+            .map(|&f| db_to_power(a_weight(f)))
             .collect();
         self.reset_level_buffers();
-        self.pcm_buffer.clear();
+        self.pcm_buffers.iter_mut().for_each(VecDeque::clear);
     }
 
     fn reset_level_buffers(&mut self) {
         let bins = self.config.fft_size / 2 + 1;
         let floor = self.config.floor_db;
-        reset_to_floor(&mut self.snapshot.magnitudes_db, bins, floor);
-        reset_to_floor(&mut self.snapshot.magnitudes_unweighted_db, bins, floor);
-        self.weighted.reset(bins, floor);
-        self.unweighted.reset(bins, floor);
+        for trace in &mut self.snapshot.traces {
+            for db in trace { reset_to_floor(db, bins, floor); }
+        }
+        for buffers in &mut self.levels { buffers.reset(bins); }
+    }
+
+    fn sources(&self) -> [Channel; TRACE_COUNT] {
+        [self.config.source, self.config.secondary_source]
+    }
+
+    fn active_traces(&self) -> [bool; TRACE_COUNT] {
+        let [primary, secondary] = self.sources();
+        [primary != Channel::None, secondary != Channel::None && secondary != primary]
     }
 
     fn process_ready_windows(&mut self, timestamp: Instant) -> bool {
@@ -188,59 +207,71 @@ impl SpectrumProcessor {
         let hop = self.config.hop_size.max(1);
         let bins = fft_size / 2 + 1;
         let floor = self.config.floor_db;
+        let active = self.active_traces();
         let mut produced = false;
 
-        debug_assert_eq!(self.a_weighting_db.len(), bins);
+        debug_assert_eq!(self.a_weighting_gain.len(), bins);
+        if !active.iter().any(|&active| active) { return false; }
 
-        while self.pcm_buffer.len() >= fft_size {
-            copy_dc_removed_from_deque(&mut self.real_buffer[..fft_size], &self.pcm_buffer);
-            apply_window(&mut self.real_buffer, &self.window);
-
-            if self
-                .fft
-                .process_with_scratch(
-                    &mut self.real_buffer,
-                    &mut self.spectrum_buffer,
-                    &mut self.scratch_buffer,
-                )
-                .is_err()
-            {
-                return produced;
-            }
-
-            for (idx, ((complex, norm), &weight)) in self
-                .spectrum_buffer
-                .iter()
-                .zip(&self.bin_normalization)
-                .zip(&self.a_weighting_db)
-                .take(bins)
-                .enumerate()
-            {
-                let raw_magnitude = power_to_db(complex.norm_sqr() * *norm, floor);
-                self.unweighted.scratch[idx] = raw_magnitude;
-                let weight = if raw_magnitude > floor { weight } else { 0.0 };
-                self.weighted.scratch[idx] = (raw_magnitude + weight).max(floor);
-            }
-
+        while (0..TRACE_COUNT).all(|trace| !active[trace] || self.pcm_buffers[trace].len() >= fft_size) {
             let dt_seconds = self.last_update_at.map_or(0.0, |last| {
                 timestamp.saturating_duration_since(last).as_secs_f32()
             });
-            for (level, output) in [
-                (&mut self.weighted, &mut self.snapshot.magnitudes_db),
-                (&mut self.unweighted, &mut self.snapshot.magnitudes_unweighted_db),
-            ] {
-                level.update_output(self.config.averaging, output, dt_seconds, floor);
+            for (trace, &active) in active.iter().enumerate() {
+                if active && !self.process_trace_window(trace, dt_seconds, floor) {
+                    return produced;
+                }
             }
-
             self.last_update_at = Some(timestamp);
-
-            self.pcm_buffer.drain(..hop.min(self.pcm_buffer.len()));
-
+            for (trace, &active) in active.iter().enumerate() {
+                if active {
+                    let buf = &mut self.pcm_buffers[trace];
+                    buf.drain(..hop.min(buf.len()));
+                }
+            }
             produced = true;
         }
 
         produced
     }
+
+    fn process_trace_window(&mut self, trace: usize, dt_seconds: f32, floor: f32) -> bool {
+        let bins = self.config.fft_size / 2 + 1;
+        copy_dc_removed_from_deque(&mut self.real_buffer, &self.pcm_buffers[trace]);
+        apply_window(&mut self.real_buffer, &self.window);
+        if self
+            .fft
+            .process_with_scratch(
+                &mut self.real_buffer,
+                &mut self.spectrum_buffer,
+                &mut self.scratch_buffer,
+            )
+            .is_err()
+        {
+            return false;
+        }
+
+        let level = &mut self.levels[trace];
+        let snapshot = &mut self.snapshot.traces[trace];
+        for (idx, (complex, norm)) in self
+            .spectrum_buffer
+            .iter()
+            .zip(&self.bin_normalization)
+            .take(bins)
+            .enumerate()
+        {
+            level.scratch_power[idx] = complex.norm_sqr() * *norm;
+        }
+        level.update_outputs(
+            self.config.averaging,
+            snapshot,
+            &self.a_weighting_gain,
+            dt_seconds,
+            floor,
+        );
+        true
+    }
+
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<SpectrumSnapshot> {
         if block.is_empty() { return None; }
 
@@ -252,7 +283,7 @@ impl SpectrumProcessor {
         if self.real_buffer.len() != self.config.fft_size {
             self.rebuild_fft();
         }
-        mixdown_into_deque(&mut self.pcm_buffer, block.samples, block.channels);
+        self.push_sources(block);
 
         if self.process_ready_windows(block.timestamp) {
             Some(self.snapshot.clone())
@@ -260,13 +291,32 @@ impl SpectrumProcessor {
             None
         }
     }
+
+    fn push_sources(&mut self, block: &AudioBlock<'_>) {
+        let active = self.active_traces();
+        for (idx, source) in self.sources().into_iter().enumerate().filter(|(idx, _)| active[*idx]) {
+            if project_interleaved_channel_into(
+                &mut self.source_scratch,
+                block.samples,
+                block.channels,
+                block.frame_count(),
+                source,
+            ) {
+                self.pcm_buffers[idx].extend(&self.source_scratch);
+            }
+        }
+    }
+
     pub fn update_config(&mut self, mut config: SpectrumConfig) {
         let old = self.config;
         config.normalize();
         self.config = config;
         if old.fft_size != config.fft_size || old.window != config.window {
             self.rebuild_fft();
-        } else if sample_rates_differ(old.sample_rate, config.sample_rate) {
+        } else if sample_rates_differ(old.sample_rate, config.sample_rate)
+            || old.source != config.source
+            || old.secondary_source != config.secondary_source
+        {
             self.reset_buffers();
         } else if (old.floor_db - config.floor_db).abs() > f32::EPSILON {
             self.reset_level_buffers();
@@ -276,59 +326,55 @@ impl SpectrumProcessor {
 
 #[derive(Default)]
 struct SpectrumLevelBuffers {
-    averaged: Vec<f32>,
-    peak_hold: Vec<f32>,
-    scratch: Vec<f32>,
+    averaged_power: Vec<f32>,
+    peak_hold_power: Vec<f32>,
+    scratch_power: Vec<f32>,
 }
 
 impl SpectrumLevelBuffers {
-    fn reset(&mut self, bins: usize, floor: f32) {
-        reset_to_floor(&mut self.averaged, bins, floor);
-        reset_to_floor(&mut self.peak_hold, bins, floor);
-        reset_to_floor(&mut self.scratch, bins, floor);
+    fn reset(&mut self, bins: usize) {
+        reset_to_floor(&mut self.averaged_power, bins, 0.0);
+        reset_to_floor(&mut self.peak_hold_power, bins, 0.0);
+        reset_to_floor(&mut self.scratch_power, bins, 0.0);
     }
 
-    fn update_output(
+    fn update_outputs(
         &mut self,
         mode: AveragingMode,
-        output: &mut Vec<f32>,
+        outputs: &mut [Vec<f32>; WEIGHTING_COUNT],
+        weighting_gain: &[f32],
         dt_seconds: f32,
         floor: f32,
     ) {
-        let bins = self.scratch.len();
-        for buf in [&mut self.averaged, &mut self.peak_hold, &mut *output] {
-            if buf.len() != bins {
-                buf.resize(bins, floor);
+        let bins = self.scratch_power.len();
+        debug_assert_eq!(weighting_gain.len(), bins);
+        for output in outputs.iter_mut() {
+            if output.len() != bins {
+                output.resize(bins, floor);
             }
         }
-
-        match mode {
-            AveragingMode::None => {
-                for (out, &value) in output.iter_mut().zip(&self.scratch) {
-                    *out = value.max(floor);
-                }
-            }
+        let powers = match mode {
+            AveragingMode::None => &self.scratch_power,
             AveragingMode::Exponential { factor } => {
                 let alpha = factor.clamp(0.0, 0.9999);
-                for ((avg, out), &value) in self.averaged.iter_mut().zip(output).zip(&self.scratch)
-                {
-                    *avg = if *avg <= floor + f32::EPSILON {
-                        value
-                    } else {
-                        *avg * alpha + value * (1.0 - alpha)
-                    };
-                    *out = (*avg).max(floor);
+                for (avg, &power) in self.averaged_power.iter_mut().zip(&self.scratch_power) {
+                    *avg = if *avg <= 0.0 { power } else { *avg * alpha + power * (1.0 - alpha) };
                 }
+                &self.averaged_power
             }
             AveragingMode::PeakHold { decay_per_second } => {
-                let decay = decay_per_second.max(0.0) * dt_seconds;
-                for ((hold, out), &value) in
-                    self.peak_hold.iter_mut().zip(output).zip(&self.scratch)
-                {
-                    *hold = (*hold - decay).max(floor).max(value);
-                    *out = *hold;
+                let decay = db_to_power(-decay_per_second.max(0.0) * dt_seconds);
+                for (hold, &power) in self.peak_hold_power.iter_mut().zip(&self.scratch_power) {
+                    *hold = (*hold * decay).max(power);
                 }
+                &self.peak_hold_power
             }
+        };
+        let (weighted, raw) = outputs.split_at_mut(RAW);
+        let (weighted_out, raw_out) = (&mut weighted[A_WEIGHTED], &mut raw[0]);
+        for i in 0..bins {
+            raw_out[i] = power_to_db(powers[i], floor);
+            weighted_out[i] = power_to_db(powers[i] * weighting_gain[i], floor);
         }
     }
 }
@@ -396,26 +442,54 @@ mod tests {
     #[test]
     fn floor_change_reseeds_state_buffers_without_clearing_pending_audio() {
         let mut p = SpectrumProcessor::new(SpectrumConfig::default());
-        p.pcm_buffer.extend([0.25, -0.25]);
+        p.pcm_buffers[0].extend([0.25, -0.25]);
         let mut cfg = p.config();
         cfg.floor_db = -96.0;
 
         p.update_config(cfg);
 
-        assert_eq!(p.pcm_buffer.len(), 2);
-        for output in [
-            &p.snapshot.magnitudes_db,
-            &p.snapshot.magnitudes_unweighted_db,
-        ] {
+        assert_eq!(p.pcm_buffers[0].len(), 2);
+        for output in &p.snapshot.traces[0] {
             assert!(output.iter().all(|&v| v == cfg.floor_db));
         }
         let bins = cfg.fft_size / 2 + 1;
-        for buffers in [&p.weighted, &p.unweighted] {
-            assert_eq!(buffers.scratch.len(), bins);
-            assert!(buffers.scratch.iter().all(|&v| v == cfg.floor_db));
-            assert!(buffers.averaged.iter().all(|&v| v == cfg.floor_db));
-            assert!(buffers.peak_hold.iter().all(|&v| v == cfg.floor_db));
+        for buffers in &p.levels {
+            assert_eq!(buffers.scratch_power.len(), bins);
+            assert!(buffers.scratch_power.iter().all(|&v| v == 0.0));
+            assert!(buffers.averaged_power.iter().all(|&v| v == 0.0));
+            assert!(buffers.peak_hold_power.iter().all(|&v| v == 0.0));
         }
+    }
+
+    #[test]
+    fn configured_sources_are_projected_before_fft() {
+        let mut p = SpectrumProcessor::new(SpectrumConfig {
+            fft_size: 8,
+            source: Channel::Left,
+            secondary_source: Channel::Side,
+            ..Default::default()
+        });
+        let samples = [1.0, 0.0, 0.0, 1.0];
+        p.process_block(&AudioBlock::new(&samples, 2, p.config.sample_rate, Instant::now()));
+
+        assert_eq!(p.pcm_buffers[0].iter().copied().collect::<Vec<_>>(), [1.0, 0.0]);
+        assert_eq!(p.pcm_buffers[1].iter().copied().collect::<Vec<_>>(), [0.5, -0.5]);
+    }
+
+    #[test]
+    fn secondary_source_can_drive_processing_without_primary() {
+        let mut p = SpectrumProcessor::new(SpectrumConfig {
+            fft_size: 8,
+            hop_size: 8,
+            source: Channel::None,
+            secondary_source: Channel::Left,
+            ..Default::default()
+        });
+        let samples = vec![0.0; 8];
+
+        let snap = p.process_block(&AudioBlock::new(&samples, 1, p.config.sample_rate, Instant::now()));
+
+        assert!(snap.is_some());
     }
 
     #[test]
@@ -432,14 +506,14 @@ mod tests {
 
         let cfg = p.config();
         let bins = cfg.fft_size / 2 + 1;
-        for buffers in [&p.weighted, &p.unweighted] {
-            assert_eq!(buffers.scratch.len(), bins);
+        for buffers in &p.levels {
+            assert_eq!(buffers.scratch_power.len(), bins);
         }
 
         let samples = vec![0.0; cfg.fft_size];
         let lengths = p
             .process_block(&AudioBlock::new(&samples, 1, cfg.sample_rate, Instant::now()))
-            .map(|s| (s.magnitudes_db.len(), s.magnitudes_unweighted_db.len()));
+            .map(|s| (s.traces[0][A_WEIGHTED].len(), s.traces[0][RAW].len()));
         assert_eq!(lengths, Some((bins, bins)));
     }
 

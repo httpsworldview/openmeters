@@ -77,6 +77,7 @@ open an issue or pull request.
   - Adjustable color map, stop positions, and stop spreads.
 - **Spectrum analyzer**
   - A multitude of window types, lengths, and hop sizes.
+  - Selectable primary and secondary source: left, right, mid, side, or none.
   - Raw or IEC 61672-1 A-weighted display.
   - Peak label with frequency, note, and level.
   - No averaging, exponential averaging, or peak hold.

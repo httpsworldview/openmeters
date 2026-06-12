@@ -192,21 +192,21 @@ visuals! {
         apply(p, s, set) { visuals!(@apply_config p, set); let cfg = p.config(); let mut st = s.borrow_mut();
             visuals!(@apply_palette st, set, &palettes::spectrum::COLORS);
             let style = st.style_mut(); style.frequency_scale = set.frequency_scale;
-            style.reverse_frequency = set.reverse_frequency; style.smoothing_radius = set.smoothing_radius;
-            style.smoothing_passes = set.smoothing_passes; style.highlight_threshold = set.highlight_threshold;
+            style.source = set.source; style.reverse_frequency = set.reverse_frequency;
+            style.highlight_threshold = set.highlight_threshold;
             style.display_mode = set.display_mode; style.weighting_mode = set.weighting_mode;
-            style.min_db = cfg.floor_db; style.show_secondary_line = set.show_secondary_line;
+            style.secondary_weighting_mode = set.secondary_weighting_mode;
+            style.secondary_source = set.secondary_source;
+            style.min_db = cfg.floor_db;
             style.bar_count = set.bar_count; style.bar_gap = set.bar_gap; style.show_grid = set.show_grid;
             st.update_show_peak_label(set.show_peak_label); };
         export(p, s) { let st = s.borrow(); let style = st.style(); let cfg = p.config();
             let mut out = settings_cfg::SpectrumSettings::from_config(&cfg);
             out.palette = visuals!(@export_palette &style.spectrum_palette, &palettes::spectrum::COLORS);
-            out.smoothing_radius = style.smoothing_radius;
-            out.smoothing_passes = style.smoothing_passes;
             out.highlight_threshold = style.highlight_threshold;
             out.display_mode = style.display_mode;
             out.weighting_mode = style.weighting_mode;
-            out.show_secondary_line = style.show_secondary_line;
+            out.secondary_weighting_mode = style.secondary_weighting_mode;
             out.bar_count = style.bar_count; out.bar_gap = style.bar_gap; out };
 
     Stereometer(150.0, 220.0, 100.0) =>

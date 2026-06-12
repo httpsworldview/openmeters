@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::processor::SpectrumSnapshot;
-use super::render::{MIN_BAR_COUNT, SpectrumParams, SpectrumPeakParams, SpectrumPrimitive};
+use super::processor::{SpectrumSnapshot, SpectrumTraceSnapshot};
+use super::render::{SpectrumParams, SpectrumPeakParams, SpectrumPrimitive};
 use crate::persistence::settings::SpectrumSettings;
 use crate::visuals::options::{SpectrumDisplayMode, SpectrumWeightingMode};
 use crate::util::audio::musical::NoteInfo;
-use crate::util::audio::{FrequencyScale, fmt_freq, lerp};
+use crate::util::audio::{Channel, FrequencyScale, fmt_freq, lerp};
 use crate::util::color::{color_to_rgba, with_alpha};
 use crate::visuals::palettes;
 use crate::visuals::render::common::{
@@ -19,9 +19,7 @@ use std::sync::{Arc, LazyLock};
 
 const EPSILON: f32 = 1e-6;
 const MIN_FREQUENCY: f32 = 20.0;
-const MAX_FREQUENCY: f32 = 20_000.0;
 const MAX_DB: f32 = 0.0;
-const SPECTRUM_RESOLUTION: usize = 1024;
 const LINE_THICKNESS: f32 = 1.0;
 const SECONDARY_LINE_THICKNESS: f32 = 0.75;
 const GRID_LABEL_SIZE: f32 = 10.0;
@@ -39,17 +37,17 @@ static GRID_LABEL_SLOT: LazyLock<Size> = LazyLock::new(|| {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct SpectrumStyle {
     pub min_db: f32,
-    pub smoothing_radius: usize,
-    pub smoothing_passes: usize,
     pub highlight_threshold: f32,
     pub spectrum_palette: [Color; 6],
     pub frequency_scale: FrequencyScale,
+    pub source: Channel,
     pub reverse_frequency: bool,
     pub show_grid: bool,
     pub show_peak_label: bool,
     pub display_mode: SpectrumDisplayMode,
     pub weighting_mode: SpectrumWeightingMode,
-    pub show_secondary_line: bool,
+    pub secondary_weighting_mode: SpectrumWeightingMode,
+    pub secondary_source: Channel,
     pub bar_count: usize,
     pub bar_gap: f32,
 }
@@ -59,17 +57,17 @@ impl Default for SpectrumStyle {
         let defaults = SpectrumSettings::default();
         Self {
             min_db: defaults.floor_db,
-            smoothing_radius: defaults.smoothing_radius,
-            smoothing_passes: defaults.smoothing_passes,
             highlight_threshold: defaults.highlight_threshold,
             spectrum_palette: palettes::spectrum::COLORS,
             frequency_scale: defaults.frequency_scale,
+            source: defaults.source,
             reverse_frequency: defaults.reverse_frequency,
             show_grid: defaults.show_grid,
             show_peak_label: defaults.show_peak_label,
             display_mode: defaults.display_mode,
             weighting_mode: defaults.weighting_mode,
-            show_secondary_line: defaults.show_secondary_line,
+            secondary_weighting_mode: defaults.secondary_weighting_mode,
+            secondary_source: defaults.secondary_source,
             bar_count: defaults.bar_count,
             bar_gap: defaults.bar_gap,
         }
@@ -96,24 +94,22 @@ struct PeakUpdate {
 #[derive(Debug, Clone)]
 pub(crate) struct SpectrumState {
     style: SpectrumStyle,
-    weighted: Arc<[[f32; 2]]>,
-    unweighted: Arc<[[f32; 2]]>,
+    primary: Arc<[[f32; 2]]>,
+    secondary: Arc<[[f32; 2]]>,
     key: u64,
     peak: Option<PeakLabel>,
     effective_range: Option<(f32, f32)>,
-    scratch: Vec<f32>,
 }
 
 impl SpectrumState {
     pub fn new() -> Self {
         Self {
             style: SpectrumStyle::default(),
-            weighted: Arc::default(),
-            unweighted: Arc::default(),
+            primary: Arc::default(),
+            secondary: Arc::default(),
             key: crate::visuals::next_key(),
             peak: None,
             effective_range: None,
-            scratch: Vec::new(),
         }
     }
 
@@ -137,75 +133,67 @@ impl SpectrumState {
 
     pub fn apply_snapshot(&mut self, snap: SpectrumSnapshot) {
         let bins = snap.frequency_bins.len();
+        let (primary, secondary) = (primary_trace(&self.style), secondary_trace(&self.style));
         if bins == 0
-            || snap.magnitudes_db.len() != bins
-            || snap.magnitudes_unweighted_db.len() != bins
+            || (primary.is_none() && secondary.is_none())
+            || [primary, secondary]
+                .into_iter()
+                .flatten()
+                .any(|idx| snap.traces[idx].iter().any(|buf| buf.len() != bins))
         {
             self.clear_visuals();
             return;
         }
-        let nyq = snap.frequency_bins[bins - 1];
-        let (min_f, mut max_f) = (MIN_FREQUENCY, MAX_FREQUENCY.min(nyq));
-        if max_f <= min_f {
-            max_f = nyq.max(min_f * 1.02);
-        }
-        if max_f <= min_f {
-            self.clear_visuals();
-            return;
-        }
+        let min_f = MIN_FREQUENCY;
+        let max_f = snap.frequency_bins[bins - 1].max(min_f * 1.02);
+        let bins = snap.frequency_bins.as_slice();
 
-        let res = SPECTRUM_RESOLUTION;
-        let (mut w, mut u) = build_points(&self.style, res, min_f, max_f, &snap);
-
-        if self.style.smoothing_radius > 0 && self.style.smoothing_passes > 0 {
-            let (r, p) = (self.style.smoothing_radius, self.style.smoothing_passes);
-            smooth(&mut w, r, p, &mut self.scratch);
-            smooth(&mut u, r, p, &mut self.scratch);
-            self.scratch.shrink_to(res);
-        } else {
-            self.scratch = Vec::new();
-        }
-        if self.style.reverse_frequency {
-            for buf in [&mut w, &mut u] {
-                buf.reverse();
-                reindex(&mut buf[..]);
-            }
-        }
-
-        let primary = match self.style.weighting_mode {
-            SpectrumWeightingMode::AWeighted => w.as_slice(),
-            SpectrumWeightingMode::Raw => u.as_slice(),
+        let points = |idx, mode| {
+            build_single_points(
+                &self.style,
+                min_f,
+                max_f,
+                bins,
+                trace_db(&snap.traces[idx], mode),
+            )
         };
-        let pk = self
-            .style
-            .show_peak_label
-            .then(|| self.build_peak(primary, min_f, max_f))
-            .flatten();
+        let primary_points = primary
+            .map(|idx| points(idx, self.style.weighting_mode))
+            .unwrap_or_default();
+        let secondary_points = secondary
+            .map(|idx| points(idx, self.style.secondary_weighting_mode))
+            .unwrap_or_default();
+        let pk = primary
+            .filter(|_| self.style.show_peak_label)
+            .and_then(|idx| self.build_peak(bins, trace_db(&snap.traces[idx], self.style.weighting_mode), min_f, max_f));
 
-        self.weighted = Arc::from(w);
-        self.unweighted = Arc::from(u);
+        self.primary = Arc::from(primary_points);
+        self.secondary = Arc::from(secondary_points);
         self.effective_range = Some((min_f, max_f));
         self.fade_peak(pk);
     }
 
     fn clear_visuals(&mut self) {
-        (self.weighted, self.unweighted) = (Arc::default(), Arc::default());
+        (self.primary, self.secondary) = (Arc::default(), Arc::default());
         self.effective_range = None;
         self.peak = None;
     }
 
-    fn build_peak(&self, pts: &[[f32; 2]], min_f: f32, max_f: f32) -> Option<PeakUpdate> {
-        let [x, y] = visible_peak(pts, &self.style).filter(|p| p[1] >= 0.08)?;
-        let t = if self.style.reverse_frequency {
-            1.0 - x
-        } else {
-            x
-        }
-        .clamp(0.0, 1.0);
-        let f = self.style.frequency_scale.freq_at(min_f, max_f, t);
-        if !f.is_finite() { return None; }
-        let pos = [x.clamp(0.0, 1.0), y.clamp(0.0, 1.0)];
-        let m = lerp(self.style.min_db, MAX_DB, pos[1]);
+    fn build_peak(
+        &self,
+        bins: &[f32],
+        db: &[f32],
+        min_f: f32,
+        max_f: f32,
+    ) -> Option<PeakUpdate> {
+        let bin = peak_bin(bins, db, min_f, max_f)?;
+        let (f, m) = interpolated_peak(bins, db, bin)?;
+        let t = self.style.frequency_scale.pos_of(min_f, max_f, f);
+        if !t.is_finite() || !m.is_finite() { return None; }
+        let x = if self.style.reverse_frequency { 1.0 - t } else { t }.clamp(0.0, 1.0);
+        let y = ((m - self.style.min_db) / (MAX_DB - self.style.min_db).max(EPSILON))
+            .clamp(0.0, 1.0);
+        if y < 0.08 { return None; }
         let unit = match self.style.weighting_mode {
             SpectrumWeightingMode::AWeighted => "dBFS(A)",
             SpectrumWeightingMode::Raw => "dBFS",
@@ -217,8 +205,8 @@ impl SpectrumState {
         };
         Some(PeakUpdate {
             text,
-            label_pos: pos,
-            marker_pos: pos,
+            label_pos: [x, y],
+            marker_pos: [x, y],
         })
     }
 
@@ -257,7 +245,9 @@ impl SpectrumState {
     }
 
     pub fn peak(&self) -> Option<&PeakLabel> {
-        self.peak.as_ref().filter(|_| self.style.show_peak_label)
+        self.peak.as_ref().filter(|_| {
+            self.style.show_peak_label && self.style.source != Channel::None && self.primary.len() >= 2
+        })
     }
 
     fn visual_params(
@@ -266,20 +256,28 @@ impl SpectrumState {
         theme: &iced::Theme,
         peak_layout: Option<PeakLayout>,
     ) -> Option<SpectrumParams> {
-        if self.weighted.len() < 2 { return None; }
+        let has_primary = self.style.source != Channel::None && self.primary.len() >= 2;
+        let has_secondary = self.style.secondary_source != Channel::None && self.secondary.len() >= 2;
+        if !has_primary && !has_secondary { return None; }
         let pal = theme.extended_palette();
 
-        let (primary, secondary) = match self.style.weighting_mode {
-            SpectrumWeightingMode::AWeighted => (&self.weighted, &self.unweighted),
-            SpectrumWeightingMode::Raw => (&self.unweighted, &self.weighted),
+        let visible = |show: bool, points: &Arc<[[f32; 2]]>| {
+            if show { Arc::clone(points) } else { Arc::default() }
         };
         let peak = self.peak();
         let accent = self.style.spectrum_palette[5];
+        let (mut primary, mut secondary) = (
+            visible(has_primary, &self.primary),
+            visible(has_secondary, &self.secondary),
+        );
+        if self.style.display_mode == SpectrumDisplayMode::Bar && primary.is_empty() {
+            std::mem::swap(&mut primary, &mut secondary);
+        }
 
         Some(SpectrumParams {
             bounds,
-            normalized_points: Arc::clone(primary),
-            secondary_points: Arc::clone(secondary),
+            normalized_points: primary,
+            secondary_points: secondary,
             key: self.key,
             line_color: color_to_rgba(with_alpha(pal.background.base.text, 0.92)),
             line_width: LINE_THICKNESS,
@@ -288,7 +286,6 @@ impl SpectrumState {
             highlight_threshold: self.style.highlight_threshold,
             spectrum_palette: self.style.spectrum_palette.map(color_to_rgba),
             display_mode: self.style.display_mode,
-            show_secondary_line: self.style.show_secondary_line,
             bar_count: self.style.bar_count,
             bar_gap: self.style.bar_gap,
             peak: peak.map(|p| SpectrumPeakParams {
@@ -319,94 +316,132 @@ crate::visuals::visualization_widget!(Spectrum, SpectrumState, |this, r, th, b| 
     }
 });
 
-fn interp_at(bins: &[f32], mags: &[f32], t: f32, i: usize) -> f32 {
+fn value_at(bins: &[f32], mags: &[f32], f: f32) -> f32 {
+    let i = bins.partition_point(|&bin| bin < f);
     if i == 0 { return mags[0]; }
     if i >= bins.len() { return mags[bins.len() - 1]; }
     lerp(
         mags[i - 1],
         mags[i],
-        (t - bins[i - 1]) / (bins[i] - bins[i - 1]).max(EPSILON),
+        (f - bins[i - 1]) / (bins[i] - bins[i - 1]).max(EPSILON),
     )
 }
 
-fn visible_peak(pts: &[[f32; 2]], style: &SpectrumStyle) -> Option<[f32; 2]> {
-    match style.display_mode {
-        SpectrumDisplayMode::Line => max_finite_point(pts.iter().copied()),
-        SpectrumDisplayMode::Bar => {
-            let bars = style.bar_count.max(MIN_BAR_COUNT);
-            max_finite_point((0..bars).map(|i| {
-                let t0 = i as f32 / bars as f32;
-                let t1 = (i + 1) as f32 / bars as f32;
-                [(t0 + t1) * 0.5, super::render::sample_max(pts, t0, t1)]
-            }))
+fn peak_bin(bins: &[f32], db: &[f32], min_f: f32, max_f: f32) -> Option<usize> {
+    (1..bins.len().saturating_sub(1))
+        .filter(|&i| (min_f..=max_f).contains(&bins[i]) && db[i].is_finite())
+        .max_by(|&a, &b| db[a].total_cmp(&db[b]))
+}
+
+fn interpolated_peak(bins: &[f32], db: &[f32], bin: usize) -> Option<(f32, f32)> {
+    let next = bin.checked_add(1)?;
+    if bins.len() != db.len() || bin == 0 || next >= bins.len() { return None; }
+    let bin_hz = bins[1] - bins[0];
+    let (center_freq, center) = (bins[bin], db[bin]);
+    if !bin_hz.is_finite()
+        || bin_hz <= 0.0
+        || !center_freq.is_finite()
+        || !center.is_finite()
+    {
+        return None;
+    }
+
+    let (left, right) = (db[bin - 1], db[next]);
+    let offset = if left.is_finite() && right.is_finite() {
+        let denom = left - 2.0 * center + right;
+        if denom < -EPSILON {
+            (0.5 * (left - right) / denom).clamp(-0.5, 0.5)
+        } else {
+            0.0
         }
+    } else {
+        0.0
+    };
+    let level = if offset == 0.0 {
+        center
+    } else {
+        (center - 0.25 * (left - right) * offset).max(center)
+    };
+    Some(((center_freq + offset * bin_hz).max(0.0), level))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn secondary_trace_can_render_without_primary_source() {
+        let trace = [vec![-20.0; 3], vec![-20.0; 3]];
+        let mut state = SpectrumState::new();
+        state.style.source = Channel::None;
+        state.style.secondary_source = Channel::Left;
+
+        state.apply_snapshot(SpectrumSnapshot {
+            frequency_bins: vec![0.0, 20.0, 40.0],
+            traces: [SpectrumTraceSnapshot::default(), trace],
+        });
+
+        assert!(state.primary.is_empty());
+        assert!(state.secondary.len() >= 2);
+        assert!(state.peak().is_none());
     }
 }
 
-fn max_finite_point(points: impl Iterator<Item = [f32; 2]>) -> Option<[f32; 2]> {
-    points
-        .filter(|p| p[0].is_finite() && p[1].is_finite())
-        .max_by(|a, b| a[1].total_cmp(&b[1]))
+fn primary_trace(style: &SpectrumStyle) -> Option<usize> {
+    (style.source != Channel::None).then_some(0)
 }
 
-fn build_points(
+fn secondary_trace(style: &SpectrumStyle) -> Option<usize> {
+    match (style.source, style.secondary_source) {
+        (_, Channel::None) => None,
+        (primary, secondary) if primary == secondary => Some(0),
+        _ => Some(1),
+    }
+}
+
+fn weighting_slot(mode: SpectrumWeightingMode) -> usize {
+    match mode {
+        SpectrumWeightingMode::AWeighted => 0,
+        SpectrumWeightingMode::Raw => 1,
+    }
+}
+
+fn trace_db(trace: &SpectrumTraceSnapshot, mode: SpectrumWeightingMode) -> &[f32] {
+    &trace[weighting_slot(mode)]
+}
+
+fn build_single_points(
     style: &SpectrumStyle,
-    res: usize,
     min_f: f32,
     max_f: f32,
-    snap: &SpectrumSnapshot,
-) -> (Vec<[f32; 2]>, Vec<[f32; 2]>) {
-    let (bins, db, raw) = (
-        snap.frequency_bins.as_slice(),
-        snap.magnitudes_db.as_slice(),
-        snap.magnitudes_unweighted_db.as_slice(),
-    );
+    bins: &[f32],
+    db: &[f32],
+) -> Vec<[f32; 2]> {
     let dr = (MAX_DB - style.min_db).max(EPSILON);
-    let denom = res.saturating_sub(1).max(1) as f32;
     let y = |m: f32| ((m - style.min_db) / dr).clamp(0.0, 1.0);
-    let (mut weighted, mut unweighted) = (Vec::with_capacity(res), Vec::with_capacity(res));
-    let mut bin = 0;
-
-    for i in 0..res {
-        let t = i as f32 / denom;
-        let f = style.frequency_scale.freq_at(min_f, max_f, t);
-        while bin < bins.len() && bins[bin] < f {
-            bin += 1;
+    let x = |f: f32| {
+        let x = style.frequency_scale.pos_of(min_f, max_f, f).clamp(0.0, 1.0);
+        if style.reverse_frequency { 1.0 - x } else { x }
+    };
+    let mut out = Vec::with_capacity(bins.len() + 2);
+    let mut push = |f: f32, m: f32| {
+        let x = x(f);
+        if x.is_finite() {
+            out.push([x, y(m)]);
         }
-        weighted.push([t, y(interp_at(bins, db, f, bin))]);
-        unweighted.push([t, y(interp_at(bins, raw, f, bin))]);
-    }
+    };
 
-    (weighted, unweighted)
-}
-
-fn smooth(pts: &mut [[f32; 2]], r: usize, passes: usize, scratch: &mut Vec<f32>) {
-    if r == 0 || passes == 0 || pts.len() < 3 {
-        return;
-    }
-    scratch.resize(pts.len(), 0.0);
-    for _ in 0..passes {
-        for (d, p) in scratch.iter_mut().zip(pts.iter()) {
-            *d = p[1];
-        }
-        for (i, p) in pts.iter_mut().enumerate() {
-            let (s, e) = (i.saturating_sub(r), (i + r + 1).min(scratch.len()));
-            let (mut sum, mut wsum) = (0.0f32, 0.0f32);
-            for (j, &v) in scratch[s..e].iter().enumerate() {
-                let w = (r - (s + j).abs_diff(i) + 1) as f32;
-                sum += v * w;
-                wsum += w;
-            }
-            p[1] = sum / wsum;
+    push(min_f, value_at(bins, db, min_f));
+    for (&f, &m) in bins.iter().zip(db) {
+        if f > min_f && f < max_f {
+            push(f, m);
         }
     }
-}
-
-fn reindex(pts: &mut [[f32; 2]]) {
-    let denom = pts.len().saturating_sub(1).max(1) as f32;
-    for (i, p) in pts.iter_mut().enumerate() {
-        p[0] = i as f32 / denom;
+    push(max_f, value_at(bins, db, max_f));
+    if style.reverse_frequency {
+        out.reverse();
     }
+    out
 }
 
 fn draw_grid(
