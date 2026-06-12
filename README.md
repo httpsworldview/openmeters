@@ -131,6 +131,17 @@ Releases](https://github.com/httpsworldview/openmeters/releases).
 Download the latest `.rpm` package from [GitHub
 Releases](https://github.com/httpsworldview/openmeters/releases).
 
+### NixOS
+
+OpenMeters is available as a flake thanks to
+[@magnetophon](https://github.com/magnetophon) and
+[@bitbloxhub](https://github.com/bitbloxhub). Add it to your nix
+config with:
+
+```bas
+nix profile add nixpkgs#openmeters
+```
+
 ### Other distributions
 
 Tarballs are available under tagged releases, or you can build
