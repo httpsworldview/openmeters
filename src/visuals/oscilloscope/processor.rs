@@ -3,7 +3,7 @@
 
 use crate::dsp::AudioBlock;
 use crate::util::audio::{self, Channel, DEFAULT_SAMPLE_RATE};
-use realfft::{RealFftPlanner, RealToComplex};
+use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -70,39 +70,49 @@ struct PeriodEstimate {
     confidence: f32,
 }
 
+struct PeriodFft {
+    forward: Arc<dyn RealToComplex<f32>>,
+    inverse: Arc<dyn ComplexToReal<f32>>,
+    input: Vec<f32>,
+    spectrum: Vec<Complex<f32>>,
+    output: Vec<f32>,
+    scratch: Vec<Complex<f32>>,
+}
+
+impl PeriodFft {
+    fn new(size: usize) -> Self {
+        let mut planner = RealFftPlanner::new();
+        let forward = planner.plan_fft_forward(size);
+        let inverse = planner.plan_fft_inverse(size);
+        let mut scratch = forward.make_scratch_vec();
+        let inv_scratch = inverse.make_scratch_vec();
+        if inv_scratch.len() > scratch.len() {
+            scratch = inv_scratch;
+        }
+        Self {
+            input: forward.make_input_vec(),
+            spectrum: forward.make_output_vec(),
+            output: inverse.make_output_vec(),
+            scratch,
+            forward,
+            inverse,
+        }
+    }
+}
+
 #[derive(Default)]
 struct PeriodEstimator {
     periodicity: Vec<f32>,
     energy_prefix: Vec<f32>,
     last_peak: f32,
-    fft_size: usize,
-    fft_forward: Option<Arc<dyn RealToComplex<f32>>>,
-    fft_inverse: Option<Arc<dyn realfft::ComplexToReal<f32>>>,
-    fft_input: Vec<f32>,
-    fft_spectrum: Vec<Complex<f32>>,
-    fft_output: Vec<f32>,
-    fft_scratch: Vec<Complex<f32>>,
+    fft: Option<PeriodFft>,
 }
 
 impl PeriodEstimator {
     fn rebuild_fft(&mut self, size: usize) {
-        if self.fft_size == size && self.fft_forward.is_some() {
-            return;
+        if self.fft.as_ref().is_none_or(|fft| fft.input.len() != size) {
+            self.fft = Some(PeriodFft::new(size));
         }
-        self.fft_size = size;
-        let mut planner = RealFftPlanner::new();
-        let forward = planner.plan_fft_forward(size);
-        let inverse = planner.plan_fft_inverse(size);
-        self.fft_input = forward.make_input_vec();
-        self.fft_spectrum = forward.make_output_vec();
-        self.fft_output = inverse.make_output_vec();
-        self.fft_scratch = forward.make_scratch_vec();
-        let inv_scratch = inverse.make_scratch_vec();
-        if inv_scratch.len() > self.fft_scratch.len() {
-            self.fft_scratch = inv_scratch;
-        }
-        self.fft_forward = Some(forward);
-        self.fft_inverse = Some(inverse);
     }
 
     fn estimate_period(&mut self, samples: &[f32], rate: f32) -> Option<PeriodEstimate> {
@@ -123,7 +133,7 @@ impl PeriodEstimator {
 
         let nsdf = &self.periodicity[..=max_period];
         let zero_crossing = (1..=max_period).find(|&tau| nsdf[tau] <= 0.0)?;
-        let first_tau = min_period.max(zero_crossing).max(1);
+        let first_tau = min_period.max(zero_crossing);
         if first_tau >= max_period { return None; }
 
         let is_candidate = |tau: &usize| {
@@ -148,47 +158,44 @@ impl PeriodEstimator {
     fn compute_periodicity(&mut self, samples: &[f32], mean: f32, max_lag: usize) -> Option<()> {
         let fft_size = (samples.len() * 2).next_power_of_two();
         self.rebuild_fft(fft_size);
+        let Self { periodicity, energy_prefix, fft, .. } = self;
+        let fft = fft.as_mut()?;
 
-        let (Some(forward), Some(inverse)) = (self.fft_forward.as_ref(), self.fft_inverse.as_ref())
-        else {
-            return None;
-        };
-
-        self.energy_prefix.resize(samples.len() + 1, 0.0);
-        self.energy_prefix[0] = 0.0;
-        for (i, (dst, &sample)) in self.fft_input[..samples.len()]
+        energy_prefix.resize(samples.len() + 1, 0.0);
+        energy_prefix[0] = 0.0;
+        for (i, (dst, &sample)) in fft.input[..samples.len()]
             .iter_mut()
             .zip(samples)
             .enumerate()
         {
             let centered = sample - mean;
             *dst = centered;
-            self.energy_prefix[i + 1] = centered.mul_add(centered, self.energy_prefix[i]);
+            energy_prefix[i + 1] = centered.mul_add(centered, energy_prefix[i]);
         }
-        self.fft_input[samples.len()..].fill(0.0);
+        fft.input[samples.len()..].fill(0.0);
 
-        forward
-            .process_with_scratch(&mut self.fft_input, &mut self.fft_spectrum, &mut self.fft_scratch)
+        fft.forward
+            .process_with_scratch(&mut fft.input, &mut fft.spectrum, &mut fft.scratch)
             .ok()?;
 
-        for bin in &mut self.fft_spectrum {
+        for bin in &mut fft.spectrum {
             *bin = Complex::new(bin.norm_sqr(), 0.0);
         }
 
-        inverse
-            .process_with_scratch(&mut self.fft_spectrum, &mut self.fft_output, &mut self.fft_scratch)
+        fft.inverse
+            .process_with_scratch(&mut fft.spectrum, &mut fft.output, &mut fft.scratch)
             .ok()?;
 
         let norm = 1.0 / fft_size as f32;
-        self.periodicity.resize(max_lag + 1, 0.0);
-        let total_energy = self.energy_prefix[samples.len()];
+        periodicity.resize(max_lag + 1, 0.0);
+        let total_energy = energy_prefix[samples.len()];
         if total_energy <= f32::EPSILON { return None; }
         for tau in 0..=max_lag {
-            let left_energy = self.energy_prefix[samples.len() - tau];
-            let right_energy = total_energy - self.energy_prefix[tau];
+            let left_energy = energy_prefix[samples.len() - tau];
+            let right_energy = total_energy - energy_prefix[tau];
             let denom = left_energy + right_energy;
-            self.periodicity[tau] = if denom > f32::EPSILON {
-                2.0 * self.fft_output[tau] * norm / denom
+            periodicity[tau] = if denom > f32::EPSILON {
+                2.0 * fft.output[tau] * norm / denom
             } else {
                 0.0
             };
@@ -269,7 +276,7 @@ fn sample_linear_zero(data: &[f32], pos: f32) -> f32 {
 
 fn retune_reference(reference: &[f32], old_period: f32, new_period: f32, len: usize) -> Vec<f32> {
     let ratio = new_period / old_period;
-    if len == 0 || !ratio.is_finite() || ratio <= f32::EPSILON {
+    if !ratio.is_finite() || ratio <= f32::EPSILON {
         return vec![0.0; len];
     }
 
@@ -309,9 +316,6 @@ impl StableTrigger {
         self.missed_periods = 0;
         self.reference.clear();
         self.reference_period = None;
-        self.kernel.clear();
-        self.work.clear();
-        self.candidate.clear();
         self.mean = 0.0;
     }
 
@@ -561,16 +565,20 @@ pub struct OscilloscopeSnapshot {
     pub samples_per_channel: usize,
 }
 
+#[derive(Default)]
+struct TraceState {
+    buffer: Vec<f32>,
+    trigger: StableTrigger,
+}
+
 pub struct OscilloscopeProcessor {
     config: OscilloscopeConfig,
     snapshot: OscilloscopeSnapshot,
     epoch: u64,
     history: VecDeque<f32>,
     history_channels: Option<usize>,
-    trace_buffers: [Vec<f32>; TRACE_COUNT],
-    trigger_buffer: Vec<f32>,
-    stable_triggers: [StableTrigger; TRACE_COUNT],
-    source_trigger: StableTrigger,
+    traces: [TraceState; TRACE_COUNT],
+    source: TraceState,
 }
 
 impl OscilloscopeProcessor {
@@ -581,10 +589,8 @@ impl OscilloscopeProcessor {
             epoch: 0,
             history: VecDeque::new(),
             history_channels: None,
-            trace_buffers: std::array::from_fn(|_| Vec::new()),
-            trigger_buffer: Vec::new(),
-            stable_triggers: std::array::from_fn(|_| StableTrigger::default()),
-            source_trigger: StableTrigger::default(),
+            traces: std::array::from_fn(|_| TraceState::default()),
+            source: TraceState::default(),
         }
     }
 
@@ -592,15 +598,12 @@ impl OscilloscopeProcessor {
         self.config
     }
 
-    fn trace_channels(&self) -> [Channel; TRACE_COUNT] {
-        [self.config.channel_1, self.config.channel_2]
-    }
-
     #[cfg(test)]
     fn last_cycle_rate(&self) -> Option<f32> {
-        self.source_trigger
+        self.source
+            .trigger
             .period
-            .or_else(|| self.stable_triggers.iter().find_map(|trigger| trigger.period))
+            .or_else(|| self.traces.iter().find_map(|trace| trace.trigger.period))
             .map(|period| self.config.sample_rate / period)
     }
 
@@ -634,7 +637,7 @@ impl OscilloscopeProcessor {
                 stable_history_frames(max_period, num_cycles, self.config.sample_rate)
             }
         };
-        let trace_channels = self.trace_channels();
+        let trace_channels = [self.config.channel_1, self.config.channel_2];
         let trigger_source = self.config.trigger_source;
         let samples = &block.samples[..block.frame_count() * channel_count];
         audio::extend_interleaved_history(
@@ -648,29 +651,27 @@ impl OscilloscopeProcessor {
         let mode = self.config.trigger_mode;
         let sample_rate = self.config.sample_rate;
         let capture = |trace: &[f32], trigger: &mut StableTrigger| match mode {
-            TriggerMode::ZeroCrossing => {
-                zero_crossing_capture(trace, available, base_frames, max_period)
-            }
-            TriggerMode::Stable { num_cycles } => (available >= base_frames).then(|| {
+            TriggerMode::ZeroCrossing => zero_crossing_capture(trace, base_frames, max_period),
+            TriggerMode::Stable { num_cycles } => (trace.len() >= base_frames).then(|| {
                 trigger.capture(trace, sample_rate, probe_frames, base_frames, num_cycles)
             }),
         };
         let linked_capture = if audio::project_interleaved_channel_into(
-            &mut self.trigger_buffer,
+            &mut self.source.buffer,
             data,
             channel_count,
             available,
             trigger_source,
         ) {
-            capture(&self.trigger_buffer, &mut self.source_trigger)
+            capture(&self.source.buffer, &mut self.source.trigger)
         } else {
             None
         };
         let mut captures = [None; TRACE_COUNT];
 
-        for (slot, channel) in trace_channels.into_iter().enumerate() {
+        for (slot, (trace, channel)) in self.traces.iter_mut().zip(trace_channels).enumerate() {
             if !audio::project_interleaved_channel_into(
-                &mut self.trace_buffers[slot],
+                &mut trace.buffer,
                 data,
                 channel_count,
                 available,
@@ -679,12 +680,7 @@ impl OscilloscopeProcessor {
                 continue;
             }
 
-            captures[slot] = linked_capture.or_else(|| {
-                capture(
-                    &self.trace_buffers[slot],
-                    &mut self.stable_triggers[slot],
-                )
-            });
+            captures[slot] = linked_capture.or_else(|| capture(&trace.buffer, &mut trace.trigger));
         }
 
         if captures.iter().all(Option::is_none) { return None; }
@@ -696,12 +692,12 @@ impl OscilloscopeProcessor {
     fn clear_history(&mut self) {
         self.epoch = self.epoch.wrapping_add(1);
         self.history.clear();
-        self.trace_buffers.iter_mut().for_each(Vec::clear);
-        self.trigger_buffer.clear();
-        self.stable_triggers
-            .iter_mut()
-            .for_each(StableTrigger::unlock);
-        self.source_trigger.unlock();
+        self.traces.iter_mut().for_each(|trace| {
+            trace.buffer.clear();
+            trace.trigger.unlock();
+        });
+        self.source.buffer.clear();
+        self.source.trigger.unlock();
     }
 
     fn write_snapshot(&mut self, captures: &[Option<Capture>; TRACE_COUNT]) {
@@ -721,7 +717,7 @@ impl OscilloscopeProcessor {
             let Some(capture) = capture else { continue };
             if downsample_trace(
                 &mut self.snapshot.samples,
-                &self.trace_buffers[slot],
+                &self.traces[slot].buffer,
                 capture,
                 target,
             ) {
@@ -743,21 +739,16 @@ impl OscilloscopeProcessor {
 fn stable_history_frames(max_period: usize, cycles: usize, sample_rate: f32) -> usize {
     let max_period_f = max_period as f32;
     let max_kernel = trigger_kernel_len(max_period_f, sample_rate);
-    let max_tail = (max_period * cycles.max(1) + 1).max(max_kernel - max_kernel / 2);
+    let max_tail = (max_period * cycles.max(1) + 1).max(max_kernel.div_ceil(2));
     let max_search = (max_period_f * StableTuning::SEARCH_PERIODS).ceil() as usize;
     max_kernel / 2 + max_tail + max_search + 2
 }
 
-fn zero_crossing_capture(
-    samples: &[f32],
-    available: usize,
-    frames: usize,
-    search_range: usize,
-) -> Option<Capture> {
-    let frames = frames.min(available);
+fn zero_crossing_capture(samples: &[f32], frames: usize, search_range: usize) -> Option<Capture> {
+    let frames = frames.min(samples.len());
     if frames == 0 { return None; }
 
-    let end = available.saturating_sub(1);
+    let end = samples.len().saturating_sub(1);
     let right_lo = end.saturating_sub(search_range);
     let right = find_rising_zero_crossing(samples, (right_lo..=end).rev()).unwrap_or(end);
 
@@ -785,9 +776,7 @@ fn downsample_trace(output: &mut Vec<f32>, data: &[f32], capture: Capture, targe
     if !span.is_finite() || span <= 0.0 { return false; }
 
     let step = span / (target - 1) as f32;
-    for i in 0..target {
-        output.push(sample_linear_zero(data, start_offset + i as f32 * step));
-    }
+    output.extend((0..target).map(|i| sample_linear_zero(data, start_offset + i as f32 * step)));
     true
 }
 
