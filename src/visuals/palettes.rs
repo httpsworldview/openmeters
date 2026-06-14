@@ -7,7 +7,6 @@ use iced::Color;
 
 pub const BG_BASE: Color = hex(0x00, 0x00, 0x00, 0xFF);
 
-const POSITIONS_9: [f32; 9] = [0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0];
 const HEAT_RAMP: [Color; 5] = [
     hex(0x00, 0x00, 0x00, 0x00),
     hex(0x38, 0x00, 0xAD, 0xFF),
@@ -106,31 +105,14 @@ pub mod spectrum {
 }
 
 pub mod waveform {
-    use super::{Color, POSITIONS_9, hex};
-    pub const GRADIENT_STOPS: usize = 6;
-    pub const COLORS: [Color; 9] = [
-        hex(0x8B, 0x00, 0x00, 0xFF),
-        hex(0xFF, 0x42, 0x00, 0xFF),
-        hex(0xFF, 0x69, 0x00, 0xFF),
-        hex(0x4C, 0xFF, 0x2E, 0xFF),
-        hex(0x32, 0xCD, 0xFF, 0xFF),
-        hex(0x00, 0x00, 0xFF, 0xFF),
-        hex(0xE0, 0x40, 0xA0, 0xD9),
-        hex(0x33, 0xE6, 0x33, 0xD9),
-        hex(0x33, 0x66, 0xFF, 0xD9),
+    use super::{Color, hex};
+    pub const COLORS: [Color; 3] = [
+        hex(0xE0, 0x00, 0x30, 0xFF),
+        hex(0x33, 0xE6, 0x33, 0xFF),
+        hex(0x33, 0x66, 0xFF, 0xFF),
     ];
-    pub const LABELS: &[&str] = &[
-        "Sub-bass",
-        "->",
-        "->",
-        "->",
-        "->",
-        "Brilliance",
-        "Low Band",
-        "Mid Band",
-        "High Band",
-    ];
-    pub const DEFAULT_POSITIONS: [f32; COLORS.len()] = POSITIONS_9;
+    pub const LABELS: &[&str] = &["Low", "Mid", "High"];
+    pub const DEFAULT_POSITIONS: [f32; COLORS.len()] = [0.0, 0.5, 1.0];
 }
 
 pub mod oscilloscope {
@@ -141,7 +123,7 @@ pub mod oscilloscope {
 }
 
 pub mod stereometer {
-    use super::{Color, POSITIONS_9, hex};
+    use super::{Color, hex};
     pub const COLORS: [Color; 9] = [
         hex(0xFF, 0xFF, 0xFF, 0xFF),
         hex(0x1A, 0x1A, 0x1A, 0xFF),
@@ -164,7 +146,8 @@ pub mod stereometer {
         "High",
         "Grid",
     ];
-    pub const DEFAULT_POSITIONS: [f32; COLORS.len()] = POSITIONS_9;
+    pub const DEFAULT_POSITIONS: [f32; COLORS.len()] =
+        [0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0];
 }
 
 pub mod loudness {

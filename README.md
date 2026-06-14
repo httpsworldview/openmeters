@@ -95,7 +95,7 @@ open an issue or pull request.
   - Selectable left, right, mid/mono, side, or `none` channel lanes.
   - Adjustable scroll speed.
   - Optional low/mid/high band-level history overlay.
-  - Color by spectral centroid, amplitude, or a static color.
+  - Color by low/mid/high band balance, loudness, or a static color.
 
 ## Installation
 

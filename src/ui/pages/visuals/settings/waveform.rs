@@ -2,14 +2,13 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::palette::PaletteEditor;
-use super::widgets::{SliderRange, pick, set_if_changed, slide, toggle, update_f32_range};
+use super::widgets::{SliderRange, pick, set_if_changed, slide, update_f32_range};
 use crate::persistence::settings::WaveformSettings;
 use crate::util::audio::Channel;
-use crate::visuals::options::WaveformColorMode;
-use crate::visuals::palettes::waveform::GRADIENT_STOPS;
+use crate::visuals::options::{WaveformColorMode, WaveformHistoryMode};
 use crate::visuals::registry::VisualKind;
 use crate::visuals::waveform::processor::{
-    MAX_BAND_DB_FLOOR, MAX_SCROLL_SPEED, MIN_BAND_DB_FLOOR, MIN_SCROLL_SPEED, NUM_BANDS,
+    MAX_BAND_DB_FLOOR, MAX_SCROLL_SPEED, MIN_BAND_DB_FLOOR, MIN_SCROLL_SPEED,
 };
 use iced::Element;
 
@@ -27,15 +26,8 @@ const BAND_DB_FLOOR_RANGE: SliderRange =
 
 fn configure_palette_for_mode(palette: &mut PaletteEditor, mode: WaveformColorMode) {
     let (visible, labels) = match mode {
-        WaveformColorMode::Static => (
-            Some(
-                std::iter::once(0)
-                    .chain(GRADIENT_STOPS..GRADIENT_STOPS + NUM_BANDS)
-                    .collect(),
-            ),
-            vec![(0, "Color")],
-        ),
-        WaveformColorMode::Loudness => (None, vec![(0, "Quiet"), (5, "Loud")]),
+        WaveformColorMode::Static => (Some(vec![0]), vec![(0, "Color")]),
+        WaveformColorMode::Loudness => (None, vec![(0, "Quiet"), (1, "->"), (2, "Loud")]),
         WaveformColorMode::Frequency => (None, Vec::new()),
     };
     palette.set_visible_indices(visible);
@@ -52,21 +44,30 @@ settings_messages!(WaveformSettingsPane as pane, value {
         if changed { configure_palette_for_mode(&mut pane.palette, value); }
         changed
     };
-    ShowPeakHistory(bool) => set_if_changed(&mut pane.settings.show_peak_history, value);
+    HistoryMode(WaveformHistoryMode) => set_if_changed(&mut pane.settings.history_mode, value);
 });
 
 impl WaveformSettingsPane {
     fn view(&self) -> Element<'_, Message> {
         let s = &self.settings;
-        controls!(16.0;
+        let mut controls = controls!(16.0;
             slider!("Scroll speed", s.scroll_speed, SCROLL_SPEED_RANGE, Message::ScrollSpeed, "{:.0} px/s");
             pick("Channel 1", Channel::ALL, s.channel_1, Message::Channel1);
             pick("Channel 2", Channel::ALL, s.channel_2, Message::Channel2);
             pick("Color mode", WaveformColorMode::ALL, s.color_mode, Message::ColorMode);
-            toggle("Peak history", s.show_peak_history, Message::ShowPeakHistory);
-            slider!("Peak range", s.band_db_floor, BAND_DB_FLOOR_RANGE, Message::BandDbFloor, "{:.0} dB");
-            super::palette_section(&self.palette, Message::Palette);
-        )
-        .into()
+            pick("History", WaveformHistoryMode::ALL, s.history_mode, Message::HistoryMode);
+        );
+        if s.history_mode != WaveformHistoryMode::Off {
+            controls = controls.push(slider!(
+                "History floor",
+                s.band_db_floor,
+                BAND_DB_FLOOR_RANGE,
+                Message::BandDbFloor,
+                "{:.0} dB"
+            ));
+        }
+        controls
+            .push(super::palette_section(&self.palette, Message::Palette))
+            .into()
     }
 }

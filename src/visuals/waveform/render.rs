@@ -10,7 +10,7 @@ use crate::util::color::rgba_with_alpha;
 use crate::visuals::render::common::{
     ChannelLayout, ClipTransform, GeometryScratch, extend_filled_line, quad_vertices,
 };
-use crate::visuals::waveform::processor::NUM_BANDS;
+use crate::visuals::waveform::processor::{NUM_BANDS, WAVEFORM_SILENCE_AMPLITUDE};
 
 #[derive(Debug, Clone, Copy)]
 pub struct PreviewSample {
@@ -21,6 +21,7 @@ pub struct PreviewSample {
 
 const BAND_LINE_WIDTH: f32 = 1.5;
 const BAND_FILL_ALPHA: f32 = 0.15;
+const MIN_COLUMN_HEIGHT_PIXELS: f32 = 1.0;
 
 #[derive(Debug, Clone)]
 pub struct WaveformParams {
@@ -49,9 +50,27 @@ impl WaveformParams {
     }
 }
 
-fn normalize_sample(min: f32, max: f32) -> (f32, f32) {
+fn sample_y_span(center_y: f32, amplitude_scale: f32, min: f32, max: f32) -> Option<(f32, f32)> {
     let (lo, hi) = (min.min(max), min.max(max));
-    (lo.clamp(-1.0, 1.0), hi.clamp(-1.0, 1.0))
+    let (min, max) = (lo.clamp(-1.0, 1.0), hi.clamp(-1.0, 1.0));
+    if min.abs().max(max.abs()) < WAVEFORM_SILENCE_AMPLITUDE {
+        return None;
+    }
+
+    let (mut y0, mut y1) = (
+        center_y - max * amplitude_scale,
+        center_y - min * amplitude_scale,
+    );
+    if (y1 - y0).abs() < MIN_COLUMN_HEIGHT_PIXELS {
+        let mid = (y0 + y1) * 0.5;
+        y0 = mid - MIN_COLUMN_HEIGHT_PIXELS * 0.5;
+        y1 = mid + MIN_COLUMN_HEIGHT_PIXELS * 0.5;
+    }
+    Some((y0.min(y1), y0.max(y1)))
+}
+
+fn with_fill_alpha(color: [f32; 4], alpha: f32) -> [f32; 4] {
+    rgba_with_alpha(color, (color[3] * alpha).clamp(0.0, 1.0))
 }
 
 impl WaveformPrimitive {
@@ -103,16 +122,21 @@ impl WaveformPrimitive {
             for i in 0..columns {
                 let idx = ch * columns + i;
                 let x = column_x(i);
-                let (min, max) = normalize_sample(params.samples[idx][0], params.samples[idx][1]);
-                let color = rgba_with_alpha(params.colors[idx], params.fill_alpha);
-                vertices.extend(quad_vertices(
-                    x,
-                    center_y - max * layout.amplitude_scale,
-                    x + col_width,
-                    center_y - min * layout.amplitude_scale,
-                    clip,
-                    color,
-                ));
+                if let Some((y0, y1)) = sample_y_span(
+                    center_y,
+                    layout.amplitude_scale,
+                    params.samples[idx][0],
+                    params.samples[idx][1],
+                ) {
+                    vertices.extend(quad_vertices(
+                        x,
+                        y0,
+                        x + col_width,
+                        y1,
+                        clip,
+                        with_fill_alpha(params.colors[idx], params.fill_alpha),
+                    ));
+                }
             }
 
             if preview_active {
@@ -121,15 +145,18 @@ impl WaveformPrimitive {
                 let end_x = right_edge;
 
                 let ps = params.preview_samples[ch];
-                let (min, max) = normalize_sample(ps.min, ps.max);
-                vertices.extend(quad_vertices(
-                    start_x,
-                    center_y - max * layout.amplitude_scale,
-                    end_x,
-                    center_y - min * layout.amplitude_scale,
-                    clip,
-                    rgba_with_alpha(ps.color, params.fill_alpha),
-                ));
+                if let Some((y0, y1)) =
+                    sample_y_span(center_y, layout.amplitude_scale, ps.min, ps.max)
+                {
+                    vertices.extend(quad_vertices(
+                        start_x,
+                        y0,
+                        end_x,
+                        y1,
+                        clip,
+                        with_fill_alpha(ps.color, params.fill_alpha),
+                    ));
+                }
             }
 
             if !params.band_levels.is_empty()
@@ -142,7 +169,7 @@ impl WaveformPrimitive {
                 for band in 0..NUM_BANDS {
                     let band_base = (ch * NUM_BANDS + band) * columns;
                     let color = params.band_colors[band];
-                    let fill_color = rgba_with_alpha(color, BAND_FILL_ALPHA);
+                    let fill_color = with_fill_alpha(color, BAND_FILL_ALPHA);
 
                     pts.clear();
                     pts.extend((0..columns).map(|i| {

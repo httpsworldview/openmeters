@@ -10,13 +10,14 @@ use crate::util::audio::{Channel, FrequencyScale, WindowKind};
 use crate::visuals::options::{
     CorrelationMeterMode, CorrelationMeterSide, MeterMode, PianoRollOverlay, SpectrumDisplayMode,
     SpectrumWeightingMode, StereometerMode, StereometerScale, WaveformColorMode,
+    WaveformHistoryMode,
 };
 use crate::visuals::{
     oscilloscope::processor::{OscilloscopeConfig, TriggerMode},
     spectrogram::processor::SpectrogramConfig,
     spectrum::processor::{AveragingMode, SpectrumConfig},
     stereometer::processor::StereometerConfig,
-    waveform::processor::WaveformConfig,
+    waveform::processor::{DEFAULT_BAND_DB_FLOOR, WaveformConfig},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -195,11 +196,13 @@ visual_settings!(OscilloscopeSettings from OscilloscopeConfig {
 });
 
 visual_settings!(WaveformSettings from WaveformConfig {
-    scroll_speed: f32, band_db_floor: f32,
+    scroll_speed: f32,
 } extra {
-    channel_1: Channel = Channel::Mid, channel_2: Channel = Channel::None,
+    band_db_floor: f32 = DEFAULT_BAND_DB_FLOOR,
+    channel_1: Channel = Channel::Mid,
+    channel_2: Channel = Channel::None,
     color_mode: WaveformColorMode = WaveformColorMode::default(),
-    show_peak_history: bool = false,
+    history_mode: WaveformHistoryMode = WaveformHistoryMode::default(),
 });
 
 visual_settings!(SpectrumSettings from SpectrumConfig {

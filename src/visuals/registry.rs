@@ -3,7 +3,7 @@
 
 use super::{
     loudness,
-    options::StereometerMode,
+    options::{StereometerMode, WaveformColorMode, WaveformHistoryMode},
     oscilloscope, palettes,
     spectrogram::{self, processor::MAX_SPECTROGRAM_HISTORY_COLUMNS},
     spectrum, stereometer, waveform,
@@ -143,13 +143,21 @@ visuals! {
     Waveform(220.0, 180.0, 220.0) =>
         waveform::WaveformProcessor, WaveformConfig, WaveformState;
         settings_cfg::WaveformSettings;
-        apply(p, s, set) { visuals!(@apply_config p, set);
+        apply(p, s, set) {
+            let mut cfg = p.config();
+            set.apply_to(&mut cfg);
+            cfg.analyze_bands = set.color_mode == WaveformColorMode::Frequency
+                || set.history_mode != WaveformHistoryMode::Off;
+            p.update_config(cfg);
             let mut st = s.borrow_mut(); st.set_channels(set.channel_1, set.channel_2);
-            st.color_mode = set.color_mode; st.show_peak_history = set.show_peak_history;
+            st.color_mode = set.color_mode;
+            st.history_mode = set.history_mode;
+            st.band_db_floor = set.band_db_floor;
             visuals!(@apply_palette st, set, &palettes::waveform::COLORS); };
         export(p, s) { let st = s.borrow(); let mut out = settings_cfg::WaveformSettings::from_config(&p.config());
             out.channel_1 = st.channel_1; out.channel_2 = st.channel_2; out.color_mode = st.color_mode;
-            out.show_peak_history = st.show_peak_history;
+            out.history_mode = st.history_mode;
+            out.band_db_floor = st.band_db_floor;
             out.palette = visuals!(@export_palette &st.style.palette, &palettes::waveform::COLORS); out };
 
     Spectrogram(320.0, 220.0, 300.0) =>

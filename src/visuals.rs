@@ -124,7 +124,8 @@ pub mod options {
 
     crate::macros::choice_enum!(all pub enum SpectrumDisplayMode { #[default] Line => "Line", Bar => "Bar" });
     crate::macros::choice_enum!(all pub enum SpectrumWeightingMode { #[default] AWeighted => "A-Weighted", Raw => "Raw" });
-    crate::macros::choice_enum!(all pub enum WaveformColorMode { #[default] Frequency => "Frequency", Loudness => "Loudness", Static => "Static" });
+    crate::macros::choice_enum!(all pub enum WaveformColorMode { #[default] Frequency => "Frequency Bands", Loudness => "Loudness", Static => "Static" });
+    crate::macros::choice_enum!(all pub enum WaveformHistoryMode { #[default] Off => "Off", RmsFast => "RMS Fast", RmsSlow => "RMS Slow" });
 }
 pub mod palettes;
 pub mod registry;

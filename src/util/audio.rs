@@ -152,49 +152,29 @@ pub fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
 
-pub(crate) fn project_planar_channels<const N: usize>(
-    selection: [Channel; N],
-    data: &[f32],
-    stride: usize,
+#[inline]
+pub(crate) fn project_interleaved_frame(
+    frame: &[f32],
     channels: usize,
-) -> Vec<f32> {
-    let channels = channels.max(1);
-    let selected = selection.iter().filter(|&&c| c != Channel::None).count();
-    let mut out = Vec::with_capacity(selected.saturating_mul(stride));
-    let left = data.get(..stride);
+    channel: Channel,
+) -> Option<f32> {
+    if channels == 0 || channel == Channel::None {
+        return None;
+    }
+    let len = channels.min(frame.len());
+    let left = *frame.first()?;
     let right = if channels > 1 {
-        data.get(stride..stride + stride)
+        frame.get(1).copied().unwrap_or(left)
     } else {
         left
     };
-    for channel in selection {
-        match channel {
-            Channel::Left => out.extend_from_slice(left.unwrap_or_default()),
-            Channel::Right => out.extend_from_slice(right.unwrap_or_default()),
-            Channel::Mid if data.len() >= channels.saturating_mul(stride) => {
-                let start = out.len();
-                out.resize(start + stride, 0.0);
-                for ch in data.chunks(stride).take(channels) {
-                    for (dst, &sample) in out[start..].iter_mut().zip(ch) {
-                        *dst += sample;
-                    }
-                }
-                out[start..]
-                    .iter_mut()
-                    .for_each(|sample| *sample /= channels as f32);
-            }
-            Channel::Side => {
-                let Some(left) = left else { continue };
-                out.extend(
-                    left.iter()
-                        .zip(right.unwrap_or(left))
-                        .map(|(l, r)| (l - r) * 0.5),
-                );
-            }
-            Channel::Mid | Channel::None => {}
-        }
-    }
-    out
+    Some(match channel {
+        Channel::Left => left,
+        Channel::Right => right,
+        Channel::Mid => frame[..len].iter().sum::<f32>() / len as f32,
+        Channel::Side => (left - right) * 0.5,
+        Channel::None => unreachable!(),
+    })
 }
 
 pub(crate) fn project_interleaved_channel_into(
@@ -210,13 +190,9 @@ pub(crate) fn project_interleaved_channel_into(
     }
     output.reserve(frames);
     for frame in interleaved.chunks_exact(channels).take(frames) {
-        output.push(match channel {
-            Channel::Left => frame[0],
-            Channel::Right => frame.get(1).copied().unwrap_or(frame[0]),
-            Channel::Mid => frame.iter().sum::<f32>() / channels as f32,
-            Channel::Side => (frame[0] - frame.get(1).copied().unwrap_or(frame[0])) * 0.5,
-            Channel::None => unreachable!(),
-        });
+        if let Some(sample) = project_interleaved_frame(frame, channels, channel) {
+            output.push(sample);
+        }
     }
     !output.is_empty()
 }
