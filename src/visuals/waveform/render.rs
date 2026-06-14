@@ -3,37 +3,40 @@
 
 use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
+use std::{collections::VecDeque, sync::Arc};
 
+use crate::util::{
+    audio::{DB_FLOOR, power_to_db, sanitize_negative_db},
+    color::{rgba_with_alpha, sample_rgba_gradient},
+};
+use crate::visuals::options::{WaveformColorMode, WaveformHistoryMode};
 use crate::visuals::render::common::sdf_primitive;
-use crate::util::color::rgba_with_alpha;
 use crate::visuals::render::common::{
     ChannelLayout, ClipTransform, GeometryScratch, extend_filled_line, quad_vertices,
 };
-use crate::visuals::waveform::processor::{NUM_BANDS, WAVEFORM_SILENCE_AMPLITUDE};
-
-#[derive(Debug, Clone, Copy)]
-pub struct PreviewSample {
-    pub min: f32,
-    pub max: f32,
-    pub color: [f32; 4],
-}
+use crate::visuals::waveform::processor::{
+    DEFAULT_BAND_DB_FLOOR, NUM_BANDS, WAVEFORM_SILENCE_AMPLITUDE, WaveColumn, WaveFrame,
+    WaveformPreview,
+};
 
 const BAND_LINE_WIDTH: f32 = 1.5;
 const BAND_FILL_ALPHA: f32 = 0.15;
 const MIN_COLUMN_HEIGHT_PIXELS: f32 = 1.0;
+const LOUDNESS_QUIET_DB: f32 = -36.0;
 
 #[derive(Debug)]
 pub struct WaveformParams {
     pub bounds: Rectangle,
+    pub lanes: [usize; 2],
     pub channels: usize,
     pub column_width: f32,
     pub columns: usize,
-    pub samples: Vec<[f32; 2]>,
-    pub colors: Vec<[f32; 4]>,
-    pub preview_samples: Vec<PreviewSample>,
-    pub preview_progress: f32,
-    pub band_levels: Vec<f32>,
-    pub band_colors: [[f32; 4]; NUM_BANDS],
+    pub data: Arc<VecDeque<WaveFrame>>,
+    pub preview: WaveformPreview,
+    pub color_mode: WaveformColorMode,
+    pub history_mode: WaveformHistoryMode,
+    pub band_db_floor: f32,
+    pub palette: [[f32; 4]; NUM_BANDS],
     pub fill_alpha: f32,
     pub vertical_padding: f32,
     pub channel_gap: f32,
@@ -43,9 +46,49 @@ pub struct WaveformParams {
 
 impl WaveformParams {
     fn preview_active(&self) -> bool {
-        self.channels > 0
-            && self.preview_progress > 0.0
-            && self.preview_samples.len() >= self.channels
+        self.channels > 0 && self.preview.progress > 0.0 && self.preview.columns.is_some()
+    }
+
+    fn column_color(&self, column: WaveColumn) -> [f32; 4] {
+        match self.color_mode {
+            WaveformColorMode::Frequency => self.band_mix_color(column.color_bands),
+            WaveformColorMode::Loudness => {
+                let peak = column.min.abs().max(column.max.abs());
+                let db = power_to_db(peak * peak, DB_FLOOR);
+                sample_rgba_gradient(&self.palette, if db.is_finite() {
+                    ((db - LOUDNESS_QUIET_DB) / -LOUDNESS_QUIET_DB).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                })
+            }
+            WaveformColorMode::Static => self.palette[0],
+        }
+    }
+
+    fn band_mix_color(&self, bands: [f32; NUM_BANDS]) -> [f32; 4] {
+        let mut out = [0.0; 4];
+        let mut total = 0.0;
+        for (weight, color) in bands
+            .map(|v| if v.is_finite() { v.max(0.0) } else { 0.0 })
+            .into_iter()
+            .zip(self.palette.iter())
+        {
+            total += weight;
+            for i in 0..4 {
+                out[i] += color[i] * weight;
+            }
+        }
+        let brightness = out[0].max(out[1]).max(out[2]);
+        if total <= f32::EPSILON || brightness <= WAVEFORM_SILENCE_AMPLITUDE {
+            return [0.0; 4];
+        }
+        let inv_brightness = brightness.recip();
+        [
+            (out[0] * inv_brightness).clamp(0.0, 1.0),
+            (out[1] * inv_brightness).clamp(0.0, 1.0),
+            (out[2] * inv_brightness).clamp(0.0, 1.0),
+            (out[3] / total).clamp(0.0, 1.0),
+        ]
     }
 }
 
@@ -75,14 +118,12 @@ fn with_fill_alpha(color: [f32; 4], alpha: f32) -> [f32; 4] {
 impl WaveformPrimitive {
     fn build_vertices(&self, viewport: &Viewport, scratch: &mut GeometryScratch) {
         let params = &self.params;
-        let (channels, columns) = (params.channels.max(1), params.columns);
-        let total = channels * columns;
+        let data = &params.data;
+        let (channels, columns) = (params.channels.max(1), params.columns.min(data.len()));
+        let start = data.len().saturating_sub(columns);
         let preview_active = params.preview_active();
 
-        let valid = (columns == 0
-            || (params.samples.len() >= total && params.colors.len() >= total))
-            && (columns > 0 || preview_active);
-        if !valid {
+        if columns == 0 && !preview_active {
             return;
         }
 
@@ -98,13 +139,25 @@ impl WaveformPrimitive {
             params.channel_gap,
             params.amplitude_scale,
         );
-        let band_expected = channels * NUM_BANDS * columns;
+        let history: Option<fn(WaveColumn) -> [f32; NUM_BANDS]> = match params.history_mode {
+            WaveformHistoryMode::Off => None,
+            WaveformHistoryMode::RmsFast => Some(|column| column.rms_fast_db),
+            WaveformHistoryMode::RmsSlow => Some(|column| column.rms_slow_db),
+        };
+        let history_active = history.is_some() && columns >= 2;
+        let floor = sanitize_negative_db(params.band_db_floor, DEFAULT_BAND_DB_FLOOR);
 
         let vertices = &mut scratch.vertices;
-        vertices.reserve(channels * (columns + 1) * 6);
+        vertices.reserve(
+            channels * (columns + 1) * 6
+                + usize::from(history_active) * channels * NUM_BANDS * columns * 12,
+        );
+
+        let static_color = (params.color_mode == WaveformColorMode::Static)
+            .then(|| with_fill_alpha(params.palette[0], params.fill_alpha));
 
         let scroll_offset = if preview_active {
-            params.preview_progress * col_width
+            params.preview.progress * col_width
         } else {
             0.0
         };
@@ -119,13 +172,13 @@ impl WaveformPrimitive {
             let center_y = layout.center_y(ch);
 
             for i in 0..columns {
-                let idx = ch * columns + i;
+                let column = data[start + i][params.lanes[ch]];
                 let x = column_x(i);
                 if let Some((y0, y1)) = sample_y_span(
                     center_y,
                     layout.amplitude_scale,
-                    params.samples[idx][0],
-                    params.samples[idx][1],
+                    column.min,
+                    column.max,
                 ) {
                     vertices.extend(quad_vertices(
                         x,
@@ -133,7 +186,8 @@ impl WaveformPrimitive {
                         x + col_width,
                         y1,
                         clip,
-                        with_fill_alpha(params.colors[idx], params.fill_alpha),
+                        static_color
+                            .unwrap_or_else(|| with_fill_alpha(params.column_color(column), params.fill_alpha)),
                     ));
                 }
             }
@@ -143,7 +197,7 @@ impl WaveformPrimitive {
                 let start_x = raw_last_x.floor();
                 let end_x = right_edge;
 
-                let ps = params.preview_samples[ch];
+                let ps = params.preview.columns.unwrap()[params.lanes[ch]];
                 if let Some((y0, y1)) =
                     sample_y_span(center_y, layout.amplitude_scale, ps.min, ps.max)
                 {
@@ -153,26 +207,25 @@ impl WaveformPrimitive {
                         end_x,
                         y1,
                         clip,
-                        with_fill_alpha(ps.color, params.fill_alpha),
+                        static_color
+                            .unwrap_or_else(|| with_fill_alpha(params.column_color(ps), params.fill_alpha)),
                     ));
                 }
             }
 
-            if !params.band_levels.is_empty()
-                && params.band_levels.len() >= band_expected
-                && columns >= 2
-            {
+            if let Some(history) = history.filter(|_| history_active) {
                 let baseline = center_y + layout.channel_height * 0.5;
                 let band_height = layout.channel_height;
                 let pts = &mut scratch.points;
-                for band in 0..NUM_BANDS {
-                    let band_base = (ch * NUM_BANDS + band) * columns;
-                    let color = params.band_colors[band];
+                for (band, &color) in params.palette.iter().enumerate() {
                     let fill_color = with_fill_alpha(color, BAND_FILL_ALPHA);
 
                     pts.clear();
+                    pts.reserve(columns + 1);
                     pts.extend((0..columns).map(|i| {
-                        let level = params.band_levels[band_base + i].clamp(0.0, 1.0);
+                        let column = data[start + i][params.lanes[ch]];
+                        let db = history(column)[band].max(floor);
+                        let level = ((db - floor) / -floor).clamp(0.0, 1.0);
                         (column_x(i), baseline - level * band_height)
                     }));
                     if let Some(&last) = pts.last() {

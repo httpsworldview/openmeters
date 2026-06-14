@@ -2,28 +2,22 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::processor::{
-    DEFAULT_BAND_DB_FLOOR, MAX_COLUMN_CAPACITY, NUM_BANDS, WAVEFORM_CHANNELS,
-    WAVEFORM_SILENCE_AMPLITUDE, WaveColumn, WaveFrame, WaveformPreview, WaveformUpdate,
+    MAX_COLUMN_CAPACITY, NUM_BANDS, WAVEFORM_CHANNELS, WaveFrame, WaveformPreview,
+    WaveformUpdate,
 };
-use super::render::{PreviewSample, WaveformParams, WaveformPrimitive};
+use super::render::{WaveformParams, WaveformPrimitive};
 use crate::persistence::settings::WaveformSettings;
-use crate::util::{
-    audio::{Channel, DB_FLOOR, power_to_db, sanitize_negative_db},
-    color::{color_to_rgba, sample_gradient},
-};
+use crate::util::{audio::Channel, color::color_to_rgba};
 use crate::visuals::options::{WaveformColorMode, WaveformHistoryMode};
 use crate::visuals::palettes;
 use iced::Color;
-use std::{cell::Cell, collections::VecDeque};
+use std::{cell::Cell, collections::VecDeque, sync::Arc};
 
 const COLUMN_WIDTH_PIXELS: f32 = 1.0;
 const INITIAL_VIEW_COLUMNS: usize = 512;
-const LOUDNESS_QUIET_DB: f32 = -36.0;
-type SampleBuffers = (Vec<[f32; 2]>, Vec<[f32; 4]>);
-
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct WaveformState {
-    data: VecDeque<WaveFrame>,
+    data: Arc<VecDeque<WaveFrame>>,
     preview: WaveformPreview,
     view_columns: Cell<usize>,
     pub(crate) style: WaveformStyle,
@@ -39,7 +33,7 @@ impl WaveformState {
     pub fn new() -> Self {
         let defaults = WaveformSettings::default();
         Self {
-            data: VecDeque::new(),
+            data: Arc::new(VecDeque::with_capacity(INITIAL_VIEW_COLUMNS)),
             preview: WaveformPreview::default(),
             view_columns: Cell::new(INITIAL_VIEW_COLUMNS),
             style: WaveformStyle::default(),
@@ -52,12 +46,16 @@ impl WaveformState {
         }
     }
 
-    pub fn apply_snapshot(&mut self, update: WaveformUpdate) {
-        let max_columns = self.view_columns.get().clamp(1, MAX_COLUMN_CAPACITY);
-        self.configure_ring(max_columns, update.reset);
+    pub fn apply_snapshot(&mut self, update: WaveformUpdate<'_>) {
         self.preview = update.preview;
-        for columns in update.columns {
-            self.push_column(columns, max_columns);
+        if !update.reset && update.columns.is_empty() {
+            return;
+        }
+        let max_columns = self.view_columns.get().clamp(1, MAX_COLUMN_CAPACITY);
+        let data = Arc::make_mut(&mut self.data);
+        Self::configure_ring(data, max_columns, update.reset);
+        for &columns in update.columns {
+            Self::push_column(data, columns, max_columns);
         }
     }
 
@@ -82,28 +80,27 @@ impl WaveformState {
 
         let total_columns = self.data.len();
         let (lanes, selected_channels) = self.selected_lanes();
-        if bounds.width <= 0.0 || total_columns == 0 || selected_channels == 0 {
+        if bounds.width <= 0.0
+            || selected_channels == 0
+            || (total_columns == 0 && self.preview.columns.is_none())
+        {
             return None;
         }
 
-        let visible = needed.min(total_columns);
-        let start = total_columns.saturating_sub(needed);
         let lanes = &lanes[..selected_channels];
-        let (samples, colors) = self.build_sample_data(lanes, start, visible);
-        let (preview_samples, preview_progress) = self.build_preview(lanes);
-        let band_levels = self.build_history_levels(lanes, start, visible);
 
         Some(WaveformParams {
             bounds,
+            lanes: [lanes[0], lanes.get(1).copied().unwrap_or(0)],
             channels: selected_channels,
             column_width: COLUMN_WIDTH_PIXELS,
-            columns: visible,
-            samples,
-            colors,
-            preview_samples,
-            preview_progress,
-            band_levels,
-            band_colors: self.style.band_colors(),
+            columns: needed,
+            data: Arc::clone(&self.data),
+            preview: self.preview,
+            color_mode: self.color_mode,
+            history_mode: self.history_mode,
+            band_db_floor: self.band_db_floor,
+            palette: self.style.palette.map(color_to_rgba),
             fill_alpha: self.style.fill_alpha,
             vertical_padding: self.style.vertical_padding,
             channel_gap: self.style.channel_gap,
@@ -112,24 +109,23 @@ impl WaveformState {
         })
     }
 
-    fn configure_ring(&mut self, max_columns: usize, reset: bool) {
+    fn configure_ring(data: &mut VecDeque<WaveFrame>, max_columns: usize, reset: bool) {
         if reset {
-            self.data.clear();
+            data.clear();
         }
-        let drop = self.data.len().saturating_sub(max_columns);
-        self.data.drain(..drop);
-        if self.data.capacity() < max_columns {
-            self.data.reserve(max_columns - self.data.capacity());
-        } else if self.data.capacity() > max_columns.saturating_mul(2) {
-            self.data.shrink_to(max_columns);
+        data.drain(..data.len().saturating_sub(max_columns));
+        if data.capacity() < max_columns {
+            data.reserve(max_columns.saturating_sub(data.len()));
+        } else if data.capacity() > max_columns.saturating_mul(2) {
+            data.shrink_to(max_columns);
         }
     }
 
-    fn push_column(&mut self, columns: WaveFrame, max_columns: usize) {
-        if self.data.len() == max_columns {
-            self.data.pop_front();
+    fn push_column(data: &mut VecDeque<WaveFrame>, columns: WaveFrame, max_columns: usize) {
+        if data.len() == max_columns {
+            data.pop_front();
         }
-        self.data.push_back(columns);
+        data.push_back(columns);
     }
 
     fn selected_lanes(&self) -> ([usize; 2], usize) {
@@ -144,86 +140,9 @@ impl WaveformState {
         }
         (lanes, len)
     }
-
-    fn column(&self, lane: usize, col: usize) -> WaveColumn {
-        self.data[col][lane]
-    }
-
-    fn build_sample_data(&self, lanes: &[usize], start: usize, visible: usize) -> SampleBuffers {
-        let mut samples = Vec::with_capacity(visible * lanes.len());
-        let mut colors = Vec::with_capacity(visible * lanes.len());
-
-        for &lane in lanes {
-            for col in start..(start + visible) {
-                let column = self.column(lane, col);
-                samples.push([column.min, column.max]);
-                colors.push(color_to_rgba(self.column_color(column)));
-            }
-        }
-        (samples, colors)
-    }
-
-    fn column_color(&self, column: WaveColumn) -> Color {
-        match self.color_mode {
-            WaveformColorMode::Frequency => self.style.band_mix_color(column.color_bands),
-            WaveformColorMode::Loudness => {
-                let peak = column.min.abs().max(column.max.abs());
-                let peak_db = power_to_db(peak * peak, DB_FLOOR);
-                self.style.sample_color(if peak_db.is_finite() {
-                    ((peak_db - LOUDNESS_QUIET_DB) / -LOUDNESS_QUIET_DB).clamp(0.0, 1.0)
-                } else {
-                    0.0
-                })
-            }
-            WaveformColorMode::Static => self.style.sample_color(0.0),
-        }
-    }
-
-    fn build_preview(&self, lanes: &[usize]) -> (Vec<PreviewSample>, f32) {
-        let preview = &self.preview;
-        let Some(columns) = preview.columns else {
-            return (Vec::new(), 0.0);
-        };
-        if preview.progress <= 0.0 {
-            return (Vec::new(), 0.0);
-        }
-
-        let result = lanes
-            .iter()
-            .map(|&lane| {
-                let column = columns[lane];
-                PreviewSample {
-                    min: column.min,
-                    max: column.max,
-                    color: color_to_rgba(self.column_color(column)),
-                }
-            })
-            .collect();
-
-        (result, preview.progress.clamp(0.0, 1.0))
-    }
-
-    fn build_history_levels(&self, lanes: &[usize], start: usize, visible: usize) -> Vec<f32> {
-        let history: fn(WaveColumn) -> [f32; NUM_BANDS] = match self.history_mode {
-            WaveformHistoryMode::Off => return Vec::new(),
-            WaveformHistoryMode::RmsFast => |column| column.rms_fast,
-            WaveformHistoryMode::RmsSlow => |column| column.rms_slow,
-        };
-        let floor = sanitize_negative_db(self.band_db_floor, DEFAULT_BAND_DB_FLOOR);
-        let mut out = Vec::with_capacity(lanes.len() * NUM_BANDS * visible);
-        for &lane in lanes {
-            for band in 0..NUM_BANDS {
-                for col in start..(start + visible) {
-                    let db = power_to_db(history(self.column(lane, col))[band], floor);
-                    out.push(((db - floor) / -floor).clamp(0.0, 1.0));
-                }
-            }
-        }
-        out
-    }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct WaveformStyle {
     pub fill_alpha: f32,
     pub vertical_padding: f32,
@@ -241,47 +160,6 @@ impl Default for WaveformStyle {
             amplitude_scale: 1.0,
             palette: palettes::waveform::COLORS,
         }
-    }
-}
-
-impl WaveformStyle {
-    fn sample_color(&self, intensity: f32) -> Color {
-        sample_gradient(&self.palette, intensity)
-    }
-
-    fn band_mix_color(&self, bands: [f32; NUM_BANDS]) -> Color {
-        let mut rgb = [0.0; 3];
-        let mut alpha = 0.0;
-        let mut total = 0.0;
-
-        for (weight, color) in bands
-            .map(|v| if v.is_finite() { v.max(0.0) } else { 0.0 })
-            .into_iter()
-            .zip(self.palette.iter())
-        {
-            total += weight;
-            rgb[0] += color.r * weight;
-            rgb[1] += color.g * weight;
-            rgb[2] += color.b * weight;
-            alpha += color.a * weight;
-        }
-
-        let brightness = rgb[0].max(rgb[1]).max(rgb[2]);
-        if total <= f32::EPSILON || brightness <= WAVEFORM_SILENCE_AMPLITUDE {
-            return Color::TRANSPARENT;
-        }
-
-        let inv_brightness = brightness.recip();
-        Color::from_rgba(
-            (rgb[0] * inv_brightness).clamp(0.0, 1.0),
-            (rgb[1] * inv_brightness).clamp(0.0, 1.0),
-            (rgb[2] * inv_brightness).clamp(0.0, 1.0),
-            (alpha / total).clamp(0.0, 1.0),
-        )
-    }
-
-    fn band_colors(&self) -> [[f32; 4]; NUM_BANDS] {
-        std::array::from_fn(|i| color_to_rgba(self.palette[i]))
     }
 }
 

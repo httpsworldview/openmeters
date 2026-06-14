@@ -73,13 +73,6 @@ fn gradient_segment(count: usize, t: f32) -> Option<(usize, f32)> {
     })
 }
 
-pub fn sample_gradient(palette: &[Color], t: f32) -> Color {
-    match gradient_segment(palette.len(), t) {
-        Some((i, f)) => lerp_color(palette[i], palette[i + 1], f),
-        None => palette.first().copied().unwrap_or(Color::BLACK),
-    }
-}
-
 pub fn sample_rgba_gradient(palette: &[[f32; 4]], t: f32) -> [f32; 4] {
     match gradient_segment(palette.len(), t) {
         Some((i, f)) => {
