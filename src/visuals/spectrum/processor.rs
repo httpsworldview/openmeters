@@ -21,10 +21,10 @@ pub const MIN_SPECTRUM_PEAK_DECAY: f32 = 0.0;
 pub const MAX_SPECTRUM_PEAK_DECAY: f32 = 120.0;
 pub const MIN_SPECTRUM_DB_FLOOR: f32 = DB_FLOOR;
 pub const MAX_SPECTRUM_DB_FLOOR: f32 = -1.0;
-pub const DEFAULT_SPECTRUM_DB_FLOOR: f32 = -80.0;
+pub const DEFAULT_SPECTRUM_DB_FLOOR: f32 = -100.0;
 
-const DEFAULT_SPECTRUM_HOP_DIVISOR: usize = 8;
-const DEFAULT_SPECTRUM_FFT_SIZE: usize = 4096;
+const DEFAULT_SPECTRUM_HOP_DIVISOR: usize = 16;
+const DEFAULT_SPECTRUM_FFT_SIZE: usize = 16_384;
 const DEFAULT_SPECTRUM_EXP_FACTOR: f32 = 0.5;
 const DEFAULT_SPECTRUM_PEAK_DECAY: f32 = 12.0;
 const TRACE_COUNT: usize = 2;
@@ -68,10 +68,8 @@ impl Default for SpectrumConfig {
             sample_rate: DEFAULT_SAMPLE_RATE,
             fft_size: DEFAULT_SPECTRUM_FFT_SIZE,
             hop_size: DEFAULT_SPECTRUM_FFT_SIZE / DEFAULT_SPECTRUM_HOP_DIVISOR,
-            window: WindowKind::BlackmanHarris,
-            averaging: AveragingMode::Exponential {
-                factor: DEFAULT_SPECTRUM_EXP_FACTOR,
-            },
+            window: WindowKind::Hann,
+            averaging: AveragingMode::None,
             source: Channel::Mid,
             secondary_source: Channel::None,
             frequency_scale: FrequencyScale::Logarithmic,
