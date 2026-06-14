@@ -3,26 +3,29 @@
 
 use super::processor::{
     DEFAULT_BAND_DB_FLOOR, MAX_COLUMN_CAPACITY, NUM_BANDS, WAVEFORM_CHANNELS,
-    WAVEFORM_SILENCE_AMPLITUDE, WaveColumn, WaveformSnapshot,
+    WAVEFORM_SILENCE_AMPLITUDE, WaveColumn, WaveFrame, WaveformPreview, WaveformUpdate,
 };
 use super::render::{PreviewSample, WaveformParams, WaveformPrimitive};
 use crate::persistence::settings::WaveformSettings;
 use crate::util::{
-    audio::{Channel, power_to_db, sanitize_negative_db},
+    audio::{Channel, DB_FLOOR, power_to_db, sanitize_negative_db},
     color::{color_to_rgba, sample_gradient},
 };
 use crate::visuals::options::{WaveformColorMode, WaveformHistoryMode};
 use crate::visuals::palettes;
 use iced::Color;
-use std::sync::Arc;
+use std::{cell::Cell, collections::VecDeque};
 
 const COLUMN_WIDTH_PIXELS: f32 = 1.0;
+const INITIAL_VIEW_COLUMNS: usize = 512;
 const LOUDNESS_QUIET_DB: f32 = -36.0;
-type SampleBuffers = (Arc<[[f32; 2]]>, Arc<[[f32; 4]]>);
+type SampleBuffers = (Vec<[f32; 2]>, Vec<[f32; 4]>);
 
 #[derive(Debug, Clone)]
 pub(crate) struct WaveformState {
-    raw_snapshot: WaveformSnapshot,
+    data: VecDeque<WaveFrame>,
+    preview: WaveformPreview,
+    view_columns: Cell<usize>,
     pub(crate) style: WaveformStyle,
     key: u64,
     pub(crate) channel_1: Channel,
@@ -36,7 +39,9 @@ impl WaveformState {
     pub fn new() -> Self {
         let defaults = WaveformSettings::default();
         Self {
-            raw_snapshot: WaveformSnapshot::default(),
+            data: VecDeque::new(),
+            preview: WaveformPreview::default(),
+            view_columns: Cell::new(INITIAL_VIEW_COLUMNS),
             style: WaveformStyle::default(),
             key: crate::visuals::next_key(),
             channel_1: defaults.channel_1,
@@ -47,8 +52,17 @@ impl WaveformState {
         }
     }
 
-    pub fn apply_snapshot(&mut self, snapshot: WaveformSnapshot) {
-        self.raw_snapshot = snapshot;
+    pub fn apply_snapshot(&mut self, update: WaveformUpdate) {
+        let max_columns = self.view_columns.get().clamp(1, MAX_COLUMN_CAPACITY);
+        self.configure_ring(max_columns, update.reset);
+        self.preview = update.preview;
+        for columns in update.columns {
+            self.push_column(columns, max_columns);
+        }
+    }
+
+    pub(crate) fn view_columns(&self) -> usize {
+        self.view_columns.get()
     }
 
     pub fn set_channels(&mut self, channel_1: Channel, channel_2: Channel) {
@@ -60,20 +74,18 @@ impl WaveformState {
     }
 
     pub fn visual_params(&self, bounds: iced::Rectangle) -> Option<WaveformParams> {
-        let snapshot = &self.raw_snapshot;
-        let total_columns = snapshot.columns;
-        let (lanes, selected_channels) = self.selected_lanes(snapshot.channels);
-        let expected = total_columns * snapshot.channels;
-        if bounds.width <= 0.0
-            || total_columns == 0
-            || selected_channels == 0
-            || snapshot.data.len() < expected
-        {
+        let needed = ((bounds.width / COLUMN_WIDTH_PIXELS).ceil() as usize)
+            .clamp(1, MAX_COLUMN_CAPACITY);
+        if bounds.width > 0.0 {
+            self.view_columns.set(needed);
+        }
+
+        let total_columns = self.data.len();
+        let (lanes, selected_channels) = self.selected_lanes();
+        if bounds.width <= 0.0 || total_columns == 0 || selected_channels == 0 {
             return None;
         }
 
-        let needed =
-            ((bounds.width / COLUMN_WIDTH_PIXELS).ceil() as usize).clamp(1, MAX_COLUMN_CAPACITY);
         let visible = needed.min(total_columns);
         let start = total_columns.saturating_sub(needed);
         let lanes = &lanes[..selected_channels];
@@ -100,13 +112,32 @@ impl WaveformState {
         })
     }
 
-    fn selected_lanes(&self, available_lanes: usize) -> ([usize; 2], usize) {
+    fn configure_ring(&mut self, max_columns: usize, reset: bool) {
+        if reset {
+            self.data.clear();
+        }
+        let drop = self.data.len().saturating_sub(max_columns);
+        self.data.drain(..drop);
+        if self.data.capacity() < max_columns {
+            self.data.reserve(max_columns - self.data.capacity());
+        } else if self.data.capacity() > max_columns.saturating_mul(2) {
+            self.data.shrink_to(max_columns);
+        }
+    }
+
+    fn push_column(&mut self, columns: WaveFrame, max_columns: usize) {
+        if self.data.len() == max_columns {
+            self.data.pop_front();
+        }
+        self.data.push_back(columns);
+    }
+
+    fn selected_lanes(&self) -> ([usize; 2], usize) {
         let mut lanes = [0; 2];
         let mut len = 0;
         for lane in [self.channel_1, self.channel_2]
             .into_iter()
             .filter_map(|channel| WAVEFORM_CHANNELS.iter().position(|&source| source == channel))
-            .filter(|&lane| lane < available_lanes)
         {
             lanes[len] = lane;
             len += 1;
@@ -115,7 +146,7 @@ impl WaveformState {
     }
 
     fn column(&self, lane: usize, col: usize) -> WaveColumn {
-        self.raw_snapshot.data[lane * self.raw_snapshot.columns + col]
+        self.data[col][lane]
     }
 
     fn build_sample_data(&self, lanes: &[usize], start: usize, visible: usize) -> SampleBuffers {
@@ -129,31 +160,38 @@ impl WaveformState {
                 colors.push(color_to_rgba(self.column_color(column)));
             }
         }
-        (Arc::from(samples), Arc::from(colors))
+        (samples, colors)
     }
 
     fn column_color(&self, column: WaveColumn) -> Color {
         match self.color_mode {
             WaveformColorMode::Frequency => self.style.band_mix_color(column.color_bands),
-            WaveformColorMode::Loudness => self.style.sample_color(if column.peak_db.is_finite() {
-                ((column.peak_db - LOUDNESS_QUIET_DB) / -LOUDNESS_QUIET_DB).clamp(0.0, 1.0)
-            } else {
-                0.0
-            }),
+            WaveformColorMode::Loudness => {
+                let peak = column.min.abs().max(column.max.abs());
+                let peak_db = power_to_db(peak * peak, DB_FLOOR);
+                self.style.sample_color(if peak_db.is_finite() {
+                    ((peak_db - LOUDNESS_QUIET_DB) / -LOUDNESS_QUIET_DB).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                })
+            }
             WaveformColorMode::Static => self.style.sample_color(0.0),
         }
     }
 
-    fn build_preview(&self, lanes: &[usize]) -> (Arc<[PreviewSample]>, f32) {
-        let preview = &self.raw_snapshot.preview;
-        if preview.progress <= 0.0 || preview.columns.len() < self.raw_snapshot.channels {
-            return (Arc::from([]), 0.0);
+    fn build_preview(&self, lanes: &[usize]) -> (Vec<PreviewSample>, f32) {
+        let preview = &self.preview;
+        let Some(columns) = preview.columns else {
+            return (Vec::new(), 0.0);
+        };
+        if preview.progress <= 0.0 {
+            return (Vec::new(), 0.0);
         }
 
-        let result: Vec<_> = lanes
+        let result = lanes
             .iter()
             .map(|&lane| {
-                let column = preview.columns[lane];
+                let column = columns[lane];
                 PreviewSample {
                     min: column.min,
                     max: column.max,
@@ -162,12 +200,12 @@ impl WaveformState {
             })
             .collect();
 
-        (Arc::from(result), preview.progress.clamp(0.0, 1.0))
+        (result, preview.progress.clamp(0.0, 1.0))
     }
 
-    fn build_history_levels(&self, lanes: &[usize], start: usize, visible: usize) -> Arc<[f32]> {
+    fn build_history_levels(&self, lanes: &[usize], start: usize, visible: usize) -> Vec<f32> {
         let history: fn(WaveColumn) -> [f32; NUM_BANDS] = match self.history_mode {
-            WaveformHistoryMode::Off => return Arc::from([]),
+            WaveformHistoryMode::Off => return Vec::new(),
             WaveformHistoryMode::RmsFast => |column| column.rms_fast,
             WaveformHistoryMode::RmsSlow => |column| column.rms_slow,
         };
@@ -181,7 +219,7 @@ impl WaveformState {
                 }
             }
         }
-        Arc::from(out)
+        out
     }
 }
 

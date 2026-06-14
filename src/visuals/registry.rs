@@ -143,11 +143,19 @@ visuals! {
     Waveform(220.0, 180.0, 220.0) =>
         waveform::WaveformProcessor, WaveformConfig, WaveformState;
         settings_cfg::WaveformSettings;
+        pre_ingest(p, s) {
+            let max_columns = s.borrow().view_columns().min(waveform::processor::MAX_COLUMN_CAPACITY);
+            let mut cfg = p.config();
+            if cfg.max_columns != max_columns {
+                cfg.max_columns = max_columns;
+                p.update_config(cfg);
+            }
+        };
         apply(p, s, set) {
             let mut cfg = p.config();
             set.apply_to(&mut cfg);
-            cfg.analyze_bands = set.color_mode == WaveformColorMode::Frequency
-                || set.history_mode != WaveformHistoryMode::Off;
+            cfg.track_history = set.history_mode != WaveformHistoryMode::Off;
+            cfg.analyze_bands = set.color_mode == WaveformColorMode::Frequency || cfg.track_history;
             p.update_config(cfg);
             let mut st = s.borrow_mut(); st.set_channels(set.channel_1, set.channel_2);
             st.color_mode = set.color_mode;

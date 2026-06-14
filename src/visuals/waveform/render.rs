@@ -3,7 +3,6 @@
 
 use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
-use std::sync::Arc;
 
 use crate::visuals::render::common::sdf_primitive;
 use crate::util::color::rgba_with_alpha;
@@ -23,17 +22,17 @@ const BAND_LINE_WIDTH: f32 = 1.5;
 const BAND_FILL_ALPHA: f32 = 0.15;
 const MIN_COLUMN_HEIGHT_PIXELS: f32 = 1.0;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct WaveformParams {
     pub bounds: Rectangle,
     pub channels: usize,
     pub column_width: f32,
     pub columns: usize,
-    pub samples: Arc<[[f32; 2]]>,
-    pub colors: Arc<[[f32; 4]]>,
-    pub preview_samples: Arc<[PreviewSample]>,
+    pub samples: Vec<[f32; 2]>,
+    pub colors: Vec<[f32; 4]>,
+    pub preview_samples: Vec<PreviewSample>,
     pub preview_progress: f32,
-    pub band_levels: Arc<[f32]>,
+    pub band_levels: Vec<f32>,
     pub band_colors: [[f32; 4]; NUM_BANDS],
     pub fill_alpha: f32,
     pub vertical_padding: f32,

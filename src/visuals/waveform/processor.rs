@@ -3,10 +3,9 @@
 
 use crate::dsp::AudioBlock;
 use crate::util::audio::{
-    BAND_SPLITS_HZ, Channel, DB_FLOOR, DEFAULT_SAMPLE_RATE, power_to_db,
-    project_interleaved_frame, sample_rates_differ, sanitize_sample_rate,
+    BAND_SPLITS_HZ, Channel, DEFAULT_SAMPLE_RATE, project_interleaved_frame, sample_rates_differ,
+    sanitize_sample_rate,
 };
-use std::sync::Arc;
 
 pub const MIN_SCROLL_SPEED: f32 = 10.0;
 pub const MAX_SCROLL_SPEED: f32 = 1000.0;
@@ -17,7 +16,7 @@ pub const DEFAULT_BAND_DB_FLOOR: f32 = -60.0;
 const MIN_RUNTIME_SCROLL_SPEED: f32 = 1.0;
 pub(crate) const WAVEFORM_CHANNELS: [Channel; 4] =
     [Channel::Left, Channel::Right, Channel::Mid, Channel::Side];
-const DERIVED_CHANNELS: usize = WAVEFORM_CHANNELS.len();
+pub(crate) const DERIVED_CHANNELS: usize = WAVEFORM_CHANNELS.len();
 const REFERENCE_SAMPLE_RATE: f32 = 44_100.0;
 const BAND_COLOR_WINDOW_AT_44K1: usize = 2048;
 const BAND_SLOW_WINDOW_AT_44K1: usize = 16_384;
@@ -36,6 +35,7 @@ pub struct WaveformConfig {
     pub scroll_speed: f32,
     pub max_columns: usize,
     pub analyze_bands: bool,
+    pub track_history: bool,
 }
 
 impl Default for WaveformConfig {
@@ -45,6 +45,7 @@ impl Default for WaveformConfig {
             scroll_speed: DEFAULT_SCROLL_SPEED,
             max_columns: MAX_COLUMN_CAPACITY,
             analyze_bands: true,
+            track_history: false,
         }
     }
 }
@@ -56,6 +57,7 @@ impl WaveformConfig {
             .map(|speed| speed.max(MIN_RUNTIME_SCROLL_SPEED))
             .unwrap_or(DEFAULT_SCROLL_SPEED);
         self.max_columns = self.max_columns.clamp(1, MAX_COLUMN_CAPACITY);
+        self.track_history &= self.analyze_bands;
         self
     }
 }
@@ -64,23 +66,23 @@ impl WaveformConfig {
 pub struct WaveColumn {
     pub min: f32,
     pub max: f32,
-    pub peak_db: f32,
     pub color_bands: [f32; NUM_BANDS],
     pub rms_fast: [f32; NUM_BANDS],
     pub rms_slow: [f32; NUM_BANDS],
 }
 
+pub(crate) type WaveFrame = [WaveColumn; DERIVED_CHANNELS];
+
 #[derive(Debug, Clone, Default)]
 pub struct WaveformPreview {
     pub progress: f32,
-    pub columns: Vec<WaveColumn>,
+    pub columns: Option<WaveFrame>,
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct WaveformSnapshot {
-    pub channels: usize,
-    pub columns: usize,
-    pub data: Arc<[WaveColumn]>,
+pub struct WaveformUpdate {
+    pub reset: bool,
+    pub columns: Vec<WaveFrame>,
     pub preview: WaveformPreview,
 }
 
@@ -212,43 +214,43 @@ impl BandWindow {
 struct BandTracker {
     filters: ThreeBand,
     color: BandWindow,
-    fast: BandWindow,
-    slow: BandWindow,
+    fast: Option<BandWindow>,
+    slow: Option<BandWindow>,
 }
 
 impl BandTracker {
-    fn new(sample_rate: f32) -> Self {
+    fn new(sample_rate: f32, track_history: bool) -> Self {
         let color_len = window_len(BAND_COLOR_WINDOW_AT_44K1, sample_rate);
         Self {
             filters: ThreeBand::new(sample_rate),
             color: BandWindow::new(color_len),
-            fast: BandWindow::new(color_len),
-            slow: BandWindow::new(window_len(BAND_SLOW_WINDOW_AT_44K1, sample_rate)),
+            fast: track_history.then(|| BandWindow::new(color_len)),
+            slow: track_history
+                .then(|| BandWindow::new(window_len(BAND_SLOW_WINDOW_AT_44K1, sample_rate))),
         }
     }
 
     fn process(&mut self, sample: f32) {
         let bands = self.filters.process(sample);
         let color = std::array::from_fn(|band| bands[band] * BAND_COLOR_GAINS[band]);
-        let power = bands.map(|value| value * value);
         self.color.push(color);
-        self.fast.push(power);
-        self.slow.push(power);
+        if let (Some(fast), Some(slow)) = (&mut self.fast, &mut self.slow) {
+            let power = bands.map(|value| value * value);
+            fast.push(power);
+            slow.push(power);
+        }
     }
 }
 
 pub struct WaveformProcessor {
     config: WaveformConfig,
-    snapshot: WaveformSnapshot,
     source_channels: usize,
-    ring: Vec<WaveColumn>,
     trackers: [BandTracker; DERIVED_CHANNELS],
-    ring_head: usize,
-    column_count: usize,
     column_phase: f32,
     current: [Option<(f32, f32, Option<f32>)>; DERIVED_CHANNELS],
     last_sample: [Option<f32>; DERIVED_CHANNELS],
-    has_pending_changes: bool,
+    pending_columns: Vec<WaveFrame>,
+    reset_pending: bool,
 }
 
 impl WaveformProcessor {
@@ -256,16 +258,15 @@ impl WaveformProcessor {
         let config = config.normalized();
         Self {
             config,
-            snapshot: WaveformSnapshot::default(),
             source_channels: 2,
-            ring: vec![WaveColumn::default(); config.max_columns * DERIVED_CHANNELS],
-            trackers: std::array::from_fn(|_| BandTracker::new(config.sample_rate)),
-            ring_head: 0,
-            column_count: 0,
+            trackers: std::array::from_fn(|_| {
+                BandTracker::new(config.sample_rate, config.track_history)
+            }),
             column_phase: 0.0,
             current: [None; DERIVED_CHANNELS],
             last_sample: [None; DERIVED_CHANNELS],
-            has_pending_changes: false,
+            pending_columns: Vec::new(),
+            reset_pending: true,
         }
     }
 
@@ -274,20 +275,18 @@ impl WaveformProcessor {
     }
 
     fn rebuild(&mut self) {
-        self.snapshot = WaveformSnapshot::default();
-        self.ring_head = 0;
-        self.column_count = 0;
         self.column_phase = 0.0;
         self.last_sample = [None; DERIVED_CHANNELS];
-        self.has_pending_changes = false;
+        self.pending_columns.clear();
         self.reset_column();
-        self.ring
-            .resize(self.config.max_columns * DERIVED_CHANNELS, WaveColumn::default());
         self.reset_trackers();
+        self.reset_pending = true;
     }
 
     fn reset_trackers(&mut self) {
-        self.trackers = std::array::from_fn(|_| BandTracker::new(self.config.sample_rate));
+        self.trackers = std::array::from_fn(|_| {
+            BandTracker::new(self.config.sample_rate, self.config.track_history)
+        });
     }
 
     fn reset_column(&mut self) {
@@ -304,34 +303,38 @@ impl WaveformProcessor {
                 (min, max)
             })
             .unwrap_or((0.0, 0.0));
-        let peak = min.abs().max(max.abs());
         let mut column = WaveColumn {
             min,
             max,
-            peak_db: power_to_db(peak * peak, DB_FLOOR),
             ..WaveColumn::default()
         };
         if self.config.analyze_bands {
             let tracker = &self.trackers[channel];
             column.color_bands = tracker.color.means();
-            column.rms_fast = tracker.fast.means();
-            column.rms_slow = tracker.slow.means();
+            if self.config.track_history {
+                column.rms_fast = tracker
+                    .fast
+                    .as_ref()
+                    .map(BandWindow::means)
+                    .unwrap_or_default();
+                column.rms_slow = tracker
+                    .slow
+                    .as_ref()
+                    .map(BandWindow::means)
+                    .unwrap_or_default();
+            }
         }
         column
     }
 
     fn emit_column(&mut self) {
-        let max_columns = self.config.max_columns;
+        let columns = std::array::from_fn(|channel| self.column_for(channel));
         for channel in 0..DERIVED_CHANNELS {
-            self.ring[channel * max_columns + self.ring_head] = self.column_for(channel);
             if let Some((_, _, Some(last))) = self.current[channel] {
                 self.last_sample[channel] = Some(last);
             }
         }
-
-        self.ring_head = (self.ring_head + 1) % max_columns;
-        self.column_count = (self.column_count + 1).min(max_columns);
-        self.has_pending_changes = true;
+        self.pending_columns.push(columns);
         self.reset_column();
     }
 
@@ -365,40 +368,23 @@ impl WaveformProcessor {
         }
     }
 
-    fn sync_ring_to_snapshot(&mut self) {
-        let (max_columns, visible) = (self.config.max_columns, self.column_count);
-        let mut data = Vec::with_capacity(DERIVED_CHANNELS * visible);
-        self.snapshot.channels = DERIVED_CHANNELS;
-        self.snapshot.columns = visible;
-
-        if visible > 0 {
-            let start = if visible < max_columns { 0 } else { self.ring_head };
-            for src in self.ring.chunks_exact(max_columns) {
-                if start == 0 {
-                    data.extend_from_slice(&src[..visible]);
-                } else {
-                    data.extend_from_slice(&src[start..]);
-                    data.extend_from_slice(&src[..start]);
-                }
-            }
+    fn take_pending_columns(&mut self) -> Vec<WaveFrame> {
+        let mut columns = std::mem::take(&mut self.pending_columns);
+        if columns.len() > self.config.max_columns {
+            columns.drain(..columns.len() - self.config.max_columns);
         }
-
-        self.snapshot.data = Arc::from(data);
-        self.has_pending_changes = false;
+        columns
     }
 
-    fn sync_preview(&mut self) {
+    fn preview(&self) -> WaveformPreview {
         let progress = self.column_phase.clamp(0.0, 1.0);
-        let columns: Option<[WaveColumn; DERIVED_CHANNELS]> =
-            (progress > 0.0).then(|| std::array::from_fn(|ch| self.column_for(ch)));
-        self.snapshot.preview.progress = progress;
-        self.snapshot.preview.columns.clear();
-        if let Some(columns) = columns {
-            self.snapshot.preview.columns.extend(columns);
+        WaveformPreview {
+            progress,
+            columns: (progress > 0.0).then(|| std::array::from_fn(|ch| self.column_for(ch))),
         }
     }
 
-    pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<WaveformSnapshot> {
+    pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<WaveformUpdate> {
         if block.is_empty() {
             return None;
         }
@@ -413,20 +399,20 @@ impl WaveformProcessor {
 
         self.ingest_samples(block.samples, channels);
 
-        if self.has_pending_changes {
-            self.sync_ring_to_snapshot();
-        }
-
-        self.sync_preview();
-
-        Some(self.snapshot.clone())
+        let reset = self.reset_pending;
+        self.reset_pending = false;
+        Some(WaveformUpdate {
+            reset,
+            columns: self.take_pending_columns(),
+            preview: self.preview(),
+        })
     }
 
     pub fn update_config(&mut self, config: WaveformConfig) {
         let normalized = config.normalized();
-        let rebuild = sample_rates_differ(self.config.sample_rate, normalized.sample_rate)
-            || self.config.max_columns != normalized.max_columns;
-        let reset_analysis = self.config.analyze_bands != normalized.analyze_bands;
+        let rebuild = sample_rates_differ(self.config.sample_rate, normalized.sample_rate);
+        let reset_analysis = self.config.analyze_bands != normalized.analyze_bands
+            || self.config.track_history != normalized.track_history;
         self.config = normalized;
         if rebuild {
             self.rebuild();
@@ -456,83 +442,68 @@ mod tests {
         }
     }
 
-    fn extract(update: Option<WaveformSnapshot>) -> WaveformSnapshot {
-        update.expect("expected snapshot")
+    fn process(processor: &mut WaveformProcessor, samples: &[f32], channels: usize) -> WaveformUpdate {
+        processor
+            .process_block(&block(samples, channels, RATE))
+            .expect("expected update")
     }
 
-    fn column(snapshot: &WaveformSnapshot, channel: usize, col: usize) -> WaveColumn {
-        snapshot.data[channel * snapshot.columns + col]
+    fn column(update: &WaveformUpdate, channel: usize, col: usize) -> WaveColumn {
+        update.columns[col][channel]
     }
 
-    fn band(snapshot: &WaveformSnapshot, channel: usize, band: usize) -> f32 {
-        column(snapshot, channel, snapshot.columns - 1).color_bands[band]
+    fn latest(update: &WaveformUpdate, channel: usize) -> WaveColumn {
+        column(update, channel, update.columns.len() - 1)
     }
 
-    #[test]
-    fn derives_mid_and_side_before_extrema() {
-        let mut processor = WaveformProcessor::new(config(RATE / 2.0, 8));
-        let snapshot = extract(processor.process_block(&block(&[1.0, 0.0, 0.0, 1.0], 2, RATE)));
-
-        assert_eq!(snapshot.channels, DERIVED_CHANNELS);
-        assert_eq!(snapshot.columns, 1);
-        assert_eq!(column(&snapshot, 2, 0).max, 0.5);
-        assert_eq!(column(&snapshot, 2, 0).min, 0.5);
-        assert_eq!(column(&snapshot, 3, 0).max, 0.5);
-        assert_eq!(column(&snapshot, 3, 0).min, -0.5);
+    fn band(update: &WaveformUpdate, channel: usize, band: usize) -> f32 {
+        latest(update, channel).color_bands[band]
     }
 
     #[test]
-    fn mono_maps_to_left_right_mid_with_silent_side() {
+    fn channel_projection_feeds_extrema() {
         let mut processor = WaveformProcessor::new(config(RATE / 2.0, 8));
-        let snapshot = extract(processor.process_block(&block(&[0.25, -0.5], 1, RATE)));
+        let update = process(&mut processor, &[1.0, 0.0, 0.0, 1.0], 2);
+        assert_eq!((column(&update, 2, 0).min, column(&update, 2, 0).max), (0.5, 0.5));
+        assert_eq!((column(&update, 3, 0).min, column(&update, 3, 0).max), (-0.5, 0.5));
 
+        let update = process(&mut WaveformProcessor::new(config(RATE / 2.0, 8)), &[0.25, -0.5], 1);
         for channel in 0..3 {
-            assert_eq!(column(&snapshot, channel, 0).min, -0.5);
-            assert_eq!(column(&snapshot, channel, 0).max, 0.25);
+            assert_eq!((column(&update, channel, 0).min, column(&update, channel, 0).max), (-0.5, 0.25));
         }
-        assert_eq!(column(&snapshot, 3, 0).min, 0.0);
-        assert_eq!(column(&snapshot, 3, 0).max, 0.0);
-    }
+        assert_eq!((column(&update, 3, 0).min, column(&update, 3, 0).max), (0.0, 0.0));
 
-    #[test]
-    fn multichannel_mid_averages_all_sources() {
-        let mut processor = WaveformProcessor::new(config(RATE / 2.0, 8));
-        let snapshot = extract(processor.process_block(&block(
+        let update = process(
+            &mut WaveformProcessor::new(config(RATE / 2.0, 8)),
             &[1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
             4,
-            RATE,
-        )));
-
-        assert_eq!(column(&snapshot, 2, 0).min, 0.25);
-        assert_eq!(column(&snapshot, 2, 0).max, 0.75);
+        );
+        assert_eq!((column(&update, 2, 0).min, column(&update, 2, 0).max), (0.25, 0.75));
     }
 
     #[test]
     fn previous_sample_continuity_catches_column_boundary_steps() {
         let mut processor = WaveformProcessor::new(config(RATE / 2.0, 8));
-        let snapshot = extract(processor.process_block(&block(&[0.0, 0.0, 1.0, 1.0], 1, RATE)));
+        let update = process(&mut processor, &[0.0, 0.0, 1.0, 1.0], 1);
 
-        assert_eq!(snapshot.columns, 2);
-        assert_eq!(column(&snapshot, 0, 1).min, 0.0);
-        assert_eq!(column(&snapshot, 0, 1).max, 1.0);
+        assert_eq!(update.columns.len(), 2);
+        assert_eq!(column(&update, 0, 1).min, 0.0);
+        assert_eq!(column(&update, 0, 1).max, 1.0);
     }
 
     #[test]
     fn non_finite_samples_are_sanitized_and_break_column_continuity() {
         let mut processor = WaveformProcessor::new(config(RATE, 8));
-        let snapshot = extract(processor.process_block(&block(
-            &[0.0, f32::NAN, f32::INFINITY, 1.0],
-            1,
-            RATE,
-        )));
+        let update = process(&mut processor, &[0.0, f32::NAN, f32::INFINITY, 1.0], 1);
 
-        assert_eq!(snapshot.columns, 4);
-        assert_eq!(column(&snapshot, 0, 3).min, 1.0);
-        assert_eq!(column(&snapshot, 0, 3).max, 1.0);
-        assert!(snapshot.data.iter().all(|c| c.min.is_finite() && c.max.is_finite()));
-        assert!(snapshot
-            .data
+        assert_eq!(update.columns.len(), 4);
+        assert_eq!(column(&update, 0, 3).min, 1.0);
+        assert_eq!(column(&update, 0, 3).max, 1.0);
+        assert!(update.columns.iter().flatten().all(|c| c.min.is_finite() && c.max.is_finite()));
+        assert!(update
+            .columns
             .iter()
+            .flatten()
             .flat_map(|c| c.color_bands)
             .all(|v| v.is_finite()));
     }
@@ -540,13 +511,12 @@ mod tests {
     #[test]
     fn disabled_band_analysis_emits_zero_band_data() {
         let mut processor = WaveformProcessor::new(config(RATE, 128));
-        extract(processor.process_block(&block(&[1.0; 32], 1, RATE)));
+        let _ = process(&mut processor, &[1.0; 32], 1);
 
         let mut updated = processor.config();
         updated.analyze_bands = false;
         processor.update_config(updated);
-        let snapshot = extract(processor.process_block(&block(&[0.0], 1, RATE)));
-        let latest = column(&snapshot, 0, snapshot.columns - 1);
+        let latest = latest(&process(&mut processor, &[0.0], 1), 0);
 
         assert_eq!(latest.color_bands, [0.0; NUM_BANDS]);
         assert_eq!(latest.rms_fast, [0.0; NUM_BANDS]);
@@ -560,8 +530,8 @@ mod tests {
             let samples: Vec<f32> = (0..RATE as usize)
                 .map(|n| (2.0 * PI * freq * n as f32 / RATE).sin() * 0.8)
                 .collect();
-            let snapshot = extract(processor.process_block(&block(&samples, 1, RATE)));
-            std::array::from_fn(|b| band(&snapshot, 0, b))
+            let update = process(&mut processor, &samples, 1);
+            std::array::from_fn(|b| band(&update, 0, b))
         }
 
         let low = latest_bands_for(80.0);
@@ -575,63 +545,38 @@ mod tests {
 
     #[test]
     fn fast_rms_reacts_before_slow_rms() {
-        let mut processor = WaveformProcessor::new(config(100.0, 512));
+        let mut cfg = config(100.0, 512);
+        cfg.track_history = true;
+        let mut processor = WaveformProcessor::new(cfg);
         let mut samples = vec![0.0; RATE as usize];
         samples.extend(vec![1.0; BAND_COLOR_WINDOW_AT_44K1]);
-        let snapshot = extract(processor.process_block(&block(&samples, 1, RATE)));
-        let latest = column(&snapshot, 0, snapshot.columns - 1);
+        let latest = latest(&process(&mut processor, &samples, 1), 0);
 
         assert!(latest.rms_fast[0] > latest.rms_slow[0]);
     }
 
     #[test]
-    fn config_updates_preserve_existing_columns_when_capacity_is_unchanged() {
-        let mut processor = WaveformProcessor::new(WaveformConfig {
-            analyze_bands: false,
-            ..config(RATE / 2.0, 8)
-        });
-        let before = extract(processor.process_block(&block(&[0.1, 0.1, 0.2, 0.2], 1, RATE)));
-
-        let mut updated = processor.config();
-        updated.scroll_speed = RATE;
-        updated.analyze_bands = true;
-        processor.update_config(updated);
-        let after = extract(processor.process_block(&block(&[0.3], 1, RATE)));
-
-        assert_eq!(before.columns, 2);
-        assert_eq!(column(&after, 0, 0).max, 0.1);
-        assert_eq!(column(&after, 0, 1).max, 0.2);
-        assert_eq!(column(&after, 0, 2).max, 0.3);
-    }
-
-    #[test]
     fn fractional_timing_matches_requested_average_speed() {
-        let rate = 1_000.0;
-        let speed = 333.0;
         let mut processor = WaveformProcessor::new(WaveformConfig {
-            sample_rate: rate,
-            scroll_speed: speed,
+            sample_rate: 1_000.0,
+            scroll_speed: 333.0,
             max_columns: 4_000,
             ..Default::default()
         });
-        let samples = vec![0.0; (rate as usize) * 10];
-        let snapshot = extract(processor.process_block(&block(&samples, 1, rate)));
+        let samples = vec![0.0; 10_000];
+        let update = processor.process_block(&block(&samples, 1, 1_000.0)).unwrap();
 
-        assert!((snapshot.columns as isize - 3330).abs() <= 1);
+        assert!((update.columns.len() as isize - 3330).abs() <= 1);
     }
 
     #[test]
-    fn snapshot_retains_latest_columns_after_history_exceeds_capacity() {
-        let mut processor = WaveformProcessor::new(config(RATE / 2.0, 4));
-        let snapshot = extract(processor.process_block(&block(
-            &[0.1, 0.1, 0.2, 0.2, 0.3, 0.3, 0.4, 0.4, 0.5, 0.5],
-            1,
-            RATE,
-        )));
+    fn update_payload_is_capped_to_configured_history() {
+        let mut processor = WaveformProcessor::new(config(RATE, 4));
+        let update = process(&mut processor, &[0.1, 0.2, 0.3, 0.4, 0.5], 1);
 
-        assert_eq!(snapshot.columns, 4);
+        assert_eq!(update.columns.len(), 4);
         assert_eq!(
-            (0..4).map(|i| column(&snapshot, 0, i).max).collect::<Vec<_>>(),
+            (0..4).map(|i| column(&update, 0, i).max).collect::<Vec<_>>(),
             [0.2, 0.3, 0.4, 0.5]
         );
     }
