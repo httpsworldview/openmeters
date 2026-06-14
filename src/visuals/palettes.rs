@@ -107,9 +107,9 @@ pub mod spectrum {
 pub mod waveform {
     use super::{Color, hex};
     pub const COLORS: [Color; 3] = [
-        hex(0xE0, 0x00, 0x30, 0xFF),
-        hex(0x33, 0xE6, 0x33, 0xFF),
-        hex(0x33, 0x66, 0xFF, 0xFF),
+        hex(0xFF, 0x00, 0x00, 0xFF),
+        hex(0x00, 0xFF, 0x00, 0xFF),
+        hex(0x00, 0x00, 0xFF, 0xFF),
     ];
     pub const LABELS: &[&str] = &["Low", "Mid", "High"];
     pub const DEFAULT_POSITIONS: [f32; COLORS.len()] = [0.0, 0.5, 1.0];
