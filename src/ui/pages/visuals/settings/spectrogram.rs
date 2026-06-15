@@ -63,7 +63,7 @@ impl SpectrogramSettingsPane {
         let tilt = if s.tilt_db == 0.0 {
             "Off".to_string()
         } else {
-            format!("{:+.1} dB/dec", s.tilt_db)
+            format!("{:+.1} dB/oct", s.tilt_db)
         };
         let core = controls!(
             iced::widget::Column::new()

@@ -208,13 +208,13 @@ fn vs_strip(
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var mag = in.magnitude_db;
 
-    // dB/decade tilt relative to 1 kHz. Do not lift sentinels/floor bins.
+    // dB/octave tilt relative to 1 kHz. Do not lift sentinels/floor bins.
     if u.tilt_db != 0.0 {
         if !(mag > DB_ANALYSIS_FLOOR + DB_FLOOR_EPS) {
             return vec4<f32>(0.0);
         }
         if in.freq_hz > 0.0 {
-            mag += u.tilt_db * log(in.freq_hz / 1000.0) * LOG10_E;
+            mag += u.tilt_db * log2(in.freq_hz / 1000.0);
         }
     }
 
