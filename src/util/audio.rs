@@ -197,25 +197,6 @@ pub(crate) fn project_interleaved_channel_into(
     !output.is_empty()
 }
 
-pub fn mixdown_into_deque(buffer: &mut VecDeque<f32>, samples: &[f32], channels: usize) {
-    if channels == 0 || samples.is_empty() {
-        return;
-    }
-
-    if channels == 1 {
-        buffer.extend(samples);
-        return;
-    }
-
-    buffer.reserve(samples.len() / channels);
-
-    let inv = 1.0 / channels as f32;
-    for frame in samples.chunks_exact(channels) {
-        let sum: f32 = frame.iter().sum();
-        buffer.push_back(sum * inv);
-    }
-}
-
 pub fn apply_window(buffer: &mut [f32], window: &[f32]) {
     debug_assert_eq!(buffer.len(), window.len());
     for (sample, coeff) in buffer.iter_mut().zip(window.iter()) {

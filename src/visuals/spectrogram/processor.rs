@@ -24,8 +24,8 @@
 use crate::dsp::AudioBlock;
 use crate::util::audio::{
     DB_FLOOR, DEFAULT_SAMPLE_RATE, FrequencyScale, LN_TO_DB, WindowKind,
-    compute_fft_bin_normalization, copy_dc_removed_from_deque, db_to_power, mixdown_into_deque,
-    power_to_db, sample_rates_differ, sanitize_sample_rate, window_coefficients,
+    compute_fft_bin_normalization, copy_dc_removed_from_deque, db_to_power, power_to_db,
+    sample_rates_differ, sanitize_sample_rate, window_coefficients,
 };
 use bytemuck::{Pod, Zeroable};
 use rustfft::num_complex::Complex32;
@@ -172,6 +172,8 @@ pub struct SpectrogramProcessor {
     reassign: ReassignmentBuffers,
     bin_norm: Vec<f32>,
     audio_buffer: VecDeque<f32>,
+    audio_front_sample: u64,
+    audio_last_nonzero: Option<u64>,
     bin_hz: f32,
     reset: bool,
 }
@@ -198,6 +200,8 @@ impl SpectrogramProcessor {
             reassign: ReassignmentBuffers::default(),
             bin_norm: Vec::new(),
             audio_buffer: VecDeque::new(),
+            audio_front_sample: 0,
+            audio_last_nonzero: None,
             bin_hz: 0.0,
             reset: true,
         };
@@ -252,6 +256,7 @@ impl SpectrogramProcessor {
         self.bin_norm = compute_fft_bin_normalization(&self.window, self.fft_size);
         let buffered_len = active_len.saturating_mul(2);
         self.audio_buffer.truncate(buffered_len);
+        self.recompute_audio_activity();
         self.shrink_audio_buffer(buffered_len);
         self.bin_hz = self.config.sample_rate / self.fft_size.max(1) as f32;
     }
@@ -290,11 +295,22 @@ impl SpectrogramProcessor {
         let skip = ready.saturating_sub(retained);
         let mut output = Vec::with_capacity(ready.min(retained));
         let skipped_samples = skip.saturating_mul(hop_size).min(self.audio_buffer.len());
-        self.audio_buffer.drain(..skipped_samples);
+        self.drain_audio(skipped_samples);
 
         for _ in skip..ready {
-            copy_dc_removed_from_deque(&mut self.real[..read_len], &self.audio_buffer);
+            if self.audio_is_silent() {
+                let col = if reassignment_enabled {
+                    SpectrogramColumn::Reassigned(vec![SpectrogramPoint::SENTINEL; bin_count])
+                } else {
+                    self.classic_bins[..bin_count].fill(pack_classic_db(DB_FLOOR));
+                    SpectrogramColumn::Classic(self.classic_bins[..bin_count].to_vec())
+                };
+                output.push(col);
+                self.drain_audio(hop_size);
+                continue;
+            }
 
+            copy_dc_removed_from_deque(&mut self.real[..read_len], &self.audio_buffer);
             let center = &self.real[center_offset..center_offset + self.window_size];
 
             let col = if reassignment_enabled {
@@ -351,8 +367,7 @@ impl SpectrogramProcessor {
             };
 
             output.push(col);
-            self.audio_buffer
-                .drain(..hop_size.min(self.audio_buffer.len()));
+            self.drain_audio(hop_size);
         }
         self.shrink_audio_buffer(read_len.saturating_mul(4));
         output
@@ -362,6 +377,54 @@ impl SpectrogramProcessor {
         let target = target.max(self.audio_buffer.len());
         if self.audio_buffer.capacity() > target.saturating_mul(4).max(1) {
             self.audio_buffer.shrink_to(target);
+        }
+    }
+
+    fn recompute_audio_activity(&mut self) {
+        let base = self.audio_front_sample;
+        self.audio_last_nonzero = self
+            .audio_buffer
+            .iter()
+            .rposition(|&sample| sample != 0.0)
+            .map(|i| base + i as u64);
+    }
+
+    fn audio_is_silent(&self) -> bool {
+        self.audio_last_nonzero
+            .is_none_or(|last| last < self.audio_front_sample)
+    }
+
+    fn drain_audio(&mut self, count: usize) {
+        let count = count.min(self.audio_buffer.len());
+        if count == 0 {
+            return;
+        }
+        drop(self.audio_buffer.drain(..count));
+        self.audio_front_sample = self.audio_front_sample.saturating_add(count as u64);
+    }
+
+    fn push_audio(&mut self, samples: &[f32], channels: usize) {
+        if channels == 0 || samples.is_empty() {
+            return;
+        }
+        if channels == 1 {
+            let base = self.audio_front_sample + self.audio_buffer.len() as u64;
+            if let Some(i) = samples.iter().rposition(|&sample| sample != 0.0) {
+                self.audio_last_nonzero = Some(base + i as u64);
+            }
+            self.audio_buffer.extend(samples);
+            return;
+        }
+
+        self.audio_buffer.reserve(samples.len() / channels);
+        let inv = 1.0 / channels as f32;
+        for frame in samples.chunks_exact(channels) {
+            let sample = frame.iter().sum::<f32>() * inv;
+            if sample != 0.0 {
+                self.audio_last_nonzero =
+                    Some(self.audio_front_sample + self.audio_buffer.len() as u64);
+            }
+            self.audio_buffer.push_back(sample);
         }
     }
 
@@ -421,9 +484,11 @@ impl SpectrogramProcessor {
             self.config.sample_rate = sample_rate;
             self.rebuild_fft();
             self.audio_buffer.clear();
+            self.audio_front_sample = 0;
+            self.audio_last_nonzero = None;
             self.reset = true;
         }
-        mixdown_into_deque(&mut self.audio_buffer, block.samples, block.channels);
+        self.push_audio(block.samples, block.channels);
         let cols = self.process_ready_windows();
         let bin_count = self.fft_size / 2 + 1;
         if cols.is_empty() {
@@ -458,6 +523,8 @@ impl SpectrogramProcessor {
             self.rebuild_fft();
             if rate_changed {
                 self.audio_buffer.clear();
+                self.audio_front_sample = 0;
+                self.audio_last_nonzero = None;
             }
         }
         let reset = rebuild || prev.hop_size != cfg.hop_size;
@@ -700,6 +767,30 @@ mod tests {
         processor.update_config(next);
 
         assert_eq!(processor.bin_hz, next.sample_rate / processor.fft_size as f32);
+    }
+
+    #[test]
+    fn silent_input_advances_transparent_columns() {
+        let samples = vec![0.0; 192];
+        let floor = pack_classic_db(DB_FLOOR);
+
+        let classic = process_samples(cfg(64, 16, false), &samples);
+        assert_eq!(classic.new_columns.len(), 4);
+        assert!(classic
+            .new_columns
+            .iter()
+            .all(|col| classic_mags(col).iter().all(|&mag| mag == floor)));
+
+        let reassigned = process_samples(cfg(64, 16, true), &samples);
+        assert_eq!(reassigned.new_columns.len(), 4);
+        assert!(reassigned
+            .new_columns
+            .iter()
+            .all(|col| {
+                reassigned_points(col)
+                    .iter()
+                    .all(|&p| p == SpectrogramPoint::SENTINEL)
+            }));
     }
 
     #[test]
