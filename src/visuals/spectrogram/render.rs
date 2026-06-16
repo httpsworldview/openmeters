@@ -14,17 +14,10 @@ use crate::visuals::render::common::{
 };
 
 use super::processor::SpectrogramPoint;
-use crate::util::audio::FrequencyScale;
+use crate::util::audio::{FrequencyScale, hz_to_erb_rate};
 
 pub const SPECTROGRAM_PALETTE_SIZE: usize = 5;
-
-const fn extent3d(w: u32, h: u32) -> wgpu::Extent3d {
-    wgpu::Extent3d {
-        width: if w > 0 { w } else { 1 },
-        height: if h > 0 { h } else { 1 },
-        depth_or_array_layers: 1,
-    }
-}
+const LOG_KNEE_HZ: f32 = 20.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColumnKind {
@@ -128,27 +121,31 @@ impl Primitive for SpectrogramPrimitive {
         let Some(r) = inst.resources.as_ref() else {
             return;
         };
-        // Classic skips the trailing bin (no successor to fill into).
-        let (pl, segs_per_col) = match r.ring.kind {
-            ColumnKind::Reassigned => (&pipeline.splat_pipeline, inst.points_per_col),
-            ColumnKind::Classic => (
-                &pipeline.strip_pipeline,
-                inst.points_per_col.saturating_sub(1),
-            ),
-        };
-        let instance_count = inst.col_count * segs_per_col;
-        if instance_count == 0 {
+        if inst.col_count == 0 {
             return;
         }
 
         let mut pass = begin_load_pass(encoder, target, clip, "Spectrogram pass");
-        pass.set_pipeline(pl);
         pass.set_bind_group(0, &r.ring.bg, &[]);
         pass.set_vertex_buffer(0, r.quad_buf.slice(..));
-        if r.ring.kind == ColumnKind::Reassigned {
-            pass.set_vertex_buffer(1, r.ring.buf.slice(..));
+        match r.ring.kind {
+            ColumnKind::Reassigned => {
+                let instance_count = inst.col_count * inst.points_per_col;
+                if instance_count == 0 {
+                    return;
+                }
+                pass.set_pipeline(&pipeline.splat_pipeline);
+                pass.set_vertex_buffer(1, r.ring.buf.slice(..));
+                pass.draw(0..6, 0..instance_count);
+            }
+            ColumnKind::Classic => {
+                if inst.points_per_col < 2 {
+                    return;
+                }
+                pass.set_pipeline(&pipeline.classic_pipeline);
+                pass.draw(0..6, 0..1);
+            }
         }
-        pass.draw(0..6, 0..instance_count);
     }
 }
 
@@ -185,7 +182,7 @@ fn point_instance_layout() -> wgpu::VertexBufferLayout<'static> {
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, PartialEq)]
 struct Uniforms {
-    freq_min_max: [f32; 2], // display axis bounds
+    freq_axis: [f32; 2], // (scaled_min, inverse scaled display span)
     freq_scale: u32,
     points_per_col: u32,
     history_length: u32,
@@ -209,12 +206,15 @@ struct Uniforms {
     // (pos1, pos2, pos3, spread0), (spread1, spread2, spread3, spread4).
     // Stops 0 and 4 are constant 0.0 / 1.0 and live in the shader.
     stops: [[f32; 4]; 2],
+    // Quantized to match the old Rgba8Unorm palette texture path.
+    palette: [[f32; 4]; SPECTROGRAM_PALETTE_SIZE],
 }
 
 // Locks layout to what the WGSL Uniforms struct expects. Stops must land at
-// offset 112 (16-aligned for array<vec4>), total 144 bytes.
-const _: () = assert!(std::mem::size_of::<Uniforms>() == 144);
+// offset 112 (16-aligned for array<vec4>), palette at 144, total 224 bytes.
+const _: () = assert!(std::mem::size_of::<Uniforms>() == 224);
 const _: () = assert!(std::mem::offset_of!(Uniforms, stops) == 112);
+const _: () = assert!(std::mem::offset_of!(Uniforms, palette) == 144);
 
 impl Uniforms {
     fn from_params(p: &SpectrogramParams, viewport: [f32; 2], scale_factor: f32) -> Self {
@@ -223,6 +223,16 @@ impl Uniforms {
             FrequencyScale::Logarithmic => 1,
             FrequencyScale::Erb => 2,
         };
+        let scale_freq = |hz: f32| match p.freq_scale {
+            FrequencyScale::Linear => hz,
+            FrequencyScale::Logarithmic => (hz / LOG_KNEE_HZ).asinh(),
+            FrequencyScale::Erb => hz_to_erb_rate(hz),
+        };
+        let freq_lo = scale_freq(p.freq_min);
+        let freq_hi = scale_freq(p.freq_max);
+        let palette = p
+            .palette
+            .map(|rgba| rgba.map(|c| f32_to_u8(c) as f32 / 255.0));
         let rotation = p.rotation.rem_euclid(4) as u32;
         let sf = scale_factor.max(1.0);
         let hl = p.ring_capacity.max(1);
@@ -230,7 +240,7 @@ impl Uniforms {
         let inv_uv_range = 1.0 / (p.uv_y_range[1] - p.uv_y_range[0]).max(1e-12);
         let col_stride_u16 = p.points_per_column.div_ceil(2) * 2;
         Self {
-            freq_min_max: [p.freq_min, p.freq_max],
+            freq_axis: [freq_lo, 1.0 / (freq_hi - freq_lo).max(1e-12)],
             freq_scale,
             points_per_col: p.points_per_column,
             history_length: p.ring_capacity,
@@ -272,15 +282,16 @@ impl Uniforms {
                     p.stop_spreads[4],
                 ],
             ],
+            palette,
         }
     }
 }
 
 pub struct Pipeline {
     splat_pipeline: wgpu::RenderPipeline,
-    strip_pipeline: wgpu::RenderPipeline,
+    classic_pipeline: wgpu::RenderPipeline,
     splat_bgl: wgpu::BindGroupLayout,
-    strip_bgl: wgpu::BindGroupLayout,
+    classic_bgl: wgpu::BindGroupLayout,
     instances: HashMap<u64, Instance>,
     cache: CacheTracker,
 }
@@ -301,14 +312,6 @@ impl primitive::Pipeline for Pipeline {
                 min_binding_size: None,
             },
         );
-        let palette_entry = bgl_entry(
-            1,
-            wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                view_dimension: wgpu::TextureViewDimension::D1,
-                multisampled: false,
-            },
-        );
         let mag_entry = bgl_entry(
             2,
             wgpu::BindingType::Buffer {
@@ -320,11 +323,11 @@ impl primitive::Pipeline for Pipeline {
 
         let splat_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Spectrogram splat BGL"),
-            entries: &[uniform_entry, palette_entry],
+            entries: &[uniform_entry],
         });
-        let strip_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Spectrogram strip BGL"),
-            entries: &[uniform_entry, palette_entry, mag_entry],
+        let classic_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Spectrogram classic BGL"),
+            entries: &[uniform_entry, mag_entry],
         });
 
         let splat_pipeline = create_render_pipeline(
@@ -334,29 +337,31 @@ impl primitive::Pipeline for Pipeline {
                 label: "Spectrogram splat pipeline",
                 shader: &shader,
                 vertex_entry: "vs_splat",
+                fragment_entry: "fs_splat",
                 buffers: &[quad_corner_layout(), point_instance_layout()],
                 bind_group_layouts: &[&splat_bgl],
                 topology: wgpu::PrimitiveTopology::TriangleList,
             },
         );
-        let strip_pipeline = create_render_pipeline(
+        let classic_pipeline = create_render_pipeline(
             device,
             format,
             RenderPipelineSpec {
-                label: "Spectrogram strip pipeline",
+                label: "Spectrogram classic pipeline",
                 shader: &shader,
-                vertex_entry: "vs_strip",
+                vertex_entry: "vs_classic",
+                fragment_entry: "fs_classic",
                 buffers: &[quad_corner_layout()],
-                bind_group_layouts: &[&strip_bgl],
+                bind_group_layouts: &[&classic_bgl],
                 topology: wgpu::PrimitiveTopology::TriangleList,
             },
         );
 
         Self {
             splat_pipeline,
-            strip_pipeline,
+            classic_pipeline,
             splat_bgl,
-            strip_bgl,
+            classic_bgl,
             instances: HashMap::new(),
             cache: CacheTracker::default(),
         }
@@ -378,7 +383,7 @@ impl Pipeline {
         inst.last_used = frame;
         let bgls = Bgls {
             splat: &self.splat_bgl,
-            strip: &self.strip_bgl,
+            classic: &self.classic_bgl,
         };
         inst.sync(device, queue, bgls, params, viewport, scale_factor);
         if let Some(t) = prune {
@@ -399,7 +404,7 @@ fn bgl_entry(binding: u32, ty: wgpu::BindingType) -> wgpu::BindGroupLayoutEntry 
 #[derive(Clone, Copy)]
 struct Bgls<'a> {
     splat: &'a wgpu::BindGroupLayout,
-    strip: &'a wgpu::BindGroupLayout,
+    classic: &'a wgpu::BindGroupLayout,
 }
 
 #[derive(Default)]
@@ -455,10 +460,7 @@ struct ColumnRing {
 struct Resources {
     uniform_buf: wgpu::Buffer,
     quad_buf: wgpu::Buffer,
-    palette_tex: wgpu::Texture,
-    palette_view: wgpu::TextureView,
     uniform_cache: Uniforms,
-    palette_cache: [[f32; 4]; SPECTROGRAM_PALETTE_SIZE],
     ring: ColumnRing,
     classic_upload_scratch: Vec<u16>,
 }
@@ -482,30 +484,12 @@ impl Resources {
             .get_mapped_range_mut()
             .copy_from_slice(bytemuck::cast_slice(&UNIT_QUAD));
         quad_buf.unmap();
-        // Rgba8Unorm palette: raw sRGB stops, mix in sRGB space (web-colors pipeline).
-        let palette_tex = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Spectrogram palette"),
-            size: extent3d(SPECTROGRAM_PALETTE_SIZE as u32, 1),
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D1,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[wgpu::TextureFormat::Rgba8Unorm],
-        });
-        let palette_view = palette_tex.create_view(&wgpu::TextureViewDescriptor {
-            dimension: Some(wgpu::TextureViewDimension::D1),
-            ..Default::default()
-        });
-        let ring = create_ring(device, bgls, &uniform_buf, &palette_view, p);
+        let ring = create_ring(device, bgls, &uniform_buf, p);
 
         Self {
             uniform_buf,
             quad_buf,
-            palette_tex,
-            palette_view,
             uniform_cache: Uniforms::zeroed(),
-            palette_cache: [[0.0; 4]; SPECTROGRAM_PALETTE_SIZE],
             ring,
             classic_upload_scratch: Vec::new(),
         }
@@ -523,7 +507,6 @@ impl Resources {
         self.resize_ring(device, queue, bgls, p);
         self.upload_pending(queue, p);
         self.write_uniforms(queue, p, viewport, scale_factor);
-        self.write_palette(queue, p);
     }
 
     fn resize_ring(
@@ -543,7 +526,7 @@ impl Resources {
             return;
         }
 
-        let new_ring = create_ring(device, bgls, &self.uniform_buf, &self.palette_view, p);
+        let new_ring = create_ring(device, bgls, &self.uniform_buf, p);
         if let Some((source_cap, copies)) = copy_plan {
             let source_cap = u64::from(*source_cap).min(self.ring.capacity / stride);
             if source_cap > 0 {
@@ -616,38 +599,12 @@ impl Resources {
         }
     }
 
-    fn write_palette(&mut self, queue: &wgpu::Queue, p: &SpectrogramParams) {
-        if p.palette == self.palette_cache {
-            return;
-        }
-        let mut bytes = [0u8; SPECTROGRAM_PALETTE_SIZE * 4];
-        for (dst, rgba) in bytes.chunks_exact_mut(4).zip(p.palette.iter()) {
-            dst.copy_from_slice(&rgba.map(f32_to_u8));
-        }
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.palette_tex,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &bytes,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some((SPECTROGRAM_PALETTE_SIZE * 4) as u32),
-                rows_per_image: None,
-            },
-            extent3d(SPECTROGRAM_PALETTE_SIZE as u32, 1),
-        );
-        self.palette_cache = p.palette;
-    }
 }
 
 fn create_ring(
     device: &wgpu::Device,
     bgls: Bgls<'_>,
     uniform_buf: &wgpu::Buffer,
-    palette_view: &wgpu::TextureView,
     p: &SpectrogramParams,
 ) -> ColumnRing {
     let copy = wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC;
@@ -660,7 +617,7 @@ fn create_ring(
         ColumnKind::Classic => (
             "Spectrogram mag ring",
             copy | wgpu::BufferUsages::STORAGE,
-            bgls.strip,
+            bgls.classic,
         ),
     };
     let capacity = p.ring_capacity as u64 * col_byte_stride(p.col_kind, p.points_per_column);
@@ -671,7 +628,7 @@ fn create_ring(
         mapped_at_creation: false,
     });
     let mag = (p.col_kind == ColumnKind::Classic).then_some(&buf);
-    let bg = make_bind_group(device, layout, uniform_buf, palette_view, mag);
+    let bg = make_bind_group(device, layout, uniform_buf, mag);
     ColumnRing {
         kind: p.col_kind,
         buf,
@@ -684,14 +641,10 @@ fn make_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     ub: &wgpu::Buffer,
-    pal: &wgpu::TextureView,
     mag: Option<&wgpu::Buffer>,
 ) -> wgpu::BindGroup {
     let entry = |binding, resource| wgpu::BindGroupEntry { binding, resource };
-    let mut entries = vec![
-        entry(0, ub.as_entire_binding()),
-        entry(1, wgpu::BindingResource::TextureView(pal)),
-    ];
+    let mut entries = vec![entry(0, ub.as_entire_binding())];
     if let Some(buf) = mag {
         entries.push(entry(2, buf.as_entire_binding()));
     }

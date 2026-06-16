@@ -12,7 +12,7 @@ const DB_FLOOR_EPS: f32 = 0.01;
 
 // Must match Rust-side Uniforms layout exactly.
 struct Uniforms {
-    freq_min_max: vec2<f32>,        // (freq_min, freq_max) display axis bounds
+    freq_axis: vec2<f32>,           // (scaled_min, inverse scaled display span)
     freq_scale: u32,                // 0=linear, 1=log, 2=erb
     points_per_col: u32,
 
@@ -34,7 +34,7 @@ struct Uniforms {
     newest_col: u32,
     inv_uv_range: f32,
     col_stride_u16: u32,
-    // FFT bin spacing (sample_rate / fft_size); only used by vs_strip.
+    // FFT bin spacing (sample_rate / fft_size); only used by classic sampling.
     bin_hz: f32,
     // Three u32 pads (vec3 would align to 16 B and desync the Rust layout).
     _pad0: u32,
@@ -44,6 +44,8 @@ struct Uniforms {
     // (pos1, pos2, pos3, spread0), (spread1, spread2, spread3, spread4).
     // Stops 0 and 4 are constant 0.0 / 1.0
     stops: array<vec4<f32>, 2>,
+    // Quantized sRGB stops, matching the old Rgba8Unorm texture path.
+    palette: array<vec4<f32>, 5>,
 }
 
 struct VertexOutput {
@@ -53,7 +55,6 @@ struct VertexOutput {
 }
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
-@group(0) @binding(1) var palette_tex: texture_1d<f32>;
 @group(0) @binding(2) var<storage, read> mags: array<u32>;
 
 // (Glasberg & Moore 1990)
@@ -62,59 +63,54 @@ fn erb(f: f32) -> f32 {
 }
 
 fn freq_to_norm(hz: f32) -> f32 {
-    let lo = u.freq_min_max.x;
-    let hi = u.freq_min_max.y;
-
+    var scaled: f32;
     switch u.freq_scale {
-        case 1u: {
-            let a_lo = asinh(lo / LOG_KNEE_HZ);
-            let a_hi = asinh(hi / LOG_KNEE_HZ);
-            return (asinh(hz / LOG_KNEE_HZ) - a_lo) / max(a_hi - a_lo, 1e-12);
-        }
-        case 2u: {
-            let erb_lo = erb(lo);
-            let erb_hi = erb(hi);
-            return (erb(hz) - erb_lo) / max(erb_hi - erb_lo, 1e-12);
-        }
-        default: {
-            return (hz - lo) / max(hi - lo, 1e-12);
-        }
+        case 1u: { scaled = asinh(hz / LOG_KNEE_HZ); }
+        case 2u: { scaled = erb(hz); }
+        default: { scaled = hz; }
     }
+    return (scaled - u.freq_axis.x) * u.freq_axis.y;
 }
 
-struct PaletteSegment {
-    lo: i32,
-    hi: i32,
-    f: f32,
-}
-
-fn find_segment(t: f32) -> PaletteSegment {
-    let tc = clamp(t, 0.0, 1.0);
-    let positions = array<f32, 5>(0.0, u.stops[0].x, u.stops[0].y, u.stops[0].z, 1.0);
-    let spreads = array<f32, 5>(u.stops[0].w, u.stops[1].x, u.stops[1].y, u.stops[1].z, u.stops[1].w);
-    var lo: i32 = 3;
-    var hi: i32 = 4;
-    var linear_t: f32 = 1.0;
-    for (var i: i32 = 0; i < 4; i = i + 1) {
-        let p_hi = positions[i + 1];
-        if (tc <= p_hi) {
-            let p_lo = positions[i];
-            let span = max(p_hi - p_lo, 1e-6);
-            lo = i;
-            hi = i + 1;
-            linear_t = clamp((tc - p_lo) / span, 0.0, 1.0);
-            break;
-        }
-    }
-    let sl = spreads[lo];
-    let sr = spreads[hi];
-    var f: f32;
+fn spread_t(linear_t: f32, sl: f32, sr: f32) -> f32 {
     if (abs(sl - 1.0) < 1e-4 && abs(sr - 1.0) < 1e-4) {
-        f = linear_t;
-    } else {
-        f = clamp(pow(linear_t, sl / sr), 0.0, 1.0);
+        return linear_t;
     }
-    return PaletteSegment(lo, hi, f);
+    return clamp(pow(linear_t, sl / sr), 0.0, 1.0);
+}
+
+fn palette_color(t: f32) -> vec4<f32> {
+    let tc = clamp(t, 0.0, 1.0);
+    var lo = u.palette[3];
+    var hi = u.palette[4];
+    var p_lo = u.stops[0].z;
+    var p_hi = 1.0;
+    var sl = u.stops[1].z;
+    var sr = u.stops[1].w;
+    if (tc <= u.stops[0].x) {
+        lo = u.palette[0];
+        hi = u.palette[1];
+        p_lo = 0.0;
+        p_hi = u.stops[0].x;
+        sl = u.stops[0].w;
+        sr = u.stops[1].x;
+    } else if (tc <= u.stops[0].y) {
+        lo = u.palette[1];
+        hi = u.palette[2];
+        p_lo = u.stops[0].x;
+        p_hi = u.stops[0].y;
+        sl = u.stops[1].x;
+        sr = u.stops[1].y;
+    } else if (tc <= u.stops[0].z) {
+        lo = u.palette[2];
+        hi = u.palette[3];
+        p_lo = u.stops[0].y;
+        p_hi = u.stops[0].z;
+        sl = u.stops[1].y;
+        sr = u.stops[1].z;
+    }
+    let linear_t = clamp((tc - p_lo) / max(p_hi - p_lo, 1e-6), 0.0, 1.0);
+    return mix(lo, hi, spread_t(linear_t, sl, sr));
 }
 
 // 0 = newest. Single formula handles both partial and full rings via newest_col.
@@ -152,6 +148,7 @@ fn unpack_mag(slot: u32, bin_in_col: u32) -> f32 {
 }
 
 const CULL_POS: vec4<f32> = vec4<f32>(0.0, 0.0, 2.0, 1.0);
+const CLASSIC_SENTINEL_DB: f32 = -10000.0;
 
 @vertex
 fn vs_splat(
@@ -173,48 +170,77 @@ fn vs_splat(
 }
 
 @vertex
-fn vs_strip(
-    @location(0) corner: vec2<f32>,
-    @builtin(instance_index) inst: u32,
-) -> VertexOutput {
-    // Instance count = col_count * (points_per_col - 1); instance i encodes
-    // (slot, bin_in_col) where bin_in_col is the lower of the two segment bins.
-    let segs_per_col = max(u.points_per_col, 1u) - 1u;
-    let slot = inst / max(segs_per_col, 1u);
-    let bin_in_col = inst % max(segs_per_col, 1u);
-
-    // Compute both endpoint freq positions so cull decisions are uniform across quad
-    let zoomed_lo = (freq_to_norm(f32(bin_in_col) * u.bin_hz) - u.uv_y_range.x) * u.inv_uv_range;
-    let zoomed_hi = (freq_to_norm(f32(bin_in_col + 1u) * u.bin_hz) - u.uv_y_range.x) * u.inv_uv_range;
-    if max(zoomed_lo, zoomed_hi) < -0.01 || min(zoomed_lo, zoomed_hi) > 1.01 {
-        return VertexOutput(CULL_POS, u.floor_db, 0.0);
-    }
-
-    // corner.y > 0 -> lower-freq edge
-    // note: not exact. off by a fraction of a dB
-    let use_lo = corner.y > 0.0;
-    let bin_idx = select(bin_in_col + 1u, bin_in_col, use_lo);
-    let mag_db = unpack_mag(slot, bin_idx);
-    let freq_hz = f32(bin_idx) * u.bin_hz;
-    let ext = extents();
-    let zoomed = select(zoomed_hi, zoomed_lo, use_lo);
-    // corner padding: 1 px time + 1 px freq so subpixel bins stay visible at high freq.
-    let pos = vec2<f32>(ext.x - f32(compute_age(slot)) * u.scale_factor, (1.0 - zoomed) * ext.y)
-        + corner * u.scale_factor;
-    return VertexOutput(place(pos, ext), mag_db, freq_hz);
+fn vs_classic(@location(0) corner: vec2<f32>) -> VertexOutput {
+    let px = u.bounds.xy + (corner + vec2<f32>(0.5)) * u.bounds.zw;
+    let clip = vec4<f32>(px.x * u.clip_scale.x - 1.0, 1.0 - px.y * u.clip_scale.y, 0.0, 1.0);
+    return VertexOutput(clip, CLASSIC_SENTINEL_DB, 0.0);
 }
 
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    var mag = in.magnitude_db;
+fn norm_to_freq(norm: f32) -> f32 {
+    let scaled = u.freq_axis.x + norm / max(u.freq_axis.y, 1e-12);
+    switch u.freq_scale {
+        case 1u: { return LOG_KNEE_HZ * sinh(scaled); }
+        case 2u: { return 228.8 * (pow(10.0, scaled / 21.4) - 1.0); }
+        default: { return scaled; }
+    }
+}
+
+fn unrotate(local: vec2<f32>, ext: vec2<f32>) -> vec2<f32> {
+    switch u.rotation {
+        case 1u: { return vec2<f32>(local.y, ext.y - local.x); }
+        case 2u: { return vec2<f32>(ext.x - local.x, ext.y - local.y); }
+        case 3u: { return vec2<f32>(ext.x - local.y, local.x); }
+        default: { return local; }
+    }
+}
+
+fn classic_sample(frag_xy: vec2<f32>) -> vec2<f32> {
+    let local = frag_xy - u.bounds.xy;
+    if local.x < 0.0 || local.y < 0.0 || local.x > u.bounds.z || local.y > u.bounds.w {
+        return vec2<f32>(CLASSIC_SENTINEL_DB, 0.0);
+    }
+
+    let ext = extents();
+    let pos = unrotate(local, ext);
+    if pos.x < 0.0 || pos.y < 0.0 || pos.x > ext.x || pos.y > ext.y {
+        return vec2<f32>(CLASSIC_SENTINEL_DB, 0.0);
+    }
+
+    let age_f = floor((ext.x - pos.x) / max(u.scale_factor, 1e-6));
+    if age_f < 0.0 || age_f >= f32(u.col_count) {
+        return vec2<f32>(CLASSIC_SENTINEL_DB, 0.0);
+    }
+    let hl = max(u.history_length, 1u);
+    let slot = (u.newest_col + hl - u32(age_f)) % hl;
+
+    let zoomed = 1.0 - pos.y / max(ext.y, 1.0);
+    if zoomed < 0.0 || zoomed > 1.0 {
+        return vec2<f32>(CLASSIC_SENTINEL_DB, 0.0);
+    }
+    let freq_norm = u.uv_y_range.x + zoomed / u.inv_uv_range;
+    let freq_hz = norm_to_freq(freq_norm);
+    let max_bin = max(u.points_per_col, 1u) - 1u;
+    let bin_f = freq_hz / max(u.bin_hz, 1e-12);
+    if bin_f < 0.0 || bin_f > f32(max_bin) {
+        return vec2<f32>(CLASSIC_SENTINEL_DB, 0.0);
+    }
+
+    let bin0 = min(u32(floor(bin_f)), max_bin);
+    let bin1 = min(bin0 + 1u, max_bin);
+    let mag = mix(unpack_mag(slot, bin0), unpack_mag(slot, bin1), fract(bin_f));
+    return vec2<f32>(mag, freq_hz);
+}
+
+fn shade(mut_mag: f32, freq_hz: f32) -> vec4<f32> {
+    var mag = mut_mag;
 
     // dB/octave tilt relative to 1 kHz. Do not lift sentinels/floor bins.
     if u.tilt_db != 0.0 {
         if !(mag > DB_ANALYSIS_FLOOR + DB_FLOOR_EPS) {
             return vec4<f32>(0.0);
         }
-        if in.freq_hz > 0.0 {
-            mag += u.tilt_db * log2(in.freq_hz / 1000.0);
+        if freq_hz > 0.0 {
+            mag += u.tilt_db * log2(freq_hz / 1000.0);
         }
     }
 
@@ -222,12 +248,23 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let normalized = clamp((mag - u.floor_db) / range, 0.0, 1.0);
     let adjusted = pow(normalized, max(u.contrast, 0.01));
 
-    // Rgba8Unorm palette: raw sRGB stops, mix in sRGB space (web-colors pipeline).
-    let seg = find_segment(adjusted);
-    let stop_lo = textureLoad(palette_tex, seg.lo, 0);
-    let stop_hi = textureLoad(palette_tex, seg.hi, 0);
-    let color = mix(stop_lo, stop_hi, seg.f);
+    // Quantized sRGB stops, mix in sRGB space (web-colors pipeline).
+    let color = palette_color(adjusted);
 
     // iced expects premultiplied alpha
     return vec4<f32>(color.rgb * color.a, color.a);
+}
+
+@fragment
+fn fs_splat(in: VertexOutput) -> @location(0) vec4<f32> {
+    return shade(in.magnitude_db, in.freq_hz);
+}
+
+@fragment
+fn fs_classic(in: VertexOutput) -> @location(0) vec4<f32> {
+    let sample = classic_sample(in.position.xy);
+    if sample.x < -9000.0 {
+        return vec4<f32>(0.0);
+    }
+    return shade(sample.x, sample.y);
 }

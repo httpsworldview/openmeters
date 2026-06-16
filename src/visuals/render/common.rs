@@ -483,6 +483,7 @@ pub(crate) struct RenderPipelineSpec<'a> {
     pub(crate) label: &'static str,
     pub(crate) shader: &'a wgpu::ShaderModule,
     pub(crate) vertex_entry: &'static str,
+    pub(crate) fragment_entry: &'static str,
     pub(crate) buffers: &'a [wgpu::VertexBufferLayout<'a>],
     pub(crate) bind_group_layouts: &'a [&'a wgpu::BindGroupLayout],
     pub(crate) topology: wgpu::PrimitiveTopology,
@@ -510,7 +511,7 @@ pub(crate) fn create_render_pipeline(
         },
         fragment: Some(wgpu::FragmentState {
             module: spec.shader,
-            entry_point: Some("fs_main"),
+            entry_point: Some(spec.fragment_entry),
             targets: &[Some(wgpu::ColorTargetState {
                 format,
                 blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
@@ -543,6 +544,7 @@ fn create_sdf_pipeline(
             label,
             shader: &shader,
             vertex_entry: "vs_main",
+            fragment_entry: "fs_main",
             buffers: &[SdfVertex::layout()],
             bind_group_layouts: &[],
             topology,
