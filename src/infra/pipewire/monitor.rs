@@ -118,11 +118,11 @@ fn restore_all_routes(routing: &mut RoutingManager, snapshot: Option<&registry::
             routed_nodes.len()
         );
 
-        let hw_sink = routing.hw_sink(snapshot).cloned();
+        let hw_sink = routing.hw_sink(snapshot);
         let find_node = |id: &u32| snapshot.nodes.iter().find(|node| node.id == *id);
 
         for node in routed_nodes.iter().filter_map(&find_node) {
-            if let Some(sink) = hw_sink.as_ref() {
+            if let Some(sink) = hw_sink {
                 routing.handle.route_node(node, sink);
             } else {
                 // relying on the policy manager to pick a default.
@@ -214,11 +214,17 @@ impl RoutingManager {
         if self.current_links != links && self.handle.set_links(links.clone()) {
             self.current_links = links;
         }
-
         self.update_routes(snapshot);
     }
 
     fn update_routes(&mut self, snapshot: &registry::RegistrySnapshot) {
+        if self.capture_mode == CaptureMode::Device {
+            let (handle, nodes) = (&self.handle, &snapshot.nodes);
+            self.routed_to
+                .retain(|&id, _| nodes.iter().any(|n| n.id == id && !handle.reset_route(n)));
+            return;
+        }
+
         let Some(sink) = snapshot.find_node_by_label(VIRTUAL_SINK_NAME) else {
             if !self.warned_sink_missing {
                 warn!("[router] virtual sink '{VIRTUAL_SINK_NAME}' not yet available");
@@ -230,30 +236,21 @@ impl RoutingManager {
         let hw_sink = self.hw_sink(snapshot);
 
         for node in snapshot.route_candidates(sink) {
-            let target = match self.capture_mode {
-                CaptureMode::Applications if !self.disabled_nodes.contains(&node.id) => Some(sink),
-                _ => hw_sink,
-            };
+            let enabled = !self.disabled_nodes.contains(&node.id);
+            let target = enabled.then_some(sink).or(hw_sink);
 
-            let Some(target) = target else {
-                if self.routed_to.remove(&node.id).is_some() {
-                    warn!(
-                        "[router] unable to restore '{}'; no sink available",
-                        node.display_name()
+            if let Some(target) = target {
+                if self.handle.route_node(node, target)
+                    && self.routed_to.insert(node.id, target.id) != Some(target.id)
+                {
+                    info!(
+                        "[router] routed '{}' -> '{}'",
+                        node.display_name(),
+                        target.display_name()
                     );
                 }
-                continue;
-            };
-
-            if self.routed_to.get(&node.id) != Some(&target.id)
-                && self.handle.route_node(node, target)
-            {
-                info!(
-                    "[router] routed '{}' -> '{}'",
-                    node.display_name(),
-                    target.display_name()
-                );
-                self.routed_to.insert(node.id, target.id);
+            } else if self.routed_to.contains_key(&node.id) && self.handle.reset_route(node) {
+                self.routed_to.remove(&node.id);
             }
         }
     }

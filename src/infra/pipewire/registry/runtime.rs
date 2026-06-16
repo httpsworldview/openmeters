@@ -554,7 +554,9 @@ impl RegistryContext {
     }
 
     fn select_routing_metadata(&self, metadata_id: Option<u32>) {
-        *self.routing_metadata_id.borrow_mut() = metadata_id;
+        if self.routing_metadata_id.replace(metadata_id) == metadata_id {
+            return;
+        }
         if let Some(id) = metadata_id {
             let bindings = self.metadata_bindings.borrow();
             let name = bindings
@@ -565,6 +567,7 @@ impl RegistryContext {
         } else {
             warn!("[registry] no metadata available for routing");
         }
+        self.runtime.notify_watchers();
     }
 }
 
