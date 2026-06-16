@@ -23,6 +23,11 @@ pub struct OscilloscopeParams {
 
 impl OscilloscopePrimitive {
     fn build_vertices(&self, viewport: &Viewport, scratch: &mut GeometryScratch) {
+        const VERTICAL_PADDING: f32 = 8.0;
+        const CHANNEL_GAP: f32 = 12.0;
+        const AMPLITUDE_SCALE: f32 = 0.9;
+        const STROKE_WIDTH: f32 = 1.0;
+
         let samples_per_channel = self.params.samples_per_channel;
         let channels = self.params.channels.max(1);
 
@@ -32,11 +37,6 @@ impl OscilloscopePrimitive {
 
         let bounds = self.params.bounds;
         let clip = ClipTransform::from_viewport(viewport);
-
-        const VERTICAL_PADDING: f32 = 8.0;
-        const CHANNEL_GAP: f32 = 12.0;
-        const AMPLITUDE_SCALE: f32 = 0.9;
-        const STROKE_WIDTH: f32 = 1.0;
 
         let layout = ChannelLayout::new(
             bounds,

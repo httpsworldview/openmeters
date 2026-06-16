@@ -26,4 +26,4 @@ macro_rules! choice_enum {
     ($($rest:tt)+) => { $crate::macros::choice_enum!(@build [Default] $($rest)+); };
 }
 
-pub(crate) use choice_enum;
+pub(super) use choice_enum;

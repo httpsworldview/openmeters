@@ -9,7 +9,7 @@ use std::f32::consts::{FRAC_PI_2, PI};
 
 const GLOW_SIZE: f32 = 24.0;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ScrollGlow {
     pub show_start: bool,
     pub show_end: bool,

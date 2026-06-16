@@ -14,7 +14,7 @@ settings_pane!(
     extra_from_settings(settings) {
         num_cycles: usize = match settings.trigger_mode {
             TriggerMode::Stable { num_cycles } => num_cycles,
-            _ => 2,
+            TriggerMode::ZeroCrossing => 2,
         },
     }
 );
@@ -109,7 +109,7 @@ impl OscilloscopeSettingsPane {
     }
 }
 
-crate::macros::choice_enum!(no_default all pub(crate) enum TriggerPreset {
+crate::macros::choice_enum!(no_default all pub(in crate::ui) enum TriggerPreset {
     ZeroCrossing => "Zero-crossing",
     Stable => "Stable",
 });

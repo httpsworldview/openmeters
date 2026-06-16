@@ -7,20 +7,20 @@ macro_rules! visual_modules {
             pub mod processor;
             pub mod render;
             pub mod state;
-            pub(crate) use processor::{$config, $processor};
-            pub(crate) use state::{widget, $state};
+            pub(in crate::visuals) use processor::{$config, $processor};
+            pub(in crate::visuals) use state::{widget, $state};
         })+
     };
 }
 
 macro_rules! visualization_widget {
     (@base $widget:ident, $state:ty, |$this:ident, $renderer:ident, $theme:ident, $bounds:ident| $draw:block) => {
-        pub(crate) struct $widget<'a> {
+        struct $widget<'a> {
             state: &'a std::cell::RefCell<$state>,
         }
 
         impl<'a> $widget<'a> {
-            pub(crate) fn new(state: &'a std::cell::RefCell<$state>) -> Self {
+            fn new(state: &'a std::cell::RefCell<$state>) -> Self {
                 Self { state }
             }
         }
@@ -59,7 +59,7 @@ macro_rules! visualization_widget {
             }
         }
 
-        pub(crate) fn widget<'a, M: 'a>(state: &'a std::cell::RefCell<$state>) -> iced::Element<'a, M> {
+        pub(in crate::visuals) fn widget<'a, M: 'a>(state: &'a std::cell::RefCell<$state>) -> iced::Element<'a, M> {
             iced::Element::new($widget::new(state))
         }
     };
@@ -81,7 +81,7 @@ macro_rules! visualization_widget {
     };
 }
 
-pub(crate) use visualization_widget;
+pub(in crate::visuals) use visualization_widget;
 
 visual_modules! {
     loudness { LoudnessProcessor, LoudnessConfig, LoudnessState },
@@ -137,6 +137,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_VIS_KEY: AtomicU64 = AtomicU64::new(1);
 
-pub(crate) fn next_key() -> u64 {
+pub(in crate::visuals) fn next_key() -> u64 {
     NEXT_VIS_KEY.fetch_add(1, Ordering::Relaxed)
 }

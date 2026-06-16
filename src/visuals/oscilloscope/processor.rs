@@ -18,7 +18,7 @@ fn parabolic_refine(y_prev: f32, y_curr: f32, y_next: f32, tau: usize) -> f32 {
     (tau as f32 + delta.clamp(-1.0, 1.0)).max(1.0)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TriggerMode {
     ZeroCrossing,
     Stable { num_cycles: usize },
@@ -232,7 +232,9 @@ fn trigger_kernel_len(period: f32, rate: f32) -> usize {
 fn normalize_peak(data: &mut [f32]) {
     let peak = data.iter().map(|sample| sample.abs()).fold(0.0, f32::max);
     let scale = 1.0 / peak.max(StableTuning::NORMALIZE_FLOOR);
-    data.iter_mut().for_each(|sample| *sample *= scale);
+    for sample in data {
+        *sample *= scale;
+    }
 }
 
 fn gaussian(len: usize, index: usize, std: f32) -> f32 {
@@ -342,7 +344,7 @@ impl StableTrigger {
 
         self.stabilize(detected)
             .and_then(|estimate| self.locate(trace, estimate, cycles, sample_rate))
-            .unwrap_or(Capture {
+            .unwrap_or_else(|| Capture {
                 span: fallback_frames.saturating_sub(1).max(1) as f32,
                 start: trace.len().saturating_sub(fallback_frames),
                 frac_offset: 0.0,
@@ -513,8 +515,7 @@ impl StableTrigger {
         }
         self.reference_period = Some(
             self.reference_period
-                .map(|prev| prev + StableTuning::BUFFER_RESPONSIVENESS * (period - prev))
-                .unwrap_or(period),
+                .map_or(period, |prev| prev + StableTuning::BUFFER_RESPONSIVENESS * (period - prev)),
         );
     }
 

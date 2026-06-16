@@ -260,8 +260,10 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer> for PaneGrid
                 r.current.len() == count
                     && (r.current.iter().sum::<f32>() - available_width).abs() < 0.5
             })
-            .map(|r| fit_sum(r.current.clone(), available_width))
-            .unwrap_or_else(|| solve_widths(&self.width_specs(), available_width));
+            .map_or_else(
+                || solve_widths(&self.width_specs(), available_width),
+                |r| fit_sum(r.current.clone(), available_width),
+            );
 
         let mut x = 0.0;
         let children = self
@@ -420,11 +422,11 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer> for PaneGrid
                     Quad {
                         bounds: child_layout.bounds(),
                         border: iced::Border {
-                            radius: Default::default(),
+                            radius: iced::border::Radius::default(),
                             width: 2.0,
                             color: with_alpha(accent, 0.9),
                         },
-                        shadow: Default::default(),
+                        shadow: iced::Shadow::default(),
                         snap: true,
                     },
                     Background::Color(with_alpha(accent, 0.4)),
@@ -441,8 +443,8 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer> for PaneGrid
                         Point::new(child.bounds().x + child.bounds().width - 1.0, b.y),
                         Size::new(2.0, b.height),
                     ),
-                    border: Default::default(),
-                    shadow: Default::default(),
+                    border: iced::Border::default(),
+                    shadow: iced::Shadow::default(),
                     snap: true,
                 },
                 Background::Color(with_alpha(crate::ui::theme::ACCENT_PRIMARY, 0.75)),
@@ -470,12 +472,13 @@ impl<'a, Message: 'a> PaneGrid<'a, Message> {
         cursor: mouse::Cursor,
         shell: &mut Shell<'_, Message>,
     ) -> bool {
+        use mouse::Button;
+
         let Event::Mouse(mouse_event) = event else {
             return false;
         };
-        use mouse::Button;
 
-        if let mouse::Event::CursorLeft = mouse_event {
+        if matches!(mouse_event, mouse::Event::CursorLeft) {
             let interaction = tree.state.downcast_mut::<Interaction>();
             let dragging = interaction.dragging.take();
             interaction.last_x = None;
@@ -593,13 +596,14 @@ impl<'a, Message: 'a> PaneGrid<'a, Message> {
         event: &Event,
         shell: &mut Shell<'_, Message>,
     ) -> bool {
+        use mouse::Button;
+
         let Event::Mouse(mouse_event) = event else {
             return false;
         };
         let Some(mut resizing) = tree.state.downcast_mut::<Interaction>().resizing.take() else {
             return false;
         };
-        use mouse::Button;
 
         match mouse_event {
             mouse::Event::CursorMoved { position } => {
@@ -678,7 +682,9 @@ fn fit_mins(specs: &[(f32, f32)], available: f32) -> Vec<f32> {
         .collect();
     let sum = min.iter().sum::<f32>();
     if sum > available && sum > EPS {
-        min.iter_mut().for_each(|w| *w *= available / sum);
+        for w in &mut min {
+            *w *= available / sum;
+        }
     }
     min
 }

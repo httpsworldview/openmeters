@@ -39,7 +39,7 @@ impl MusicalNote {
     }
 
     pub fn to_frequency(self) -> f32 {
-        A440_HZ * 2.0f32.powf((self.midi_number - A440_MIDI) as f32 / SEMITONES_PER_OCTAVE as f32)
+        A440_HZ * ((self.midi_number - A440_MIDI) as f32 / SEMITONES_PER_OCTAVE as f32).exp2()
     }
 
     pub fn is_black(self) -> bool {

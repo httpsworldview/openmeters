@@ -212,6 +212,10 @@ fn convert_samples_to_f32_into(
 ) -> Option<()> {
     use spa::param::audio::AudioFormat as Fmt;
 
+    const I8_DIV: f32 = i8::MAX as f32;
+    const I16_DIV: f32 = i16::MAX as f32;
+    const I32_DIV: f32 = i32::MAX as f32;
+
     let sample_count = converted_sample_count(bytes, format)?;
     if out.capacity() < sample_count {
         return None;
@@ -236,20 +240,17 @@ fn convert_samples_to_f32_into(
             }));
         }};
     }
-    const I8_DIV: f32 = i8::MAX as f32;
-    const I16_DIV: f32 = i16::MAX as f32;
-    const I32_DIV: f32 = i32::MAX as f32;
 
     match format {
         Fmt::F32LE | Fmt::F32BE => convert!(f32, |v| v),
         Fmt::F64LE | Fmt::F64BE => convert!(f64, |v| v as f32),
         Fmt::S16LE | Fmt::S16BE => convert!(i16, |v| v as f32 / I16_DIV),
         Fmt::S32LE | Fmt::S24_32LE | Fmt::S32BE | Fmt::S24_32BE => {
-            convert!(i32, |v| v as f32 / I32_DIV)
+            convert!(i32, |v| v as f32 / I32_DIV);
         }
         Fmt::U16LE | Fmt::U16BE => convert!(u16, |v| (v as f32 - 32_768.0) / 32_768.0),
         Fmt::U32LE | Fmt::U32BE => {
-            convert!(u32, |v| (v as f64 / u32::MAX as f64 * 2.0 - 1.0) as f32)
+            convert!(u32, |v| (v as f64 / u32::MAX as f64 * 2.0 - 1.0) as f32);
         }
         Fmt::U8 => out.extend(bytes.iter().map(|&b| (b as f32 - 128.0) / 128.0)),
         Fmt::S8 => convert!(i8, |v| f32::from(v) / I8_DIV),

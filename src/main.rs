@@ -12,13 +12,16 @@ mod visuals;
 use domain::routing::{DeviceSelection, RoutingCommand, RoutingConfig};
 use infra::pipewire::{monitor, registry, virtual_sink};
 use persistence::settings::SettingsHandle;
-use std::sync::{Arc, mpsc};
+use std::{
+    process::ExitCode,
+    sync::{Arc, mpsc},
+};
 use ui::UiConfig;
 use util::telemetry;
 
 use tracing::{error, info};
 
-fn main() {
+fn main() -> ExitCode {
     telemetry::init();
     info!("OpenMeters starting up");
 
@@ -45,13 +48,19 @@ fn main() {
     let ui_config = UiConfig::new(routing_tx, Some(Arc::new(snapshot_rx)), settings_handle)
         .with_audio_stream(audio_stream);
 
-    if let Err(err) = ui::run(ui_config) {
-        error!("[ui] failed: {err}");
-    }
+    let exit_code = match ui::run(ui_config) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            error!("[ui] failed: {err}");
+            ExitCode::FAILURE
+        }
+    };
     settings_for_shutdown.flush();
 
     if let Some((_, handle)) = registry_thread {
         info!("[main] shutdown requested; waiting for registry monitor to exit...");
         let _ = handle.join();
     }
+
+    exit_code
 }

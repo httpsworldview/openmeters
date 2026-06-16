@@ -68,13 +68,17 @@ fn text<C>(content: C, px: f32, bounds: Size) -> IcedText<C> {
     }
 }
 
-pub(crate) fn measure_text(s: &str, px: f32) -> Size {
+pub(in crate::visuals) fn measure_text(s: &str, px: f32) -> Size {
     use iced::advanced::graphics::text::Paragraph;
     use iced::advanced::text::Paragraph as _;
     Paragraph::with_text(text(s, px, Size::INFINITE)).min_bounds()
 }
 
-pub(crate) fn make_text(s: impl Into<String>, px: f32, bounds: Size) -> IcedText<String> {
+pub(in crate::visuals) fn make_text(
+    s: impl Into<String>,
+    px: f32,
+    bounds: Size,
+) -> IcedText<String> {
     text(s.into(), px, bounds)
 }
 
@@ -91,11 +95,11 @@ fn fill_rect_quad(r: &mut Renderer, bounds: Rectangle, color: Color, border: Bor
     );
 }
 
-pub(crate) fn fill_rect(r: &mut Renderer, bounds: Rectangle, color: Color) {
-    fill_rect_quad(r, bounds, color, Default::default(), true);
+pub(in crate::visuals) fn fill_rect(r: &mut Renderer, bounds: Rectangle, color: Color) {
+    fill_rect_quad(r, bounds, color, Border::default(), true);
 }
 
-pub(crate) fn fill_bordered_rect(
+pub(in crate::visuals) fn fill_bordered_rect(
     r: &mut Renderer,
     bounds: Rectangle,
     color: Color,
@@ -104,7 +108,7 @@ pub(crate) fn fill_bordered_rect(
     fill_rect_quad(r, bounds, color, border, false);
 }
 
-pub(crate) fn fill_snapped_bordered_rect(
+pub(in crate::visuals) fn fill_snapped_bordered_rect(
     r: &mut Renderer,
     bounds: Rectangle,
     color: Color,
@@ -162,7 +166,7 @@ pub fn quad_vertices(
     gradient_quad_vertices(x0, y0, x1, y1, clip, color, color)
 }
 
-pub(crate) fn gradient_quad_vertices(
+pub(in crate::visuals) fn gradient_quad_vertices(
     x0: f32,
     y0: f32,
     x1: f32,
@@ -187,7 +191,7 @@ pub(crate) fn gradient_quad_vertices(
     ]
 }
 
-pub(crate) fn baseline_segment_vertices(
+pub(in crate::visuals) fn baseline_segment_vertices(
     p0: (f32, f32),
     p1: (f32, f32),
     baseline: f32,
@@ -318,7 +322,8 @@ pub fn decimate_line_in_place(pts: &mut Vec<(f32, f32)>, max_points: usize) {
     }
 
     debug_assert!(pts.windows(2).all(|w| w[0].0 <= w[1].0));
-    let (x0, width) = (pts[0].0, pts.last().unwrap().0 - pts[0].0);
+    let Some(&last) = pts.last() else { return };
+    let (x0, width) = (pts[0].0, last.0 - pts[0].0);
     let bucketed = width.is_finite() && width > 0.0;
     let buckets = if bucketed {
         (max_points / 2).min(width.ceil().max(1.0) as usize)
@@ -454,7 +459,7 @@ pub fn create_shader_module(
     })
 }
 
-pub(crate) fn begin_load_pass<'a>(
+pub(in crate::visuals) fn begin_load_pass<'a>(
     encoder: &'a mut wgpu::CommandEncoder,
     target: &'a wgpu::TextureView,
     clip: &Rectangle<u32>,
@@ -479,17 +484,17 @@ pub(crate) fn begin_load_pass<'a>(
     pass
 }
 
-pub(crate) struct RenderPipelineSpec<'a> {
-    pub(crate) label: &'static str,
-    pub(crate) shader: &'a wgpu::ShaderModule,
-    pub(crate) vertex_entry: &'static str,
-    pub(crate) fragment_entry: &'static str,
-    pub(crate) buffers: &'a [wgpu::VertexBufferLayout<'a>],
-    pub(crate) bind_group_layouts: &'a [&'a wgpu::BindGroupLayout],
-    pub(crate) topology: wgpu::PrimitiveTopology,
+pub(in crate::visuals) struct RenderPipelineSpec<'a> {
+    pub(in crate::visuals) label: &'static str,
+    pub(in crate::visuals) shader: &'a wgpu::ShaderModule,
+    pub(in crate::visuals) vertex_entry: &'static str,
+    pub(in crate::visuals) fragment_entry: &'static str,
+    pub(in crate::visuals) buffers: &'a [wgpu::VertexBufferLayout<'a>],
+    pub(in crate::visuals) bind_group_layouts: &'a [&'a wgpu::BindGroupLayout],
+    pub(in crate::visuals) topology: wgpu::PrimitiveTopology,
 }
 
-pub(crate) fn create_render_pipeline(
+pub(in crate::visuals) fn create_render_pipeline(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
     spec: RenderPipelineSpec<'_>,
@@ -507,7 +512,7 @@ pub(crate) fn create_render_pipeline(
             module: spec.shader,
             entry_point: Some(spec.vertex_entry),
             buffers: spec.buffers,
-            compilation_options: Default::default(),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
         fragment: Some(wgpu::FragmentState {
             module: spec.shader,
@@ -517,14 +522,14 @@ pub(crate) fn create_render_pipeline(
                 blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                 write_mask: wgpu::ColorWrites::ALL,
             })],
-            compilation_options: Default::default(),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
         }),
         primitive: wgpu::PrimitiveState {
             topology: spec.topology,
             ..Default::default()
         },
         depth_stencil: None,
-        multisample: Default::default(),
+        multisample: wgpu::MultisampleState::default(),
         multiview: None,
         cache: None,
     })
@@ -670,4 +675,4 @@ macro_rules! sdf_primitive {
     };
 }
 
-pub(crate) use sdf_primitive;
+pub(in crate::visuals) use sdf_primitive;

@@ -185,6 +185,8 @@ impl RegistryRuntime {
 }
 
 fn registry_thread_main(runtime: RegistryRuntime) -> Result<(), pw::Error> {
+    const MAX_CONSECUTIVE_ERRORS: u32 = 10;
+
     pw::init();
 
     let mainloop = pw::main_loop::MainLoopRc::new(None)?;
@@ -199,12 +201,12 @@ fn registry_thread_main(runtime: RegistryRuntime) -> Result<(), pw::Error> {
     let registry_context = RegistryContext {
         registry: registry.clone(),
         runtime: runtime.clone(),
-        metadata_bindings: Default::default(),
+        metadata_bindings: Rc::default(),
         routing_metadata_id: Rc::new(RefCell::new(None)),
     };
     let metadata_bindings = Rc::clone(&registry_context.metadata_bindings);
     let routing_metadata_id = Rc::clone(&registry_context.routing_metadata_id);
-    let pending_syncs: Rc<RefCell<PendingSyncs>> = Default::default();
+    let pending_syncs: Rc<RefCell<PendingSyncs>> = Rc::default();
 
     let _core_listener = {
         let pending = Rc::clone(&pending_syncs);
@@ -238,7 +240,6 @@ fn registry_thread_main(runtime: RegistryRuntime) -> Result<(), pw::Error> {
     let loop_ref = mainloop.loop_();
     let mut commands_disconnected = false;
     let mut consecutive_errors = 0u32;
-    const MAX_CONSECUTIVE_ERRORS: u32 = 10;
 
     'registry_loop: loop {
         if !commands_disconnected {

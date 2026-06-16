@@ -55,7 +55,7 @@ pub struct SpectrogramConfig {
 
 const DEFAULT_SPECTROGRAM_FFT_SIZE: usize = 2048;
 const DEFAULT_SPECTROGRAM_HOP_SIZE: usize = 64;
-pub(crate) const MAX_SPECTROGRAM_HISTORY_COLUMNS: usize = 8192;
+pub(in crate::visuals) const MAX_SPECTROGRAM_HISTORY_COLUMNS: usize = 8192;
 pub(super) const SPECTROGRAM_HISTORY_BYTE_BUDGET: usize = 128 * 1024 * 1024;
 
 // Fixed [dB] storage domain -- must match the shader constants in spectrogram.wgsl.

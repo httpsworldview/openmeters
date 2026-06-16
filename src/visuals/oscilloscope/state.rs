@@ -13,10 +13,10 @@ const MAX_PERSISTENCE: f32 = 0.98;
 const FILL_ALPHA: f32 = 0.15;
 
 #[derive(Debug, Clone)]
-pub(crate) struct OscilloscopeState {
+pub(in crate::visuals) struct OscilloscopeState {
     snapshot: OscilloscopeSnapshot,
-    pub(crate) colors: [Color; OSCILLOSCOPE_PALETTE_SIZE],
-    pub(crate) persistence: f32,
+    pub(in crate::visuals) colors: [Color; OSCILLOSCOPE_PALETTE_SIZE],
+    pub(in crate::visuals) persistence: f32,
     key: u64,
 }
 

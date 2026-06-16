@@ -29,11 +29,11 @@ macro_rules! settings_modules {
         $(mod $module;)+
 
         #[derive(Debug, Clone)]
-        pub enum SettingsMessage {
+        pub(in crate::ui) enum SettingsMessage {
             $($variant($module::Message),)+
         }
 
-        pub fn create_panel(
+        pub(in crate::ui) fn create_panel(
             kind: VisualKind,
             visual_manager: &VisualManagerHandle,
         ) -> ActiveSettings {
@@ -132,7 +132,7 @@ settings_modules! {
     waveform => Waveform,
 }
 
-pub trait ModuleSettingsPane: 'static {
+trait ModuleSettingsPane: 'static {
     fn view(&self) -> Element<'_, SettingsMessage>;
     fn handle(
         &mut self,
@@ -142,17 +142,17 @@ pub trait ModuleSettingsPane: 'static {
     );
 }
 
-pub struct ActiveSettings {
-    pub(crate) kind: VisualKind,
+pub(in crate::ui) struct ActiveSettings {
+    pub(in crate::ui) kind: VisualKind,
     pane: Box<dyn ModuleSettingsPane>,
 }
 
 impl ActiveSettings {
-    pub(crate) fn view(&self) -> Element<'_, SettingsMessage> {
+    pub(in crate::ui) fn view(&self) -> Element<'_, SettingsMessage> {
         self.pane.view()
     }
 
-    pub(crate) fn handle(
+    pub(in crate::ui) fn handle(
         &mut self,
         message: SettingsMessage,
         visual_manager: &VisualManagerHandle,

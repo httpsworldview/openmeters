@@ -16,7 +16,7 @@ const TEXT_DARK: Color = Color::from_rgba(0.10, 0.10, 0.10, 1.0);
 pub const BORDER_SUBTLE: Color = Color::from_rgba(0.280, 0.288, 0.304, 1.0);
 const BORDER_FOCUS: Color = Color::from_rgba(0.520, 0.536, 0.560, 1.0);
 
-pub(crate) const ACCENT_PRIMARY: Color = Color::from_rgba(0.157, 0.157, 0.157, 1.0);
+pub(in crate::ui) const ACCENT_PRIMARY: Color = Color::from_rgba(0.157, 0.157, 0.157, 1.0);
 const ACCENT_SUCCESS: Color = Color::from_rgba(0.478, 0.557, 0.502, 1.0);
 const ACCENT_DANGER: Color = Color::from_rgba(0.557, 0.478, 0.478, 1.0);
 
@@ -147,7 +147,7 @@ pub fn slider_style(theme: &Theme, status: slider::Status) -> slider::Style {
 
     let border_color = match status {
         slider::Status::Hovered | slider::Status::Dragged => BORDER_FOCUS,
-        _ => BORDER_SUBTLE,
+        slider::Status::Active => BORDER_SUBTLE,
     };
 
     slider::Style {

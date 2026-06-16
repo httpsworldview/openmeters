@@ -156,7 +156,8 @@ impl WaveformPrimitive {
         let static_color = (params.color_mode == WaveformColorMode::Static)
             .then(|| with_fill_alpha(params.palette[0], params.fill_alpha));
 
-        let scroll_offset = if preview_active {
+        let preview_columns = preview_active.then_some(params.preview.columns).flatten();
+        let scroll_offset = if preview_columns.is_some() {
             params.preview.progress * col_width
         } else {
             0.0
@@ -192,12 +193,12 @@ impl WaveformPrimitive {
                 }
             }
 
-            if preview_active {
+            if let Some(preview_columns) = preview_columns {
                 let raw_last_x = right_edge - preview_width - scroll_offset;
                 let start_x = raw_last_x.floor();
                 let end_x = right_edge;
 
-                let ps = params.preview.columns.unwrap()[params.lanes[ch]];
+                let ps = preview_columns[params.lanes[ch]];
                 if let Some((y0, y1)) =
                     sample_y_span(center_y, layout.amplitude_scale, ps.min, ps.max)
                 {

@@ -14,12 +14,12 @@ const CORRELATION_SMOOTHING: f32 = 0.85;
 const MAX_PERSISTENCE: f32 = 0.9;
 
 #[derive(Debug, Clone)]
-pub(crate) struct StereometerState {
+pub(in crate::visuals) struct StereometerState {
     points: Vec<(f32, f32)>,
     band_points: [Vec<(f32, f32)>; 3],
     corr_trail: VecDeque<f32>,
     band_trail: VecDeque<BandCorrelation>,
-    pub(crate) palette: [Color; 9],
+    pub(in crate::visuals) palette: [Color; 9],
     settings: StereometerSettings,
     key: u64,
 }

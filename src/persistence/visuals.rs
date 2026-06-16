@@ -145,7 +145,7 @@ impl ModuleSettings {
             .and_then(|pal| PaletteSettings::deserialize(pal).ok())
     }
 
-    pub(crate) fn strip_palette(&mut self) {
+    pub(super) fn strip_palette(&mut self) {
         if let Some(Value::Object(map)) = &mut self.config {
             map.remove("palette");
         }

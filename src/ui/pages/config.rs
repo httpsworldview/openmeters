@@ -101,7 +101,7 @@ impl ApplicationRow {
         );
         Self {
             node_id: node.id,
-            label: secondary.map_or(primary.clone(), |s| format!("{primary} ({s})")),
+            label: secondary.map_or_else(|| primary.clone(), |s| format!("{primary} ({s})")),
             sort_key,
             enabled,
         }
@@ -139,6 +139,8 @@ impl ConfigPage {
         settings: SettingsHandle,
         bar_supported: bool,
     ) -> Self {
+        use theme::background as bg;
+
         let (current_bg, capture_mode, last_device_name, active_theme, theme_choices) = {
             let guard = settings.borrow();
             let settings = &guard.data;
@@ -150,7 +152,6 @@ impl ConfigPage {
                 guard.theme_store().list(),
             )
         };
-        use theme::background as bg;
         let mut bg_pal = theme::Palette::new(&bg::COLORS, &bg::DEFAULT_POSITIONS, bg::LABELS);
         bg_pal.set_colors(&[current_bg]);
         let bg_palette = PaletteEditor::new(bg_pal);
@@ -248,22 +249,22 @@ impl ConfigPage {
                 }
             }
             ConfigMessage::DecorationsToggled(v) => {
-                self.settings.update(|s| s.data.decorations = v)
+                self.settings.update(|s| s.data.decorations = v);
             }
             ConfigMessage::BarModeToggled(v) => self.settings.update(|s| s.data.bar.enabled = v),
             ConfigMessage::BarAlignmentChanged(v) => {
-                self.settings.update(|s| s.data.bar.alignment = v)
+                self.settings.update(|s| s.data.bar.alignment = v);
             }
             ConfigMessage::BarHeightChanged(v) => self.settings.update(|s| s.data.bar.height = v),
             ConfigMessage::BarMonitorChanged(v) => {
-                self.settings.update(|s| s.data.bar.monitor = Some(v))
+                self.settings.update(|s| s.data.bar.monitor = Some(v));
             }
             ConfigMessage::ThemeChanged(name) => self.apply_theme(&name),
             ConfigMessage::SaveTheme(name) => {
                 if let Some(saved_name) = self.save_current_as_theme(&name)
                     && self.active_theme != saved_name
                 {
-                    self.active_theme = saved_name.clone();
+                    self.active_theme.clone_from(&saved_name);
                     self.settings.update(|s| s.data.theme = Some(saved_name));
                 }
                 self.save_theme_name.clear();
@@ -326,7 +327,14 @@ impl ConfigPage {
 
         let mut section = Column::new().spacing(8).push(summary_button);
         if self.applications_expanded {
-            let content: Element<'_, _> = if !self.applications.is_empty() {
+            let content: Element<'_, _> = if self.applications.is_empty() {
+                let msg = match (self.registry_updates.is_some(), self.registry_ready) {
+                    (false, _) => "Registry unavailable; routing controls disabled.",
+                    (_, true) => "No audio applications detected. Launch something to see it here.",
+                    _ => "Waiting for PipeWire registry snapshots...",
+                };
+                text(msg).size(TEXT_SIZE).into()
+            } else {
                 render_toggle_grid(&self.applications, |entry| {
                     (
                         entry.label.as_str(),
@@ -338,13 +346,6 @@ impl ConfigPage {
                     )
                 })
                 .into()
-            } else {
-                let msg = match (self.registry_updates.is_some(), self.registry_ready) {
-                    (false, _) => "Registry unavailable; routing controls disabled.",
-                    (_, true) => "No audio applications detected. Launch something to see it here.",
-                    _ => "Waiting for PipeWire registry snapshots...",
-                };
-                text(msg).size(TEXT_SIZE).into()
             };
             section = section.push(content);
         }
@@ -458,7 +459,7 @@ impl ConfigPage {
         section_with_divider("Theme", content)
     }
 
-    pub(crate) fn sync_active_theme(&mut self) {
+    pub(in crate::ui) fn sync_active_theme(&mut self) {
         let (active, choices) = {
             let guard = self.settings.borrow();
             if guard.active_theme() == self.active_theme {
@@ -482,7 +483,7 @@ impl ConfigPage {
             s.data.background_color = Some(bg.into());
             s.data.theme = theme_val;
         });
-        self.active_theme = name.to_owned();
+        name.clone_into(&mut self.active_theme);
     }
 
     fn save_current_as_theme(&mut self, name: &str) -> Option<String> {
@@ -524,7 +525,7 @@ impl ConfigPage {
         }
     }
 
-    pub(crate) fn sync_bar_outputs(&mut self, snapshot: OutputSnapshot) {
+    pub(in crate::ui) fn sync_bar_outputs(&mut self, snapshot: OutputSnapshot) {
         self.bar_monitors = snapshot.outputs;
         if let Some(monitor) = snapshot.current
             && self.settings.borrow().data.bar.monitor.as_ref() != Some(&monitor)

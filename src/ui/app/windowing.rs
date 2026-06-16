@@ -7,6 +7,7 @@ use crate::persistence::settings::{BarAlignment, BarSettings, clamp_bar_height};
 use crate::ui::pages::config::ConfigMessage;
 use crate::ui::pages::visuals::{VisualsMessage, create_settings_panel};
 use crate::ui::theme;
+use crate::ui::widgets::scroll_glow::ScrollGlow;
 use crate::visuals::registry::{VisualContent, VisualKind, VisualMetadata, VisualSlotSnapshot};
 use iced::widget::{container, mouse_area, text};
 use iced::{Element, Length, Size, Task, exit, window};
@@ -183,7 +184,7 @@ impl UiApp {
             return Task::none();
         }
         let (new_id, open_task) = open_settings_base_window(self.use_layershell);
-        self.settings_scroll = Default::default();
+        self.settings_scroll = ScrollGlow::default();
         self.settings_window = Some((new_id, new_panel));
         match previous {
             Some((old_id, _)) => Task::batch([window::close(old_id), open_task]),

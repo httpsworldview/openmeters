@@ -24,7 +24,7 @@ const GRID_LABEL_SIZE: f32 = 10.0;
 const GRID_LABEL_GAP: f32 = 6.0;
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct SpectrumStyle {
+pub(in crate::visuals) struct SpectrumStyle {
     pub min_db: f32,
     pub highlight_threshold: f32,
     pub spectrum_palette: [Color; 6],
@@ -64,7 +64,7 @@ impl Default for SpectrumStyle {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct PeakLabel {
+struct PeakLabel {
     text: [String; 2],
     label_pos: [f32; 2],
     marker_pos: [f32; 2],
@@ -74,7 +74,7 @@ pub(crate) struct PeakLabel {
 type PeakUpdate = ([String; 2], [f32; 2]);
 
 #[derive(Debug, Clone)]
-pub(crate) struct SpectrumState {
+pub(in crate::visuals) struct SpectrumState {
     style: SpectrumStyle,
     primary: Arc<[[f32; 2]]>,
     secondary: Arc<[[f32; 2]]>,
@@ -175,8 +175,7 @@ impl SpectrumState {
 
         self.x_cache.clear();
         self.x_cache.reserve(bins.len() + 2);
-        for f in [min_f]
-            .into_iter()
+        for f in std::iter::once(min_f)
             .chain(bins.iter().copied().filter(|&f| f > min_f && f < max_f))
             .chain([max_f])
         {
@@ -207,8 +206,8 @@ impl SpectrumState {
         };
         let freq = fmt_freq(f);
         let text = match NoteInfo::from_frequency(f) {
-            Some(ni) => [ni.fmt_note_cents(), format!("{freq}   {:.1} {unit}", m)],
-            None => [freq, format!("{:.1} {unit}", m)],
+            Some(ni) => [ni.fmt_note_cents(), format!("{freq}   {m:.1} {unit}")],
+            None => [freq, format!("{m:.1} {unit}")],
         };
         Some((text, [x, y]))
     }
@@ -239,7 +238,7 @@ impl SpectrumState {
         }
     }
 
-    pub fn peak(&self) -> Option<&PeakLabel> {
+    fn peak(&self) -> Option<&PeakLabel> {
         self.peak.as_ref().filter(|_| {
             self.style.show_peak_label && self.style.source != Channel::None && self.primary.len() >= 2
         })

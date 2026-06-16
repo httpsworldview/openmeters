@@ -66,16 +66,16 @@ impl PeakHold {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct LoudnessState {
+pub(in crate::visuals) struct LoudnessState {
     short_term_loudness: f32,
     momentary_loudness: f32,
     rms_fast_db: [f32; MAX_CHANNELS],
     rms_slow_db: [f32; MAX_CHANNELS],
     true_peak_db: [f32; MAX_CHANNELS],
     channel_count: usize,
-    pub(crate) left_mode: MeterMode,
-    pub(crate) right_mode: MeterMode,
-    pub(crate) palette: [Color; LOUDNESS_PALETTE_SIZE],
+    pub(in crate::visuals) left_mode: MeterMode,
+    pub(in crate::visuals) right_mode: MeterMode,
+    pub(in crate::visuals) palette: [Color; LOUDNESS_PALETTE_SIZE],
     peaks: [PeakHold; VISIBLE_METER_COUNT],
     key: u64,
 }

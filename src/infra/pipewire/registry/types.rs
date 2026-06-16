@@ -8,7 +8,7 @@ use pw::registry::GlobalObject;
 use pw::spa::utils::dict::DictRef;
 use std::collections::HashMap;
 
-pub(crate) fn dict_to_map(dict: Option<&DictRef>) -> HashMap<String, String> {
+pub(super) fn dict_to_map(dict: Option<&DictRef>) -> HashMap<String, String> {
     dict.into_iter()
         .flat_map(|d| d.iter())
         .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -24,7 +24,7 @@ crate::macros::choice_enum!(no_default all
 );
 
 impl AudioChannel {
-    pub(crate) fn parse(value: &str) -> Option<Self> {
+    pub(super) fn parse(value: &str) -> Option<Self> {
         Self::ALL
             .iter()
             .copied()
@@ -38,7 +38,7 @@ crate::macros::choice_enum!(pub enum PortDirection {
     #[default] Unknown => "Unknown",
 });
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GraphPort {
     pub global_id: u32,
     pub port_id: u32,
@@ -49,7 +49,7 @@ pub struct GraphPort {
 }
 
 impl GraphPort {
-    pub(crate) fn from_global(global: &GlobalObject<&DictRef>) -> Option<Self> {
+    pub(super) fn from_global(global: &GlobalObject<&DictRef>) -> Option<Self> {
         let props = dict_to_map(global.props.as_ref().copied());
         let get = |primary, fallback| props.get(primary).or_else(|| props.get(fallback));
         let parse = |p, f| get(p, f).and_then(|v| v.parse().ok());
@@ -95,8 +95,8 @@ fn derive_node_direction(
     }
 }
 
-pub(crate) const DEFAULT_AUDIO_SINK_KEY: &str = "default.audio.sink";
-pub(crate) const DEFAULT_AUDIO_SOURCE_KEY: &str = "default.audio.source";
+pub(super) const DEFAULT_AUDIO_SINK_KEY: &str = "default.audio.sink";
+pub(super) const DEFAULT_AUDIO_SOURCE_KEY: &str = "default.audio.source";
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct DefaultTarget {
@@ -117,7 +117,7 @@ impl DefaultTarget {
     }
 }
 
-pub(crate) fn parse_metadata_name(type_hint: Option<&str>, value: &str) -> Option<String> {
+pub(super) fn parse_metadata_name(type_hint: Option<&str>, value: &str) -> Option<String> {
     use serde_json::Value;
     let trimmed = value.trim();
     let is_json = matches!(type_hint, Some(h) if h.eq_ignore_ascii_case("Spa:String:JSON"))
@@ -133,7 +133,7 @@ pub(crate) fn parse_metadata_name(type_hint: Option<&str>, value: &str) -> Optio
     }
 }
 
-pub(crate) fn format_target_metadata(
+pub(super) fn format_target_metadata(
     object_serial: Option<&str>,
     node_id: u32,
 ) -> (String, String) {
@@ -240,7 +240,7 @@ impl RegistrySnapshot {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NodeInfo {
     pub id: u32,
     pub name: Option<String>,
@@ -253,7 +253,7 @@ pub struct NodeInfo {
 }
 
 impl NodeInfo {
-    pub(crate) fn from_global(global: &GlobalObject<&DictRef>) -> Self {
+    pub(super) fn from_global(global: &GlobalObject<&DictRef>) -> Self {
         let props = dict_to_map(global.props.as_ref().copied());
         let name = props.get(*NODE_NAME).cloned();
         let description = props
@@ -353,14 +353,14 @@ impl NodeInfo {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MetadataDefaults {
     pub audio_sink: Option<DefaultTarget>,
     pub audio_source: Option<DefaultTarget>,
 }
 
 impl MetadataDefaults {
-    pub(crate) fn apply_update(
+    pub(super) fn apply_update(
         &mut self,
         metadata_id: u32,
         subject: u32,
@@ -395,7 +395,7 @@ impl MetadataDefaults {
         }
     }
 
-    pub(crate) fn reconcile_with_nodes(&mut self, nodes: &HashMap<u32, NodeInfo>) {
+    pub(super) fn reconcile_with_nodes(&mut self, nodes: &HashMap<u32, NodeInfo>) {
         for target in [&mut self.audio_sink, &mut self.audio_source]
             .into_iter()
             .flatten()
@@ -414,17 +414,17 @@ impl MetadataDefaults {
         }
     }
 
-    pub(crate) fn clear_metadata(&mut self, metadata_id: u32) -> bool {
+    pub(super) fn clear_metadata(&mut self, metadata_id: u32) -> bool {
         self.clear_slots(|t| t.metadata_id == Some(metadata_id), |_| {})
     }
 
-    pub(crate) fn clear_node(&mut self, node_id: u32, fallback_name: Option<String>) -> bool {
+    pub(super) fn clear_node(&mut self, node_id: u32, fallback_name: Option<String>) -> bool {
         self.clear_slots(
             |t| t.node_id == Some(node_id),
             |t| {
                 t.node_id = None;
                 if t.name.is_none() {
-                    t.name = fallback_name.clone();
+                    t.name.clone_from(&fallback_name);
                 }
             },
         )

@@ -53,13 +53,13 @@ fn display_axis(sample_rate: f32) -> (f32, f32) {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct SpectrogramStyle {
+pub(in crate::visuals) struct SpectrogramStyle {
     pub background: Color,
-    pub(crate) floor_db: f32,
+    pub(in crate::visuals) floor_db: f32,
     pub ceiling_db: f32,
     pub opacity: f32,
     pub contrast: f32,
-    pub(crate) tilt_db: f32,
+    pub(in crate::visuals) tilt_db: f32,
 }
 
 impl Default for SpectrogramStyle {
@@ -75,22 +75,22 @@ impl Default for SpectrogramStyle {
     }
 }
 
-pub(crate) struct SpectrogramState {
-    pub(crate) style: SpectrogramStyle,
-    pub(crate) palette: [Color; SPECTROGRAM_PALETTE_SIZE],
-    pub(crate) stop_positions: [f32; SPECTROGRAM_PALETTE_SIZE],
-    pub(crate) stop_spreads: [f32; SPECTROGRAM_PALETTE_SIZE],
+pub(in crate::visuals) struct SpectrogramState {
+    pub(in crate::visuals) style: SpectrogramStyle,
+    pub(in crate::visuals) palette: [Color; SPECTROGRAM_PALETTE_SIZE],
+    pub(in crate::visuals) stop_positions: [f32; SPECTROGRAM_PALETTE_SIZE],
+    pub(in crate::visuals) stop_spreads: [f32; SPECTROGRAM_PALETTE_SIZE],
     key: u64,
-    pub(crate) piano_roll_overlay: PianoRollOverlay,
-    pub(crate) rotation: i8,
+    pub(in crate::visuals) piano_roll_overlay: PianoRollOverlay,
+    pub(in crate::visuals) rotation: i8,
     sample_rate: f32,
     fft_size: usize,
     hop_size: usize,
-    pub(crate) freq_scale: FrequencyScale,
+    pub(in crate::visuals) freq_scale: FrequencyScale,
     col_kind: ColumnKind,
     zoom: f32,
     pan: f32,
-    pub(crate) view_width: u32,
+    pub(in crate::visuals) view_width: u32,
     points_per_column: usize,
     reassigned_points_per_slot: u32,
     ring_capacity: u32,
@@ -429,7 +429,7 @@ impl SpectrogramState {
     }
 }
 
-pub(crate) struct Spectrogram<'a> {
+struct Spectrogram<'a> {
     state: &'a RefCell<SpectrogramState>,
 }
 
@@ -589,7 +589,7 @@ impl<'a> Spectrogram<'a> {
         let black_key_width = PIANO_ROLL_WIDTH * PIANO_BLACK_KEY_RATIO;
         let right = matches!(overlay, PianoRollOverlay::Right);
 
-        let semi = 2.0f32.powf(0.5 / 12.0);
+        let semi = (0.5_f32 / 12.0).exp2();
         let (inv_s, whole, inv_w) = (1.0 / semi, semi * semi, 1.0 / (semi * semi));
 
         let orient_rect = |pos: f32, len: f32, cross: f32, cw: f32| -> Rectangle {
@@ -636,7 +636,7 @@ impl<'a> Spectrogram<'a> {
                 }
                 let key_len = (hi - lo).max(1.0);
                 let (fill, brd, w) = if is_blk {
-                    (black, Default::default(), black_key_width)
+                    (black, iced::Border::default(), black_key_width)
                 } else {
                     (white, wborder, PIANO_ROLL_WIDTH)
                 };
@@ -832,7 +832,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
     }
 }
 
-pub(crate) fn widget<'a, Message: 'a>(
+pub(in crate::visuals) fn widget<'a, Message: 'a>(
     state: &'a RefCell<SpectrogramState>,
 ) -> Element<'a, Message> {
     Element::new(Spectrogram::new(state))

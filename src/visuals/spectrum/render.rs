@@ -14,7 +14,7 @@ use crate::visuals::render::common::{
     dot_vertices, extend_aa_line_list, gradient_quad_vertices, line_vertices, quad_vertices,
 };
 
-pub(crate) const MIN_BAR_COUNT: usize = 4;
+const MIN_BAR_COUNT: usize = 4;
 
 #[derive(Debug, Clone, Copy)]
 pub struct SpectrumPeakParams {

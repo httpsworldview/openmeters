@@ -16,17 +16,17 @@ use std::{cell::Cell, collections::VecDeque, sync::Arc};
 const COLUMN_WIDTH_PIXELS: f32 = 1.0;
 const INITIAL_VIEW_COLUMNS: usize = 512;
 #[derive(Debug)]
-pub(crate) struct WaveformState {
+pub(in crate::visuals) struct WaveformState {
     data: Arc<VecDeque<WaveFrame>>,
     preview: WaveformPreview,
     view_columns: Cell<usize>,
-    pub(crate) style: WaveformStyle,
+    pub(in crate::visuals) style: WaveformStyle,
     key: u64,
-    pub(crate) channel_1: Channel,
-    pub(crate) channel_2: Channel,
-    pub(crate) color_mode: WaveformColorMode,
-    pub(crate) history_mode: WaveformHistoryMode,
-    pub(crate) band_db_floor: f32,
+    pub(in crate::visuals) channel_1: Channel,
+    pub(in crate::visuals) channel_2: Channel,
+    pub(in crate::visuals) color_mode: WaveformColorMode,
+    pub(in crate::visuals) history_mode: WaveformHistoryMode,
+    pub(in crate::visuals) band_db_floor: f32,
 }
 
 impl WaveformState {
@@ -59,7 +59,7 @@ impl WaveformState {
         }
     }
 
-    pub(crate) fn view_columns(&self) -> usize {
+    pub(in crate::visuals) fn view_columns(&self) -> usize {
         self.view_columns.get()
     }
 
@@ -143,12 +143,12 @@ impl WaveformState {
 }
 
 #[derive(Debug)]
-pub(crate) struct WaveformStyle {
+pub(in crate::visuals) struct WaveformStyle {
     pub fill_alpha: f32,
     pub vertical_padding: f32,
     pub channel_gap: f32,
     pub amplitude_scale: f32,
-    pub(crate) palette: [Color; NUM_BANDS],
+    pub(in crate::visuals) palette: [Color; NUM_BANDS],
 }
 
 impl Default for WaveformStyle {

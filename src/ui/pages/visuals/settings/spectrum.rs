@@ -24,7 +24,7 @@ const BARS_R: SliderRange = SliderRange::new(8.0, 128.0, 1.0);
 const GAP_R: SliderRange = SliderRange::new(0.0, 0.8, 0.05);
 const HIGH_R: SliderRange = SliderRange::new(0.0, 0.9, 0.01);
 const FLOOR_R: SliderRange = SliderRange::new(MIN_SPECTRUM_DB_FLOOR, MAX_SPECTRUM_DB_FLOOR, 1.0);
-crate::macros::choice_enum!(all pub(crate) enum AvgMode {
+crate::macros::choice_enum!(all pub(in crate::ui) enum AvgMode {
     None => "None",
     #[default] Exponential => "Exponential",
     PeakHold => "Peak hold",

@@ -385,12 +385,12 @@ fn reset_to_floor(buf: &mut Vec<f32>, bins: usize, floor: f32) {
 
 fn a_weight(freq_hz: f32) -> f32 {
     const MIN_DB: f32 = -80.0;
-    if freq_hz <= 0.0 { return MIN_DB; }
-
     const C1: f64 = 20.598_997 * 20.598_997;
     const C2: f64 = 107.652_65 * 107.652_65;
     const C3: f64 = 737.862_23 * 737.862_23;
     const C4: f64 = 12_194.217 * 12_194.217;
+
+    if freq_hz <= 0.0 { return MIN_DB; }
 
     let f = freq_hz as f64;
     let f2 = f * f;

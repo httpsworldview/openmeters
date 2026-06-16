@@ -7,7 +7,9 @@ use crate::visuals::registry::{
     VisualContent, VisualKind, VisualManagerHandle, VisualSlotSnapshot,
 };
 pub mod settings;
-pub use settings::{ActiveSettings, SettingsMessage, create_panel as create_settings_panel};
+pub(in crate::ui) use settings::{
+    ActiveSettings, SettingsMessage, create_panel as create_settings_panel,
+};
 
 use iced::widget::{container, mouse_area, text};
 use iced::{Element, Length, Task};
@@ -124,7 +126,7 @@ impl VisualsPage {
         }
     }
 
-    pub(crate) fn apply_snapshot_excluding(
+    pub(in crate::ui) fn apply_snapshot_excluding(
         &mut self,
         snapshot: &[VisualSlotSnapshot],
         exclude: &[VisualKind],

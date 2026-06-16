@@ -462,7 +462,7 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for GradientBar<'_> {
                     Point::new(bounds.x + i as f32 * step_w, bounds.y),
                     Size::new(step_w + 0.5, GRADIENT_BAR_HEIGHT),
                 ),
-                Default::default(),
+                iced::Border::default(),
                 Background::Color(with_alpha(premultiply_rgb(c), 1.0)),
             );
         }
@@ -483,7 +483,7 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for GradientBar<'_> {
                     Point::new(x - INDICATOR_WIDTH * 0.5, bounds.y),
                     Size::new(INDICATOR_WIDTH, GRADIENT_BAR_HEIGHT),
                 ),
-                Default::default(),
+                iced::Border::default(),
                 Background::Color(with_alpha(Color::WHITE, line_alpha)),
             );
             let hw = if active {

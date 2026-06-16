@@ -5,7 +5,7 @@ use super::types::{GraphPort, MetadataDefaults, NodeInfo, RegistrySnapshot};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Default)]
-pub(crate) struct RegistryState {
+pub(super) struct RegistryState {
     serial: u64,
     nodes: HashMap<u32, NodeInfo>,
     device_ids: HashSet<u32>,
@@ -14,7 +14,7 @@ pub(crate) struct RegistryState {
 }
 
 impl RegistryState {
-    pub(crate) fn snapshot(&self) -> RegistrySnapshot {
+    pub(super) fn snapshot(&self) -> RegistrySnapshot {
         let mut nodes: Vec<_> = self.nodes.values().cloned().collect();
         nodes.sort_by_key(|node| node.id);
 
@@ -26,7 +26,7 @@ impl RegistryState {
         }
     }
 
-    pub(crate) fn upsert_node(&mut self, info: NodeInfo) -> bool {
+    pub(super) fn upsert_node(&mut self, info: NodeInfo) -> bool {
         if self.nodes.get(&info.id) == Some(&info) {
             return false;
         }
@@ -36,7 +36,7 @@ impl RegistryState {
         true
     }
 
-    pub(crate) fn remove_node(&mut self, id: u32) -> bool {
+    pub(super) fn remove_node(&mut self, id: u32) -> bool {
         let Some(info) = self.nodes.remove(&id) else {
             return false;
         };
@@ -49,7 +49,7 @@ impl RegistryState {
         true
     }
 
-    pub(crate) fn add_device(&mut self, id: u32) -> bool {
+    pub(super) fn add_device(&mut self, id: u32) -> bool {
         if !self.device_ids.insert(id) {
             return false;
         }
@@ -57,7 +57,7 @@ impl RegistryState {
         true
     }
 
-    pub(crate) fn remove_device(&mut self, id: u32) -> bool {
+    pub(super) fn remove_device(&mut self, id: u32) -> bool {
         if !self.device_ids.remove(&id) {
             return false;
         }
@@ -65,7 +65,7 @@ impl RegistryState {
         true
     }
 
-    pub(crate) fn upsert_port(&mut self, port: GraphPort) -> bool {
+    pub(super) fn upsert_port(&mut self, port: GraphPort) -> bool {
         let (node_id, port_id, global_id) = (port.node_id, port.port_id, port.global_id);
         let Some(node) = self.nodes.get_mut(&node_id) else {
             return false;
@@ -82,7 +82,7 @@ impl RegistryState {
         true
     }
 
-    pub(crate) fn remove_port(&mut self, global_id: u32) -> bool {
+    pub(super) fn remove_port(&mut self, global_id: u32) -> bool {
         let Some((node_id, port_id)) = self.port_index.remove(&global_id) else {
             return false;
         };
@@ -94,7 +94,7 @@ impl RegistryState {
         true
     }
 
-    pub(crate) fn apply_metadata_property(
+    pub(super) fn apply_metadata_property(
         &mut self,
         metadata_id: u32,
         subject: u32,

@@ -14,15 +14,15 @@ pub const MAX_COLUMN_CAPACITY: usize = 8_192;
 const DEFAULT_SCROLL_SPEED: f32 = 300.0;
 pub const DEFAULT_BAND_DB_FLOOR: f32 = -60.0;
 const MIN_RUNTIME_SCROLL_SPEED: f32 = 1.0;
-pub(crate) const WAVEFORM_CHANNELS: [Channel; 4] =
+pub(super) const WAVEFORM_CHANNELS: [Channel; 4] =
     [Channel::Left, Channel::Right, Channel::Mid, Channel::Side];
-pub(crate) const DERIVED_CHANNELS: usize = WAVEFORM_CHANNELS.len();
+pub(super) const DERIVED_CHANNELS: usize = WAVEFORM_CHANNELS.len();
 const REFERENCE_SAMPLE_RATE: f32 = 44_100.0;
 const BAND_COLOR_WINDOW_AT_44K1: usize = 2048;
 const BAND_SLOW_WINDOW_AT_44K1: usize = 16_384;
 const BAND_FILTER_Q: f32 = 0.71;
 const BAND_COLOR_GAINS: [f32; NUM_BANDS] = [1.0, 0.7, 2.0];
-pub(crate) const WAVEFORM_SILENCE_AMPLITUDE: f32 = 1.584_893_1e-5;
+pub(super) const WAVEFORM_SILENCE_AMPLITUDE: f32 = 1.584_893_1e-5;
 const MAX_TRACKER_SAMPLE_RATE: f32 = 1_000_000.0;
 
 pub const NUM_BANDS: usize = 3;
@@ -54,8 +54,7 @@ impl WaveformConfig {
     fn normalized(mut self) -> Self {
         self.sample_rate = sanitize_sample_rate(self.sample_rate);
         self.scroll_speed = crate::util::finite_positive(self.scroll_speed)
-            .map(|speed| speed.max(MIN_RUNTIME_SCROLL_SPEED))
-            .unwrap_or(DEFAULT_SCROLL_SPEED);
+            .map_or(DEFAULT_SCROLL_SPEED, |speed| speed.max(MIN_RUNTIME_SCROLL_SPEED));
         self.max_columns = self.max_columns.clamp(1, MAX_COLUMN_CAPACITY);
         self.track_history &= self.analyze_bands;
         self
@@ -83,7 +82,7 @@ impl Default for WaveColumn {
     }
 }
 
-pub(crate) type WaveFrame = [WaveColumn; DERIVED_CHANNELS];
+pub(super) type WaveFrame = [WaveColumn; DERIVED_CHANNELS];
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct WaveformPreview {
@@ -337,15 +336,13 @@ impl WaveformProcessor {
     }
 
     fn column_for(&self, channel: usize) -> WaveColumn {
-        let (min, max) = self.current[channel]
-            .map(|(mut min, mut max, _)| {
-                if let Some(last) = self.last_sample[channel] {
-                    min = min.min(last);
-                    max = max.max(last);
-                }
-                (min, max)
-            })
-            .unwrap_or((0.0, 0.0));
+        let (min, max) = self.current[channel].map_or((0.0, 0.0), |(mut min, mut max, _)| {
+            if let Some(last) = self.last_sample[channel] {
+                min = min.min(last);
+                max = max.max(last);
+            }
+            (min, max)
+        });
         let mut column = WaveColumn {
             min,
             max,
@@ -593,7 +590,7 @@ mod tests {
             .iter()
             .flatten()
             .flat_map(|c| c.color_bands)
-            .all(|v| v.is_finite()));
+            .all(f32::is_finite));
 
         let mut processor = WaveformProcessor::new(config(RATE, 8));
         let update = process(&mut processor, &[f32::MAX, f32::MAX], 2);

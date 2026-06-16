@@ -6,7 +6,7 @@ pub mod musical;
 use super::finite_positive;
 use std::{
     collections::{HashMap, VecDeque},
-    sync::{Arc, LazyLock, RwLock},
+    sync::{Arc, LazyLock, PoisonError, RwLock},
 };
 
 pub const DEFAULT_SAMPLE_RATE: f32 = 48_000.0;
@@ -120,17 +120,15 @@ pub(crate) fn window_coefficients(kind: WindowKind, len: usize) -> Arc<[f32]> {
         return Arc::from([]);
     }
     let key = (kind, len);
-    if let Some(window) = CACHE
-        .read()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .get(&key)
-        .cloned()
-    {
+    let cache = CACHE.read().unwrap_or_else(PoisonError::into_inner);
+    if let Some(window) = cache.get(&key).cloned() {
         return window;
     }
+    drop(cache);
+
     CACHE
         .write()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(PoisonError::into_inner)
         .entry(key)
         .or_insert_with(|| Arc::from(kind.coefficients(len)))
         .clone()
@@ -153,11 +151,7 @@ pub fn lerp(a: f32, b: f32, t: f32) -> f32 {
 }
 
 #[inline]
-pub(crate) fn project_interleaved_frame(
-    frame: &[f32],
-    channels: usize,
-    channel: Channel,
-) -> Option<f32> {
+fn project_interleaved_frame(frame: &[f32], channels: usize, channel: Channel) -> Option<f32> {
     if channels == 0 || channel == Channel::None {
         return None;
     }
@@ -168,13 +162,13 @@ pub(crate) fn project_interleaved_frame(
     } else {
         left
     };
-    Some(match channel {
-        Channel::Left => left,
-        Channel::Right => right,
-        Channel::Mid => frame[..len].iter().sum::<f32>() / len as f32,
-        Channel::Side => (left - right) * 0.5,
-        Channel::None => unreachable!(),
-    })
+    match channel {
+        Channel::Left => Some(left),
+        Channel::Right => Some(right),
+        Channel::Mid => Some(frame[..len].iter().sum::<f32>() / len as f32),
+        Channel::Side => Some((left - right) * 0.5),
+        Channel::None => None,
+    }
 }
 
 pub(crate) fn project_interleaved_channel_into(
@@ -221,7 +215,9 @@ pub fn copy_dc_removed_from_deque(dst: &mut [f32], src: &VecDeque<f32>) {
         dst[split..].copy_from_slice(&tail[..len - split]);
     }
     let mean = dst.iter().sum::<f32>() / len as f32;
-    dst.iter_mut().for_each(|sample| *sample -= mean);
+    for sample in dst {
+        *sample -= mean;
+    }
 }
 
 pub fn db_to_power(db: f32) -> f32 {
