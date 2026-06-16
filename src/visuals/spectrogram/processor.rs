@@ -41,14 +41,6 @@ pub struct SpectrogramPoint {
     pub magnitude_db: f32,
 }
 
-impl SpectrogramPoint {
-    pub const SENTINEL: Self = Self {
-        time_offset: 0.0,
-        freq_hz: 0.0,
-        magnitude_db: f32::NEG_INFINITY,
-    };
-}
-
 #[derive(Debug, Clone, Copy)]
 pub struct SpectrogramConfig {
     pub sample_rate: f32,
@@ -134,7 +126,8 @@ impl ReassignmentBuffers {
     }
 }
 
-// Reassigned ships fractional (t, f, mag) per bin for splat rendering.
+// Reassigned ships only visible fractional (t, f, mag) splats; bins below
+// the analysis floor are omitted instead of sent as invisible sentinels.
 // Classic ships packed fixed-domain dB per bin; freq is implicit (k * bin_hz)
 // and the renderer fills between adjacent bins.
 #[derive(Debug, Clone)]
@@ -300,7 +293,7 @@ impl SpectrogramProcessor {
         for _ in skip..ready {
             if self.audio_is_silent() {
                 let col = if reassignment_enabled {
-                    SpectrogramColumn::Reassigned(vec![SpectrogramPoint::SENTINEL; bin_count])
+                    SpectrogramColumn::Reassigned(Vec::new())
                 } else {
                     self.classic_bins[..bin_count].fill(pack_classic_db(DB_FLOOR));
                     SpectrogramColumn::Classic(self.classic_bins[..bin_count].to_vec())
@@ -447,36 +440,37 @@ impl SpectrogramProcessor {
         let floor_linear = self.reassign.floor_linear;
         let inv_2pi = sample_rate / core::f32::consts::TAU;
         let inv_hop = 1.0 / hop_size.max(1) as f32;
-        let mut points = vec![SpectrogramPoint::SENTINEL; bin_count];
+        let mut points = Vec::new();
 
-        for (i, point) in points.iter_mut().enumerate() {
+        for i in 0..bin_count {
             let base = self.spectrum[i];
-            let d = self.reassign.derivative_spectrum[i];
-            let t = self.reassign.time_weighted_spectrum[i];
             let energy_scale = self.bin_norm[i];
             let pow = base.re * base.re + base.im * base.im;
             let scaled_power = pow * energy_scale;
-            let inv_pow = 1.0 / pow.max(f32::MIN_POSITIVE);
+            if !(scaled_power >= floor_linear && energy_scale > 0.0) {
+                continue;
+            }
+
+            let d = self.reassign.derivative_spectrum[i];
+            let t = self.reassign.time_weighted_spectrum[i];
+            let inv_pow = 1.0 / pow;
             let d_omega = -(d.im * base.re - d.re * base.im) * inv_pow;
             let freq_hz = i as f32 * bin_hz + d_omega * inv_2pi;
-            let time_offset = (t.re * base.re + t.im * base.im) * inv_pow * inv_hop
-                - latency_samples as f32 * inv_hop;
-
-            if scaled_power >= floor_linear
-                && energy_scale > 0.0
-                && freq_hz > 0.0
-                && max_hz - freq_hz > 0.0
-            {
-                *point = SpectrogramPoint {
-                    time_offset,
-                    freq_hz,
-                    magnitude_db: (scaled_power.ln() * LN_TO_DB).max(DB_FLOOR),
-                };
+            if !(freq_hz > 0.0 && max_hz - freq_hz > 0.0) {
+                continue;
             }
+
+            points.push(SpectrogramPoint {
+                time_offset: (t.re * base.re + t.im * base.im) * inv_pow * inv_hop
+                    - latency_samples as f32 * inv_hop,
+                freq_hz,
+                magnitude_db: (scaled_power.ln() * LN_TO_DB).max(DB_FLOOR),
+            });
         }
 
         points
     }
+
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<SpectrogramUpdate> {
         if block.is_empty() { return None; }
         let sample_rate = block.sample_rate;
@@ -786,11 +780,7 @@ mod tests {
         assert!(reassigned
             .new_columns
             .iter()
-            .all(|col| {
-                reassigned_points(col)
-                    .iter()
-                    .all(|&p| p == SpectrogramPoint::SENTINEL)
-            }));
+            .all(|col| reassigned_points(col).is_empty()));
     }
 
     #[test]
@@ -815,7 +805,7 @@ mod tests {
                 "time offset {:.4} vs expected {expected_time:.4}",
                 peak.time_offset
             );
-            assert!(points.contains(&SpectrogramPoint::SENTINEL));
+            assert!(points.len() < cfg.fft_size / 2 + 1);
         }
     }
 }

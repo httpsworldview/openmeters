@@ -14,7 +14,7 @@ const DB_FLOOR_EPS: f32 = 0.01;
 struct Uniforms {
     freq_axis: vec2<f32>,           // (scaled_min, inverse scaled display span)
     freq_scale: u32,                // 0=linear, 1=log, 2=erb
-    points_per_col: u32,
+    points_per_col: u32,            // reassigned slot stride, or classic FFT bins
 
     history_length: u32,
     col_count: u32,

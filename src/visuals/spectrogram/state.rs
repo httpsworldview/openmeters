@@ -92,10 +92,12 @@ pub(crate) struct SpectrogramState {
     pan: f32,
     pub(crate) view_width: u32,
     points_per_column: usize,
+    reassigned_points_per_slot: u32,
     ring_capacity: u32,
     gpu_capacity: u32,
     write_slot: u32,
     col_count: u32,
+    slot_counts: Vec<u32>,
     pending: VecDeque<PendingUpload>,
     pending_copy: Option<RingCopyPlan>,
 }
@@ -120,10 +122,12 @@ impl SpectrogramState {
             pan: 0.5,
             view_width: 0,
             points_per_column: 0,
+            reassigned_points_per_slot: 1,
             ring_capacity: 0,
             gpu_capacity: 0,
             write_slot: 0,
             col_count: 0,
+            slot_counts: Vec::new(),
             pending: VecDeque::new(),
             pending_copy: None,
         }
@@ -192,11 +196,13 @@ impl SpectrogramState {
 
         if snap.reset || self.points_per_column != ppc || new_kind != self.col_kind {
             self.points_per_column = ppc;
+            self.reassigned_points_per_slot = 1;
             self.ring_capacity = capacity;
             self.gpu_capacity = 0;
             self.col_kind = new_kind;
             self.write_slot = 0;
             self.col_count = 0;
+            self.slot_counts = vec![0; capacity as usize];
             self.pending = VecDeque::new();
             self.pending_copy = None;
         } else if capacity != self.ring_capacity {
@@ -212,18 +218,19 @@ impl SpectrogramState {
                 self.write_slot = 0;
             }
             self.ring_capacity = capacity;
+            self.slot_counts.resize(capacity as usize, 0);
         }
 
         for col in snap.new_columns {
+            let slot = self.write_slot;
             let upload = match col {
-                SpectrogramColumn::Reassigned(points) => PendingUpload::Reassigned {
-                    slot: self.write_slot,
-                    points,
-                },
-                SpectrogramColumn::Classic(mags) => PendingUpload::Classic {
-                    slot: self.write_slot,
-                    mags,
-                },
+                SpectrogramColumn::Reassigned(points) => {
+                    if let Some(count) = self.slot_counts.get_mut(slot as usize) {
+                        *count = points.len() as u32;
+                    }
+                    PendingUpload::Reassigned { slot, points }
+                }
+                SpectrogramColumn::Classic(mags) => PendingUpload::Classic { slot, mags },
             };
             if self.pending.len() as u32 >= self.ring_capacity {
                 self.pending.pop_front();
@@ -234,6 +241,7 @@ impl SpectrogramState {
                 self.col_count += 1;
             }
         }
+        self.fit_reassigned_slot_capacity();
     }
 
     fn ensure_pending_copy(&mut self) {
@@ -243,12 +251,40 @@ impl SpectrogramState {
         }
     }
 
+    fn fit_reassigned_slot_capacity(&mut self) {
+        if self.col_kind != ColumnKind::Reassigned {
+            self.reassigned_points_per_slot = 1;
+            return;
+        }
+        let needed = self
+            .slot_counts
+            .iter()
+            .take(self.ring_capacity as usize)
+            .copied()
+            .max()
+            .unwrap_or(0)
+            .max(1);
+        let current = self.reassigned_points_per_slot.max(1);
+        if needed > current || current > needed.saturating_mul(4).max(1) {
+            self.ensure_pending_copy();
+            self.reassigned_points_per_slot = needed;
+        }
+    }
+
     fn remap_retained(&mut self, start: u32, keep: u32) {
         let old_cap = self.ring_capacity.max(1);
         let remap = |slot: &mut u32| {
             *slot = (*slot + old_cap - start) % old_cap;
             *slot < keep
         };
+        let mut counts = vec![0; keep as usize];
+        for (src, &count) in self.slot_counts.iter().enumerate().take(old_cap as usize) {
+            let mut dst = src as u32;
+            if remap(&mut dst) {
+                counts[dst as usize] = count;
+            }
+        }
+        self.slot_counts = counts;
         self.pending.retain_mut(|upload| {
             let (PendingUpload::Reassigned { slot, .. } | PendingUpload::Classic { slot, .. }) =
                 upload;
@@ -278,10 +314,16 @@ impl SpectrogramState {
             bounds,
             ring_capacity: self.ring_capacity,
             points_per_column: self.points_per_column as u32,
+            reassigned_points_per_slot: self.reassigned_points_per_slot.max(1),
             col_count: self.col_count,
             write_slot: self.write_slot,
             pending_uploads: std::mem::take(&mut self.pending),
             copy_plan,
+            slot_counts: if self.col_kind == ColumnKind::Reassigned {
+                self.slot_counts.clone()
+            } else {
+                Vec::new()
+            },
             col_kind: self.col_kind,
             freq_min,
             freq_max,
@@ -818,6 +860,31 @@ mod tests {
         }
     }
 
+    fn reassigned_update(history_length: usize, reset: bool, counts: &[usize]) -> SpectrogramUpdate {
+        SpectrogramUpdate {
+            fft_size: 8,
+            hop_size: 1,
+            sample_rate: 48_000.0,
+            frequency_scale: FrequencyScale::Linear,
+            history_length,
+            reset,
+            points_per_column: 8,
+            new_columns: counts
+                .iter()
+                .map(|&n| {
+                    SpectrogramColumn::Reassigned(vec![
+                        super::super::processor::SpectrogramPoint {
+                            time_offset: 0.0,
+                            freq_hz: 100.0,
+                            magnitude_db: -20.0,
+                        };
+                        n
+                    ])
+                })
+                .collect(),
+        }
+    }
+
     fn visual_params(state: &mut SpectrogramState) -> SpectrogramParams {
         state
             .visual_params(
@@ -867,5 +934,27 @@ mod tests {
         assert_eq!((params.ring_capacity, params.col_count, params.write_slot), (2, 2, 1));
         assert_eq!(upload_slots(&params), vec![0]);
         assert_eq!(params.copy_plan, Some((4, vec![[2, 0], [3, 1]])));
+    }
+
+    #[test]
+    fn reassigned_params_track_sparse_slot_counts() {
+        let mut state = SpectrogramState::new();
+        state.apply_snapshot(reassigned_update(4, true, &[0, 2, 1]));
+
+        let params = visual_params(&mut state);
+
+        assert_eq!(params.reassigned_points_per_slot, 2);
+        assert_eq!(&params.slot_counts[..4], &[0, 2, 1, 0]);
+        assert_eq!(
+            params
+                .pending_uploads
+                .iter()
+                .map(|upload| match upload {
+                    PendingUpload::Reassigned { points, .. } => points.len(),
+                    PendingUpload::Classic { .. } => panic!("expected reassigned upload"),
+                })
+                .collect::<Vec<_>>(),
+            vec![0, 2, 1]
+        );
     }
 }

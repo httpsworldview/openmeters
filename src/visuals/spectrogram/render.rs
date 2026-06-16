@@ -46,10 +46,12 @@ pub struct SpectrogramParams {
     pub bounds: Rectangle,
     pub ring_capacity: u32,
     pub points_per_column: u32,
+    pub reassigned_points_per_slot: u32,
     pub col_count: u32,
     pub write_slot: u32,
     pub pending_uploads: VecDeque<PendingUpload>,
     pub copy_plan: Option<RingCopyPlan>,
+    pub slot_counts: Vec<u32>,
     pub col_kind: ColumnKind,
     pub freq_min: f32,
     pub freq_max: f32,
@@ -121,7 +123,10 @@ impl Primitive for SpectrogramPrimitive {
         let Some(r) = inst.resources.as_ref() else {
             return;
         };
-        if inst.col_count == 0 {
+        if inst.col_count == 0
+            || (r.ring.kind == ColumnKind::Reassigned
+                && !(0..inst.visible_slots()).any(|slot| inst.slot_count(slot) > 0))
+        {
             return;
         }
 
@@ -130,13 +135,29 @@ impl Primitive for SpectrogramPrimitive {
         pass.set_vertex_buffer(0, r.quad_buf.slice(..));
         match r.ring.kind {
             ColumnKind::Reassigned => {
-                let instance_count = inst.col_count * inst.points_per_col;
-                if instance_count == 0 {
-                    return;
-                }
+                let stride = inst.reassigned_points_per_slot.max(1);
                 pass.set_pipeline(&pipeline.splat_pipeline);
                 pass.set_vertex_buffer(1, r.ring.buf.slice(..));
-                pass.draw(0..6, 0..instance_count);
+                let visible = inst.visible_slots();
+                let mut slot = 0;
+                while slot < visible {
+                    let count = inst.slot_count(slot).min(stride);
+                    if count == 0 {
+                        slot += 1;
+                        continue;
+                    }
+                    let first = slot * stride;
+                    if count == stride {
+                        slot += 1;
+                        while slot < visible && inst.slot_count(slot).min(stride) == stride {
+                            slot += 1;
+                        }
+                        pass.draw(0..6, first..slot * stride);
+                    } else {
+                        pass.draw(0..6, first..first + count);
+                        slot += 1;
+                    }
+                }
             }
             ColumnKind::Classic => {
                 if inst.points_per_col < 2 {
@@ -184,7 +205,7 @@ fn point_instance_layout() -> wgpu::VertexBufferLayout<'static> {
 struct Uniforms {
     freq_axis: [f32; 2], // (scaled_min, inverse scaled display span)
     freq_scale: u32,
-    points_per_col: u32,
+    points_per_col: u32, // reassigned slot stride, or classic FFT bins
     history_length: u32,
     col_count: u32,
     write_slot: u32,
@@ -242,7 +263,10 @@ impl Uniforms {
         Self {
             freq_axis: [freq_lo, 1.0 / (freq_hi - freq_lo).max(1e-12)],
             freq_scale,
-            points_per_col: p.points_per_column,
+            points_per_col: match p.col_kind {
+                ColumnKind::Reassigned => p.reassigned_points_per_slot.max(1),
+                ColumnKind::Classic => p.points_per_column,
+            },
             history_length: p.ring_capacity,
             col_count: p.col_count,
             write_slot: p.write_slot,
@@ -410,8 +434,11 @@ struct Bgls<'a> {
 #[derive(Default)]
 struct Instance {
     resources: Option<Resources>,
+    ring_capacity: u32,
     col_count: u32,
     points_per_col: u32,
+    reassigned_points_per_slot: u32,
+    slot_counts: Vec<u32>,
     last_used: u64,
 }
 
@@ -430,17 +457,33 @@ impl Instance {
             return;
         }
         let res = match &mut self.resources {
-            Some(r) if r.ring.kind == p.col_kind && self.points_per_col == p.points_per_column => r,
+            Some(r) if r.ring.kind == p.col_kind => r,
             slot => slot.insert(Resources::new(device, bgls, p)),
         };
         res.sync(device, queue, bgls, p, viewport, scale_factor);
+        self.ring_capacity = p.ring_capacity;
         self.col_count = p.col_count;
         self.points_per_col = p.points_per_column;
+        self.reassigned_points_per_slot = p.reassigned_points_per_slot.max(1);
+        self.slot_counts = if p.col_kind == ColumnKind::Reassigned {
+            p.slot_counts.clone()
+        } else {
+            Vec::new()
+        };
+    }
+
+    fn visible_slots(&self) -> u32 {
+        self.col_count.min(self.ring_capacity)
+    }
+
+    fn slot_count(&self, slot: u32) -> u32 {
+        self.slot_counts.get(slot as usize).copied().unwrap_or(0)
     }
 }
 
-// Column stride in bytes for the active storage kind. Packed rounds u16 pairs
-// up to a full u32 so pack/unpack2x16 never straddles a word boundary.
+// Column stride in bytes for the active storage kind. Reassigned uses the
+// compact per-slot point capacity; classic uses FFT bins. Packed classic rounds
+// u16 pairs up to a full u32 so pack/unpack2x16 never straddles a word boundary.
 pub(super) fn col_byte_stride(kind: ColumnKind, points_per_col: u32) -> u64 {
     match kind {
         ColumnKind::Reassigned => {
@@ -450,10 +493,19 @@ pub(super) fn col_byte_stride(kind: ColumnKind, points_per_col: u32) -> u64 {
     }
 }
 
+fn stored_points_per_col(p: &SpectrogramParams) -> u32 {
+    match p.col_kind {
+        ColumnKind::Reassigned => p.reassigned_points_per_slot.max(1),
+        ColumnKind::Classic => p.points_per_column,
+    }
+}
+
 struct ColumnRing {
     kind: ColumnKind,
     buf: wgpu::Buffer,
     capacity: u64,
+    stride: u64,
+    slots: u64,
     bg: wgpu::BindGroup,
 }
 
@@ -516,7 +568,7 @@ impl Resources {
         bgls: Bgls<'_>,
         p: &SpectrogramParams,
     ) {
-        let stride = col_byte_stride(p.col_kind, p.points_per_column);
+        let stride = col_byte_stride(p.col_kind, stored_points_per_col(p));
         let needed = p.ring_capacity as u64 * stride;
         let copy_plan = p
             .copy_plan
@@ -526,21 +578,35 @@ impl Resources {
             return;
         }
 
+        let old_stride = self.ring.stride;
         let new_ring = create_ring(device, bgls, &self.uniform_buf, p);
         if let Some((source_cap, copies)) = copy_plan {
-            let source_cap = u64::from(*source_cap).min(self.ring.capacity / stride);
+            let source_cap = u64::from(*source_cap).min(self.ring.slots);
             if source_cap > 0 {
                 let mut encoder =
                     device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
                 for &[src, dst] in copies {
                     if u64::from(src) < source_cap && dst < p.ring_capacity {
-                        encoder.copy_buffer_to_buffer(
-                            &self.ring.buf,
-                            u64::from(src) * stride,
-                            &new_ring.buf,
-                            u64::from(dst) * stride,
-                            stride,
-                        );
+                        let bytes = match p.col_kind {
+                            ColumnKind::Reassigned => p
+                                .slot_counts
+                                .get(dst as usize)
+                                .copied()
+                                .unwrap_or(0) as u64
+                                * std::mem::size_of::<SpectrogramPoint>() as u64,
+                            ColumnKind::Classic => stride,
+                        }
+                        .min(old_stride)
+                        .min(stride);
+                        if bytes > 0 {
+                            encoder.copy_buffer_to_buffer(
+                                &self.ring.buf,
+                                u64::from(src) * old_stride,
+                                &new_ring.buf,
+                                u64::from(dst) * stride,
+                                bytes,
+                            );
+                        }
                     }
                 }
                 queue.submit(std::iter::once(encoder.finish()));
@@ -550,18 +616,21 @@ impl Resources {
     }
 
     fn upload_pending(&mut self, queue: &wgpu::Queue, p: &SpectrogramParams) {
-        let stride = col_byte_stride(p.col_kind, p.points_per_column);
+        let stride = col_byte_stride(p.col_kind, stored_points_per_col(p));
         let ring_buf = &self.ring.buf;
         let write = |slot: u32, data: &[u8]| {
             queue.write_buffer(ring_buf, slot as u64 * stride, data);
         };
         match p.col_kind {
             ColumnKind::Reassigned => {
+                let point_stride =
+                    (stride / std::mem::size_of::<SpectrogramPoint>() as u64) as usize;
                 for upload in &p.pending_uploads {
                     if let PendingUpload::Reassigned { slot, points } = upload
                         && !points.is_empty()
                     {
-                        write(*slot, bytemuck::cast_slice(points));
+                        let written = points.len().min(point_stride);
+                        write(*slot, bytemuck::cast_slice(&points[..written]));
                     }
                 }
             }
@@ -620,7 +689,8 @@ fn create_ring(
             bgls.classic,
         ),
     };
-    let capacity = p.ring_capacity as u64 * col_byte_stride(p.col_kind, p.points_per_column);
+    let stride = col_byte_stride(p.col_kind, stored_points_per_col(p));
+    let capacity = p.ring_capacity as u64 * stride;
     let buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(label),
         size: capacity,
@@ -633,6 +703,8 @@ fn create_ring(
         kind: p.col_kind,
         buf,
         capacity,
+        stride,
+        slots: p.ring_capacity as u64,
         bg,
     }
 }
