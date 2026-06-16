@@ -1053,51 +1053,41 @@ mod tests {
     }
 
     #[test]
-    fn zero_crossing_both_directions_and_stereo() {
+    fn zero_crossing_finds_edges_after_channel_projection() {
         let mono = sine_samples(440.0, RATE, 4800);
-        let backward = find_rising_zero_crossing(&mono, (0..=3840).rev()).unwrap();
-        let forward = find_rising_zero_crossing(&mono, 0..=4799).unwrap();
-        for c in [backward, forward] {
+        for c in [
+            find_rising_zero_crossing(&mono, (0..=3840).rev()).unwrap(),
+            find_rising_zero_crossing(&mono, 0..=4799).unwrap(),
+        ] {
             assert!(mono[c] > 0.0 && mono[c - 1] <= 0.0);
         }
 
-        let stereo: Vec<f32> = mono.iter().flat_map(|&s| [s, s]).collect();
-        let mut mid = Vec::new();
-        assert!(audio::project_interleaved_channel_into(
-            &mut mid,
-            &stereo,
-            2,
-            mono.len(),
-            Channel::Mid,
-        ));
-        let c = find_rising_zero_crossing(&mid, (0..=3840).rev()).unwrap();
-        assert!(mid[c] > 0.0 && mid[c - 1] <= 0.0);
-    }
-
-    #[test]
-    fn zero_crossing_uses_active_channel_selection() {
-        let mono = sine_samples(440.0, RATE, 4800);
-        let stereo: Vec<f32> = mono.iter().flat_map(|&s| [s, -s]).collect();
         let mut projected = Vec::new();
-
+        let same_stereo: Vec<f32> = mono.iter().flat_map(|&s| [s, s]).collect();
         assert!(audio::project_interleaved_channel_into(
             &mut projected,
-            &stereo,
+            &same_stereo,
             2,
             mono.len(),
             Channel::Mid,
         ));
-        assert!(find_rising_zero_crossing(&projected, 0..=4799).is_none());
-
-        assert!(audio::project_interleaved_channel_into(
-            &mut projected,
-            &stereo,
-            2,
-            mono.len(),
-            Channel::Left,
-        ));
-        let c = find_rising_zero_crossing(&projected, 0..=4799).unwrap();
+        let c = find_rising_zero_crossing(&projected, (0..=3840).rev()).unwrap();
         assert!(projected[c] > 0.0 && projected[c - 1] <= 0.0);
+
+        let inverted: Vec<f32> = mono.iter().flat_map(|&s| [s, -s]).collect();
+        for (channel, should_cross) in [(Channel::Mid, false), (Channel::Left, true)] {
+            assert!(audio::project_interleaved_channel_into(
+                &mut projected,
+                &inverted,
+                2,
+                mono.len(),
+                channel,
+            ));
+            assert_eq!(
+                find_rising_zero_crossing(&projected, 0..=4799).is_some(),
+                should_cross
+            );
+        }
     }
 
     #[test]

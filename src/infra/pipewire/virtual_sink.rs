@@ -511,45 +511,46 @@ mod tests {
 
     #[test]
     fn sample_format_conversion() {
-        let s16 = [0x00_u8, 0x80, 0xFF, 0x7F];
-        assert_sample(
-            &s16,
-            Fmt::S16LE,
-            2,
-            0,
-            i16::MIN as f32 / i16::MAX as f32,
-            1e-5,
-        );
-        assert_sample(&s16, Fmt::S16LE, 2, 1, 1.0, f32::EPSILON);
-        assert_sample(
-            &[0x80, 0x00, 0x7F, 0xFF],
-            Fmt::S16BE,
-            2,
-            0,
-            i16::MIN as f32 / i16::MAX as f32,
-            1e-5,
-        );
-        assert_sample(
-            &[0x00, 0x00, 0xFF, 0xFF],
-            Fmt::U16BE,
-            2,
-            1,
-            (u16::MAX as f32 - 32_768.0) / 32_768.0,
-            f32::EPSILON,
-        );
-
-        let val: f32 = 0.123_456_78;
-        assert_sample(&val.to_le_bytes(), Fmt::F32LE, 1, 0, val, f32::EPSILON);
-        assert_sample(&i32::MAX.to_le_bytes(), Fmt::S32LE, 1, 0, 1.0, f32::EPSILON);
-
+        let s16le = [0x00_u8, 0x80, 0xFF, 0x7F];
+        let s16be = [0x80, 0x00, 0x7F, 0xFF];
+        let u16be = [0x00, 0x00, 0xFF, 0xFF];
+        let f32le = 0.123_456_78f32.to_le_bytes();
+        let s32le = i32::MAX.to_le_bytes();
+        let s8 = [0x80, 0x7F];
+        for (bytes, fmt, len, index, expected, eps) in [
+            (
+                &s16le[..],
+                Fmt::S16LE,
+                2,
+                0,
+                i16::MIN as f32 / i16::MAX as f32,
+                1e-5,
+            ),
+            (&s16le, Fmt::S16LE, 2, 1, 1.0, f32::EPSILON),
+            (
+                &s16be,
+                Fmt::S16BE,
+                2,
+                0,
+                i16::MIN as f32 / i16::MAX as f32,
+                1e-5,
+            ),
+            (
+                &u16be,
+                Fmt::U16BE,
+                2,
+                1,
+                (u16::MAX as f32 - 32_768.0) / 32_768.0,
+                f32::EPSILON,
+            ),
+            (&f32le, Fmt::F32LE, 1, 0, 0.123_456_78, f32::EPSILON),
+            (&s32le, Fmt::S32LE, 1, 0, 1.0, f32::EPSILON),
+            (&s8, Fmt::S8, 2, 0, i8::MIN as f32 / i8::MAX as f32, 1e-5),
+            (&s8, Fmt::S8, 2, 1, 1.0, f32::EPSILON),
+        ] {
+            assert_sample(bytes, fmt, len, index, expected, eps);
+        }
         assert!(converted_sample_count(&[0u8; 4], Fmt::Unknown).is_none());
         assert!(converted_sample_count(&[0u8; 3], Fmt::S16LE).is_none());
-    }
-
-    #[test]
-    fn signed_8_bit_sample_conversion() {
-        let bytes = [0x80, 0x7F];
-        assert_sample(&bytes, Fmt::S8, 2, 0, i8::MIN as f32 / i8::MAX as f32, 1e-5);
-        assert_sample(&bytes, Fmt::S8, 2, 1, 1.0, f32::EPSILON);
     }
 }

@@ -3,7 +3,7 @@ use iced::advanced::widget::{
     self,
     tree::{self, Tree},
 };
-use iced::advanced::{self as core, Clipboard, Layout, Shell, Widget, layout, mouse};
+use iced::advanced::{Clipboard, Layout, Renderer as _, Shell, Widget, layout, mouse};
 use iced::{Background, Element, Event, Length, Point, Rectangle, Size};
 
 use crate::util::color::with_alpha;
@@ -19,12 +19,13 @@ pub struct State<T> {
 
 impl<T> State<T> {
     pub fn from_iter(items: impl IntoIterator<Item = T>) -> Self {
-        let panes = items
-            .into_iter()
-            .enumerate()
-            .map(|(id, item)| (Pane(id), item))
-            .collect();
-        Self { panes }
+        Self {
+            panes: items
+                .into_iter()
+                .enumerate()
+                .map(|(id, item)| (Pane(id), item))
+                .collect(),
+        }
     }
 
     pub fn get(&self, pane: Pane) -> Option<&T> {
@@ -94,20 +95,14 @@ pub enum DragEvent {
 
 // Element internals do not implement Debug; this mirrors iced's widget types.
 #[allow(missing_debug_implementations)]
-pub struct Content<'a, Message, Theme = iced::Theme, Renderer = iced::Renderer>
-where
-    Renderer: core::Renderer,
-{
-    body: Element<'a, Message, Theme, Renderer>,
+pub struct Content<'a, Message> {
+    body: Element<'a, Message>,
     min_width: f32,
     basis_width: f32,
 }
 
-impl<'a, Message, Theme, Renderer> Content<'a, Message, Theme, Renderer>
-where
-    Renderer: core::Renderer,
-{
-    pub fn new(body: impl Into<Element<'a, Message, Theme, Renderer>>) -> Self {
+impl<'a, Message> Content<'a, Message> {
+    pub fn new(body: impl Into<Element<'a, Message>>) -> Self {
         Self {
             body: body.into(),
             min_width: 0.0,
@@ -124,13 +119,8 @@ where
 
 // Callback closures do not implement Debug; this mirrors iced's widget types.
 #[allow(missing_debug_implementations)]
-pub struct PaneGrid<'a, Message, Theme = iced::Theme, Renderer = iced::Renderer>
-where
-    Message: 'a,
-    Theme: 'a,
-    Renderer: core::Renderer,
-{
-    entries: Vec<(Pane, Content<'a, Message, Theme, Renderer>)>,
+pub struct PaneGrid<'a, Message> {
+    entries: Vec<(Pane, Content<'a, Message>)>,
     width: Length,
     height: Length,
     on_drag: Option<Box<dyn Fn(DragEvent) -> Message + 'a>>,
@@ -139,23 +129,13 @@ where
     on_hover: Option<Box<dyn Fn(Option<Pane>) -> Message + 'a>>,
 }
 
-impl<'a, Message, Theme, Renderer> PaneGrid<'a, Message, Theme, Renderer>
-where
-    Message: 'a,
-    Theme: 'a,
-    Renderer: core::Renderer,
-{
-    pub fn new<T>(
-        state: &'a State<T>,
-        view: impl Fn(Pane, &'a T) -> Content<'a, Message, Theme, Renderer>,
-    ) -> Self {
-        let entries = state
-            .iter()
-            .map(|(pane, value)| (*pane, view(*pane, value)))
-            .collect();
-
+impl<'a, Message: 'a> PaneGrid<'a, Message> {
+    pub fn new<T>(state: &'a State<T>, view: impl Fn(Pane, &'a T) -> Content<'a, Message>) -> Self {
         Self {
-            entries,
+            entries: state
+                .iter()
+                .map(|(pane, value)| (*pane, view(*pane, value)))
+                .collect(),
             width: Length::Fill,
             height: Length::Fill,
             on_drag: None,
@@ -233,13 +213,7 @@ where
     }
 }
 
-impl<'a, Message, Theme, Renderer> Widget<Message, Theme, Renderer>
-    for PaneGrid<'a, Message, Theme, Renderer>
-where
-    Message: 'a,
-    Theme: 'a,
-    Renderer: core::Renderer,
-{
+impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer> for PaneGrid<'_, Message> {
     fn tag(&self) -> tree::Tag {
         tree::Tag::of::<Interaction>()
     }
@@ -270,21 +244,18 @@ where
     fn layout(
         &mut self,
         tree: &mut Tree,
-        renderer: &Renderer,
+        renderer: &iced::Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
         let count = self.entries.len();
         let size = limits.resolve(self.width, self.height, Size::ZERO);
-
         if count == 0 {
             return layout::Node::new(size);
         }
 
         let available_width = size.width.max(0.0);
-        let interaction = tree.state.downcast_ref::<Interaction>();
-        let widths = interaction
-            .resizing
-            .as_ref()
+        let resizing = tree.state.downcast_ref::<Interaction>().resizing.as_ref();
+        let widths = resizing
             .filter(|r| {
                 r.current.len() == count
                     && (r.current.iter().sum::<f32>() - available_width).abs() < 0.5
@@ -292,31 +263,27 @@ where
             .map(|r| fit_sum(r.current.clone(), available_width))
             .unwrap_or_else(|| solve_widths(&self.width_specs(), available_width));
 
-        let mut position = 0.0;
-        let mut children = Vec::with_capacity(count);
-
-        for (((_, content), child), width) in self
+        let mut x = 0.0;
+        let children = self
             .entries
             .iter_mut()
             .zip(tree.children.iter_mut())
             .zip(widths)
-        {
-            let pane_width = width.max(0.0);
-            let limits = layout::Limits::new(
-                Size::new(pane_width, size.height),
-                Size::new(pane_width, size.height),
-            );
-
-            let node = content
-                .body
-                .as_widget_mut()
-                .layout(child, renderer, &limits)
-                .move_to(Point::new(position, 0.0));
-
-            position += pane_width;
-            children.push(node);
-        }
-
+            .map(|(((_, content), child), width)| {
+                let width = width.max(0.0);
+                let limits = layout::Limits::new(
+                    Size::new(width, size.height),
+                    Size::new(width, size.height),
+                );
+                let node = content
+                    .body
+                    .as_widget_mut()
+                    .layout(child, renderer, &limits)
+                    .move_to(Point::new(x, 0.0));
+                x += width;
+                node
+            })
+            .collect();
         layout::Node::with_children(size, children)
     }
 
@@ -324,13 +291,13 @@ where
         &mut self,
         tree: &mut Tree,
         layout: Layout<'_>,
-        renderer: &Renderer,
+        renderer: &iced::Renderer,
         operation: &mut dyn widget::Operation,
     ) {
         for (((_, content), child), child_layout) in self
             .entries
             .iter_mut()
-            .zip(tree.children.iter_mut())
+            .zip(&mut tree.children)
             .zip(layout.children())
         {
             content
@@ -346,7 +313,7 @@ where
         event: &Event,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
-        renderer: &Renderer,
+        renderer: &iced::Renderer,
         clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
@@ -377,10 +344,8 @@ where
         if shell.is_event_captured() {
             return;
         }
-
         if let Event::Mouse(mouse::Event::CursorMoved { position }) = event {
-            let pane = self.pane_at(layout, *position);
-            self.publish_hover(tree.state.downcast_mut::<Interaction>(), pane, shell);
+            self.publish_hover(tree, self.pane_at(layout, *position), shell);
         }
     }
 
@@ -390,10 +355,9 @@ where
         layout: Layout<'_>,
         cursor: mouse::Cursor,
         viewport: &Rectangle,
-        renderer: &Renderer,
+        renderer: &iced::Renderer,
     ) -> mouse::Interaction {
         let interaction = tree.state.downcast_ref::<Interaction>();
-
         if interaction.dragging.is_some() {
             return mouse::Interaction::Grabbing;
         }
@@ -405,7 +369,6 @@ where
         {
             return mouse::Interaction::ResizingHorizontally;
         }
-
         self.entries
             .iter()
             .zip(&tree.children)
@@ -426,8 +389,8 @@ where
     fn draw(
         &self,
         tree: &Tree,
-        renderer: &mut Renderer,
-        theme: &Theme,
+        renderer: &mut iced::Renderer,
+        theme: &iced::Theme,
         defaults: &renderer::Style,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
@@ -488,18 +451,9 @@ where
     }
 }
 
-impl<'a, Message, Theme, Renderer> PaneGrid<'a, Message, Theme, Renderer>
-where
-    Message: 'a,
-    Theme: 'a,
-    Renderer: core::Renderer,
-{
-    fn publish_hover(
-        &self,
-        interaction: &mut Interaction,
-        pane: Option<Pane>,
-        shell: &mut Shell<'_, Message>,
-    ) {
+impl<'a, Message: 'a> PaneGrid<'a, Message> {
+    fn publish_hover(&self, tree: &mut Tree, pane: Option<Pane>, shell: &mut Shell<'_, Message>) {
+        let interaction = tree.state.downcast_mut::<Interaction>();
         if interaction.cursor_over != pane {
             interaction.cursor_over = pane;
             if let Some(on_hover) = &self.on_hover {
@@ -525,24 +479,23 @@ where
             let interaction = tree.state.downcast_mut::<Interaction>();
             let dragging = interaction.dragging.take();
             interaction.last_x = None;
-            self.publish_hover(interaction, None, shell);
-            if dragging.is_none() {
-                return false;
+            self.publish_hover(tree, None, shell);
+            if dragging.is_some() {
+                self.publish_drop(shell);
+                shell.capture_event();
             }
-            if let Some(on_drag) = &self.on_drag {
-                shell.publish(on_drag(DragEvent::Dropped));
-            }
-            shell.capture_event();
-            return true;
+            return dragging.is_some();
         }
 
-        let interaction = tree.state.downcast_ref::<Interaction>();
-        if let Some((pane, origin)) = interaction.dragging {
+        if let Some((pane, origin)) = tree.state.downcast_ref::<Interaction>().dragging {
             match mouse_event {
                 mouse::Event::CursorMoved { position } => {
-                    const DRAG_DEADBAND: f32 = 5.0;
-                    let last_x = interaction.last_x.unwrap_or(position.x);
-                    if position.distance(origin) > DRAG_DEADBAND
+                    let last_x = tree
+                        .state
+                        .downcast_ref::<Interaction>()
+                        .last_x
+                        .unwrap_or(position.x);
+                    if position.distance(origin) > 5.0
                         && let Some(idx) = self.entries.iter().position(|(p, _)| *p == pane)
                     {
                         let neighbor = if position.x > last_x {
@@ -572,9 +525,7 @@ where
                     let interaction = tree.state.downcast_mut::<Interaction>();
                     interaction.dragging = None;
                     interaction.last_x = None;
-                    if let Some(on_drag) = &self.on_drag {
-                        shell.publish(on_drag(DragEvent::Dropped));
-                    }
+                    self.publish_drop(shell);
                 }
                 _ => {}
             }
@@ -590,10 +541,10 @@ where
                 if self.on_resize.is_some()
                     && let Some(divider) = self.divider_at(layout, position)
                 {
-                    let start = layout
+                    let start: Vec<_> = layout
                         .children()
                         .map(|c| c.bounds().width.max(0.0))
-                        .collect::<Vec<_>>();
+                        .collect();
                     tree.state.downcast_mut::<Interaction>().resizing = Some(ResizeState {
                         divider,
                         origin_x: position.x,
@@ -630,6 +581,12 @@ where
         false
     }
 
+    fn publish_drop(&self, shell: &mut Shell<'_, Message>) {
+        if let Some(on_drag) = &self.on_drag {
+            shell.publish(on_drag(DragEvent::Dropped));
+        }
+    }
+
     fn update_resize(
         &self,
         tree: &mut Tree,
@@ -639,8 +596,7 @@ where
         let Event::Mouse(mouse_event) = event else {
             return false;
         };
-        let interaction = tree.state.downcast_mut::<Interaction>();
-        let Some(mut resizing) = interaction.resizing.take() else {
+        let Some(mut resizing) = tree.state.downcast_mut::<Interaction>().resizing.take() else {
             return false;
         };
         use mouse::Button;
@@ -658,7 +614,7 @@ where
                     shell.invalidate_layout();
                     shell.request_redraw();
                 }
-                interaction.resizing = Some(resizing);
+                tree.state.downcast_mut::<Interaction>().resizing = Some(resizing);
             }
             mouse::Event::ButtonReleased(Button::Left) => {
                 if !widths_equal(&resizing.current, &resizing.start) {
@@ -673,12 +629,10 @@ where
                 if !widths_equal(&resizing.current, &resizing.start) {
                     shell.invalidate_layout();
                 }
-                self.publish_hover(interaction, None, shell);
+                self.publish_hover(tree, None, shell);
                 shell.request_redraw();
             }
-            _ => {
-                interaction.resizing = Some(resizing);
-            }
+            _ => tree.state.downcast_mut::<Interaction>().resizing = Some(resizing),
         }
         shell.capture_event();
         true
@@ -688,8 +642,7 @@ where
 fn solve_widths(specs: &[(f32, f32)], available: f32) -> Vec<f32> {
     let available = finite_nonnegative(available);
     let mut min = fit_mins(specs, available);
-    let min_sum = min.iter().sum::<f32>();
-    if min_sum >= available - EPS {
+    if min.iter().sum::<f32>() >= available - EPS {
         return fit_sum(min, available);
     }
 
@@ -725,8 +678,7 @@ fn fit_mins(specs: &[(f32, f32)], available: f32) -> Vec<f32> {
         .collect();
     let sum = min.iter().sum::<f32>();
     if sum > available && sum > EPS {
-        let scale = available / sum;
-        min.iter_mut().for_each(|w| *w *= scale);
+        min.iter_mut().for_each(|w| *w *= available / sum);
     }
     min
 }
@@ -793,14 +745,8 @@ fn apply_nearest(
     }
 }
 
-impl<'a, Message, Theme, Renderer> From<PaneGrid<'a, Message, Theme, Renderer>>
-    for Element<'a, Message, Theme, Renderer>
-where
-    Message: 'a,
-    Theme: 'a,
-    Renderer: core::Renderer + 'a,
-{
-    fn from(pane_grid: PaneGrid<'a, Message, Theme, Renderer>) -> Self {
+impl<'a, Message: 'static> From<PaneGrid<'a, Message>> for Element<'a, Message> {
+    fn from(pane_grid: PaneGrid<'a, Message>) -> Self {
         Element::new(pane_grid)
     }
 }

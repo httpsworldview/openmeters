@@ -259,16 +259,8 @@ impl BandTracker {
 }
 
 fn derived_frame(frame: &[f32], channels: usize) -> [f32; DERIVED_CHANNELS] {
-    let left = frame[0];
-    let right = if channels > 1 { frame[1] } else { left };
-    let mid = if channels == 1 {
-        left
-    } else if channels == 2 {
-        (left + right) * 0.5
-    } else {
-        frame[..channels.min(frame.len())].iter().sum::<f32>() / channels as f32
-    };
-    [left, right, mid, (left - right) * 0.5]
+    let (left, right) = (frame[0], frame[1]);
+    [left, right, frame.iter().sum::<f32>() / channels as f32, (left - right) * 0.5]
 }
 
 fn process_bands(
@@ -398,36 +390,30 @@ impl WaveformProcessor {
                 for &left in samples {
                     let side = left * 0.0;
                     let finite = left.is_finite();
-                    let derived = [left, left, left, side];
-                    let finite = [finite, finite, finite, side.is_finite()];
-                    if let Some(trackers) = &mut self.trackers {
-                        process_bands(trackers, derived, finite);
-                    }
-                    self.ingest_derived(derived, finite, step);
+                    self.ingest_frame([left, left, left, side], [finite, finite, finite, side.is_finite()], step);
                 }
             }
             2 => {
                 for frame in samples.chunks_exact(2) {
                     let (left, right) = (frame[0], frame[1]);
                     let derived = [left, right, (left + right) * 0.5, (left - right) * 0.5];
-                    let finite = derived.map(f32::is_finite);
-                    if let Some(trackers) = &mut self.trackers {
-                        process_bands(trackers, derived, finite);
-                    }
-                    self.ingest_derived(derived, finite, step);
+                    self.ingest_frame(derived, derived.map(f32::is_finite), step);
                 }
             }
             _ => {
                 for frame in samples.chunks_exact(channels) {
                     let derived = derived_frame(frame, channels);
-                    let finite = derived.map(f32::is_finite);
-                    if let Some(trackers) = &mut self.trackers {
-                        process_bands(trackers, derived, finite);
-                    }
-                    self.ingest_derived(derived, finite, step);
+                    self.ingest_frame(derived, derived.map(f32::is_finite), step);
                 }
             }
         }
+    }
+
+    fn ingest_frame(&mut self, derived: [f32; DERIVED_CHANNELS], finite: [bool; DERIVED_CHANNELS], step: f32) {
+        if let Some(trackers) = &mut self.trackers {
+            process_bands(trackers, derived, finite);
+        }
+        self.ingest_derived(derived, finite, step);
     }
 
     fn ingest_derived(

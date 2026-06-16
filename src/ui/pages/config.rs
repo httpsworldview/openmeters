@@ -13,10 +13,8 @@ use crate::ui::subscription::channel_subscription;
 use crate::ui::theme;
 use crate::util::color::with_alpha;
 
-mod application_row;
 use crate::ui::widgets::scroll_glow::ScrollGlow;
 use crate::visuals::registry::{VisualKind, VisualManagerHandle, VisualSlotSnapshot};
-use application_row::ApplicationRow;
 use async_channel::Receiver as AsyncReceiver;
 use iced::widget::text::Wrapping;
 use iced::widget::{
@@ -74,6 +72,40 @@ pub enum ConfigMessage {
     SaveTheme(String),
     ThemeNameInput(String),
     Scrolled(ScrollGlow),
+}
+
+#[derive(Clone, Debug)]
+struct ApplicationRow {
+    node_id: u32,
+    label: String,
+    sort_key: (String, String, u32),
+    enabled: bool,
+}
+
+impl ApplicationRow {
+    fn from_node(node: &crate::infra::pipewire::registry::NodeInfo, enabled: bool) -> Self {
+        let primary = node
+            .app_name()
+            .map(str::to_owned)
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| node.display_name());
+        let node_label = node.display_name();
+        let secondary = (!primary.eq_ignore_ascii_case(&node_label)).then_some(node_label);
+        let sort_key = (
+            primary.to_ascii_lowercase(),
+            secondary
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase(),
+            node.id,
+        );
+        Self {
+            node_id: node.id,
+            label: secondary.map_or(primary.clone(), |s| format!("{primary} ({s})")),
+            sort_key,
+            enabled,
+        }
+    }
 }
 
 pub struct ConfigPage {
