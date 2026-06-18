@@ -1,6 +1,6 @@
 [package]
 name = "openmeters"
-version = "1.6.0"
+version = "1.7.0"
 edition = "2024"
 rust-version = "1.95"
 license = "GPL-3.0-or-later"
@@ -45,7 +45,7 @@ wayland-client = "0.31.14"
 
 [patch.crates-io.iced_layershell]
 git = "https://github.com/httpsworldview/exwlshelleventloop"
-rev = "a0e177a18810f2fcff1bfc800c9f2f63b653844e"
+rev = "49c4b9bd21b6d800b1dfb73fbf58d52822e272bc"
 
 [dev-dependencies]
 ebur128 = "0.1.10"
