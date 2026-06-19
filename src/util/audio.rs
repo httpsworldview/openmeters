@@ -99,7 +99,7 @@ impl WindowKind {
             Self::Blackman => &[0.42, -0.5, 0.08],
             Self::BlackmanHarris => &[0.35875, -0.48829, 0.14128, -0.01168],
         };
-        let step = core::f32::consts::TAU / (len - 1) as f32;
+        let step = core::f32::consts::TAU / len as f32;
         (0..len)
             .map(|n| {
                 let phi = n as f32 * step;
@@ -295,4 +295,18 @@ pub fn compute_fft_bin_normalization(window: &[f32], fft_size: usize) -> Vec<f32
         norms[bins - 1] = dc_scale;
     }
     norms
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fft_windows_are_periodic() {
+        let hann = WindowKind::Hann.coefficients(8);
+
+        assert_eq!(hann[0], 0.0);
+        assert!((hann[4] - 1.0).abs() < 1.0e-6);
+        assert!((hann[7] - 0.146_446_5).abs() < 1.0e-6);
+    }
 }

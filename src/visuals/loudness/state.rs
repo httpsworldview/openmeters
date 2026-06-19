@@ -22,10 +22,6 @@ const RIGHT_PADDING: f32 = 64.0;
 const LABEL_FONT_SIZE: f32 = 10.0;
 const VALUE_FONT_SIZE: f32 = 12.0;
 
-const LEFT_CHANNEL_INDICES: &[usize] = &[0, 4, 6];
-const RIGHT_CHANNEL_INDICES: &[usize] = &[1, 5, 7];
-const CENTER_CHANNEL_INDEX: usize = 2;
-
 pub const LOUDNESS_PALETTE_SIZE: usize = palettes::loudness::COLORS.len();
 
 const PAL_BACKGROUND: usize = 0;
@@ -165,23 +161,23 @@ impl LoudnessState {
         }
     }
 
-    fn aggregate_channels(&self, mode: MeterMode, indices: &[usize]) -> f32 {
+    fn aggregate_channels(&self, mode: MeterMode, wanted: MeterSide) -> f32 {
         if matches!(mode, MeterMode::LufsShortTerm | MeterMode::LufsMomentary) {
             return self.get_value(mode, 0);
         }
-        indices
-            .iter()
-            .copied()
-            .filter(|&ch| ch < self.channel_count)
-            .chain((self.channel_count > CENTER_CHANNEL_INDEX).then_some(CENTER_CHANNEL_INDEX))
+        (0..self.channel_count)
+            .filter(|&ch| {
+                let side = fallback_side(ch, self.channel_count);
+                side == MeterSide::Both || side == wanted
+            })
             .map(|ch| self.get_value(mode, ch))
             .fold(DEFAULT_RANGE.0, f32::max)
     }
 
     fn visible_values(&self) -> [f32; VISIBLE_METER_COUNT] {
         [
-            self.aggregate_channels(self.left_mode, LEFT_CHANNEL_INDICES),
-            self.aggregate_channels(self.left_mode, RIGHT_CHANNEL_INDICES),
+            self.aggregate_channels(self.left_mode, MeterSide::Left),
+            self.aggregate_channels(self.left_mode, MeterSide::Right),
             self.get_value(self.right_mode, 0),
         ]
     }
@@ -222,6 +218,29 @@ impl LoudnessState {
         for (peak, value) in self.peaks.iter_mut().zip(values) {
             peak.update(value.clamp(min, max), now);
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MeterSide {
+    Left,
+    Right,
+    Both,
+    Neither,
+}
+
+fn fallback_side(channel_index: usize, total_channels: usize) -> MeterSide {
+    match (total_channels, channel_index) {
+        (1, 0) => MeterSide::Both,
+        (_, 0) => MeterSide::Left,
+        (_, 1) => MeterSide::Right,
+        (3 | 5, 2) | (6.., 2) => MeterSide::Both,
+        (4, 2) | (5, 3) => MeterSide::Left,
+        (4, 3) | (5, 4) => MeterSide::Right,
+        (6.., 3) => MeterSide::Neither,
+        (6.., i) if i % 2 == 0 => MeterSide::Left,
+        (6.., _) => MeterSide::Right,
+        _ => MeterSide::Neither,
     }
 }
 
@@ -338,6 +357,31 @@ mod tests {
 
         state.set_modes(MeterMode::RmsFast, MeterMode::LufsMomentary);
         assert_eq!(visible_bar_values(&state), vec![vec![-6.0, -3.0], vec![-7.5]]);
+    }
+
+    #[test]
+    fn visible_bars_follow_fallback_channel_layouts() {
+        let snapshot = |true_peak_db, channel_count| LoudnessSnapshot {
+            short_term_loudness: -9.0,
+            momentary_loudness: -9.0,
+            rms_fast_db: [DEFAULT_RANGE.0; MAX_CHANNELS],
+            rms_slow_db: [DEFAULT_RANGE.0; MAX_CHANNELS],
+            true_peak_db,
+            channel_count,
+        };
+        let mut state = LoudnessState::new();
+        state.set_modes(MeterMode::TruePeak, MeterMode::LufsShortTerm);
+
+        let mut mono = [DEFAULT_RANGE.0; MAX_CHANNELS];
+        mono[0] = -12.0;
+        state.apply_snapshot(snapshot(mono, 1));
+        assert_eq!(visible_bar_values(&state)[0], vec![-12.0, -12.0]);
+
+        let mut quad = [DEFAULT_RANGE.0; MAX_CHANNELS];
+        quad[2] = -6.0;
+        quad[3] = -3.0;
+        state.apply_snapshot(snapshot(quad, 4));
+        assert_eq!(visible_bar_values(&state)[0], vec![-6.0, -3.0]);
     }
 
     #[test]

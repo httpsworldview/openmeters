@@ -220,11 +220,12 @@ pub const MAX_CHANNELS: usize = 8;
 
 fn channel_weight(channel_index: usize, total_channels: usize) -> f64 {
     match total_channels {
-        1 | 2 => 1.0,
-        6 => [1.0, 1.0, 1.0, 0.0, 1.41, 1.41][channel_index.min(5)],
-        8 => [1.0, 1.0, 1.0, 0.0, 1.41, 1.41, 1.41, 1.41][channel_index.min(7)],
-        _ if channel_index < 3 => 1.0,
-        _ => 1.41,
+        1..=3 => 1.0,
+        4 => [1.0, 1.0, 1.41, 1.41][channel_index.min(3)],
+        5 => [1.0, 1.0, 1.0, 1.41, 1.41][channel_index.min(4)],
+        _ if channel_index == 3 => 0.0,
+        _ if channel_index >= 4 => 1.41,
+        _ => 1.0,
     }
 }
 
@@ -402,27 +403,40 @@ mod tests {
     #[test]
     fn processor_matches_ebur128_short_term() {
         for sample_rate in [44100.0_f32, 48000.0, 96000.0] {
-            let mono = sine_wave(sample_rate, 4.0, 1000.0, 0.5);
-            let stereo: Vec<f32> = mono.iter().flat_map(|&s| [s, s]).collect();
-            let block = AudioBlock::new(&stereo, 2, sample_rate);
-            let cfg = LoudnessConfig {
-                sample_rate,
-                ..Default::default()
-            };
-            let ours = f64::from(
-                unwrap_snapshot(LoudnessProcessor::new(cfg).process_block(&block))
-                    .short_term_loudness,
-            );
+            for channels in [2, 4, 5, 6] {
+                let mono = sine_wave(sample_rate, 4.0, 1000.0, 0.5);
+                let interleaved: Vec<f32> = mono
+                    .iter()
+                    .flat_map(|&s| std::iter::repeat_n(s, channels))
+                    .collect();
+                let block = AudioBlock::new(&interleaved, channels, sample_rate);
+                let cfg = LoudnessConfig {
+                    sample_rate,
+                    ..Default::default()
+                };
+                let ours = f64::from(
+                    unwrap_snapshot(LoudnessProcessor::new(cfg).process_block(&block))
+                        .short_term_loudness,
+                );
 
-            let mut reference = EbuR128::new(2, sample_rate as u32, Mode::S).unwrap();
-            reference.add_frames_planar_f32(&[&mono, &mono]).unwrap();
-            let expected = reference.loudness_shortterm().unwrap();
-            let diff = (ours - expected).abs();
-            assert!(
-                diff < 0.001,
-                "{sample_rate}Hz mismatch: {ours:.6} vs {expected:.6} (diff={diff:.8})"
-            );
+                let planar = vec![mono.as_slice(); channels];
+                let mut reference = EbuR128::new(channels as u32, sample_rate as u32, Mode::S).unwrap();
+                reference.add_frames_planar_f32(&planar).unwrap();
+                let expected = reference.loudness_shortterm().unwrap();
+                let diff = (ours - expected).abs();
+                assert!(
+                    diff < 0.001,
+                    "{sample_rate}Hz/{channels}ch mismatch: {ours:.6} vs {expected:.6} (diff={diff:.8})"
+                );
+            }
         }
+    }
+
+    #[test]
+    fn fallback_channel_weights_match_common_bs1770_layouts() {
+        assert_eq!(channel_weight(2, 4), 1.41);
+        assert_eq!(channel_weight(3, 6), 0.0);
+        assert_eq!(channel_weight(4, 6), 1.41);
     }
 
     #[test]
