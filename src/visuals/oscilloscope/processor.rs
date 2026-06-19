@@ -785,14 +785,14 @@ fn downsample_trace(output: &mut Vec<f32>, data: &[f32], capture: Capture, targe
 mod tests {
     use super::*;
     use crate::dsp::AudioBlock;
-    use std::{ops::Range, time::Instant};
+    use std::ops::Range;
 
     const RATE: f32 = 48_000.0;
     const BLOCK: usize = 1024;
     const TAU: f32 = std::f32::consts::TAU;
 
     fn make_block(samples: &[f32], channels: usize, sample_rate: f32) -> AudioBlock<'_> {
-        AudioBlock::new(samples, channels, sample_rate, Instant::now())
+        AudioBlock::new(samples, channels, sample_rate)
     }
 
     fn stable_config() -> OscilloscopeConfig {

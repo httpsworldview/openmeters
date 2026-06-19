@@ -625,7 +625,7 @@ mod tests {
     fn process_samples(cfg: SpectrogramConfig, samples: &[f32]) -> SpectrogramUpdate {
         let mut processor = SpectrogramProcessor::new(cfg);
         processor
-            .process_block(&AudioBlock::now(samples, 1, cfg.sample_rate))
+            .process_block(&AudioBlock::new(samples, 1, cfg.sample_rate))
             .expect("expected snapshot")
     }
 

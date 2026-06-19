@@ -52,18 +52,27 @@ struct LR4 {
 }
 
 impl LR4 {
-    fn lowpass(sample_rate: f32, freq: f32) -> Self {
+    fn new(sample_rate: f32, freq: f32, highpass: bool) -> Self {
         let omega = std::f32::consts::TAU * freq / sample_rate;
         let (sin_w, cos_w) = omega.sin_cos();
         let alpha = sin_w * std::f32::consts::FRAC_1_SQRT_2;
         let a0_inv = 1.0 / (1.0 + alpha);
-        let gain = 1.0 - cos_w;
-        let (b0, b1) = (gain * 0.5 * a0_inv, gain * a0_inv);
+        let gain = if highpass { 1.0 + cos_w } else { 1.0 - cos_w };
+        let b0 = gain * 0.5 * a0_inv;
+        let b1 = (if highpass { -gain } else { gain }) * a0_inv;
         Self {
             feedforward: [[b0, b1, b0]; 2],
             feedback: [[-2.0 * cos_w * a0_inv, (1.0 - alpha) * a0_inv]; 2],
             delays: [[0.0; 4]; 2],
         }
+    }
+
+    fn lowpass(sample_rate: f32, freq: f32) -> Self {
+        Self::new(sample_rate, freq, false)
+    }
+
+    fn highpass(sample_rate: f32, freq: f32) -> Self {
+        Self::new(sample_rate, freq, true)
     }
 
     fn process(&mut self, sample: f32) -> f32 {
@@ -113,7 +122,7 @@ pub struct StereometerProcessor {
     history: VecDeque<f32>,
     band_history: [VecDeque<f32>; 3],
     history_channels: usize,
-    crossovers: [LR4; 4],
+    crossovers: [LR4; 8],
     correlators: [Correlator; 4],
 }
 
@@ -130,14 +139,38 @@ impl StereometerProcessor {
         }
     }
 
-    fn build_crossovers(sample_rate: f32) -> [LR4; 4] {
+    fn build_crossovers(sample_rate: f32) -> [LR4; 8] {
         let [low_mid, mid_high] = BAND_SPLITS_HZ;
         [
             LR4::lowpass(sample_rate, low_mid),
             LR4::lowpass(sample_rate, low_mid),
+            LR4::highpass(sample_rate, low_mid),
+            LR4::highpass(sample_rate, low_mid),
             LR4::lowpass(sample_rate, mid_high),
             LR4::lowpass(sample_rate, mid_high),
+            LR4::highpass(sample_rate, mid_high),
+            LR4::highpass(sample_rate, mid_high),
         ]
+    }
+
+    fn split_bands(&mut self, left: f32, right: f32) -> [(f32, f32); 3] {
+        let low = (
+            self.crossovers[0].process(left),
+            self.crossovers[1].process(right),
+        );
+        let rest = (
+            self.crossovers[2].process(left),
+            self.crossovers[3].process(right),
+        );
+        let mid = (
+            self.crossovers[4].process(rest.0),
+            self.crossovers[5].process(rest.1),
+        );
+        let high = (
+            self.crossovers[6].process(rest.0),
+            self.crossovers[7].process(rest.1),
+        );
+        [low, mid, high]
     }
 
     fn fresh_correlators(config: StereometerConfig) -> [Correlator; 4] {
@@ -170,17 +203,7 @@ impl StereometerProcessor {
             let (left, right) = (frame[0], frame[1]);
             self.correlators[0].update(left, right);
 
-            let low = (
-                self.crossovers[0].process(left),
-                self.crossovers[1].process(right),
-            );
-            let mid = (
-                self.crossovers[2].process(left - low.0),
-                self.crossovers[3].process(right - low.1),
-            );
-            let bands = [low, mid, (left - low.0 - mid.0, right - low.1 - mid.1)];
-
-            for (i, (l, r)) in bands.into_iter().enumerate() {
+            for (i, (l, r)) in self.split_bands(left, right).into_iter().enumerate() {
                 self.correlators[i + 1].update(l, r);
                 if self.config.emit_band_points {
                     self.band_history[i].extend([l, r]);

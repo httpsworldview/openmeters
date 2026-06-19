@@ -93,7 +93,7 @@ macro_rules! visuals {
                     let ($pip, $pis) = (&mut self.processor, &self.state);
                     $pre_ingest_body
                 })?
-                if let Some(snap) = self.processor.process_block(&AudioBlock::now(
+                if let Some(snap) = self.processor.process_block(&AudioBlock::new(
                     samples,
                     fmt.channels,
                     fmt.sample_rate,

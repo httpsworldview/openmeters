@@ -509,7 +509,7 @@ mod tests {
     const RATE: f32 = 48_000.0;
 
     fn block(samples: &[f32], channels: usize, sample_rate: f32) -> AudioBlock<'_> {
-        AudioBlock::now(samples, channels, sample_rate)
+        AudioBlock::new(samples, channels, sample_rate)
     }
 
     fn config(scroll_speed: f32, max_columns: usize) -> WaveformConfig {

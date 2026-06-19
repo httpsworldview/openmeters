@@ -214,6 +214,7 @@ fn convert_samples_to_f32_into(
 
     const I8_DIV: f32 = i8::MAX as f32;
     const I16_DIV: f32 = i16::MAX as f32;
+    const I24_DIV: f32 = 0x7f_ffff as f32;
     const I32_DIV: f32 = i32::MAX as f32;
 
     let sample_count = converted_sample_count(bytes, format)?;
@@ -245,9 +246,11 @@ fn convert_samples_to_f32_into(
         Fmt::F32LE | Fmt::F32BE => convert!(f32, |v| v),
         Fmt::F64LE | Fmt::F64BE => convert!(f64, |v| v as f32),
         Fmt::S16LE | Fmt::S16BE => convert!(i16, |v| v as f32 / I16_DIV),
-        Fmt::S32LE | Fmt::S24_32LE | Fmt::S32BE | Fmt::S24_32BE => {
-            convert!(i32, |v| v as f32 / I32_DIV);
+        Fmt::S24_32LE | Fmt::S24_32BE => {
+            convert!(u32, |v| (((v & 0x00ff_ffff) as i32) << 8 >> 8) as f32
+                / I24_DIV);
         }
+        Fmt::S32LE | Fmt::S32BE => convert!(i32, |v| v as f32 / I32_DIV),
         Fmt::U16LE | Fmt::U16BE => convert!(u16, |v| (v as f32 - 32_768.0) / 32_768.0),
         Fmt::U32LE | Fmt::U32BE => {
             convert!(u32, |v| (v as f64 / u32::MAX as f64 * 2.0 - 1.0) as f32);
@@ -516,6 +519,8 @@ mod tests {
         let s16be = [0x80, 0x00, 0x7F, 0xFF];
         let u16be = [0x00, 0x00, 0xFF, 0xFF];
         let f32le = 0.123_456_78f32.to_le_bytes();
+        let s24_32le = [0xff, 0xff, 0x7f, 0x55, 0x00, 0x00, 0x80, 0xaa];
+        let s24_32be = [0x55, 0x7f, 0xff, 0xff, 0xaa, 0x80, 0x00, 0x00];
         let s32le = i32::MAX.to_le_bytes();
         let s8 = [0x80, 0x7F];
         for (bytes, fmt, len, index, expected, eps) in [
@@ -545,6 +550,24 @@ mod tests {
                 f32::EPSILON,
             ),
             (&f32le, Fmt::F32LE, 1, 0, 0.123_456_78, f32::EPSILON),
+            (&s24_32le, Fmt::S24_32LE, 2, 0, 1.0, f32::EPSILON),
+            (
+                &s24_32le,
+                Fmt::S24_32LE,
+                2,
+                1,
+                -8_388_608.0 / 8_388_607.0,
+                1e-6,
+            ),
+            (&s24_32be, Fmt::S24_32BE, 2, 0, 1.0, f32::EPSILON),
+            (
+                &s24_32be,
+                Fmt::S24_32BE,
+                2,
+                1,
+                -8_388_608.0 / 8_388_607.0,
+                1e-6,
+            ),
             (&s32le, Fmt::S32LE, 1, 0, 1.0, f32::EPSILON),
             (&s8, Fmt::S8, 2, 0, i8::MIN as f32 / i8::MAX as f32, 1e-5),
             (&s8, Fmt::S8, 2, 1, 1.0, f32::EPSILON),

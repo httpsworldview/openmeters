@@ -291,7 +291,7 @@ pub fn compute_fft_bin_normalization(window: &[f32], fft_size: usize) -> Vec<f32
     let ac_scale = 4.0 * dc_scale;
     let mut norms = vec![ac_scale; bins];
     norms[0] = dc_scale;
-    if bins > 1 {
+    if fft_size.is_multiple_of(2) && bins > 1 {
         norms[bins - 1] = dc_scale;
     }
     norms

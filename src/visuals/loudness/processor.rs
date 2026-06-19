@@ -353,7 +353,6 @@ impl LoudnessProcessor {
 mod tests {
     use super::*;
     use ebur128::{EbuR128, Mode};
-    use std::time::Instant;
 
     fn sine_wave(rate: f32, secs: f32, freq: f32, amp: f32) -> Vec<f32> {
         (0..(rate * secs) as usize)
@@ -384,7 +383,7 @@ mod tests {
     fn processor_estimates_short_term_and_rms() {
         let measure = |amp| {
             let samples = sine_wave(DEFAULT_SAMPLE_RATE, 3.0, 1000.0, amp);
-            let block = AudioBlock::new(&samples, 1, DEFAULT_SAMPLE_RATE, Instant::now());
+            let block = AudioBlock::new(&samples, 1, DEFAULT_SAMPLE_RATE);
             let s = unwrap_snapshot(
                 LoudnessProcessor::new(LoudnessConfig::default()).process_block(&block),
             );
@@ -405,7 +404,7 @@ mod tests {
         for sample_rate in [44100.0_f32, 48000.0, 96000.0] {
             let mono = sine_wave(sample_rate, 4.0, 1000.0, 0.5);
             let stereo: Vec<f32> = mono.iter().flat_map(|&s| [s, s]).collect();
-            let block = AudioBlock::new(&stereo, 2, sample_rate, Instant::now());
+            let block = AudioBlock::new(&stereo, 2, sample_rate);
             let cfg = LoudnessConfig {
                 sample_rate,
                 ..Default::default()
@@ -435,7 +434,7 @@ mod tests {
             sample_rate,
             ..Default::default()
         };
-        let block = AudioBlock::new(&stereo, 2, sample_rate, Instant::now());
+        let block = AudioBlock::new(&stereo, 2, sample_rate);
         let ours = unwrap_snapshot(LoudnessProcessor::new(cfg).process_block(&block)).true_peak_db
             [0] as f64;
 

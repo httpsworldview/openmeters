@@ -13,7 +13,6 @@ use rustfft::num_complex::Complex32;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::time::Instant;
 
 pub const MIN_SPECTRUM_EXP_FACTOR: f32 = 0.0;
 pub const MAX_SPECTRUM_EXP_FACTOR: f32 = 0.95;
@@ -124,7 +123,6 @@ pub struct SpectrumProcessor {
     source_scratch: Vec<f32>,
     levels: [SpectrumLevelBuffers; TRACE_COUNT],
     a_weighting_db: Vec<f32>,
-    last_update_at: Option<Instant>,
 }
 
 impl SpectrumProcessor {
@@ -147,7 +145,6 @@ impl SpectrumProcessor {
             source_scratch: Vec::new(),
             levels: Default::default(),
             a_weighting_db: Vec::new(),
-            last_update_at: None,
         };
         processor.rebuild_fft();
         processor
@@ -200,11 +197,12 @@ impl SpectrumProcessor {
         [primary != Channel::None, secondary != Channel::None && secondary != primary]
     }
 
-    fn process_ready_windows(&mut self, timestamp: Instant) -> bool {
+    fn process_ready_windows(&mut self) -> bool {
         let fft_size = self.config.fft_size;
         let hop = self.config.hop_size.max(1);
         let bins = fft_size / 2 + 1;
         let floor = self.config.floor_db;
+        let dt_seconds = hop as f32 / self.config.sample_rate.max(f32::EPSILON);
         let active = self.active_traces();
         let mut produced = false;
 
@@ -212,15 +210,11 @@ impl SpectrumProcessor {
         if !active.iter().any(|&active| active) { return false; }
 
         while (0..TRACE_COUNT).all(|trace| !active[trace] || self.pcm_buffers[trace].len() >= fft_size) {
-            let dt_seconds = self.last_update_at.map_or(0.0, |last| {
-                timestamp.saturating_duration_since(last).as_secs_f32()
-            });
             for (trace, &active) in active.iter().enumerate() {
                 if active && !self.process_trace_window(trace, dt_seconds, floor) {
                     return produced;
                 }
             }
-            self.last_update_at = Some(timestamp);
             for (trace, &active) in active.iter().enumerate() {
                 if active {
                     let buf = &mut self.pcm_buffers[trace];
@@ -283,7 +277,7 @@ impl SpectrumProcessor {
         }
         self.push_sources(block);
 
-        if self.process_ready_windows(block.timestamp) {
+        if self.process_ready_windows() {
             Some(self.snapshot.clone())
         } else {
             None
@@ -384,31 +378,28 @@ fn reset_to_floor(buf: &mut Vec<f32>, bins: usize, floor: f32) {
 }
 
 fn a_weight(freq_hz: f32) -> f32 {
-    const MIN_DB: f32 = -80.0;
     const C1: f64 = 20.598_997 * 20.598_997;
     const C2: f64 = 107.652_65 * 107.652_65;
     const C3: f64 = 737.862_23 * 737.862_23;
     const C4: f64 = 12_194.217 * 12_194.217;
 
-    if freq_hz <= 0.0 { return MIN_DB; }
+    if freq_hz <= 0.0 { return f32::NEG_INFINITY; }
 
     let f = freq_hz as f64;
     let f2 = f * f;
     let numerator = C4 * f2 * f2;
     let denom = (f2 + C1) * ((f2 + C2) * (f2 + C3)).sqrt() * (f2 + C4);
 
-    if denom <= 0.0 || numerator <= 0.0 { return MIN_DB; }
+    if denom <= 0.0 || numerator <= 0.0 { return f32::NEG_INFINITY; }
 
     let ra = numerator / denom;
-    let db = 20.0 * ra.log10() + 2.0;
-    db.max(MIN_DB as f64) as f32
+    (20.0 * ra.log10() + 2.0) as f32
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::dsp::AudioBlock;
-    use std::time::Instant;
 
     #[test]
     fn normalization_bounds_runtime_values_without_enforcing_gui_ranges() {
@@ -468,7 +459,7 @@ mod tests {
             ..Default::default()
         });
         let samples = [1.0, 0.0, 0.0, 1.0];
-        p.process_block(&AudioBlock::new(&samples, 2, p.config.sample_rate, Instant::now()));
+        p.process_block(&AudioBlock::new(&samples, 2, p.config.sample_rate));
 
         assert_eq!(p.pcm_buffers[0].iter().copied().collect::<Vec<_>>(), [1.0, 0.0]);
         assert_eq!(p.pcm_buffers[1].iter().copied().collect::<Vec<_>>(), [0.5, -0.5]);
@@ -485,7 +476,7 @@ mod tests {
         });
         let samples = vec![0.0; 8];
 
-        let snap = p.process_block(&AudioBlock::new(&samples, 1, p.config.sample_rate, Instant::now()));
+        let snap = p.process_block(&AudioBlock::new(&samples, 1, p.config.sample_rate));
 
         assert!(snap.is_some());
     }
@@ -510,14 +501,45 @@ mod tests {
 
         let samples = vec![0.0; cfg.fft_size];
         let lengths = p
-            .process_block(&AudioBlock::new(&samples, 1, cfg.sample_rate, Instant::now()))
+            .process_block(&AudioBlock::new(&samples, 1, cfg.sample_rate))
             .map(|s| (s.traces[0][A_WEIGHTED].len(), s.traces[0][RAW].len()));
         assert_eq!(lengths, Some((bins, bins)));
     }
 
     #[test]
+    fn peak_hold_decays_for_each_audio_hop_in_large_batch() {
+        let mut p = SpectrumProcessor::new(SpectrumConfig {
+            sample_rate: 8.0,
+            fft_size: 8,
+            hop_size: 8,
+            window: WindowKind::Rectangular,
+            averaging: AveragingMode::PeakHold {
+                decay_per_second: 24.0,
+            },
+            floor_db: -100.0,
+            ..Default::default()
+        });
+        let mut samples: Vec<_> = (0..8)
+            .map(|n| (std::f32::consts::TAU * n as f32 / 8.0).sin())
+            .collect();
+        samples.extend([0.0; 8]);
+
+        let snap = p
+            .process_block(&AudioBlock::new(&samples, 1, 8.0))
+            .expect("expected snapshot");
+        let held_db = snap.traces[0][RAW][1];
+
+        assert!(
+            (-24.1..-23.9).contains(&held_db),
+            "held peak should decay once per hop, got {held_db} dB"
+        );
+    }
+
+    #[test]
     fn a_weight_matches_iec_reference_points() {
         let reference_points: &[(f32, f32)] = &[
+            (1.0, -148.6),
+            (5.0, -93.1),
             (31.5, -39.4),
             (63.0, -26.2),
             (100.0, -19.1),
