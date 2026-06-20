@@ -2,13 +2,13 @@
 // Copyright (C) 2026 Maika Namuo
 
 pub mod app;
-pub mod pages {
-    pub mod config;
-    pub mod visuals;
-}
+pub mod config;
+pub mod settings;
 pub mod subscription;
 pub mod theme;
+pub mod visuals;
 pub mod widgets {
+    pub mod palette_editor;
     pub mod pane_grid;
     pub mod scroll_glow;
 

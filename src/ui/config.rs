@@ -8,9 +8,9 @@ use crate::persistence::settings::{
     BAR_MAX_HEIGHT, BAR_MIN_HEIGHT, BUILTIN_THEME, BarAlignment, SettingsHandle, ThemeChoice,
     ThemeFile, ThemeOrigin, canonical_theme_name,
 };
-use crate::ui::pages::visuals::settings::palette::{PaletteEditor, PaletteEvent};
 use crate::ui::subscription::channel_subscription;
 use crate::ui::theme;
+use crate::ui::widgets::palette_editor::{PaletteEditor, PaletteEvent};
 use crate::util::color::with_alpha;
 
 use crate::ui::widgets::scroll_glow::ScrollGlow;

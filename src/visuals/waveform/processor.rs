@@ -385,9 +385,8 @@ impl WaveformProcessor {
         match channels {
             1 => {
                 for &left in samples {
-                    let side = left * 0.0;
                     let finite = left.is_finite();
-                    self.ingest_frame([left, left, left, side], [finite, finite, finite, side.is_finite()], step);
+                    self.ingest_frame([left, left, left, 0.0], [finite, finite, finite, true], step);
                 }
             }
             2 => {

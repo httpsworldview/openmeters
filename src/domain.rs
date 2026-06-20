@@ -22,7 +22,9 @@ pub mod routing {
 
     impl DeviceSelection {
         pub fn from_token(token: Option<String>) -> Self {
-            token.map(Self::Device).unwrap_or_default()
+            token
+                .filter(|token| !token.is_empty())
+                .map_or(Self::Default, Self::Device)
         }
 
         pub fn token(&self) -> Option<&str> {

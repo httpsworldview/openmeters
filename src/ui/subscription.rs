@@ -16,7 +16,6 @@ where
     from_recipe(ChannelRecipe { receiver })
 }
 
-#[derive(Clone)]
 struct ChannelRecipe<T> {
     receiver: Arc<AsyncReceiver<T>>,
 }
@@ -32,8 +31,7 @@ where
     }
 
     fn stream(self: Box<Self>, _input: EventStream) -> futures::stream::BoxStream<'static, T> {
-        let receiver = Arc::clone(&self.receiver);
-        futures::stream::unfold(receiver, |receiver| async move {
+        futures::stream::unfold(self.receiver, |receiver| async move {
             receiver.recv().await.ok().map(|value| (value, receiver))
         })
         .boxed()

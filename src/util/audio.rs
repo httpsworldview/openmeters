@@ -240,8 +240,13 @@ pub fn extend_interleaved_history(
     capacity: usize,
     channels: usize,
 ) {
+    let capacity = capacity / channels.max(1) * channels;
     if capacity == 0 || channels == 0 {
         history.clear();
+        return;
+    }
+    let samples = &samples[..samples.len() / channels * channels];
+    if samples.is_empty() {
         return;
     }
 

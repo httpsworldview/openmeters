@@ -6,11 +6,6 @@ use crate::ui::widgets::pane_grid::{self, Content as PaneContent, Pane};
 use crate::visuals::registry::{
     VisualContent, VisualKind, VisualManagerHandle, VisualSlotSnapshot,
 };
-pub mod settings;
-pub(in crate::ui) use settings::{
-    ActiveSettings, SettingsMessage, create_panel as create_settings_panel,
-};
-
 use iced::widget::{container, mouse_area, text};
 use iced::{Element, Length, Task};
 

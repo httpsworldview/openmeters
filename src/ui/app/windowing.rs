@@ -4,9 +4,10 @@
 use super::UiApp;
 use super::message::{self, Message};
 use crate::persistence::settings::{BarAlignment, BarSettings, clamp_bar_height};
-use crate::ui::pages::config::ConfigMessage;
-use crate::ui::pages::visuals::{VisualsMessage, create_settings_panel};
+use crate::ui::config::ConfigMessage;
+use crate::ui::settings::create_panel as create_settings_panel;
 use crate::ui::theme;
+use crate::ui::visuals::VisualsMessage;
 use crate::ui::widgets::scroll_glow::ScrollGlow;
 use crate::visuals::registry::{VisualContent, VisualKind, VisualMetadata, VisualSlotSnapshot};
 use iced::widget::{container, mouse_area, text};

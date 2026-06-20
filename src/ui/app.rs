@@ -13,10 +13,11 @@ mod windowing;
 use crate::domain::routing::RoutingCommand;
 use crate::infra::pipewire::{meter_tap::AudioBatch, registry::RegistrySnapshot};
 use crate::persistence::settings::{BarAlignment, BarSettings, SettingsHandle, clamp_bar_height};
-use crate::ui::pages::config::ConfigPage;
-use crate::ui::pages::visuals::{ActiveSettings, VisualsPage};
+use crate::ui::config::ConfigPage;
+use crate::ui::settings::ActiveSettings;
 use crate::ui::subscription::channel_subscription;
 use crate::ui::theme;
+use crate::ui::visuals::VisualsPage;
 use crate::ui::widgets::scroll_glow::ScrollGlow;
 use crate::visuals::registry::{VisualManager, VisualManagerHandle};
 use async_channel::Receiver as AsyncReceiver;
@@ -50,7 +51,7 @@ const DRAWER_RESIZE_HANDLE_WIDTH: f32 = 6.0;
 pub struct UiConfig {
     routing_sender: mpsc::Sender<RoutingCommand>,
     registry_updates: Option<Arc<AsyncReceiver<RegistrySnapshot>>>,
-    audio_frames: Option<Arc<AsyncReceiver<AudioBatch>>>,
+    audio_frames: Arc<AsyncReceiver<AudioBatch>>,
     settings_handle: SettingsHandle,
 }
 
@@ -58,19 +59,15 @@ impl UiConfig {
     pub fn new(
         routing_sender: mpsc::Sender<RoutingCommand>,
         registry_updates: Option<Arc<AsyncReceiver<RegistrySnapshot>>>,
+        audio_frames: Arc<AsyncReceiver<AudioBatch>>,
         settings_handle: SettingsHandle,
     ) -> Self {
         Self {
             routing_sender,
             registry_updates,
-            audio_frames: None,
+            audio_frames,
             settings_handle,
         }
-    }
-
-    pub fn with_audio_stream(mut self, rx: Arc<AsyncReceiver<AudioBatch>>) -> Self {
-        self.audio_frames = Some(rx);
-        self
     }
 }
 
@@ -115,7 +112,7 @@ struct UiApp {
     visuals_page: VisualsPage,
     visual_manager: VisualManagerHandle,
     settings_handle: SettingsHandle,
-    audio_frames: Option<Arc<AsyncReceiver<AudioBatch>>>,
+    audio_frames: Arc<AsyncReceiver<AudioBatch>>,
     drawer_open: bool,
     drawer_width_ratio: f32,
     drawer_resizing: bool,
@@ -210,9 +207,7 @@ impl UiApp {
                 _ => None,
             }),
         ];
-        if let Some(rx) = &self.audio_frames {
-            subs.push(channel_subscription(Arc::clone(rx)).map(Message::AudioFrame));
-        }
+        subs.push(channel_subscription(Arc::clone(&self.audio_frames)).map(Message::AudioFrame));
         if self.drawer_resizing && self.drawer_open {
             subs.push(event::listen_with(message::drawer_drag_events));
         }

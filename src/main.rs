@@ -10,7 +10,7 @@ mod ui;
 mod util;
 mod visuals;
 use domain::routing::{DeviceSelection, RoutingCommand, RoutingConfig};
-use infra::pipewire::{monitor, registry, virtual_sink};
+use infra::pipewire::{meter_tap, monitor, registry, virtual_sink};
 use persistence::settings::SettingsHandle;
 use std::{
     process::ExitCode,
@@ -29,7 +29,6 @@ fn main() -> ExitCode {
     let (snapshot_tx, snapshot_rx) = async_channel::bounded::<registry::RegistrySnapshot>(64);
 
     let settings_handle = SettingsHandle::load_or_default();
-    let settings_for_shutdown = settings_handle.clone();
     let routing_config = {
         let guard = settings_handle.borrow();
         let settings = &guard.data;
@@ -43,10 +42,12 @@ fn main() -> ExitCode {
 
     virtual_sink::run();
 
-    let audio_stream = infra::pipewire::meter_tap::audio_sample_stream();
-
-    let ui_config = UiConfig::new(routing_tx, Some(Arc::new(snapshot_rx)), settings_handle)
-        .with_audio_stream(audio_stream);
+    let ui_config = UiConfig::new(
+        routing_tx,
+        registry_thread.as_ref().map(|_| Arc::new(snapshot_rx)),
+        meter_tap::audio_sample_stream(),
+        settings_handle.clone(),
+    );
 
     let exit_code = match ui::run(ui_config) {
         Ok(()) => ExitCode::SUCCESS,
@@ -55,9 +56,9 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     };
-    settings_for_shutdown.flush();
+    settings_handle.flush();
 
-    if let Some((_, handle)) = registry_thread {
+    if let Some(handle) = registry_thread {
         info!("[main] shutdown requested; waiting for registry monitor to exit...");
         let _ = handle.join();
     }

@@ -14,23 +14,20 @@ pub fn init_registry_monitor(
     command_rx: mpsc::Receiver<RoutingCommand>,
     snapshot_tx: Sender<registry::RegistrySnapshot>,
     routing_config: RoutingConfig,
-) -> Option<(registry::AudioRegistryHandle, std::thread::JoinHandle<()>)> {
+) -> Option<std::thread::JoinHandle<()>> {
     let handle = registry::spawn_registry()
         .inspect_err(|err| {
             tracing::error!("[registry-monitor] failed to start PipeWire registry: {err:?}");
         })
         .ok()?;
 
-    let handle_for_thread = handle.clone();
-    let thread_handle = std::thread::Builder::new()
+    std::thread::Builder::new()
         .name("openmeters-registry-monitor".into())
-        .spawn(move || run_monitor_loop(handle_for_thread, command_rx, snapshot_tx, routing_config))
+        .spawn(move || run_monitor_loop(handle, command_rx, snapshot_tx, routing_config))
         .inspect_err(|err| {
             tracing::error!("[registry-monitor] failed to spawn monitor thread: {err}");
         })
-        .ok()?;
-
-    Some((handle, thread_handle))
+        .ok()
 }
 
 fn try_send_or_queue(

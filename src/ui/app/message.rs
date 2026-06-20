@@ -3,9 +3,10 @@
 
 use super::{TOAST_DISPLAY_DURATION, UiApp};
 use crate::infra::pipewire::meter_tap::AudioBatch;
-use crate::ui::pages::config::ConfigMessage;
-use crate::ui::pages::visuals::{SettingsMessage, VisualsMessage};
+use crate::ui::config::ConfigMessage;
+use crate::ui::settings::SettingsMessage;
 use crate::ui::theme;
+use crate::ui::visuals::VisualsMessage;
 use crate::ui::widgets::scroll_glow::ScrollGlow;
 use iced::event::{self, Event};
 use iced::keyboard::{self, Key};

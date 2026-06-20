@@ -3,7 +3,7 @@
 https://github.com/user-attachments/assets/52d0202e-f6e7-47aa-9952-e3a0be975f42
 
 OpenMeters is an audio metering application for Linux. It currently
-consists of six meters: loudness , oscilloscope, spectrogram, spectrum
+consists of six meters: loudness, oscilloscope, spectrogram, spectrum
 analyzer, stereometer, and waveform.
 
 My goal is to provide a free, open source desktop meter that is
@@ -139,7 +139,7 @@ OpenMeters is available in `nixpkgs` thanks to
 [@bitbloxhub](https://github.com/bitbloxhub). Add it to your nix
 config with:
 
-```bas
+```bash
 nix profile add nixpkgs#openmeters
 ```
 

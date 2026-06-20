@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::palette::PaletteEditor;
+use crate::ui::widgets::palette_editor::PaletteEditor;
 use super::widgets::{SliderRange, pick, set_if_changed, slide, update_f32_range};
 use crate::persistence::settings::WaveformSettings;
 use crate::util::audio::Channel;

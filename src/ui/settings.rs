@@ -55,7 +55,7 @@ macro_rules! settings_pane {
     ) => {
         pub struct $pane {
             settings: $settings_ty,
-            palette: super::palette::PaletteEditor,
+            palette: crate::ui::widgets::palette_editor::PaletteEditor,
             $($field: $ty,)*
         }
 
@@ -96,7 +96,7 @@ macro_rules! settings_pane {
 macro_rules! settings_messages {
     ($pane:ident as $this:ident, $value:ident { $($variant:ident($ty:ty) => $handler:expr;)+ }) => {
         #[derive(Debug, Clone)]
-        pub enum Message { $($variant($ty),)+ Palette(super::palette::PaletteEvent) }
+        pub enum Message { $($variant($ty),)+ Palette(crate::ui::widgets::palette_editor::PaletteEvent) }
 
         impl $pane {
             fn handle(&mut self, msg: Message) -> bool {
@@ -110,14 +110,13 @@ macro_rules! settings_messages {
     };
 }
 
-pub mod palette;
 mod widgets;
 
-use self::palette::{PaletteEditor, PaletteEvent};
 use crate::persistence::settings::{
     BUILTIN_THEME, HasPalette, ModuleSettings, PaletteSettings, SettingsConfig, SettingsHandle,
 };
 use crate::ui::theme::Palette;
+use crate::ui::widgets::palette_editor::{PaletteEditor, PaletteEvent};
 use crate::visuals::registry::{VisualKind, VisualManagerHandle};
 use iced::widget::column;
 use iced::{Color, Element};
