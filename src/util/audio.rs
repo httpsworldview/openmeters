@@ -20,4 +20,4 @@ pub use self::{
     window::{WindowKind, apply_window, compute_fft_bin_normalization, copy_dc_removed_from_deque},
 };
 
-pub const BAND_SPLITS_HZ: [f32; 2] = [250.0, 4000.0];
+pub const BAND_SPLITS_HZ: [f32; 2] = [200.0, 2000.0];
