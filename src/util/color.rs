@@ -8,19 +8,6 @@ pub const EPSILON: f32 = 1e-4;
 pub const STOP_SPREAD_MIN: f32 = 0.2;
 pub const STOP_SPREAD_MAX: f32 = 5.0;
 
-pub fn f32_to_u8(v: f32) -> u8 {
-    (v.clamp(0.0, 1.0) * 255.0).round() as u8
-}
-
-pub const fn hex(r: u8, g: u8, b: u8, a: u8) -> Color {
-    Color::from_rgba(
-        r as f32 / 255.0,
-        g as f32 / 255.0,
-        b as f32 / 255.0,
-        a as f32 / 255.0,
-    )
-}
-
 pub fn colors_equal(a: Color, b: Color) -> bool {
     (a.r - b.r).abs() <= EPSILON
         && (a.g - b.g).abs() <= EPSILON
@@ -53,17 +40,8 @@ pub fn with_alpha(color: Color, alpha: f32) -> Color {
     }
 }
 
-pub fn premultiply_rgb(color: Color) -> Color {
-    Color {
-        r: color.r * color.a,
-        g: color.g * color.a,
-        b: color.b * color.a,
-        ..color
-    }
-}
-
 pub fn rgba_with_alpha(color: [f32; 4], alpha: f32) -> [f32; 4] {
-    [color[0], color[1], color[2], alpha]
+    [color[0], color[1], color[2], alpha.clamp(0.0, 1.0)]
 }
 
 fn gradient_segment(count: usize, t: f32) -> Option<(usize, f32)> {
@@ -128,41 +106,4 @@ pub fn sanitize_stop_spreads(raw: Option<&[f32]>, count: usize) -> Vec<f32> {
         };
     }
     out
-}
-
-pub fn find_segment(
-    positions: &[f32],
-    spreads: &[f32],
-    t: f32,
-    count: usize,
-) -> (usize, usize, f32) {
-    let t = t.clamp(0.0, 1.0);
-    if count < 2 {
-        return (0, 0, 0.0);
-    }
-    if positions.len() < count {
-        let (lo, linear) = gradient_segment(count, t).unwrap_or((0, 0.0));
-        return (
-            lo,
-            lo + 1,
-            interpolate_with_spreads(linear, spreads, lo, lo + 1),
-        );
-    }
-    let hi = positions[..count]
-        .partition_point(|&pos| pos < t)
-        .clamp(1, count - 1);
-    let lo = hi - 1;
-    let span = (positions[hi] - positions[lo]).max(f32::EPSILON);
-    let linear = ((t - positions[lo]) / span).clamp(0.0, 1.0);
-    (lo, hi, interpolate_with_spreads(linear, spreads, lo, hi))
-}
-
-fn interpolate_with_spreads(linear: f32, spreads: &[f32], lo: usize, hi: usize) -> f32 {
-    let sl = spreads.get(lo).copied().unwrap_or(1.0);
-    let sr = spreads.get(hi).copied().unwrap_or(1.0);
-    if (sl - 1.0).abs() < EPSILON && (sr - 1.0).abs() < EPSILON {
-        linear
-    } else {
-        linear.powf(sl / sr).clamp(0.0, 1.0)
-    }
 }

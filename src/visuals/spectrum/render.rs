@@ -201,7 +201,7 @@ fn push_highlight_columns(
 
 fn palette_color(palette: &[[f32; 4]], amp: f32, threshold: f32) -> [f32; 4] {
     let intensity = (amp - threshold) / (1.0 - threshold).max(1e-6);
-    sample_rgba_gradient(palette, intensity.clamp(0.0, 1.0))
+    sample_rgba_gradient(palette, intensity)
 }
 
 fn sample_max(pts: &[[f32; 2]], t0: f32, t1: f32) -> f32 {

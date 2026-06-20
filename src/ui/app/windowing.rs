@@ -9,6 +9,7 @@ use crate::ui::settings::create_panel as create_settings_panel;
 use crate::ui::theme;
 use crate::ui::visuals::VisualsMessage;
 use crate::ui::widgets::scroll_glow::ScrollGlow;
+use crate::util::color::with_alpha;
 use crate::visuals::registry::{VisualContent, VisualKind, VisualMetadata, VisualSlotSnapshot};
 use iced::widget::{container, mouse_area, text};
 use iced::{Element, Length, Size, Task, exit, window};
@@ -295,11 +296,7 @@ impl UiApp {
         }
         .map(|c| {
             let c: iced::Color = c.into();
-            if is_settings {
-                iced::Color { a: 1.0, ..c }
-            } else {
-                c
-            }
+            if is_settings { with_alpha(c, 1.0) } else { c }
         });
         theme::theme(custom_bg)
     }

@@ -56,7 +56,7 @@ impl WaveformParams {
                 let peak = column.min.abs().max(column.max.abs());
                 let db = power_to_db(peak * peak, DB_FLOOR);
                 sample_rgba_gradient(&self.palette, if db.is_finite() {
-                    ((db - LOUDNESS_QUIET_DB) / -LOUDNESS_QUIET_DB).clamp(0.0, 1.0)
+                    (db - LOUDNESS_QUIET_DB) / -LOUDNESS_QUIET_DB
                 } else {
                     0.0
                 })
@@ -112,7 +112,7 @@ fn sample_y_span(center_y: f32, amplitude_scale: f32, min: f32, max: f32) -> Opt
 }
 
 fn with_fill_alpha(color: [f32; 4], alpha: f32) -> [f32; 4] {
-    rgba_with_alpha(color, (color[3] * alpha).clamp(0.0, 1.0))
+    rgba_with_alpha(color, color[3] * alpha)
 }
 
 impl WaveformPrimitive {

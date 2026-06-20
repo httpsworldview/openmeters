@@ -4,8 +4,8 @@
 use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
 
-use crate::visuals::render::common::sdf_primitive;
 use crate::util::color::rgba_with_alpha;
+use crate::visuals::render::common::sdf_primitive;
 use crate::visuals::render::common::{
     ChannelLayout, ClipTransform, GeometryScratch, decimate_line_in_place, extend_filled_line,
 };

@@ -4,8 +4,8 @@
 use crate::ui::theme::{self, Palette};
 use crate::ui::widgets::{scroll_delta_lines, scroll_glow::ScrollGlow};
 use crate::util::color::{
-    EPSILON, STOP_SPREAD_MAX, STOP_SPREAD_MIN, colors_equal, f32_to_u8, find_segment, lerp_color,
-    premultiply_rgb, sanitize_stop_positions, sanitize_stop_spreads, with_alpha,
+    EPSILON, STOP_SPREAD_MAX, STOP_SPREAD_MIN, colors_equal, lerp_color, sanitize_stop_positions,
+    sanitize_stop_spreads, with_alpha,
 };
 use iced::advanced::renderer::{self, Quad};
 use iced::advanced::widget::{Tree, tree};
@@ -280,6 +280,15 @@ impl PaletteEditor {
     }
 }
 
+fn premultiply_rgb(color: Color) -> Color {
+    Color {
+        r: color.r * color.a,
+        g: color.g * color.a,
+        b: color.b * color.a,
+        ..color
+    }
+}
+
 fn swatch_style(color: Color, active: bool) -> container::Style {
     container::Style::default()
         .background(Background::Color(premultiply_rgb(color)))
@@ -291,7 +300,7 @@ fn swatch_style(color: Color, active: bool) -> container::Style {
 }
 
 fn to_hex(c: Color) -> String {
-    let [r, g, b, a] = [c.r, c.g, c.b, c.a].map(f32_to_u8);
+    let [r, g, b, a] = c.into_rgba8();
     if a == 255 {
         format!("#{r:02X}{g:02X}{b:02X}")
     } else {
@@ -318,6 +327,29 @@ fn nearest_handle(
         })
         .min_by(|a, b| a.1.total_cmp(&b.1))
         .map(|(i, _)| i)
+}
+
+fn find_segment(positions: &[f32], spreads: &[f32], t: f32) -> (usize, usize, f32) {
+    let count = positions.len();
+    if count < 2 {
+        return (0, 0, 0.0);
+    }
+
+    let t = t.clamp(0.0, 1.0);
+    let hi = positions
+        .partition_point(|&pos| pos < t)
+        .clamp(1, count - 1);
+    let lo = hi - 1;
+    let linear =
+        ((t - positions[lo]) / (positions[hi] - positions[lo]).max(f32::EPSILON)).clamp(0.0, 1.0);
+    let sl = spreads.get(lo).copied().unwrap_or(1.0);
+    let sr = spreads.get(hi).copied().unwrap_or(1.0);
+    let f = if (sl - 1.0).abs() < EPSILON && (sr - 1.0).abs() < EPSILON {
+        linear
+    } else {
+        linear.powf(sl / sr).clamp(0.0, 1.0)
+    };
+    (lo, hi, f)
 }
 
 #[derive(Debug, Default)]
@@ -459,10 +491,9 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for GradientBar<'_> {
 
         let steps = (bar_w as usize).clamp(1, 512);
         let step_w = bar_w / steps as f32;
-        let stop_count = self.colors.len();
         for i in 0..steps {
             let t = i as f32 / (steps - 1).max(1) as f32;
-            let (lo, hi, f) = find_segment(self.positions, self.spreads, t, stop_count);
+            let (lo, hi, f) = find_segment(self.positions, self.spreads, t);
             let c = lerp_color(self.colors[lo], self.colors[hi], f);
             paint(
                 Rectangle::new(
@@ -531,7 +562,7 @@ fn channel_slider<'a>(
     let display = if ch == 3 {
         format!("{:>3}%", (val.clamp(0.0, 1.0) * 100.0).round() as u8)
     } else {
-        format!("{:>3}", f32_to_u8(val))
+        format!("{:>3}", (val.clamp(0.0, 1.0) * 255.0).round() as u8)
     };
     Row::new()
         .spacing(8.0)

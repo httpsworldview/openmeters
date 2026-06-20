@@ -2,17 +2,17 @@
 // Copyright (C) 2026 Maika Namuo
 
 use crate::domain::visuals::VisualKind;
-use crate::util::color::{hex, palettes_equal};
+use crate::util::color::palettes_equal;
 use iced::Color;
 
-pub const BG_BASE: Color = hex(0x00, 0x00, 0x00, 0xFF);
+pub const BG_BASE: Color = Color::BLACK;
 
 const HEAT_RAMP: [Color; 5] = [
-    hex(0x00, 0x00, 0x00, 0x00),
-    hex(0x38, 0x00, 0xAD, 0xFF),
-    hex(0xFF, 0x00, 0x00, 0xFF),
-    hex(0xFF, 0xFF, 0x21, 0xFF),
-    hex(0xFF, 0xFF, 0xFF, 0xFF),
+    Color::TRANSPARENT,
+    Color::from_rgb8(0x38, 0x00, 0xAD),
+    Color::from_rgb8(0xFF, 0x00, 0x00),
+    Color::from_rgb8(0xFF, 0xFF, 0x21),
+    Color::from_rgb8(0xFF, 0xFF, 0xFF),
 ];
 
 #[derive(Debug, Clone)]
@@ -105,35 +105,35 @@ pub mod spectrum {
 }
 
 pub mod waveform {
-    use super::{Color, hex};
+    use super::Color;
     pub const COLORS: [Color; 3] = [
-        hex(0xFF, 0x00, 0x00, 0xFF),
-        hex(0x00, 0xFF, 0x00, 0xFF),
-        hex(0x00, 0x00, 0xFF, 0xFF),
+        Color::from_rgb8(0xFF, 0x00, 0x00),
+        Color::from_rgb8(0x00, 0xFF, 0x00),
+        Color::from_rgb8(0x00, 0x00, 0xFF),
     ];
     pub const LABELS: &[&str] = &["Low", "Mid", "High"];
     pub const DEFAULT_POSITIONS: [f32; COLORS.len()] = [0.0, 0.5, 1.0];
 }
 
 pub mod oscilloscope {
-    use super::{Color, hex};
-    pub const COLORS: [Color; 1] = [hex(0xFF, 0xFF, 0xFF, 0xFF)];
+    use super::Color;
+    pub const COLORS: [Color; 1] = [Color::from_rgb8(0xFF, 0xFF, 0xFF)];
     pub const LABELS: &[&str] = &["Trace"];
     pub const DEFAULT_POSITIONS: [f32; COLORS.len()] = [0.0];
 }
 
 pub mod stereometer {
-    use super::{Color, hex};
+    use super::Color;
     pub const COLORS: [Color; 9] = [
-        hex(0xFF, 0xFF, 0xFF, 0xFF),
-        hex(0x1A, 0x1A, 0x1A, 0xFF),
-        hex(0x80, 0x80, 0x80, 0xFF),
-        hex(0x73, 0xA6, 0x80, 0xFF),
-        hex(0xB3, 0x59, 0x59, 0xFF),
-        hex(0xFF, 0x00, 0x00, 0xFF),
-        hex(0x00, 0xFF, 0x00, 0xFF),
-        hex(0x00, 0x00, 0xFF, 0xFF),
-        hex(0x80, 0x80, 0x80, 0x40),
+        Color::from_rgb8(0xFF, 0xFF, 0xFF),
+        Color::from_rgb8(0x1A, 0x1A, 0x1A),
+        Color::from_rgb8(0x80, 0x80, 0x80),
+        Color::from_rgb8(0x73, 0xA6, 0x80),
+        Color::from_rgb8(0xB3, 0x59, 0x59),
+        Color::from_rgb8(0xFF, 0x00, 0x00),
+        Color::from_rgb8(0x00, 0xFF, 0x00),
+        Color::from_rgb8(0x00, 0x00, 0xFF),
+        Color::from_rgba8(0x80, 0x80, 0x80, 64.0 / 255.0),
     ];
     pub const LABELS: &[&str] = &[
         "Trace",
@@ -151,15 +151,15 @@ pub mod stereometer {
 }
 
 pub mod loudness {
-    use super::{Color, hex};
+    use super::Color;
     pub const COLORS: [Color; 7] = [
-        hex(0x29, 0x29, 0x29, 0xFF),
-        hex(0xA0, 0xAA, 0xAD, 0xFF),
-        hex(0xAB, 0xCF, 0xAD, 0xFF),
-        hex(0xFF, 0xB7, 0x54, 0xFF),
-        hex(0xFF, 0x5C, 0x4F, 0xFF),
-        hex(0xF5, 0xED, 0xC4, 0xFF),
-        hex(0xB7, 0xC2, 0xC9, 0xE0),
+        Color::from_rgb8(0x29, 0x29, 0x29),
+        Color::from_rgb8(0xA0, 0xAA, 0xAD),
+        Color::from_rgb8(0xAB, 0xCF, 0xAD),
+        Color::from_rgb8(0xFF, 0xB7, 0x54),
+        Color::from_rgb8(0xFF, 0x5C, 0x4F),
+        Color::from_rgb8(0xF5, 0xED, 0xC4),
+        Color::from_rgba8(0xB7, 0xC2, 0xC9, 224.0 / 255.0),
     ];
     pub const LABELS: &[&str] = &[
         "Background",
@@ -172,7 +172,6 @@ pub mod loudness {
     ];
     pub const DEFAULT_POSITIONS: [f32; COLORS.len()] = [0.0, 0.16, 0.32, 0.48, 0.64, 0.80, 1.0];
 }
-
 pub mod background {
     use super::{BG_BASE, Color};
     pub const COLORS: [Color; 1] = [BG_BASE];

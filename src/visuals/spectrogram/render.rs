@@ -7,8 +7,6 @@ use iced::advanced::graphics::Viewport;
 use iced_wgpu::primitive::{self, Primitive};
 use std::collections::{HashMap, VecDeque};
 
-use crate::util::color::f32_to_u8;
-
 use crate::visuals::render::common::{
     CacheTracker, RenderPipelineSpec, begin_load_pass, create_render_pipeline, create_shader_module,
 };
@@ -253,7 +251,9 @@ impl Uniforms {
         let freq_hi = scale_freq(p.freq_max);
         let palette = p
             .palette
-            .map(|rgba| rgba.map(|c| f32_to_u8(c) as f32 / 255.0));
+            .map(|rgba| {
+                rgba.map(|c| ((c.clamp(0.0, 1.0) * 255.0).round() as u8 as f32) / 255.0)
+            });
         let rotation = p.rotation.rem_euclid(4) as u32;
         let sf = scale_factor.max(1.0);
         let hl = p.ring_capacity.max(1);
