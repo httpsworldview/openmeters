@@ -35,8 +35,7 @@ pub enum PendingUpload {
     },
 }
 
-// (source_capacity, [source_slot, destination_slot] copies) for preserving
-// GPU-resident columns when the CPU ring is resized or re-linearized.
+// preserve GPU columns when the CPU ring is resized or re-linearized.
 pub type RingCopyPlan = (u32, Vec<[u32; 2]>);
 
 pub struct SpectrogramParams {
@@ -225,7 +224,6 @@ struct Uniforms {
     // (pos1, pos2, pos3, spread0), (spread1, spread2, spread3, spread4).
     // Stops 0 and 4 are constant 0.0 / 1.0 and live in the shader.
     stops: [[f32; 4]; 2],
-    // Quantized to match the old Rgba8Unorm palette texture path.
     palette: [[f32; 4]; SPECTROGRAM_PALETTE_SIZE],
 }
 
@@ -249,11 +247,7 @@ impl Uniforms {
         };
         let freq_lo = scale_freq(p.freq_min);
         let freq_hi = scale_freq(p.freq_max);
-        let palette = p
-            .palette
-            .map(|rgba| {
-                rgba.map(|c| ((c.clamp(0.0, 1.0) * 255.0).round() as u8 as f32) / 255.0)
-            });
+        let palette = p.palette;
         let rotation = p.rotation.rem_euclid(4) as u32;
         let sf = scale_factor.max(1.0);
         let hl = p.ring_capacity.max(1);

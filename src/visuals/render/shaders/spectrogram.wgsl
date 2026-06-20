@@ -44,7 +44,7 @@ struct Uniforms {
     // (pos1, pos2, pos3, spread0), (spread1, spread2, spread3, spread4).
     // Stops 0 and 4 are constant 0.0 / 1.0
     stops: array<vec4<f32>, 2>,
-    // Quantized sRGB stops, matching the old Rgba8Unorm texture path.
+    // Palette colors come from a uniform array (legacy texture path removed).
     palette: array<vec4<f32>, 5>,
 }
 
@@ -248,7 +248,7 @@ fn shade(mut_mag: f32, freq_hz: f32) -> vec4<f32> {
     let normalized = clamp((mag - u.floor_db) / range, 0.0, 1.0);
     let adjusted = pow(normalized, max(u.contrast, 0.01));
 
-    // Quantized sRGB stops, mix in sRGB space (web-colors pipeline).
+    // Mix palette stops in sRGB space (web-colors pipeline).
     let color = palette_color(adjusted);
 
     // iced expects premultiplied alpha
