@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use crate::visuals::options::SpectrumDisplayMode;
 use crate::visuals::render::common::sdf_primitive;
-use crate::util::audio::lerp;
 use crate::util::color::{rgba_with_alpha, sample_rgba_gradient};
+use crate::util::lerp;
 use crate::visuals::render::common::{
     ClipTransform, GeometryScratch, SdfVertex, baseline_segment_vertices, decimate_line_in_place,
     dot_vertices, extend_aa_line_list, gradient_quad_vertices, line_vertices, quad_vertices,

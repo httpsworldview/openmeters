@@ -9,6 +9,7 @@ use crate::visuals::render::common::sdf_primitive;
 use crate::visuals::options::{
     CorrelationMeterMode, CorrelationMeterSide, StereometerMode, StereometerScale,
 };
+use crate::util::lerp;
 use crate::visuals::render::common::{
     ClipTransform, GeometryScratch, SdfVertex, dot_vertices, gradient_quad_vertices, line_vertices,
     quad_vertices,
@@ -126,8 +127,8 @@ impl StereometerPrimitive {
             for seg in 0..GRID_SEGMENTS {
                 let t0 = seg as f32 / GRID_SEGMENTS as f32;
                 let t1 = (seg + 1) as f32 / GRID_SEGMENTS as f32;
-                let p0 = t.project(ax + (bx - ax) * t0, ay + (by - ay) * t0);
-                let p1 = t.project(ax + (bx - ax) * t1, ay + (by - ay) * t1);
+                let p0 = t.project(lerp(ax, bx, t0), lerp(ay, by, t0));
+                let p1 = t.project(lerp(ax, bx, t1), lerp(ay, by, t1));
                 vertices.extend(line_vertices(
                     p0,
                     p1,

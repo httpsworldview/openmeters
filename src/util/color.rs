@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
+use super::lerp;
 use iced::Color;
 
 pub const EPSILON: f32 = 1e-4;
@@ -38,10 +39,10 @@ pub fn color_to_rgba(color: Color) -> [f32; 4] {
 pub fn lerp_color(a: Color, b: Color, t: f32) -> Color {
     let t = t.clamp(0.0, 1.0);
     Color::from_rgba(
-        (b.r - a.r).mul_add(t, a.r),
-        (b.g - a.g).mul_add(t, a.g),
-        (b.b - a.b).mul_add(t, a.b),
-        (b.a - a.a).mul_add(t, a.a),
+        lerp(a.r, b.r, t),
+        lerp(a.g, b.g, t),
+        lerp(a.b, b.b, t),
+        lerp(a.a, b.a, t),
     )
 }
 
@@ -77,12 +78,7 @@ pub fn sample_rgba_gradient(palette: &[[f32; 4]], t: f32) -> [f32; 4] {
     match gradient_segment(palette.len(), t) {
         Some((i, f)) => {
             let [a, b] = [palette[i], palette[i + 1]];
-            [
-                a[0] + (b[0] - a[0]) * f,
-                a[1] + (b[1] - a[1]) * f,
-                a[2] + (b[2] - a[2]) * f,
-                a[3] + (b[3] - a[3]) * f,
-            ]
+            std::array::from_fn(|ch| lerp(a[ch], b[ch], f))
         }
         None => palette.first().copied().unwrap_or([0.0; 4]),
     }

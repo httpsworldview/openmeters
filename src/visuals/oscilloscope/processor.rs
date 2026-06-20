@@ -270,7 +270,7 @@ fn sample_linear_zero(data: &[f32], pos: f32) -> f32 {
     let idx = pos as usize;
     let frac = pos - idx as f32;
     if frac > f32::EPSILON && idx + 1 < data.len() {
-        crate::util::audio::lerp(data[idx], data[idx + 1], frac)
+        crate::util::lerp(data[idx], data[idx + 1], frac)
     } else {
         data[idx]
     }
