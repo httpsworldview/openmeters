@@ -16,7 +16,6 @@ pub(super) fn dict_to_map(dict: Option<&DictRef>) -> HashMap<String, String> {
 }
 
 crate::macros::choice_enum!(no_default all
-    #[derive(Hash)]
     pub enum AudioChannel {
         FrontLeft => "FL", FrontRight => "FR", FrontCenter => "FC", LowFrequency => "LFE",
         RearLeft => "RL", RearRight => "RR", SideLeft => "SL", SideRight => "SR", Mono => "MONO",
@@ -32,11 +31,13 @@ impl AudioChannel {
     }
 }
 
-crate::macros::choice_enum!(pub enum PortDirection {
-    Input => "Input",
-    Output => "Output",
-    #[default] Unknown => "Unknown",
-});
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PortDirection {
+    Input,
+    Output,
+    #[default]
+    Unknown,
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GraphPort {
@@ -70,11 +71,13 @@ impl GraphPort {
     }
 }
 
-crate::macros::choice_enum!(pub enum NodeDirection {
-    Input => "Input",
-    Output => "Output",
-    #[default] Unknown => "Unknown",
-});
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NodeDirection {
+    Input,
+    Output,
+    #[default]
+    Unknown,
+}
 
 fn derive_node_direction(
     media_class: Option<&str>,

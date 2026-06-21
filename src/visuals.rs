@@ -103,8 +103,7 @@ pub mod options {
     crate::macros::choice_enum!(all pub enum CorrelationMeterSide { Left => "Left", #[default] Right => "Right" });
     crate::macros::choice_enum!(all pub enum PianoRollOverlay { #[default] Off => "Off", Right => "Right", Left => "Left" });
 
-    crate::macros::choice_enum!(all pub enum MeterMode {
-        #[default]
+    crate::macros::choice_enum!(no_default all pub enum MeterMode {
         LufsShortTerm => "LUFS Short-term",
         LufsMomentary => "LUFS Momentary",
         RmsFast => "RMS Fast",

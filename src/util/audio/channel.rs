@@ -3,8 +3,7 @@
 
 use std::collections::VecDeque;
 
-crate::macros::choice_enum!(all pub enum Channel {
-    #[default]
+crate::macros::choice_enum!(no_default all pub enum Channel {
     Left => "Left",
     Right => "Right",
     Mid => "Mid",
