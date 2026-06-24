@@ -94,8 +94,10 @@ rustup component add rustfmt clippy --toolchain 1.95
 ```
 
 You also need native development packages for PipeWire, Wayland/X11,
-xkbcommon, fontconfig/freetype, libclang, pkg-config, and Vulkan. On
-Ubuntu/Debian-like systems, the CI dependency set is:
+xkbcommon, fontconfig/freetype, libclang, pkg-config, and Vulkan.
+PipeWire/SPA development headers must be from PipeWire 0.3.65 or newer;
+Ubuntu 22.04's 0.3.48 headers are too old for the current Rust
+bindings. On Ubuntu/Debian-like systems, the CI dependency set is:
 
 ```bash
 sudo apt-get update
@@ -172,6 +174,14 @@ For changes that affect runtime behavior, test:
   unknown keys, saving through the UI, and theme interactions.
 - Packaging changes: build the release binary first, then run the
   relevant `packaging/` target.
+
+## Release tags
+
+Release tags use `v<Cargo.toml package.version>` for normal upstream
+releases. For packaging-only rebuilds, append a positive package
+release suffix: `v1.7.1-2`. The suffix does not change the Rust crate
+version; it is passed to `make -C packaging RELEASE=<suffix>` for the
+Debian/RPM release number.
 
 ## Repository layout
 

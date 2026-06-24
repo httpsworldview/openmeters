@@ -17,6 +17,7 @@ license: GPL-3.0-or-later
 
 # Debian family
 depends:
+  - libc6 (>= 2.39)
   - libpipewire-0.3-0
   - libwayland-client0
   - libvulkan1
@@ -29,6 +30,7 @@ recommends:
 overrides:
   rpm:
     depends:
+      - glibc >= 2.39
       - pipewire-libs
       - libwayland-client
       - vulkan-loader

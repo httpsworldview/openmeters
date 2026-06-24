@@ -108,7 +108,7 @@ OpenMeters requires:
 3. Vulkan support through your distribution's Vulkan loader and driver
    stack.
 4. For pre-built release artifacts: x86_64 GNU/Linux with `glibc` >=
-   v2.35. The release workflow builds these artifacts in Ubuntu 22.04.
+   v2.39. The release workflow builds these artifacts in Ubuntu 24.04.
 
 Normal application windows are available on both X11 and Wayland. Bar
 mode additionally requires a Wayland compositor that exposes
@@ -156,7 +156,8 @@ an issue and I will try to help.
 1. Install a Rust toolchain, a C toolchain, `pkg-config`, `libclang`,
    and native development packages for PipeWire, Wayland/X11,
    xkbcommon, fontconfig/freetype, and the Vulkan loader/development
-   headers. The recommended way to install Rust is
+   headers. PipeWire/SPA development headers must be from PipeWire
+   0.3.65 or newer. The recommended way to install Rust is
    [rustup](https://rustup.rs/). OpenMeters currently requires the
    Rust version declared in `Cargo.toml` or newer.
 2. Clone the repository:

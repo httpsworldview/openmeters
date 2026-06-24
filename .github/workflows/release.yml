@@ -20,12 +20,15 @@ jobs:
   build-and-package:
     runs-on: ubuntu-24.04
     container:
-      image: ubuntu:22.04@sha256:ce941a2a18bbb922e434d6d6d2b31e571a5c3826eaf6ada0a41dcc905bd2d906 # ubuntu:22.04 linux/amd64
+      image: ubuntu:24.04@sha256:023f8a753c22258c9fe2d0005a7d28258038da7d620e9f93e9ad78aa266f9f11 # ubuntu:24.04 linux/amd64
     env:
       NFPM_VERSION: v2.46.3
-      MIN_GLIBC_VERSION: 2.35
+      MIN_GLIBC_VERSION: 2.39
+      MIN_PIPEWIRE_VERSION: 0.3.65
     outputs:
       version: ${{ steps.release.outputs.version }}
+      package_release: ${{ steps.release.outputs.package_release }}
+      display_version: ${{ steps.release.outputs.display_version }}
       tag: ${{ steps.release.outputs.tag }}
       commit: ${{ steps.release.outputs.commit }}
 
@@ -60,6 +63,25 @@ jobs:
             zstd
           rm -rf /var/lib/apt/lists/*
 
+      - name: Validate native dependency versions
+        run: |
+          set -euo pipefail
+
+          glibc_version="$(ldd --version | awk 'NR==1 {print $NF}')"
+          pipewire_version="$(pkg-config --modversion libpipewire-0.3)"
+
+          echo "glibc version: ${glibc_version}"
+          echo "PipeWire/SPA development headers: ${pipewire_version}"
+
+          if ! dpkg --compare-versions "${glibc_version}" ge "${MIN_GLIBC_VERSION}"; then
+            echo "Release pipeline requires glibc >= ${MIN_GLIBC_VERSION}" >&2
+            exit 1
+          fi
+          if ! dpkg --compare-versions "${pipewire_version}" ge "${MIN_PIPEWIRE_VERSION}"; then
+            echo "Release pipeline requires PipeWire/SPA development headers >= ${MIN_PIPEWIRE_VERSION}" >&2
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -93,9 +115,20 @@ jobs:
           fi
 
           tag="${TAG_NAME}"
-          expected_tag="v${version}"
-          if [ "$tag" != "$expected_tag" ]; then
-            echo "Release tag ${tag} does not match Cargo.toml package.version (${version}); expected ${expected_tag}." >&2
+          tag_body="${tag#v}"
+          package_release="1"
+          display_version="${version}"
+          if [ "$tag_body" = "$version" ]; then
+            :
+          elif [[ "$tag_body" == "${version}-"* ]]; then
+            package_release="${tag_body#"${version}-"}"
+            if [[ ! "$package_release" =~ ^[1-9][0-9]*$ ]]; then
+              echo "Release tag ${tag} has invalid package release suffix; expected v${version}-<positive integer>." >&2
+              exit 1
+            fi
+            display_version="${version}-${package_release}"
+          else
+            echo "Release tag ${tag} does not match Cargo.toml package.version (${version}); expected v${version} or v${version}-<package release>." >&2
             exit 1
           fi
 
@@ -145,6 +178,8 @@ jobs:
 
           {
             echo "version=${version}"
+            echo "package_release=${package_release}"
+            echo "display_version=${display_version}"
             echo "rust_toolchain=${rust_toolchain}"
             echo "tag=${tag}"
             echo "commit=${head_commit}"
@@ -185,33 +220,27 @@ jobs:
           path: |
             ${{ steps.go-cache.outputs.build }}
             ${{ steps.go-cache.outputs.modules }}
-          key: ubuntu-22.04-${{ runner.arch }}-go-${{ steps.go-cache.outputs.version }}-nfpm-${{ env.NFPM_VERSION }}
+          key: ubuntu-24.04-${{ runner.arch }}-go-${{ steps.go-cache.outputs.version }}-nfpm-${{ env.NFPM_VERSION }}
 
       - name: Build and package release assets
         run: |
           set -euo pipefail
 
-          glibc_version="$(ldd --version | awk 'NR==1 {print $NF}')"
-          echo "glibc version: ${glibc_version}"
-          if ! dpkg --compare-versions "${glibc_version}" ge "${MIN_GLIBC_VERSION}"; then
-            echo "Release pipeline requires glibc >= ${MIN_GLIBC_VERSION}"
-            exit 1
-          fi
-
           go install "github.com/goreleaser/nfpm/v2/cmd/nfpm@${NFPM_VERSION}"
           export PATH="${HOME}/go/bin:${PATH}"
 
           cargo build --locked --release
-          make -C packaging all
+          make -C packaging all RELEASE="${{ steps.release.outputs.package_release }}"
 
           version="${{ steps.release.outputs.version }}"
+          package_release="${{ steps.release.outputs.package_release }}"
           dist_dir="${PWD}/dist"
 
           shopt -s nullglob
           assets=(
             "${dist_dir}"/openmeters-"${version}"-*.tar.xz
-            "${dist_dir}"/openmeters_"${version}"-*.deb
-            "${dist_dir}"/openmeters-"${version}"-*.rpm
+            "${dist_dir}"/openmeters_"${version}"-"${package_release}"_*.deb
+            "${dist_dir}"/openmeters-"${version}"-"${package_release}".*.rpm
             "${dist_dir}"/SHA256SUMS
           )
           shopt -u nullglob
@@ -230,8 +259,8 @@ jobs:
           name: release-assets
           path: |
             dist/openmeters-${{ steps.release.outputs.version }}-*.tar.xz
-            dist/openmeters_${{ steps.release.outputs.version }}-*.deb
-            dist/openmeters-${{ steps.release.outputs.version }}-*.rpm
+            dist/openmeters_${{ steps.release.outputs.version }}-${{ steps.release.outputs.package_release }}_*.deb
+            dist/openmeters-${{ steps.release.outputs.version }}-${{ steps.release.outputs.package_release }}.*.rpm
             dist/SHA256SUMS
           if-no-files-found: error
           retention-days: 7
@@ -251,6 +280,8 @@ jobs:
       contents: write
     env:
       VERSION: ${{ needs.build-and-package.outputs.version }}
+      PACKAGE_RELEASE: ${{ needs.build-and-package.outputs.package_release }}
+      DISPLAY_VERSION: ${{ needs.build-and-package.outputs.display_version }}
       TAG_NAME: ${{ needs.build-and-package.outputs.tag }}
       COMMIT: ${{ needs.build-and-package.outputs.commit }}
       DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
@@ -330,8 +361,8 @@ jobs:
           shopt -s nullglob
           assets=(
             "${dist_dir}"/openmeters-"${VERSION}"-*.tar.xz
-            "${dist_dir}"/openmeters_"${VERSION}"-*.deb
-            "${dist_dir}"/openmeters-"${VERSION}"-*.rpm
+            "${dist_dir}"/openmeters_"${VERSION}"-"${PACKAGE_RELEASE}"_*.deb
+            "${dist_dir}"/openmeters-"${VERSION}"-"${PACKAGE_RELEASE}".*.rpm
             "${dist_dir}"/SHA256SUMS
           )
           shopt -u nullglob
@@ -357,7 +388,7 @@ jobs:
           gh release create "$TAG_NAME" \
             --draft \
             --target "$COMMIT" \
-            --title "openmeters ${VERSION}" \
+            --title "openmeters ${DISPLAY_VERSION}" \
             --notes-file "$notes_file" \
             --verify-tag
           gh release upload "$TAG_NAME" "${assets[@]}"
