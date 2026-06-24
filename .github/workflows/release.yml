@@ -23,7 +23,9 @@ jobs:
       image: ubuntu:24.04@sha256:023f8a753c22258c9fe2d0005a7d28258038da7d620e9f93e9ad78aa266f9f11 # ubuntu:24.04 linux/amd64
     env:
       NFPM_VERSION: v2.46.3
-      MIN_GLIBC_VERSION: 2.39
+      GO_VERSION: 1.25.0 # nFPM v2.46.3 go directive
+      GOTOOLCHAIN: local
+      RELEASE_GLIBC_VERSION: 2.39
       MIN_PIPEWIRE_VERSION: 0.3.65
     outputs:
       version: ${{ steps.release.outputs.version }}
@@ -42,7 +44,6 @@ jobs:
             ca-certificates \
             curl \
             git \
-            golang-go \
             libclang-dev \
             libpipewire-0.3-dev \
             libwayland-dev \
@@ -73,8 +74,8 @@ jobs:
           echo "glibc version: ${glibc_version}"
           echo "PipeWire/SPA development headers: ${pipewire_version}"
 
-          if ! dpkg --compare-versions "${glibc_version}" ge "${MIN_GLIBC_VERSION}"; then
-            echo "Release pipeline requires glibc >= ${MIN_GLIBC_VERSION}" >&2
+          if [ "${glibc_version}" != "${RELEASE_GLIBC_VERSION}" ]; then
+            echo "Release pipeline expected glibc ${RELEASE_GLIBC_VERSION}; got ${glibc_version}" >&2
             exit 1
           fi
           if ! dpkg --compare-versions "${pipewire_version}" ge "${MIN_PIPEWIRE_VERSION}"; then
@@ -204,23 +205,11 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked --all-targets
 
-      - name: Locate Go caches
-        id: go-cache
-        run: |
-          set -euo pipefail
-          {
-            echo "build=$(go env GOCACHE)"
-            echo "modules=$(go env GOMODCACHE)"
-            echo "version=$(go env GOVERSION)"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Cache Go builds
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      - name: Set up Go
+        uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6.1.0
         with:
-          path: |
-            ${{ steps.go-cache.outputs.build }}
-            ${{ steps.go-cache.outputs.modules }}
-          key: ubuntu-24.04-${{ runner.arch }}-go-${{ steps.go-cache.outputs.version }}-nfpm-${{ env.NFPM_VERSION }}
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
 
       - name: Build and package release assets
         run: |
@@ -230,7 +219,9 @@ jobs:
           export PATH="${HOME}/go/bin:${PATH}"
 
           cargo build --locked --release
-          make -C packaging all RELEASE="${{ steps.release.outputs.package_release }}"
+          make -C packaging all \
+            RELEASE="${{ steps.release.outputs.package_release }}" \
+            MAX_GLIBC_VERSION="${RELEASE_GLIBC_VERSION}"
 
           version="${{ steps.release.outputs.version }}"
           package_release="${{ steps.release.outputs.package_release }}"

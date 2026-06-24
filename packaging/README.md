@@ -10,7 +10,7 @@ is not built here.
 
 - `cargo` (to produce the release binary, invoked separately)
 - [`nfpm`](https://nfpm.goreleaser.com/)
-- `tar`, `xz`, `sha256sum`, `awk`
+- `git`, `rustc`, `objdump`, `tar`, `xz`, `sha256sum`, `awk`
 
 ## Files
 
@@ -25,19 +25,24 @@ is not built here.
 only assembles artifacts.
 
 ```bash
-cargo build --release      # from repo root
+cargo build --locked --release # from repo root
 cd packaging
 
+make check        # print the package ABI/dependency floor
+make MAX_GLIBC_VERSION=2.39 check
 make tarball      # dist/openmeters-<version>-x86_64-linux-gnu.tar.xz
 make deb          # dist/openmeters_<version>-1_amd64.deb
 make rpm          # dist/openmeters-<version>-1.x86_64.rpm
 make RELEASE=2 all # package rebuild: deb/rpm release number 2
 make all          # all of the above, plus SHA256SUMS
-make clean      # wipe dist/
+make clean        # wipe dist/
 ```
 
 Version is parsed from the root `Cargo.toml`. `RELEASE` defaults to
-`1` and is passed to nFPM for Debian/RPM package rebuilds.
+`1` and is passed to nFPM for Debian/RPM package rebuilds. Run nFPM
+through `make`. `MAX_GLIBC_VERSION` is optional for local builds, but
+CI sets it so official artifacts cannot silently move to a newer glibc
+floor.
 
 ## Artifact paths (example version)
 
@@ -54,13 +59,18 @@ dist/
 
 ## Runtime dependencies
 
-- `glibc` >= 2.39 for pre-built release artifacts
-- `libpipewire-0.3.so.0` (direct NEEDED; audio I/O and virtual sink)
+- `glibc` >= 2.39 for pre-built release artifacts. Local packages
+  declare the highest `GLIBC_*` symbol required by the built binary.
+- `libgcc_s.so.1`
+- `libpipewire-0.3.so.0` >= 0.3.65 (audio I/O and virtual sink)
 - `libvulkan.so.1` (wgpu uses the distro's Vulkan loader + ICDs)
-- `libwayland-client.so.0` (Wayland protocol)
-- `libxkbcommon.so.0` (keyboard input)
+- Wayland: `libwayland-client.so.0`, `libwayland-cursor.so.0`
+- X11: `libX11.so.6`, `libX11-xcb.so.1`, `libxcb.so.1`,
+  `libXcursor.so.1`, `libXi.so.6`
+- Keyboard input: `libxkbcommon.so.0`, `libxkbcommon-x11.so.0`
 
-(Note: if you find this list to be inaccurate please let me know.)
+Some graphics/windowing libraries are loaded with `dlopen`, so they
+may not appear in `readelf -d` output.
 
 ## Tarball layout
 

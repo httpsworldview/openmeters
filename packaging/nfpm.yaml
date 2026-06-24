@@ -17,11 +17,19 @@ license: GPL-3.0-or-later
 
 # Debian family
 depends:
-  - libc6 (>= 2.39)
-  - libpipewire-0.3-0
+  - libc6 (>= ${GLIBC_VERSION})
+  - libgcc-s1
+  - libpipewire-0.3-0 (>= ${MIN_PIPEWIRE_VERSION})
   - libwayland-client0
+  - libwayland-cursor0
   - libvulkan1
+  - libx11-6
+  - libx11-xcb1
+  - libxcb1
+  - libxcursor1
+  - libxi6
   - libxkbcommon0
+  - libxkbcommon-x11-0
 
 recommends:
   - hicolor-icon-theme
@@ -30,11 +38,18 @@ recommends:
 overrides:
   rpm:
     depends:
-      - glibc >= 2.39
-      - pipewire-libs
-      - libwayland-client
+      - glibc >= ${GLIBC_VERSION}
+      - libgcc
+      - pipewire-libs >= ${MIN_PIPEWIRE_VERSION}
+      - wayland-libs
       - vulkan-loader
+      - libX11
+      - libX11-xcb
+      - libxcb
+      - libXcursor
+      - libXi
       - libxkbcommon
+      - libxkbcommon-x11
     recommends:
       - hicolor-icon-theme
       - desktop-file-utils
