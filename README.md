@@ -108,7 +108,7 @@ OpenMeters requires:
 3. Vulkan support through your distribution's Vulkan loader and driver
    stack.
 4. For pre-built release artifacts: x86_64 GNU/Linux with `glibc` >=
-   v2.41. The release workflow builds these artifacts in Debian 13.
+   v2.35. The release workflow builds these artifacts in Ubuntu 22.04.
 
 Normal application windows are available on both X11 and Wayland. Bar
 mode additionally requires a Wayland compositor that exposes

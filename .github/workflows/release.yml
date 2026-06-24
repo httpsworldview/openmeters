@@ -20,9 +20,10 @@ jobs:
   build-and-package:
     runs-on: ubuntu-24.04
     container:
-      image: debian:13@sha256:2477d9ee0ead4370c778ce3aa42258a0b07684d1a84ded8f4af518383fbc3f2d # debian:13 linux/amd64
+      image: ubuntu:22.04@sha256:ce941a2a18bbb922e434d6d6d2b31e571a5c3826eaf6ada0a41dcc905bd2d906 # ubuntu:22.04 linux/amd64
     env:
       NFPM_VERSION: v2.46.3
+      MIN_GLIBC_VERSION: 2.35
     outputs:
       version: ${{ steps.release.outputs.version }}
       tag: ${{ steps.release.outputs.tag }}
@@ -184,7 +185,7 @@ jobs:
           path: |
             ${{ steps.go-cache.outputs.build }}
             ${{ steps.go-cache.outputs.modules }}
-          key: debian-13-${{ runner.arch }}-go-${{ steps.go-cache.outputs.version }}-nfpm-${{ env.NFPM_VERSION }}
+          key: ubuntu-22.04-${{ runner.arch }}-go-${{ steps.go-cache.outputs.version }}-nfpm-${{ env.NFPM_VERSION }}
 
       - name: Build and package release assets
         run: |
@@ -192,8 +193,8 @@ jobs:
 
           glibc_version="$(ldd --version | awk 'NR==1 {print $NF}')"
           echo "glibc version: ${glibc_version}"
-          if ! dpkg --compare-versions "${glibc_version}" ge 2.41; then
-            echo "Debian release pipeline requires glibc >= 2.41"
+          if ! dpkg --compare-versions "${glibc_version}" ge "${MIN_GLIBC_VERSION}"; then
+            echo "Release pipeline requires glibc >= ${MIN_GLIBC_VERSION}"
             exit 1
           fi
 
