@@ -321,7 +321,9 @@ pub fn decimate_line_in_place(pts: &mut Vec<(f32, f32)>, max_points: usize) {
         return;
     }
 
-    debug_assert!(pts.windows(2).all(|w| w[0].0 <= w[1].0));
+    if pts.windows(2).any(|w| w[0].0 > w[1].0) {
+        pts.sort_by(|a, b| a.0.total_cmp(&b.0));
+    }
     let Some(&last) = pts.last() else { return };
     let (x0, width) = (pts[0].0, last.0 - pts[0].0);
     let bucketed = width.is_finite() && width > 0.0;
