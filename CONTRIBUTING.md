@@ -82,6 +82,17 @@ Where:
   $ git commit -s -m "fix(spectrum): correct a-weighting calculation"
   ```
 
+## AI policy
+
+AI tools have (for the most part) fundamentally changed how software
+is written. Personally, I limit my use of these tools heavily. All
+code *must* be reviewed *extensively* by a human prior to being pushed
+upstream.
+
+Low-quality and obviously AI-generated pull requests and issues will
+be closed. If you cannot find the time to review or test your own
+code, I will not do so either.
+
 ## Development environment
 
 OpenMeters is a Rust 2024 project. Use the Rust version declared in
@@ -95,34 +106,6 @@ rustup component add rustfmt clippy --toolchain 1.95
 
 You also need native development packages for PipeWire, Wayland/X11,
 xkbcommon, fontconfig/freetype, libclang, pkg-config, and Vulkan.
-PipeWire/SPA development headers must be from PipeWire 0.3.65 or newer;
-Ubuntu 22.04's 0.3.48 headers are too old for the current Rust
-bindings. On Ubuntu/Debian-like systems, the CI dependency set is:
-
-```bash
-sudo apt-get update
-sudo apt-get install -y --no-install-recommends \
-  build-essential \
-  libclang-dev \
-  libpipewire-0.3-dev \
-  libwayland-dev \
-  libx11-dev \
-  libx11-xcb-dev \
-  libxext-dev \
-  libxfixes-dev \
-  libxrandr-dev \
-  libxcursor-dev \
-  libxi-dev \
-  libxinerama-dev \
-  libxkbcommon-dev \
-  libfontconfig1-dev \
-  libfreetype6-dev \
-  libvulkan-dev \
-  pkg-config
-```
-
-Many of these come preinstalled, but if you run into issues, perhaps
-that will help.
 
 ## Getting started
 
@@ -143,9 +126,7 @@ cargo run --release
 RUST_LOG=openmeters=debug cargo run
 ```
 
-Development builds are faster and include debug information. For
-performance work you may use the `profiling` profile, which is the
-same as `release` except for the fact that it includes debug symbols.
+For performance work you may want to use the `profiling` profile.
 
 ## Verification before opening a pull request
 
@@ -153,27 +134,15 @@ The CI workflow currently runs these checks:
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --workspace --locked --all-targets -- -D warnings
-cargo test --workspace --locked --all-targets
+cargo clippy --all-targets -- -D warnings
+cargo test --all-targets
 ```
 
-Please run the same checks locally when practical. For
-documentation-only changes, a full build is usually not necessary, but
-please still check formatting, links, examples, and spelling as
-appropriate.
+Please run the same checks prior to commit. For documentation changes
+please check formatting, links, examples, and spelling.
 
-For changes that affect runtime behavior, test:
-
-- DSP/visual processors: test generated signals or known references
-  and cover edge cases with unit tests.
-- UI changes: run the app and check the affected
-  panel/window/pop-out/bar/etc. behavior.
-- PipeWire changes: verify capture, route enable/disable,
-  default-device/etc. behavior, and clean shutdown.
-- Settings changes: test loading existing settings, invalid values,
-  unknown keys, saving through the UI, and theme interactions.
-- Packaging changes: build the release binary first, then run the
-  relevant `packaging/` target.
+Always test relevant behavior through tests and manual
+verification.
 
 ## Release tags
 
@@ -231,34 +200,21 @@ When adding or changing a visual, also check the related wiring:
 - `src/ui/pages/visuals/settings/` for settings panels.
 - `README.md` if the user-visible behavior changes.
 
-Use existing visuals as templates and always use shared render helpers
-in `src/visuals/render/common.rs`; add new render code only when they
-don't fit.
+Always use shared render helpers in `src/visuals/render/common.rs`;
+add new render code only when they don't fit.
 
 ## Testing expectations
 
-Add or update tests when a change has behavior that can
-regress. Existing unit tests live beside the code they exercise.
-
-Tests for this project usually:
-
-- exercise public or module-level behavior rather than incidental
-  implementation details;
-- use generated audio signals, reference values, tolerances, and edge
-  cases for DSP; and
-- include a regression case for every bug fix that can be reproduced
-  in a small test.
-
-If a behavior is impractical to automate, describe the manual checks
-you performed instead.
+Add or update tests when a change has behavior that can regress. If a
+behavior is impractical to automate, describe the manual checks you
+performed instead.
 
 ## Pull requests
 
-Once you've made your changes, you may open a pull request. Ensure
-that your PR includes a clear description of the changes you've made,
-and any relevant context or motivation. If your changes are related to
-an open issue, please link to it in the description. I will do my best
-to review and merge your PR in a timely manner.
+Ensure that your PR includes a clear description of the changes you've
+made, and any relevant context or motivation. If your changes are
+related to an open issue, please link to it in the description. I will
+do my best to review your PR in a timely manner.
 
 The title of your PR should follow the same format as commit messages,
 in fact, feel free to use the same message for both your commit and PR
