@@ -4,6 +4,9 @@ use super::{lossy, palette::ColorSetting, visuals::VisualSettings};
 use crate::domain::routing::CaptureMode;
 use serde::{Deserialize, Serialize};
 
+const MAIN_WINDOW_DEFAULT_WIDTH: u32 = 420;
+const MAIN_WINDOW_DEFAULT_HEIGHT: u32 = 520;
+
 pub const BAR_MIN_HEIGHT: u32 = 24;
 pub const BAR_MAX_HEIGHT: u32 = 800;
 pub const BAR_DEFAULT_HEIGHT: u32 = 180;
@@ -13,6 +16,22 @@ pub fn clamp_bar_height(height: u32) -> u32 {
 }
 
 crate::macros::choice_enum!(all pub enum BarAlignment { #[default] Top => "Top", Bottom => "Bottom" });
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MainWindowSettings {
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Default for MainWindowSettings {
+    fn default() -> Self {
+        Self {
+            width: MAIN_WINDOW_DEFAULT_WIDTH,
+            height: MAIN_WINDOW_DEFAULT_HEIGHT,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -42,6 +61,7 @@ pub struct UiSettings {
     #[serde(skip_serializing)]
     pub background_color: Option<ColorSetting>,
     pub decorations: bool,
+    pub main_window: MainWindowSettings,
     pub bar: BarSettings,
     pub capture_mode: CaptureMode,
     pub last_device_name: Option<String>,
@@ -58,6 +78,16 @@ impl UiSettings {
         lossy::settings(value, "settings", Self::default(), |map, out| {
             if let Some(value) = map.remove("visuals") {
                 out.visuals = VisualSettings::from_value_lossy(value);
+            }
+            if let Some(value) = map.remove("main_window") {
+                out.main_window = lossy::settings(
+                    value,
+                    "main_window",
+                    MainWindowSettings::default(),
+                    |map, out| {
+                        lossy::fields!(map, out, "main_window"; width, height);
+                    },
+                );
             }
             if let Some(value) = map.remove("bar") {
                 out.bar = lossy::settings(value, "bar", BarSettings::default(), |map, out| {
@@ -82,6 +112,10 @@ mod tests {
         let settings = UiSettings::from_value_lossy(serde_json::json!({
             "decorations": true,
             "capture_mode": "not_a_mode",
+            "main_window": {
+                "width": 640,
+                "height": "tall",
+            },
             "bar": {
                 "enabled": true,
                 "alignment": "bottom",
@@ -112,6 +146,8 @@ mod tests {
 
         assert!(settings.decorations);
         assert_eq!(settings.capture_mode, CaptureMode::default());
+        assert_eq!(settings.main_window.width, 640);
+        assert_eq!(settings.main_window.height, MAIN_WINDOW_DEFAULT_HEIGHT);
         assert!(settings.bar.enabled);
         assert_eq!(settings.bar.alignment, BarAlignment::Bottom);
         assert_eq!(settings.bar.height, BAR_DEFAULT_HEIGHT);

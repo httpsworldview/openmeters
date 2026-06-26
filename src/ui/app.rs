@@ -36,8 +36,7 @@ use std::rc::Rc;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 use windowing::{
-    APP_ID, BarResizeState, MAIN_WINDOW_INITIAL_SIZE, PopoutWindow, layershell_available,
-    open_main_window,
+    APP_ID, BarResizeState, PopoutWindow, layershell_available, main_window_size, open_main_window,
 };
 
 const TOAST_DISPLAY_DURATION: Duration = Duration::from_secs(2);
@@ -139,13 +138,14 @@ impl UiApp {
             audio_frames,
             settings_handle,
         } = config;
-        let (visual_settings, use_decorations, bar_settings, theme_file) = {
+        let (visual_settings, use_decorations, bar_settings, main_window, theme_file) = {
             let guard = settings_handle.borrow();
             let settings = &guard.data;
             (
                 settings.visuals.clone(),
                 settings.decorations,
                 settings.bar.clone(),
+                settings.main_window,
                 guard.theme_store().load(guard.active_theme()),
             )
         };
@@ -163,7 +163,7 @@ impl UiApp {
             use_layershell,
         );
         let visuals_page = VisualsPage::new(visual_manager.clone(), settings_handle.clone());
-        let base_size = MAIN_WINDOW_INITIAL_SIZE;
+        let base_size = main_window_size(main_window);
         let (main_id, open_task, main_is_layer, main_size) =
             open_main_window(use_layershell, bar_settings, base_size, use_decorations);
         (

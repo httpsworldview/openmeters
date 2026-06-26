@@ -3,7 +3,9 @@
 
 use super::UiApp;
 use super::message::{self, Message};
-use crate::persistence::settings::{BarAlignment, BarSettings, clamp_bar_height};
+use crate::persistence::settings::{
+    BarAlignment, BarSettings, MainWindowSettings, clamp_bar_height,
+};
 use crate::ui::config::ConfigMessage;
 use crate::ui::settings::create_panel as create_settings_panel;
 use crate::ui::theme;
@@ -24,7 +26,6 @@ use wayland_client::{Connection, Dispatch, QueueHandle};
 pub(super) const APP_ID: &str = "openmeters-ui";
 const WINDOW_MIN_SIZE: Size = Size::new(200.0, 150.0);
 pub(super) const SETTINGS_WINDOW_SIZE: Size = Size::new(480.0, 600.0);
-pub(super) const MAIN_WINDOW_INITIAL_SIZE: Size = Size::new(420.0, 520.0);
 
 #[derive(Debug, Default)]
 struct LayerShellProbe;
@@ -74,6 +75,20 @@ fn bar_layershell_settings(bar: &BarSettings, height: u32) -> NewLayerShellSetti
             .map(OutputOption::OutputName)
             .unwrap_or_default(),
         ..Default::default()
+    }
+}
+
+pub(super) fn main_window_size(settings: MainWindowSettings) -> Size {
+    Size::new(
+        (settings.width as f32).max(WINDOW_MIN_SIZE.width),
+        (settings.height as f32).max(WINDOW_MIN_SIZE.height),
+    )
+}
+
+fn main_window_settings(size: Size) -> MainWindowSettings {
+    MainWindowSettings {
+        width: size.width.round().max(WINDOW_MIN_SIZE.width) as u32,
+        height: size.height.round().max(WINDOW_MIN_SIZE.height) as u32,
     }
 }
 
@@ -358,8 +373,8 @@ impl UiApp {
             return Task::none();
         }
 
-        self.main_window_size = new_size;
         if self.main_window_is_layer {
+            self.main_window_size = new_size;
             let height = clamp_bar_height(new_size.height.round().max(1.0) as u32);
             let current_height = self.settings_handle.borrow().data.bar.height;
             if current_height != height {
@@ -374,7 +389,15 @@ impl UiApp {
             ]);
         }
 
-        self.last_base_window_size = new_size;
+        let settings = main_window_settings(new_size);
+        let size = main_window_size(settings);
+        self.main_window_size = size;
+        self.last_base_window_size = size;
+        let current_settings = self.settings_handle.borrow().data.main_window;
+        if current_settings != settings {
+            self.settings_handle
+                .update(|s| s.data.main_window = settings);
+        }
         Task::none()
     }
 
