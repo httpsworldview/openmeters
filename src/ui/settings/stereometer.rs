@@ -2,16 +2,14 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::widgets::{
-    SliderRange, pick, section, set_if_changed, slide, toggle, update_f32_range,
+    SliderRange, card, palette_card, pick, set_if_changed, slide, split, toggle, update_f32_range,
     update_usize_from_f32,
 };
 use crate::persistence::settings::StereometerSettings;
 use crate::visuals::options::{
     CorrelationMeterMode, CorrelationMeterSide, StereometerMode, StereometerScale,
 };
-use crate::visuals::registry::VisualKind;
-use iced::widget::{column, row};
-use iced::{Element, Length};
+use iced::Element;
 
 const ROTATION_RANGE: SliderRange = SliderRange::new(-4.0, 4.0, 1.0);
 const SCALE_RANGE: SliderRange = SliderRange::new(1.0, 30.0, 0.5);
@@ -21,14 +19,9 @@ const CORRELATION_WINDOW_RANGE: SliderRange = SliderRange::new(0.05, 1.0, 0.01);
 const PERSISTENCE_RANGE: SliderRange = SliderRange::new(0.0, 1.0, 0.01);
 const DOT_RADIUS_RANGE: SliderRange = SliderRange::new(0.5, 8.0, 0.1);
 
-settings_pane!(
-    StereometerSettingsPane,
-    StereometerSettings,
-    VisualKind::Stereometer,
-    Stereometer
-);
+settings_pane!(StereometerSettings);
 
-settings_messages!(StereometerSettingsPane as pane, value {
+settings_messages!(pane, value {
     SegmentDuration(f32) => update_f32_range(&mut pane.settings.segment_duration, value, SEGMENT_DURATION_RANGE);
     TargetSampleCount(f32) => update_usize_from_f32(&mut pane.settings.target_sample_count, value, TARGET_SAMPLE_COUNT_RANGE);
     CorrelationWindow(f32) => update_f32_range(&mut pane.settings.correlation_window, value, CORRELATION_WINDOW_RANGE);
@@ -46,16 +39,15 @@ settings_messages!(StereometerSettingsPane as pane, value {
     CorrelationSide(CorrelationMeterSide) => set_if_changed(&mut pane.settings.correlation_meter_side, value);
 });
 
-impl StereometerSettingsPane {
-    fn view(&self) -> Element<'_, Message> {
+impl Pane {
+    pub(super) fn view(&self) -> Element<'_, Message> {
         use Message::*;
         let s = &self.settings;
-        let picks = row![
-            pick("Mode", StereometerMode::ALL, s.mode, Mode).width(Length::Fill),
-            pick("Scale", StereometerScale::ALL, s.scale, Scale).width(Length::Fill),
-        ]
-        .spacing(16);
-        let mut core = controls!(iced::widget::Column::new().spacing(8.0).push(picks);
+        let mut meter = controls!(8.0;
+            split(
+                pick("Mode", StereometerMode::ALL, s.mode, Mode),
+                pick("Scale", StereometerScale::ALL, s.scale, Scale),
+            );
             slider!(
                 "Segment duration", s.segment_duration, SEGMENT_DURATION_RANGE, SegmentDuration,
                 format!("{:.1} ms", s.segment_duration * 1000.0)
@@ -66,10 +58,11 @@ impl StereometerSettingsPane {
             );
         );
         if s.scale == StereometerScale::Exponential {
-            core = controls!(core;
+            meter = controls!(meter;
                 slider!("Scale range", s.scale_range, SCALE_RANGE, ScaleRange, "{:.1}");
             );
         }
+
         let mut display = controls!(8.0;
             slider!("Rotation", s.rotation as f32, ROTATION_RANGE, Rotation, s.rotation.to_string());
             slider!("Persistence", s.persistence, PERSISTENCE_RANGE, Persistence, "{:.2}");
@@ -82,30 +75,17 @@ impl StereometerSettingsPane {
         }
 
         let corr_active = s.correlation_meter != CorrelationMeterMode::Off;
-        let mut corr_picks = row![
-            pick(
-                "Meter",
-                CorrelationMeterMode::ALL,
-                s.correlation_meter,
-                CorrelationMeter,
-            )
-            .width(Length::Fill),
-        ]
-        .spacing(16);
+        let mut correlation = controls!(8.0;
+            pick("Meter", CorrelationMeterMode::ALL, s.correlation_meter, CorrelationMeter);
+        );
         if corr_active {
-            corr_picks = corr_picks.push(
+            correlation = controls!(correlation;
                 pick(
                     "Side",
                     CorrelationMeterSide::ALL,
                     s.correlation_meter_side,
                     CorrelationSide,
-                )
-                .width(Length::Fill),
-            );
-        }
-        let mut correlation = column![corr_picks].spacing(8);
-        if corr_active {
-            correlation = controls!(correlation;
+                );
                 slider!(
                     "Window", s.correlation_window, CORRELATION_WINDOW_RANGE, CorrelationWindow,
                     format!("{:.0} ms", s.correlation_window * 1000.0)
@@ -113,16 +93,12 @@ impl StereometerSettingsPane {
             );
         }
 
-        column![
-            section("Core"),
-            core,
-            section("Display"),
-            display,
-            section("Correlation"),
-            correlation,
-            super::palette_section(&self.palette, Palette)
-        ]
-        .spacing(12)
+        controls!(12.0;
+            card("Meter", meter);
+            card("Display", display);
+            card("Correlation", correlation);
+            palette_card(&self.palette, Palette);
+        )
         .into()
     }
 }

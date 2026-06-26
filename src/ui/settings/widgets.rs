@@ -2,7 +2,9 @@
 // Copyright (C) 2026 Maika Namuo
 
 use crate::ui::theme;
-use iced::Length;
+use crate::ui::widgets::palette_editor::{PaletteEditor, PaletteEvent};
+use iced::Element;
+use iced::Length::{Fill, Shrink};
 use iced::alignment::Vertical;
 use iced::widget::text::Wrapping;
 use iced::widget::{column, container, pick_list, row, slider, text, toggler};
@@ -103,15 +105,47 @@ pub fn slide<'a, M: Clone + 'a>(
 ) -> iced::widget::Column<'a, M> {
     column![
         row![
-            clipped_text(label, 12.0),
+            clipped_text(label, 12.0).width(Fill),
             clipped_text(formatted.into(), 11.0)
         ]
-        .spacing(6.0),
+        .spacing(6.0)
+        .width(Fill),
         slider::Slider::new(range.min..=range.max, value, on_change)
             .step(range.step)
             .style(theme::slider_style),
     ]
     .spacing(8.0)
+    .width(Fill)
+}
+
+pub fn card<'a, M: 'a>(
+    label: &'static str,
+    content: impl Into<Element<'a, M>>,
+) -> container::Container<'a, M> {
+    container(
+        column![clipped_text(label, 14.0), content.into()]
+            .spacing(10)
+            .width(Fill),
+    )
+    .padding(12)
+    .width(Fill)
+    .style(theme::weak_container)
+}
+
+pub fn split<'a, M: 'a>(
+    left: impl Into<Element<'a, M>>,
+    right: impl Into<Element<'a, M>>,
+) -> iced::widget::Row<'a, M> {
+    row![container(left).width(Fill), container(right).width(Fill)]
+        .spacing(16)
+        .width(Fill)
+}
+
+pub fn palette_card<'a, M: 'a>(
+    palette: &'a PaletteEditor,
+    map: impl Fn(PaletteEvent) -> M + 'a,
+) -> container::Container<'a, M> {
+    card("Colors", palette.view().map(map))
 }
 
 pub fn pick<'a, T, M>(
@@ -125,11 +159,12 @@ where
     M: Clone + 'a,
 {
     row![
-        clipped_text(label, 12.0).width(Length::Shrink),
-        pick_list(options.into(), Some(selected), on_select),
+        clipped_text(label, 12.0).width(Shrink),
+        pick_list(options.into(), Some(selected), on_select).width(Fill),
     ]
     .spacing(8.0)
     .align_y(Vertical::Center)
+    .width(Fill)
 }
 
 pub fn toggle<'a, M: 'a>(
@@ -142,8 +177,4 @@ pub fn toggle<'a, M: 'a>(
         .spacing(4)
         .text_size(11)
         .on_toggle(on_toggle)
-}
-
-pub fn section<'a, M: 'a>(label: &'static str) -> container::Container<'a, M> {
-    clipped_text(label, 14.0)
 }

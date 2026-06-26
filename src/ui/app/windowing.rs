@@ -77,12 +77,12 @@ fn bar_layershell_settings(bar: &BarSettings, height: u32) -> NewLayerShellSetti
     }
 }
 
-fn base_window_settings(size: Size, with_decorations: bool) -> window::Settings {
+fn base_window_settings(size: Size, decorations: bool) -> window::Settings {
     window::Settings {
         size,
         min_size: Some(WINDOW_MIN_SIZE),
         resizable: true,
-        decorations: with_decorations,
+        decorations,
         // Keep one alpha mode across base windows; visual windows need it for background opacity.
         transparent: true,
         ..Default::default()
@@ -90,18 +90,18 @@ fn base_window_settings(size: Size, with_decorations: bool) -> window::Settings 
 }
 
 fn open_base_window(
-    use_layershell: bool,
+    layershell: bool,
     size: Size,
-    with_decorations: bool,
+    decorations: bool,
 ) -> (window::Id, Task<Message>) {
-    if use_layershell {
+    if layershell {
         let settings = iced_layershell::actions::IcedXdgWindowSettings {
             size: Some((size.width.round() as u32, size.height.round() as u32)),
-            client_side_decorations: !with_decorations,
+            client_side_decorations: !decorations,
         };
         message::base_window_open(settings)
     } else {
-        let (id, task) = window::open(base_window_settings(size, with_decorations));
+        let (id, task) = window::open(base_window_settings(size, decorations));
         (id, task.discard())
     }
 }

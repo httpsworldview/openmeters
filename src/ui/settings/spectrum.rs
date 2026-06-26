@@ -2,20 +2,18 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::widgets::{
-    FFT_OPTIONS, HOP_DIVISORS, SliderRange, get_closest_hop_divisor, pick, section,
-    set_if_changed, slide, toggle, update_f32_range, update_fft_size, update_hop_divisor,
+    FFT_OPTIONS, HOP_DIVISORS, SliderRange, card, get_closest_hop_divisor, palette_card, pick,
+    set_if_changed, slide, split, toggle, update_f32_range, update_fft_size, update_hop_divisor,
     update_usize_from_f32,
 };
 use crate::persistence::settings::SpectrumSettings;
 use crate::util::audio::{Channel, FrequencyScale};
 use crate::visuals::options::{SpectrumDisplayMode, SpectrumWeightingMode};
-use crate::visuals::registry::VisualKind;
 use crate::visuals::spectrum::processor::{
     AveragingMode, MAX_SPECTRUM_DB_FLOOR, MAX_SPECTRUM_EXP_FACTOR, MAX_SPECTRUM_PEAK_DECAY,
     MIN_SPECTRUM_DB_FLOOR, MIN_SPECTRUM_EXP_FACTOR, MIN_SPECTRUM_PEAK_DECAY,
 };
-use iced::widget::{column, row};
-use iced::{Element, Length};
+use iced::Element;
 
 const EXP_R: SliderRange = SliderRange::new(MIN_SPECTRUM_EXP_FACTOR, MAX_SPECTRUM_EXP_FACTOR, 0.01);
 const DECAY_R: SliderRange =
@@ -24,6 +22,7 @@ const BARS_R: SliderRange = SliderRange::new(8.0, 128.0, 1.0);
 const GAP_R: SliderRange = SliderRange::new(0.0, 0.8, 0.05);
 const HIGH_R: SliderRange = SliderRange::new(0.0, 0.9, 0.01);
 const FLOOR_R: SliderRange = SliderRange::new(MIN_SPECTRUM_DB_FLOOR, MAX_SPECTRUM_DB_FLOOR, 1.0);
+
 crate::macros::choice_enum!(no_default all pub(in crate::ui) enum AvgMode {
     None => "None",
     Exponential => "Exponential",
@@ -37,18 +36,18 @@ struct AveragingControls {
 }
 
 settings_pane!(
-    SpectrumSettingsPane, SpectrumSettings, VisualKind::Spectrum, Spectrum,
+    SpectrumSettings,
     extra_from_settings(settings) {
         averaging: AveragingControls = split_averaging(settings.averaging),
     }
 );
 
-settings_messages!(SpectrumSettingsPane as pane, value {
+settings_messages!(pane, value {
     FftSize(usize) => update_fft_size(&mut pane.settings.fft_size, &mut pane.settings.hop_size, value);
     HopDivisor(usize) => update_hop_divisor(pane.settings.fft_size, &mut pane.settings.hop_size, value);
     Source(Channel) => set_if_changed(&mut pane.settings.source, value);
     SecondarySource(Channel) => set_if_changed(&mut pane.settings.secondary_source, value);
-    FreqScale(FrequencyScale) => set_if_changed(&mut pane.settings.frequency_scale, value);
+    FrequencyScale(FrequencyScale) => set_if_changed(&mut pane.settings.frequency_scale, value);
     ReverseFrequency(bool) => set_if_changed(&mut pane.settings.reverse_frequency, value);
     DisplayMode(SpectrumDisplayMode) => set_if_changed(&mut pane.settings.display_mode, value);
     WeightingMode(SpectrumWeightingMode) => set_if_changed(&mut pane.settings.weighting_mode, value);
@@ -64,9 +63,8 @@ settings_messages!(SpectrumSettingsPane as pane, value {
     Highlight(f32) => update_f32_range(&mut pane.settings.highlight_threshold, value, HIGH_R);
 });
 
-impl SpectrumSettingsPane {
-    fn view(&self) -> Element<'_, Message> {
-        use Message::*;
+impl Pane {
+    pub(super) fn view(&self) -> Element<'_, Message> {
         let s = &self.settings;
         let hop_divisor = get_closest_hop_divisor(s.fft_size, s.hop_size);
         let dir = if s.reverse_frequency {
@@ -74,74 +72,78 @@ impl SpectrumSettingsPane {
         } else {
             "Low -> High"
         };
-        let left = controls!(8.0;
-            pick("Primary source", Channel::ALL, s.source, Source);
-            pick("Primary weighting", SpectrumWeightingMode::ALL, s.weighting_mode, WeightingMode);
-            pick("Display", SpectrumDisplayMode::ALL, s.display_mode, DisplayMode);
-            pick("FFT size", &FFT_OPTIONS, s.fft_size, FftSize);
-        )
-        .width(Length::Fill);
-        let right = controls!(8.0;
-            pick("Secondary source", Channel::ALL, s.secondary_source, SecondarySource);
-            pick("Secondary weighting", SpectrumWeightingMode::ALL, s.secondary_weighting_mode, SecondaryWeightingMode);
-            pick("Freq scale", FrequencyScale::ALL, s.frequency_scale, FreqScale);
-            pick("Averaging", AvgMode::ALL, self.averaging.mode, Averaging);
-            pick("Hop divisor", &HOP_DIVISORS, hop_divisor, HopDivisor);
-        )
-        .width(Length::Fill);
-        let toggles = row![
+
+        let sources = split(
             controls!(8.0;
-                toggle(dir, s.reverse_frequency, ReverseFrequency);
-                toggle("Freq grid", s.show_grid, ShowGrid);
-            )
-            .width(Length::Fill),
+                pick("Primary source", Channel::ALL, s.source, Message::Source);
+                pick("Primary weighting", SpectrumWeightingMode::ALL, s.weighting_mode, Message::WeightingMode);
+            ),
             controls!(8.0;
-                toggle("Peak label", s.show_peak_label, ShowPeakLabel);
-            )
-            .width(Length::Fill),
-        ]
-        .spacing(16);
-        let avg_ctrl = match self.averaging.mode {
-            AvgMode::Exponential => controls!(8.0;
-                slider!("Exp factor", self.averaging.factor, EXP_R, AvgFactor, "{:.2}");
+                pick("Secondary source", Channel::ALL, s.secondary_source, Message::SecondarySource);
+                pick("Secondary weighting", SpectrumWeightingMode::ALL, s.secondary_weighting_mode, Message::SecondaryWeightingMode);
             ),
-            AvgMode::PeakHold => controls!(8.0;
-                slider!("Peak decay", self.averaging.peak_decay, DECAY_R, PeakDecay, "{:.1} dB/s");
+        );
+        let mut analysis = controls!(8.0;
+            split(
+                controls!(8.0;
+                    pick("FFT size", &FFT_OPTIONS, s.fft_size, Message::FftSize);
+                    pick("Hop divisor", &HOP_DIVISORS, hop_divisor, Message::HopDivisor);
+                ),
+                controls!(8.0;
+                    pick("Frequency scale", FrequencyScale::ALL, s.frequency_scale, Message::FrequencyScale);
+                    pick("Averaging", AvgMode::ALL, self.averaging.mode, Message::Averaging);
+                ),
+            );
+        );
+        analysis = match self.averaging.mode {
+            AvgMode::Exponential => controls!(analysis;
+                slider!("Exp factor", self.averaging.factor, EXP_R, Message::AvgFactor, "{:.2}");
             ),
-            AvgMode::None => column![],
+            AvgMode::PeakHold => controls!(analysis;
+                slider!("Peak decay", self.averaging.peak_decay, DECAY_R, Message::PeakDecay, "{:.1} dB/s");
+            ),
+            AvgMode::None => analysis,
         };
 
-        let mut visual = controls!(8.0;
-            slider!("Noise floor", s.floor_db, FLOOR_R, FloorDb, "{:.0} dB");
+        let mut display = controls!(8.0;
+            pick("Display", SpectrumDisplayMode::ALL, s.display_mode, Message::DisplayMode);
+            split(
+                controls!(8.0;
+                    toggle(dir, s.reverse_frequency, Message::ReverseFrequency);
+                    toggle("Frequency grid", s.show_grid, Message::ShowGrid);
+                ),
+                controls!(8.0;
+                    toggle("Peak label", s.show_peak_label, Message::ShowPeakLabel);
+                ),
+            );
+            slider!("Noise floor", s.floor_db, FLOOR_R, Message::FloorDb, "{:.0} dB");
         );
         if s.display_mode == SpectrumDisplayMode::Bar {
-            visual = controls!(visual;
-                slider!("Bar count", s.bar_count as f32, BARS_R, BarCount, s.bar_count.to_string());
-                slider!("Bar gap", s.bar_gap, GAP_R, BarGap, format!("{:.0}%", s.bar_gap * 100.0));
+            display = controls!(display;
+                slider!("Bar count", s.bar_count as f32, BARS_R, Message::BarCount, s.bar_count.to_string());
+                slider!("Bar gap", s.bar_gap, GAP_R, Message::BarGap, format!("{:.0}%", s.bar_gap * 100.0));
             );
         }
-        visual = controls!(visual;
+        display = controls!(display;
             slider!(
-                "Color floor", s.highlight_threshold, HIGH_R, Highlight,
+                "Color floor", s.highlight_threshold, HIGH_R, Message::Highlight,
                 format!("{:.0}%", s.highlight_threshold * 100.0)
             );
         );
 
-        column![
-            section("Core"),
-            row![left, right].spacing(16),
-            avg_ctrl,
-            section("Display"),
-            toggles,
-            visual,
-            super::palette_section(&self.palette, Palette)
-        ]
-        .spacing(12)
+        controls!(12.0;
+            card("Sources", sources);
+            card("Analysis", analysis);
+            card("Display", display);
+            palette_card(&self.palette, Message::Palette);
+        )
         .into()
     }
 
     fn update_avg(&mut self, update: impl FnOnce(&mut AveragingControls) -> bool) -> bool {
-        if !update(&mut self.averaging) { return false; }
+        if !update(&mut self.averaging) {
+            return false;
+        }
         self.settings.averaging = match self.averaging.mode {
             AvgMode::None => AveragingMode::None,
             AvgMode::Exponential => AveragingMode::Exponential {
