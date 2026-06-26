@@ -3,8 +3,8 @@
 I greatly appreciate you taking the time to read this. Throughout
 development, it has always felt as though I was building this project
 in a vacuum. Often it feels as though I'm the only person who will
-ever use this software, and that all this is doing is talking to
-myself. So, thank you for being here. I hope you find this software
+ever use this software, and that I am only talking to myself. So,
+thank you for being here. I hope you find this software
 useful, and if you have any feedback or suggestions, please don't
 hesitate to reach out.
 
@@ -13,11 +13,11 @@ hesitate to reach out.
 OpenMeters is, at its core, the code within
 `src/visuals/<name>/processor.rs`. The quality, rigor, and correctness
 of that code is the most important part of this entire project. To
-illustrate that importance I should be able to gesture towards any of
+illustrate that importance, I should be able to gesture towards any of
 the existing visuals, but in short:
 
 1. The spectrogram faithfully implements linear, log, and ERB
-   frequency scaling, and most importantly Auger and Flandrin's method
+   frequency scaling, and, most importantly, Auger and Flandrin's method
    of spectral reassignment as described in their 1995 paper.
 2. The spectrum analyzer implements A-weighting according to IEC
    61672:2003, and shares the same linear, log, and ERB frequency
@@ -28,7 +28,7 @@ the existing visuals, but in short:
 4. The oscilloscope uses normalized autocorrelation period estimation
    and waveform-template correlation to keep traces stable across
    complex periodic signals and visible channel selections.
-5. The stereometer separates bands using LR4 butterworth filters,
+5. The stereometer separates bands using LR4 Butterworth filters,
    along with linear and log scaling. The correlation meter uses those
    same Butterworth crossings.
 6. The loudness meter implements K-weighting relative to full
@@ -36,7 +36,7 @@ the existing visuals, but in short:
    fast/slow. Standards used include ITU-R BS.1770.
 
 The point of this section is not to discourage engagement with the
-project, rather it is to emphasize the expected level at which
+project, but rather to emphasize the expected level at which
 contributions are to operate.
 
 ## Licensing information
@@ -74,12 +74,12 @@ Where:
   for the body.
 - `<body>` is an optional longer description of the change, which can
   include motivation, implementation, etc.
-- `<DCO>` is a `Signed-off by:` footer certifying that you have the
+- `<DCO>` is a `Signed-off-by:` footer certifying that you have the
   right to submit the contribution under this project's license. Use
   git's `--signoff` (`-s`) flag to add it automatically:
   
   ```bash
-  $ git commit -s -m "fix(spectrum): correct a-weighting calculation"
+  $ git commit -s -m "fix(spectrum): correct A-weighting calculation"
   ```
 
 ## AI policy
@@ -138,7 +138,7 @@ cargo clippy --all-targets -- -D warnings
 cargo test --all-targets
 ```
 
-Please run the same checks prior to commit. For documentation changes
+Please run the same checks before committing. For documentation changes,
 please check formatting, links, examples, and spelling.
 
 Always test relevant behavior through tests and manual
@@ -184,7 +184,7 @@ Each visual lives under `src/visuals/<name>/`:
 
 - `processor.rs` converts `AudioBlock`s into snapshots. This is the
   most important part to test carefully.
-- `state.rs` owns user facing visual state and maps snapshots into
+- `state.rs` owns user-facing visual state and maps snapshots into
   render parameters.
 - `render.rs` owns custom iced/wgpu drawing primitives.
 
@@ -216,9 +216,9 @@ made, and any relevant context or motivation. If your changes are
 related to an open issue, please link to it in the description. I will
 do my best to review your PR in a timely manner.
 
-The title of your PR should follow the same format as commit messages,
-in fact, feel free to use the same message for both your commit and PR
-title. Use your best judgment.
+The title of your PR should follow the same format as commit messages.
+Feel free to use the same message for both your commit and PR title.
+Use your best judgment.
 
 Ultimately, I decide what gets merged, but I will never reject a PR
 due to grammatical issues or petty semantics alone. I will work with
