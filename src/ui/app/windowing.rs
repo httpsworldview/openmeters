@@ -4,7 +4,7 @@
 use super::UiApp;
 use super::message::{self, Message};
 use crate::persistence::settings::{
-    BarAlignment, BarSettings, MainWindowSettings, clamp_bar_height,
+    BarAlignment, BarSettings, MainWindowSettings, PopoutWindowSettings, clamp_bar_height,
 };
 use crate::ui::config::ConfigMessage;
 use crate::ui::settings::create_panel as create_settings_panel;
@@ -143,11 +143,34 @@ pub(super) fn open_main_window(
     (id, task, false, base_size)
 }
 
-fn popout_window_size(metadata: &VisualMetadata) -> Size {
-    Size::new(
+fn popout_window_size(metadata: &VisualMetadata, saved: Option<PopoutWindowSettings>) -> Size {
+    let default = Size::new(
         metadata.preferred_width.max(400.0),
         metadata.preferred_height.max(300.0),
+    );
+    let Some(saved) = saved else {
+        return default;
+    };
+    Size::new(
+        if saved.width > 0 {
+            (saved.width as f32).max(WINDOW_MIN_SIZE.width)
+        } else {
+            default.width
+        },
+        if saved.height > 0 {
+            (saved.height as f32).max(WINDOW_MIN_SIZE.height)
+        } else {
+            default.height
+        },
     )
+}
+
+fn popout_window_settings(size: Size, popped_out: bool) -> PopoutWindowSettings {
+    PopoutWindowSettings {
+        width: size.width.round().max(WINDOW_MIN_SIZE.width) as u32,
+        height: size.height.round().max(WINDOW_MIN_SIZE.height) as u32,
+        popped_out,
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -160,6 +183,7 @@ pub(super) struct BarResizeState {
 pub(super) struct PopoutWindow {
     pub kind: VisualKind,
     pub original_index: usize,
+    pub size: Size,
     pub cached: Option<(VisualMetadata, VisualContent)>,
 }
 
@@ -209,30 +233,102 @@ impl UiApp {
         }
     }
 
-    pub(super) fn open_popout_window(&mut self, kind: VisualKind) -> Task<Message> {
+    fn create_popout_window(
+        &mut self,
+        kind: VisualKind,
+        saved_size: Option<PopoutWindowSettings>,
+    ) -> Option<(PopoutWindowSettings, Task<Message>)> {
         if self
             .popout_windows
             .values()
             .any(|popout| popout.kind == kind)
         {
-            return Task::none();
+            return None;
         }
         let snapshot = self.visual_manager.borrow().snapshot();
-        let Some((index, slot)) = snapshot.iter().enumerate().find(|(_, s)| s.kind == kind) else {
-            return Task::none();
-        };
-        let window_size = popout_window_size(&slot.metadata);
+        let (index, slot) = snapshot
+            .iter()
+            .enumerate()
+            .find(|(_, s)| s.kind == kind && s.enabled)?;
+        let window_size = popout_window_size(&slot.metadata, saved_size);
         let use_decorations = self.settings_handle.borrow().data.decorations;
         let (new_id, open_task) =
             open_base_window(self.use_layershell, window_size, use_decorations);
         let mut popout = PopoutWindow {
             kind,
             original_index: index,
+            size: window_size,
             cached: None,
         };
         popout.sync_from_snapshot(&snapshot);
         self.popout_windows.insert(new_id, popout);
-        open_task
+        Some((popout_window_settings(window_size, true), open_task))
+    }
+
+    pub(super) fn restore_popout_windows(
+        &mut self,
+        saved: &std::collections::HashMap<VisualKind, PopoutWindowSettings>,
+    ) -> Task<Message> {
+        let order = self.visual_manager.borrow().order();
+        Task::batch(order.into_iter().filter_map(|kind| {
+            let settings = saved.get(&kind).copied().filter(|s| s.popped_out)?;
+            self.create_popout_window(kind, Some(settings))
+                .map(|(_, task)| task)
+        }))
+    }
+
+    pub(super) fn restore_popout_window(&mut self, kind: VisualKind) -> Task<Message> {
+        let saved = {
+            self.settings_handle
+                .borrow()
+                .data
+                .visuals
+                .popouts
+                .get(&kind)
+                .copied()
+                .filter(|s| s.popped_out)
+        };
+        let Some(settings) = saved else {
+            return Task::none();
+        };
+        self.create_popout_window(kind, Some(settings))
+            .map_or_else(Task::none, |(_, task)| task)
+    }
+
+    fn open_popout_window(&mut self, kind: VisualKind) -> Task<Message> {
+        let saved_size = self
+            .settings_handle
+            .borrow()
+            .data
+            .visuals
+            .popouts
+            .get(&kind)
+            .copied();
+        let Some((settings, task)) = self.create_popout_window(kind, saved_size) else {
+            return Task::none();
+        };
+        self.settings_handle.update(|s| {
+            s.data.visuals.popouts.insert(kind, settings);
+        });
+        task
+    }
+
+    fn dock_popout(&mut self, popout: PopoutWindow) {
+        let order = {
+            let mut manager = self.visual_manager.borrow_mut();
+            manager.move_to(popout.kind, popout.original_index);
+            manager.order()
+        };
+        let popout_settings = popout_window_settings(popout.size, false);
+        self.sync_visuals_page();
+        self.settings_handle.update(|settings| {
+            settings
+                .data
+                .visuals
+                .popouts
+                .insert(popout.kind, popout_settings);
+            settings.data.visuals.order = order;
+        });
     }
 
     pub(super) fn on_window_closed(&mut self, id: window::Id) -> Task<Message> {
@@ -242,7 +338,9 @@ impl UiApp {
         if self.settings_window.as_ref().is_some_and(|(w, _)| *w == id) {
             self.settings_window = None;
         }
-        self.popout_windows.remove(&id);
+        if let Some(popout) = self.popout_windows.remove(&id) {
+            self.dock_popout(popout);
+        }
         Task::none()
     }
 
@@ -266,14 +364,28 @@ impl UiApp {
         let stale_windows: Vec<_> = self
             .popout_windows
             .extract_if(|_, popout| popout.cached.is_none())
-            .map(|(id, _)| id)
+            .map(|(id, popout)| (id, popout.kind, popout.size))
             .collect();
+        // keep disabled popouts restorable when re-enabled.
+        if !stale_windows.is_empty() {
+            self.settings_handle.update(|settings| {
+                for (_, kind, size) in &stale_windows {
+                    settings
+                        .data
+                        .visuals
+                        .popouts
+                        .insert(*kind, popout_window_settings(*size, true));
+                }
+            });
+        }
         self.visuals_page
             .apply_snapshot_excluding(&snapshot, &self.popped_out_kinds());
         Task::batch(
-            close_settings_task
-                .into_iter()
-                .chain(stale_windows.into_iter().map(window::close)),
+            close_settings_task.into_iter().chain(
+                stale_windows
+                    .into_iter()
+                    .map(|(id, _, _)| window::close(id)),
+            ),
         )
     }
 
@@ -318,13 +430,7 @@ impl UiApp {
 
     pub(super) fn handle_popout_or_dock(&mut self, source_window: window::Id) -> Task<Message> {
         if let Some(popout) = self.popout_windows.remove(&source_window) {
-            self.visual_manager
-                .borrow_mut()
-                .move_to(popout.kind, popout.original_index);
-            self.sync_visuals_page();
-            self.settings_handle.update(|settings| {
-                settings.data.visuals.order = self.visual_manager.borrow().order();
-            });
+            self.dock_popout(popout);
             return window::close(source_window);
         }
         let Some(kind) = self.visuals_page.hovered_visual() else {
@@ -364,11 +470,22 @@ impl UiApp {
         ])
     }
 
-    pub(super) fn handle_main_window_resize(
+    pub(super) fn handle_window_resize(
         &mut self,
         window_id: window::Id,
         new_size: Size,
     ) -> Task<Message> {
+        if let Some(popout) = self.popout_windows.get_mut(&window_id) {
+            let settings = popout_window_settings(new_size, true);
+            if popout_window_settings(popout.size, true) != settings {
+                popout.size = Size::new(settings.width as f32, settings.height as f32);
+                let kind = popout.kind;
+                self.settings_handle.update(|s| {
+                    s.data.visuals.popouts.insert(kind, settings);
+                });
+            }
+            return Task::none();
+        }
         if window_id != self.main_window_id {
             return Task::none();
         }
@@ -511,14 +628,8 @@ impl UiApp {
         let old_popouts = std::mem::take(&mut self.popout_windows);
         let mut tasks = Vec::with_capacity(old_popouts.len() * 2);
         for (old_id, popout) in old_popouts {
-            let window_size = popout
-                .cached
-                .as_ref()
-                .map_or(Size::new(400.0, 300.0), |(meta, _)| {
-                    popout_window_size(meta)
-                });
             let (new_id, open_task) =
-                open_base_window(self.use_layershell, window_size, use_decorations);
+                open_base_window(self.use_layershell, popout.size, use_decorations);
             self.popout_windows.insert(new_id, popout);
             tasks.push(open_task);
             tasks.push(window::close(old_id));

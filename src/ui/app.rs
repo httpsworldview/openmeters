@@ -166,32 +166,34 @@ impl UiApp {
         let base_size = main_window_size(main_window);
         let (main_id, open_task, main_is_layer, main_size) =
             open_main_window(use_layershell, bar_settings, base_size, use_decorations);
-        (
-            Self {
-                config_page,
-                visuals_page,
-                visual_manager,
-                settings_handle,
-                audio_frames,
-                drawer_open: false,
-                drawer_width_ratio: DEFAULT_DRAWER_RATIO,
-                drawer_resizing: false,
-                drawer_resize_offset: None,
-                bar_resize_state: None,
-                rendering_paused: false,
-                toast_until: None,
-                main_window_id: main_id,
-                main_window_size: main_size,
-                last_base_window_size: base_size,
-                main_window_is_layer: main_is_layer,
-                use_layershell,
-                settings_window: None,
-                settings_scroll: ScrollGlow::default(),
-                popout_windows: HashMap::default(),
-                exit_warning_until: None,
-            },
-            open_task,
-        )
+        let mut app = Self {
+            config_page,
+            visuals_page,
+            visual_manager,
+            settings_handle,
+            audio_frames,
+            drawer_open: false,
+            drawer_width_ratio: DEFAULT_DRAWER_RATIO,
+            drawer_resizing: false,
+            drawer_resize_offset: None,
+            bar_resize_state: None,
+            rendering_paused: false,
+            toast_until: None,
+            main_window_id: main_id,
+            main_window_size: main_size,
+            last_base_window_size: base_size,
+            main_window_is_layer: main_is_layer,
+            use_layershell,
+            settings_window: None,
+            settings_scroll: ScrollGlow::default(),
+            popout_windows: HashMap::default(),
+            exit_warning_until: None,
+        };
+        let restore_popouts = app.restore_popout_windows(&visual_settings.popouts);
+        if !app.popout_windows.is_empty() {
+            app.sync_visuals_page();
+        }
+        (app, Task::batch([open_task, restore_popouts]))
     }
 
     fn subscription(&self) -> Subscription<Message> {

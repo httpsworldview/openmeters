@@ -27,7 +27,8 @@ pub mod settings {
     pub use super::theme::{BUILTIN_THEME, ThemeChoice, ThemeFile, ThemeOrigin};
     pub(crate) use super::visuals::SettingsConfig;
     pub use super::visuals::{
-        LoudnessSettings, ModuleSettings, OscilloscopeSettings, SpectrogramSettings,
-        SpectrumSettings, StereometerSettings, VisualSettings, WaveformSettings,
+        LoudnessSettings, ModuleSettings, OscilloscopeSettings, PopoutWindowSettings,
+        SpectrogramSettings, SpectrumSettings, StereometerSettings, VisualSettings,
+        WaveformSettings,
     };
 }

@@ -107,13 +107,23 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
                 ConfigMessage::DecorationsToggled(enabled) => app.recreate_windows(*enabled),
                 _ => Task::none(),
             };
+            let restore_popout = match &config_msg {
+                ConfigMessage::VisualToggled {
+                    kind,
+                    enabled: true,
+                } => Some(*kind),
+                _ => None,
+            };
             let bar_task = app.handle_bar_config_message(&config_msg);
-            let theme_changed = matches!(config_msg, ConfigMessage::ThemeChanged(_));
+            let theme_changed = matches!(&config_msg, ConfigMessage::ThemeChanged(_));
             app.config_page.update(config_msg);
             if theme_changed {
                 app.refresh_settings_panel();
             }
-            Task::batch([decoration_task, bar_task, app.sync_all_windows()])
+            let restore_task =
+                restore_popout.map_or_else(Task::none, |kind| app.restore_popout_window(kind));
+            let sync_task = app.sync_all_windows();
+            Task::batch([decoration_task, bar_task, restore_task, sync_task])
         }
         Message::Visuals(VisualsMessage::SettingsRequested(kind)) => app.open_settings_window(kind),
         Message::Visuals(VisualsMessage::WindowDragRequested) if !app.main_window_is_layer => {
@@ -189,9 +199,9 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
             app.settings_scroll = g;
             Task::none()
         }
-        Message::WindowResized(id, size) => app.handle_main_window_resize(id, size),
+        Message::WindowResized(id, size) => app.handle_window_resize(id, size),
         Message::SizeChange { id, size } => {
-            app.handle_main_window_resize(id, Size::new(size.0 as f32, size.1 as f32))
+            app.handle_window_resize(id, Size::new(size.0 as f32, size.1 as f32))
         }
         _ => Task::none(),
     }

@@ -24,6 +24,29 @@ use serde_json::Value;
 use std::collections::HashMap;
 use tracing::warn;
 
+fn is_true(value: &bool) -> bool {
+    *value
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PopoutWindowSettings {
+    pub width: u32,
+    pub height: u32,
+    #[serde(skip_serializing_if = "is_true")]
+    pub popped_out: bool,
+}
+
+impl Default for PopoutWindowSettings {
+    fn default() -> Self {
+        Self {
+            width: 0,
+            height: 0,
+            popped_out: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct VisualSettings {
@@ -31,6 +54,8 @@ pub struct VisualSettings {
     pub order: Vec<VisualKind>,
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub width_basis: HashMap<VisualKind, f32>,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub popouts: HashMap<VisualKind, PopoutWindowSettings>,
 }
 
 impl VisualSettings {
@@ -45,6 +70,9 @@ impl VisualSettings {
             }
             if let Some(value) = map.remove("width_basis") {
                 out.width_basis = visual_map(value, "visuals.width_basis", width_basis);
+            }
+            if let Some(value) = map.remove("popouts") {
+                out.popouts = visual_map(value, "visuals.popouts", popout_window);
             }
         })
     }
@@ -85,6 +113,14 @@ fn width_basis(value: Value, scope: &str) -> Option<f32> {
         warn!("[settings] invalid {scope}: must be finite and greater than zero");
         None
     }
+}
+
+fn popout_window(value: Value, scope: &str) -> Option<PopoutWindowSettings> {
+    let mut map = lossy::object(value, scope)?;
+    let mut out = PopoutWindowSettings::default();
+    lossy::fields!(&mut map, out, scope; width, height, popped_out);
+    lossy::unknown(scope, &map);
+    Some(out)
 }
 
 pub(crate) trait SettingsConfig: Default {

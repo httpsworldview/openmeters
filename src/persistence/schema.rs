@@ -103,9 +103,35 @@ impl UiSettings {
 
 #[cfg(test)]
 mod tests {
-    use super::super::visuals::SpectrumSettings;
+    use super::super::visuals::{PopoutWindowSettings, SpectrumSettings};
     use super::*;
     use crate::domain::visuals::VisualKind;
+
+    #[test]
+    fn popout_json_omits_default_active_state() {
+        let mut settings = UiSettings::default();
+        settings.visuals.popouts.insert(
+            VisualKind::Spectrum,
+            PopoutWindowSettings {
+                width: 640,
+                height: 360,
+                popped_out: true,
+            },
+        );
+        settings.visuals.popouts.insert(
+            VisualKind::Waveform,
+            PopoutWindowSettings {
+                width: 320,
+                height: 200,
+                popped_out: false,
+            },
+        );
+
+        let value = serde_json::to_value(&settings).unwrap();
+        let popouts = &value["visuals"]["popouts"];
+        assert!(popouts["spectrum"].get("popped_out").is_none());
+        assert_eq!(popouts["waveform"]["popped_out"], false);
+    }
 
     #[test]
     fn lossy_value_ignores_invalid_fields_at_their_scope() {
@@ -141,6 +167,12 @@ mod tests {
                     "loudness": -1.0,
                     "made_up": 1.0,
                 },
+                "popouts": {
+                    "spectrum": { "width": 640, "height": "tall" },
+                    "oscilloscope": { "width": 300, "height": 200, "popped_out": false },
+                    "waveform": "wide",
+                    "made_up": { "width": 300, "height": 200 }
+                },
             },
         }));
 
@@ -156,6 +188,15 @@ mod tests {
         assert_eq!(settings.visuals.order, vec![VisualKind::Spectrum]);
         assert_eq!(settings.visuals.width_basis.len(), 1);
         assert_eq!(settings.visuals.width_basis[&VisualKind::Spectrum], 320.0);
+        assert_eq!(settings.visuals.popouts.len(), 2);
+        assert_eq!(settings.visuals.popouts[&VisualKind::Spectrum].width, 640);
+        assert_eq!(settings.visuals.popouts[&VisualKind::Spectrum].height, 0);
+        assert!(settings.visuals.popouts[&VisualKind::Spectrum].popped_out);
+        assert_eq!(
+            settings.visuals.popouts[&VisualKind::Oscilloscope].width,
+            300
+        );
+        assert!(!settings.visuals.popouts[&VisualKind::Oscilloscope].popped_out);
 
         assert_eq!(settings.visuals.modules.len(), 1);
         let module = settings.visuals.modules.get(&VisualKind::Spectrum).unwrap();
