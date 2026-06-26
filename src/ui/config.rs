@@ -18,11 +18,12 @@ use crate::visuals::registry::{VisualKind, VisualManagerHandle, VisualSlotSnapsh
 use async_channel::Receiver as AsyncReceiver;
 use iced::widget::text::Wrapping;
 use iced::widget::{
-    Column, Row, Rule, Space, button, container, pick_list, radio, rule, slider, text, text_input,
+    Column, Row, Rule, button, column, container, pick_list, radio, row, rule, slider, text,
+    text_input,
 };
 use iced::{Element, Length, Subscription};
 use iced_layershell::actions::OutputSnapshot;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::{Arc, mpsc};
 
 const GRID_COLUMNS: usize = 2;
@@ -41,7 +42,7 @@ fn truncate_label(label: &str, max_chars: usize) -> (&str, bool) {
     (&label[..end], true)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct DeviceOption {
     label: String,
     selection: DeviceSelection,
@@ -74,36 +75,27 @@ pub enum ConfigMessage {
     Scrolled(ScrollGlow),
 }
 
-#[derive(Clone, Debug)]
 struct ApplicationRow {
     node_id: u32,
     label: String,
-    sort_key: (String, String, u32),
-    enabled: bool,
 }
 
 impl ApplicationRow {
-    fn from_node(node: &crate::infra::pipewire::registry::NodeInfo, enabled: bool) -> Self {
+    fn from_node(node: &crate::infra::pipewire::registry::NodeInfo) -> Self {
         let primary = node
             .app_name()
             .map(str::to_owned)
             .filter(|name| !name.trim().is_empty())
             .unwrap_or_else(|| node.display_name());
         let node_label = node.display_name();
-        let secondary = (!primary.eq_ignore_ascii_case(&node_label)).then_some(node_label);
-        let sort_key = (
-            primary.to_ascii_lowercase(),
-            secondary
-                .as_deref()
-                .unwrap_or_default()
-                .to_ascii_lowercase(),
-            node.id,
-        );
+        let label = if primary.eq_ignore_ascii_case(&node_label) {
+            primary
+        } else {
+            format!("{primary} ({node_label})")
+        };
         Self {
             node_id: node.id,
-            label: secondary.map_or_else(|| primary.clone(), |s| format!("{primary} ({s})")),
-            sort_key,
-            enabled,
+            label,
         }
     }
 }
@@ -115,18 +107,16 @@ pub struct ConfigPage {
     settings: SettingsHandle,
     bar_supported: bool,
     bar_monitors: Vec<String>,
-    preferences: HashMap<u32, bool>,
+    disabled_applications: HashSet<u32>,
     applications: Vec<ApplicationRow>,
     hardware_sink_label: String,
     hardware_sink_last_known: Option<String>,
     registry_ready: bool,
     applications_expanded: bool,
-    capture_mode: CaptureMode,
     device_choices: Vec<DeviceOption>,
     selected_device: DeviceSelection,
     bg_palette: PaletteEditor,
     scroll: ScrollGlow,
-    active_theme: String,
     theme_choices: Vec<ThemeChoice>,
     save_theme_name: String,
 }
@@ -141,14 +131,12 @@ impl ConfigPage {
     ) -> Self {
         use theme::background as bg;
 
-        let (current_bg, capture_mode, last_device_name, active_theme, theme_choices) = {
+        let (current_bg, last_device_name, theme_choices) = {
             let guard = settings.borrow();
-            let settings = &guard.data;
+            let data = &guard.data;
             (
-                settings.background_color.map_or(theme::BG_BASE, Into::into),
-                settings.capture_mode,
-                settings.last_device_name.clone(),
-                guard.active_theme().to_owned(),
+                data.background_color.map_or(theme::BG_BASE, Into::into),
+                data.last_device_name.clone(),
                 guard.theme_store().list(),
             )
         };
@@ -163,18 +151,16 @@ impl ConfigPage {
             settings,
             bar_supported,
             bar_monitors: Vec::new(),
-            preferences: HashMap::new(),
+            disabled_applications: HashSet::new(),
             applications: Vec::new(),
             hardware_sink_label: String::from("(detecting hardware sink...)"),
             hardware_sink_last_known: None,
             registry_ready: false,
             applications_expanded: false,
-            capture_mode,
             device_choices: Vec::new(),
             selected_device: DeviceSelection::from_token(last_device_name),
             bg_palette,
             scroll: ScrollGlow::default(),
-            active_theme,
             theme_choices,
             save_theme_name: String::new(),
         }
@@ -195,22 +181,12 @@ impl ConfigPage {
                 self.apply_snapshot(snapshot);
             }
             ConfigMessage::ToggleChanged { node_id, enabled } => {
-                self.preferences.insert(node_id, enabled);
-
-                if let Some(entry) = self
-                    .applications
-                    .iter_mut()
-                    .find(|entry| entry.node_id == node_id)
-                {
-                    entry.enabled = enabled;
+                if enabled {
+                    self.disabled_applications.remove(&node_id);
+                } else {
+                    self.disabled_applications.insert(node_id);
                 }
-
-                if let Err(err) = self
-                    .routing_sender
-                    .send(RoutingCommand::SetApplicationEnabled { node_id, enabled })
-                {
-                    tracing::error!("[ui] failed to send routing command: {err}");
-                }
+                self.send_routing(RoutingCommand::SetApplicationEnabled { node_id, enabled });
             }
             ConfigMessage::ToggleApplicationsVisibility => {
                 self.applications_expanded = !self.applications_expanded;
@@ -224,10 +200,9 @@ impl ConfigPage {
                 });
             }
             ConfigMessage::CaptureModeChanged(mode) => {
-                if self.capture_mode != mode {
-                    self.capture_mode = mode;
-                    self.dispatch_capture_state();
+                if self.settings.borrow().data.capture_mode != mode {
                     self.settings.update(|s| s.data.capture_mode = mode);
+                    self.dispatch_capture_state();
                 }
             }
             ConfigMessage::CaptureDeviceChanged(selection) => {
@@ -245,7 +220,7 @@ impl ConfigPage {
                         s.data.background_color = color.map(Into::into);
                         s.update_active_theme(|theme| theme.background = color.map(Into::into));
                     });
-                    self.sync_active_theme();
+                    self.refresh_theme_choices_if_needed();
                 }
             }
             ConfigMessage::DecorationsToggled(v) => {
@@ -261,10 +236,10 @@ impl ConfigPage {
             }
             ConfigMessage::ThemeChanged(name) => self.apply_theme(&name),
             ConfigMessage::SaveTheme(name) => {
+                let active = self.settings.borrow().active_theme().to_owned();
                 if let Some(saved_name) = self.save_current_as_theme(&name)
-                    && self.active_theme != saved_name
+                    && active != saved_name
                 {
-                    self.active_theme.clone_from(&saved_name);
                     self.settings.update(|s| s.data.theme = Some(saved_name));
                 }
                 self.save_theme_name.clear();
@@ -289,19 +264,15 @@ impl ConfigPage {
     }
 
     fn render_capture_section(&self) -> Column<'_, ConfigMessage> {
-        let capture_controls = radio_row(
-            CaptureMode::ALL,
-            self.capture_mode,
-            ConfigMessage::CaptureModeChanged,
-        );
-        let content =
-            Column::new()
-                .spacing(8)
-                .push(capture_controls)
-                .push(match self.capture_mode {
-                    CaptureMode::Applications => self.render_applications_section(),
-                    CaptureMode::Device => self.render_device_section(),
-                });
+        let mode = self.settings.borrow().data.capture_mode;
+        let content = column![
+            radio_row(CaptureMode::ALL, mode, ConfigMessage::CaptureModeChanged),
+            match mode {
+                CaptureMode::Applications => self.render_applications_section(),
+                CaptureMode::Device => self.render_device_section(),
+            }
+        ]
+        .spacing(8);
 
         section_with_divider("Audio Capture", content)
     }
@@ -336,12 +307,13 @@ impl ConfigPage {
                 text(msg).size(TEXT_SIZE).into()
             } else {
                 render_toggle_grid(&self.applications, |entry| {
+                    let enabled = !self.disabled_applications.contains(&entry.node_id);
                     (
                         entry.label.as_str(),
-                        entry.enabled,
+                        enabled,
                         ConfigMessage::ToggleChanged {
                             node_id: entry.node_id,
-                            enabled: !entry.enabled,
+                            enabled: !enabled,
                         },
                     )
                 })
@@ -357,25 +329,22 @@ impl ConfigPage {
             .device_choices
             .iter()
             .find(|opt| opt.selection == self.selected_device);
-        let mut picker = pick_list(
-            self.device_choices.as_slice(),
-            selected,
-            |opt: DeviceOption| ConfigMessage::CaptureDeviceChanged(opt.selection),
-        )
+        let mut picker = pick_list(self.device_choices.as_slice(), selected, |opt| {
+            ConfigMessage::CaptureDeviceChanged(opt.selection)
+        })
         .text_size(TEXT_SIZE)
         .width(Length::Fill);
         if self.device_choices.len() <= 1 {
             picker = picker.placeholder("No devices available");
         }
 
-        Column::new()
-            .spacing(6)
-            .push(container(picker).width(Length::Fill).clip(true))
-            .push(
-                text("Direct device capture. Application routing disabled.")
-                    .size(TEXT_SIZE)
-                    .style(theme::weak_text_style),
-            )
+        column![
+            container(picker).width(Length::Fill).clip(true),
+            text("Direct device capture. Application routing disabled.")
+                .size(TEXT_SIZE)
+                .style(theme::weak_text_style)
+        ]
+        .spacing(6)
     }
 
     fn build_device_choices(&self, snapshot: &RegistrySnapshot) -> Vec<DeviceOption> {
@@ -402,73 +371,53 @@ impl ConfigPage {
 
     fn render_global_section(&self) -> Column<'_, ConfigMessage> {
         let decorations_enabled = self.settings.borrow().data.decorations;
-        let content = Column::new()
-            .spacing(12)
-            .push(self.bg_palette.view().map(ConfigMessage::BgPalette))
-            .push(
-                iced::widget::checkbox(decorations_enabled)
-                    .label("Enable Window Decorations")
-                    .size(14)
-                    .text_size(TEXT_SIZE)
-                    .on_toggle(ConfigMessage::DecorationsToggled),
-            );
+        let content = column![
+            self.bg_palette.view().map(ConfigMessage::BgPalette),
+            iced::widget::checkbox(decorations_enabled)
+                .label("Enable Window Decorations")
+                .size(14)
+                .text_size(TEXT_SIZE)
+                .on_toggle(ConfigMessage::DecorationsToggled)
+        ]
+        .spacing(12);
 
         section_with_divider("Global", content)
     }
 
     fn render_theme_section(&self) -> Column<'_, ConfigMessage> {
-        let selected = self
-            .theme_choices
-            .iter()
-            .find(|c| c.name == self.active_theme);
+        let active = self.settings.borrow().active_theme().to_owned();
+        let selected = self.theme_choices.iter().find(|c| c.name == active);
         let is_builtin = selected.is_some_and(|c| c.origin == ThemeOrigin::BuiltIn);
 
-        let picker = pick_list(
-            self.theme_choices.as_slice(),
-            selected,
-            |choice: ThemeChoice| ConfigMessage::ThemeChanged(choice.name),
-        )
+        let picker = pick_list(self.theme_choices.as_slice(), selected, |choice| {
+            ConfigMessage::ThemeChanged(choice.name)
+        })
         .text_size(TEXT_SIZE)
         .width(Length::Fill);
 
-        let save_btn = button(text("Save").size(TEXT_SIZE))
-            .padding([4, 8])
-            .style(|t, s| theme::tab_button_style(t, false, s))
-            .on_press_maybe(
-                (!is_builtin).then(|| ConfigMessage::SaveTheme(self.active_theme.clone())),
-            );
+        let save_btn = small_button(
+            "Save",
+            (!is_builtin).then(|| ConfigMessage::SaveTheme(active.clone())),
+        );
 
         let save_as_input = text_input("New theme name...", &self.save_theme_name)
             .on_input(ConfigMessage::ThemeNameInput)
             .size(TEXT_SIZE)
             .width(Length::Fill);
         let trimmed = self.save_theme_name.trim();
-        let save_as_btn = button(text("Save as").size(TEXT_SIZE))
-            .padding([4, 8])
-            .style(|t, s| theme::tab_button_style(t, false, s))
-            .on_press_maybe(
-                (!trimmed.is_empty() && trimmed != BUILTIN_THEME)
-                    .then(|| ConfigMessage::SaveTheme(trimmed.to_owned())),
-            );
+        let save_as_btn = small_button(
+            "Save as",
+            (!trimmed.is_empty() && trimmed != BUILTIN_THEME)
+                .then(|| ConfigMessage::SaveTheme(trimmed.to_owned())),
+        );
 
-        let content = Column::new()
-            .spacing(8)
-            .push(Row::new().spacing(8).push(picker).push(save_btn))
-            .push(Row::new().spacing(8).push(save_as_input).push(save_as_btn));
+        let content = column![
+            row![picker, save_btn].spacing(8),
+            row![save_as_input, save_as_btn].spacing(8)
+        ]
+        .spacing(8);
 
         section_with_divider("Theme", content)
-    }
-
-    pub(in crate::ui) fn sync_active_theme(&mut self) {
-        let (active, choices) = {
-            let guard = self.settings.borrow();
-            if guard.active_theme() == self.active_theme {
-                return;
-            }
-            (guard.active_theme().to_owned(), guard.theme_store().list())
-        };
-        self.active_theme = active;
-        self.theme_choices = choices;
     }
 
     fn apply_theme(&mut self, name: &str) {
@@ -483,7 +432,6 @@ impl ConfigPage {
             s.data.background_color = Some(bg.into());
             s.data.theme = theme_val;
         });
-        name.clone_into(&mut self.active_theme);
     }
 
     fn save_current_as_theme(&mut self, name: &str) -> Option<String> {
@@ -494,14 +442,28 @@ impl ConfigPage {
         }
 
         let theme_file = self.export_theme(&name);
-        let guard = self.settings.borrow();
-        let store = guard.theme_store();
-        if let Err(e) = store.save(&name, &theme_file) {
+        let saved = self
+            .settings
+            .borrow()
+            .theme_store()
+            .save(&name, &theme_file);
+        if let Err(e) = saved {
             tracing::warn!("[theme] failed to save theme {name:?}: {e}");
             return None;
         }
-        self.theme_choices = store.list();
+        self.refresh_theme_choices();
         Some(name)
+    }
+
+    pub(in crate::ui) fn refresh_theme_choices_if_needed(&mut self) {
+        let active = self.settings.borrow().active_theme().to_owned();
+        if !self.theme_choices.iter().any(|c| c.name == active) {
+            self.refresh_theme_choices();
+        }
+    }
+
+    fn refresh_theme_choices(&mut self) {
+        self.theme_choices = self.settings.borrow().theme_store().list();
     }
 
     fn export_theme(&self, name: &str) -> ThemeFile {
@@ -541,7 +503,7 @@ impl ConfigPage {
             .size(14)
             .text_size(TEXT_SIZE)
             .on_toggle(ConfigMessage::BarModeToggled);
-        let mut content = Column::new().spacing(10).push(bar_toggle);
+        let mut content = column![bar_toggle].spacing(10);
         if bar.enabled {
             content = content
                 .push(
@@ -580,9 +542,8 @@ impl ConfigPage {
     fn render_visuals_section(&self, snapshot: &[VisualSlotSnapshot]) -> Column<'_, ConfigMessage> {
         let enabled = snapshot.iter().filter(|s| s.enabled).count();
         let title = format!("Visual Modules ({enabled}/{})", snapshot.len());
-        let content: Element<'_, ConfigMessage> = if snapshot.is_empty() {
-            text("No visual modules available.").size(TEXT_SIZE).into()
-        } else {
+        section_with_divider(
+            title,
             render_toggle_grid(snapshot, |slot| {
                 (
                     slot.kind.label(),
@@ -592,10 +553,8 @@ impl ConfigPage {
                         enabled: !slot.enabled,
                     },
                 )
-            })
-            .into()
-        };
-        section_with_divider(title, content)
+            }),
+        )
     }
 
     fn update_hardware_sink_label(&mut self, snapshot: &RegistrySnapshot) {
@@ -629,22 +588,23 @@ impl ConfigPage {
             .flat_map(|sink| snapshot.route_candidates(sink))
             .map(|node| {
                 seen.insert(node.id);
-                ApplicationRow::from_node(
-                    node,
-                    self.preferences.get(&node.id).copied().unwrap_or(true),
-                )
+                ApplicationRow::from_node(node)
             })
             .collect();
-        self.preferences.retain(|id, _| seen.contains(id));
-        entries.sort_unstable_by(|a, b| a.sort_key.cmp(&b.sort_key));
+        self.disabled_applications.retain(|id| seen.contains(id));
+        entries.sort_by_cached_key(|entry| (entry.label.to_ascii_lowercase(), entry.node_id));
         self.applications = entries;
     }
 
     fn dispatch_capture_state(&self) {
-        if let Err(err) = self.routing_sender.send(RoutingCommand::SetCaptureState(
-            self.capture_mode,
+        self.send_routing(RoutingCommand::SetCaptureState(
+            self.settings.borrow().data.capture_mode,
             self.selected_device.clone(),
-        )) {
+        ));
+    }
+
+    fn send_routing(&self, command: RoutingCommand) {
+        if let Err(err) = self.routing_sender.send(command) {
             tracing::error!("[ui] failed to send routing command: {err}");
         }
     }
@@ -689,11 +649,12 @@ fn section_with_divider<'a>(
     title: impl Into<String>,
     content: impl Into<Element<'a, ConfigMessage>>,
 ) -> Column<'a, ConfigMessage> {
-    Column::new()
-        .spacing(8)
-        .push(text(title.into()).size(TITLE_SIZE))
-        .push(divider())
-        .push(content)
+    column![
+        text(title.into()).size(TITLE_SIZE),
+        divider(),
+        content.into()
+    ]
+    .spacing(8)
 }
 
 fn radio_row<'a, T: Copy + Eq + std::fmt::Display + 'a>(
@@ -722,16 +683,19 @@ where
             let label = format!("{name} ({})", if enabled { "enabled" } else { "disabled" });
             row = row.push(tab_button(label, enabled, message).width(Length::FillPortion(1)));
         }
-        for _ in chunk.len()..GRID_COLUMNS {
-            row = row.push(
-                Space::new()
-                    .width(Length::FillPortion(1))
-                    .height(Length::Shrink),
-            );
-        }
         grid = grid.push(row);
     }
     grid
+}
+
+fn small_button<'a>(
+    label: &'static str,
+    message: Option<ConfigMessage>,
+) -> iced::widget::Button<'a, ConfigMessage> {
+    button(text(label).size(TEXT_SIZE))
+        .padding([4, 8])
+        .style(|t, s| theme::tab_button_style(t, false, s))
+        .on_press_maybe(message)
 }
 
 fn tab_button<'a>(
