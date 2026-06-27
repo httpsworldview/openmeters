@@ -9,14 +9,13 @@ use super::render::{
     ColumnKind, PendingUpload, RingCopyPlan, SPECTROGRAM_PALETTE_SIZE, SpectrogramParams,
     SpectrogramPrimitive, col_byte_stride,
 };
-use crate::visuals::options::PianoRollOverlay;
-use crate::ui::theme::BORDER_SUBTLE;
-use crate::ui::widgets::scroll_delta_lines;
+use crate::ui::{scroll_delta_lines, theme};
 use crate::util::{
     audio::musical::{MusicalNote, NoteInfo},
     audio::{DB_FLOOR, FrequencyScale, fmt_duration, fmt_freq},
     color::{color_to_rgba, lerp_color, rgba_with_alpha, with_alpha},
 };
+use crate::visuals::options::PianoRollOverlay;
 use crate::visuals::palettes;
 use crate::visuals::render::common::{fill_bordered_rect, fill_rect, make_text, measure_text};
 use iced::advanced::renderer;
@@ -463,7 +462,13 @@ impl<'a> Spectrogram<'a> {
         Self { state }
     }
 
-    fn draw_crosshair(renderer: &mut iced::Renderer, bounds: Rectangle, cursor: Point) {
+    fn draw_crosshair(
+        renderer: &mut iced::Renderer,
+        theme: &iced::Theme,
+        bounds: Rectangle,
+        cursor: Point,
+    ) {
+        let color = theme::border_color(theme, false);
         for rect in [
             Rectangle::new(
                 Point::new(cursor.x, bounds.y),
@@ -471,7 +476,7 @@ impl<'a> Spectrogram<'a> {
             ),
             Rectangle::new(Point::new(bounds.x, cursor.y), Size::new(bounds.width, 1.0)),
         ] {
-            fill_rect(renderer, rect, BORDER_SUBTLE);
+            fill_rect(renderer, rect, color);
         }
     }
 
@@ -511,9 +516,9 @@ impl<'a> Spectrogram<'a> {
             tb,
             with_alpha(pal.background.strong.color, TOOLTIP_BG_ALPHA),
             iced::Border {
-                color: with_alpha(crate::ui::theme::BORDER_SUBTLE, TOOLTIP_BORDER_ALPHA),
+                color: with_alpha(theme::border_color(theme, false), TOOLTIP_BORDER_ALPHA),
                 width: 1.0,
-                radius: 0.0.into(),
+                ..Default::default()
             },
         );
 
@@ -807,7 +812,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
             && bounds.contains(c)
         {
             renderer.with_layer(bounds, |r| {
-                Self::draw_crosshair(r, bounds, c);
+                Self::draw_crosshair(r, theme, bounds, c);
                 self.draw_tooltip(r, theme, bounds, c, uv_y_range);
             });
         }

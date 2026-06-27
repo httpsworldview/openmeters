@@ -134,8 +134,8 @@ The CI workflow currently runs these checks:
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --all-targets -- -D warnings
-cargo test --all-targets
+cargo clippy --workspace --locked --all-targets -- -D warnings
+cargo test --workspace --locked --all-targets
 ```
 
 Please run the same checks before committing. For documentation changes,
@@ -197,7 +197,7 @@ When adding or changing a visual, also check the related wiring:
   export, enablement, ordering, and sample delivery.
 - `src/persistence/visuals.rs` for serializable visual settings and
   lossy parsing.
-- `src/ui/pages/visuals/settings/` for settings panels.
+- `src/ui/settings/` for settings panels.
 - `README.md` if the user-visible behavior changes.
 
 Always use shared render helpers in `src/visuals/render/common.rs`;

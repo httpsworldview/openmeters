@@ -1,3 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later AND MIT
+// Copyright (C) 2026 Maika Namuo
+// Copyright 2019 Hector Ramon, Iced contributors
+//
+// Adapted from iced_widget v0.13.4 pane_grid.
+// See docs/licenses/iced_widget_pane_grid.md for the MIT notice.
+
 use iced::advanced::renderer::{self, Quad};
 use iced::advanced::widget::{
     self,
@@ -8,7 +15,6 @@ use iced::{Background, Element, Event, Length, Point, Rectangle, Size};
 
 use crate::util::color::with_alpha;
 
-// This type is adapted from iced_widget v0.13.4 (MIT License).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Pane(usize);
 
@@ -399,6 +405,7 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer> for PaneGrid
         viewport: &Rectangle,
     ) {
         let interaction = tree.state.downcast_ref::<Interaction>();
+        let accent = theme.extended_palette().primary.base.color;
         for (((pane, content), child), child_layout) in self
             .entries
             .iter()
@@ -417,17 +424,16 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer> for PaneGrid
                 );
             });
             if interaction.dragging.is_some_and(|(p, _)| p == *pane) {
-                let accent = crate::ui::theme::ACCENT_PRIMARY;
                 renderer.fill_quad(
                     Quad {
                         bounds: child_layout.bounds(),
                         border: iced::Border {
-                            radius: iced::border::Radius::default(),
                             width: 2.0,
                             color: with_alpha(accent, 0.9),
+                            ..Default::default()
                         },
-                        shadow: iced::Shadow::default(),
                         snap: true,
+                        ..Default::default()
                     },
                     Background::Color(with_alpha(accent, 0.4)),
                 );
@@ -443,11 +449,10 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer> for PaneGrid
                         Point::new(child.bounds().x + child.bounds().width - 1.0, b.y),
                         Size::new(2.0, b.height),
                     ),
-                    border: iced::Border::default(),
-                    shadow: iced::Shadow::default(),
                     snap: true,
+                    ..Default::default()
                 },
-                Background::Color(with_alpha(crate::ui::theme::ACCENT_PRIMARY, 0.75)),
+                Background::Color(with_alpha(accent, 0.75)),
             );
         }
     }

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::ui::theme::{self, Palette};
-use crate::ui::widgets::{scroll_delta_lines, scroll_glow::ScrollGlow};
+use crate::ui::scroll_delta_lines;
+use crate::ui::theme::{self as ui_theme, Palette};
+use crate::ui::widgets::scroll_glow::ScrollGlow;
 use crate::util::color::{
     EPSILON, STOP_SPREAD_MAX, STOP_SPREAD_MIN, colors_equal, lerp_color, sanitize_stop_positions,
     sanitize_stop_spreads, with_alpha,
@@ -225,7 +226,7 @@ impl PaletteEditor {
         col.push(
             Button::new(clipped_text("Reset to defaults", 12.0))
                 .padding([6, 10])
-                .style(|t, s| theme::tab_button_style(t, false, s))
+                .style(|theme, status| ui_theme::tab_button_style(theme, false, status))
                 .on_press_maybe((!self.is_default()).then_some(PaletteEvent::Reset)),
         )
         .into()
@@ -244,12 +245,12 @@ impl PaletteEditor {
                     container(Space::new().width(Length::Fill).height(Length::Fill))
                         .width(Length::Fixed(w))
                         .height(Length::Fixed(h))
-                        .style(move |_| swatch_style(c, active)),
+                        .style(move |theme| swatch_style(theme, c, active)),
                 )
                 .push(clipped_text(to_hex(c), 11.0)),
         )
         .padding([6, 8])
-        .style(|t, s| theme::tab_button_style(t, false, s))
+        .style(|theme, status| ui_theme::tab_button_style(theme, false, status))
         .on_press(PaletteEvent::Open(i))
         .into()
     }
@@ -263,7 +264,7 @@ impl PaletteEditor {
             .push(
                 Button::new(clipped_text("Done", 12.0))
                     .padding([6, 10])
-                    .style(|t, s| theme::tab_button_style(t, false, s))
+                    .style(|theme, status| ui_theme::tab_button_style(theme, false, status))
                     .on_press(PaletteEvent::Close),
             );
 
@@ -275,7 +276,7 @@ impl PaletteEditor {
             );
         container(col)
             .padding(12)
-            .style(theme::weak_container)
+            .style(ui_theme::weak_container)
             .into()
     }
 }
@@ -289,14 +290,10 @@ fn premultiply_rgb(color: Color) -> Color {
     }
 }
 
-fn swatch_style(color: Color, active: bool) -> container::Style {
+fn swatch_style(theme: &iced::Theme, color: Color, active: bool) -> container::Style {
     container::Style::default()
         .background(Background::Color(premultiply_rgb(color)))
-        .border(if active {
-            theme::focus_border()
-        } else {
-            theme::sharp_border()
-        })
+        .border(ui_theme::border(theme, active))
 }
 
 fn to_hex(c: Color) -> String {
@@ -467,7 +464,7 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for GradientBar<'_> {
         &self,
         _tree: &Tree,
         renderer: &mut iced::Renderer,
-        _theme: &iced::Theme,
+        theme: &iced::Theme,
         _style: &renderer::Style,
         layout: Layout<'_>,
         _cursor: mouse::Cursor,
@@ -506,7 +503,7 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for GradientBar<'_> {
         }
         paint(
             Rectangle::new(bounds.position(), Size::new(bar_w, GRADIENT_BAR_HEIGHT)),
-            theme::sharp_border(),
+            ui_theme::border(theme, false),
             Background::Color(Color::TRANSPARENT),
         );
 
@@ -535,17 +532,12 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for GradientBar<'_> {
                 b: c.b.max(0.12),
                 a: 1.0,
             };
-            let border = if active {
-                theme::focus_border()
-            } else {
-                theme::sharp_border()
-            };
             paint(
                 Rectangle::new(
                     Point::new(x - hw * 0.5, handle_y),
                     Size::new(hw, MARKER_HEIGHT - 1.0),
                 ),
-                border,
+                ui_theme::border(theme, active),
                 Background::Color(fill),
             );
         }
@@ -581,7 +573,7 @@ fn channel_slider<'a>(
                 PaletteEvent::Adjust { index, color: nc }
             })
             .step(0.01)
-            .style(theme::slider_style)
+            .style(ui_theme::slider_style)
             .width(Length::Fill),
         )
         .push(clipped_text(display, 12.0))

@@ -13,19 +13,16 @@ pub use crate::visuals::palettes::{BG_BASE, Palette, background};
 const TEXT_PRIMARY: Color = Color::from_rgba(0.902, 0.910, 0.925, 1.0);
 const TEXT_DARK: Color = Color::from_rgba(0.10, 0.10, 0.10, 1.0);
 
-pub const BORDER_SUBTLE: Color = Color::from_rgba(0.280, 0.288, 0.304, 1.0);
-const BORDER_FOCUS: Color = Color::from_rgba(0.520, 0.536, 0.560, 1.0);
-
-pub(in crate::ui) const ACCENT_PRIMARY: Color = Color::from_rgba(0.157, 0.157, 0.157, 1.0);
+const ACCENT_PRIMARY: Color = Color::from_rgba(0.157, 0.157, 0.157, 1.0);
 const ACCENT_SUCCESS: Color = Color::from_rgba(0.478, 0.557, 0.502, 1.0);
 const ACCENT_DANGER: Color = Color::from_rgba(0.557, 0.478, 0.478, 1.0);
 
 pub fn theme(custom_bg: Option<Color>) -> Theme {
-    Theme::custom_with_fn(
-        "OpenMeters Monochrome".to_string(),
-        palette(custom_bg),
-        Extended::generate,
-    )
+    Theme::custom_with_fn("OpenMeters Monochrome", palette(custom_bg), |base| {
+        let mut extended = Extended::generate(base);
+        extended.background.weak = extended.background.neutral;
+        extended
+    })
 }
 
 fn palette(custom_bg: Option<Color>) -> palette::Palette {
@@ -41,25 +38,23 @@ fn palette(custom_bg: Option<Color>) -> palette::Palette {
         text,
         primary: ACCENT_PRIMARY,
         success: ACCENT_SUCCESS,
-        warning: ACCENT_SUCCESS, // monochrome: no distinct warning color
+        warning: ACCENT_SUCCESS,
         danger: ACCENT_DANGER,
     }
 }
 
-fn border(color: Color) -> Border {
+pub fn border_color(theme: &Theme, emphasized: bool) -> Color {
+    let base = theme.extended_palette().background.base;
+    let mix = if emphasized { 0.58 } else { 0.32 };
+    with_alpha(lerp_color(base.color, base.text, mix), 1.0)
+}
+
+pub fn border(theme: &Theme, emphasized: bool) -> Border {
     Border {
-        color,
+        color: border_color(theme, emphasized),
         width: 1.0,
-        radius: 0.0.into(),
+        ..Default::default()
     }
-}
-
-pub fn sharp_border() -> Border {
-    border(BORDER_SUBTLE)
-}
-
-pub fn focus_border() -> Border {
-    border(BORDER_FOCUS)
 }
 
 fn button_style(theme: &Theme, base: Color, status: button::Status) -> button::Style {
@@ -69,15 +64,10 @@ fn button_style(theme: &Theme, base: Color, status: button::Status) -> button::S
     } else {
         base
     };
-    let border = if status == Pressed {
-        focus_border()
-    } else {
-        sharp_border()
-    };
     button::Style {
         background: Some(Background::Color(bg)),
         text_color: theme.extended_palette().background.base.text,
-        border,
+        border: border(theme, status == Pressed),
         ..Default::default()
     }
 }
@@ -97,7 +87,7 @@ pub fn weak_container(theme: &Theme) -> container::Style {
     container::Style {
         background: Some(Background::Color(palette.background.weak.color)),
         text_color: Some(palette.background.base.text),
-        border: sharp_border(),
+        border: border(theme, false),
         ..Default::default()
     }
 }
@@ -145,21 +135,16 @@ pub fn slider_style(theme: &Theme, status: slider::Status) -> slider::Style {
     let track = lerp_color(palette.background.base.color, Color::WHITE, 0.16);
     let filled = lerp_color(palette.primary.base.color, Color::WHITE, 0.10);
 
-    let border_color = match status {
-        slider::Status::Hovered | slider::Status::Dragged => BORDER_FOCUS,
-        slider::Status::Active => BORDER_SUBTLE,
-    };
-
     slider::Style {
         rail: slider::Rail {
             backgrounds: (Background::Color(filled), Background::Color(track)),
-            border: sharp_border(),
+            border: border(theme, false),
             width: 2.0,
         },
         handle: slider::Handle {
             shape: slider::HandleShape::Circle { radius: 7.0 },
             background: Background::Color(filled),
-            border_color,
+            border_color: border_color(theme, status != slider::Status::Active),
             border_width: 1.0,
         },
     }
