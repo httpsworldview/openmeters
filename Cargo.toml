@@ -1,6 +1,6 @@
 [package]
 name = "openmeters"
-version = "1.7.1"
+version = "1.8.0"
 edition = "2024"
 rust-version = "1.95"
 license = "GPL-3.0-or-later"
