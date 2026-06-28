@@ -124,7 +124,7 @@ fn popout_window(value: Value, scope: &str) -> Option<PopoutWindowSettings> {
 }
 
 pub(crate) trait SettingsConfig: Default {
-    fn from_value_lossy(value: &Value, scope: &str) -> Self;
+    fn from_value_lossy(value: Value, scope: &str) -> Self;
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -155,12 +155,9 @@ impl ModuleSettings {
     }
     pub(crate) fn parse_config<T: SettingsConfig>(&self) -> Option<T> {
         self.config
-            .as_ref()
+            .clone()
             .filter(|value| !value.is_null())
             .map(|value| T::from_value_lossy(value, "config"))
-    }
-    pub(crate) fn config_or_default<T: SettingsConfig>(&self) -> T {
-        self.parse_config().unwrap_or_default()
     }
     pub(crate) fn override_palette(&mut self, palette: Option<&PaletteSettings>) {
         let obj = self
@@ -195,8 +192,8 @@ macro_rules! visual_settings {
             fn set_palette(&mut self, palette: Option<PaletteSettings>) { self.palette = palette; }
         }
         impl SettingsConfig for $name {
-            fn from_value_lossy(value: &Value, scope: &str) -> Self {
-                lossy::settings(value.clone(), scope, Self::default(), |map, out| {
+            fn from_value_lossy(value: Value, scope: &str) -> Self {
+                lossy::settings(value, scope, Self::default(), |map, out| {
                     lossy::fields!(map, out, scope; $($field),*);
                 })
             }

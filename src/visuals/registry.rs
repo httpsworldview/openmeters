@@ -107,7 +107,7 @@ macro_rules! visuals {
             }
 
             fn apply(&mut self, module_cfg: &ModuleSettings) {
-                let $aset: $settings_ty = module_cfg.config_or_default();
+                let $aset: $settings_ty = module_cfg.parse_config().unwrap_or_default();
                 let ($ap, $as) = (&mut self.processor, &self.state);
                 $apply_body
             }
