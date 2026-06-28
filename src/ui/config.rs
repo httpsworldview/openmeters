@@ -86,8 +86,8 @@ impl ApplicationRow {
             .app_name()
             .map(str::to_owned)
             .filter(|name| !name.trim().is_empty())
-            .unwrap_or_else(|| node.display_name());
-        let node_label = node.display_name();
+            .unwrap_or_else(|| node.capture_device_token());
+        let node_label = node.capture_device_token();
         let label = if primary.eq_ignore_ascii_case(&node_label) {
             primary
         } else {

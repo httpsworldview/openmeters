@@ -185,7 +185,7 @@ impl RegistrySnapshot {
         let raw = target.and_then(|t| t.name.as_deref()).unwrap_or("(none)");
         let display = target
             .and_then(|t| self.resolve_default_target(t))
-            .map_or_else(|| raw.to_string(), NodeInfo::display_name);
+            .map_or_else(|| raw.to_string(), NodeInfo::capture_device_token);
         TargetDescription {
             display,
             raw: raw.to_string(),
@@ -282,10 +282,6 @@ impl NodeInfo {
         }
     }
 
-    pub fn display_name(&self) -> String {
-        self.capture_device_token()
-    }
-
     pub fn capture_device_token(&self) -> String {
         self.name
             .as_deref()
@@ -332,27 +328,26 @@ impl NodeInfo {
             && self.app_name().is_some()
     }
 
-    pub fn output_ports_for_loopback(&self) -> Vec<GraphPort> {
+    pub fn output_ports_for_loopback(&self) -> Vec<&GraphPort> {
         self.ports_for_loopback(PortDirection::Output, true)
     }
 
-    pub fn input_ports_for_loopback(&self) -> Vec<GraphPort> {
+    pub fn input_ports_for_loopback(&self) -> Vec<&GraphPort> {
         self.ports_for_loopback(PortDirection::Input, false)
     }
 
-    fn ports_for_loopback(&self, dir: PortDirection, prefer_monitor: bool) -> Vec<GraphPort> {
+    fn ports_for_loopback(&self, dir: PortDirection, prefer_monitor: bool) -> Vec<&GraphPort> {
         for monitor in [Some(prefer_monitor), None] {
             let ports: Vec<_> = self
                 .ports
                 .iter()
                 .filter(|p| p.direction == dir && monitor.is_none_or(|m| p.is_monitor == m))
-                .cloned()
                 .collect();
             if !ports.is_empty() {
                 return ports;
             }
         }
-        self.ports.clone()
+        self.ports.iter().collect()
     }
 }
 

@@ -242,8 +242,8 @@ impl RoutingManager {
                 {
                     info!(
                         "[router] routed '{}' -> '{}'",
-                        node.display_name(),
-                        target.display_name()
+                        node.capture_device_token(),
+                        target.capture_device_token()
                     );
                 }
             } else if self.routed_to.contains_key(&node.id) && self.handle.reset_route(node) {
@@ -268,7 +268,7 @@ impl RoutingManager {
                     .iter()
                     .find(|n| n.id == *id || n.matches_label(label))
             });
-        self.hw_sink_cache = node.map(|n| (n.id, n.display_name()));
+        self.hw_sink_cache = node.map(|n| (n.id, n.capture_device_token()));
         node
     }
 
@@ -288,11 +288,13 @@ impl RoutingManager {
             target.input_ports_for_loopback(),
         );
         if src_ports.is_empty() {
-            debug!("[loopback] no output ports on '{}'", source.display_name());
+            let name = source.capture_device_token();
+            debug!("[loopback] no output ports on '{name}'");
             return None;
         }
         if tgt_ports.is_empty() {
-            debug!("[loopback] no input ports on '{}'", target.display_name());
+            let name = target.capture_device_token();
+            debug!("[loopback] no input ports on '{name}'");
             return None;
         }
 

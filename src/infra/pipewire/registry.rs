@@ -11,10 +11,12 @@ pub use types::{GraphPort, LinkSpec, NodeInfo, RegistrySnapshot};
 #[cfg(test)]
 use types::{AudioChannel, DefaultTarget, MetadataDefaults, PortDirection};
 
-pub fn pair_ports_by_channel(
-    mut sources: Vec<GraphPort>,
-    mut targets: Vec<GraphPort>,
-) -> Vec<(GraphPort, GraphPort)> {
+pub fn pair_ports_by_channel<'a>(
+    sources: impl IntoIterator<Item = &'a GraphPort>,
+    targets: impl IntoIterator<Item = &'a GraphPort>,
+) -> Vec<(&'a GraphPort, &'a GraphPort)> {
+    let mut sources: Vec<_> = sources.into_iter().collect();
+    let mut targets: Vec<_> = targets.into_iter().collect();
     sources.sort_by_key(|p| p.port_id);
     targets.sort_by_key(|p| p.port_id);
 
@@ -25,13 +27,13 @@ pub fn pair_ports_by_channel(
             || (!use_channel && src.port_id == target.port_id)
     };
 
-    let mut pairs = Vec::with_capacity(sources.len().min(targets.len()));
-    for src in sources {
-        if let Some(idx) = targets.iter().position(|target| matches(&src, target)) {
-            pairs.push((src, targets.remove(idx)));
-        }
-    }
-    pairs
+    sources
+        .into_iter()
+        .filter_map(|src| {
+            let idx = targets.iter().position(|&target| matches(src, target))?;
+            Some((src, targets.remove(idx)))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -56,7 +58,7 @@ mod tests {
     #[test]
     fn pair_ports_by_channel_behavior() {
         let ids = |sources, targets| -> Vec<(u32, u32)> {
-            pair_ports_by_channel(ports(sources), ports(targets))
+            pair_ports_by_channel(&ports(sources), &ports(targets))
                 .iter()
                 .map(|(s, t)| (s.port_id, t.port_id))
                 .collect()
@@ -108,7 +110,7 @@ mod tests {
             .map(|(i, c)| port(i as u32, Some(c)))
             .collect();
         assert!(
-            pair_ports_by_channel(src, tgt)
+            pair_ports_by_channel(&src, &tgt)
                 .iter()
                 .all(|(s, t)| s.channel == t.channel)
         );
