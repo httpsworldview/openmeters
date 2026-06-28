@@ -44,7 +44,7 @@ pub mod routing {
 
 pub mod visuals {
     crate::macros::choice_enum!(no_default
-        #[derive(Hash)]
+        #[derive(PartialOrd, Ord)]
         pub enum VisualKind {
             Loudness => "Loudness",
             Oscilloscope => "Oscilloscope",

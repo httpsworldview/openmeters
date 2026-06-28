@@ -21,7 +21,7 @@ use crate::visuals::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use tracing::warn;
 
 fn is_true(value: &bool) -> bool {
@@ -50,12 +50,12 @@ impl Default for PopoutWindowSettings {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct VisualSettings {
-    pub modules: HashMap<VisualKind, ModuleSettings>,
+    pub modules: BTreeMap<VisualKind, ModuleSettings>,
     pub order: Vec<VisualKind>,
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
-    pub width_basis: HashMap<VisualKind, f32>,
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
-    pub popouts: HashMap<VisualKind, PopoutWindowSettings>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub width_basis: BTreeMap<VisualKind, f32>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub popouts: BTreeMap<VisualKind, PopoutWindowSettings>,
 }
 
 impl VisualSettings {
@@ -82,7 +82,7 @@ fn visual_map<T>(
     value: Value,
     scope: &str,
     mut parse: impl FnMut(Value, &str) -> Option<T>,
-) -> HashMap<VisualKind, T> {
+) -> BTreeMap<VisualKind, T> {
     lossy::object(value, scope)
         .unwrap_or_default()
         .into_iter()

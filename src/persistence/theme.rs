@@ -3,7 +3,7 @@
 
 use super::palette::{ColorSetting, PaletteSettings};
 use crate::domain::visuals::VisualKind;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 use tracing::warn;
@@ -48,8 +48,8 @@ pub struct ThemeFile {
     pub author: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub background: Option<ColorSetting>,
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
-    pub palettes: HashMap<VisualKind, PaletteSettings>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub palettes: BTreeMap<VisualKind, PaletteSettings>,
 }
 
 pub struct ThemeStore {
@@ -150,7 +150,7 @@ mod tests {
 
         let theme = ThemeFile {
             name: Some("Test".into()),
-            palettes: HashMap::from([(
+            palettes: BTreeMap::from([(
                 VisualKind::Spectrum,
                 PaletteSettings {
                     stops: vec![Color::WHITE.into(), Color::BLACK.into()],

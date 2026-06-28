@@ -267,7 +267,7 @@ impl UiApp {
 
     pub(super) fn restore_popout_windows(
         &mut self,
-        saved: &std::collections::HashMap<VisualKind, PopoutWindowSettings>,
+        saved: &std::collections::BTreeMap<VisualKind, PopoutWindowSettings>,
     ) -> Task<Message> {
         let order = self.visual_manager.borrow().order();
         Task::batch(order.into_iter().filter_map(|kind| {
