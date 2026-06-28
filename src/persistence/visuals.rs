@@ -269,8 +269,9 @@ visual_settings!(SpectrogramSettings from SpectrogramConfig {
 visual_settings!(StereometerSettings from StereometerConfig {
     segment_duration: f32, target_sample_count: usize, correlation_window: f32,
 } extra {
-    persistence: f32 = 0.0, dot_radius: f32 = 1.5, mode: StereometerMode = StereometerMode::default(),
-    scale: StereometerScale = StereometerScale::default(), scale_range: f32 = 15.0, rotation: i8 = -1, flip: bool = true,
+    dot_radius: f32 = 1.5, mode: StereometerMode = StereometerMode::default(),
+    scale: StereometerScale = StereometerScale::default(), rotation: i8 = -1, flip: bool = true,
+    unipolar: bool = false,
     correlation_meter: CorrelationMeterMode = CorrelationMeterMode::default(),
     correlation_meter_side: CorrelationMeterSide = CorrelationMeterSide::default(),
 });

@@ -14,6 +14,7 @@ pub struct StereometerConfig {
     pub segment_duration: f32,
     pub target_sample_count: usize,
     pub correlation_window: f32,
+    pub analyze_bands: bool,
     pub emit_band_points: bool,
 }
 
@@ -24,8 +25,15 @@ impl Default for StereometerConfig {
             segment_duration: 0.02,
             target_sample_count: 2_000,
             correlation_window: 0.05,
+            analyze_bands: false,
             emit_band_points: false,
         }
+    }
+}
+
+impl StereometerConfig {
+    fn needs_band_analysis(&self) -> bool {
+        self.analyze_bands || self.emit_band_points
     }
 }
 
@@ -44,7 +52,7 @@ pub struct StereometerSnapshot {
     pub band_points: [Vec<(f32, f32)>; 3],
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 struct LR4 {
     feedforward: [[f32; 3]; 2],
     feedback: [[f32; 2]; 2],
@@ -89,7 +97,55 @@ impl LR4 {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
+struct StereoFilter {
+    left: LR4,
+    right: LR4,
+}
+
+impl StereoFilter {
+    fn lowpass(sample_rate: f32, freq: f32) -> Self {
+        let filter = LR4::lowpass(sample_rate, freq);
+        Self { left: filter, right: filter }
+    }
+
+    fn highpass(sample_rate: f32, freq: f32) -> Self {
+        let filter = LR4::highpass(sample_rate, freq);
+        Self { left: filter, right: filter }
+    }
+
+    fn process(&mut self, left: f32, right: f32) -> (f32, f32) {
+        (self.left.process(left), self.right.process(right))
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BandSplitter {
+    low: StereoFilter,
+    above_low: StereoFilter,
+    mid: StereoFilter,
+    high: StereoFilter,
+}
+
+impl BandSplitter {
+    fn new(sample_rate: f32) -> Self {
+        let [low_mid, mid_high] = BAND_SPLITS_HZ;
+        Self {
+            low: StereoFilter::lowpass(sample_rate, low_mid),
+            above_low: StereoFilter::highpass(sample_rate, low_mid),
+            mid: StereoFilter::lowpass(sample_rate, mid_high),
+            high: StereoFilter::highpass(sample_rate, mid_high),
+        }
+    }
+
+    fn split(&mut self, left: f32, right: f32) -> [(f32, f32); 3] {
+        let low = self.low.process(left, right);
+        let (left, right) = self.above_low.process(left, right);
+        [low, self.mid.process(left, right), self.high.process(left, right)]
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 struct Correlator {
     cross: f64,
     left_power: f64,
@@ -98,6 +154,15 @@ struct Correlator {
 }
 
 impl Correlator {
+    fn new(alpha: f64) -> Self {
+        Self {
+            cross: 0.0,
+            left_power: 0.0,
+            right_power: 0.0,
+            alpha,
+        }
+    }
+
     fn update(&mut self, left: f32, right: f32) {
         let (left, right) = (left as f64, right as f64);
         self.cross += self.alpha * (left * right - self.cross);
@@ -107,11 +172,47 @@ impl Correlator {
 
     fn value(&self) -> f32 {
         let denom = (self.left_power * self.right_power).sqrt();
-        if denom < 1e-12 {
-            0.0
-        } else {
-            (self.cross / denom).clamp(-1.0, 1.0) as f32
+        if denom <= 1e-12 {
+            return 0.0;
         }
+        let value = self.cross / denom;
+        if value.is_finite() {
+            value.clamp(-1.0, 1.0) as f32
+        } else {
+            0.0
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Correlators {
+    full: Correlator,
+    bands: [Correlator; 3],
+}
+
+impl Correlators {
+    fn new(config: StereometerConfig) -> Self {
+        let alpha = ema_alpha(config.sample_rate, config.correlation_window);
+        Self {
+            full: Correlator::new(alpha),
+            bands: [Correlator::new(alpha); 3],
+        }
+    }
+
+    fn set_alpha(&mut self, alpha: f64) {
+        self.full.alpha = alpha;
+        for band in &mut self.bands {
+            band.alpha = alpha;
+        }
+    }
+
+    fn reset_bands(&mut self, alpha: f64) {
+        self.bands = [Correlator::new(alpha); 3];
+    }
+
+    fn band_correlation(&self) -> BandCorrelation {
+        let [low, mid, high] = self.bands.each_ref().map(Correlator::value);
+        BandCorrelation { low, mid, high }
     }
 }
 
@@ -122,8 +223,8 @@ pub struct StereometerProcessor {
     history: VecDeque<f32>,
     band_history: [VecDeque<f32>; 3],
     history_channels: usize,
-    crossovers: [LR4; 8],
-    correlators: [Correlator; 4],
+    band_splitter: BandSplitter,
+    correlators: Correlators,
 }
 
 impl StereometerProcessor {
@@ -133,51 +234,10 @@ impl StereometerProcessor {
             history: VecDeque::new(),
             band_history: Default::default(),
             history_channels: 0,
-            crossovers: Self::build_crossovers(config.sample_rate),
-            correlators: Self::fresh_correlators(config),
+            band_splitter: BandSplitter::new(config.sample_rate),
+            correlators: Correlators::new(config),
             config,
         }
-    }
-
-    fn build_crossovers(sample_rate: f32) -> [LR4; 8] {
-        let [low_mid, mid_high] = BAND_SPLITS_HZ;
-        [
-            LR4::lowpass(sample_rate, low_mid),
-            LR4::lowpass(sample_rate, low_mid),
-            LR4::highpass(sample_rate, low_mid),
-            LR4::highpass(sample_rate, low_mid),
-            LR4::lowpass(sample_rate, mid_high),
-            LR4::lowpass(sample_rate, mid_high),
-            LR4::highpass(sample_rate, mid_high),
-            LR4::highpass(sample_rate, mid_high),
-        ]
-    }
-
-    fn split_bands(&mut self, left: f32, right: f32) -> [(f32, f32); 3] {
-        let low = (
-            self.crossovers[0].process(left),
-            self.crossovers[1].process(right),
-        );
-        let rest = (
-            self.crossovers[2].process(left),
-            self.crossovers[3].process(right),
-        );
-        let mid = (
-            self.crossovers[4].process(rest.0),
-            self.crossovers[5].process(rest.1),
-        );
-        let high = (
-            self.crossovers[6].process(rest.0),
-            self.crossovers[7].process(rest.1),
-        );
-        [low, mid, high]
-    }
-
-    fn fresh_correlators(config: StereometerConfig) -> [Correlator; 4] {
-        [Correlator {
-            alpha: ema_alpha(config.sample_rate, config.correlation_window),
-            ..Default::default()
-        }; 4]
     }
 
     pub fn config(&self) -> StereometerConfig {
@@ -199,14 +259,24 @@ impl StereometerProcessor {
             self.history_channels = channel_count;
         }
 
+        let analyze_bands = self.config.needs_band_analysis();
         for frame in block.samples.chunks_exact(channel_count) {
             let (left, right) = (frame[0], frame[1]);
-            self.correlators[0].update(left, right);
+            self.correlators.full.update(left, right);
 
-            for (i, (l, r)) in self.split_bands(left, right).into_iter().enumerate() {
-                self.correlators[i + 1].update(l, r);
-                if self.config.emit_band_points {
-                    self.band_history[i].extend([l, r]);
+            if analyze_bands {
+                let bands = self.band_splitter.split(left, right);
+                for ((correlator, history), (left, right)) in self
+                    .correlators
+                    .bands
+                    .iter_mut()
+                    .zip(&mut self.band_history)
+                    .zip(bands)
+                {
+                    correlator.update(left, right);
+                    if self.config.emit_band_points {
+                        history.extend([left, right]);
+                    }
                 }
             }
         }
@@ -253,19 +323,16 @@ impl StereometerProcessor {
                 buf.reserve(target);
                 for i in 0..target {
                     let idx = (i * frames / target) * BAND_CHANNELS;
-                    buf.push((
-                        data[idx] * BAND_DISPLAY_GAIN,
-                        data[idx + 1] * BAND_DISPLAY_GAIN,
-                    ));
+                    buf.push((data[idx] * BAND_DISPLAY_GAIN, data[idx + 1] * BAND_DISPLAY_GAIN));
                 }
             }
         }
 
-        self.snapshot.correlation = self.correlators[0].value();
-        self.snapshot.band_correlation = BandCorrelation {
-            low: self.correlators[1].value(),
-            mid: self.correlators[2].value(),
-            high: self.correlators[3].value(),
+        self.snapshot.correlation = self.correlators.full.value();
+        self.snapshot.band_correlation = if analyze_bands {
+            self.correlators.band_correlation()
+        } else {
+            BandCorrelation::default()
         };
 
         Some(self.snapshot.clone())
@@ -275,20 +342,28 @@ impl StereometerProcessor {
         *self = Self::new(self.config);
     }
     pub fn update_config(&mut self, config: StereometerConfig) {
-        let sample_rate_changed = audio::sample_rates_differ(self.config.sample_rate, config.sample_rate);
+        let sample_rate_changed =
+            audio::sample_rates_differ(self.config.sample_rate, config.sample_rate);
         let window_changed =
             (self.config.correlation_window - config.correlation_window).abs() > f32::EPSILON;
-        let emit_turned_off = self.config.emit_band_points && !config.emit_band_points;
+        let band_analysis_changed = self.config.needs_band_analysis() != config.needs_band_analysis();
         self.config = config;
 
         if sample_rate_changed {
             self.reset();
-        } else if window_changed {
+        } else {
             let alpha = ema_alpha(config.sample_rate, config.correlation_window);
-            self.correlators.iter_mut().for_each(|c| c.alpha = alpha);
+            if window_changed {
+                self.correlators.set_alpha(alpha);
+            }
+            if band_analysis_changed {
+                self.band_splitter = BandSplitter::new(config.sample_rate);
+                self.correlators.reset_bands(alpha);
+                self.snapshot.band_correlation = BandCorrelation::default();
+            }
         }
 
-        if emit_turned_off {
+        if !config.emit_band_points {
             self.band_history = Default::default();
             self.snapshot.band_points = Default::default();
         }
@@ -297,4 +372,33 @@ impl StereometerProcessor {
 
 fn ema_alpha(sample_rate: f32, window: f32) -> f64 {
     1.0 - (-1.0 / (sample_rate as f64 * window as f64).max(1.0)).exp()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn correlation(pairs: &[(f32, f32)]) -> f32 {
+        let mut meter = Correlator::new(0.5);
+        for &(left, right) in pairs {
+            meter.update(left, right);
+        }
+        meter.value()
+    }
+
+    fn assert_close(a: f32, b: f32) {
+        assert!((a - b).abs() <= 1e-6, "{a} != {b}");
+    }
+
+    #[test]
+    fn correlator_matches_reference_points() {
+        assert_close(correlation(&[(1.0, 1.0), (-1.0, -1.0)]), 1.0);
+        assert_close(correlation(&[(1.0, -1.0), (-1.0, 1.0)]), -1.0);
+        assert_close(correlation(&[(1.0, 0.25), (-1.0, -0.25)]), 1.0);
+        assert_close(
+            correlation(&[(1.0, 0.0), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0)]),
+            0.0,
+        );
+        assert_close(correlation(&[(0.0, 0.0)]), 0.0);
+    }
 }

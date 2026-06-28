@@ -4,7 +4,6 @@
 use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
 
-use super::processor::BandCorrelation;
 use crate::visuals::render::common::sdf_primitive;
 use crate::visuals::options::{
     CorrelationMeterMode, CorrelationMeterSide, StereometerMode, StereometerScale,
@@ -15,29 +14,35 @@ use crate::visuals::render::common::{
     quad_vertices,
 };
 
-pub fn scale_point(scale: StereometerScale, x: f32, y: f32, range: f32) -> (f32, f32) {
-    match scale {
-        StereometerScale::Linear => (x, y),
-        StereometerScale::Exponential => {
-            let len = x.hypot(y);
-            if len < f32::EPSILON { return (0.0, 0.0); }
-            let k = (len.max((-range).exp2()).log2() + range) / (range * len);
-            (k * x, k * y)
-        }
-    }
-}
+const SCALED_MODE_HEADROOM_GAIN: f32 = 0.66834;
+const SCALED_MODE_EXP: f32 = 0.3;
+const LINEAR_GUIDE_LEVELS: [f32; 3] = [1.0 / 3.0, 2.0 / 3.0, 1.0];
+// -48, -24, -12, and 0 dBFS.
+const SCALED_GUIDE_LEVELS: [f32; 4] = [0.0039810717, 0.06309573, 0.25118864, 1.0];
+const GRID_SEGMENTS: usize = 16;
+const GRID_LINE_WIDTH: f32 = 1.0;
+const GRID_CORNERS: [(f32, f32); 4] = [(1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0)];
+const GRID_AXES: [((f32, f32), (f32, f32)); 2] =
+    [((1.0, 1.0), (-1.0, -1.0)), ((1.0, -1.0), (-1.0, 1.0))];
 
 const CORR_W: f32 = 28.0;
 const CORR_PAD: f32 = 4.0;
 const CORR_VPAD: f32 = 16.0;
 const CORR_EDGE: f32 = 6.0;
 const BAND_GAP: f32 = 2.0;
-const GRID_RINGS: usize = 3;
-const GRID_SEGMENTS: usize = 16;
-const GRID_LINE_WIDTH: f32 = 1.0;
-const GRID_CORNERS: [(f32, f32); 4] = [(1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0)];
-const GRID_AXES: [((f32, f32), (f32, f32)); 2] =
-    [((1.0, 1.0), (-1.0, -1.0)), ((1.0, -1.0), (-1.0, 1.0))];
+
+fn scaled_radius(len: f32) -> f32 {
+    len.powf(SCALED_MODE_EXP).min(1.0)
+}
+
+fn scaled_point(x: f32, y: f32) -> (f32, f32) {
+    let len = x.hypot(y);
+    if len < f32::EPSILON {
+        return (0.0, 0.0);
+    }
+    let radius = scaled_radius(len * SCALED_MODE_HEADROOM_GAIN);
+    (x * radius / len, y * radius / len)
+}
 
 #[derive(Debug, Clone)]
 pub struct StereometerParams {
@@ -48,111 +53,189 @@ pub struct StereometerParams {
     pub palette: [[f32; 4]; 9],
     pub mode: StereometerMode,
     pub scale: StereometerScale,
-    pub scale_range: f32,
     pub dot_radius: f32,
     pub rotation: i8,
     pub flip: bool,
+    pub unipolar: bool,
     pub correlation_meter: CorrelationMeterMode,
     pub correlation_meter_side: CorrelationMeterSide,
     pub corr_trail: Vec<f32>,
-    pub band_trail: Vec<BandCorrelation>,
+    pub band_trail: [Vec<f32>; 3],
 }
 
-struct VecTransform {
+#[derive(Debug, Clone, Copy)]
+struct Projection {
     cx: f32,
     cy: f32,
     sin_t: f32,
     cos_t: f32,
-    rot_scale: f32,
+    fit: f32,
     radius: f32,
     flip: bool,
+    unipolar: bool,
     scale: StereometerScale,
-    scale_range: f32,
 }
 
-impl VecTransform {
-    fn new(p: &StereometerParams, bounds: Rectangle) -> Self {
-        let (cx, cy) = (
-            bounds.x + bounds.width * 0.5,
-            bounds.y + bounds.height * 0.5,
-        );
-        let (sin_t, cos_t) = (f32::from(p.rotation) * std::f32::consts::FRAC_PI_4).sin_cos();
-        let corner_k = match p.scale {
-            StereometerScale::Linear => 1.0,
-            StereometerScale::Exponential => {
-                let r = p.scale_range.max(f32::EPSILON);
-                (0.5 + r) / (r * std::f32::consts::SQRT_2)
-            }
+impl Projection {
+    fn from_params(p: &StereometerParams, bounds: Rectangle) -> Self {
+        let scale = if p.mode == StereometerMode::Lissajous {
+            StereometerScale::Linear
+        } else {
+            p.scale
         };
-        let axis_extent = cos_t.abs().max(sin_t.abs());
-        let corner_extent = corner_k * (cos_t.abs() + sin_t.abs());
-        let rot_scale = 1.0 / axis_extent.max(corner_extent).max(f32::EPSILON);
-        let radius = (bounds.width.min(bounds.height) * 0.5) - 2.0;
+        Self::new(scale, p.rotation, p.flip, p.unipolar, bounds)
+    }
+
+    fn new(
+        scale: StereometerScale,
+        rotation: i8,
+        flip: bool,
+        unipolar: bool,
+        bounds: Rectangle,
+    ) -> Self {
+        let half_w = bounds.width * 0.5;
+        let half_h = bounds.height * 0.5;
+        let cx = bounds.x + half_w;
+        let (cy, extent) = if unipolar {
+            (bounds.y + bounds.height, half_w.min(bounds.height))
+        } else {
+            (bounds.y + half_h, half_w.min(half_h))
+        };
+        let (sin_t, cos_t) = (f32::from(rotation) * std::f32::consts::FRAC_PI_4).sin_cos();
+        let fit = match scale {
+            StereometerScale::Linear => 1.0 / (cos_t.abs() + sin_t.abs()).max(f32::EPSILON),
+            StereometerScale::Scaled => 1.0,
+        };
         Self {
             cx,
             cy,
             sin_t,
             cos_t,
-            rot_scale,
-            radius,
-            flip: p.flip,
-            scale: p.scale,
-            scale_range: p.scale_range,
+            fit,
+            radius: (extent - 2.0).max(0.0),
+            flip,
+            unipolar,
+            scale,
         }
     }
 
-    fn project(&self, l: f32, r: f32) -> (f32, f32) {
-        let (l, r) = scale_point(self.scale, l, r, self.scale_range);
-        self.apply_rotation(l, r)
+    fn project(self, l: f32, r: f32) -> (f32, f32) {
+        let (x, y) = self.unit(l, r);
+        let point = if self.unipolar && y > 0.0 {
+            (-x, -y)
+        } else {
+            (x, y)
+        };
+        self.to_screen(point)
     }
 
-    fn apply_rotation(&self, l: f32, r: f32) -> (f32, f32) {
+    fn segment(self, a: (f32, f32), b: (f32, f32)) -> Option<((f32, f32), (f32, f32))> {
+        let (a, b) = (self.unit(a.0, a.1), self.unit(b.0, b.1));
+        let (a, b) = if self.unipolar {
+            clip_segment_to_visible_unipolar_half(a, b)?
+        } else {
+            (a, b)
+        };
+        Some((self.to_screen(a), self.to_screen(b)))
+    }
+
+    fn rotated(self, l: f32, r: f32) -> (f32, f32) {
         let (l, r) = if self.flip { (r, l) } else { (l, r) };
-        let l = l * self.rot_scale;
-        let r = r * self.rot_scale;
-        (
-            self.cx + (l * self.cos_t + r * self.sin_t) * self.radius,
-            self.cy + (l * self.sin_t - r * self.cos_t) * self.radius,
-        )
+        (l * self.cos_t + r * self.sin_t, l * self.sin_t - r * self.cos_t)
+    }
+
+    fn unit(self, l: f32, r: f32) -> (f32, f32) {
+        let (x, y) = self.rotated(l, r);
+        match self.scale {
+            StereometerScale::Linear => (x * self.fit, y * self.fit),
+            StereometerScale::Scaled => scaled_point(x, y),
+        }
+    }
+
+    fn to_screen(self, (x, y): (f32, f32)) -> (f32, f32) {
+        (self.cx + x * self.radius, self.cy + y * self.radius)
+    }
+}
+
+fn clip_segment_to_visible_unipolar_half(
+    mut a: (f32, f32),
+    mut b: (f32, f32),
+) -> Option<((f32, f32), (f32, f32))> {
+    let a_outside = a.1 > 0.0;
+    let b_outside = b.1 > 0.0;
+
+    if a_outside && b_outside {
+        return None;
+    }
+    if a_outside || b_outside {
+        let boundary_fraction = a.1 / (a.1 - b.1);
+        let boundary = (lerp(a.0, b.0, boundary_fraction), 0.0);
+        if a_outside {
+            a = boundary;
+        } else {
+            b = boundary;
+        }
+    }
+    Some((a, b))
+}
+
+fn projected_line(
+    out: &mut Vec<SdfVertex>,
+    projection: Projection,
+    a: (f32, f32),
+    b: (f32, f32),
+    color: [f32; 4],
+    clip: ClipTransform,
+) {
+    for seg in 0..GRID_SEGMENTS {
+        let t0 = seg as f32 / GRID_SEGMENTS as f32;
+        let t1 = (seg + 1) as f32 / GRID_SEGMENTS as f32;
+        if let Some((p0, p1)) = projection.segment(
+            (lerp(a.0, b.0, t0), lerp(a.1, b.1, t0)),
+            (lerp(a.0, b.0, t1), lerp(a.1, b.1, t1)),
+        ) {
+            out.extend(line_vertices(p0, p1, color, color, GRID_LINE_WIDTH, clip));
+        }
     }
 }
 
 impl StereometerPrimitive {
-    fn add_grid_vertices(&self, vertices: &mut Vec<SdfVertex>, t: &VecTransform, clip: ClipTransform) {
-        let grid_color = self.params.palette[8];
-        if grid_color[3] < f32::EPSILON {
+    fn add_grid_vertices(
+        &self,
+        vertices: &mut Vec<SdfVertex>,
+        projection: Projection,
+        clip: ClipTransform,
+    ) {
+        let color = self.params.palette[8];
+        if color[3] < f32::EPSILON {
             return;
         }
-        let mut draw_line = |(ax, ay): (f32, f32), (bx, by): (f32, f32)| {
-            for seg in 0..GRID_SEGMENTS {
-                let t0 = seg as f32 / GRID_SEGMENTS as f32;
-                let t1 = (seg + 1) as f32 / GRID_SEGMENTS as f32;
-                let p0 = t.project(lerp(ax, bx, t0), lerp(ay, by, t0));
-                let p1 = t.project(lerp(ax, bx, t1), lerp(ay, by, t1));
-                vertices.extend(line_vertices(
-                    p0,
-                    p1,
-                    grid_color,
-                    grid_color,
-                    GRID_LINE_WIDTH,
-                    clip,
-                ));
-            }
-        };
 
-        for ring in 1..=GRID_RINGS {
-            let frac = ring as f32 / GRID_RINGS as f32;
-            let radius = match t.scale {
-                StereometerScale::Linear => frac,
-                StereometerScale::Exponential => (t.scale_range * (frac - 1.0)).exp2(),
-            };
+        let levels: &[f32] = match projection.scale {
+            StereometerScale::Linear => &LINEAR_GUIDE_LEVELS,
+            StereometerScale::Scaled => &SCALED_GUIDE_LEVELS,
+        };
+        for &radius in levels {
             for (edge, &(x, y)) in GRID_CORNERS.iter().enumerate() {
                 let (nx, ny) = GRID_CORNERS[(edge + 1) % GRID_CORNERS.len()];
-                draw_line((x * radius, y * radius), (nx * radius, ny * radius));
+                projected_line(
+                    vertices,
+                    projection,
+                    (x * radius, y * radius),
+                    (nx * radius, ny * radius),
+                    color,
+                    clip,
+                );
             }
         }
-        for (start, end) in GRID_AXES {
-            draw_line(start, end);
+
+        let axes = if self.params.mode == StereometerMode::Lissajous {
+            &GRID_AXES[..1]
+        } else {
+            &GRID_AXES[..]
+        };
+        for &(start, end) in axes {
+            projected_line(vertices, projection, start, end, color, clip);
         }
     }
 
@@ -188,7 +271,7 @@ impl StereometerPrimitive {
     fn add_trace_vertices(
         out: &mut Vec<SdfVertex>,
         p: &StereometerParams,
-        t: &VecTransform,
+        projection: Projection,
         clip: ClipTransform,
     ) {
         let [cr, cg, cb, ca] = p.palette[0];
@@ -198,32 +281,33 @@ impl StereometerPrimitive {
             StereometerMode::DotCloud => {
                 let count = p.points.len() as f32;
                 out.extend(p.points.iter().enumerate().flat_map(|(i, &(l, r))| {
-                    let (px, py) = t.apply_rotation(l, r);
+                    let (px, py) = projection.project(l, r);
                     let alpha = ca * (i + 1) as f32 / count;
                     dot_vertices(px, py, dot_r, [cr, cg, cb, alpha], clip, false)
                 }));
             }
-            StereometerMode::Lissajous if p.points.len() >= 2 => {
-                let last = (p.points.len() - 1) as f32;
-                out.extend(p.points.windows(2).enumerate().flat_map(|(i, w)| {
-                    let p0 = t.apply_rotation(w[0].0, w[0].1);
-                    let p1 = t.apply_rotation(w[1].0, w[1].1);
-                    let (t0, t1) = (i as f32 / last, (i + 1) as f32 / last);
-                    line_vertices(p0, p1, [cr, cg, cb, ca * t0], [cr, cg, cb, ca * t1], 1.5, clip)
-                }));
+            StereometerMode::Lissajous => {
+                if p.points.len() >= 2 {
+                    let last = (p.points.len() - 1) as f32;
+                    out.extend(p.points.windows(2).enumerate().flat_map(|(i, w)| {
+                        let p0 = projection.project(w[0].0, w[0].1);
+                        let p1 = projection.project(w[1].0, w[1].1);
+                        let (t0, t1) = (i as f32 / last, (i + 1) as f32 / last);
+                        line_vertices(p0, p1, [cr, cg, cb, ca * t0], [cr, cg, cb, ca * t1], 1.5, clip)
+                    }));
+                }
             }
             StereometerMode::DotCloudBands => {
-                for (band, pts) in p.band_points.iter().enumerate() {
+                for (pts, color) in p.band_points.iter().zip(&p.palette[5..8]) {
                     let count = pts.len() as f32;
-                    let [cr, cg, cb, ca] = p.palette[5 + band];
+                    let [cr, cg, cb, ca] = *color;
                     out.extend(pts.iter().enumerate().flat_map(|(i, &(l, r))| {
-                        let (px, py) = t.apply_rotation(l, r);
+                        let (px, py) = projection.project(l, r);
                         let factor = ca * (i + 1) as f32 / count;
                         dot_vertices(px, py, dot_r, [cr * factor, cg * factor, cb * factor, 0.0], clip, true)
                     }));
                 }
             }
-            StereometerMode::Lissajous => {}
         }
     }
 
@@ -234,44 +318,29 @@ impl StereometerPrimitive {
         bounds: Rectangle,
         clip: ClipTransform,
     ) {
-        let is_single = p.correlation_meter == CorrelationMeterMode::SingleBand;
-        let (bars, gap) = if is_single { (1, 0.0) } else { (3, BAND_GAP) };
+        let multi_band = match p.correlation_meter {
+            CorrelationMeterMode::Off => return,
+            CorrelationMeterMode::SingleBand => false,
+            CorrelationMeterMode::MultiBand => true,
+        };
+        let bars = if multi_band { p.band_trail.len() } else { 1 };
+        let gap = if multi_band { BAND_GAP } else { 0.0 };
         let bar_w = (CORR_W - gap * (bars - 1) as f32) / bars as f32;
-        let corr_cy = bounds.y + bounds.height * 0.5;
         let half_h = bounds.height * 0.5;
+        let corr_cy = bounds.y + half_h;
         let val_y = |val: f32| corr_cy - val.clamp(-1.0, 1.0) * half_h;
-
         let y_min = bounds.y as i32;
         let height = (bounds.height as i32 + 1).max(0) as usize;
         let y_max = y_min + height as i32 - 1;
 
-        let trail_len = if is_single {
-            p.corr_trail.len()
-        } else {
-            p.band_trail.len()
-        };
-        let val = |band: usize, i: usize| {
-            if is_single {
-                p.corr_trail[i]
-            } else {
-                match band {
-                    0 => p.band_trail[i].low,
-                    1 => p.band_trail[i].mid,
-                    _ => p.band_trail[i].high,
-                }
-            }
-        };
-        let color_for = |band: usize, value: f32| {
-            if is_single {
-                p.palette[if value < 0.0 { 4 } else { 3 }]
-            } else {
-                p.palette[5 + band]
-            }
-        };
-
         for band in 0..bars {
             let bx = bounds.x + band as f32 * (bar_w + gap);
             let (x0, x1) = (bx + 1.0, bx + bar_w - 1.0);
+            let trail: &[f32] = if multi_band {
+                &p.band_trail[band]
+            } else {
+                &p.corr_trail
+            };
 
             out.extend(quad_vertices(
                 bx,
@@ -290,44 +359,42 @@ impl StereometerPrimitive {
                 p.palette[2],
             ));
 
-            if trail_len > 1 {
-                alpha.resize(height, 0.0);
-                alpha.fill(0.0);
-                for j in 0..trail_len - 1 {
-                    let a = (1.0 - (j + 1) as f32 / trail_len as f32).powf(2.4);
-                    if a <= 0.0 {
-                        continue;
-                    }
-                    let (y0, y1) = (val_y(val(band, j)), val_y(val(band, j + 1)));
-                    let (top, bot) = (y0.min(y1) as i32, (y0.max(y1) + 2.0) as i32);
-                    for sy in top.max(y_min)..=bot.min(y_max) {
-                        let idx = (sy - y_min) as usize;
-                        alpha[idx] = alpha[idx].max(a);
-                    }
-                }
-                let base = color_for(band, val(band, 0));
-                for (k, w) in alpha.windows(2).enumerate() {
-                    if w[0] > 0.0 || w[1] > 0.0 {
-                        let (mut c0, mut c1) = (base, base);
-                        c0[3] *= w[0];
-                        c1[3] *= w[1];
-                        let y = (y_min + k as i32) as f32;
-                        out.extend(gradient_quad_vertices(x0, y, x1, y + 1.0, clip, c0, c1));
-                    }
-                }
-            }
+            if let Some(&current) = trail.first() {
+                let base = if multi_band {
+                    p.palette[5 + band]
+                } else {
+                    p.palette[if current < 0.0 { 4 } else { 3 }]
+                };
 
-            if trail_len > 0 {
-                let current = val(band, 0);
+                if trail.len() > 1 {
+                    alpha.resize(height, 0.0);
+                    alpha.fill(0.0);
+                    let trail_len = trail.len() as f32;
+                    for (j, pair) in trail.windows(2).enumerate() {
+                        let a = (1.0 - (j + 1) as f32 / trail_len).powf(2.4);
+                        if a <= 0.0 {
+                            continue;
+                        }
+                        let (y0, y1) = (val_y(pair[0]), val_y(pair[1]));
+                        let (top, bot) = (y0.min(y1) as i32, (y0.max(y1) + 2.0) as i32);
+                        for sy in top.max(y_min)..=bot.min(y_max) {
+                            let idx = (sy - y_min) as usize;
+                            alpha[idx] = alpha[idx].max(a);
+                        }
+                    }
+                    for (k, w) in alpha.windows(2).enumerate() {
+                        if w[0] > 0.0 || w[1] > 0.0 {
+                            let (mut c0, mut c1) = (base, base);
+                            c0[3] *= w[0];
+                            c1[3] *= w[1];
+                            let y = (y_min + k as i32) as f32;
+                            out.extend(gradient_quad_vertices(x0, y, x1, y + 1.0, clip, c0, c1));
+                        }
+                    }
+                }
+
                 let y = val_y(current);
-                out.extend(quad_vertices(
-                    x0,
-                    y - 1.0,
-                    x1,
-                    y + 1.0,
-                    clip,
-                    color_for(band, current),
-                ));
+                out.extend(quad_vertices(x0, y - 1.0, x1, y + 1.0, clip, base));
             }
         }
     }
@@ -336,12 +403,84 @@ impl StereometerPrimitive {
         let clip = ClipTransform::from_viewport(viewport);
         let p = &self.params;
         let (vec_bounds, corr_bounds) = Self::meter_bounds(p);
-        let transform = VecTransform::new(p, vec_bounds);
+        let projection = Projection::from_params(p, vec_bounds);
         let vertices = &mut scratch.vertices;
-        self.add_grid_vertices(vertices, &transform, clip);
-        Self::add_trace_vertices(vertices, p, &transform, clip);
+        self.add_grid_vertices(vertices, projection, clip);
+        Self::add_trace_vertices(vertices, p, projection, clip);
         if let Some(bounds) = corr_bounds {
             Self::add_correlation_vertices(vertices, &mut scratch.scalars, p, bounds, clip);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use StereometerScale::{Linear, Scaled};
+
+    const EPS: f32 = 1e-4;
+    const BOUNDS: Rectangle = Rectangle {
+        x: 0.0,
+        y: 0.0,
+        width: 200.0,
+        height: 100.0,
+    };
+    const FULL_SCALE: [(f32, f32); 6] = [
+        (-1.0, -1.0),
+        (-1.0, 1.0),
+        (1.0, -1.0),
+        (1.0, 1.0),
+        (1.0, 0.0),
+        (0.0, 1.0),
+    ];
+
+    fn assert_close((ax, ay): (f32, f32), (bx, by): (f32, f32)) {
+        assert!((ax - bx).abs() <= EPS && (ay - by).abs() <= EPS, "({ax}, {ay}) != ({bx}, {by})");
+    }
+
+    fn assert_inside((x, y): (f32, f32)) {
+        assert!(
+            (-EPS..=BOUNDS.width + EPS).contains(&x) && (-EPS..=BOUNDS.height + EPS).contains(&y),
+            "({x}, {y}) outside {BOUNDS:?}"
+        );
+    }
+
+    #[test]
+    fn projection_centers_fits_and_flips() {
+        assert!(scaled_radius(std::f32::consts::SQRT_2 * SCALED_MODE_HEADROOM_GAIN) < 1.0);
+
+        for scale in [Linear, Scaled] {
+            for rotation in -4_i8..=4 {
+                for unipolar in [false, true] {
+                    let normal = Projection::new(scale, rotation, false, unipolar, BOUNDS);
+                    let flipped = Projection::new(scale, rotation, true, unipolar, BOUNDS);
+
+                    for p in [normal, flipped] {
+                        assert_close(p.project(0.0, 0.0), (p.cx, p.cy));
+                        for (l, r) in FULL_SCALE {
+                            assert_inside(p.project(l, r));
+                        }
+                    }
+
+                    for (l, r) in [(-0.75, 0.25), (0.2, -0.9), (1.0, 0.0)] {
+                        assert_close(flipped.project(l, r), normal.project(r, l));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn unipolar_clip_rejects_hidden_segments_and_trims_crossings() {
+        assert!(clip_segment_to_visible_unipolar_half((-1.0, 1.0), (1.0, 1.0)).is_none());
+
+        for (input, expected) in [
+            (((-1.0, -1.0), (1.0, 1.0)), ((-1.0, -1.0), (0.0, 0.0))),
+            (((-1.0, 1.0), (1.0, -1.0)), ((0.0, 0.0), (1.0, -1.0))),
+        ] {
+            let got = clip_segment_to_visible_unipolar_half(input.0, input.1).unwrap();
+            assert_close(got.0, expected.0);
+            assert_close(got.1, expected.1);
         }
     }
 }

@@ -98,7 +98,7 @@ pub mod options {
         #[default] DotCloud => "Dot Cloud",
         DotCloudBands => "Dot Cloud (Bands)",
     });
-    crate::macros::choice_enum!(all pub enum StereometerScale { Linear => "Linear", #[default] Exponential => "Exponential" });
+    crate::macros::choice_enum!(all pub enum StereometerScale { Linear => "Linear", #[default] #[serde(alias = "exponential")] Scaled => "Scaled" });
     crate::macros::choice_enum!(all pub enum CorrelationMeterMode { Off => "Off", SingleBand => "Single Band", #[default] MultiBand => "Multi Band" });
     crate::macros::choice_enum!(all pub enum CorrelationMeterSide { Left => "Left", #[default] Right => "Right" });
     crate::macros::choice_enum!(all pub enum PianoRollOverlay { #[default] Off => "Off", Right => "Right", Left => "Left" });

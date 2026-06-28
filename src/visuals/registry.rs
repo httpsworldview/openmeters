@@ -3,7 +3,7 @@
 
 use super::{
     loudness,
-    options::{StereometerMode, WaveformColorMode, WaveformHistoryMode},
+    options::{CorrelationMeterMode, StereometerMode, WaveformColorMode, WaveformHistoryMode},
     oscilloscope, palettes,
     spectrogram::{self, processor::MAX_SPECTROGRAM_HISTORY_COLUMNS},
     spectrum, stereometer, waveform,
@@ -232,6 +232,8 @@ visuals! {
             let mut cfg = p.config();
             set.apply_to(&mut cfg);
             cfg.emit_band_points = set.mode == StereometerMode::DotCloudBands;
+            cfg.analyze_bands = cfg.emit_band_points
+                || set.correlation_meter == CorrelationMeterMode::MultiBand;
             p.update_config(cfg);
             let mut st = s.borrow_mut();
             st.update_view_settings(&set);

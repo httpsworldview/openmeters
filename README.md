@@ -87,10 +87,10 @@ open an issue or pull request.
 - **Stereometer**
   - L/R vector display in Lissajous or dot-cloud modes.
   - Frequency-band dot-cloud mode with low/mid/high bands.
-  - Single-band or low/mid/high correlation meter.
+  - Single-band or low/mid/high phase-correlation meter.
   - Adjustable correlation window.
-  - Adjustable scale, rotation, channel flip, dot size, persistence,
-    and grid.
+  - Adjustable dot-cloud scale, rotation, channel flip, unipolar fold,
+    dot size, and grid.
 - **Waveform**
   - Selectable left, right, mid/mono, side, or `none` channel lanes.
   - Adjustable scroll speed.
