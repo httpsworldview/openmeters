@@ -257,9 +257,11 @@ impl BandTracker {
     }
 }
 
-fn derived_frame(frame: &[f32], channels: usize) -> [f32; DERIVED_CHANNELS] {
-    let (left, right) = (frame[0], frame[1]);
-    [left, right, frame.iter().sum::<f32>() / channels as f32, (left - right) * 0.5]
+fn derived_frame(frame: &[f32]) -> [f32; DERIVED_CHANNELS] {
+    let left = frame[0];
+    let right = frame.get(1).copied().unwrap_or(left);
+    let side = if frame.len() > 1 { (left - right) * 0.5 } else { 0.0 };
+    [left, right, frame.iter().sum::<f32>() / frame.len() as f32, side]
 }
 
 fn process_bands(
@@ -382,26 +384,9 @@ impl WaveformProcessor {
 
     fn ingest_samples(&mut self, samples: &[f32], channels: usize) {
         let step = (self.config.scroll_speed / self.config.sample_rate).clamp(0.0, 1.0);
-        match channels {
-            1 => {
-                for &left in samples {
-                    let finite = left.is_finite();
-                    self.ingest_frame([left, left, left, 0.0], [finite, finite, finite, true], step);
-                }
-            }
-            2 => {
-                for frame in samples.chunks_exact(2) {
-                    let (left, right) = (frame[0], frame[1]);
-                    let derived = [left, right, (left + right) * 0.5, (left - right) * 0.5];
-                    self.ingest_frame(derived, derived.map(f32::is_finite), step);
-                }
-            }
-            _ => {
-                for frame in samples.chunks_exact(channels) {
-                    let derived = derived_frame(frame, channels);
-                    self.ingest_frame(derived, derived.map(f32::is_finite), step);
-                }
-            }
+        for frame in samples.chunks_exact(channels) {
+            let derived = derived_frame(frame);
+            self.ingest_frame(derived, derived.map(f32::is_finite), step);
         }
     }
 
