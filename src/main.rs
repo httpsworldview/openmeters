@@ -42,12 +42,12 @@ fn main() -> ExitCode {
 
     virtual_sink::run();
 
-    let ui_config = UiConfig::new(
-        routing_tx,
-        registry_thread.as_ref().map(|_| Arc::new(snapshot_rx)),
-        meter_tap::audio_sample_stream(),
-        settings_handle.clone(),
-    );
+    let ui_config = UiConfig {
+        routing_sender: routing_tx,
+        registry_updates: registry_thread.is_some().then(|| Arc::new(snapshot_rx)),
+        audio_frames: meter_tap::audio_sample_stream(),
+        settings_handle: settings_handle.clone(),
+    };
 
     let exit_code = match ui::run(ui_config) {
         Ok(()) => ExitCode::SUCCESS,

@@ -20,4 +20,4 @@ pub(crate) fn scroll_delta_lines(delta: iced::advanced::mouse::ScrollDelta) -> f
     }
 }
 
-pub use app::{UiConfig, run};
+pub(crate) use app::{UiConfig, run};

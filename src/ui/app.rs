@@ -47,30 +47,14 @@ const BAR_RESIZE_HANDLE_THICKNESS: f32 = 6.0;
 const DRAWER_RESIZE_HANDLE_WIDTH: f32 = 6.0;
 
 #[derive(Clone)]
-pub struct UiConfig {
-    routing_sender: mpsc::Sender<RoutingCommand>,
-    registry_updates: Option<Arc<AsyncReceiver<RegistrySnapshot>>>,
-    audio_frames: Arc<AsyncReceiver<AudioBatch>>,
-    settings_handle: SettingsHandle,
+pub(crate) struct UiConfig {
+    pub(crate) routing_sender: mpsc::Sender<RoutingCommand>,
+    pub(crate) registry_updates: Option<Arc<AsyncReceiver<RegistrySnapshot>>>,
+    pub(crate) audio_frames: Arc<AsyncReceiver<AudioBatch>>,
+    pub(crate) settings_handle: SettingsHandle,
 }
 
-impl UiConfig {
-    pub fn new(
-        routing_sender: mpsc::Sender<RoutingCommand>,
-        registry_updates: Option<Arc<AsyncReceiver<RegistrySnapshot>>>,
-        audio_frames: Arc<AsyncReceiver<AudioBatch>>,
-        settings_handle: SettingsHandle,
-    ) -> Self {
-        Self {
-            routing_sender,
-            registry_updates,
-            audio_frames,
-            settings_handle,
-        }
-    }
-}
-
-pub fn run(config: UiConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+pub(crate) fn run(config: UiConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if layershell_available() {
         let layer_settings = LayerShellSettings {
             start_mode: StartMode::Background,
