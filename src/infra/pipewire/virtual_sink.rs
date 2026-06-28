@@ -11,7 +11,7 @@ use std::error::Error;
 use std::io::{self, Cursor};
 use std::mem::size_of;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Condvar, LazyLock, Mutex, PoisonError};
 use std::thread;
 use std::time::Duration;
 use tracing::{error, info, warn};
@@ -24,7 +24,8 @@ const CAPTURE_POOL_SPARE_BUFFERS: usize = 8;
 const DESIRED_LATENCY_FRAMES: u32 = 256;
 
 static SINK_THREAD: Mutex<Option<thread::JoinHandle<()>>> = Mutex::new(None);
-static CAPTURE_BUFFER: OnceLock<Arc<CaptureBuffer>> = OnceLock::new();
+static CAPTURE_BUFFER: LazyLock<Arc<CaptureBuffer>> =
+    LazyLock::new(|| Arc::new(CaptureBuffer::new(CAPTURE_BUFFER_CAPACITY)));
 
 #[derive(Debug, Clone)]
 pub struct CapturedAudio {
@@ -263,7 +264,7 @@ fn convert_samples_to_f32_into(
 }
 
 pub fn run() {
-    ensure_capture_buffer();
+    LazyLock::force(&CAPTURE_BUFFER);
 
     let mut sink_thread = SINK_THREAD.lock().unwrap_or_else(PoisonError::into_inner);
     if sink_thread.is_none() {
@@ -280,7 +281,7 @@ pub fn run() {
 }
 
 pub fn capture_buffer_handle() -> Arc<CaptureBuffer> {
-    ensure_capture_buffer().clone()
+    Arc::clone(&CAPTURE_BUFFER)
 }
 
 struct VirtualSinkState {
@@ -455,10 +456,6 @@ fn build_format_pod(rate: u32) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> 
     )?;
 
     Ok(cursor.into_inner())
-}
-
-fn ensure_capture_buffer() -> &'static Arc<CaptureBuffer> {
-    CAPTURE_BUFFER.get_or_init(|| Arc::new(CaptureBuffer::new(CAPTURE_BUFFER_CAPACITY)))
 }
 
 #[cfg(test)]

@@ -3,7 +3,7 @@
 
 use super::virtual_sink::{self, CaptureBuffer};
 use async_channel::{Receiver as AsyncReceiver, Sender as AsyncSender};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, LazyLock};
 use std::thread;
 use std::time::{Duration, Instant};
 use tracing::{info, warn};
@@ -14,7 +14,11 @@ const TARGET_BATCH_SAMPLES: usize = 2_048;
 const MAX_BATCH_LATENCY: Duration = Duration::from_millis(25);
 const DROP_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 
-static AUDIO_STREAM: OnceLock<Arc<AsyncReceiver<AudioBatch>>> = OnceLock::new();
+static AUDIO_STREAM: LazyLock<Arc<AsyncReceiver<AudioBatch>>> = LazyLock::new(|| {
+    let (sender, receiver) = async_channel::bounded(CHANNEL_CAPACITY);
+    spawn_forwarder(sender, virtual_sink::capture_buffer_handle());
+    Arc::new(receiver)
+});
 
 #[derive(Debug, Clone)]
 pub struct AudioBatch {
@@ -78,13 +82,7 @@ impl SampleBatcher {
 }
 
 pub fn audio_sample_stream() -> Arc<AsyncReceiver<AudioBatch>> {
-    AUDIO_STREAM
-        .get_or_init(|| {
-            let (sender, receiver) = async_channel::bounded(CHANNEL_CAPACITY);
-            spawn_forwarder(sender, virtual_sink::capture_buffer_handle());
-            Arc::new(receiver)
-        })
-        .clone()
+    Arc::clone(&AUDIO_STREAM)
 }
 
 fn spawn_forwarder(sender: AsyncSender<AudioBatch>, buffer: Arc<CaptureBuffer>) {
