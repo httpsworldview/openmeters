@@ -20,13 +20,12 @@ const BAND_DB_FLOOR_RANGE: SliderRange =
     SliderRange::new(MIN_BAND_DB_FLOOR, MAX_BAND_DB_FLOOR, 1.0);
 
 fn configure_palette_for_mode(palette: &mut PaletteEditor, mode: WaveformColorMode) {
-    let (visible, labels) = match mode {
-        WaveformColorMode::Static => (Some(vec![0]), vec![(0, "Color")]),
-        WaveformColorMode::Loudness => (None, vec![(0, "Quiet"), (1, "->"), (2, "Loud")]),
-        WaveformColorMode::Frequency => (None, Vec::new()),
-    };
-    palette.set_visible_indices(visible);
-    palette.set_label_overrides(labels);
+    palette.set_visible_indices((mode == WaveformColorMode::Static).then_some(&[0][..]));
+    palette.set_label_overrides(match mode {
+        WaveformColorMode::Static => &[(0, "Color")],
+        WaveformColorMode::Loudness => &[(0, "Quiet"), (1, "->"), (2, "Loud")],
+        WaveformColorMode::Frequency => &[],
+    });
 }
 
 settings_messages!(pane, value {

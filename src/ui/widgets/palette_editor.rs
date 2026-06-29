@@ -45,8 +45,8 @@ pub struct PaletteEditor {
     positions: Vec<f32>,
     spreads: Vec<f32>,
     active: Option<usize>,
-    visible_indices: Option<Vec<usize>>,
-    label_overrides: Vec<(usize, &'static str)>,
+    visible_indices: Option<&'static [usize]>,
+    label_overrides: &'static [(usize, &'static str)],
     show_ramp: bool,
     scroll: ScrollGlow,
 }
@@ -59,7 +59,7 @@ impl PaletteEditor {
             palette,
             active: None,
             visible_indices: None,
-            label_overrides: Vec::new(),
+            label_overrides: &[],
             show_ramp: false,
             scroll: ScrollGlow::default(),
         }
@@ -69,16 +69,16 @@ impl PaletteEditor {
         self.show_ramp = show;
     }
 
-    pub fn set_visible_indices(&mut self, indices: Option<Vec<usize>>) {
+    pub fn set_visible_indices(&mut self, indices: Option<&'static [usize]>) {
         self.visible_indices = indices;
-        if let (Some(active), Some(visible)) = (self.active, &self.visible_indices)
+        if let Some((active, visible)) = self.active.zip(self.visible_indices)
             && !visible.contains(&active)
         {
             self.active = None;
         }
     }
 
-    pub fn set_label_overrides(&mut self, overrides: Vec<(usize, &'static str)>) {
+    pub fn set_label_overrides(&mut self, overrides: &'static [(usize, &'static str)]) {
         self.label_overrides = overrides;
     }
 
@@ -200,7 +200,7 @@ impl PaletteEditor {
     pub fn view(&self) -> Element<'_, PaletteEvent> {
         let colors = self.palette.colors();
         let mut row = Row::new().spacing(12.0);
-        if let Some(indices) = &self.visible_indices {
+        if let Some(indices) = self.visible_indices {
             for &i in indices {
                 if let Some(&color) = colors.get(i) {
                     row = row.push(self.color_picker(i, color));
