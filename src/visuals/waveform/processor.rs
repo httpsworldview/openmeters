@@ -183,7 +183,7 @@ impl ThreeBand {
 
 struct BandWindow {
     values: Vec<[f32; NUM_BANDS]>,
-    sums: [f32; NUM_BANDS],
+    sums: [f64; NUM_BANDS],
     index: usize,
     len: usize,
 }
@@ -212,7 +212,7 @@ impl BandWindow {
             self.index = 0;
         }
         for band in 0..NUM_BANDS {
-            self.sums[band] += values[band] - old[band];
+            self.sums[band] += f64::from(values[band]) - f64::from(old[band]);
         }
     }
 
@@ -220,7 +220,7 @@ impl BandWindow {
         if self.len == 0 {
             [0.0; NUM_BANDS]
         } else {
-            self.sums.map(|sum| sum / self.len as f32)
+            self.sums.map(|sum| (sum / self.len as f64).max(0.0) as f32)
         }
     }
 }
@@ -626,6 +626,23 @@ mod tests {
         let latest = latest(&process(&mut processor, &samples, 1), 0);
 
         assert!(latest.rms_fast_db[0] > latest.rms_slow_db[0]);
+    }
+
+    #[test]
+    fn rms_history_returns_to_floor_after_silence() {
+        let mut cfg = config(300.0, 1024);
+        cfg.track_history = true;
+        let mut processor = WaveformProcessor::new(cfg);
+        let signal: Vec<_> = (0..RATE as usize)
+            .map(|n| (2.0 * PI * 80.0 * n as f32 / RATE).sin())
+            .collect();
+        let silence = vec![0.0; RATE as usize];
+
+        let _ = process(&mut processor, &signal, 1);
+        let latest = latest(&process(&mut processor, &silence, 1), 0);
+
+        assert_eq!(latest.rms_fast_db, [DB_FLOOR; NUM_BANDS]);
+        assert_eq!(latest.rms_slow_db, [DB_FLOOR; NUM_BANDS]);
     }
 
     #[test]
