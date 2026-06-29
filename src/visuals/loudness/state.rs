@@ -20,6 +20,9 @@ const PEAK_DECAY_DB_PER_SEC: f32 = 60.0;
 const LEFT_PADDING: f32 = 28.0;
 const RIGHT_PADDING: f32 = 64.0;
 const LABEL_FONT_SIZE: f32 = 10.0;
+const GUIDE_LABEL_HEIGHT: f32 = 12.0;
+const GUIDE_LABEL_GAP: f32 = 2.0;
+const GUIDE_LABEL_ORDER: [usize; GUIDE_LEVELS.len()] = [0, 2, 5, 3, 4, 1];
 const VALUE_FONT_SIZE: f32 = 12.0;
 
 pub const LOUDNESS_PALETTE_SIZE: usize = palettes::loudness::COLORS.len();
@@ -255,6 +258,33 @@ fn is_danger_zone(mode: MeterMode, db: f32) -> bool {
     db >= zone_thresholds(mode)[DANGER_THRESHOLD_INDEX]
 }
 
+fn visible_guide_labels(params: &LoudnessParams, bounds: Rectangle) -> Vec<(f32, Rectangle)> {
+    if bounds.height < GUIDE_LABEL_HEIGHT {
+        return Vec::new();
+    }
+
+    let max_top = bounds.y + bounds.height - GUIDE_LABEL_HEIGHT;
+    let mut labels: Vec<(f32, Rectangle)> = Vec::with_capacity(params.guides.len());
+
+    for &i in &GUIDE_LABEL_ORDER {
+        let db = params.guides[i];
+        let y = bounds.y + bounds.height * (1.0 - params.db_to_ratio(db));
+        let rect = Rectangle::new(
+            Point::new(bounds.x, (y - GUIDE_LABEL_HEIGHT * 0.5).clamp(bounds.y, max_top)),
+            Size::new(LEFT_PADDING, GUIDE_LABEL_HEIGHT),
+        );
+
+        if !labels
+            .iter()
+            .any(|(_, r)| r.expand(GUIDE_LABEL_GAP).intersects(&rect))
+        {
+            labels.push((db, rect));
+        }
+    }
+
+    labels
+}
+
 crate::visuals::visualization_widget!(Loudness, LoudnessState, |this, renderer, theme, bounds| {
     let state = this.state.borrow();
     let params = state.visual_params(bounds);
@@ -267,17 +297,16 @@ crate::visuals::visualization_widget!(Loudness, LoudnessState, |this, renderer, 
     if let Some((meter_x, bar_width, stride)) = params.meter_bounds() {
         let y_of = |db| bounds.y + bounds.height * (1.0 - params.db_to_ratio(db));
 
-        for &db in params.guides {
-            let y = y_of(db);
+        for (db, rect) in visible_guide_labels(&params, bounds) {
             let label = if db == 0.0 { "0".to_owned() } else { format!("{db:+.0}") };
 
-            let mut text = make_text(label, LABEL_FONT_SIZE, Size::new(LEFT_PADDING, 20.0));
+            let mut text = make_text(label, LABEL_FONT_SIZE, rect.size());
             text.align_x = Horizontal::Right.into();
             text.align_y = Vertical::Center;
             text::Renderer::fill_text(
                 renderer,
                 text,
-                Point::new(bounds.x + LEFT_PADDING - 4.0, y),
+                Point::new(rect.x + rect.width - 4.0, rect.y + rect.height * 0.5),
                 label_color,
                 bounds,
             );
