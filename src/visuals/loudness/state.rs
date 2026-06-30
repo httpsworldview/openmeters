@@ -254,6 +254,14 @@ fn zone_thresholds(mode: MeterMode) -> [f32; 3] {
     }
 }
 
+fn meter_unit_label(mode: MeterMode) -> &'static str {
+    match mode {
+        MeterMode::LufsShortTerm | MeterMode::LufsMomentary => "LUFS",
+        MeterMode::RmsFast | MeterMode::RmsSlow => "dB",
+        MeterMode::TruePeak => "dBTP",
+    }
+}
+
 fn is_danger_zone(mode: MeterMode, db: f32) -> bool {
     db >= zone_thresholds(mode)[DANGER_THRESHOLD_INDEX]
 }
@@ -313,7 +321,7 @@ crate::visuals::visualization_widget!(Loudness, LoudnessState, |this, renderer, 
         }
 
         let value = state.get_value(state.right_mode, 0);
-        let unit = state.right_mode.unit_label();
+        let unit = meter_unit_label(state.right_mode);
         let y = y_of(value);
         let label = format!("{value:.1} {unit}");
 
