@@ -351,6 +351,7 @@ pub fn decimate_line_in_place(pts: &mut Vec<(f32, f32)>, max_points: usize) {
         while read < pts.len() && pts[read].0 <= end_x {
             read += 1;
         }
+        read = read.max(start + 1);
 
         let (mut mn, mut mx) = (start, start);
         for i in start + 1..read {
@@ -678,3 +679,15 @@ macro_rules! sdf_primitive {
 }
 
 pub(in crate::visuals) use sdf_primitive;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decimate_line_advances_when_bucket_edge_rounds_below_point() {
+        let mut pts = vec![(667.6, 0.0), (3881.2603, 1.0)];
+        decimate_line_in_place(&mut pts, 5507);
+        assert_eq!(pts.len(), 2);
+    }
+}
