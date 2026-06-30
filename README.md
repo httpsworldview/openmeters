@@ -18,6 +18,7 @@ designed for enthusiasts, professionals, and everyone in between.
 - [Configuration and theming](#configuration)
 - [Contributing](#contributing)
 - [Credits](#credits)
+- [Notes](#notes)
 - [License](#license)
 
 ## Features
@@ -311,6 +312,22 @@ out.
 - **RustFFT** (<https://github.com/ejmahler/RustFFT>)
 - **RealFFT** (<https://github.com/HEnquist/realfft>)
 - **wgpu** (<https://github.com/gfx-rs/wgpu>)
+
+## Notes
+
+### FFT size convention
+
+**OpenMeters labels FFT/window size as the actual number of input
+samples used by the transform**.
+
+Some other applications, including MiniMeters and Wave Candy, label
+the visible positive-frequency bins instead. This is because for
+real-valued audio, only the 0 Hz..Nyquist half of the FFT is
+unique.
+
+If you are matching settings from MiniMeters or Wave Candy, use
+approximately double their displayed band count as the FFT size within
+OpenMeters' GUIs (e.g. MiniMeters' 2048 = OpenMeters' 4096).
 
 ## License
 
