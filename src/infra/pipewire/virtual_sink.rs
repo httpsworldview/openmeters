@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::VIRTUAL_SINK_NAME;
 use crate::util::audio::DEFAULT_SAMPLE_RATE;
 use pipewire as pw;
 use pw::{properties::properties, spa};
@@ -16,6 +15,9 @@ use std::thread;
 use std::time::Duration;
 use tracing::{error, info, warn};
 
+pub const NODE_NAME: &str = "openmeters.sink";
+
+const DESCRIPTION: &str = "OpenMeters Sink";
 const VIRTUAL_SINK_SAMPLE_RATE: u32 = DEFAULT_SAMPLE_RATE as u32;
 const CAPTURE_BUFFER_CAPACITY: usize = 64;
 const CAPTURE_POOL_INITIAL_SAMPLES: usize = 4_096;
@@ -358,14 +360,14 @@ fn run_virtual_sink() -> Result<(), Box<dyn Error + Send + Sync>> {
 
     let stream = pw::stream::StreamBox::new(
         &core,
-        "OpenMeters Sink",
+        DESCRIPTION,
         properties! {
             *pw::keys::MEDIA_CLASS => "Audio/Sink",
             *pw::keys::MEDIA_TYPE => "Audio",
             *pw::keys::MEDIA_ROLE => "Playback",
             *pw::keys::MEDIA_CATEGORY => "Playback",
-            *pw::keys::NODE_DESCRIPTION => "OpenMeters Sink",
-            *pw::keys::NODE_NAME => VIRTUAL_SINK_NAME,
+            *pw::keys::NODE_DESCRIPTION => DESCRIPTION,
+            *pw::keys::NODE_NAME => NODE_NAME,
             *pw::keys::APP_NAME => "OpenMeters",
             *pw::keys::NODE_LATENCY => format!("{}/{}", DESIRED_LATENCY_FRAMES, VIRTUAL_SINK_SAMPLE_RATE),
         },

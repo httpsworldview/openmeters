@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::infra::pipewire::VIRTUAL_SINK_NAME;
+use crate::infra::pipewire::virtual_sink;
 use pipewire as pw;
 use pw::keys::*;
 use pw::registry::GlobalObject;
@@ -208,6 +208,12 @@ impl RegistrySnapshot {
         self.nodes.iter().find(|n| n.matches_label(label))
     }
 
+    pub fn virtual_sink(&self) -> Option<&NodeInfo> {
+        self.nodes
+            .iter()
+            .find(|n| n.name.as_deref() == Some(virtual_sink::NODE_NAME))
+    }
+
     pub fn find_capture_device_by_token(&self, token: &str) -> Option<&NodeInfo> {
         let node_token_id = token
             .get(..5)
@@ -266,7 +272,7 @@ impl NodeInfo {
             .cloned();
         let media_class = props.get(*MEDIA_CLASS).cloned();
         let is_virtual = props.get("node.virtual").map_or_else(
-            || name.as_deref() == Some(VIRTUAL_SINK_NAME),
+            || name.as_deref() == Some(virtual_sink::NODE_NAME),
             |v| v == "true",
         );
 

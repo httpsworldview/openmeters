@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Maika Namuo
 
 use crate::domain::routing::{CaptureMode, DeviceSelection, RoutingCommand};
-use crate::infra::pipewire::VIRTUAL_SINK_NAME;
 use crate::infra::pipewire::registry::RegistrySnapshot;
 use crate::persistence::settings::{
     BAR_MAX_HEIGHT, BAR_MIN_HEIGHT, BUILTIN_THEME, BarAlignment, SettingsHandle, ThemeChoice,
@@ -583,7 +582,7 @@ impl ConfigPage {
 
         let mut seen = HashSet::new();
         let mut entries: Vec<_> = snapshot
-            .find_node_by_label(VIRTUAL_SINK_NAME)
+            .virtual_sink()
             .into_iter()
             .flat_map(|sink| snapshot.route_candidates(sink))
             .map(|node| {

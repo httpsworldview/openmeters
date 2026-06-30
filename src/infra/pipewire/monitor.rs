@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::{VIRTUAL_SINK_NAME, registry};
+use super::{registry, virtual_sink};
 use crate::domain::routing::{CaptureMode, DeviceSelection, RoutingCommand, RoutingConfig};
 use async_channel::{Sender, TrySendError};
 use std::collections::{HashMap, HashSet};
@@ -222,9 +222,12 @@ impl RoutingManager {
             return;
         }
 
-        let Some(sink) = snapshot.find_node_by_label(VIRTUAL_SINK_NAME) else {
+        let Some(sink) = snapshot.virtual_sink() else {
             if !self.warned_sink_missing {
-                warn!("[router] virtual sink '{VIRTUAL_SINK_NAME}' not yet available");
+                warn!(
+                    "[router] virtual sink '{}' not yet available",
+                    virtual_sink::NODE_NAME
+                );
                 self.warned_sink_missing = true;
             }
             return;
@@ -276,7 +279,7 @@ impl RoutingManager {
         &mut self,
         snapshot: &registry::RegistrySnapshot,
     ) -> Option<Vec<registry::LinkSpec>> {
-        let om_sink = snapshot.find_node_by_label(VIRTUAL_SINK_NAME)?;
+        let om_sink = snapshot.virtual_sink()?;
 
         let (source, target) = match self.capture_mode {
             CaptureMode::Applications => (om_sink, self.hw_sink(snapshot)?),
