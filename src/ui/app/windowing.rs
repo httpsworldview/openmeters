@@ -12,7 +12,7 @@ use crate::ui::theme;
 use crate::ui::visuals::VisualsMessage;
 use crate::ui::widgets::scroll_glow::ScrollGlow;
 use crate::util::color::with_alpha;
-use crate::visuals::registry::{VisualContent, VisualKind, VisualMetadata, VisualSlotSnapshot};
+use crate::visuals::registry::{VisualContent, VisualKind, VisualSlotSnapshot};
 use iced::widget::{container, mouse_area, text};
 use iced::{Element, Length, Size, Task, exit, window};
 use iced_layershell::actions::OutputSnapshotCallback;
@@ -143,11 +143,8 @@ pub(super) fn open_main_window(
     (id, task, false, base_size)
 }
 
-fn popout_window_size(metadata: &VisualMetadata, saved: Option<PopoutWindowSettings>) -> Size {
-    let default = Size::new(
-        metadata.preferred_width.max(400.0),
-        metadata.preferred_height.max(300.0),
-    );
+fn popout_window_size(saved: Option<PopoutWindowSettings>) -> Size {
+    let default = Size::new(400.0, 300.0);
     let Some(saved) = saved else {
         return default;
     };
@@ -184,7 +181,7 @@ pub(super) struct PopoutWindow {
     pub kind: VisualKind,
     pub original_index: usize,
     pub size: Size,
-    pub cached: Option<(VisualMetadata, VisualContent)>,
+    pub cached: Option<VisualContent>,
 }
 
 impl PopoutWindow {
@@ -192,11 +189,11 @@ impl PopoutWindow {
         self.cached = snapshot
             .iter()
             .find(|slot| slot.kind == self.kind && slot.enabled)
-            .map(|slot| (slot.metadata, slot.content.clone()));
+            .map(|slot| slot.content.clone());
     }
 
     pub fn view(&self) -> Element<'_, VisualsMessage> {
-        let Some((_, content)) = &self.cached else {
+        let Some(content) = &self.cached else {
             return fill!(text("")).into();
         };
         let msg = VisualsMessage::SettingsRequested(self.kind);
@@ -246,11 +243,11 @@ impl UiApp {
             return None;
         }
         let snapshot = self.visual_manager.borrow().snapshot();
-        let (index, slot) = snapshot
+        let (index, _) = snapshot
             .iter()
             .enumerate()
             .find(|(_, s)| s.kind == kind && s.enabled)?;
-        let window_size = popout_window_size(&slot.metadata, saved_size);
+        let window_size = popout_window_size(saved_size);
         let use_decorations = self.settings_handle.borrow().data.decorations;
         let (new_id, open_task) =
             open_base_window(self.use_layershell, window_size, use_decorations);

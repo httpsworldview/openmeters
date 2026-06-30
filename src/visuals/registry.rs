@@ -44,7 +44,7 @@ macro_rules! visuals {
     (@apply_palette $st:expr, $settings:ident, $default:expr) => {
         $st.set_palette(&resolve_palette($settings.palette.as_ref(), $default))
     };
-    ($($variant:ident($width:expr, $height:expr, $min_w:expr) =>
+    ($($variant:ident($default_width_basis:expr, $min_w:expr) =>
        $module:ident :: $processor:ident, $config:ident, $state:ident;
        $settings_ty:ty;
        $(pre_ingest($pip:ident, $pis:ident) $pre_ingest_body:expr;)?
@@ -73,11 +73,8 @@ macro_rules! visuals {
 
         const DESCRIPTORS: &[Descriptor] = &[$(Descriptor {
             kind: VisualKind::$variant,
-            meta: VisualMetadata {
-                preferred_width: $width,
-                preferred_height: $height,
-                min_width: $min_w,
-            },
+            default_width_basis: $default_width_basis,
+            min_width: $min_w,
             build: || Box::new(Visual {
                 processor: $module::$processor::new($module::$config {
                     sample_rate: DEFAULT_SAMPLE_RATE,
@@ -121,7 +118,7 @@ macro_rules! visuals {
 }
 
 visuals! {
-    Loudness(140.0, 300.0, 80.0) =>
+    Loudness(140.0, 80.0) =>
         loudness::LoudnessProcessor, LoudnessConfig, LoudnessState;
         settings_cfg::LoudnessSettings;
         apply(_p, s, set) { let mut st = s.borrow_mut();
@@ -130,7 +127,7 @@ visuals! {
         export(_p, s) { let st = s.borrow(); settings_cfg::LoudnessSettings { left_mode: st.left_mode, right_mode: st.right_mode,
             palette: visuals!(@export_palette &st.palette, &palettes::loudness::COLORS) } };
 
-    Oscilloscope(150.0, 160.0, 100.0) =>
+    Oscilloscope(150.0, 100.0) =>
         oscilloscope::OscilloscopeProcessor, OscilloscopeConfig, OscilloscopeState;
         settings_cfg::OscilloscopeSettings;
         apply(p, s, set) { visuals!(@apply_config p, set); let reset = [set.channel_1, set.channel_2] == [Channel::None; 2];
@@ -140,7 +137,7 @@ visuals! {
             out.persistence = st.persistence;
             out.palette = visuals!(@export_palette &st.colors, &palettes::oscilloscope::COLORS); out };
 
-    Waveform(220.0, 180.0, 220.0) =>
+    Waveform(220.0, 220.0) =>
         waveform::WaveformProcessor, WaveformConfig, WaveformState;
         settings_cfg::WaveformSettings;
         pre_ingest(p, s) {
@@ -168,7 +165,7 @@ visuals! {
             out.band_db_floor = st.band_db_floor;
             out.palette = visuals!(@export_palette &st.style.palette, &palettes::waveform::COLORS); out };
 
-    Spectrogram(320.0, 220.0, 300.0) =>
+    Spectrogram(320.0, 300.0) =>
         spectrogram::SpectrogramProcessor, SpectrogramConfig, SpectrogramState;
         settings_cfg::SpectrogramSettings;
         pre_ingest(p, s) {
@@ -202,7 +199,7 @@ visuals! {
             out.tilt_db = st.style.tilt_db;
             out.rotation = st.rotation; out };
 
-    Spectrum(400.0, 180.0, 400.0) =>
+    Spectrum(400.0, 400.0) =>
         spectrum::SpectrumProcessor, SpectrumConfig, SpectrumState;
         settings_cfg::SpectrumSettings;
         apply(p, s, set) { visuals!(@apply_config p, set); let cfg = p.config(); let mut st = s.borrow_mut();
@@ -225,7 +222,7 @@ visuals! {
             out.secondary_weighting_mode = style.secondary_weighting_mode;
             out.bar_count = style.bar_count; out.bar_gap = style.bar_gap; out };
 
-    Stereometer(150.0, 220.0, 100.0) =>
+    Stereometer(150.0, 100.0) =>
         stereometer::StereometerProcessor, StereometerConfig, StereometerState;
         settings_cfg::StereometerSettings;
         apply(p, s, set) {
@@ -252,13 +249,6 @@ struct Visual<P, S> {
     state: S,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct VisualMetadata {
-    pub preferred_width: f32,
-    pub preferred_height: f32,
-    pub min_width: f32,
-}
-
 pub trait VisualModule {
     fn ingest(&mut self, samples: &[f32], format: MeterFormat);
     fn content(&self) -> VisualContent;
@@ -268,25 +258,17 @@ pub trait VisualModule {
 
 struct Descriptor {
     kind: VisualKind,
-    meta: VisualMetadata,
+    default_width_basis: f32,
+    min_width: f32,
     build: fn() -> Box<dyn VisualModule>,
 }
 
 struct Entry {
-    kind: VisualKind,
+    descriptor: &'static Descriptor,
     enabled: bool,
-    meta: VisualMetadata,
     module: Box<dyn VisualModule>,
 }
 impl Entry {
-    fn new(descriptor: &Descriptor) -> Self {
-        Self {
-            kind: descriptor.kind,
-            enabled: false,
-            meta: descriptor.meta,
-            module: (descriptor.build)(),
-        }
-    }
     fn apply_settings(&mut self, settings: &ModuleSettings) {
         if let Some(enabled) = settings.enabled {
             self.enabled = enabled;
@@ -299,27 +281,36 @@ impl Entry {
 pub(crate) struct VisualSlotSnapshot {
     pub kind: VisualKind,
     pub enabled: bool,
-    pub metadata: VisualMetadata,
+    pub default_width_basis: f32,
+    pub min_width: f32,
     pub content: VisualContent,
 }
 
 pub(crate) struct VisualManager {
     entries: Vec<Entry>,
 }
-impl VisualManager {
-    pub fn new() -> Self {
+impl Default for VisualManager {
+    fn default() -> Self {
         Self {
-            entries: DESCRIPTORS.iter().map(Entry::new).collect(),
+            entries: DESCRIPTORS
+                .iter()
+                .map(|descriptor| Entry {
+                    descriptor,
+                    enabled: false,
+                    module: (descriptor.build)(),
+                })
+                .collect(),
         }
     }
-    fn by_kind(&self, kind: VisualKind) -> Option<&Entry> {
-        self.entries.iter().find(|entry| entry.kind == kind)
-    }
-    fn by_kind_mut(&mut self, kind: VisualKind) -> Option<&mut Entry> {
-        self.entries.iter_mut().find(|entry| entry.kind == kind)
+}
+impl VisualManager {
+    fn position(&self, kind: VisualKind) -> Option<usize> {
+        self.entries
+            .iter()
+            .position(|entry| entry.descriptor.kind == kind)
     }
     pub fn move_to(&mut self, kind: VisualKind, target: usize) {
-        let Some(current) = self.entries.iter().position(|entry| entry.kind == kind) else {
+        let Some(current) = self.position(kind) else {
             return;
         };
         let target = target.min(self.entries.len().saturating_sub(1));
@@ -332,33 +323,35 @@ impl VisualManager {
         self.entries
             .iter()
             .map(|entry| VisualSlotSnapshot {
-                kind: entry.kind,
+                kind: entry.descriptor.kind,
                 enabled: entry.enabled,
-                metadata: entry.meta,
+                default_width_basis: entry.descriptor.default_width_basis,
+                min_width: entry.descriptor.min_width,
                 content: entry.module.content(),
             })
             .collect()
     }
     pub fn order(&self) -> Vec<VisualKind> {
-        self.entries.iter().map(|entry| entry.kind).collect()
+        self.entries
+            .iter()
+            .map(|entry| entry.descriptor.kind)
+            .collect()
     }
     pub fn module_settings(&self, kind: VisualKind) -> Option<ModuleSettings> {
-        self.by_kind(kind).map(|entry| {
-            let mut settings = entry.module.export();
-            settings.enabled.get_or_insert(entry.enabled);
-            settings
-        })
+        let entry = &self.entries[self.position(kind)?];
+        let mut settings = entry.module.export();
+        settings.enabled.get_or_insert(entry.enabled);
+        Some(settings)
     }
-    pub fn apply_module_settings(&mut self, kind: VisualKind, settings: &ModuleSettings) -> bool {
-        let Some(entry) = self.by_kind_mut(kind) else {
-            return false;
-        };
-        entry.apply_settings(settings);
-        true
+    pub fn apply_module_settings(&mut self, kind: VisualKind, settings: &ModuleSettings) {
+        let index = self
+            .position(kind)
+            .expect("visual kind missing from registry");
+        self.entries[index].apply_settings(settings);
     }
-    pub fn set_enabled_by_kind(&mut self, kind: VisualKind, enabled: bool) {
-        if let Some(entry) = self.by_kind_mut(kind) {
-            entry.enabled = enabled;
+    pub fn set_enabled(&mut self, kind: VisualKind, enabled: bool) {
+        if let Some(index) = self.position(kind) {
+            self.entries[index].enabled = enabled;
         }
     }
     pub fn apply_visual_settings(&mut self, settings: &VisualSettings) {
@@ -367,7 +360,7 @@ impl VisualManager {
             entry.apply_settings(
                 settings
                     .modules
-                    .get(&entry.kind)
+                    .get(&entry.descriptor.kind)
                     .unwrap_or(&default_settings),
             );
         }
@@ -381,7 +374,7 @@ impl VisualManager {
     pub fn apply_theme(&mut self, theme: &ThemeFile) {
         for entry in &mut self.entries {
             let mut settings = entry.module.export();
-            settings.override_palette(theme.palettes.get(&entry.kind));
+            settings.override_palette(theme.palettes.get(&entry.descriptor.kind));
             entry.module.apply(&settings);
         }
     }

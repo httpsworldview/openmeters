@@ -191,9 +191,7 @@ impl ConfigPage {
                 self.applications_expanded = !self.applications_expanded;
             }
             ConfigMessage::VisualToggled { kind, enabled } => {
-                self.visual_manager
-                    .borrow_mut()
-                    .set_enabled_by_kind(kind, enabled);
+                self.visual_manager.borrow_mut().set_enabled(kind, enabled);
                 self.settings.update(|s| {
                     s.data.visuals.modules.entry(kind).or_default().enabled = Some(enabled);
                 });

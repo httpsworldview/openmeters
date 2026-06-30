@@ -227,12 +227,9 @@ pub(super) fn persist_with_palette<T: Clone + Serialize + HasPalette>(
         palette.spreads(),
     );
     stored.set_palette(palette_settings.clone());
-    if !visual_manager
+    visual_manager
         .borrow_mut()
-        .apply_module_settings(kind, &ModuleSettings::with_config(&stored))
-    {
-        return;
-    }
+        .apply_module_settings(kind, &ModuleSettings::with_config(&stored));
     settings_handle.update(move |s| {
         s.data
             .visuals

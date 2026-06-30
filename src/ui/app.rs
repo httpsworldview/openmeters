@@ -133,7 +133,7 @@ impl UiApp {
                 guard.theme_store().load(guard.active_theme()),
             )
         };
-        let mut manager = VisualManager::new();
+        let mut manager = VisualManager::default();
         manager.apply_visual_settings(&visual_settings);
         if let Some(theme_file) = theme_file {
             manager.apply_theme(&theme_file);

@@ -176,12 +176,12 @@ impl VisualsPage {
             VisualPane {
                 kind: slot.kind,
                 content: slot.content.clone(),
-                min_width: slot.metadata.min_width,
+                min_width: slot.min_width,
                 width_basis: saved_width_basis
                     .get(&slot.kind)
                     .copied()
                     .and_then(crate::util::finite_positive)
-                    .unwrap_or(slot.metadata.preferred_width),
+                    .unwrap_or(slot.default_width_basis),
             }
         }))
     }
