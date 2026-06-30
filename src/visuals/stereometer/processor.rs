@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Maika Namuo
 
 use crate::dsp::AudioBlock;
-use crate::util::audio::{self, BAND_SPLITS_HZ, DEFAULT_SAMPLE_RATE, extend_interleaved_history};
+use crate::util::audio::{BAND_SPLITS_HZ, DEFAULT_SAMPLE_RATE, extend_interleaved_history};
 use std::collections::VecDeque;
 
 const BAND_CHANNELS: usize = 2;
@@ -249,7 +249,7 @@ impl StereometerProcessor {
         if block.is_empty() || channel_count < 2 { return None; }
 
         let sample_rate = block.sample_rate;
-        if audio::sample_rates_differ(self.config.sample_rate, sample_rate) {
+        if self.config.sample_rate != sample_rate {
             let mut config = self.config;
             config.sample_rate = sample_rate;
             self.update_config(config);
@@ -342,8 +342,7 @@ impl StereometerProcessor {
         *self = Self::new(self.config);
     }
     pub fn update_config(&mut self, config: StereometerConfig) {
-        let sample_rate_changed =
-            audio::sample_rates_differ(self.config.sample_rate, config.sample_rate);
+        let sample_rate_changed = self.config.sample_rate != config.sample_rate;
         let window_changed =
             (self.config.correlation_window - config.correlation_window).abs() > f32::EPSILON;
         let band_analysis_changed = self.config.needs_band_analysis() != config.needs_band_analysis();

@@ -22,7 +22,7 @@ impl FrequencyScale {
         (self.scale(freq) - lo) / (hi - lo).max(1e-6)
     }
 
-    fn scale(self, hz: f32) -> f32 {
+    pub(crate) fn scale(self, hz: f32) -> f32 {
         match self {
             Self::Linear => hz,
             Self::Logarithmic => (hz / LOG_KNEE_HZ).asinh(),
@@ -39,10 +39,10 @@ impl FrequencyScale {
     }
 }
 
-pub fn hz_to_erb_rate(hz: f32) -> f32 {
+fn hz_to_erb_rate(hz: f32) -> f32 {
     21.4 * (1.0 + hz / 228.8).log10()
 }
 
-pub fn erb_rate_to_hz(erb: f32) -> f32 {
+fn erb_rate_to_hz(erb: f32) -> f32 {
     228.8 * (10.0f32.powf(erb / 21.4) - 1.0)
 }

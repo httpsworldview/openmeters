@@ -5,8 +5,8 @@ use crate::dsp::AudioBlock;
 use crate::util::audio::{
     Channel, DB_FLOOR, DEFAULT_SAMPLE_RATE, FrequencyScale, LN_TO_DB, WindowKind, apply_window,
     compute_fft_bin_normalization, copy_dc_removed_from_deque, db_to_power,
-    project_interleaved_channel_into, sample_rates_differ, sanitize_negative_db,
-    sanitize_sample_rate, window_coefficients,
+    project_interleaved_channel_into, sanitize_negative_db, sanitize_sample_rate,
+    window_coefficients,
 };
 use realfft::{RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex32;
@@ -267,7 +267,7 @@ impl SpectrumProcessor {
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<SpectrumSnapshot> {
         if block.is_empty() { return None; }
 
-        if sample_rates_differ(block.sample_rate, self.config.sample_rate) {
+        if block.sample_rate != self.config.sample_rate {
             self.config.sample_rate = block.sample_rate;
             self.reset_buffers();
         }
@@ -305,8 +305,7 @@ impl SpectrumProcessor {
         self.config = config;
         if old.fft_size != config.fft_size || old.window != config.window {
             self.rebuild_fft();
-        } else if sample_rates_differ(old.sample_rate, config.sample_rate)
-            || old.source != config.source
+        } else if old.sample_rate != config.sample_rate || old.source != config.source
             || old.secondary_source != config.secondary_source
         {
             self.reset_buffers();

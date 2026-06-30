@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::ui::scroll_delta_lines;
 use crate::ui::theme::{self as ui_theme, Palette};
 use crate::ui::widgets::scroll_glow::ScrollGlow;
+use crate::ui::{clipped_text, scroll_delta_lines};
 use crate::util::color::{
     EPSILON, STOP_SPREAD_MAX, STOP_SPREAD_MIN, colors_equal, lerp_color, sanitize_stop_positions,
     sanitize_stop_spreads, with_alpha,
@@ -12,21 +12,13 @@ use iced::advanced::renderer::{self, Quad};
 use iced::advanced::widget::{Tree, tree};
 use iced::advanced::{Layout, Renderer as _, Widget, layout, mouse};
 use iced::alignment::{Horizontal, Vertical};
-use iced::widget::text::Wrapping;
-use iced::widget::{Button, Column, Row, Space, container, slider, text};
+use iced::widget::{Button, Column, Row, Space, container, slider};
 use iced::{Background, Color, Element, Length, Point, Rectangle, Size};
 
 const SWATCH_SIZE: (f32, f32) = (56.0, 28.0);
 const GRADIENT_BAR_HEIGHT: f32 = 24.0;
 const MARKER_HEIGHT: f32 = 8.0;
 const MIN_STOP_GAP: f32 = 0.01;
-
-fn clipped_text<'a, M: 'a>(
-    content: impl iced::widget::text::IntoFragment<'a>,
-    size: f32,
-) -> container::Container<'a, M> {
-    container(text(content).size(size).wrapping(Wrapping::None)).clip(true)
-}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PaletteEvent {

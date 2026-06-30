@@ -69,7 +69,7 @@ impl WaveformParams {
         let mut out = [0.0; 4];
         let mut total = 0.0;
         for (weight, color) in bands
-            .map(|v| if v.is_finite() { v.max(0.0) } else { 0.0 })
+            .map(|v| crate::util::finite_positive(v).unwrap_or(0.0))
             .into_iter()
             .zip(self.palette.iter())
         {

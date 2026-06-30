@@ -333,8 +333,7 @@ fn interpolated_peak(bins: &[f32], db: &[f32], bin: usize) -> Option<(f32, f32)>
     if bins.len() != db.len() || bin == 0 || next >= bins.len() { return None; }
     let bin_hz = bins[1] - bins[0];
     let (center_freq, center) = (bins[bin], db[bin]);
-    if !bin_hz.is_finite()
-        || bin_hz <= 0.0
+    if crate::util::finite_positive(bin_hz).is_none()
         || !center_freq.is_finite()
         || !center.is_finite()
     {

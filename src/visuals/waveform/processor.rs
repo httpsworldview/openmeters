@@ -3,8 +3,7 @@
 
 use crate::dsp::AudioBlock;
 use crate::util::audio::{
-    BAND_SPLITS_HZ, Channel, DB_FLOOR, DEFAULT_SAMPLE_RATE, power_to_db, sample_rates_differ,
-    sanitize_sample_rate,
+    BAND_SPLITS_HZ, Channel, DB_FLOOR, DEFAULT_SAMPLE_RATE, power_to_db, sanitize_sample_rate,
 };
 
 pub const MIN_SCROLL_SPEED: f32 = 10.0;
@@ -447,8 +446,7 @@ impl WaveformProcessor {
         self.pending_columns.clear();
 
         let (channels, sample_rate) = (block.channels.max(1), block.sample_rate);
-        if channels != self.source_channels || sample_rates_differ(self.config.sample_rate, sample_rate)
-        {
+        if channels != self.source_channels || self.config.sample_rate != sample_rate {
             self.source_channels = channels;
             self.config.sample_rate = sanitize_sample_rate(sample_rate);
             self.rebuild();
@@ -469,7 +467,7 @@ impl WaveformProcessor {
 
     pub fn update_config(&mut self, config: WaveformConfig) {
         let normalized = config.normalized();
-        let rebuild = sample_rates_differ(self.config.sample_rate, normalized.sample_rate);
+        let rebuild = self.config.sample_rate != normalized.sample_rate;
         let reset_analysis = self.config.analyze_bands != normalized.analyze_bands
             || self.config.track_history != normalized.track_history;
         let resize_pending = self.config.max_columns != normalized.max_columns;

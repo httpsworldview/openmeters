@@ -12,10 +12,9 @@ use crate::visuals::render::common::{
 };
 
 use super::processor::SpectrogramPoint;
-use crate::util::audio::{FrequencyScale, hz_to_erb_rate};
+use crate::util::audio::FrequencyScale;
 
 pub const SPECTROGRAM_PALETTE_SIZE: usize = 5;
-const LOG_KNEE_HZ: f32 = 20.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColumnKind {
@@ -240,13 +239,8 @@ impl Uniforms {
             FrequencyScale::Logarithmic => 1,
             FrequencyScale::Erb => 2,
         };
-        let scale_freq = |hz: f32| match p.freq_scale {
-            FrequencyScale::Linear => hz,
-            FrequencyScale::Logarithmic => (hz / LOG_KNEE_HZ).asinh(),
-            FrequencyScale::Erb => hz_to_erb_rate(hz),
-        };
-        let freq_lo = scale_freq(p.freq_min);
-        let freq_hi = scale_freq(p.freq_max);
+        let freq_lo = p.freq_scale.scale(p.freq_min);
+        let freq_hi = p.freq_scale.scale(p.freq_max);
         let palette = p.palette;
         let rotation = p.rotation.rem_euclid(4) as u32;
         let sf = scale_factor.max(1.0);

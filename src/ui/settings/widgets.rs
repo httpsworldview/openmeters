@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::ui::theme;
 use crate::ui::widgets::palette_editor::{PaletteEditor, PaletteEvent};
+use crate::ui::{clipped_text, theme};
 use iced::Element;
 use iced::Length::{Fill, Shrink};
 use iced::alignment::Vertical;
-use iced::widget::text::Wrapping;
-use iced::widget::{column, container, pick_list, row, slider, text, toggler};
+use iced::widget::{column, container, pick_list, row, slider, toggler};
 use std::borrow::Cow;
 use std::fmt;
 
@@ -87,13 +86,6 @@ pub fn update_fft_size(fft_size: &mut usize, hop_size: &mut usize, new: usize) -
 
 pub fn update_hop_divisor(fft_size: usize, hop_size: &mut usize, divisor: usize) -> bool {
     set_if_changed(hop_size, (fft_size / divisor.max(1)).max(1))
-}
-
-pub fn clipped_text<'a, M: 'a>(
-    content: impl iced::widget::text::IntoFragment<'a>,
-    size: f32,
-) -> container::Container<'a, M> {
-    container(text(content).size(size).wrapping(Wrapping::None)).clip(true)
 }
 
 pub fn slide<'a, M: Clone + 'a>(

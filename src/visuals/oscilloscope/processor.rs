@@ -611,7 +611,7 @@ impl OscilloscopeProcessor {
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<OscilloscopeSnapshot> {
         if block.is_empty() { return None; }
 
-        if audio::sample_rates_differ(self.config.sample_rate, block.sample_rate) {
+        if self.config.sample_rate != block.sample_rate {
             self.update_config(OscilloscopeConfig {
                 sample_rate: block.sample_rate,
                 ..self.config
@@ -774,7 +774,7 @@ fn downsample_trace(output: &mut Vec<f32>, data: &[f32], capture: Capture, targe
     let last = (data.len() - 1) as f32;
     let start_offset = capture.frac_offset.clamp(0.0, last);
     let span = capture.span.min(last - start_offset);
-    if !span.is_finite() || span <= 0.0 { return false; }
+    if crate::util::finite_positive(span).is_none() { return false; }
 
     let step = span / (target - 1) as f32;
     output.extend((0..target).map(|i| sample_linear_zero(data, start_offset + i as f32 * step)));

@@ -326,7 +326,7 @@ pub fn decimate_line_in_place(pts: &mut Vec<(f32, f32)>, max_points: usize) {
     }
     let Some(&last) = pts.last() else { return };
     let (x0, width) = (pts[0].0, last.0 - pts[0].0);
-    let bucketed = width.is_finite() && width > 0.0;
+    let bucketed = crate::util::finite_positive(width).is_some();
     let buckets = if bucketed {
         (max_points / 2).min(width.ceil().max(1.0) as usize)
     } else {

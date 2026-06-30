@@ -13,6 +13,18 @@ pub mod widgets {
     pub mod scroll_glow;
 }
 
+pub(crate) fn clipped_text<'a, M: 'a>(
+    content: impl iced::widget::text::IntoFragment<'a>,
+    size: f32,
+) -> iced::widget::container::Container<'a, M> {
+    iced::widget::container(
+        iced::widget::text(content)
+            .size(size)
+            .wrapping(iced::widget::text::Wrapping::None),
+    )
+    .clip(true)
+}
+
 pub(crate) fn scroll_delta_lines(delta: iced::advanced::mouse::ScrollDelta) -> f32 {
     match delta {
         iced::advanced::mouse::ScrollDelta::Lines { y, .. } => y,

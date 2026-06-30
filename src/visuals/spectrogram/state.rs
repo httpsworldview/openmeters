@@ -12,7 +12,7 @@ use super::render::{
 use crate::ui::{scroll_delta_lines, theme};
 use crate::util::{
     audio::musical::{MusicalNote, NoteInfo},
-    audio::{DB_FLOOR, FrequencyScale, fmt_duration, fmt_freq},
+    audio::{DB_FLOOR, FrequencyScale, fmt_duration, fmt_freq, sanitize_negative_db},
     color::{color_to_rgba, lerp_color, rgba_with_alpha, with_alpha},
 };
 use crate::visuals::options::PianoRollOverlay;
@@ -149,12 +149,8 @@ impl SpectrogramState {
     }
 
     pub fn set_floor_db(&mut self, floor_db: f32) {
-        let floor = if floor_db.is_finite() {
-            floor_db
-        } else {
-            DB_FLOOR
-        };
-        self.style.floor_db = floor.min(self.style.ceiling_db - 1.0);
+        self.style.floor_db = sanitize_negative_db(floor_db, DB_FLOOR)
+            .min(self.style.ceiling_db - 1.0);
     }
 
     pub fn set_tilt_db(&mut self, tilt_db: f32) {

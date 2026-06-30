@@ -53,7 +53,7 @@ impl std::fmt::Display for MusicalNote {
     }
 }
 
-/// Nearest note and cents deviation for a frequency.
+// Nearest note and cents deviation for a frequency.
 #[derive(Debug, Clone, Copy)]
 pub struct NoteInfo {
     pub note: MusicalNote,
@@ -72,7 +72,7 @@ impl NoteInfo {
         })
     }
 
-    /// `"F4  + 42 Cents"`
+    // `"F4  + 42 Cents"`
     pub fn fmt_note_cents(&self) -> String {
         let sign = if self.cents >= 0 { '+' } else { '-' };
         format!("{:<4}{sign} {} Cents", self.note, self.cents.abs())

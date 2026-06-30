@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::virtual_sink::{self, CaptureBuffer};
+use crate::util::audio::sanitize_sample_rate;
 use async_channel::{Receiver as AsyncReceiver, Sender as AsyncSender};
 use std::sync::{Arc, LazyLock};
 use std::thread;
@@ -137,7 +138,7 @@ fn forward_loop(sender: AsyncSender<AudioBatch>, buffer: Arc<CaptureBuffer>) {
             Some(packet) => {
                 let format = MeterFormat {
                     channels: packet.channels.max(1) as usize,
-                    sample_rate: packet.sample_rate.max(1) as f32,
+                    sample_rate: sanitize_sample_rate(packet.sample_rate as f32),
                 };
 
                 let batch_expired =

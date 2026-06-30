@@ -14,9 +14,9 @@ pub(crate) use self::{channel::project_interleaved_channel_into, window::window_
 pub use self::{
     channel::{Channel, extend_interleaved_history},
     format::{fmt_duration, fmt_freq},
-    frequency::{FrequencyScale, hz_to_erb_rate},
+    frequency::FrequencyScale,
     level::{DB_FLOOR, LN_TO_DB, db_to_power, power_to_db, sanitize_negative_db},
-    rate::{DEFAULT_SAMPLE_RATE, sample_rates_differ, sanitize_sample_rate},
+    rate::{DEFAULT_SAMPLE_RATE, sanitize_sample_rate},
     window::{WindowKind, apply_window, compute_fft_bin_normalization, copy_dc_removed_from_deque},
 };
 

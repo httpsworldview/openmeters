@@ -25,7 +25,7 @@ use crate::dsp::AudioBlock;
 use crate::util::audio::{
     DB_FLOOR, DEFAULT_SAMPLE_RATE, FrequencyScale, LN_TO_DB, WindowKind,
     compute_fft_bin_normalization, copy_dc_removed_from_deque, db_to_power, power_to_db,
-    sample_rates_differ, sanitize_sample_rate, window_coefficients,
+    sanitize_sample_rate, window_coefficients,
 };
 use bytemuck::{Pod, Zeroable};
 use rustfft::num_complex::Complex32;
@@ -474,7 +474,7 @@ impl SpectrogramProcessor {
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<SpectrogramUpdate> {
         if block.is_empty() { return None; }
         let sample_rate = block.sample_rate;
-        if sample_rates_differ(self.config.sample_rate, sample_rate) {
+        if self.config.sample_rate != sample_rate {
             self.config.sample_rate = sample_rate;
             self.rebuild_fft();
             self.audio_buffer.clear();
@@ -506,7 +506,7 @@ impl SpectrogramProcessor {
         let prev = self.config;
         self.config = cfg;
 
-        let rate_changed = sample_rates_differ(prev.sample_rate, cfg.sample_rate);
+        let rate_changed = prev.sample_rate != cfg.sample_rate;
         let rebuild = prev.fft_size != cfg.fft_size
             || prev.zero_padding_factor != cfg.zero_padding_factor
             || prev.window != cfg.window
