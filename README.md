@@ -2,12 +2,8 @@
 
 ![https://github.com/user-attachments/assets/52d0202e-f6e7-47aa-9952-e3a0be975f42](https://github.com/user-attachments/assets/e7b15cd0-eb12-4e99-b036-79b11e04bb46)
 
-OpenMeters is an audio metering application for Linux. It currently
-consists of six meters: loudness, oscilloscope, spectrogram, spectrum
-analyzer, stereometer, and waveform.
-
-My goal is to provide a free, open source desktop meter that is
-rigorous and correct about what it computes and pleasant to look at.
+An open-source audio metering and visualization suite for Linux,
+designed for enthusiasts, professionals, and everyone in between.
 
 ## Quick links
 
@@ -34,23 +30,21 @@ open an issue or pull request.
 
 - PipeWire audio capture
   - Per-application capture through a PipeWire virtual sink.
-  - Device/default-sink capture by linking a selected PipeWire audio
-    device/source, or the current default sink, into the OpenMeters
-    sink.
+  - Device/default-sink capture.
   - Application routes touched by OpenMeters are reset on clean
     shutdown.
 - Windowing
   - Normal desktop windows on X11 or Wayland.
   - Wayland layer-shell bar mode when the compositor exposes
-    `zwlr_layer_shell_v1`, anchored to the top or bottom of the
-    selected monitor.
+    `zwlr_layer_shell_v1`, anchored to the top or bottom of a given
+    monitor.
   - Pop-out windows for individual visuals.
-  - Optional window decorations.
+  - Window decoration toggle.
 - Appearance and persistence
   - Configurable RGBA background color.
   - Editable JSON settings with lossy loading for unknown or invalid
     fields.
-  - User themes stored as separate JSON files.
+  - User themes.
 
 ### Visuals
 
@@ -70,7 +64,8 @@ open an issue or pull request.
 - **Spectrogram**
   - A multitude of window types, lengths, and hop sizes.
   - Classic STFT rendering.
-  - Time-frequency reassignment.
+  - Time-frequency reassignment (Similar to Wavecandy's "Enhanced
+    frequency" mode, or MiniMeters' "Sharper" mode.)
   - Click-and-hold crosshair with frequency, note, and time tooltip.
   - Piano-roll overlay.
   - Frequency-axis zoom and pan.
