@@ -11,22 +11,6 @@ use std::array;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ColorSetting(Color);
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LegacyRgba {
-    r: f32,
-    g: f32,
-    b: f32,
-    a: f32,
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum ColorSettingRepr {
-    Hex(String),
-    Legacy(LegacyRgba),
-}
-
 impl Serialize for ColorSetting {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -41,12 +25,10 @@ impl<'de> Deserialize<'de> for ColorSetting {
     where
         D: Deserializer<'de>,
     {
-        match ColorSettingRepr::deserialize(deserializer)? {
-            ColorSettingRepr::Hex(value) => value.parse().map(Self).map_err(de::Error::custom),
-            ColorSettingRepr::Legacy(LegacyRgba { r, g, b, a }) => {
-                Ok(Self(Color::from_rgba(r, g, b, a)))
-            }
-        }
+        String::deserialize(deserializer)?
+            .parse()
+            .map(Self)
+            .map_err(de::Error::custom)
     }
 }
 

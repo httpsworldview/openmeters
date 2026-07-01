@@ -273,18 +273,9 @@ impl PaletteEditor {
     }
 }
 
-fn premultiply_rgb(color: Color) -> Color {
-    Color {
-        r: color.r * color.a,
-        g: color.g * color.a,
-        b: color.b * color.a,
-        ..color
-    }
-}
-
 fn swatch_style(theme: &iced::Theme, color: Color, active: bool) -> container::Style {
     container::Style::default()
-        .background(Background::Color(premultiply_rgb(color)))
+        .background(Background::Color(color))
         .border(ui_theme::border(theme, active))
 }
 
@@ -484,13 +475,21 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for GradientBar<'_> {
             let t = i as f32 / (steps - 1).max(1) as f32;
             let (lo, hi, f) = find_segment(self.positions, self.spreads, t);
             let c = lerp_color(self.colors[lo], self.colors[hi], f);
+            let x = bounds.x + i as f32 * step_w;
             paint(
                 Rectangle::new(
-                    Point::new(bounds.x + i as f32 * step_w, bounds.y),
-                    Size::new(step_w + 0.5, GRADIENT_BAR_HEIGHT),
+                    Point::new(x, bounds.y),
+                    Size::new(
+                        if i + 1 == steps {
+                            bounds.x + bar_w - x
+                        } else {
+                            step_w
+                        },
+                        GRADIENT_BAR_HEIGHT,
+                    ),
                 ),
                 iced::Border::default(),
-                Background::Color(with_alpha(premultiply_rgb(c), 1.0)),
+                Background::Color(c),
             );
         }
         paint(

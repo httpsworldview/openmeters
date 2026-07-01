@@ -6,7 +6,7 @@ use super::render::{LoudnessParams, LoudnessPrimitive, MeterFill};
 use crate::persistence::settings::LoudnessSettings;
 use crate::visuals::options::MeterMode;
 use crate::visuals::palettes;
-use crate::util::color::{color_to_rgba, with_alpha};
+use crate::util::color::color_to_rgba;
 use crate::visuals::render::common::{fill_rect, make_text};
 use iced::advanced::text;
 use iced::alignment::{Horizontal, Vertical};
@@ -139,7 +139,7 @@ impl LoudnessState {
     fn visual_params(&self, bounds: Rectangle) -> LoudnessParams {
         let (min, max) = DEFAULT_RANGE;
         let guide_color = color_to_rgba(self.palette[PAL_GUIDE]);
-        let bg_color = color_to_rgba(with_alpha(self.palette[PAL_BACKGROUND], 1.0));
+        let bg_color = color_to_rgba(self.palette[PAL_BACKGROUND]);
         let values = self.visible_values();
 
         LoudnessParams {
@@ -337,7 +337,7 @@ crate::visuals::visualization_widget!(Loudness, LoudnessState, |this, renderer, 
         fill_rect(
             renderer,
             label_rect,
-            with_alpha(state.palette[PAL_BACKGROUND], 1.0),
+            state.palette[PAL_BACKGROUND],
         );
 
         let mut text = make_text(

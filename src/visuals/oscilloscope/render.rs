@@ -75,8 +75,8 @@ impl OscilloscopePrimitive {
                 positions,
                 center,
                 STROKE_WIDTH,
-                rgba_with_alpha(color, 1.0),
-                rgba_with_alpha(color, self.params.fill_alpha),
+                color,
+                rgba_with_alpha(color, color[3] * self.params.fill_alpha),
                 clip,
             );
         }
