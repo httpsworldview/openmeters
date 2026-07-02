@@ -4,7 +4,7 @@
 use async_channel::Receiver as AsyncReceiver;
 use iced::Subscription;
 use iced::advanced::subscription::{EventStream, Hasher, Recipe, from_recipe};
-use iced::futures::{self, StreamExt};
+use iced::futures::{StreamExt, stream::BoxStream};
 use std::fmt;
 use std::hash::Hasher as _;
 use std::sync::Arc;
@@ -30,11 +30,8 @@ where
         state.write_usize(Arc::as_ptr(&self.receiver) as usize);
     }
 
-    fn stream(self: Box<Self>, _input: EventStream) -> futures::stream::BoxStream<'static, T> {
-        futures::stream::unfold(self.receiver, |receiver| async move {
-            receiver.recv().await.ok().map(|value| (value, receiver))
-        })
-        .boxed()
+    fn stream(self: Box<Self>, _input: EventStream) -> BoxStream<'static, T> {
+        self.receiver.as_ref().clone().boxed()
     }
 }
 
