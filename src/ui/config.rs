@@ -464,23 +464,12 @@ impl ConfigPage {
     }
 
     fn export_theme(&self, name: &str) -> ThemeFile {
-        let manager = self.visual_manager.borrow();
-        let palettes = manager
-            .snapshot()
-            .iter()
-            .filter_map(|slot| {
-                manager
-                    .module_settings(slot.kind)?
-                    .extract_palette()
-                    .map(|ps| (slot.kind, ps))
-            })
-            .collect();
         let bg = self.settings.borrow().data.background_color;
         ThemeFile {
             name: Some(name.to_owned()),
             author: None,
             background: bg,
-            palettes,
+            palettes: self.visual_manager.borrow().theme_palettes().collect(),
         }
     }
 

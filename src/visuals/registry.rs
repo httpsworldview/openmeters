@@ -343,6 +343,15 @@ impl VisualManager {
         settings.enabled.get_or_insert(entry.enabled);
         Some(settings)
     }
+    pub fn theme_palettes(&self) -> impl Iterator<Item = (VisualKind, PaletteSettings)> + '_ {
+        self.entries.iter().filter_map(|entry| {
+            entry
+                .module
+                .export()
+                .extract_palette()
+                .map(|palette| (entry.descriptor.kind, palette))
+        })
+    }
     pub fn apply_module_settings(&mut self, kind: VisualKind, settings: &ModuleSettings) {
         let index = self
             .position(kind)
