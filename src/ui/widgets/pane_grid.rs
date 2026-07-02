@@ -49,6 +49,10 @@ impl<T> State<T> {
         self.panes.iter().map(|(pane, state)| (pane, state))
     }
 
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (Pane, &mut T)> {
+        self.panes.iter_mut().map(|(pane, state)| (*pane, state))
+    }
+
     pub fn move_to(&mut self, a: Pane, b: Pane) -> bool {
         let (Some(from), Some(to)) = (self.position(a), self.position(b)) else {
             return false;
@@ -59,12 +63,6 @@ impl<T> State<T> {
         let pane = self.panes.remove(from);
         self.panes.insert(to, pane);
         true
-    }
-
-    pub fn for_each_mut(&mut self, mut f: impl FnMut(Pane, &mut T)) {
-        for (pane, value) in &mut self.panes {
-            f(*pane, value);
-        }
     }
 
     fn position(&self, pane: Pane) -> Option<usize> {

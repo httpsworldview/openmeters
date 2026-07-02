@@ -146,11 +146,9 @@ impl VisualsPage {
             return;
         }
         if let Some(panes) = self.panes.as_mut() {
-            panes.for_each_mut(|_, p| {
-                if let Some(s) = slots.iter().copied().find(|s| s.kind == p.kind) {
-                    p.content = s.content.clone();
-                }
-            });
+            for ((_, pane), slot) in panes.iter_mut().zip(slots) {
+                pane.content = slot.content.clone();
+            }
         }
     }
 
