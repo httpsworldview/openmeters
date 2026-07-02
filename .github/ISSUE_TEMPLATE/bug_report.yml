@@ -1,0 +1,74 @@
+name: Bug report
+description: Report reproducible incorrect behavior.
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please include enough detail for someone else to reproduce it.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before filing
+      options:
+        - label: I searched existing issues for a duplicate.
+          required: true
+        - label: I can reproduce this.
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: OpenMeters version
+      description: Release version, package version, or commit hash.
+      placeholder: "v1.7.1, openmeters-git r123, 858612a"
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include the details that affect rendering, capture, and packaging.
+      placeholder: |
+        - Distribution:
+        - Session: X11 or Wayland
+        - Desktop/compositor:
+        - PipeWire version:
+        - GPU/driver:
+        - Install method:
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Use a minimal sequence when possible.
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or crash output
+      description: If useful, run with RUST_LOG=openmeters=debug.
+      render: shell
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: Screenshots, recordings, sample files, or anything else that helps explain the issue.
