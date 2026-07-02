@@ -11,6 +11,9 @@ mod visuals;
 use std::{fs, io, path::Path};
 
 fn write_json_atomic(path: &Path, json: &str) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
     let temp = path.with_extension("json.tmp");
     fs::write(&temp, json)?;
     fs::rename(&temp, path)

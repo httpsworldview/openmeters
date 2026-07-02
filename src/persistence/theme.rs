@@ -98,7 +98,6 @@ impl ThemeStore {
     }
 
     pub fn save(&self, name: &str, theme: &ThemeFile) -> io::Result<()> {
-        fs::create_dir_all(&self.dir)?;
         let path = self.theme_path(name);
         let json = serde_json::to_string_pretty(theme)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;

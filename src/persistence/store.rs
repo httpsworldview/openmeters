@@ -147,11 +147,6 @@ fn settings_saver_loop(rx: mpsc::Receiver<PersistRequest>) {
         if last_written.as_deref() == Some(&json) {
             continue;
         }
-        if let Some(parent) = dest.parent()
-            && let Err(err) = fs::create_dir_all(parent)
-        {
-            tracing::warn!("[settings] failed to create config dir: {err}");
-        }
         match super::write_json_atomic(&dest, &json) {
             Ok(()) => last_written = Some(json),
             Err(err) => tracing::warn!("[settings] failed to write settings: {err}"),
