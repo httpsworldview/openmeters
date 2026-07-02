@@ -11,27 +11,6 @@ crate::macros::choice_enum!(no_default all pub enum Channel {
     None => "None",
 });
 
-#[inline]
-fn project_interleaved_frame(frame: &[f32], channels: usize, channel: Channel) -> Option<f32> {
-    if channels == 0 || channel == Channel::None {
-        return None;
-    }
-    let len = channels.min(frame.len());
-    let left = *frame.first()?;
-    let right = if channels > 1 {
-        frame.get(1).copied().unwrap_or(left)
-    } else {
-        left
-    };
-    match channel {
-        Channel::Left => Some(left),
-        Channel::Right => Some(right),
-        Channel::Mid => Some(frame[..len].iter().sum::<f32>() / len as f32),
-        Channel::Side => Some((left - right) * 0.5),
-        Channel::None => None,
-    }
-}
-
 pub(crate) fn project_interleaved_channel_into(
     output: &mut Vec<f32>,
     interleaved: &[f32],
@@ -43,11 +22,19 @@ pub(crate) fn project_interleaved_channel_into(
     if channels == 0 || channel == Channel::None {
         return false;
     }
-    output.reserve(frames);
-    for frame in interleaved.chunks_exact(channels).take(frames) {
-        if let Some(sample) = project_interleaved_frame(frame, channels, channel) {
-            output.push(sample);
+
+    let frame_count = frames.min(interleaved.len() / channels);
+    output.reserve(frame_count);
+    let chunks = interleaved.chunks_exact(channels).take(frame_count);
+    let right = |frame: &[f32]| frame.get(1).copied().unwrap_or(frame[0]);
+    match channel {
+        Channel::Left => output.extend(chunks.map(|frame| frame[0])),
+        Channel::Right => output.extend(chunks.map(right)),
+        Channel::Mid => {
+            output.extend(chunks.map(|frame| frame.iter().sum::<f32>() / channels as f32))
         }
+        Channel::Side => output.extend(chunks.map(|frame| (frame[0] - right(frame)) * 0.5)),
+        Channel::None => unreachable!(),
     }
     !output.is_empty()
 }
