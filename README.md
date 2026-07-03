@@ -187,7 +187,7 @@ Fedora, and tarball artifacts.
 
 | Binding | Action |
 | --- | --- |
-| `ctrl+shift+h` | Show or hide the global configuration drawer. |
+| `ctrl+shift+h` | Show/hide the configuration window; while open, drag visuals to rearrange them. |
 | right click on a visual | Open that visual's settings window. |
 | `p` | Pause or resume meter updates. |
 | `q` twice | Quit the application. |

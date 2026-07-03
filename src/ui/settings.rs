@@ -1,29 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-macro_rules! controls {
-    ($spacing:literal; $($control:expr;)*) => {{
-        controls!(@push iced::widget::Column::new().spacing($spacing); $($control;)*)
-    }};
-    ($base:expr; $($control:expr;)*) => {{
-        controls!(@push $base; $($control;)*)
-    }};
-    (@push $base:expr; $($control:expr;)*) => {{
-        let mut column = $base;
-        $(column = column.push($control);)*
-        column
-    }};
-}
-
-macro_rules! slider {
-    ($label:expr, $value:expr, $range:expr, $on_change:expr, $fmt:literal) => {
-        slide($label, $value, format!($fmt, $value), $range, $on_change)
-    };
-    ($label:expr, $value:expr, $range:expr, $on_change:expr, $display:expr) => {
-        slide($label, $value, $display, $range, $on_change)
-    };
-}
-
 macro_rules! settings_modules {
     ($($module:ident => $variant:ident),+ $(,)?) => {
         $(mod $module;)+
@@ -142,7 +119,7 @@ macro_rules! settings_messages {
     };
 }
 
-mod widgets;
+pub(in crate::ui) mod widgets;
 
 use crate::persistence::settings::{
     BUILTIN_THEME, HasPalette, ModuleSettings, PaletteSettings, SettingsConfig, SettingsHandle,

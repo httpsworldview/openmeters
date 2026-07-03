@@ -7,19 +7,15 @@ use crate::persistence::settings::{
     BAR_MAX_HEIGHT, BAR_MIN_HEIGHT, BUILTIN_THEME, BarAlignment, SettingsHandle, ThemeChoice,
     ThemeFile, ThemeOrigin, canonical_theme_name,
 };
+use crate::ui::settings::widgets::{SliderRange, card, pick, toggle};
 use crate::ui::subscription::channel_subscription;
 use crate::ui::theme;
 use crate::ui::widgets::palette_editor::{PaletteEditor, PaletteEvent};
-use crate::util::color::with_alpha;
-
 use crate::ui::widgets::scroll_glow::ScrollGlow;
 use crate::visuals::registry::{VisualKind, VisualManagerHandle, VisualSlotSnapshot};
 use async_channel::Receiver as AsyncReceiver;
 use iced::widget::text::Wrapping;
-use iced::widget::{
-    Column, Row, Rule, button, column, container, pick_list, radio, row, rule, slider, text,
-    text_input,
-};
+use iced::widget::{Column, Row, button, column, container, pick_list, row, text, text_input};
 use iced::{Element, Length, Subscription};
 use iced_layershell::actions::OutputSnapshot;
 use std::collections::HashSet;
@@ -27,7 +23,6 @@ use std::sync::{Arc, mpsc};
 
 const GRID_COLUMNS: usize = 2;
 const TEXT_SIZE: f32 = 12.0;
-const TITLE_SIZE: f32 = 14.0;
 const MAX_DEVICE_NAME_LEN: usize = 48;
 
 fn truncate_label(label: &str, max_chars: usize) -> (&str, bool) {
@@ -247,31 +242,30 @@ impl ConfigPage {
     }
 
     pub fn view(&self) -> Element<'_, ConfigMessage> {
-        let mut content = Column::new()
-            .spacing(14)
-            .padding(8)
-            .push(self.render_capture_section())
-            .push(self.render_visuals_section(&self.visual_manager.borrow().snapshot()))
-            .push(self.render_theme_section())
-            .push(self.render_global_section());
+        let snapshot = self.visual_manager.borrow().snapshot();
+        let mut content = controls!(12.0;
+            self.render_capture_card();
+            self.render_visuals_card(&snapshot);
+            self.render_theme_card();
+            self.render_global_card();
+        );
         if self.bar_supported {
-            content = content.push(self.render_bar_section());
+            content = content.push(self.render_bar_card());
         }
         self.scroll.vertical(content, ConfigMessage::Scrolled)
     }
 
-    fn render_capture_section(&self) -> Column<'_, ConfigMessage> {
+    fn render_capture_card(&self) -> container::Container<'_, ConfigMessage> {
         let mode = self.settings.borrow().data.capture_mode;
-        let content = column![
-            radio_row(CaptureMode::ALL, mode, ConfigMessage::CaptureModeChanged),
+        let content = controls!(8.0;
+            pick("Mode", CaptureMode::ALL, mode, ConfigMessage::CaptureModeChanged);
             match mode {
                 CaptureMode::Applications => self.render_applications_section(),
                 CaptureMode::Device => self.render_device_section(),
-            }
-        ]
-        .spacing(8);
+            };
+        );
 
-        section_with_divider("Audio Capture", content)
+        card("Audio Capture", content)
     }
 
     fn render_applications_section(&self) -> Column<'_, ConfigMessage> {
@@ -366,22 +360,17 @@ impl ConfigPage {
         choices
     }
 
-    fn render_global_section(&self) -> Column<'_, ConfigMessage> {
+    fn render_global_card(&self) -> container::Container<'_, ConfigMessage> {
         let decorations_enabled = self.settings.borrow().data.decorations;
-        let content = column![
-            self.bg_palette.view().map(ConfigMessage::BgPalette),
-            iced::widget::checkbox(decorations_enabled)
-                .label("Enable Window Decorations")
-                .size(14)
-                .text_size(TEXT_SIZE)
-                .on_toggle(ConfigMessage::DecorationsToggled)
-        ]
-        .spacing(12);
+        let content = controls!(12.0;
+            self.bg_palette.view().map(ConfigMessage::BgPalette);
+            toggle("Window decorations", decorations_enabled, ConfigMessage::DecorationsToggled);
+        );
 
-        section_with_divider("Global", content)
+        card("Global", content)
     }
 
-    fn render_theme_section(&self) -> Column<'_, ConfigMessage> {
+    fn render_theme_card(&self) -> container::Container<'_, ConfigMessage> {
         let active = self.settings.borrow().active_theme().to_owned();
         let selected = self.theme_choices.iter().find(|c| c.name == active);
         let is_builtin = selected.is_some_and(|c| c.origin == ThemeOrigin::BuiltIn);
@@ -408,13 +397,12 @@ impl ConfigPage {
                 .then(|| ConfigMessage::SaveTheme(trimmed.to_owned())),
         );
 
-        let content = column![
-            row![picker, save_btn].spacing(8),
-            row![save_as_input, save_as_btn].spacing(8)
-        ]
-        .spacing(8);
+        let content = controls!(8.0;
+            row![picker, save_btn].spacing(8);
+            row![save_as_input, save_as_btn].spacing(8);
+        );
 
-        section_with_divider("Theme", content)
+        card("Theme", content)
     }
 
     fn apply_theme(&mut self, name: &str) {
@@ -482,17 +470,17 @@ impl ConfigPage {
         }
     }
 
-    fn render_bar_section(&self) -> Column<'_, ConfigMessage> {
+    fn render_bar_card(&self) -> container::Container<'_, ConfigMessage> {
         let bar = self.settings.borrow().data.bar.clone();
-        let bar_toggle = iced::widget::checkbox(bar.enabled)
-            .label("Enable Bar Mode")
-            .size(14)
-            .text_size(TEXT_SIZE)
-            .on_toggle(ConfigMessage::BarModeToggled);
-        let mut content = column![bar_toggle].spacing(10);
+        let mut content = controls!(10.0;
+            toggle("Bar mode", bar.enabled, ConfigMessage::BarModeToggled);
+        );
         if bar.enabled {
-            content = content
-                .push(
+            let height = bar.height.clamp(BAR_MIN_HEIGHT, BAR_MAX_HEIGHT);
+            let height_range = SliderRange::new(BAR_MIN_HEIGHT as f32, BAR_MAX_HEIGHT as f32, 1.0);
+            content = controls!(content;
+                row![
+                    text("Monitor").size(TEXT_SIZE),
                     pick_list(
                         self.bar_monitors.as_slice(),
                         bar.monitor.clone(),
@@ -501,35 +489,29 @@ impl ConfigPage {
                     .placeholder("Detecting monitor...")
                     .text_size(TEXT_SIZE)
                     .width(Length::Fill),
-                )
-                .push(radio_row(
-                    BarAlignment::ALL,
-                    bar.alignment,
-                    ConfigMessage::BarAlignmentChanged,
-                ))
-                .push(
-                    slider(
-                        BAR_MIN_HEIGHT..=BAR_MAX_HEIGHT,
-                        bar.height.clamp(BAR_MIN_HEIGHT, BAR_MAX_HEIGHT),
-                        ConfigMessage::BarHeightChanged,
-                    )
-                    .step(1u32)
-                    .width(Length::Fill),
-                )
-                .push(
-                    text(format!("Height: {} px", bar.height))
-                        .size(TEXT_SIZE)
-                        .style(theme::weak_text_style),
+                ]
+                .spacing(8)
+                .width(Length::Fill);
+                pick("Alignment", BarAlignment::ALL, bar.alignment, ConfigMessage::BarAlignmentChanged);
+                slider!(
+                    "Height",
+                    height as f32,
+                    height_range,
+                    |v| ConfigMessage::BarHeightChanged(v.round() as u32),
+                    format!("{height} px")
                 );
+            );
         }
-        section_with_divider("Bar Mode", content)
+        card("Bar Mode", content)
     }
 
-    fn render_visuals_section(&self, snapshot: &[VisualSlotSnapshot]) -> Column<'_, ConfigMessage> {
-        let enabled = snapshot.iter().filter(|s| s.enabled).count();
-        let title = format!("Visual Modules ({enabled}/{})", snapshot.len());
-        section_with_divider(
-            title,
+    fn render_visuals_card(
+        &self,
+        snapshot: &[VisualSlotSnapshot],
+    ) -> container::Container<'_, ConfigMessage> {
+        let enabled = snapshot.iter().filter(|slot| slot.enabled).count();
+        card(
+            format!("Visual Modules ({enabled}/{})", snapshot.len()),
             render_toggle_grid(snapshot, |slot| {
                 (
                     slot.kind.label(),
@@ -620,41 +602,6 @@ fn sync_selected_device_with_choices(
         });
     }
     changed
-}
-
-fn divider<'a>() -> Rule<'a> {
-    rule::horizontal(1).style(|theme: &iced::Theme| rule::Style {
-        color: with_alpha(theme.extended_palette().secondary.weak.text, 0.2),
-        radius: 0.0.into(),
-        fill_mode: rule::FillMode::Percent(100.0),
-        snap: true,
-    })
-}
-
-fn section_with_divider<'a>(
-    title: impl Into<String>,
-    content: impl Into<Element<'a, ConfigMessage>>,
-) -> Column<'a, ConfigMessage> {
-    column![
-        text(title.into()).size(TITLE_SIZE),
-        divider(),
-        content.into()
-    ]
-    .spacing(8)
-}
-
-fn radio_row<'a, T: Copy + Eq + std::fmt::Display + 'a>(
-    options: &'a [T],
-    selected: T,
-    on_select: fn(T) -> ConfigMessage,
-) -> Row<'a, ConfigMessage> {
-    options.iter().fold(Row::new().spacing(12), |row, &val| {
-        row.push(
-            radio(val.to_string(), val, Some(selected), on_select)
-                .size(14)
-                .text_size(TEXT_SIZE),
-        )
-    })
 }
 
 fn render_toggle_grid<'a, T, F>(items: &[T], mut project: F) -> Column<'a, ConfigMessage>

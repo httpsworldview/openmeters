@@ -98,25 +98,6 @@ pub fn weak_text_style(theme: &Theme) -> text::Style {
     }
 }
 
-pub fn opaque_container(theme: &Theme) -> container::Style {
-    let bg = with_alpha(theme.extended_palette().background.base.color, 1.0);
-    container::Style {
-        background: Some(Background::Color(bg)),
-        ..Default::default()
-    }
-}
-
-pub fn resize_handle_container(theme: &Theme) -> container::Style {
-    let palette = theme.extended_palette();
-    container::Style {
-        background: Some(Background::Color(with_alpha(
-            palette.secondary.weak.color,
-            0.1,
-        ))),
-        ..Default::default()
-    }
-}
-
 pub fn resize_overlay(theme: &Theme) -> container::Style {
     let palette = theme.extended_palette();
     container::Style {

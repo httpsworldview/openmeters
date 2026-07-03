@@ -36,15 +36,12 @@ use std::rc::Rc;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 use windowing::{
-    APP_ID, BarResizeState, PopoutWindow, layershell_available, main_window_size, open_main_window,
+    APP_ID, BarResizeState, PopoutWindow, layershell_available, main_window_size,
+    open_config_base_window, open_main_window,
 };
 
 const TOAST_DISPLAY_DURATION: Duration = Duration::from_secs(2);
-const DEFAULT_DRAWER_RATIO: f32 = 0.20;
-const MIN_DRAWER_RATIO: f32 = 0.10;
-const MAX_DRAWER_RATIO: f32 = 0.50;
 const BAR_RESIZE_HANDLE_THICKNESS: f32 = 6.0;
-const DRAWER_RESIZE_HANDLE_WIDTH: f32 = 6.0;
 
 #[derive(Clone)]
 pub(crate) struct UiConfig {
@@ -96,10 +93,7 @@ struct UiApp {
     visual_manager: VisualManagerHandle,
     settings_handle: SettingsHandle,
     audio_frames: Arc<AsyncReceiver<AudioBatch>>,
-    drawer_open: bool,
-    drawer_width_ratio: f32,
-    drawer_resizing: bool,
-    drawer_resize_offset: Option<f32>,
+    config_window: Option<window::Id>,
     bar_resize_state: Option<BarResizeState>,
     rendering_paused: bool,
     toast_until: Option<Instant>,
@@ -156,10 +150,7 @@ impl UiApp {
             visual_manager,
             settings_handle,
             audio_frames,
-            drawer_open: false,
-            drawer_width_ratio: DEFAULT_DRAWER_RATIO,
-            drawer_resizing: false,
-            drawer_resize_offset: None,
+            config_window: None,
             bar_resize_state: None,
             rendering_paused: false,
             toast_until: None,
@@ -194,38 +185,20 @@ impl UiApp {
             }),
         ];
         subs.push(channel_subscription(Arc::clone(&self.audio_frames)).map(Message::AudioFrame));
-        if self.drawer_resizing && self.drawer_open {
-            subs.push(event::listen_with(message::drawer_drag_events));
-        }
         if self.bar_resize_state.is_some() {
             subs.push(event::listen_with(message::bar_drag_events));
         }
         Subscription::batch(subs)
     }
 
-    fn toggle_drawer(&mut self) {
-        self.drawer_open = !self.drawer_open;
-        self.end_drawer_resize();
-        self.toast_until = self
-            .drawer_open
-            .then(|| Instant::now() + TOAST_DISPLAY_DURATION);
-    }
-
-    fn end_drawer_resize(&mut self) {
-        self.drawer_resizing = false;
-        self.drawer_resize_offset = None;
-    }
-
-    fn handle_drawer_resize(&mut self, position: iced::Point) {
-        if self.drawer_resizing && self.drawer_width_ratio > 0.0 {
-            let estimated_width = self.drawer_resize_offset.get_or_insert_with(|| {
-                (position.x - DRAWER_RESIZE_HANDLE_WIDTH) / self.drawer_width_ratio
-            });
-            if *estimated_width > 0.0 {
-                self.drawer_width_ratio =
-                    (position.x / *estimated_width).clamp(MIN_DRAWER_RATIO, MAX_DRAWER_RATIO);
-            }
+    fn toggle_config_window(&mut self) -> Task<Message> {
+        if let Some(id) = self.config_window.take() {
+            return window::close(id);
         }
+        let (id, task) = open_config_base_window(self.use_layershell);
+        self.config_window = Some(id);
+        self.toast_until = Some(Instant::now() + TOAST_DISPLAY_DURATION);
+        task
     }
 
     fn begin_bar_resize(&mut self) {
@@ -288,22 +261,19 @@ impl UiApp {
         };
 
         let content = self.visuals_with_toasts();
-        let content = self.wrap_drawer(content);
         let content = self.wrap_bar_resize(content, &bar);
         Self::wrap_window_resize(content, use_decorations, &bar)
     }
 
     fn visuals_with_toasts(&self) -> Element<'_, Message> {
-        let visuals_view = self
-            .visuals_page
-            .view(self.drawer_open)
-            .map(Message::Visuals);
+        let config_open = self.config_window.is_some();
+        let visuals_view = self.visuals_page.view(config_open).map(Message::Visuals);
 
         let now = Instant::now();
         let is_active = |deadline: Option<Instant>| deadline.is_some_and(|expires| now < expires);
         let toast_msgs: Vec<&str> = [
-            (self.drawer_open && is_active(self.toast_until))
-                .then_some("ctrl+shift+h to close drawer"),
+            (config_open && is_active(self.toast_until))
+                .then_some("drag visuals to rearrange | ctrl+shift+h to close config"),
             self.rendering_paused.then_some("paused (p to resume)"),
             is_active(self.exit_warning_until).then_some("q again to exit"),
         ]
@@ -327,36 +297,6 @@ impl UiApp {
             );
         }
         layer.into()
-    }
-
-    fn wrap_drawer<'a>(&'a self, visuals: Element<'a, Message>) -> Element<'a, Message> {
-        if !self.drawer_open {
-            return visuals;
-        }
-        let drawer_portion = (self.drawer_width_ratio * 1000.0).round() as u16;
-        let visuals_portion = 1000 - drawer_portion;
-        let drawer: Element<'_, Message> = fill!(self.config_page.view().map(Message::Config))
-            .width(Length::FillPortion(drawer_portion))
-            .style(theme::opaque_container)
-            .into();
-        let handle: Element<'_, Message> = mouse_area(
-            container(text(":").size(12).align_x(Horizontal::Center))
-                .width(12)
-                .height(Length::Fill)
-                .align_x(Horizontal::Center)
-                .align_y(Vertical::Center)
-                .style(theme::resize_handle_container),
-        )
-        .on_press(Message::DrawerResizeStart)
-        .interaction(iced::mouse::Interaction::ResizingHorizontally)
-        .into();
-        let visuals: Element<'_, Message> = fill!(visuals)
-            .width(Length::FillPortion(visuals_portion))
-            .into();
-        row![drawer, handle, visuals]
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
     }
 
     fn wrap_bar_resize<'a>(

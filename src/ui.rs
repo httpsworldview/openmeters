@@ -1,6 +1,35 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
+macro_rules! controls {
+    ($spacing:literal; $($control:expr;)*) => {{
+        controls!(@push iced::widget::Column::new().spacing($spacing); $($control;)*)
+    }};
+    ($base:expr; $($control:expr;)*) => {{
+        controls!(@push $base; $($control;)*)
+    }};
+    (@push $base:expr; $($control:expr;)*) => {{
+        let mut column = $base;
+        $(column = column.push($control);)*
+        column
+    }};
+}
+
+macro_rules! slider {
+    ($label:expr, $value:expr, $range:expr, $on_change:expr, $fmt:literal) => {
+        $crate::ui::settings::widgets::slide(
+            $label,
+            $value,
+            format!($fmt, $value),
+            $range,
+            $on_change,
+        )
+    };
+    ($label:expr, $value:expr, $range:expr, $on_change:expr, $display:expr) => {
+        $crate::ui::settings::widgets::slide($label, $value, $display, $range, $on_change)
+    };
+}
+
 pub mod app;
 pub mod config;
 pub mod settings;

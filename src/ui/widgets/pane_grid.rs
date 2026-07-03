@@ -375,6 +375,13 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer> for PaneGrid
         {
             return mouse::Interaction::ResizingHorizontally;
         }
+        if self.on_drag.is_some()
+            && cursor
+                .position()
+                .is_some_and(|p| self.pane_at(layout, p).is_some())
+        {
+            return mouse::Interaction::Grab;
+        }
         self.entries
             .iter()
             .zip(&tree.children)

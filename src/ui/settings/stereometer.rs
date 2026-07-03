@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::widgets::{
-    SliderRange, card, palette_card, pick, set_if_changed, slide, split, toggle, update_f32_range,
+    SliderRange, card, palette_card, pick, set_if_changed, split, toggle, update_f32_range,
     update_usize_from_f32,
 };
 use crate::persistence::settings::StereometerSettings;

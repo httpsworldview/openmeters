@@ -111,7 +111,7 @@ pub fn slide<'a, M: Clone + 'a>(
 }
 
 pub fn card<'a, M: 'a>(
-    label: &'static str,
+    label: impl iced::widget::text::IntoFragment<'a>,
     content: impl Into<Element<'a, M>>,
 ) -> container::Container<'a, M> {
     container(

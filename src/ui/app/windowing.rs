@@ -25,7 +25,7 @@ use wayland_client::{Connection, Dispatch, QueueHandle};
 
 pub(super) const APP_ID: &str = "openmeters-ui";
 const WINDOW_MIN_SIZE: Size = Size::new(200.0, 150.0);
-pub(super) const SETTINGS_WINDOW_SIZE: Size = Size::new(480.0, 600.0);
+const TOOL_WINDOW_SIZE: Size = Size::new(480.0, 600.0);
 
 #[derive(Debug, Default)]
 struct LayerShellProbe;
@@ -121,8 +121,12 @@ fn open_base_window(
     }
 }
 
+pub(super) fn open_config_base_window(use_layershell: bool) -> (window::Id, Task<Message>) {
+    open_base_window(use_layershell, TOOL_WINDOW_SIZE, true)
+}
+
 fn open_settings_base_window(use_layershell: bool) -> (window::Id, Task<Message>) {
-    open_base_window(use_layershell, SETTINGS_WINDOW_SIZE, true)
+    open_base_window(use_layershell, TOOL_WINDOW_SIZE, true)
 }
 
 pub(super) fn open_main_window(
@@ -332,6 +336,9 @@ impl UiApp {
         if id == self.main_window_id {
             return exit();
         }
+        if self.config_window == Some(id) {
+            self.config_window = None;
+        }
         if self.settings_window.as_ref().is_some_and(|(w, _)| *w == id) {
             self.settings_window = None;
         }
@@ -391,6 +398,10 @@ impl UiApp {
             return "OpenMeters".into();
         }
 
+        if self.config_window == Some(window_id) {
+            return "Configuration - OpenMeters".into();
+        }
+
         let (kind, suffix) = if let Some((_, panel)) = self
             .settings_window
             .as_ref()
@@ -407,10 +418,12 @@ impl UiApp {
     }
 
     pub(super) fn theme(&self, window_id: window::Id) -> iced::Theme {
+        let is_config = self.config_window == Some(window_id);
         let is_settings = matches!(&self.settings_window, Some((w, _)) if *w == window_id);
-        // Settings window forces opaque alpha: it has no wgpu visual backdrop, so a
+        let is_tool = is_config || is_settings;
+        // Tool windows force opaque alpha: they have no wgpu visual backdrop, so a
         // translucent user background would let the desktop bleed through the chrome.
-        let custom_bg = if is_settings
+        let custom_bg = if is_tool
             || window_id == self.main_window_id
             || self.popout_windows.contains_key(&window_id)
         {
@@ -420,7 +433,7 @@ impl UiApp {
         }
         .map(|c| {
             let c: iced::Color = c.into();
-            if is_settings { with_alpha(c, 1.0) } else { c }
+            if is_tool { with_alpha(c, 1.0) } else { c }
         });
         theme::theme(custom_bg)
     }

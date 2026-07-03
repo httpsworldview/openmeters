@@ -90,7 +90,7 @@ impl VisualsPage {
         self.panes.as_ref()?.get(self.hovered_pane?).map(|p| p.kind)
     }
 
-    pub fn view(&self, controls_visible: bool) -> Element<'_, VisualsMessage> {
+    pub fn view(&self, reorder_enabled: bool) -> Element<'_, VisualsMessage> {
         let Some(panes) = &self.panes else {
             return container(text("enable some visuals to see them here (Ctrl+Shift+H)"))
                 .width(Length::Fill)
@@ -107,7 +107,7 @@ impl VisualsPage {
             .on_context_request(VisualsMessage::PaneContextRequested)
             .on_hover(VisualsMessage::PaneHovered);
 
-        if controls_visible {
+        if reorder_enabled {
             grid = grid.on_drag(VisualsMessage::PaneDragged);
             container(grid)
                 .width(Length::Fill)

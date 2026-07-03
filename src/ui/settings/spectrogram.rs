@@ -3,7 +3,7 @@
 
 use super::widgets::{
     FFT_OPTIONS, HOP_DIVISORS, SliderRange, card, get_closest_hop_divisor, palette_card, pick,
-    set_if_changed, slide, split, toggle, update_f32_range, update_fft_size, update_hop_divisor,
+    set_if_changed, split, toggle, update_f32_range, update_fft_size, update_hop_divisor,
 };
 use crate::persistence::settings::SpectrogramSettings;
 use crate::util::audio::{FrequencyScale, WindowKind};

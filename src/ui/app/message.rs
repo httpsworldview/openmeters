@@ -24,12 +24,9 @@ pub(super) enum Message {
     Visuals(VisualsMessage),
     AudioFrame(AudioBatch),
     BarOutputResolved(window::Id, Option<OutputSnapshot>),
-    ToggleDrawer,
+    ToggleConfig,
     TogglePause,
     PopOutOrDock(window::Id),
-    DrawerResizeStart,
-    DrawerResizeMove(iced::Point),
-    DrawerResizeEnd,
     BarResizeStart,
     BarResizeMove(iced::Point),
     BarResizeEnd,
@@ -63,10 +60,6 @@ fn drag_events(
     }
 }
 
-pub(super) fn drawer_drag_events(evt: Event, _: event::Status, _: window::Id) -> Option<Message> {
-    drag_events(evt, Message::DrawerResizeMove, Message::DrawerResizeEnd)
-}
-
 pub(super) fn bar_drag_events(evt: Event, _: event::Status, _: window::Id) -> Option<Message> {
     drag_events(evt, Message::BarResizeMove, Message::BarResizeEnd)
 }
@@ -83,7 +76,7 @@ pub(super) fn keyboard_shortcut(
         (modifiers.control(), modifiers.shift(), modifiers.is_empty());
     match key {
         Key::Character(ch) if ctrl && shift && ch.eq_ignore_ascii_case("h") => {
-            Some(Message::ToggleDrawer)
+            Some(Message::ToggleConfig)
         }
         Key::Named(keyboard::key::Named::Space) if ctrl => Some(Message::PopOutOrDock(window_id)),
         Key::Character(ch) if no_modifiers && status != event::Status::Captured => {
@@ -130,30 +123,12 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
             window::drag(app.main_window_id)
         }
         Message::Visuals(visuals_msg) => app.visuals_page.update(visuals_msg).map(Message::Visuals),
-        Message::ToggleDrawer => {
-            app.toggle_drawer();
-            Task::none()
-        }
+        Message::ToggleConfig => app.toggle_config_window(),
         Message::TogglePause => {
             app.rendering_paused = !app.rendering_paused;
             Task::none()
         }
         Message::PopOutOrDock(window_id) => app.handle_popout_or_dock(window_id),
-        Message::DrawerResizeStart => {
-            if app.drawer_open {
-                app.drawer_resizing = true;
-                app.drawer_resize_offset = None;
-            }
-            Task::none()
-        }
-        Message::DrawerResizeMove(pos) => {
-            app.handle_drawer_resize(pos);
-            Task::none()
-        }
-        Message::DrawerResizeEnd => {
-            app.end_drawer_resize();
-            Task::none()
-        }
         Message::BarResizeStart => {
             app.begin_bar_resize();
             Task::none()
@@ -210,6 +185,13 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
 pub(super) fn view(app: &UiApp, window_id: window::Id) -> Element<'_, Message> {
     if window_id == app.main_window_id {
         return app.main_window_view();
+    }
+    if app.config_window == Some(window_id) {
+        let content: Element<'_, Message> = fill!(app.config_page.view().map(Message::Config))
+            .padding(16)
+            .style(theme::weak_container)
+            .into();
+        return content;
     }
     if let Some((_, panel)) = app
         .settings_window
