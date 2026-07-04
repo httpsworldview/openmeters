@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::processor::OscilloscopeSnapshot;
+use super::processor::{OscilloscopeSnapshot, TRACE_COUNT};
 use super::render::{OscilloscopeParams, OscilloscopePrimitive};
 use crate::persistence::settings::OscilloscopeSettings;
 use crate::util::color::color_to_rgba;
 use crate::visuals::palettes;
 use iced::Color;
 
-const OSCILLOSCOPE_PALETTE_SIZE: usize = 1;
+const OSCILLOSCOPE_PALETTE_SIZE: usize = TRACE_COUNT;
 const MAX_PERSISTENCE: f32 = 0.98;
 const FILL_ALPHA: f32 = 0.15;
 
@@ -17,6 +17,7 @@ pub(in crate::visuals) struct OscilloscopeState {
     snapshot: OscilloscopeSnapshot,
     pub(in crate::visuals) colors: [Color; OSCILLOSCOPE_PALETTE_SIZE],
     pub(in crate::visuals) persistence: f32,
+    pub(in crate::visuals) stacked: bool,
     key: u64,
 }
 
@@ -27,16 +28,18 @@ impl OscilloscopeState {
             snapshot: OscilloscopeSnapshot::default(),
             colors: palettes::oscilloscope::COLORS,
             persistence: defaults.persistence,
+            stacked: defaults.stacked,
             key: crate::visuals::next_key(),
         }
     }
 
-    pub fn update_view_settings(&mut self, persistence: f32, reset_snapshot: bool) {
+    pub fn update_view_settings(&mut self, persistence: f32, stacked: bool, reset_snapshot: bool) {
         self.persistence = if persistence.is_finite() {
             persistence.clamp(0.0, 1.0)
         } else {
             OscilloscopeSettings::default().persistence
         };
+        self.stacked = stacked;
         if reset_snapshot {
             self.snapshot = OscilloscopeSnapshot::default();
         }
@@ -53,6 +56,7 @@ impl OscilloscopeState {
             && snapshot.channels == self.snapshot.channels
             && snapshot.samples_per_channel == self.snapshot.samples_per_channel
             && snapshot.samples.len() == self.snapshot.samples.len()
+            && snapshot.slots[..snapshot.channels] == self.snapshot.slots[..self.snapshot.channels]
         {
             let persistence = self.persistence.clamp(0.0, MAX_PERSISTENCE);
             if persistence > f32::EPSILON {
@@ -80,8 +84,10 @@ impl OscilloscopeState {
             bounds,
             channels,
             samples_per_channel,
+            slots: self.snapshot.slots,
             samples: self.snapshot.samples.clone(),
-            color: color_to_rgba(self.colors[0]),
+            colors: self.colors.map(color_to_rgba),
+            stacked: self.stacked,
             fill_alpha: FILL_ALPHA,
         })
     }

@@ -226,6 +226,7 @@ visual_settings!(OscilloscopeSettings from OscilloscopeConfig {
     channel_1: Channel, channel_2: Channel,
 } extra {
     persistence: f32 = 0.0,
+    stacked: bool = false,
 });
 
 visual_settings!(WaveformSettings from WaveformConfig {

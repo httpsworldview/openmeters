@@ -117,9 +117,12 @@ pub mod waveform {
 
 pub mod oscilloscope {
     use super::Color;
-    pub const COLORS: [Color; 1] = [Color::from_rgb8(0xFF, 0xFF, 0xFF)];
-    pub const LABELS: &[&str] = &["Trace"];
-    pub const DEFAULT_POSITIONS: [f32; COLORS.len()] = [0.0];
+    pub const COLORS: [Color; 2] = [
+        Color::from_rgb8(0xFF, 0xFF, 0xFF),
+        Color::from_rgb8(0xFF, 0xFF, 0xFF),
+    ];
+    pub const LABELS: &[&str] = &["Channel 1", "Channel 2"];
+    pub const DEFAULT_POSITIONS: [f32; COLORS.len()] = [0.0, 1.0];
 }
 
 pub mod stereometer {

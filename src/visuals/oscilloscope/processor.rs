@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-const TRACE_COUNT: usize = 2;
+pub(in crate::visuals::oscilloscope) const TRACE_COUNT: usize = 2;
 
 fn parabolic_refine(y_prev: f32, y_curr: f32, y_next: f32, tau: usize) -> f32 {
     let denom = y_prev - 2.0 * y_curr + y_next;
@@ -562,6 +562,7 @@ fn find_rising_zero_crossing(
 pub struct OscilloscopeSnapshot {
     pub epoch: u64,
     pub channels: usize,
+    pub slots: [usize; TRACE_COUNT],
     pub samples: Vec<f32>,
     pub samples_per_channel: usize,
 }
@@ -722,6 +723,7 @@ impl OscilloscopeProcessor {
                 capture,
                 target,
             ) {
+                self.snapshot.slots[self.snapshot.channels] = slot;
                 self.snapshot.channels += 1;
             }
         }

@@ -23,13 +23,35 @@ use std::{cell::RefCell, rc::Rc};
 
 type Shared<T> = Rc<RefCell<T>>;
 
+// too many stops -> keep first N
+// too few stops -> copy provided, repeat last
 fn resolve_palette<const N: usize>(
     custom: Option<&PaletteSettings>,
     default: &[Color; N],
 ) -> [Color; N] {
-    custom
-        .and_then(PaletteSettings::to_array)
-        .unwrap_or(*default)
+    let Some(custom) = custom else {
+        return *default;
+    };
+
+    if let Some(colors) = custom.to_array() {
+        return colors;
+    }
+
+    let mut colors = *default;
+    let mut last = None;
+    let mut used = 0;
+    for (dst, stop) in colors.iter_mut().zip(&custom.stops) {
+        let color = (*stop).into();
+        *dst = color;
+        last = Some(color);
+        used += 1;
+    }
+    if let Some(color) = last
+        && used < N
+    {
+        colors[used..].fill(color);
+    }
+    colors
 }
 
 macro_rules! visuals {
@@ -131,10 +153,10 @@ visuals! {
         oscilloscope::OscilloscopeProcessor, OscilloscopeConfig, OscilloscopeState;
         settings_cfg::OscilloscopeSettings;
         apply(p, s, set) { visuals!(@apply_config p, set); let reset = [set.channel_1, set.channel_2] == [Channel::None; 2];
-            let mut st = s.borrow_mut(); st.update_view_settings(set.persistence, reset);
+            let mut st = s.borrow_mut(); st.update_view_settings(set.persistence, set.stacked, reset);
             visuals!(@apply_palette st, set, &palettes::oscilloscope::COLORS); };
         export(p, s) { let st = s.borrow(); let mut out = settings_cfg::OscilloscopeSettings::from_config(&p.config());
-            out.persistence = st.persistence;
+            out.persistence = st.persistence; out.stacked = st.stacked;
             out.palette = visuals!(@export_palette &st.colors, &palettes::oscilloscope::COLORS); out };
 
     Waveform(220.0, 220.0) =>
@@ -401,3 +423,23 @@ impl VisualManager {
 }
 
 pub(crate) type VisualManagerHandle = Shared<VisualManager>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_palettes_extend_with_last_stop() {
+        let a = Color::from_rgb8(1, 2, 3);
+        let b = Color::from_rgb8(4, 5, 6);
+        let palette = PaletteSettings {
+            stops: vec![a.into(), b.into()],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            resolve_palette(Some(&palette), &[Color::BLACK; 4]),
+            [a, b, b, b]
+        );
+    }
+}

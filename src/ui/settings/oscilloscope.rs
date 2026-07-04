@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::widgets::{SliderRange, card, palette_card, pick, set_if_changed, update_f32_range};
+use super::widgets::{SliderRange, card, palette_card, pick, set_if_changed, toggle, update_f32_range};
 use crate::persistence::settings::OscilloscopeSettings;
 use crate::util::audio::Channel;
 use crate::visuals::oscilloscope::processor::TriggerMode;
@@ -65,6 +65,7 @@ settings_messages!(pane, value {
     TriggerSource(Channel) => set_if_changed(&mut pane.settings.trigger_source, value);
     Channel1(Channel) => set_if_changed(&mut pane.settings.channel_1, value);
     Channel2(Channel) => set_if_changed(&mut pane.settings.channel_2, value);
+    Stacked(bool) => set_if_changed(&mut pane.settings.stacked, value);
 });
 
 impl Pane {
@@ -109,6 +110,7 @@ impl Pane {
             card("Signal", signal);
             card("Trigger", trigger);
             card("Display", controls!(8.0;
+                toggle("Stacked", self.settings.stacked, Message::Stacked);
                 slider!("Persistence", self.settings.persistence, PERSISTENCE_RANGE, Message::Persistence, "{:.2}");
             ));
             palette_card(&self.palette, Message::Palette);

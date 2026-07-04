@@ -4,6 +4,7 @@
 use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
 
+use super::processor::TRACE_COUNT;
 use crate::util::color::rgba_with_alpha;
 use crate::visuals::render::common::sdf_primitive;
 use crate::visuals::render::common::{
@@ -16,8 +17,10 @@ pub struct OscilloscopeParams {
     pub bounds: Rectangle,
     pub channels: usize,
     pub samples_per_channel: usize,
+    pub slots: [usize; TRACE_COUNT],
     pub samples: Vec<f32>,
-    pub color: [f32; 4],
+    pub colors: [[f32; 4]; TRACE_COUNT],
+    pub stacked: bool,
     pub fill_alpha: f32,
 }
 
@@ -29,9 +32,12 @@ impl OscilloscopePrimitive {
         const STROKE_WIDTH: f32 = 1.0;
 
         let samples_per_channel = self.params.samples_per_channel;
-        let channels = self.params.channels.max(1);
+        let channels = self.params.channels.min(TRACE_COUNT);
 
-        if samples_per_channel < 2 || self.params.samples.len() < channels * samples_per_channel {
+        if channels == 0
+            || samples_per_channel < 2
+            || self.params.samples.len() < channels * samples_per_channel
+        {
             return;
         }
 
@@ -40,7 +46,7 @@ impl OscilloscopePrimitive {
 
         let layout = ChannelLayout::new(
             bounds,
-            channels,
+            if self.params.stacked { 1 } else { channels },
             VERTICAL_PADDING,
             CHANNEL_GAP,
             AMPLITUDE_SCALE,
@@ -51,15 +57,12 @@ impl OscilloscopePrimitive {
         let vertices = &mut scratch.vertices;
         let positions = &mut scratch.points;
 
-        for (channel_idx, channel_samples) in self
-            .params
-            .samples
-            .chunks_exact(samples_per_channel)
-            .take(channels)
-            .enumerate()
-        {
-            let color = self.params.color;
-            let center = layout.center_y(channel_idx);
+        for i in 0..channels {
+            let channel_idx = if self.params.stacked { channels - 1 - i } else { i };
+            let start = channel_idx * samples_per_channel;
+            let channel_samples = &self.params.samples[start..start + samples_per_channel];
+            let color = self.params.colors[self.params.slots[channel_idx].min(TRACE_COUNT - 1)];
+            let center = layout.center_y(if self.params.stacked { 0 } else { channel_idx });
 
             positions.clear();
             positions.extend(channel_samples.iter().enumerate().map(|(i, &s)| {
