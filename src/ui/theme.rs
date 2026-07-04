@@ -25,13 +25,17 @@ pub fn theme(custom_bg: Option<Color>) -> Theme {
     })
 }
 
-fn palette(custom_bg: Option<Color>) -> palette::Palette {
-    let background = custom_bg.unwrap_or(BG_BASE);
-    let text = if palette::is_dark(background) {
+fn readable_text(background: Color) -> Color {
+    if palette::is_dark(background) {
         TEXT_PRIMARY
     } else {
         TEXT_DARK
-    };
+    }
+}
+
+fn palette(custom_bg: Option<Color>) -> palette::Palette {
+    let background = custom_bg.unwrap_or(BG_BASE);
+    let text = readable_text(background);
 
     palette::Palette {
         background,
@@ -66,7 +70,7 @@ fn button_style(theme: &Theme, base: Color, status: button::Status) -> button::S
     };
     button::Style {
         background: Some(Background::Color(bg)),
-        text_color: theme.extended_palette().background.base.text,
+        text_color: readable_text(bg),
         border: border(theme, status == Pressed),
         ..Default::default()
     }
