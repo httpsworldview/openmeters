@@ -31,7 +31,6 @@ pub(super) enum Message {
     BarResizeMove(iced::Point),
     BarResizeEnd,
     Quit,
-    Resize,
     WindowClosed(window::Id),
     WindowResized(window::Id, Size),
     Settings(window::Id, SettingsMessage),
@@ -141,9 +140,6 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
             }
             app.exit_warning_until = Some(Instant::now() + TOAST_DISPLAY_DURATION);
             Task::none()
-        }
-        Message::Resize if !app.main_window_is_layer => {
-            window::drag_resize(app.main_window_id, window::Direction::SouthEast)
         }
         Message::AudioFrame(AudioBatch { samples, format }) if !app.rendering_paused => {
             app.visual_manager

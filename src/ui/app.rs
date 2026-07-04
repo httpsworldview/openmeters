@@ -254,15 +254,9 @@ impl UiApp {
     }
 
     fn main_window_view(&self) -> Element<'_, Message> {
-        let (use_decorations, bar) = {
-            let guard = self.settings_handle.borrow();
-            let settings = &guard.data;
-            (settings.decorations, settings.bar.clone())
-        };
-
+        let bar = self.settings_handle.borrow().data.bar.clone();
         let content = self.visuals_with_toasts();
-        let content = self.wrap_bar_resize(content, &bar);
-        Self::wrap_window_resize(content, use_decorations, &bar)
+        self.wrap_bar_resize(content, &bar)
     }
 
     fn visuals_with_toasts(&self) -> Element<'_, Message> {
@@ -332,26 +326,5 @@ impl UiApp {
         } else {
             stack![content, handle_layer].into()
         }
-    }
-
-    fn wrap_window_resize<'a>(
-        content: Element<'a, Message>,
-        use_decorations: bool,
-        bar: &BarSettings,
-    ) -> Element<'a, Message> {
-        if use_decorations || bar.enabled {
-            return content;
-        }
-        let handle = mouse_area(container(text(" ")).width(20).height(20))
-            .on_press(Message::Resize)
-            .interaction(iced::mouse::Interaction::ResizingDiagonallyDown);
-        stack![
-            content,
-            fill!(handle)
-                .align_x(Horizontal::Right)
-                .align_y(Vertical::Bottom)
-                .padding(4)
-        ]
-        .into()
     }
 }
