@@ -6,7 +6,7 @@ use crate::ui::widgets::pane_grid::{self, Content as PaneContent, Pane};
 use crate::visuals::registry::{
     VisualContent, VisualKind, VisualManagerHandle, VisualSlotSnapshot,
 };
-use iced::widget::{container, mouse_area, text};
+use iced::widget::{container, text};
 use iced::{Element, Length, Task};
 
 #[derive(Debug, Clone)]
@@ -16,7 +16,6 @@ pub enum VisualsMessage {
     PaneContextRequested(Pane),
     PaneHovered(Option<Pane>),
     SettingsRequested(VisualKind),
-    WindowDragRequested,
 }
 
 #[derive(Clone)]
@@ -81,7 +80,7 @@ impl VisualsPage {
                 }
             }
             VisualsMessage::PaneHovered(pane) => self.hovered_pane = pane,
-            VisualsMessage::SettingsRequested(_) | VisualsMessage::WindowDragRequested => {}
+            VisualsMessage::SettingsRequested(_) => {}
         }
         Task::none()
     }
@@ -109,16 +108,11 @@ impl VisualsPage {
 
         if reorder_enabled {
             grid = grid.on_drag(VisualsMessage::PaneDragged);
-            container(grid)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into()
-        } else {
-            mouse_area(container(grid).width(Length::Fill).height(Length::Fill))
-                .on_press(VisualsMessage::WindowDragRequested)
-                .interaction(iced::mouse::Interaction::Grab)
-                .into()
         }
+        container(grid)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
     }
 
     pub(in crate::ui) fn apply_snapshot_excluding(

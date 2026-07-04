@@ -119,9 +119,6 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
             Task::batch([decoration_task, bar_task, restore_task, sync_task])
         }
         Message::Visuals(VisualsMessage::SettingsRequested(kind)) => app.open_settings_window(kind),
-        Message::Visuals(VisualsMessage::WindowDragRequested) if !app.main_window_is_layer => {
-            window::drag(app.main_window_id)
-        }
         Message::Visuals(visuals_msg) => app.visuals_page.update(visuals_msg).map(Message::Visuals),
         Message::ToggleConfig => app.toggle_config_window(),
         Message::TogglePause => {
