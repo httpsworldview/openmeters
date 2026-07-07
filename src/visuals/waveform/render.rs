@@ -168,6 +168,15 @@ impl WaveformPrimitive {
             (right_edge - preview_width - dist_steps * col_width - scroll_offset - col_width)
                 .floor()
         };
+        let push_column = |vertices: &mut Vec<_>, center_y, x0, x1, column: WaveColumn| {
+            if let Some((y0, y1)) =
+                sample_y_span(center_y, layout.amplitude_scale, column.min, column.max)
+            {
+                let color = static_color
+                    .unwrap_or_else(|| with_fill_alpha(params.column_color(column), params.fill_alpha));
+                vertices.extend(quad_vertices(x0, y0, x1, y1, clip, color));
+            }
+        };
 
         for ch in 0..channels {
             let center_y = layout.center_y(ch);
@@ -175,22 +184,7 @@ impl WaveformPrimitive {
             for i in 0..columns {
                 let column = data[start + i][params.lanes[ch]];
                 let x = column_x(i);
-                if let Some((y0, y1)) = sample_y_span(
-                    center_y,
-                    layout.amplitude_scale,
-                    column.min,
-                    column.max,
-                ) {
-                    vertices.extend(quad_vertices(
-                        x,
-                        y0,
-                        x + col_width,
-                        y1,
-                        clip,
-                        static_color
-                            .unwrap_or_else(|| with_fill_alpha(params.column_color(column), params.fill_alpha)),
-                    ));
-                }
+                push_column(vertices, center_y, x, x + col_width, column);
             }
 
             if let Some(preview_columns) = preview_columns {
@@ -199,19 +193,7 @@ impl WaveformPrimitive {
                 let end_x = right_edge;
 
                 let ps = preview_columns[params.lanes[ch]];
-                if let Some((y0, y1)) =
-                    sample_y_span(center_y, layout.amplitude_scale, ps.min, ps.max)
-                {
-                    vertices.extend(quad_vertices(
-                        start_x,
-                        y0,
-                        end_x,
-                        y1,
-                        clip,
-                        static_color
-                            .unwrap_or_else(|| with_fill_alpha(params.column_color(ps), params.fill_alpha)),
-                    ));
-                }
+                push_column(vertices, center_y, start_x, end_x, ps);
             }
 
             if let Some(history) = history.filter(|_| history_active) {

@@ -13,9 +13,7 @@ macro_rules! settings_modules {
         impl SettingsPane {
             fn new(kind: VisualKind, visual_manager: &VisualManagerHandle) -> Self {
                 match kind {
-                    $(VisualKind::$variant => {
-                        Self::$variant($module::create(visual_manager, kind))
-                    })+
+                    $(VisualKind::$variant => Self::$variant($module::create(visual_manager, kind)),)+
                 }
             }
 
@@ -31,18 +29,11 @@ macro_rules! settings_modules {
                 visual_manager: &VisualManagerHandle,
                 settings_handle: &SettingsHandle,
             ) {
-                match self {
-                    $(Self::$variant(pane) => {
-                        let SettingsMessage::$variant(message) = message else {
-                            return;
-                        };
-                        pane.apply(
-                            message,
-                            visual_manager,
-                            settings_handle,
-                            VisualKind::$variant,
-                        );
+                match (self, message) {
+                    $((Self::$variant(pane), SettingsMessage::$variant(message)) => {
+                        pane.apply(message, visual_manager, settings_handle, VisualKind::$variant);
                     })+
+                    _ => {}
                 }
             }
         }

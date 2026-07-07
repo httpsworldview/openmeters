@@ -78,18 +78,25 @@ fn bar_layershell_settings(bar: &BarSettings, height: u32) -> NewLayerShellSetti
     }
 }
 
-pub(super) fn main_window_size(settings: MainWindowSettings) -> Size {
+fn clamp_window_size(size: Size) -> Size {
     Size::new(
-        (settings.width as f32).max(WINDOW_MIN_SIZE.width),
-        (settings.height as f32).max(WINDOW_MIN_SIZE.height),
+        size.width.max(WINDOW_MIN_SIZE.width),
+        size.height.max(WINDOW_MIN_SIZE.height),
     )
 }
 
+fn persisted_window_size(size: Size) -> (u32, u32) {
+    let size = clamp_window_size(size);
+    (size.width.round() as u32, size.height.round() as u32)
+}
+
+pub(super) fn main_window_size(settings: MainWindowSettings) -> Size {
+    clamp_window_size(Size::new(settings.width as f32, settings.height as f32))
+}
+
 fn main_window_settings(size: Size) -> MainWindowSettings {
-    MainWindowSettings {
-        width: size.width.round().max(WINDOW_MIN_SIZE.width) as u32,
-        height: size.height.round().max(WINDOW_MIN_SIZE.height) as u32,
-    }
+    let (width, height) = persisted_window_size(size);
+    MainWindowSettings { width, height }
 }
 
 fn base_window_settings(size: Size, decorations: bool) -> window::Settings {
@@ -121,11 +128,7 @@ fn open_base_window(
     }
 }
 
-pub(super) fn open_config_base_window(use_layershell: bool) -> (window::Id, Task<Message>) {
-    open_base_window(use_layershell, TOOL_WINDOW_SIZE, true)
-}
-
-fn open_settings_base_window(use_layershell: bool) -> (window::Id, Task<Message>) {
+pub(super) fn open_tool_base_window(use_layershell: bool) -> (window::Id, Task<Message>) {
     open_base_window(use_layershell, TOOL_WINDOW_SIZE, true)
 }
 
@@ -148,28 +151,16 @@ pub(super) fn open_main_window(
 }
 
 fn popout_window_size(saved: Option<PopoutWindowSettings>) -> Size {
-    let default = Size::new(400.0, 300.0);
-    let Some(saved) = saved else {
-        return default;
-    };
-    Size::new(
-        if saved.width > 0 {
-            (saved.width as f32).max(WINDOW_MIN_SIZE.width)
-        } else {
-            default.width
-        },
-        if saved.height > 0 {
-            (saved.height as f32).max(WINDOW_MIN_SIZE.height)
-        } else {
-            default.height
-        },
-    )
+    let saved = saved.unwrap_or_default();
+    let dim = |saved: u32, default| if saved > 0 { saved as f32 } else { default };
+    clamp_window_size(Size::new(dim(saved.width, 400.0), dim(saved.height, 300.0)))
 }
 
 fn popout_window_settings(size: Size, popped_out: bool) -> PopoutWindowSettings {
+    let (width, height) = persisted_window_size(size);
     PopoutWindowSettings {
-        width: size.width.round().max(WINDOW_MIN_SIZE.width) as u32,
-        height: size.height.round().max(WINDOW_MIN_SIZE.height) as u32,
+        width,
+        height,
         popped_out,
     }
 }
@@ -225,7 +216,7 @@ impl UiApp {
             self.settings_window = previous.map(|(id, _)| (id, new_panel));
             return Task::none();
         }
-        let (new_id, open_task) = open_settings_base_window(self.use_layershell);
+        let (new_id, open_task) = open_tool_base_window(self.use_layershell);
         self.settings_scroll = ScrollGlow::default();
         self.settings_window = Some((new_id, new_panel));
         match previous {
@@ -626,7 +617,7 @@ impl UiApp {
         let Some((old_id, panel)) = self.settings_window.take() else {
             return Task::none();
         };
-        let (new_id, open_task) = open_settings_base_window(self.use_layershell);
+        let (new_id, open_task) = open_tool_base_window(self.use_layershell);
         self.settings_window = Some((
             new_id,
             create_settings_panel(panel.kind, &self.visual_manager),

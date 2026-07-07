@@ -36,8 +36,8 @@ use std::rc::Rc;
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 use windowing::{
-    APP_ID, BarResizeState, PopoutWindow, layershell_available, main_window_size,
-    open_config_base_window, open_main_window,
+    APP_ID, BarResizeState, PopoutWindow, layershell_available, main_window_size, open_main_window,
+    open_tool_base_window,
 };
 
 const TOAST_DISPLAY_DURATION: Duration = Duration::from_secs(2);
@@ -195,7 +195,7 @@ impl UiApp {
         if let Some(id) = self.config_window.take() {
             return window::close(id);
         }
-        let (id, task) = open_config_base_window(self.use_layershell);
+        let (id, task) = open_tool_base_window(self.use_layershell);
         self.config_window = Some(id);
         self.toast_until = Some(Instant::now() + TOAST_DISPLAY_DURATION);
         task
@@ -265,25 +265,23 @@ impl UiApp {
 
         let now = Instant::now();
         let is_active = |deadline: Option<Instant>| deadline.is_some_and(|expires| now < expires);
-        let toast_msgs: Vec<&str> = [
+        let toast_msgs = [
             (config_open && is_active(self.toast_until))
                 .then_some("drag visuals to rearrange | ctrl+shift+h to close config"),
             self.rendering_paused.then_some("paused (p to resume)"),
             is_active(self.exit_warning_until).then_some("q again to exit"),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
+        ];
 
         let mut layer = column![fill!(visuals_view)]
             .width(Length::Fill)
             .height(Length::Fill);
-        if !toast_msgs.is_empty() {
+        if toast_msgs.iter().any(Option::is_some) {
             layer = layer.push(
                 container(
                     row(toast_msgs
-                        .iter()
-                        .map(|m| container(text(*m).size(11)).padding([2, 6]).into()))
+                        .into_iter()
+                        .flatten()
+                        .map(|m| container(text(m).size(11)).padding([2, 6]).into()))
                     .spacing(12),
                 )
                 .width(Length::Fill)

@@ -9,7 +9,7 @@ pub use runtime::{AudioRegistryHandle, spawn_registry};
 pub use types::{GraphPort, LinkSpec, NodeInfo, RegistrySnapshot};
 
 #[cfg(test)]
-use types::{AudioChannel, DefaultTarget, MetadataDefaults, PortDirection};
+use types::{AudioChannel, DefaultTarget, Direction, MetadataDefaults};
 
 pub fn pair_ports_by_channel<'a>(
     sources: impl IntoIterator<Item = &'a GraphPort>,
@@ -46,7 +46,7 @@ mod tests {
             port_id: id,
             node_id: 1,
             channel: channel.and_then(AudioChannel::parse),
-            direction: PortDirection::Output,
+            direction: Direction::Output,
             is_monitor: false,
         }
     }

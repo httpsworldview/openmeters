@@ -32,11 +32,19 @@ impl AudioChannel {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum PortDirection {
+pub enum Direction {
     Input,
     Output,
     #[default]
     Unknown,
+}
+
+fn pipewire_direction(value: Option<&str>) -> Direction {
+    match value {
+        Some(s) if s.eq_ignore_ascii_case("in") => Direction::Input,
+        Some(s) if s.eq_ignore_ascii_case("out") => Direction::Output,
+        _ => Direction::Unknown,
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -45,7 +53,7 @@ pub struct GraphPort {
     pub port_id: u32,
     pub node_id: u32,
     pub channel: Option<AudioChannel>,
-    pub direction: PortDirection,
+    pub direction: Direction,
     pub is_monitor: bool,
 }
 
@@ -59,11 +67,9 @@ impl GraphPort {
             global_id: global.id,
             port_id: parse(*PORT_ID, "port.id")?,
             node_id: parse(*NODE_ID, "node.id")?,
-            direction: match get(*PORT_DIRECTION, "port.direction").map(String::as_str) {
-                Some(s) if s.eq_ignore_ascii_case("in") => PortDirection::Input,
-                Some(s) if s.eq_ignore_ascii_case("out") => PortDirection::Output,
-                _ => PortDirection::Unknown,
-            },
+            direction: pipewire_direction(
+                get(*PORT_DIRECTION, "port.direction").map(String::as_str),
+            ),
             channel: get(*AUDIO_CHANNEL, "audio.channel").and_then(|v| AudioChannel::parse(v)),
             is_monitor: get(*PORT_MONITOR, "port.monitor")
                 .is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1"),
@@ -71,30 +77,15 @@ impl GraphPort {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum NodeDirection {
-    Input,
-    Output,
-    #[default]
-    Unknown,
-}
-
-fn derive_node_direction(
-    media_class: Option<&str>,
-    props: &HashMap<String, String>,
-) -> NodeDirection {
+fn derive_node_direction(media_class: Option<&str>, props: &HashMap<String, String>) -> Direction {
     let class = media_class.unwrap_or_default().to_ascii_lowercase();
 
     if class.contains("sink") || class.contains("output") {
-        return NodeDirection::Output;
-    }
-    if class.contains("source") || class.contains("input") {
-        return NodeDirection::Input;
-    }
-    match props.get(*PORT_DIRECTION).map(String::as_str) {
-        Some(s) if s.eq_ignore_ascii_case("in") => NodeDirection::Input,
-        Some(s) if s.eq_ignore_ascii_case("out") => NodeDirection::Output,
-        _ => NodeDirection::Unknown,
+        Direction::Output
+    } else if class.contains("source") || class.contains("input") {
+        Direction::Input
+    } else {
+        pipewire_direction(props.get(*PORT_DIRECTION).map(String::as_str))
     }
 }
 
@@ -255,7 +246,7 @@ pub struct NodeInfo {
     pub name: Option<String>,
     pub description: Option<String>,
     pub media_class: Option<String>,
-    pub direction: NodeDirection,
+    pub direction: Direction,
     pub is_virtual: bool,
     pub properties: HashMap<String, String>,
     pub ports: Vec<GraphPort>,
@@ -326,7 +317,7 @@ impl NodeInfo {
     }
 
     fn is_audio_application_output(&self) -> bool {
-        self.direction == NodeDirection::Output
+        self.direction == Direction::Output
             && self
                 .media_class
                 .as_deref()
@@ -335,14 +326,14 @@ impl NodeInfo {
     }
 
     pub fn output_ports_for_loopback(&self) -> Vec<&GraphPort> {
-        self.ports_for_loopback(PortDirection::Output, true)
+        self.ports_for_loopback(Direction::Output, true)
     }
 
     pub fn input_ports_for_loopback(&self) -> Vec<&GraphPort> {
-        self.ports_for_loopback(PortDirection::Input, false)
+        self.ports_for_loopback(Direction::Input, false)
     }
 
-    fn ports_for_loopback(&self, dir: PortDirection, prefer_monitor: bool) -> Vec<&GraphPort> {
+    fn ports_for_loopback(&self, dir: Direction, prefer_monitor: bool) -> Vec<&GraphPort> {
         for monitor in [Some(prefer_monitor), None] {
             let ports: Vec<_> = self
                 .ports

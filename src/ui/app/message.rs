@@ -11,7 +11,7 @@ use crate::ui::widgets::scroll_glow::ScrollGlow;
 use iced::event::{self, Event};
 use iced::keyboard::{self, Key};
 use iced::widget::{container, text};
-use iced::{Element, Length, Size, Task, exit, window};
+use iced::{Element, Length, Size, Task, exit, mouse, window};
 use iced_layershell::actions::{IcedXdgWindowSettings, OutputSnapshot};
 use iced_layershell::reexport::NewLayerShellSettings;
 use iced_layershell::to_layer_message;
@@ -45,22 +45,16 @@ pub(super) fn layershell_open(settings: NewLayerShellSettings) -> (window::Id, T
     Message::layershell_open(settings)
 }
 
-fn drag_events(
-    evt: Event,
-    on_move: fn(iced::Point) -> Message,
-    on_release: Message,
-) -> Option<Message> {
+pub(super) fn bar_drag_events(evt: Event, _: event::Status, _: window::Id) -> Option<Message> {
     match evt {
-        Event::Mouse(iced::mouse::Event::CursorMoved { position }) => Some(on_move(position)),
-        Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => {
-            Some(on_release)
+        Event::Mouse(mouse::Event::CursorMoved { position }) => {
+            Some(Message::BarResizeMove(position))
+        }
+        Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+            Some(Message::BarResizeEnd)
         }
         _ => None,
     }
-}
-
-pub(super) fn bar_drag_events(evt: Event, _: event::Status, _: window::Id) -> Option<Message> {
-    drag_events(evt, Message::BarResizeMove, Message::BarResizeEnd)
 }
 
 pub(super) fn keyboard_shortcut(
