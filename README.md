@@ -213,9 +213,9 @@ Application settings are saved to
 when `XDG_CONFIG_HOME` is unset.
 
 `settings.json` is intentionally editable. GUI ranges are not hard
-limits; processors normalize only the values they need for safe
-runtime behavior. Unsupported keys or structurally invalid values are
-logged and ignored at the narrowest practical scope.
+limits; processors normalize only the bare minimum necessary for
+runtime. Unsupported keys or structurally invalid values are logged and
+ignored at the narrowest practical scope.
 
 Invalid JSON syntax is ignored and default settings are used for that
 run. Your configuration file will not be overwritten unless you change
