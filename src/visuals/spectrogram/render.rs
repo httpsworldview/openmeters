@@ -16,6 +16,8 @@ use crate::util::audio::FrequencyScale;
 
 pub const SPECTROGRAM_PALETTE_SIZE: usize = 5;
 
+const ACCUM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Float;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColumnKind {
     Reassigned,
@@ -126,40 +128,68 @@ impl Primitive for SpectrogramPrimitive {
             return;
         }
 
-        let mut pass = begin_load_pass(encoder, target, clip, "Spectrogram pass");
-        pass.set_bind_group(0, &r.ring.bg, &[]);
-        pass.set_vertex_buffer(0, r.quad_buf.slice(..));
         match r.ring.kind {
             ColumnKind::Reassigned => {
-                let stride = inst.reassigned_points_per_slot.max(1);
-                pass.set_pipeline(&pipeline.splat_pipeline);
-                pass.set_vertex_buffer(1, r.ring.buf.slice(..));
-                let visible = inst.visible_slots();
-                let mut slot = 0;
-                while slot < visible {
-                    let count = inst.slot_count(slot).min(stride);
-                    if count == 0 {
-                        slot += 1;
-                        continue;
-                    }
-                    let first = slot * stride;
-                    if count == stride {
-                        slot += 1;
-                        while slot < visible && inst.slot_count(slot).min(stride) == stride {
+                let Some(accum) = r.accum.as_ref() else {
+                    return;
+                };
+                {
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("Spectrogram accumulation pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &accum.view,
+                            resolve_target: None,
+                            depth_slice: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                    });
+                    let stride = inst.reassigned_points_per_slot.max(1);
+                    pass.set_pipeline(&pipeline.accum_pipeline);
+                    pass.set_bind_group(0, &r.ring.bg, &[]);
+                    pass.set_vertex_buffer(0, r.quad_buf.slice(..));
+                    pass.set_vertex_buffer(1, r.ring.buf.slice(..));
+                    let visible = inst.visible_slots();
+                    let mut slot = 0;
+                    while slot < visible {
+                        let count = inst.slot_count(slot).min(stride);
+                        if count == 0 {
+                            slot += 1;
+                            continue;
+                        }
+                        let first = slot * stride;
+                        if count == stride {
+                            slot += 1;
+                            while slot < visible && inst.slot_count(slot).min(stride) == stride {
+                                slot += 1;
+                            }
+                            pass.draw(0..6, first..slot * stride);
+                        } else {
+                            pass.draw(0..6, first..first + count);
                             slot += 1;
                         }
-                        pass.draw(0..6, first..slot * stride);
-                    } else {
-                        pass.draw(0..6, first..first + count);
-                        slot += 1;
                     }
                 }
+
+                let mut pass = begin_load_pass(encoder, target, clip, "Spectrogram resolve pass");
+                pass.set_pipeline(&pipeline.resolve_pipeline);
+                pass.set_bind_group(0, &accum.bg, &[]);
+                pass.set_vertex_buffer(0, r.quad_buf.slice(..));
+                pass.draw(0..6, 0..1);
             }
             ColumnKind::Classic => {
                 if inst.points_per_col < 2 {
                     return;
                 }
+                let mut pass = begin_load_pass(encoder, target, clip, "Spectrogram pass");
                 pass.set_pipeline(&pipeline.classic_pipeline);
+                pass.set_bind_group(0, &r.ring.bg, &[]);
+                pass.set_vertex_buffer(0, r.quad_buf.slice(..));
                 pass.draw(0..6, 0..1);
             }
         }
@@ -196,6 +226,20 @@ fn point_instance_layout() -> wgpu::VertexBufferLayout<'static> {
     }
 }
 
+fn accum_size(bounds: Rectangle, rotation: i8, scale_factor: f32) -> [u32; 2] {
+    let sf = scale_factor.max(1.0);
+    let swapped = matches!((rotation as i32).rem_euclid(4), 1 | 3);
+    let (w, h) = if swapped {
+        (bounds.height, bounds.width)
+    } else {
+        (bounds.width, bounds.height)
+    };
+    [
+        (w.max(1.0) * sf).ceil() as u32,
+        (h.max(1.0) * sf).ceil() as u32,
+    ]
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable, PartialEq)]
 struct Uniforms {
@@ -218,8 +262,9 @@ struct Uniforms {
     inv_uv_range: f32,
     col_stride_u16: u32,
     bin_hz: f32,
-    // 12 B pad so `stops` lands on a 16-byte boundary (array<vec4> align).
-    _pad: [u32; 3],
+    accum_size: [f32; 2],
+    // 4 B pad so `stops` lands on a 16-byte boundary (array<vec4> align).
+    _pad: u32,
     // (pos1, pos2, pos3, spread0), (spread1, spread2, spread3, spread4).
     // Stops 0 and 4 are constant 0.0 / 1.0 and live in the shader.
     stops: [[f32; 4]; 2],
@@ -229,6 +274,7 @@ struct Uniforms {
 // Locks layout to what the WGSL Uniforms struct expects. Stops must land at
 // offset 112 (16-aligned for array<vec4>), palette at 144, total 224 bytes.
 const _: () = assert!(std::mem::size_of::<Uniforms>() == 224);
+const _: () = assert!(std::mem::offset_of!(Uniforms, accum_size) == 100);
 const _: () = assert!(std::mem::offset_of!(Uniforms, stops) == 112);
 const _: () = assert!(std::mem::offset_of!(Uniforms, palette) == 144);
 
@@ -248,6 +294,7 @@ impl Uniforms {
         let newest_col = (p.write_slot + hl - 1) % hl;
         let inv_uv_range = 1.0 / (p.uv_y_range[1] - p.uv_y_range[0]).max(1e-12);
         let col_stride_u16 = p.points_per_column.div_ceil(2) * 2;
+        let acc_sz = accum_size(p.bounds, p.rotation, sf);
         Self {
             freq_axis: [freq_lo, 1.0 / (freq_hi - freq_lo).max(1e-12)],
             freq_scale,
@@ -279,7 +326,8 @@ impl Uniforms {
             inv_uv_range,
             col_stride_u16,
             bin_hz: p.bin_hz,
-            _pad: [0; 3],
+            accum_size: [acc_sz[0] as f32, acc_sz[1] as f32],
+            _pad: 0,
             stops: [
                 [
                     p.stop_positions[1],
@@ -300,10 +348,12 @@ impl Uniforms {
 }
 
 pub struct Pipeline {
-    splat_pipeline: wgpu::RenderPipeline,
+    accum_pipeline: wgpu::RenderPipeline,
+    resolve_pipeline: wgpu::RenderPipeline,
     classic_pipeline: wgpu::RenderPipeline,
     splat_bgl: wgpu::BindGroupLayout,
     classic_bgl: wgpu::BindGroupLayout,
+    resolve_bgl: wgpu::BindGroupLayout,
     instances: HashMap<u64, Instance>,
     cache: CacheTracker,
 }
@@ -324,6 +374,14 @@ impl primitive::Pipeline for Pipeline {
                 min_binding_size: None,
             },
         );
+        let accum_entry = bgl_entry(
+            1,
+            wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+        );
         let mag_entry = bgl_entry(
             2,
             wgpu::BindingType::Buffer {
@@ -341,18 +399,50 @@ impl primitive::Pipeline for Pipeline {
             label: Some("Spectrogram classic BGL"),
             entries: &[uniform_entry, mag_entry],
         });
+        let resolve_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Spectrogram resolve BGL"),
+            entries: &[uniform_entry, accum_entry],
+        });
 
-        let splat_pipeline = create_render_pipeline(
+        let accum_pipeline = create_render_pipeline(
             device,
-            format,
+            ACCUM_FORMAT,
             RenderPipelineSpec {
-                label: "Spectrogram splat pipeline",
+                label: "Spectrogram accumulation pipeline",
                 shader: &shader,
-                vertex_entry: "vs_splat",
-                fragment_entry: "fs_splat",
+                vertex_entry: "vs_accum_splat",
+                fragment_entry: "fs_accum",
                 buffers: &[quad_corner_layout(), point_instance_layout()],
                 bind_group_layouts: &[&splat_bgl],
                 topology: wgpu::PrimitiveTopology::TriangleList,
+                blend: Some(wgpu::BlendState {
+                    color: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::One,
+                        dst_factor: wgpu::BlendFactor::One,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                    alpha: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::One,
+                        dst_factor: wgpu::BlendFactor::One,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                }),
+                write_mask: wgpu::ColorWrites::RED | wgpu::ColorWrites::GREEN,
+            },
+        );
+        let resolve_pipeline = create_render_pipeline(
+            device,
+            format,
+            RenderPipelineSpec {
+                label: "Spectrogram resolve pipeline",
+                shader: &shader,
+                vertex_entry: "vs_resolve",
+                fragment_entry: "fs_resolve",
+                buffers: &[quad_corner_layout()],
+                bind_group_layouts: &[&resolve_bgl],
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
             },
         );
         let classic_pipeline = create_render_pipeline(
@@ -366,14 +456,18 @@ impl primitive::Pipeline for Pipeline {
                 buffers: &[quad_corner_layout()],
                 bind_group_layouts: &[&classic_bgl],
                 topology: wgpu::PrimitiveTopology::TriangleList,
+                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
             },
         );
 
         Self {
-            splat_pipeline,
+            accum_pipeline,
+            resolve_pipeline,
             classic_pipeline,
             splat_bgl,
             classic_bgl,
+            resolve_bgl,
             instances: HashMap::new(),
             cache: CacheTracker::default(),
         }
@@ -396,6 +490,7 @@ impl Pipeline {
         let bgls = Bgls {
             splat: &self.splat_bgl,
             classic: &self.classic_bgl,
+            resolve: &self.resolve_bgl,
         };
         inst.sync(device, queue, bgls, params, viewport, scale_factor);
         if let Some(t) = prune {
@@ -417,6 +512,7 @@ fn bgl_entry(binding: u32, ty: wgpu::BindingType) -> wgpu::BindGroupLayoutEntry 
 struct Bgls<'a> {
     splat: &'a wgpu::BindGroupLayout,
     classic: &'a wgpu::BindGroupLayout,
+    resolve: &'a wgpu::BindGroupLayout,
 }
 
 #[derive(Default)]
@@ -497,11 +593,19 @@ struct ColumnRing {
     bg: wgpu::BindGroup,
 }
 
+struct AccumTarget {
+    size: [u32; 2],
+    _tex: wgpu::Texture,
+    view: wgpu::TextureView,
+    bg: wgpu::BindGroup,
+}
+
 struct Resources {
     uniform_buf: wgpu::Buffer,
     quad_buf: wgpu::Buffer,
     uniform_cache: Uniforms,
     ring: ColumnRing,
+    accum: Option<AccumTarget>,
     classic_upload_scratch: Vec<u16>,
 }
 
@@ -531,6 +635,7 @@ impl Resources {
             quad_buf,
             uniform_cache: Uniforms::zeroed(),
             ring,
+            accum: None,
             classic_upload_scratch: Vec::new(),
         }
     }
@@ -545,6 +650,7 @@ impl Resources {
         scale_factor: f32,
     ) {
         self.resize_ring(device, queue, bgls, p);
+        self.resize_accum(device, bgls.resolve, p, scale_factor);
         self.upload_pending(queue, p);
         self.write_uniforms(queue, p, viewport, scale_factor);
     }
@@ -601,6 +707,45 @@ impl Resources {
             }
         }
         self.ring = new_ring;
+    }
+
+    fn resize_accum(
+        &mut self,
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        p: &SpectrogramParams,
+        scale_factor: f32,
+    ) {
+        if p.col_kind != ColumnKind::Reassigned {
+            self.accum = None;
+            return;
+        }
+        let size = accum_size(p.bounds, p.rotation, scale_factor);
+        if self.accum.as_ref().is_some_and(|a| a.size == size) {
+            return;
+        }
+        let tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Spectrogram power accumulation texture"),
+            size: wgpu::Extent3d {
+                width: size[0],
+                height: size[1],
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: ACCUM_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let bg = make_bind_group(device, layout, &self.uniform_buf, None, Some(&view));
+        self.accum = Some(AccumTarget {
+            size,
+            _tex: tex,
+            view,
+            bg,
+        });
     }
 
     fn upload_pending(&mut self, queue: &wgpu::Queue, p: &SpectrogramParams) {
@@ -686,7 +831,7 @@ fn create_ring(
         mapped_at_creation: false,
     });
     let mag = (p.col_kind == ColumnKind::Classic).then_some(&buf);
-    let bg = make_bind_group(device, layout, uniform_buf, mag);
+    let bg = make_bind_group(device, layout, uniform_buf, mag, None);
     ColumnRing {
         kind: p.col_kind,
         buf,
@@ -702,9 +847,13 @@ fn make_bind_group(
     layout: &wgpu::BindGroupLayout,
     ub: &wgpu::Buffer,
     mag: Option<&wgpu::Buffer>,
+    accum: Option<&wgpu::TextureView>,
 ) -> wgpu::BindGroup {
     let entry = |binding, resource| wgpu::BindGroupEntry { binding, resource };
     let mut entries = vec![entry(0, ub.as_entire_binding())];
+    if let Some(view) = accum {
+        entries.push(entry(1, wgpu::BindingResource::TextureView(view)));
+    }
     if let Some(buf) = mag {
         entries.push(entry(2, buf.as_entire_binding()));
     }

@@ -1,4 +1,10 @@
 const LOG10_E: f32 = 0.4342944819;
+const LN_TO_DB: f32 = 4.342944819;
+const DB_TO_LOG2: f32 = 0.3321928095;
+// Rg16Float cannot hold -140 dB power in one channel; G is a scaled fallback.
+const LOW_POWER_SCALE: f32 = 16777216.0;
+const INV_LOW_POWER_SCALE: f32 = 0.000000059604644775390625;
+const F16_MAX: f32 = 65504.0;
 const LOG_KNEE_HZ: f32 = 20.0;
 
 // Classic storage domain -- keep in sync with processor.rs CLASSIC_DB_STORE_*.
@@ -36,10 +42,9 @@ struct Uniforms {
     col_stride_u16: u32,
     // FFT bin spacing (sample_rate / fft_size); only used by classic sampling.
     bin_hz: f32,
-    // Three u32 pads (vec3 would align to 16 B and desync the Rust layout).
+    accum_width: f32,
+    accum_height: f32,
     _pad0: u32,
-    _pad1: u32,
-    _pad2: u32,
 
     // (pos1, pos2, pos3, spread0), (spread1, spread2, spread3, spread4).
     // Stops 0 and 4 are constant 0.0 / 1.0
@@ -48,13 +53,23 @@ struct Uniforms {
     palette: array<vec4<f32>, 5>,
 }
 
-struct VertexOutput {
+struct AccumOutput {
     @builtin(position) position: vec4<f32>,
-    @location(0) magnitude_db: f32,
-    @location(1) freq_hz: f32,
+    @location(0) @interpolate(flat) magnitude_db: f32,
+    @location(1) @interpolate(flat) freq_hz: f32,
+}
+
+struct ClassicOutput {
+    @builtin(position) position: vec4<f32>,
+}
+
+struct ResolveOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) accum_pos: vec2<f32>,
 }
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
+@group(0) @binding(1) var accum_tex: texture_2d<f32>;
 @group(0) @binding(2) var<storage, read> mags: array<u32>;
 
 // (Glasberg & Moore 1990)
@@ -127,19 +142,6 @@ fn extents() -> vec2<f32> {
     );
 }
 
-// Pre-rotation (time, freq) pos -> clip-space NDC under u.rotation, u.bounds.
-fn place(pos: vec2<f32>, ext: vec2<f32>) -> vec4<f32> {
-    var rotated: vec2<f32>;
-    switch u.rotation {
-        case 1u: { rotated = vec2<f32>(ext.y - pos.y, pos.x); }
-        case 2u: { rotated = vec2<f32>(ext.x - pos.x, ext.y - pos.y); }
-        case 3u: { rotated = vec2<f32>(pos.y, ext.x - pos.x); }
-        default: { rotated = pos; }
-    }
-    rotated += u.bounds.xy;
-    return vec4<f32>(rotated.x * u.clip_scale.x - 1.0, 1.0 - rotated.y * u.clip_scale.y, 0.0, 1.0);
-}
-
 // `col_stride_u16` rounds ppc up to even so u16 pairs never straddle u32 words.
 fn unpack_mag(slot: u32, bin_in_col: u32) -> f32 {
     let idx = slot * u.col_stride_u16 + bin_in_col;
@@ -150,30 +152,43 @@ fn unpack_mag(slot: u32, bin_in_col: u32) -> f32 {
 const CULL_POS: vec4<f32> = vec4<f32>(0.0, 0.0, 2.0, 1.0);
 const CLASSIC_SENTINEL_DB: f32 = -10000.0;
 
+fn place_accum(pos: vec2<f32>) -> vec4<f32> {
+    let size = vec2<f32>(max(u.accum_width, 1.0), max(u.accum_height, 1.0));
+    return vec4<f32>(pos.x / size.x * 2.0 - 1.0, 1.0 - pos.y / size.y * 2.0, 0.0, 1.0);
+}
+
 @vertex
-fn vs_splat(
+fn vs_accum_splat(
     @location(0) corner: vec2<f32>,
     @location(1) time_offset: f32,
     @location(2) freq_hz: f32,
     @location(3) magnitude_db: f32,
     @builtin(instance_index) inst: u32,
-) -> VertexOutput {
+) -> AccumOutput {
     let zoomed = (freq_to_norm(freq_hz) - u.uv_y_range.x) * u.inv_uv_range;
     if magnitude_db < -900.0 || zoomed < -0.01 || zoomed > 1.01 {
-        return VertexOutput(CULL_POS, magnitude_db, freq_hz);
+        return AccumOutput(CULL_POS, magnitude_db, freq_hz);
     }
     let ext = extents();
     let age = compute_age(inst / max(u.points_per_col, 1u));
     let pos = vec2<f32>(ext.x - (f32(age) - time_offset) * u.scale_factor, (1.0 - zoomed) * ext.y)
         + corner * u.scale_factor;
-    return VertexOutput(place(pos, ext), magnitude_db, freq_hz);
+    return AccumOutput(place_accum(pos), magnitude_db, freq_hz);
 }
 
 @vertex
-fn vs_classic(@location(0) corner: vec2<f32>) -> VertexOutput {
+fn vs_classic(@location(0) corner: vec2<f32>) -> ClassicOutput {
     let px = u.bounds.xy + (corner + vec2<f32>(0.5)) * u.bounds.zw;
     let clip = vec4<f32>(px.x * u.clip_scale.x - 1.0, 1.0 - px.y * u.clip_scale.y, 0.0, 1.0);
-    return VertexOutput(clip, CLASSIC_SENTINEL_DB, 0.0);
+    return ClassicOutput(clip);
+}
+
+@vertex
+fn vs_resolve(@location(0) corner: vec2<f32>) -> ResolveOutput {
+    let local = (corner + vec2<f32>(0.5)) * u.bounds.zw;
+    let px = u.bounds.xy + local;
+    let clip = vec4<f32>(px.x * u.clip_scale.x - 1.0, 1.0 - px.y * u.clip_scale.y, 0.0, 1.0);
+    return ResolveOutput(clip, unrotate(local, extents()));
 }
 
 fn norm_to_freq(norm: f32) -> f32 {
@@ -231,22 +246,27 @@ fn classic_sample(frag_xy: vec2<f32>) -> vec2<f32> {
     return vec2<f32>(mag, freq_hz);
 }
 
-fn shade(mut_mag: f32, freq_hz: f32) -> vec4<f32> {
+fn apply_tilt(mut_mag: f32, freq_hz: f32) -> f32 {
     var mag = mut_mag;
-
     // dB/octave tilt relative to 1 kHz. Do not lift sentinels/floor bins.
     if u.tilt_db != 0.0 {
         if !(mag > DB_ANALYSIS_FLOOR + DB_FLOOR_EPS) {
-            return vec4<f32>(0.0);
+            return CLASSIC_SENTINEL_DB;
         }
         if freq_hz > 0.0 {
             mag += u.tilt_db * log2(freq_hz / 1000.0);
         }
     }
+    return mag;
+}
 
+fn shade_db(mag: f32) -> vec4<f32> {
     let range = max(u.ceiling_db - u.floor_db, 0.001);
     let normalized = clamp((mag - u.floor_db) / range, 0.0, 1.0);
-    let adjusted = pow(normalized, max(u.contrast, 0.01));
+    var adjusted = normalized;
+    if abs(u.contrast - 1.0) > 1e-4 {
+        adjusted = pow(normalized, max(u.contrast, 0.01));
+    }
 
     // Mix palette stops in sRGB space (web-colors pipeline).
     let color = palette_color(adjusted);
@@ -255,13 +275,53 @@ fn shade(mut_mag: f32, freq_hz: f32) -> vec4<f32> {
     return vec4<f32>(color.rgb * color.a, color.a);
 }
 
-@fragment
-fn fs_splat(in: VertexOutput) -> @location(0) vec4<f32> {
-    return shade(in.magnitude_db, in.freq_hz);
+fn shade(mut_mag: f32, freq_hz: f32) -> vec4<f32> {
+    let mag = apply_tilt(mut_mag, freq_hz);
+    if mag < -9000.0 {
+        return vec4<f32>(0.0);
+    }
+    return shade_db(mag);
+}
+
+fn db_to_power(db: f32) -> f32 {
+    return exp2(db * DB_TO_LOG2);
+}
+
+fn power_to_db(power: f32) -> f32 {
+    return max(log(max(power, 1e-20)) * LN_TO_DB, DB_ANALYSIS_FLOOR);
 }
 
 @fragment
-fn fs_classic(in: VertexOutput) -> @location(0) vec4<f32> {
+fn fs_accum(in: AccumOutput) -> @location(0) vec2<f32> {
+    let mag = apply_tilt(in.magnitude_db, in.freq_hz);
+    if mag < -9000.0 {
+        return vec2<f32>(0.0);
+    }
+    let power = db_to_power(mag);
+    return vec2<f32>(power, power * LOW_POWER_SCALE);
+}
+
+fn accumulated_power(pos: vec2<f32>) -> f32 {
+    if pos.x < 0.0 || pos.y < 0.0 || pos.x >= u.accum_width || pos.y >= u.accum_height {
+        return 0.0;
+    }
+
+    let scaled = textureLoad(accum_tex, vec2<i32>(pos), 0).rg;
+    let scaled_low_power = scaled.g > 0.0 && scaled.g < F16_MAX;
+    return select(scaled.r, scaled.g * INV_LOW_POWER_SCALE, scaled_low_power);
+}
+
+@fragment
+fn fs_resolve(in: ResolveOutput) -> @location(0) vec4<f32> {
+    let power = accumulated_power(in.accum_pos);
+    if power <= 0.0 {
+        return vec4<f32>(0.0);
+    }
+    return shade_db(power_to_db(power));
+}
+
+@fragment
+fn fs_classic(in: ClassicOutput) -> @location(0) vec4<f32> {
     let sample = classic_sample(in.position.xy);
     if sample.x < -9000.0 {
         return vec4<f32>(0.0);

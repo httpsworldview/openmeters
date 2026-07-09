@@ -495,6 +495,8 @@ pub(in crate::visuals) struct RenderPipelineSpec<'a> {
     pub(in crate::visuals) buffers: &'a [wgpu::VertexBufferLayout<'a>],
     pub(in crate::visuals) bind_group_layouts: &'a [&'a wgpu::BindGroupLayout],
     pub(in crate::visuals) topology: wgpu::PrimitiveTopology,
+    pub(in crate::visuals) blend: Option<wgpu::BlendState>,
+    pub(in crate::visuals) write_mask: wgpu::ColorWrites,
 }
 
 pub(in crate::visuals) fn create_render_pipeline(
@@ -522,8 +524,8 @@ pub(in crate::visuals) fn create_render_pipeline(
             entry_point: Some(spec.fragment_entry),
             targets: &[Some(wgpu::ColorTargetState {
                 format,
-                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                write_mask: wgpu::ColorWrites::ALL,
+                blend: spec.blend,
+                write_mask: spec.write_mask,
             })],
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         }),
@@ -556,6 +558,8 @@ fn create_sdf_pipeline(
             buffers: &[SdfVertex::layout()],
             bind_group_layouts: &[],
             topology,
+            blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+            write_mask: wgpu::ColorWrites::ALL,
         },
     )
 }
