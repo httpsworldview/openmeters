@@ -8,26 +8,15 @@ use std::collections::VecDeque;
 const BAND_CHANNELS: usize = 2;
 const BAND_DISPLAY_GAIN: f32 = 0.8;
 
-#[derive(Debug, Clone, Copy)]
-pub struct StereometerConfig {
-    pub sample_rate: f32,
-    pub segment_duration: f32,
-    pub target_sample_count: usize,
-    pub correlation_window: f32,
-    pub analyze_bands: bool,
-    pub emit_band_points: bool,
-}
-
-impl Default for StereometerConfig {
-    fn default() -> Self {
-        Self {
-            sample_rate: DEFAULT_SAMPLE_RATE,
-            segment_duration: 0.02,
-            target_sample_count: 2_000,
-            correlation_window: 0.05,
-            analyze_bands: false,
-            emit_band_points: false,
-        }
+crate::macros::default_struct! {
+    #[derive(Debug, Clone, Copy)]
+    pub struct StereometerConfig {
+        pub sample_rate: f32 = DEFAULT_SAMPLE_RATE,
+        pub segment_duration: f32 = 0.02,
+        pub target_sample_count: usize = 2_000,
+        pub correlation_window: f32 = 0.05,
+        pub analyze_bands: bool = false,
+        pub emit_band_points: bool = false,
     }
 }
 

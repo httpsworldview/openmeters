@@ -12,7 +12,7 @@ use pw::registry::{GlobalObject, RegistryRc};
 use pw::spa::utils::dict::DictRef;
 use pw::spa::utils::result::AsyncSeq;
 use pw::types::ObjectType;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, RwLock, mpsc};
@@ -53,12 +53,22 @@ pub fn spawn_registry() -> std::io::Result<AudioRegistryHandle> {
         return Ok(AudioRegistryHandle { runtime });
     }
 
-    let runtime = RegistryRuntime::default();
+    let (commands, command_receiver) = pw::channel::channel();
+    let runtime = RegistryRuntime {
+        state: Arc::default(),
+        watchers: Arc::default(),
+        commands: Arc::new(Mutex::new(Some(commands))),
+    };
     let thread_runtime = runtime.clone();
     thread::Builder::new()
         .name(REGISTRY_THREAD_NAME.into())
         .spawn(move || {
-            if let Err(err) = registry_thread_main(thread_runtime) {
+            let command_cleanup = CommandChannelCleanup {
+                commands: Arc::clone(&thread_runtime.commands),
+            };
+            let result = registry_thread_main(thread_runtime, command_receiver);
+            drop(command_cleanup);
+            if let Err(err) = result {
                 error!("[registry] thread terminated: {err:?}");
             }
         })?;
@@ -131,26 +141,32 @@ impl RegistryUpdates {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct RegistryRuntime {
     state: Arc<RwLock<RegistryState>>,
     watchers: Arc<Mutex<Vec<mpsc::Sender<RegistrySnapshot>>>>,
-    commands: Arc<Mutex<Option<mpsc::Sender<RegistryCommand>>>>,
+    commands: Arc<Mutex<Option<pw::channel::Sender<RegistryCommand>>>>,
+}
+
+struct CommandChannelCleanup {
+    commands: Arc<Mutex<Option<pw::channel::Sender<RegistryCommand>>>>,
+}
+
+impl Drop for CommandChannelCleanup {
+    fn drop(&mut self) {
+        *lock(&self.commands) = None;
+    }
 }
 
 impl RegistryRuntime {
-    fn set_command_sender(&self, sender: mpsc::Sender<RegistryCommand>) {
-        *lock(&self.commands) = Some(sender);
-    }
-
     fn send_command(&self, command: RegistryCommand) -> bool {
         let Some(sender) = lock(&self.commands).clone() else {
-            warn!("[registry] command channel not initialised");
+            warn!("[registry] command channel unavailable");
             return false;
         };
         sender
             .send(command)
-            .inspect_err(|_| warn!("[registry] failed to send command; channel closed"))
+            .inspect_err(|_| warn!("[registry] failed to send command"))
             .is_ok()
     }
 
@@ -184,7 +200,10 @@ impl RegistryRuntime {
     }
 }
 
-fn registry_thread_main(runtime: RegistryRuntime) -> Result<(), pw::Error> {
+fn registry_thread_main(
+    runtime: RegistryRuntime,
+    command_receiver: pw::channel::Receiver<RegistryCommand>,
+) -> Result<(), pw::Error> {
     const MAX_CONSECUTIVE_ERRORS: u32 = 10;
 
     pw::init();
@@ -194,10 +213,6 @@ fn registry_thread_main(runtime: RegistryRuntime) -> Result<(), pw::Error> {
     let core = context.connect_rc(None)?;
     let registry = core.get_registry_rc()?;
 
-    let (command_tx, command_rx) = mpsc::channel::<RegistryCommand>();
-    runtime.set_command_sender(command_tx);
-
-    let mut link_state = LinkState::new(core.clone());
     let registry_context = RegistryContext {
         registry: registry.clone(),
         runtime: runtime.clone(),
@@ -231,6 +246,25 @@ fn registry_thread_main(runtime: RegistryRuntime) -> Result<(), pw::Error> {
             .register()
     };
 
+    let running = Rc::new(Cell::new(true));
+    let _command_receiver = {
+        let callback_running = Rc::clone(&running);
+        let callback_mainloop = mainloop.clone();
+        let link_state = RefCell::new(LinkState::new(core.clone()));
+        command_receiver.attach(mainloop.loop_(), move |command| {
+            if callback_running.get() {
+                callback_running.set(handle_command(
+                    command,
+                    &mut link_state.borrow_mut(),
+                    &metadata_bindings,
+                    &routing_metadata_id,
+                    &callback_mainloop,
+                    &pending_syncs,
+                ));
+            }
+        })
+    };
+
     if let Err(err) = core.sync(0) {
         error!("[registry] failed to sync core: {err}");
     }
@@ -238,65 +272,36 @@ fn registry_thread_main(runtime: RegistryRuntime) -> Result<(), pw::Error> {
     info!("[registry] PipeWire registry thread running");
 
     let loop_ref = mainloop.loop_();
-    let mut commands_disconnected = false;
     let mut consecutive_errors = 0u32;
 
-    'registry_loop: loop {
-        if !commands_disconnected {
-            loop {
-                match command_rx.try_recv() {
-                    Ok(command) => {
-                        if !handle_command(
-                            command,
-                            &mut link_state,
-                            &metadata_bindings,
-                            &routing_metadata_id,
-                            &mainloop,
-                            &pending_syncs,
-                        ) {
-                            break 'registry_loop;
-                        }
-                    }
-                    Err(mpsc::TryRecvError::Empty) => break,
-                    Err(mpsc::TryRecvError::Disconnected) => {
-                        commands_disconnected = true;
-                        break;
-                    }
-                }
-            }
-        }
-
+    while running.get() {
         let result = loop_ref.iterate(pw::loop_::Timeout::Finite(Duration::from_millis(50)));
         if result >= 0 {
             if consecutive_errors > 0 {
-                info!(
-                    "[registry] PipeWire loop recovered after {} error(s)",
-                    consecutive_errors
-                );
+                info!("[registry] PipeWire loop recovered after {consecutive_errors} error(s)");
                 consecutive_errors = 0;
             }
             continue;
         }
 
         consecutive_errors += 1;
-        if consecutive_errors == 1 {
-            warn!(
+        match consecutive_errors {
+            1 => warn!(
                 "[registry] PipeWire loop iteration failed (errno={}); retrying",
                 -result
-            );
-        }
-        if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
-            error!(
-                "[registry] PipeWire loop failed {} consecutive times; exiting",
-                consecutive_errors
-            );
-            break;
+            ),
+            MAX_CONSECUTIVE_ERRORS.. => {
+                error!(
+                    "[registry] PipeWire loop failed {consecutive_errors} consecutive times; exiting"
+                );
+                break;
+            }
+            _ => {}
         }
         let backoff = Duration::from_millis(50 * (1 << consecutive_errors.min(4)));
         thread::sleep(backoff);
     }
 
-    *lock(&runtime.commands) = None;
     info!("[registry] PipeWire registry loop exited");
 
     drop(registry);
@@ -417,29 +422,23 @@ fn handle_command(
             {
                 pending_syncs.borrow_mut().push((seq, tx));
             }
-            true
         }
-        RegistryCommand::SetLinks(desired) => {
-            link_state.apply_links(desired);
-            true
-        }
-        RegistryCommand::RouteNode { subject, target } => {
-            apply_route(
-                metadata_bindings,
-                routing_metadata_id,
-                subject,
-                target
-                    .as_ref()
-                    .map(|(object, node)| (object.as_str(), node.as_str())),
-            );
-            true
-        }
+        RegistryCommand::SetLinks(desired) => link_state.apply_links(desired),
+        RegistryCommand::RouteNode { subject, target } => apply_route(
+            metadata_bindings,
+            routing_metadata_id,
+            subject,
+            target
+                .as_ref()
+                .map(|(object, node)| (object.as_str(), node.as_str())),
+        ),
         RegistryCommand::Shutdown => {
             info!("[registry] shutting down...");
             mainloop.quit();
-            false
+            return false;
         }
     }
+    true
 }
 
 #[derive(Clone)]
@@ -577,4 +576,33 @@ struct MetadataBinding {
     _listener: MetadataListener,
     name: Option<String>,
     is_preferred: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_cleanup_releases_queued_syncs() {
+        let (sender, receiver) = pw::channel::channel();
+        let runtime = RegistryRuntime {
+            state: Arc::default(),
+            watchers: Arc::default(),
+            commands: Arc::new(Mutex::new(Some(sender))),
+        };
+        drop(receiver);
+
+        let (sync_tx, sync_rx) = mpsc::channel();
+        assert!(runtime.send_command(RegistryCommand::Sync(sync_tx)));
+
+        drop(CommandChannelCleanup {
+            commands: Arc::clone(&runtime.commands),
+        });
+
+        assert!(matches!(
+            sync_rx.try_recv(),
+            Err(mpsc::TryRecvError::Disconnected)
+        ));
+        assert!(!runtime.send_command(RegistryCommand::Shutdown));
+    }
 }

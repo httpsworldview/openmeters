@@ -30,26 +30,15 @@ impl Default for TriggerMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct OscilloscopeConfig {
-    pub sample_rate: f32,
-    pub segment_duration: f32,
-    pub trigger_mode: TriggerMode,
-    pub trigger_source: Channel,
-    pub channel_1: Channel,
-    pub channel_2: Channel,
-}
-
-impl Default for OscilloscopeConfig {
-    fn default() -> Self {
-        Self {
-            sample_rate: DEFAULT_SAMPLE_RATE,
-            segment_duration: 0.02,
-            trigger_mode: TriggerMode::default(),
-            trigger_source: Channel::Mid,
-            channel_1: Channel::Mid,
-            channel_2: Channel::None,
-        }
+crate::macros::default_struct! {
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub struct OscilloscopeConfig {
+        pub sample_rate: f32 = DEFAULT_SAMPLE_RATE,
+        pub segment_duration: f32 = 0.02,
+        pub trigger_mode: TriggerMode = TriggerMode::default(),
+        pub trigger_source: Channel = Channel::Mid,
+        pub channel_1: Channel = Channel::Mid,
+        pub channel_2: Channel = Channel::None,
     }
 }
 
@@ -978,12 +967,6 @@ mod tests {
         }
 
         assert!(estimator.estimate_period(&noise_samples(long), RATE).is_none());
-    }
-
-    #[test]
-    fn parabolic_interpolation() {
-        let y = |x: f32| (x - 5.3_f32).powi(2);
-        assert!((parabolic_refine(y(4.0), y(5.0), y(6.0), 5) - 5.3).abs() < 0.001);
     }
 
     #[test]

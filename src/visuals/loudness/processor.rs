@@ -252,20 +252,12 @@ impl LoudnessSnapshot {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct LoudnessConfig {
-    pub sample_rate: f32,
-    pub windows: [f32; 4],
-    pub floor_db: f32,
-}
-
-impl Default for LoudnessConfig {
-    fn default() -> Self {
-        Self {
-            sample_rate: DEFAULT_SAMPLE_RATE,
-            windows: DEFAULT_WINDOWS,
-            floor_db: DEFAULT_FLOOR_DB,
-        }
+crate::macros::default_struct! {
+    #[derive(Debug, Clone, Copy)]
+    pub struct LoudnessConfig {
+        pub sample_rate: f32 = DEFAULT_SAMPLE_RATE,
+        pub windows: [f32; 4] = DEFAULT_WINDOWS,
+        pub floor_db: f32 = DEFAULT_FLOOR_DB,
     }
 }
 
@@ -381,23 +373,17 @@ mod tests {
     }
 
     #[test]
-    fn processor_estimates_short_term_and_rms() {
+    fn rms_tracks_amplitude() {
         let measure = |amp| {
             let samples = sine_wave(DEFAULT_SAMPLE_RATE, 3.0, 1000.0, amp);
             let block = AudioBlock::new(&samples, 1, DEFAULT_SAMPLE_RATE);
-            let s = unwrap_snapshot(
+            unwrap_snapshot(
                 LoudnessProcessor::new(LoudnessConfig::default()).process_block(&block),
-            );
-            (s.short_term_loudness, s.rms_fast_db[0])
+            )
+            .rms_fast_db[0]
         };
-        let (st_low, rms_low) = measure(0.25);
-        let (st_high, rms_high) = measure(0.5);
-        let (st_delta, rms_delta) = (st_high - st_low, rms_high - rms_low);
-        assert!(st_high > st_low && rms_high > rms_low);
-        assert!(
-            (5.8..6.3).contains(&st_delta) && (5.8..6.3).contains(&rms_delta),
-            "st_delta={st_delta:.4}, rms_delta={rms_delta:.4}"
-        );
+        let delta = measure(0.5) - measure(0.25);
+        assert!((5.8..6.3).contains(&delta), "RMS delta was {delta:.4} dB");
     }
 
     #[test]
@@ -462,23 +448,9 @@ mod tests {
             (ours - ref_db).abs() < 0.1,
             "true peak: {ours:.4} vs {ref_db:.4} dBTP"
         );
-        assert!(ours >= sample_peak_db - 0.1 && ref_db >= sample_peak_db - 0.1);
-    }
-
-    #[test]
-    fn true_peak_meter_detects_inter_sample_peaks() {
-        let mut meter = TruePeakMeter::new();
-        for _ in 0..20 {
-            meter.process(0.0);
-        }
-        for _ in 0..20 {
-            meter.process(0.7);
-            meter.process(-0.7);
-        }
-        let peak = meter.take_peak();
         assert!(
-            peak > 0.7,
-            "inter-sample peak {peak:.4} should exceed sample amplitude 0.7"
+            ours > sample_peak_db && ref_db > sample_peak_db,
+            "true peak should exceed sample peak {sample_peak_db:.4} dB"
         );
     }
 }

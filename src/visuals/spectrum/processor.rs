@@ -43,38 +43,21 @@ pub struct SpectrumSnapshot {
     pub traces: [SpectrumTraceSnapshot; TRACE_COUNT],
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub struct SpectrumConfig {
-    pub sample_rate: f32,
-    pub fft_size: usize,
-    pub hop_size: usize,
-    pub window: WindowKind,
-    pub averaging: AveragingMode,
-    pub source: Channel,
-    pub secondary_source: Channel,
-    pub frequency_scale: FrequencyScale,
-    pub reverse_frequency: bool,
-    pub show_grid: bool,
-    pub show_peak_label: bool,
-    pub floor_db: f32,
-}
-
-impl Default for SpectrumConfig {
-    fn default() -> Self {
-        Self {
-            sample_rate: DEFAULT_SAMPLE_RATE,
-            fft_size: DEFAULT_SPECTRUM_FFT_SIZE,
-            hop_size: DEFAULT_SPECTRUM_FFT_SIZE / DEFAULT_SPECTRUM_HOP_DIVISOR,
-            window: WindowKind::Hann,
-            averaging: AveragingMode::None,
-            source: Channel::Mid,
-            secondary_source: Channel::None,
-            frequency_scale: FrequencyScale::Logarithmic,
-            reverse_frequency: false,
-            show_grid: true,
-            show_peak_label: true,
-            floor_db: DEFAULT_SPECTRUM_DB_FLOOR,
-        }
+crate::macros::default_struct! {
+    #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+    pub struct SpectrumConfig {
+        pub sample_rate: f32 = DEFAULT_SAMPLE_RATE,
+        pub fft_size: usize = DEFAULT_SPECTRUM_FFT_SIZE,
+        pub hop_size: usize = DEFAULT_SPECTRUM_FFT_SIZE / DEFAULT_SPECTRUM_HOP_DIVISOR,
+        pub window: WindowKind = WindowKind::Hann,
+        pub averaging: AveragingMode = AveragingMode::None,
+        pub source: Channel = Channel::Mid,
+        pub secondary_source: Channel = Channel::None,
+        pub frequency_scale: FrequencyScale = FrequencyScale::Logarithmic,
+        pub reverse_frequency: bool = false,
+        pub show_grid: bool = true,
+        pub show_peak_label: bool = true,
+        pub floor_db: f32 = DEFAULT_SPECTRUM_DB_FLOOR,
     }
 }
 

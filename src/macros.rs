@@ -32,3 +32,28 @@ macro_rules! choice_enum {
 }
 
 pub(super) use choice_enum;
+
+macro_rules! default_struct {
+    (
+        $(#[$struct_attr:meta])*
+        $visibility:vis struct $name:ident {
+            $(
+                $(#[$field_attr:meta])*
+                $field_visibility:vis $field:ident: $field_type:ty = $default:expr
+            ),* $(,)?
+        }
+    ) => {
+        $(#[$struct_attr])*
+        $visibility struct $name {
+            $($(#[$field_attr])* $field_visibility $field: $field_type,)*
+        }
+
+        impl Default for $name {
+            fn default() -> Self {
+                Self { $($field: $default,)* }
+            }
+        }
+    };
+}
+
+pub(super) use default_struct;

@@ -41,16 +41,18 @@ pub struct SpectrogramPoint {
     pub magnitude_db: f32,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct SpectrogramConfig {
-    pub sample_rate: f32,
-    pub fft_size: usize,
-    pub hop_size: usize,
-    pub window: WindowKind,
-    pub frequency_scale: FrequencyScale,
-    pub history_length: usize,
-    pub use_reassignment: bool,
-    pub zero_padding_factor: usize,
+crate::macros::default_struct! {
+    #[derive(Debug, Clone, Copy)]
+    pub struct SpectrogramConfig {
+        pub sample_rate: f32 = DEFAULT_SAMPLE_RATE,
+        pub fft_size: usize = DEFAULT_SPECTROGRAM_FFT_SIZE,
+        pub hop_size: usize = DEFAULT_SPECTROGRAM_HOP_SIZE,
+        pub window: WindowKind = WindowKind::Hann,
+        pub frequency_scale: FrequencyScale = FrequencyScale::default(),
+        pub history_length: usize = 0,
+        pub use_reassignment: bool = true,
+        pub zero_padding_factor: usize = 1,
+    }
 }
 
 const DEFAULT_SPECTROGRAM_FFT_SIZE: usize = 2048;
@@ -64,21 +66,6 @@ pub(super) const SPECTROGRAM_HISTORY_BYTE_BUDGET: usize = 128 * 1024 * 1024;
 pub(super) const CLASSIC_DB_STORE_LO: f32 = -144.0;
 pub(super) const CLASSIC_DB_STORE_HI: f32 = 12.0;
 pub(super) const CLASSIC_DB_STORE_RANGE: f32 = CLASSIC_DB_STORE_HI - CLASSIC_DB_STORE_LO;
-
-impl Default for SpectrogramConfig {
-    fn default() -> Self {
-        Self {
-            sample_rate: DEFAULT_SAMPLE_RATE,
-            fft_size: DEFAULT_SPECTROGRAM_FFT_SIZE,
-            hop_size: DEFAULT_SPECTROGRAM_HOP_SIZE,
-            window: WindowKind::Hann,
-            frequency_scale: FrequencyScale::default(),
-            history_length: 0,
-            use_reassignment: true,
-            zero_padding_factor: 1,
-        }
-    }
-}
 
 impl SpectrogramConfig {
     fn normalize(&mut self) {

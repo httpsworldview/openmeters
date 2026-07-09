@@ -28,24 +28,14 @@ pub const NUM_BANDS: usize = 3;
 pub const MIN_BAND_DB_FLOOR: f32 = -96.0;
 pub const MAX_BAND_DB_FLOOR: f32 = -12.0;
 
-#[derive(Debug, Clone, Copy)]
-pub struct WaveformConfig {
-    pub sample_rate: f32,
-    pub scroll_speed: f32,
-    pub max_columns: usize,
-    pub analyze_bands: bool,
-    pub track_history: bool,
-}
-
-impl Default for WaveformConfig {
-    fn default() -> Self {
-        Self {
-            sample_rate: DEFAULT_SAMPLE_RATE,
-            scroll_speed: DEFAULT_SCROLL_SPEED,
-            max_columns: MAX_COLUMN_CAPACITY,
-            analyze_bands: true,
-            track_history: false,
-        }
+crate::macros::default_struct! {
+    #[derive(Debug, Clone, Copy)]
+    pub struct WaveformConfig {
+        pub sample_rate: f32 = DEFAULT_SAMPLE_RATE,
+        pub scroll_speed: f32 = DEFAULT_SCROLL_SPEED,
+        pub max_columns: usize = MAX_COLUMN_CAPACITY,
+        pub analyze_bands: bool = true,
+        pub track_history: bool = false,
     }
 }
 
