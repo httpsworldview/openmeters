@@ -425,12 +425,13 @@ fn run_virtual_sink() -> Result<(), Box<dyn Error + Send + Sync>> {
     let mut params = [Pod::from_bytes(&format_bytes)
         .ok_or_else(|| io::Error::other("serialized PipeWire format pod was invalid"))?];
 
+    // With RT_PROCESS, `process` may run concurrently with
+    // `param_changed`, but pipewire-rs gives both callbacks mutable
+    // access to the same listener state.
     stream.connect(
         spa::utils::Direction::Input,
         None,
-        pw::stream::StreamFlags::AUTOCONNECT
-            | pw::stream::StreamFlags::MAP_BUFFERS
-            | pw::stream::StreamFlags::RT_PROCESS,
+        pw::stream::StreamFlags::AUTOCONNECT | pw::stream::StreamFlags::MAP_BUFFERS,
         &mut params,
     )?;
 
