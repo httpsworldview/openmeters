@@ -248,8 +248,7 @@ impl SpectrogramProcessor {
         }
         self.bin_norm = compute_fft_bin_normalization(&self.window, self.fft_size);
         let buffered_len = active_len.saturating_mul(2);
-        self.audio_buffer.truncate(buffered_len);
-        self.recompute_audio_activity();
+        self.drain_audio(self.audio_buffer.len().saturating_sub(buffered_len));
         self.shrink_audio_buffer(buffered_len);
         self.bin_hz = self.config.sample_rate / self.fft_size.max(1) as f32;
     }
@@ -371,15 +370,6 @@ impl SpectrogramProcessor {
         if self.audio_buffer.capacity() > target.saturating_mul(4).max(1) {
             self.audio_buffer.shrink_to(target);
         }
-    }
-
-    fn recompute_audio_activity(&mut self) {
-        let base = self.audio_front_sample;
-        self.audio_last_nonzero = self
-            .audio_buffer
-            .iter()
-            .rposition(|&sample| sample != 0.0)
-            .map(|i| base + i as u64);
     }
 
     fn audio_is_silent(&self) -> bool {
@@ -761,6 +751,18 @@ mod tests {
         processor.update_config(next);
 
         assert_eq!(processor.bin_hz, next.sample_rate / processor.fft_size as f32);
+    }
+
+    #[test]
+    fn fft_rebuild_keeps_newest_pending_audio() {
+        let mut p = SpectrogramProcessor::new(cfg(64, 16, false));
+        let samples: Vec<_> = (0..200).map(|i| i as f32).collect();
+        p.push_audio(&samples, 1);
+        let mut next = p.config();
+        next.fft_size = 16;
+        p.update_config(next);
+
+        assert_eq!(p.audio_buffer.iter().copied().collect::<Vec<_>>(), samples[168..]);
     }
 
     #[test]

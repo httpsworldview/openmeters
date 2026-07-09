@@ -28,8 +28,6 @@ const DEFAULT_SPECTRUM_EXP_FACTOR: f32 = 0.5;
 const DEFAULT_SPECTRUM_PEAK_DECAY: f32 = 12.0;
 const TRACE_COUNT: usize = 2;
 const WEIGHTING_COUNT: usize = 2;
-const A_WEIGHTED: usize = 0;
-const RAW: usize = 1;
 
 fn frequency_bins(sample_rate: f32, fft_size: usize) -> Vec<f32> {
     let bins = fft_size / 2 + 1;
@@ -361,8 +359,7 @@ impl SpectrumLevelBuffers {
                 &self.peak_hold_power
             }
         };
-        let (weighted, raw) = outputs.split_at_mut(RAW);
-        let (weighted_out, raw_out) = (&mut weighted[A_WEIGHTED], &mut raw[0]);
+        let [weighted_out, raw_out] = outputs;
         for i in 0..bins {
             let db = powers[i].ln() * LN_TO_DB;
             raw_out[i] = db.max(floor);
@@ -501,7 +498,7 @@ mod tests {
         let samples = vec![0.0; cfg.fft_size];
         let lengths = p
             .process_block(&AudioBlock::new(&samples, 1, cfg.sample_rate))
-            .map(|s| (s.traces[0][A_WEIGHTED].len(), s.traces[0][RAW].len()));
+            .map(|s| (s.traces[0][0].len(), s.traces[0][1].len()));
         assert_eq!(lengths, Some((bins, bins)));
     }
 
@@ -526,7 +523,7 @@ mod tests {
         let snap = p
             .process_block(&AudioBlock::new(&samples, 1, 8.0))
             .expect("expected snapshot");
-        let held_db = snap.traces[0][RAW][1];
+        let held_db = snap.traces[0][1][1];
 
         assert!(
             (-24.1..-23.9).contains(&held_db),
