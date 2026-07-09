@@ -74,6 +74,146 @@ impl Default for SpectrogramStyle {
     }
 }
 
+struct SpectrogramHistory {
+    col_kind: ColumnKind,
+    points_per_column: usize,
+    reassigned_points_per_slot: u32,
+    ring_capacity: u32,
+    gpu_capacity: u32,
+    write_slot: u32,
+    col_count: u32,
+    slot_counts: Vec<u32>,
+    pending: VecDeque<PendingUpload>,
+    pending_copy: Option<RingCopyPlan>,
+}
+
+impl Default for SpectrogramHistory {
+    fn default() -> Self {
+        Self {
+            col_kind: ColumnKind::Reassigned,
+            points_per_column: 0,
+            reassigned_points_per_slot: 1,
+            ring_capacity: 0,
+            gpu_capacity: 0,
+            write_slot: 0,
+            col_count: 0,
+            slot_counts: Vec::new(),
+            pending: VecDeque::new(),
+            pending_copy: None,
+        }
+    }
+}
+
+impl SpectrogramHistory {
+    fn apply_update(&mut self, snap: SpectrogramUpdate) {
+        let ppc = snap.points_per_column;
+        if ppc == 0 { return; }
+        let new_kind = match snap.new_columns.first() {
+            Some(SpectrogramColumn::Reassigned(_)) => ColumnKind::Reassigned,
+            Some(SpectrogramColumn::Classic(_)) => ColumnKind::Classic,
+            None => self.col_kind,
+        };
+        let max_bytes = SPECTROGRAM_HISTORY_BYTE_BUDGET as u64
+            * (1 + u64::from(new_kind == ColumnKind::Reassigned));
+        let max_cols = (max_bytes / col_byte_stride(new_kind, ppc as u32)) as u32;
+        let capacity = (snap.history_length as u32)
+            .clamp(1, MAX_SPECTROGRAM_HISTORY_COLUMNS as u32)
+            .min(max_cols);
+        if capacity == 0 { return; }
+
+        if snap.reset || self.points_per_column != ppc || new_kind != self.col_kind {
+            *self = Self {
+                col_kind: new_kind,
+                points_per_column: ppc,
+                ring_capacity: capacity,
+                slot_counts: vec![0; capacity as usize],
+                ..Default::default()
+            };
+        } else if capacity != self.ring_capacity {
+            self.ensure_pending_copy();
+            if capacity > self.ring_capacity && self.col_count >= self.ring_capacity {
+                self.remap_retained(self.write_slot, self.col_count);
+                self.write_slot = self.col_count % capacity;
+            } else if capacity < self.ring_capacity && self.col_count >= capacity {
+                let oldest_kept =
+                    (self.write_slot + self.ring_capacity - capacity) % self.ring_capacity;
+                self.remap_retained(oldest_kept, capacity);
+                self.col_count = capacity;
+                self.write_slot = 0;
+            }
+            self.ring_capacity = capacity;
+            self.slot_counts.resize(capacity as usize, 0);
+        }
+
+        for col in snap.new_columns {
+            let slot = self.write_slot;
+            let upload = match col {
+                SpectrogramColumn::Reassigned(points) => {
+                    if let Some(count) = self.slot_counts.get_mut(slot as usize) {
+                        *count = points.len() as u32;
+                    }
+                    PendingUpload::Reassigned { slot, points }
+                }
+                SpectrogramColumn::Classic(mags) => PendingUpload::Classic { slot, mags },
+            };
+            if self.pending.len() as u32 >= self.ring_capacity { self.pending.pop_front(); }
+            self.pending.push_back(upload);
+            self.write_slot = (self.write_slot + 1) % self.ring_capacity;
+            if self.col_count < self.ring_capacity { self.col_count += 1; }
+        }
+        self.fit_reassigned_slot_capacity();
+    }
+
+    fn ensure_pending_copy(&mut self) {
+        if self.pending_copy.is_none() && self.gpu_capacity > 0 && self.col_count > 0 {
+            let n = self.col_count.min(self.ring_capacity).min(self.gpu_capacity);
+            self.pending_copy = Some((self.gpu_capacity, (0..n).map(|s| [s, s]).collect()));
+        }
+    }
+
+    fn fit_reassigned_slot_capacity(&mut self) {
+        if self.col_kind != ColumnKind::Reassigned {
+            self.reassigned_points_per_slot = 1;
+            return;
+        }
+        let needed = self
+            .slot_counts
+            .iter()
+            .take(self.ring_capacity as usize)
+            .copied()
+            .fold(1, u32::max);
+        let current = self.reassigned_points_per_slot.max(1);
+        if needed > current || current > needed.saturating_mul(4).max(1) {
+            self.ensure_pending_copy();
+            self.reassigned_points_per_slot = needed;
+        }
+    }
+
+    fn remap_retained(&mut self, start: u32, keep: u32) {
+        let old_cap = self.ring_capacity.max(1);
+        let remap = |slot: &mut u32| {
+            *slot = (*slot + old_cap - start) % old_cap;
+            *slot < keep
+        };
+        let mut counts = vec![0; keep as usize];
+        for (src, &count) in self.slot_counts.iter().enumerate().take(old_cap as usize) {
+            let mut dst = src as u32;
+            if remap(&mut dst) {
+                counts[dst as usize] = count;
+            }
+        }
+        self.slot_counts = counts;
+        self.pending.retain_mut(|upload| {
+            let (PendingUpload::Reassigned { slot, .. } | PendingUpload::Classic { slot, .. }) =
+                upload;
+            remap(slot)
+        });
+        if let Some((_, copies)) = &mut self.pending_copy {
+            copies.retain_mut(|[_, dst]| remap(dst));
+        }
+    }
+}
+
 pub(in crate::visuals) struct SpectrogramState {
     pub(in crate::visuals) style: SpectrogramStyle,
     pub(in crate::visuals) palette: [Color; SPECTROGRAM_PALETTE_SIZE],
@@ -86,19 +226,10 @@ pub(in crate::visuals) struct SpectrogramState {
     fft_size: usize,
     hop_size: usize,
     pub(in crate::visuals) freq_scale: FrequencyScale,
-    col_kind: ColumnKind,
     zoom: f32,
     pan: f32,
     pub(in crate::visuals) view_width: u32,
-    points_per_column: usize,
-    reassigned_points_per_slot: u32,
-    ring_capacity: u32,
-    gpu_capacity: u32,
-    write_slot: u32,
-    col_count: u32,
-    slot_counts: Vec<u32>,
-    pending: VecDeque<PendingUpload>,
-    pending_copy: Option<RingCopyPlan>,
+    history: SpectrogramHistory,
 }
 
 impl SpectrogramState {
@@ -116,19 +247,10 @@ impl SpectrogramState {
             fft_size: cfg.fft_size * cfg.zero_padding_factor.max(1),
             hop_size: cfg.hop_size,
             freq_scale: cfg.frequency_scale,
-            col_kind: ColumnKind::Reassigned,
             zoom: 1.0,
             pan: 0.5,
             view_width: 0,
-            points_per_column: 0,
-            reassigned_points_per_slot: 1,
-            ring_capacity: 0,
-            gpu_capacity: 0,
-            write_slot: 0,
-            col_count: 0,
-            slot_counts: Vec::new(),
-            pending: VecDeque::new(),
-            pending_copy: None,
+            history: SpectrogramHistory::default(),
         }
     }
 
@@ -162,132 +284,12 @@ impl SpectrogramState {
     }
 
     pub fn apply_snapshot(&mut self, snap: SpectrogramUpdate) {
-        if snap.new_columns.is_empty() && !snap.reset {
-            return;
-        }
+        if snap.new_columns.is_empty() && !snap.reset { return; }
         self.sample_rate = snap.sample_rate;
         self.fft_size = snap.fft_size;
         self.hop_size = snap.hop_size;
         self.freq_scale = snap.frequency_scale;
-
-        let ppc = snap.points_per_column;
-        if ppc == 0 {
-            return;
-        }
-        let new_kind = match snap.new_columns.first() {
-            Some(SpectrogramColumn::Reassigned(_)) => ColumnKind::Reassigned,
-            Some(SpectrogramColumn::Classic(_)) => ColumnKind::Classic,
-            None => self.col_kind,
-        };
-        let max_bytes = SPECTROGRAM_HISTORY_BYTE_BUDGET as u64
-            * (1 + u64::from(new_kind == ColumnKind::Reassigned));
-        let max_cols = (max_bytes / col_byte_stride(new_kind, ppc as u32)) as u32;
-        let capacity = (snap.history_length as u32)
-            .clamp(1, MAX_SPECTROGRAM_HISTORY_COLUMNS as u32)
-            .min(max_cols);
-        if capacity == 0 {
-            return;
-        }
-
-        if snap.reset || self.points_per_column != ppc || new_kind != self.col_kind {
-            self.points_per_column = ppc;
-            self.reassigned_points_per_slot = 1;
-            self.ring_capacity = capacity;
-            self.gpu_capacity = 0;
-            self.col_kind = new_kind;
-            self.write_slot = 0;
-            self.col_count = 0;
-            self.slot_counts = vec![0; capacity as usize];
-            self.pending = VecDeque::new();
-            self.pending_copy = None;
-        } else if capacity != self.ring_capacity {
-            self.ensure_pending_copy();
-            if capacity > self.ring_capacity && self.col_count >= self.ring_capacity {
-                self.remap_retained(self.write_slot, self.col_count);
-                self.write_slot = self.col_count % capacity;
-            } else if capacity < self.ring_capacity && self.col_count >= capacity {
-                let oldest_kept =
-                    (self.write_slot + self.ring_capacity - capacity) % self.ring_capacity;
-                self.remap_retained(oldest_kept, capacity);
-                self.col_count = capacity;
-                self.write_slot = 0;
-            }
-            self.ring_capacity = capacity;
-            self.slot_counts.resize(capacity as usize, 0);
-        }
-
-        for col in snap.new_columns {
-            let slot = self.write_slot;
-            let upload = match col {
-                SpectrogramColumn::Reassigned(points) => {
-                    if let Some(count) = self.slot_counts.get_mut(slot as usize) {
-                        *count = points.len() as u32;
-                    }
-                    PendingUpload::Reassigned { slot, points }
-                }
-                SpectrogramColumn::Classic(mags) => PendingUpload::Classic { slot, mags },
-            };
-            if self.pending.len() as u32 >= self.ring_capacity {
-                self.pending.pop_front();
-            }
-            self.pending.push_back(upload);
-            self.write_slot = (self.write_slot + 1) % self.ring_capacity;
-            if self.col_count < self.ring_capacity {
-                self.col_count += 1;
-            }
-        }
-        self.fit_reassigned_slot_capacity();
-    }
-
-    fn ensure_pending_copy(&mut self) {
-        if self.pending_copy.is_none() && self.gpu_capacity > 0 && self.col_count > 0 {
-            let n = self.col_count.min(self.ring_capacity).min(self.gpu_capacity);
-            self.pending_copy = Some((self.gpu_capacity, (0..n).map(|s| [s, s]).collect()));
-        }
-    }
-
-    fn fit_reassigned_slot_capacity(&mut self) {
-        if self.col_kind != ColumnKind::Reassigned {
-            self.reassigned_points_per_slot = 1;
-            return;
-        }
-        let needed = self
-            .slot_counts
-            .iter()
-            .take(self.ring_capacity as usize)
-            .copied()
-            .max()
-            .unwrap_or(0)
-            .max(1);
-        let current = self.reassigned_points_per_slot.max(1);
-        if needed > current || current > needed.saturating_mul(4).max(1) {
-            self.ensure_pending_copy();
-            self.reassigned_points_per_slot = needed;
-        }
-    }
-
-    fn remap_retained(&mut self, start: u32, keep: u32) {
-        let old_cap = self.ring_capacity.max(1);
-        let remap = |slot: &mut u32| {
-            *slot = (*slot + old_cap - start) % old_cap;
-            *slot < keep
-        };
-        let mut counts = vec![0; keep as usize];
-        for (src, &count) in self.slot_counts.iter().enumerate().take(old_cap as usize) {
-            let mut dst = src as u32;
-            if remap(&mut dst) {
-                counts[dst as usize] = count;
-            }
-        }
-        self.slot_counts = counts;
-        self.pending.retain_mut(|upload| {
-            let (PendingUpload::Reassigned { slot, .. } | PendingUpload::Classic { slot, .. }) =
-                upload;
-            remap(slot)
-        });
-        if let Some((_, copies)) = &mut self.pending_copy {
-            copies.retain_mut(|[_, dst]| remap(dst));
-        }
+        self.history.apply_update(snap);
     }
 
     pub fn visual_params(
@@ -295,31 +297,32 @@ impl SpectrogramState {
         bounds: Rectangle,
         uv_y_range: [f32; 2],
     ) -> Option<SpectrogramParams> {
-        if self.col_count == 0 && self.pending.is_empty() { return None; }
+        let history = &mut self.history;
+        if history.col_count == 0 && history.pending.is_empty() { return None; }
+        let copy_plan = history.pending_copy.take();
+        history.gpu_capacity = history.ring_capacity;
+        let slot_counts = if history.col_kind == ColumnKind::Reassigned {
+            history.slot_counts.clone()
+        } else {
+            Vec::new()
+        };
         let op = self.style.opacity.clamp(0.0, 1.0);
         let to_rgba = |c: Color| rgba_with_alpha(color_to_rgba(c), c.a * op);
         let bin_hz = self.sample_rate / (self.fft_size.max(1) as f32);
         let (freq_min, freq_max) = display_axis(self.sample_rate);
 
-        let copy_plan = self.pending_copy.take();
-        self.gpu_capacity = self.ring_capacity;
-
         Some(SpectrogramParams {
             key: self.key,
             bounds,
-            ring_capacity: self.ring_capacity,
-            points_per_column: self.points_per_column as u32,
-            reassigned_points_per_slot: self.reassigned_points_per_slot.max(1),
-            col_count: self.col_count,
-            write_slot: self.write_slot,
-            pending_uploads: std::mem::take(&mut self.pending),
+            ring_capacity: history.ring_capacity,
+            points_per_column: history.points_per_column as u32,
+            reassigned_points_per_slot: history.reassigned_points_per_slot.max(1),
+            col_count: history.col_count,
+            write_slot: history.write_slot,
+            pending_uploads: std::mem::take(&mut history.pending),
             copy_plan,
-            slot_counts: if self.col_kind == ColumnKind::Reassigned {
-                self.slot_counts.clone()
-            } else {
-                Vec::new()
-            },
-            col_kind: self.col_kind,
+            slot_counts,
+            col_kind: history.col_kind,
             freq_min,
             freq_max,
             bin_hz,
@@ -374,7 +377,7 @@ impl SpectrogramState {
     // 1 column = 1 logical pixel on the time axis, matching the shader.
     fn time_ago_at_cursor(&self, cursor: Point, bounds: Rectangle) -> Option<f32> {
         if !bounds.contains(cursor)
-            || self.col_count == 0
+            || self.history.col_count == 0
             || self.hop_size == 0
             || self.sample_rate <= 0.0
         {
@@ -387,7 +390,7 @@ impl SpectrogramState {
             3 => cursor.y - bounds.y,
             _ => return None,
         };
-        if age < 0.0 || age >= self.col_count as f32 { return None; }
+        if age < 0.0 || age >= self.history.col_count as f32 { return None; }
         let secs = age * (self.hop_size as f32 / self.sample_rate);
         secs.is_finite().then_some(secs)
     }
