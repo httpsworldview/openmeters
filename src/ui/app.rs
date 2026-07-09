@@ -23,7 +23,7 @@ use crate::visuals::registry::{VisualManager, VisualManagerHandle};
 use async_channel::Receiver as AsyncReceiver;
 use iced::alignment::{Horizontal, Vertical};
 use iced::event::{self, Event};
-use iced::widget::{column, container, mouse_area, row, stack, text};
+use iced::widget::{container, mouse_area, row, stack, text};
 use iced::{
     Element, Length, Settings as IcedSettings, Size, Subscription, Task, daemon as iced_daemon,
     window,
@@ -272,23 +272,24 @@ impl UiApp {
             is_active(self.exit_warning_until).then_some("q again to exit"),
         ];
 
-        let mut layer = column![fill!(visuals_view)]
-            .width(Length::Fill)
-            .height(Length::Fill);
-        if toast_msgs.iter().any(Option::is_some) {
-            layer = layer.push(
-                container(
-                    row(toast_msgs
-                        .into_iter()
-                        .flatten()
-                        .map(|m| container(text(m).size(11)).padding([2, 6]).into()))
-                    .spacing(12),
-                )
-                .width(Length::Fill)
-                .align_x(Horizontal::Center),
-            );
+        let base: Element<'_, Message> = fill!(visuals_view).into();
+        if !toast_msgs.iter().any(Option::is_some) {
+            return base;
         }
-        layer.into()
+        let toast = container(
+            row(toast_msgs
+                .into_iter()
+                .flatten()
+                .map(|m| container(text(m).size(11)).padding([2, 6]).into()))
+            .spacing(12),
+        )
+        .padding([6, 10])
+        .style(theme::weak_container);
+        let overlay = fill!(toast)
+            .padding(8)
+            .align_x(Horizontal::Center)
+            .align_y(Vertical::Bottom);
+        stack![base, overlay].into()
     }
 
     fn wrap_bar_resize<'a>(

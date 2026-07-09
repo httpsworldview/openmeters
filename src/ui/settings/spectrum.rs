@@ -29,6 +29,11 @@ crate::macros::choice_enum!(no_default all pub(in crate::ui) enum AvgMode {
     PeakHold => "Peak hold",
 });
 
+crate::macros::choice_enum!(no_default all pub(in crate::ui) enum FrequencyDirection {
+    LowToHigh => "Low -> High",
+    HighToLow => "High -> Low",
+});
+
 struct AveragingControls {
     mode: AvgMode,
     factor: f32,
@@ -48,7 +53,10 @@ settings_messages!(pane, value {
     Source(Channel) => set_if_changed(&mut pane.settings.source, value);
     SecondarySource(Channel) => set_if_changed(&mut pane.settings.secondary_source, value);
     FrequencyScale(FrequencyScale) => set_if_changed(&mut pane.settings.frequency_scale, value);
-    ReverseFrequency(bool) => set_if_changed(&mut pane.settings.reverse_frequency, value);
+    FrequencyDirection(FrequencyDirection) => set_if_changed(
+        &mut pane.settings.reverse_frequency,
+        value == FrequencyDirection::HighToLow,
+    );
     DisplayMode(SpectrumDisplayMode) => set_if_changed(&mut pane.settings.display_mode, value);
     WeightingMode(SpectrumWeightingMode) => set_if_changed(&mut pane.settings.weighting_mode, value);
     SecondaryWeightingMode(SpectrumWeightingMode) => set_if_changed(&mut pane.settings.secondary_weighting_mode, value);
@@ -67,10 +75,10 @@ impl Pane {
     pub(super) fn view(&self) -> Element<'_, Message> {
         let s = &self.settings;
         let hop_divisor = get_closest_hop_divisor(s.fft_size, s.hop_size);
-        let dir = if s.reverse_frequency {
-            "High <- Low"
+        let direction = if s.reverse_frequency {
+            FrequencyDirection::HighToLow
         } else {
-            "Low -> High"
+            FrequencyDirection::LowToHigh
         };
 
         let sources = split(
@@ -109,7 +117,12 @@ impl Pane {
             pick("Display", SpectrumDisplayMode::ALL, s.display_mode, Message::DisplayMode);
             split(
                 controls!(8.0;
-                    toggle(dir, s.reverse_frequency, Message::ReverseFrequency);
+                    pick(
+                        "Direction",
+                        FrequencyDirection::ALL,
+                        direction,
+                        Message::FrequencyDirection,
+                    );
                     toggle("Frequency grid", s.show_grid, Message::ShowGrid);
                 ),
                 controls!(8.0;
