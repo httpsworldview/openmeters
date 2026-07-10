@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-macro_rules! fill {
-    ($e:expr) => {
-        container($e).width(Length::Fill).height(Length::Fill)
-    };
-}
-
 mod message;
 mod windowing;
 
@@ -18,7 +12,7 @@ use crate::ui::settings::ActiveSettings;
 use crate::ui::subscription::channel_subscription;
 use crate::ui::theme;
 use crate::ui::visuals::VisualsPage;
-use crate::ui::widgets::scroll_glow::ScrollGlow;
+use crate::ui::widgets::{fill, scroll_glow::ScrollGlow};
 use crate::visuals::registry::{VisualManager, VisualManagerHandle};
 use async_channel::Receiver as AsyncReceiver;
 use iced::alignment::{Horizontal, Vertical};
@@ -272,7 +266,7 @@ impl UiApp {
             is_active(self.exit_warning_until).then_some("q again to exit"),
         ];
 
-        let base: Element<'_, Message> = fill!(visuals_view).into();
+        let base: Element<'_, Message> = fill(visuals_view).into();
         if !toast_msgs.iter().any(Option::is_some) {
             return base;
         }
@@ -285,7 +279,7 @@ impl UiApp {
         )
         .padding([6, 10])
         .style(theme::weak_container);
-        let overlay = fill!(toast)
+        let overlay = fill(toast)
             .padding(8)
             .align_x(Horizontal::Center)
             .align_y(Vertical::Bottom);
@@ -307,7 +301,7 @@ impl UiApp {
         )
         .on_press(Message::BarResizeStart)
         .interaction(iced::mouse::Interaction::ResizingVertically);
-        let handle_layer = fill!(handle).align_y(match bar.alignment {
+        let handle_layer = fill(handle).align_y(match bar.alignment {
             BarAlignment::Top => Vertical::Bottom,
             BarAlignment::Bottom => Vertical::Top,
         });

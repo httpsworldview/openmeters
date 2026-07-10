@@ -1,19 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::widgets::{
-    FFT_OPTIONS, HOP_DIVISORS, SliderRange, card, get_closest_hop_divisor, palette_card, pick,
-    set_if_changed, split, toggle, update_f32_range, update_fft_size, update_hop_divisor,
-    update_usize_from_f32,
+use super::{
+    FFT_OPTIONS, HOP_DIVISORS, get_closest_hop_divisor, set, set_f32, set_usize,
+    update_fft_size, update_hop_divisor,
 };
 use crate::persistence::settings::SpectrumSettings;
+use crate::ui::widgets::{SliderRange, pick, split, toggle};
 use crate::util::audio::{Channel, FrequencyScale};
-use crate::visuals::options::{SpectrumDisplayMode, SpectrumWeightingMode};
+use crate::visuals::options::{SpectrumDisplayMode, SpectrumWeightingMode as WeightingMode};
 use crate::visuals::spectrum::processor::{
     AveragingMode, MAX_SPECTRUM_DB_FLOOR, MAX_SPECTRUM_EXP_FACTOR, MAX_SPECTRUM_PEAK_DECAY,
     MIN_SPECTRUM_DB_FLOOR, MIN_SPECTRUM_EXP_FACTOR, MIN_SPECTRUM_PEAK_DECAY,
 };
-use iced::Element;
 
 const EXP_R: SliderRange = SliderRange::new(MIN_SPECTRUM_EXP_FACTOR, MAX_SPECTRUM_EXP_FACTOR, 0.01);
 const DECAY_R: SliderRange =
@@ -47,112 +46,109 @@ settings_pane!(
     }
 );
 
-settings_messages!(pane, value {
-    FftSize(usize) => update_fft_size(&mut pane.settings.fft_size, &mut pane.settings.hop_size, value);
-    HopDivisor(usize) => update_hop_divisor(pane.settings.fft_size, &mut pane.settings.hop_size, value);
-    Source(Channel) => set_if_changed(&mut pane.settings.source, value);
-    SecondarySource(Channel) => set_if_changed(&mut pane.settings.secondary_source, value);
-    FrequencyScale(FrequencyScale) => set_if_changed(&mut pane.settings.frequency_scale, value);
-    FrequencyDirection(FrequencyDirection) => set_if_changed(
-        &mut pane.settings.reverse_frequency,
-        value == FrequencyDirection::HighToLow,
-    );
-    DisplayMode(SpectrumDisplayMode) => set_if_changed(&mut pane.settings.display_mode, value);
-    WeightingMode(SpectrumWeightingMode) => set_if_changed(&mut pane.settings.weighting_mode, value);
-    SecondaryWeightingMode(SpectrumWeightingMode) => set_if_changed(&mut pane.settings.secondary_weighting_mode, value);
-    Averaging(AvgMode) => pane.update_avg(|avg| set_if_changed(&mut avg.mode, value));
-    AvgFactor(f32) => pane.update_avg(|avg| update_f32_range(&mut avg.factor, value, EXP_R));
-    PeakDecay(f32) => pane.update_avg(|avg| update_f32_range(&mut avg.peak_decay, value, DECAY_R));
-    ShowGrid(bool) => set_if_changed(&mut pane.settings.show_grid, value);
-    ShowPeakLabel(bool) => set_if_changed(&mut pane.settings.show_peak_label, value);
-    FloorDb(f32) => update_f32_range(&mut pane.settings.floor_db, value, FLOOR_R);
-    BarCount(f32) => update_usize_from_f32(&mut pane.settings.bar_count, value, BARS_R);
-    BarGap(f32) => update_f32_range(&mut pane.settings.bar_gap, value, GAP_R);
-    Highlight(f32) => update_f32_range(&mut pane.settings.highlight_threshold, value, HIGH_R);
+settings_messages!(pane, settings, value {
+    FftSize(usize) => update_fft_size(&mut settings.fft_size, &mut settings.hop_size, value);
+    HopDivisor(usize) => update_hop_divisor(settings.fft_size, &mut settings.hop_size, value);
+    Source(Channel) => set(&mut settings.source, value);
+    SecondarySource(Channel) => set(&mut settings.secondary_source, value);
+    Scale(FrequencyScale) => set(&mut settings.frequency_scale, value);
+    Direction(FrequencyDirection) => {
+        set(&mut settings.reverse_frequency, value == FrequencyDirection::HighToLow)
+    };
+    Display(SpectrumDisplayMode) => set(&mut settings.display_mode, value);
+    Weighting(WeightingMode) => set(&mut settings.weighting_mode, value);
+    SecondaryWeighting(WeightingMode) => set(&mut settings.secondary_weighting_mode, value);
+    Averaging(AvgMode) => pane.update_avg(|average| set(&mut average.mode, value));
+    AvgFactor(f32) => pane.update_avg(|average| set_f32(&mut average.factor, value, EXP_R));
+    PeakDecay(f32) => pane.update_avg(|average| {
+        set_f32(&mut average.peak_decay, value, DECAY_R)
+    });
+    ShowGrid(bool) => set(&mut settings.show_grid, value);
+    ShowPeakLabel(bool) => set(&mut settings.show_peak_label, value);
+    FloorDb(f32) => set_f32(&mut settings.floor_db, value, FLOOR_R);
+    BarCount(f32) => set_usize(&mut settings.bar_count, value, BARS_R);
+    BarGap(f32) => set_f32(&mut settings.bar_gap, value, GAP_R);
+    Highlight(f32) => set_f32(&mut settings.highlight_threshold, value, HIGH_R);
 });
 
-impl Pane {
-    pub(super) fn view(&self) -> Element<'_, Message> {
-        let s = &self.settings;
-        let hop_divisor = get_closest_hop_divisor(s.fft_size, s.hop_size);
-        let direction = if s.reverse_frequency {
-            FrequencyDirection::HighToLow
-        } else {
-            FrequencyDirection::LowToHigh
-        };
+settings_view! {
+    pane as settings {
+        use FrequencyDirection::{HighToLow, LowToHigh};
+        let hop_divisor = get_closest_hop_divisor(settings.fft_size, settings.hop_size);
+        let direction = if settings.reverse_frequency { HighToLow } else { LowToHigh };
 
         let sources = split(
-            controls!(8.0;
-                pick("Primary source", Channel::ALL, s.source, Message::Source);
-                pick("Primary weighting", SpectrumWeightingMode::ALL, s.weighting_mode, Message::WeightingMode);
+            form!(
+                pick("Primary source", Channel::ALL, settings.source, Source);
+                pick("Primary weighting", WeightingMode::ALL, settings.weighting_mode, Weighting);
             ),
-            controls!(8.0;
-                pick("Secondary source", Channel::ALL, s.secondary_source, Message::SecondarySource);
-                pick("Secondary weighting", SpectrumWeightingMode::ALL, s.secondary_weighting_mode, Message::SecondaryWeightingMode);
+            form!(
+                pick("Secondary source", Channel::ALL, settings.secondary_source, SecondarySource);
+                pick(
+                    "Secondary weighting", WeightingMode::ALL,
+                    settings.secondary_weighting_mode, SecondaryWeighting
+                );
             ),
         );
-        let mut analysis = controls!(8.0;
+        let mut analysis = form!(
             split(
-                controls!(8.0;
-                    pick("FFT size", &FFT_OPTIONS, s.fft_size, Message::FftSize);
-                    pick("Hop divisor", &HOP_DIVISORS, hop_divisor, Message::HopDivisor);
+                form!(
+                    pick("FFT size", &FFT_OPTIONS[..], settings.fft_size, FftSize);
+                    pick("Hop divisor", &HOP_DIVISORS[..], hop_divisor, HopDivisor);
                 ),
-                controls!(8.0;
-                    pick("Frequency scale", FrequencyScale::ALL, s.frequency_scale, Message::FrequencyScale);
-                    pick("Averaging", AvgMode::ALL, self.averaging.mode, Message::Averaging);
+                form!(
+                    pick("Frequency scale", FrequencyScale::ALL, settings.frequency_scale, Scale);
+                    pick("Averaging", AvgMode::ALL, pane.averaging.mode, Averaging);
                 ),
             );
         );
-        analysis = match self.averaging.mode {
-            AvgMode::Exponential => controls!(analysis;
-                slider!("Exp factor", self.averaging.factor, EXP_R, Message::AvgFactor, "{:.2}");
-            ),
-            AvgMode::PeakHold => controls!(analysis;
-                slider!("Peak decay", self.averaging.peak_decay, DECAY_R, Message::PeakDecay, "{:.1} dB/s");
-            ),
-            AvgMode::None => analysis,
-        };
-
-        let mut display = controls!(8.0;
-            pick("Display", SpectrumDisplayMode::ALL, s.display_mode, Message::DisplayMode);
-            split(
-                controls!(8.0;
-                    pick(
-                        "Direction",
-                        FrequencyDirection::ALL,
-                        direction,
-                        Message::FrequencyDirection,
-                    );
-                    toggle("Frequency grid", s.show_grid, Message::ShowGrid);
-                ),
-                controls!(8.0;
-                    toggle("Peak label", s.show_peak_label, Message::ShowPeakLabel);
-                ),
-            );
-            slider!("Noise floor", s.floor_db, FLOOR_R, Message::FloorDb, "{:.0} dB");
-        );
-        if s.display_mode == SpectrumDisplayMode::Bar {
-            display = controls!(display;
-                slider!("Bar count", s.bar_count as f32, BARS_R, Message::BarCount, s.bar_count.to_string());
-                slider!("Bar gap", s.bar_gap, GAP_R, Message::BarGap, format!("{:.0}%", s.bar_gap * 100.0));
-            );
+        match pane.averaging.mode {
+            AvgMode::Exponential => {
+                analysis = analysis.push(slider!(
+                    "Exp factor", pane.averaging.factor, EXP_R, AvgFactor, "{:.2}"
+                ));
+            }
+            AvgMode::PeakHold => {
+                analysis = analysis.push(slider!(
+                    "Peak decay", pane.averaging.peak_decay, DECAY_R, PeakDecay, "{:.1} dB/s"
+                ));
+            }
+            AvgMode::None => {}
         }
-        display = controls!(display;
-            slider!(
-                "Color floor", s.highlight_threshold, HIGH_R, Message::Highlight,
-                format!("{:.0}%", s.highlight_threshold * 100.0)
+
+        let mut display = form!(
+            pick("Display", SpectrumDisplayMode::ALL, settings.display_mode, Display);
+            split(
+                form!(
+                    pick("Direction", FrequencyDirection::ALL, direction, Direction);
+                    toggle("Frequency grid", settings.show_grid, ShowGrid);
+                ),
+                form!(toggle("Peak label", settings.show_peak_label, ShowPeakLabel);),
             );
+            slider!("Noise floor", settings.floor_db, FLOOR_R, FloorDb, "{:.0} dB");
         );
-
-        controls!(12.0;
-            card("Sources", sources);
-            card("Analysis", analysis);
-            card("Display", display);
-            palette_card(&self.palette, Message::Palette);
-        )
-        .into()
+        if settings.display_mode == SpectrumDisplayMode::Bar {
+            display = display
+                .push(slider!(
+                    "Bar count", settings.bar_count as f32, BARS_R, BarCount,
+                    settings.bar_count.to_string()
+                ))
+                .push(slider!(
+                    "Bar gap", settings.bar_gap, GAP_R, BarGap,
+                    format!("{:.0}%", settings.bar_gap * 100.0)
+                ));
+        }
+        display = display.push(slider!(
+            "Color floor", settings.highlight_threshold, HIGH_R, Highlight,
+            format!("{:.0}%", settings.highlight_threshold * 100.0)
+        ));
     }
+    "Sources" => sources;
+    "Analysis" => analysis;
+    "Display" => display;
+}
 
+impl Pane {
     fn update_avg(&mut self, update: impl FnOnce(&mut AveragingControls) -> bool) -> bool {
         if !update(&mut self.averaging) {
             return false;

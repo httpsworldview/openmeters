@@ -1,20 +1,19 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::UiApp;
 use super::message::{self, Message};
+use super::{ActiveSettings, UiApp};
 use crate::persistence::settings::{
     BarAlignment, BarSettings, MainWindowSettings, PopoutWindowSettings, clamp_bar_height,
 };
 use crate::ui::config::ConfigMessage;
-use crate::ui::settings::create_panel as create_settings_panel;
 use crate::ui::theme;
 use crate::ui::visuals::VisualsMessage;
-use crate::ui::widgets::scroll_glow::ScrollGlow;
+use crate::ui::widgets::{fill, scroll_glow::ScrollGlow};
 use crate::util::color::with_alpha;
 use crate::visuals::registry::{VisualContent, VisualKind, VisualSlotSnapshot};
-use iced::widget::{container, mouse_area, text};
-use iced::{Element, Length, Size, Task, exit, window};
+use iced::widget::{mouse_area, text};
+use iced::{Element, Size, Task, exit, window};
 use iced_layershell::actions::OutputSnapshotCallback;
 use iced_layershell::reexport::{
     Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings, OutputOption,
@@ -189,10 +188,10 @@ impl PopoutWindow {
 
     pub fn view(&self) -> Element<'_, VisualsMessage> {
         let Some(content) = &self.cached else {
-            return fill!(text("")).into();
+            return fill(text("")).into();
         };
         let msg = VisualsMessage::SettingsRequested(self.kind);
-        mouse_area(fill!(content.render()))
+        mouse_area(fill(content.render()))
             .on_right_press(msg)
             .into()
     }
@@ -203,11 +202,11 @@ impl UiApp {
         let Some((_, panel)) = self.settings_window.as_mut() else {
             return;
         };
-        *panel = create_settings_panel(panel.kind, &self.visual_manager);
+        *panel = ActiveSettings::new(panel.kind, &self.visual_manager);
     }
 
     pub(super) fn open_settings_window(&mut self, kind: VisualKind) -> Task<Message> {
-        let new_panel = create_settings_panel(kind, &self.visual_manager);
+        let new_panel = ActiveSettings::new(kind, &self.visual_manager);
         let previous = self.settings_window.take();
         if previous
             .as_ref()
@@ -620,7 +619,7 @@ impl UiApp {
         let (new_id, open_task) = open_tool_base_window(self.use_layershell);
         self.settings_window = Some((
             new_id,
-            create_settings_panel(panel.kind, &self.visual_manager),
+            ActiveSettings::new(panel.kind, &self.visual_manager),
         ));
         Task::batch([open_task, window::close(old_id)])
     }

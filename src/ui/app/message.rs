@@ -5,13 +5,12 @@ use super::{TOAST_DISPLAY_DURATION, UiApp};
 use crate::infra::pipewire::meter_tap::AudioBatch;
 use crate::ui::config::ConfigMessage;
 use crate::ui::settings::SettingsMessage;
-use crate::ui::theme;
 use crate::ui::visuals::VisualsMessage;
-use crate::ui::widgets::scroll_glow::ScrollGlow;
+use crate::ui::widgets::{fill, page, scroll_glow::ScrollGlow};
 use iced::event::{self, Event};
 use iced::keyboard::{self, Key};
-use iced::widget::{container, text};
-use iced::{Element, Length, Size, Task, exit, mouse, window};
+use iced::widget::text;
+use iced::{Element, Size, Task, exit, mouse, window};
 use iced_layershell::actions::{IcedXdgWindowSettings, OutputSnapshot};
 use iced_layershell::reexport::NewLayerShellSettings;
 use iced_layershell::to_layer_message;
@@ -174,11 +173,7 @@ pub(super) fn view(app: &UiApp, window_id: window::Id) -> Element<'_, Message> {
         return app.main_window_view();
     }
     if app.config_window == Some(window_id) {
-        let content: Element<'_, Message> = fill!(app.config_page.view().map(Message::Config))
-            .padding(16)
-            .style(theme::weak_container)
-            .into();
-        return content;
+        return page(app.config_page.view().map(Message::Config)).into();
     }
     if let Some((_, panel)) = app
         .settings_window
@@ -188,17 +183,14 @@ pub(super) fn view(app: &UiApp, window_id: window::Id) -> Element<'_, Message> {
         let mapped = panel
             .view()
             .map(move |msg| Message::Settings(window_id, msg));
-        let content: Element<'_, Message> = fill!(
+        return page(
             app.settings_scroll
-                .vertical(mapped, Message::SettingsScrolled)
+                .vertical(mapped, Message::SettingsScrolled),
         )
-        .padding(16)
-        .style(theme::weak_container)
         .into();
-        return content;
     }
     app.popout_windows.get(&window_id).map_or_else(
-        || fill!(text("")).into(),
+        || fill(text("")).into(),
         |popout| popout.view().map(Message::Visuals),
     )
 }

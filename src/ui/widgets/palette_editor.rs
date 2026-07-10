@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
+use crate::ui::scroll_delta_lines;
 use crate::ui::theme::{self as ui_theme, Palette};
 use crate::ui::widgets::scroll_glow::ScrollGlow;
-use crate::ui::{clipped_text, scroll_delta_lines};
+use crate::ui::widgets::{action_button, clipped_text};
 use crate::util::color::{
     EPSILON, STOP_SPREAD_MAX, STOP_SPREAD_MIN, colors_equal, lerp_color, sanitize_stop_positions,
     sanitize_stop_spreads, with_alpha,
@@ -191,7 +192,7 @@ impl PaletteEditor {
 
     pub fn view(&self) -> Element<'_, PaletteEvent> {
         let colors = self.palette.colors();
-        let mut row = Row::new().spacing(12.0);
+        let mut row = Row::new().spacing(12);
         if let Some(indices) = self.visible_indices {
             for &i in indices {
                 if let Some(&color) = colors.get(i) {
@@ -203,7 +204,7 @@ impl PaletteEditor {
                 row = row.push(self.color_picker(i, color));
             }
         }
-        let mut col = Column::new().spacing(12.0);
+        let mut col = Column::new().spacing(12);
         if self.show_ramp && colors.len() >= 2 {
             let positions = self.positions();
             let spreads = self.spreads();
@@ -215,12 +216,10 @@ impl PaletteEditor {
         {
             col = col.push(self.color_controls(i, c));
         }
-        col.push(
-            Button::new(clipped_text("Reset to defaults", 12.0))
-                .padding([6, 10])
-                .style(|theme, status| ui_theme::tab_button_style(theme, false, status))
-                .on_press_maybe((!self.is_default()).then_some(PaletteEvent::Reset)),
-        )
+        col.push(action_button(
+            "Reset to defaults",
+            (!self.is_default()).then_some(PaletteEvent::Reset),
+        ))
         .into()
     }
 
@@ -230,7 +229,7 @@ impl PaletteEditor {
         Button::new(
             Column::new()
                 .width(Length::Shrink)
-                .spacing(4.0)
+                .spacing(4)
                 .align_x(Horizontal::Center)
                 .push(clipped_text(self.label_for(i), 11.0))
                 .push(
@@ -242,28 +241,23 @@ impl PaletteEditor {
                 .push(clipped_text(to_hex(c), 11.0)),
         )
         .padding([6, 8])
-        .style(|theme, status| ui_theme::tab_button_style(theme, false, status))
+        .style(|theme, status| ui_theme::button_style(theme, false, status))
         .on_press(PaletteEvent::Open(i))
         .into()
     }
 
     fn color_controls(&self, i: usize, c: Color) -> Element<'_, PaletteEvent> {
         let header = Row::new()
-            .spacing(8.0)
+            .spacing(8)
             .align_y(Vertical::Center)
             .push(clipped_text(self.label_for(i), 12.0))
             .push(Space::new().width(Length::Fill).height(Length::Shrink))
-            .push(
-                Button::new(clipped_text("Done", 12.0))
-                    .padding([6, 10])
-                    .style(|theme, status| ui_theme::tab_button_style(theme, false, status))
-                    .on_press(PaletteEvent::Close),
-            );
+            .push(action_button("Done", Some(PaletteEvent::Close)));
 
         let col = [("R", c.r, 0u8), ("G", c.g, 1), ("B", c.b, 2), ("A", c.a, 3)]
             .into_iter()
             .fold(
-                Column::new().spacing(8.0).push(header),
+                Column::new().spacing(8).push(header),
                 |col, (lbl, val, ch)| col.push(channel_slider(lbl, val, ch, i, c)),
             );
         container(col)
@@ -548,7 +542,7 @@ fn channel_slider<'a>(
         format!("{:>3}", (val.clamp(0.0, 1.0) * 255.0).round() as u8)
     };
     Row::new()
-        .spacing(8.0)
+        .spacing(8)
         .align_y(Vertical::Center)
         .push(clipped_text(lbl, 12.0).width(Length::Fixed(32.0)))
         .push(

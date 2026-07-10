@@ -7,22 +7,20 @@ use crate::persistence::settings::{
     BAR_MAX_HEIGHT, BAR_MIN_HEIGHT, BUILTIN_THEME, BarAlignment, SettingsHandle, ThemeChoice,
     ThemeFile, ThemeOrigin, canonical_theme_name,
 };
-use crate::ui::settings::widgets::{SliderRange, card, pick, toggle};
 use crate::ui::subscription::channel_subscription;
 use crate::ui::theme;
 use crate::ui::widgets::palette_editor::{PaletteEditor, PaletteEvent};
 use crate::ui::widgets::scroll_glow::ScrollGlow;
+use crate::ui::widgets::{SliderRange, action_button, card, pick, selectable_button, toggle};
 use crate::visuals::registry::{VisualKind, VisualManagerHandle, VisualSlotSnapshot};
 use async_channel::Receiver as AsyncReceiver;
-use iced::widget::text::Wrapping;
-use iced::widget::{Column, Row, button, column, container, pick_list, row, text, text_input};
+use iced::widget::{Column, Row, column, container, pick_list, row, text, text_input};
 use iced::{Element, Length, Subscription};
 use iced_layershell::actions::OutputSnapshot;
 use std::collections::HashSet;
 use std::sync::{Arc, mpsc};
 
 const GRID_COLUMNS: usize = 2;
-const TEXT_SIZE: f32 = 12.0;
 const MAX_DEVICE_NAME_LEN: usize = 48;
 
 fn truncate_label(label: &str, max_chars: usize) -> (&str, bool) {
@@ -243,12 +241,13 @@ impl ConfigPage {
 
     pub fn view(&self) -> Element<'_, ConfigMessage> {
         let snapshot = self.visual_manager.borrow().snapshot();
-        let mut content = controls!(12.0;
-            self.render_capture_card();
-            self.render_visuals_card(&snapshot);
-            self.render_theme_card();
-            self.render_global_card();
-        );
+        let mut content = column![
+            self.render_capture_card(),
+            self.render_visuals_card(&snapshot),
+            self.render_theme_card(),
+            self.render_global_card(),
+        ]
+        .spacing(theme::SECTION_GAP);
         if self.bar_supported {
             content = content.push(self.render_bar_card());
         }
@@ -257,14 +256,13 @@ impl ConfigPage {
 
     fn render_capture_card(&self) -> container::Container<'_, ConfigMessage> {
         let mode = self.settings.borrow().data.capture_mode;
-        let content = controls!(8.0;
+        let content = form!(
             pick("Mode", CaptureMode::ALL, mode, ConfigMessage::CaptureModeChanged);
             match mode {
                 CaptureMode::Applications => self.render_applications_section(),
                 CaptureMode::Device => self.render_device_section(),
             };
         );
-
         card("Audio Capture", content)
     }
 
@@ -281,21 +279,23 @@ impl ConfigPage {
         };
 
         let indicator = if self.applications_expanded { "v" } else { ">" };
-        let summary_button = tab_button(
+        let summary_button = selectable_button(
             format!("{indicator} Applications{status_suffix}"),
             !self.applications_expanded,
             ConfigMessage::ToggleApplicationsVisibility,
         );
 
-        let mut section = Column::new().spacing(8).push(summary_button);
+        let mut section = Column::new()
+            .spacing(theme::CONTROL_GAP)
+            .push(summary_button);
         if self.applications_expanded {
             let content: Element<'_, _> = if self.applications.is_empty() {
-                let msg = match (self.registry_updates.is_some(), self.registry_ready) {
+                let message = match (self.registry_updates.is_some(), self.registry_ready) {
                     (false, _) => "Registry unavailable; routing controls disabled.",
                     (_, true) => "No audio applications detected. Launch something to see it here.",
                     _ => "Waiting for PipeWire registry snapshots...",
                 };
-                text(msg).size(TEXT_SIZE).into()
+                text(message).size(theme::BODY_TEXT_SIZE).into()
             } else {
                 render_toggle_grid(&self.applications, |entry| {
                     let enabled = !self.disabled_applications.contains(&entry.node_id);
@@ -323,7 +323,7 @@ impl ConfigPage {
         let mut picker = pick_list(self.device_choices.as_slice(), selected, |opt| {
             ConfigMessage::CaptureDeviceChanged(opt.selection)
         })
-        .text_size(TEXT_SIZE)
+        .text_size(theme::BODY_TEXT_SIZE)
         .width(Length::Fill);
         if self.device_choices.len() <= 1 {
             picker = picker.placeholder("No devices available");
@@ -332,7 +332,7 @@ impl ConfigPage {
         column![
             container(picker).width(Length::Fill).clip(true),
             text("Direct device capture. Application routing disabled.")
-                .size(TEXT_SIZE)
+                .size(theme::BODY_TEXT_SIZE)
                 .style(theme::weak_text_style)
         ]
         .spacing(6)
@@ -361,12 +361,13 @@ impl ConfigPage {
     }
 
     fn render_global_card(&self) -> container::Container<'_, ConfigMessage> {
-        let decorations_enabled = self.settings.borrow().data.decorations;
-        let content = controls!(12.0;
-            self.bg_palette.view().map(ConfigMessage::BgPalette);
-            toggle("Window decorations", decorations_enabled, ConfigMessage::DecorationsToggled);
-        );
-
+        use ConfigMessage::{BgPalette, DecorationsToggled};
+        let decorations = self.settings.borrow().data.decorations;
+        let content = column![
+            self.bg_palette.view().map(BgPalette),
+            toggle("Window decorations", decorations, DecorationsToggled),
+        ]
+        .spacing(theme::SECTION_GAP);
         card("Global", content)
     }
 
@@ -378,30 +379,31 @@ impl ConfigPage {
         let picker = pick_list(self.theme_choices.as_slice(), selected, |choice| {
             ConfigMessage::ThemeChanged(choice.name)
         })
-        .text_size(TEXT_SIZE)
+        .text_size(theme::BODY_TEXT_SIZE)
         .width(Length::Fill);
 
-        let save_btn = small_button(
+        let save_btn = action_button(
             "Save",
             (!is_builtin).then(|| ConfigMessage::SaveTheme(active.clone())),
-        );
+        )
+        .padding([4, 8]);
 
         let save_as_input = text_input("New theme name...", &self.save_theme_name)
             .on_input(ConfigMessage::ThemeNameInput)
-            .size(TEXT_SIZE)
+            .size(theme::BODY_TEXT_SIZE)
             .width(Length::Fill);
         let trimmed = self.save_theme_name.trim();
-        let save_as_btn = small_button(
+        let save_as_btn = action_button(
             "Save as",
             (!trimmed.is_empty() && trimmed != BUILTIN_THEME)
                 .then(|| ConfigMessage::SaveTheme(trimmed.to_owned())),
-        );
+        )
+        .padding([4, 8]);
 
-        let content = controls!(8.0;
-            row![picker, save_btn].spacing(8);
-            row![save_as_input, save_as_btn].spacing(8);
+        let content = form!(
+            row![picker, save_btn].spacing(theme::CONTROL_GAP);
+            row![save_as_input, save_as_btn].spacing(theme::CONTROL_GAP);
         );
-
         card("Theme", content)
     }
 
@@ -471,36 +473,36 @@ impl ConfigPage {
     }
 
     fn render_bar_card(&self) -> container::Container<'_, ConfigMessage> {
+        use ConfigMessage::{
+            BarAlignmentChanged as Alignment, BarHeightChanged, BarModeToggled, BarMonitorChanged,
+        };
         let bar = self.settings.borrow().data.bar.clone();
-        let mut content = controls!(10.0;
-            toggle("Bar mode", bar.enabled, ConfigMessage::BarModeToggled);
-        );
+        let mut content = column![toggle("Bar mode", bar.enabled, BarModeToggled)].spacing(10);
         if bar.enabled {
             let height = bar.height.clamp(BAR_MIN_HEIGHT, BAR_MAX_HEIGHT);
             let height_range = SliderRange::new(BAR_MIN_HEIGHT as f32, BAR_MAX_HEIGHT as f32, 1.0);
-            content = controls!(content;
-                row![
-                    text("Monitor").size(TEXT_SIZE),
-                    pick_list(
-                        self.bar_monitors.as_slice(),
-                        bar.monitor.clone(),
-                        ConfigMessage::BarMonitorChanged,
-                    )
-                    .placeholder("Detecting monitor...")
-                    .text_size(TEXT_SIZE)
-                    .width(Length::Fill),
-                ]
-                .spacing(8)
-                .width(Length::Fill);
-                pick("Alignment", BarAlignment::ALL, bar.alignment, ConfigMessage::BarAlignmentChanged);
-                slider!(
-                    "Height",
-                    height as f32,
-                    height_range,
-                    |v| ConfigMessage::BarHeightChanged(v.round() as u32),
-                    format!("{height} px")
-                );
+            let monitor = row![
+                text("Monitor").size(theme::BODY_TEXT_SIZE),
+                pick_list(
+                    self.bar_monitors.as_slice(),
+                    bar.monitor.clone(),
+                    BarMonitorChanged,
+                )
+                .placeholder("Detecting monitor...")
+                .text_size(theme::BODY_TEXT_SIZE)
+                .width(Length::Fill),
+            ]
+            .spacing(theme::CONTROL_GAP)
+            .width(Length::Fill);
+            let alignment = pick("Alignment", BarAlignment::ALL, bar.alignment, Alignment);
+            let height_slider = slider!(
+                "Height",
+                height as f32,
+                height_range,
+                |value| BarHeightChanged(value.round() as u32),
+                format!("{height} px")
             );
+            content = content.push(monitor).push(alignment).push(height_slider);
         }
         card("Bar Mode", content)
     }
@@ -614,35 +616,10 @@ where
         for item in chunk {
             let (name, enabled, message) = project(item);
             let label = format!("{name} ({})", if enabled { "enabled" } else { "disabled" });
-            row = row.push(tab_button(label, enabled, message).width(Length::FillPortion(1)));
+            row =
+                row.push(selectable_button(label, enabled, message).width(Length::FillPortion(1)));
         }
         grid = grid.push(row);
     }
     grid
-}
-
-fn small_button<'a>(
-    label: &'static str,
-    message: Option<ConfigMessage>,
-) -> iced::widget::Button<'a, ConfigMessage> {
-    button(text(label).size(TEXT_SIZE))
-        .padding([4, 8])
-        .style(|t, s| theme::tab_button_style(t, false, s))
-        .on_press_maybe(message)
-}
-
-fn tab_button<'a>(
-    label: impl Into<String>,
-    active: bool,
-    message: ConfigMessage,
-) -> iced::widget::Button<'a, ConfigMessage> {
-    button(
-        container(text(label.into()).size(TEXT_SIZE).wrapping(Wrapping::None))
-            .width(Length::Fill)
-            .clip(true),
-    )
-    .padding(8)
-    .width(Length::Fill)
-    .style(move |theme, status| theme::tab_button_style(theme, active, status))
-    .on_press(message)
 }

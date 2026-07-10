@@ -10,6 +10,10 @@ use crate::util::color::{lerp_color, with_alpha};
 
 pub use crate::visuals::palettes::{BG_BASE, Palette, background};
 
+pub const BODY_TEXT_SIZE: f32 = 12.0;
+pub const CONTROL_GAP: f32 = 8.0;
+pub const SECTION_GAP: f32 = 12.0;
+
 const TEXT_PRIMARY: Color = Color::from_rgba(0.902, 0.910, 0.925, 1.0);
 const TEXT_DARK: Color = Color::from_rgba(0.10, 0.10, 0.10, 1.0);
 
@@ -61,29 +65,25 @@ pub fn border(theme: &Theme, emphasized: bool) -> Border {
     }
 }
 
-fn button_style(theme: &Theme, base: Color, status: button::Status) -> button::Style {
+pub fn button_style(theme: &Theme, selected: bool, status: button::Status) -> button::Style {
     use button::Status::{Hovered, Pressed};
-    let bg = if status == Hovered {
+    let palette = theme.extended_palette();
+    let base = if selected {
+        palette.primary.base.color
+    } else {
+        palette.background.weak.color
+    };
+    let background = if status == Hovered {
         palette::deviate(base, 0.05)
     } else {
         base
     };
     button::Style {
-        background: Some(Background::Color(bg)),
-        text_color: readable_text(bg),
+        background: Some(Background::Color(background)),
+        text_color: readable_text(background),
         border: border(theme, status == Pressed),
         ..Default::default()
     }
-}
-
-pub fn tab_button_style(theme: &Theme, active: bool, status: button::Status) -> button::Style {
-    let pal = theme.extended_palette();
-    let base = if active {
-        pal.primary.base.color
-    } else {
-        pal.background.weak.color
-    };
-    button_style(theme, base, status)
 }
 
 pub fn weak_container(theme: &Theme) -> container::Style {

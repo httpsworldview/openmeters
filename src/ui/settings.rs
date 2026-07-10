@@ -1,6 +1,30 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
+macro_rules! settings_view {
+    (
+        $pane:ident as $settings:ident { $($body:tt)* }
+        $($label:expr => $content:expr;)*
+    ) => {
+        impl Pane {
+            pub(super) fn view(&self) -> iced::Element<'_, Message> {
+                use Message::*;
+                let $pane = self;
+                let $settings = &$pane.settings;
+                $($body)*
+                iced::widget::Column::new()
+                    .spacing($crate::ui::theme::SECTION_GAP)
+                    $(.push($crate::ui::widgets::card($label, $content)))*
+                    .push($crate::ui::widgets::card(
+                        "Colors",
+                        $pane.palette.view().map(Message::Palette),
+                    ))
+                    .into()
+            }
+        }
+    };
+}
+
 macro_rules! settings_modules {
     ($($module:ident => $variant:ident),+ $(,)?) => {
         $(mod $module;)+
@@ -11,9 +35,9 @@ macro_rules! settings_modules {
         enum SettingsPane { $($variant($module::Pane),)+ }
 
         impl SettingsPane {
-            fn new(kind: VisualKind, visual_manager: &VisualManagerHandle) -> Self {
+            fn new(kind: VisualKind, manager: &VisualManagerHandle) -> Self {
                 match kind {
-                    $(VisualKind::$variant => Self::$variant($module::create(visual_manager, kind)),)+
+                    $(VisualKind::$variant => Self::$variant($module::create(manager, kind)),)+
                 }
             }
 
@@ -26,12 +50,17 @@ macro_rules! settings_modules {
             fn handle(
                 &mut self,
                 message: SettingsMessage,
-                visual_manager: &VisualManagerHandle,
-                settings_handle: &SettingsHandle,
+                manager: &VisualManagerHandle,
+                settings: &SettingsHandle,
             ) {
                 match (self, message) {
                     $((Self::$variant(pane), SettingsMessage::$variant(message)) => {
-                        pane.apply(message, visual_manager, settings_handle, VisualKind::$variant);
+                        if pane.handle(message) {
+                            persist_with_palette(
+                                manager, settings, VisualKind::$variant,
+                                &pane.settings, &pane.palette,
+                            );
+                        }
                     })+
                     _ => {}
                 }
@@ -43,8 +72,10 @@ macro_rules! settings_modules {
 macro_rules! settings_pane {
     (
         $settings_ty:ty
-        $(, extra_from_settings($s:ident) { $($field:ident : $ty:ty = $init:expr),* $(,)? })?
-        $(, init_palette($p:ident $(, $ps:ident)?) $init_body:block)?
+        $(, extra_from_settings($source:ident) {
+            $($field:ident: $ty:ty = $init:expr),* $(,)?
+        })?
+        $(, init_palette($editor:ident $(, $palette_source:ident)?) $init_body:block)?
         $(,)?
     ) => {
         pub(super) struct Pane {
@@ -57,23 +88,29 @@ macro_rules! settings_pane {
             visual_manager: &super::VisualManagerHandle,
             kind: crate::visuals::registry::VisualKind,
         ) -> Pane {
-            let (_settings, mut _palette) = super::load_settings_and_palette::<$settings_ty>(
-                visual_manager, kind,
-            );
+            let (loaded_settings, palette) =
+                super::load_settings_and_palette::<$settings_ty>(visual_manager, kind);
             $($(
                 let $field: $ty = {
-                    let $s = &_settings;
+                    let $source = &loaded_settings;
                     $init
                 };
             )*)?
-            $(let $p = &mut _palette; $(let $ps = &_settings;)? $init_body)?
-            Pane { settings: _settings, palette: _palette, $($($field,)*)? }
+            $(
+                let mut palette = palette;
+                let $editor = &mut palette;
+                $(let $palette_source = &loaded_settings;)?
+                $init_body
+            )?
+            Pane { settings: loaded_settings, palette, $($($field,)*)? }
         }
     };
 }
 
 macro_rules! settings_messages {
-    ($this:ident, $value:ident { $($variant:ident($ty:ty) => $handler:expr;)+ }) => {
+    ($pane:ident, $settings:ident, $value:ident {
+        $($variant:ident($ty:ty) => $handler:expr;)+
+    }) => {
         #[derive(Debug, Clone)]
         pub enum Message {
             $($variant($ty),)+
@@ -81,45 +118,85 @@ macro_rules! settings_messages {
         }
 
         impl Pane {
-            fn handle(&mut self, msg: Message) -> bool {
-                let $this = self;
-                match msg {
+            pub(super) fn handle(&mut self, message: Message) -> bool {
+                let $pane = self;
+                let $settings = &mut $pane.settings;
+                match message {
                     $(Message::$variant($value) => $handler,)+
-                    Message::Palette($value) => $this.palette.update($value),
-                }
-            }
-
-            pub(super) fn apply(
-                &mut self,
-                msg: Message,
-                visual_manager: &super::VisualManagerHandle,
-                settings_handle: &super::SettingsHandle,
-                kind: super::VisualKind,
-            ) {
-                if self.handle(msg) {
-                    super::persist_with_palette(
-                        visual_manager,
-                        settings_handle,
-                        kind,
-                        &self.settings,
-                        &self.palette,
-                    );
+                    Message::Palette($value) => $pane.palette.update($value),
                 }
             }
         }
     };
 }
 
-pub(in crate::ui) mod widgets;
-
 use crate::persistence::settings::{
     BUILTIN_THEME, HasPalette, ModuleSettings, PaletteSettings, SettingsConfig, SettingsHandle,
 };
 use crate::ui::theme::Palette;
-use crate::ui::widgets::palette_editor::PaletteEditor;
+use crate::ui::widgets::{SliderRange, palette_editor::PaletteEditor};
 use crate::visuals::registry::{VisualKind, VisualManagerHandle};
 use iced::{Color, Element};
-use serde::Serialize;
+
+const FFT_OPTIONS: [usize; 5] = [1024, 2048, 4096, 8192, 16384];
+const HOP_DIVISORS: [usize; 7] = [4, 6, 8, 16, 32, 64, 128];
+
+fn set<T: PartialEq>(target: &mut T, value: T) -> bool {
+    if *target == value {
+        return false;
+    }
+    *target = value;
+    true
+}
+
+// Compare bits to avoid spurious writes for identical NaN payloads.
+fn set_f32(target: &mut f32, value: f32, range: SliderRange) -> bool {
+    let value = range.snap(value);
+    if target.to_bits() == value.to_bits() {
+        return false;
+    }
+    *target = value;
+    true
+}
+
+fn set_usize(target: &mut usize, value: f32, range: SliderRange) -> bool {
+    debug_assert!(
+        [range.min, range.max, range.step]
+            .into_iter()
+            .all(|value| value.fract().abs() <= f32::EPSILON),
+        "set_usize expects integral slider bounds"
+    );
+    set(target, range.snap(value).round() as usize)
+}
+
+fn get_closest_hop_divisor(fft_size: usize, hop_size: usize) -> usize {
+    if fft_size == 0 || hop_size == 0 {
+        return 8;
+    }
+    let ratio = fft_size as f32 / hop_size as f32;
+    HOP_DIVISORS
+        .into_iter()
+        .min_by(|&left, &right| {
+            (ratio - left as f32)
+                .abs()
+                .total_cmp(&(ratio - right as f32).abs())
+        })
+        .unwrap_or(8)
+}
+
+// Preserve the hop:fft ratio when fft_size changes.
+fn update_fft_size(fft_size: &mut usize, hop_size: &mut usize, new_size: usize) -> bool {
+    let hop_divisor = get_closest_hop_divisor(*fft_size, *hop_size);
+    if !set(fft_size, new_size) {
+        return false;
+    }
+    *hop_size = (new_size / hop_divisor).max(1);
+    true
+}
+
+fn update_hop_divisor(fft_size: usize, hop_size: &mut usize, divisor: usize) -> bool {
+    set(hop_size, (fft_size / divisor.max(1)).max(1))
+}
 
 settings_modules! {
     loudness => Loudness,
@@ -135,17 +212,14 @@ pub(in crate::ui) struct ActiveSettings {
     pane: SettingsPane,
 }
 
-pub(in crate::ui) fn create_panel(
-    kind: VisualKind,
-    visual_manager: &VisualManagerHandle,
-) -> ActiveSettings {
-    ActiveSettings {
-        kind,
-        pane: SettingsPane::new(kind, visual_manager),
-    }
-}
-
 impl ActiveSettings {
+    pub(in crate::ui) fn new(kind: VisualKind, visual_manager: &VisualManagerHandle) -> Self {
+        Self {
+            kind,
+            pane: SettingsPane::new(kind, visual_manager),
+        }
+    }
+
     pub(in crate::ui) fn view(&self) -> Element<'_, SettingsMessage> {
         self.pane.view()
     }
@@ -179,7 +253,7 @@ pub(super) fn load_settings_and_palette<T: SettingsConfig + HasPalette>(
     (settings, editor)
 }
 
-pub(super) fn persist_with_palette<T: Clone + Serialize + HasPalette>(
+pub(super) fn persist_with_palette<T: Clone + serde::Serialize + HasPalette>(
     visual_manager: &VisualManagerHandle,
     settings_handle: &SettingsHandle,
     kind: VisualKind,
@@ -198,15 +272,16 @@ pub(super) fn persist_with_palette<T: Clone + Serialize + HasPalette>(
     visual_manager
         .borrow_mut()
         .apply_module_settings(kind, &ModuleSettings::with_config(&stored));
-    settings_handle.update(move |s| {
-        s.data
+    settings_handle.update(move |settings| {
+        settings
+            .data
             .visuals
             .modules
             .entry(kind)
             .or_default()
             .set_config(&stored);
-        if palette_settings.is_some() || s.active_theme() != BUILTIN_THEME {
-            s.update_active_theme(|theme| {
+        if palette_settings.is_some() || settings.active_theme() != BUILTIN_THEME {
+            settings.update_active_theme(|theme| {
                 if let Some(ps) = palette_settings {
                     theme.palettes.insert(kind, ps);
                 } else {
