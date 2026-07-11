@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::dsp::AudioBlock;
+use crate::dsp::{AudioBlock, Biquad, ThreeBand, WindowedMeans};
 use crate::util::audio::{
-    BAND_SPLITS_HZ, Channel, DB_FLOOR, DEFAULT_SAMPLE_RATE, flush_denormal_f32, power_to_db,
-    sanitize_sample_rate,
+    BAND_SPLITS_HZ, Channel, DB_FLOOR, DEFAULT_SAMPLE_RATE, power_to_db, sanitize_sample_rate,
 };
 
 pub const MIN_SCROLL_SPEED: f32 = 10.0;
@@ -92,141 +91,19 @@ fn window_len(samples_at_reference_rate: usize, sample_rate: f32) -> usize {
         .max(1)
 }
 
-#[derive(Clone, Copy)]
-enum FilterKind {
-    LowPass,
-    HighPass,
+type BandWindow = WindowedMeans<f32, NUM_BANDS, 1>;
+type BandFilter = ThreeBand<Biquad>;
+
+fn band_window(len: usize) -> BandWindow {
+    BandWindow::new([len])
 }
 
-struct Biquad {
-    b0: f32,
-    b1: f32,
-    b2: f32,
-    a1: f32,
-    a2: f32,
-    z1: f32,
-    z2: f32,
-}
-
-impl Biquad {
-    fn new(kind: FilterKind, sample_rate: f32, frequency: f32) -> Self {
-        let w0 = core::f32::consts::TAU * (frequency / sample_rate).clamp(1.0e-6, 0.49);
-        let (sin, cos) = w0.sin_cos();
-        let alpha = sin * core::f32::consts::FRAC_1_SQRT_2;
-        let (b0, b1, b2) = match kind {
-            FilterKind::LowPass => ((1.0 - cos) * 0.5, 1.0 - cos, (1.0 - cos) * 0.5),
-            FilterKind::HighPass => ((1.0 + cos) * 0.5, -(1.0 + cos), (1.0 + cos) * 0.5),
-        };
-        let inv_a0 = 1.0 / (1.0 + alpha);
-        Self {
-            b0: b0 * inv_a0,
-            b1: b1 * inv_a0,
-            b2: b2 * inv_a0,
-            a1: -2.0 * cos * inv_a0,
-            a2: (1.0 - alpha) * inv_a0,
-            z1: 0.0,
-            z2: 0.0,
-        }
-    }
-
-    fn process(&mut self, x: f32) -> f32 {
-        let y = self.b0.mul_add(x, self.z1);
-        self.z1 = self.b1 * x - self.a1 * y + self.z2;
-        self.z2 = self.b2 * x - self.a2 * y;
-        if y.is_finite() {
-            y
-        } else {
-            self.z1 = 0.0;
-            self.z2 = 0.0;
-            0.0
-        }
-    }
-
-    fn flush_denormals(&mut self) {
-        flush_denormal_f32(&mut self.z1);
-        flush_denormal_f32(&mut self.z2);
-    }
-}
-
-struct ThreeBand {
-    low: Biquad,
-    mid_hp: Biquad,
-    mid_lp: Biquad,
-    high: Biquad,
-}
-
-impl ThreeBand {
-    fn new(sample_rate: f32) -> Self {
-        let [low_split, high_split] = BAND_SPLITS_HZ;
-        Self {
-            low: Biquad::new(FilterKind::LowPass, sample_rate, low_split),
-            mid_hp: Biquad::new(FilterKind::HighPass, sample_rate, low_split),
-            mid_lp: Biquad::new(FilterKind::LowPass, sample_rate, high_split),
-            high: Biquad::new(FilterKind::HighPass, sample_rate, high_split),
-        }
-    }
-
-    fn process(&mut self, x: f32) -> [f32; NUM_BANDS] {
-        [
-            self.low.process(x),
-            self.mid_lp.process(self.mid_hp.process(x)),
-            self.high.process(x),
-        ]
-    }
-
-    fn flush_denormals(&mut self) {
-        for filter in [&mut self.low, &mut self.mid_hp, &mut self.mid_lp, &mut self.high] {
-            filter.flush_denormals();
-        }
-    }
-}
-
-struct BandWindow {
-    values: Vec<[f32; NUM_BANDS]>,
-    sums: [f64; NUM_BANDS],
-    index: usize,
-    len: usize,
-}
-
-impl BandWindow {
-    fn new(len: usize) -> Self {
-        Self {
-            values: vec![[0.0; NUM_BANDS]; len.max(1)],
-            sums: [0.0; NUM_BANDS],
-            index: 0,
-            len: 0,
-        }
-    }
-
-    fn push(&mut self, values: [f32; NUM_BANDS]) {
-        let values = values.map(|value| if value.is_finite() { value } else { 0.0 });
-        let old = if self.len < self.values.len() {
-            self.len += 1;
-            [0.0; NUM_BANDS]
-        } else {
-            self.values[self.index]
-        };
-        self.values[self.index] = values;
-        self.index += 1;
-        if self.index == self.values.len() {
-            self.index = 0;
-        }
-        for band in 0..NUM_BANDS {
-            self.sums[band] += f64::from(values[band]) - f64::from(old[band]);
-        }
-    }
-
-    fn means(&self) -> [f32; NUM_BANDS] {
-        if self.len == 0 {
-            [0.0; NUM_BANDS]
-        } else {
-            self.sums.map(|sum| (sum / self.len as f64).max(0.0) as f32)
-        }
-    }
+fn band_means(window: &BandWindow) -> [f32; NUM_BANDS] {
+    window.mean(0).map(|mean| mean.max(0.0) as f32)
 }
 
 struct BandTracker {
-    filters: ThreeBand,
+    filters: BandFilter,
     color: BandWindow,
     fast: Option<BandWindow>,
     slow: Option<BandWindow>,
@@ -236,21 +113,25 @@ impl BandTracker {
     fn new(sample_rate: f32, track_history: bool) -> Self {
         let color_len = window_len(BAND_COLOR_WINDOW_AT_44K1, sample_rate);
         Self {
-            filters: ThreeBand::new(sample_rate),
-            color: BandWindow::new(color_len),
-            fast: track_history.then(|| BandWindow::new(color_len)),
+            filters: BandFilter::parallel(sample_rate, BAND_SPLITS_HZ),
+            color: band_window(color_len),
+            fast: track_history.then(|| band_window(color_len)),
             slow: track_history
-                .then(|| BandWindow::new(window_len(BAND_SLOW_WINDOW_AT_44K1, sample_rate))),
+                .then(|| band_window(window_len(BAND_SLOW_WINDOW_AT_44K1, sample_rate))),
         }
     }
 
     fn process(&mut self, sample: f32) {
         let bands = self.filters.process(sample);
         self.color.push(std::array::from_fn(|band| {
-            bands[band].abs() * BAND_COLOR_GAINS[band]
+            let value = bands[band].abs() * BAND_COLOR_GAINS[band];
+            if value.is_finite() { value } else { 0.0 }
         }));
         if let (Some(fast), Some(slow)) = (&mut self.fast, &mut self.slow) {
-            let power = bands.map(|value| value * value);
+            let power = bands.map(|value| {
+                let power = value * value;
+                if power.is_finite() { power } else { 0.0 }
+            });
             fast.push(power);
             slow.push(power);
         }
@@ -352,18 +233,18 @@ impl WaveformProcessor {
         };
         if let Some(trackers) = &self.trackers {
             let tracker = &trackers[channel];
-            column.color_bands = tracker.color.means();
+            column.color_bands = band_means(&tracker.color);
             if self.config.track_history {
                 column.rms_fast_db = tracker
                     .fast
                     .as_ref()
-                    .map(BandWindow::means)
+                    .map(band_means)
                     .unwrap_or_default()
                     .map(|power| power_to_db(power, DB_FLOOR));
                 column.rms_slow_db = tracker
                     .slow
                     .as_ref()
-                    .map(BandWindow::means)
+                    .map(band_means)
                     .unwrap_or_default()
                     .map(|power| power_to_db(power, DB_FLOOR));
             }

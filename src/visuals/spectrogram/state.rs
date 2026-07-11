@@ -9,10 +9,11 @@ use super::render::{
     ColumnKind, PendingUpload, RingCopyPlan, SPECTROGRAM_PALETTE_SIZE, SpectrogramParams,
     SpectrogramPrimitive, col_byte_stride,
 };
+use crate::persistence::settings::SpectrogramSettings;
 use crate::ui::{scroll_delta_lines, theme};
 use crate::util::{
     audio::musical::{MusicalNote, NoteInfo},
-    audio::{DB_FLOOR, FrequencyScale, fmt_duration, fmt_freq, sanitize_negative_db},
+    audio::{DB_FLOOR, fmt_duration, fmt_freq, sanitize_negative_db},
     color::{color_to_rgba, lerp_color, rgba_with_alpha, with_alpha},
 };
 use crate::visuals::options::PianoRollOverlay;
@@ -54,22 +55,18 @@ fn display_axis(sample_rate: f32) -> (f32, f32) {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(in crate::visuals) struct SpectrogramStyle {
     pub background: Color,
-    pub(in crate::visuals) floor_db: f32,
     pub ceiling_db: f32,
     pub opacity: f32,
     pub contrast: f32,
-    pub(in crate::visuals) tilt_db: f32,
 }
 
 impl Default for SpectrogramStyle {
     fn default() -> Self {
         Self {
             background: with_alpha(palettes::BG_BASE, 0.0),
-            floor_db: DB_FLOOR,
             ceiling_db: DB_CEILING,
             opacity: 0.95,
             contrast: 1.0,
-            tilt_db: 0.0,
         }
     }
 }
@@ -220,13 +217,11 @@ pub(in crate::visuals) struct SpectrogramState {
     pub(in crate::visuals) stop_positions: [f32; SPECTROGRAM_PALETTE_SIZE],
     pub(in crate::visuals) stop_spreads: [f32; SPECTROGRAM_PALETTE_SIZE],
     key: u64,
-    pub(in crate::visuals) piano_roll_overlay: PianoRollOverlay,
-    pub(in crate::visuals) rotation: i8,
+    settings: SpectrogramSettings,
     sample_rate: f32,
     fft_size: usize,
     hop_size: usize,
     reassigned_power_scale: f32,
-    pub(in crate::visuals) freq_scale: FrequencyScale,
     zoom: f32,
     pan: f32,
     pub(in crate::visuals) view_width: u32,
@@ -242,13 +237,14 @@ impl SpectrogramState {
             stop_positions: palettes::spectrogram::DEFAULT_POSITIONS,
             stop_spreads: [1.0; SPECTROGRAM_PALETTE_SIZE],
             key: crate::visuals::next_key(),
-            piano_roll_overlay: PianoRollOverlay::Off,
-            rotation: 0,
+            settings: SpectrogramSettings {
+                floor_db: DB_FLOOR,
+                ..SpectrogramSettings::default()
+            },
             sample_rate: cfg.sample_rate,
             fft_size: cfg.fft_size * cfg.zero_padding_factor.max(1),
             hop_size: cfg.hop_size,
             reassigned_power_scale: 1.0,
-            freq_scale: cfg.frequency_scale,
             zoom: 1.0,
             pan: 0.5,
             view_width: 0,
@@ -272,17 +268,16 @@ impl SpectrogramState {
         }
     }
 
-    pub fn set_floor_db(&mut self, floor_db: f32) {
-        self.style.floor_db = sanitize_negative_db(floor_db, DB_FLOOR)
+    pub fn update_view_settings(&mut self, settings: &SpectrogramSettings) {
+        self.settings = settings.clone();
+        self.settings.floor_db = sanitize_negative_db(settings.floor_db, DB_FLOOR)
             .min(self.style.ceiling_db - 1.0);
+        self.settings.tilt_db = if settings.tilt_db.is_finite() { settings.tilt_db } else { 0.0 };
+        self.settings.rotation = settings.rotation.clamp(-1, 2);
     }
 
-    pub fn set_tilt_db(&mut self, tilt_db: f32) {
-        self.style.tilt_db = if tilt_db.is_finite() { tilt_db } else { 0.0 };
-    }
-
-    pub fn set_rotation(&mut self, rotation: i8) {
-        self.rotation = rotation.clamp(-1, 2);
+    pub fn export_settings(&self) -> SpectrogramSettings {
+        self.settings.clone()
     }
 
     pub fn apply_snapshot(&mut self, snap: SpectrogramUpdate) {
@@ -291,7 +286,7 @@ impl SpectrogramState {
         self.fft_size = snap.fft_size;
         self.hop_size = snap.hop_size;
         self.reassigned_power_scale = snap.reassigned_power_scale;
-        self.freq_scale = snap.frequency_scale;
+        self.settings.frequency_scale = snap.frequency_scale;
         self.history.apply_update(snap);
     }
 
@@ -330,16 +325,16 @@ impl SpectrogramState {
             freq_max,
             bin_hz,
             reassigned_power_scale: self.reassigned_power_scale,
-            freq_scale: self.freq_scale,
+            freq_scale: self.settings.frequency_scale,
             palette: self.palette.map(to_rgba),
             stop_positions: self.stop_positions,
             stop_spreads: self.stop_spreads,
             contrast: self.style.contrast,
-            floor_db: self.style.floor_db,
+            floor_db: self.settings.floor_db,
             ceiling_db: self.style.ceiling_db,
-            tilt_db: self.style.tilt_db,
+            tilt_db: self.settings.tilt_db,
             uv_y_range,
-            rotation: self.rotation,
+            rotation: self.settings.rotation,
         })
     }
 
@@ -353,12 +348,12 @@ impl SpectrogramState {
         let tex_uv = uv_range[0] + freq_norm * (uv_range[1] - uv_range[0]);
         if self.fft_size == 0 || self.sample_rate <= 0.0 { return None; }
         let (min_f, nyq) = display_axis(self.sample_rate);
-        crate::util::finite_positive(self.freq_scale.freq_at(min_f, nyq, tex_uv))
+        crate::util::finite_positive(self.settings.frequency_scale.freq_at(min_f, nyq, tex_uv))
     }
 
     // Normalized rotation (0..3) matching the shader's rotate_uv convention
     fn rotation_index(&self) -> u32 {
-        (self.rotation as i32).rem_euclid(4) as u32
+        (self.settings.rotation as i32).rem_euclid(4) as u32
     }
 
     fn freq_axis_is_horizontal(&self) -> bool {
@@ -553,7 +548,7 @@ impl<'a> Spectrogram<'a> {
             return;
         }
         let (min_f, nyq) = display_axis(state.sample_rate);
-        let (scale, rot) = (state.freq_scale, state.rotation_index());
+        let (scale, rot) = (state.settings.frequency_scale, state.rotation_index());
         drop(state);
         let horizontal = matches!(rot, 1 | 3);
 
@@ -796,7 +791,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
                 bw
             };
             uv_y_range = state.uv_y_range();
-            piano_roll = state.piano_roll_overlay;
+            piano_roll = state.settings.piano_roll_overlay;
             bg = state.style.background;
             params = state.visual_params(bounds, uv_y_range);
         }
@@ -849,6 +844,7 @@ pub(in crate::visuals) fn widget<'a, Message: 'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::audio::FrequencyScale;
 
     fn classic_update(history_length: usize, reset: bool, values: &[f32]) -> SpectrogramUpdate {
         SpectrogramUpdate {

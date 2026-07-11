@@ -16,33 +16,34 @@ const FILL_ALPHA: f32 = 0.15;
 pub(in crate::visuals) struct OscilloscopeState {
     snapshot: OscilloscopeSnapshot,
     pub(in crate::visuals) colors: [Color; OSCILLOSCOPE_PALETTE_SIZE],
-    pub(in crate::visuals) persistence: f32,
-    pub(in crate::visuals) stacked: bool,
+    settings: OscilloscopeSettings,
     key: u64,
 }
 
 impl OscilloscopeState {
     pub fn new() -> Self {
-        let defaults = OscilloscopeSettings::default();
         Self {
             snapshot: OscilloscopeSnapshot::default(),
             colors: palettes::oscilloscope::COLORS,
-            persistence: defaults.persistence,
-            stacked: defaults.stacked,
+            settings: OscilloscopeSettings::default(),
             key: crate::visuals::next_key(),
         }
     }
 
-    pub fn update_view_settings(&mut self, persistence: f32, stacked: bool, reset_snapshot: bool) {
-        self.persistence = if persistence.is_finite() {
-            persistence.clamp(0.0, 1.0)
+    pub fn update_view_settings(&mut self, settings: &OscilloscopeSettings, reset_snapshot: bool) {
+        self.settings = settings.clone();
+        self.settings.persistence = if settings.persistence.is_finite() {
+            settings.persistence.clamp(0.0, 1.0)
         } else {
             OscilloscopeSettings::default().persistence
         };
-        self.stacked = stacked;
         if reset_snapshot {
             self.snapshot = OscilloscopeSnapshot::default();
         }
+    }
+
+    pub fn export_settings(&self) -> OscilloscopeSettings {
+        self.settings.clone()
     }
 
     pub fn set_palette(&mut self, palette: &[Color; OSCILLOSCOPE_PALETTE_SIZE]) {
@@ -58,7 +59,7 @@ impl OscilloscopeState {
             && snapshot.samples.len() == self.snapshot.samples.len()
             && snapshot.slots[..snapshot.channels] == self.snapshot.slots[..self.snapshot.channels]
         {
-            let persistence = self.persistence.clamp(0.0, MAX_PERSISTENCE);
+            let persistence = self.settings.persistence.clamp(0.0, MAX_PERSISTENCE);
             if persistence > f32::EPSILON {
                 let fresh = 1.0 - persistence;
                 for (current, incoming) in self.snapshot.samples.iter_mut().zip(&snapshot.samples) {
@@ -87,7 +88,7 @@ impl OscilloscopeState {
             slots: self.snapshot.slots,
             samples: self.snapshot.samples.clone(),
             colors: self.colors.map(color_to_rgba),
-            stacked: self.stacked,
+            stacked: self.settings.stacked,
             fill_alpha: FILL_ALPHA,
         })
     }

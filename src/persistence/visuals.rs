@@ -209,6 +209,7 @@ macro_rules! visual_settings {
                 Self { $($field: cfg.$field,)* $($($extra: $default,)*)? palette: None }
             }
             pub fn apply_to(&self, cfg: &mut $config_ty) { $(cfg.$field = self.$field;)* }
+            pub fn sync_from_config(&mut self, cfg: &$config_ty) { $(self.$field = cfg.$field;)* }
         }
         visual_settings!(@impls $name { $($field,)* $($($extra,)*)? palette });
     };

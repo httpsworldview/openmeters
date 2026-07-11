@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::dsp::AudioBlock;
+use crate::dsp::{
+    AudioBlock, CrossoverFilter, FilterKind, LinkwitzRiley, ThreeBand,
+};
 use crate::util::audio::{
-    BAND_SPLITS_HZ, DEFAULT_SAMPLE_RATE, extend_interleaved_history, flush_denormal_f32,
-    flush_denormal_f64,
+    BAND_SPLITS_HZ, DEFAULT_SAMPLE_RATE, extend_interleaved_history, flush_denormal_f64,
 };
 use std::collections::VecDeque;
 
@@ -45,111 +46,30 @@ pub struct StereometerSnapshot {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct LR4 {
-    feedforward: [[f32; 3]; 2],
-    feedback: [[f32; 2]; 2],
-    delays: [[f32; 4]; 2],
-}
-
-impl LR4 {
-    fn new(sample_rate: f32, freq: f32, highpass: bool) -> Self {
-        let omega = std::f32::consts::TAU * freq / sample_rate;
-        let (sin_w, cos_w) = omega.sin_cos();
-        let alpha = sin_w * std::f32::consts::FRAC_1_SQRT_2;
-        let a0_inv = 1.0 / (1.0 + alpha);
-        let gain = if highpass { 1.0 + cos_w } else { 1.0 - cos_w };
-        let b0 = gain * 0.5 * a0_inv;
-        let b1 = (if highpass { -gain } else { gain }) * a0_inv;
-        Self {
-            feedforward: [[b0, b1, b0]; 2],
-            feedback: [[-2.0 * cos_w * a0_inv, (1.0 - alpha) * a0_inv]; 2],
-            delays: [[0.0; 4]; 2],
-        }
-    }
-
-    fn lowpass(sample_rate: f32, freq: f32) -> Self {
-        Self::new(sample_rate, freq, false)
-    }
-
-    fn highpass(sample_rate: f32, freq: f32) -> Self {
-        Self::new(sample_rate, freq, true)
-    }
-
-    fn process(&mut self, sample: f32) -> f32 {
-        let mut signal = sample;
-        for i in 0..2 {
-            let [b0, b1, b2] = self.feedforward[i];
-            let [a1, a2] = self.feedback[i];
-            let [x1, x2, y1, y2] = self.delays[i];
-            let y = b0 * signal + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2;
-            self.delays[i] = [signal, x1, y, y1];
-            signal = y;
-        }
-        signal
-    }
-
-    fn flush_denormals(&mut self) {
-        self.delays
-            .iter_mut()
-            .flatten()
-            .for_each(flush_denormal_f32);
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
 struct StereoFilter {
-    left: LR4,
-    right: LR4,
+    left: LinkwitzRiley,
+    right: LinkwitzRiley,
 }
 
-impl StereoFilter {
-    fn lowpass(sample_rate: f32, freq: f32) -> Self {
-        let filter = LR4::lowpass(sample_rate, freq);
+impl CrossoverFilter for StereoFilter {
+    type Sample = (f32, f32);
+
+    fn new(kind: FilterKind, sample_rate: f32, frequency: f32) -> Self {
+        let filter = LinkwitzRiley::new(kind, sample_rate, frequency);
         Self { left: filter, right: filter }
     }
 
-    fn highpass(sample_rate: f32, freq: f32) -> Self {
-        let filter = LR4::highpass(sample_rate, freq);
-        Self { left: filter, right: filter }
-    }
-
-    fn process(&mut self, left: f32, right: f32) -> (f32, f32) {
+    fn process(&mut self, (left, right): Self::Sample) -> Self::Sample {
         (self.left.process(left), self.right.process(right))
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-struct BandSplitter {
-    low: StereoFilter,
-    above_low: StereoFilter,
-    mid: StereoFilter,
-    high: StereoFilter,
-}
-
-impl BandSplitter {
-    fn new(sample_rate: f32) -> Self {
-        let [low_mid, mid_high] = BAND_SPLITS_HZ;
-        Self {
-            low: StereoFilter::lowpass(sample_rate, low_mid),
-            above_low: StereoFilter::highpass(sample_rate, low_mid),
-            mid: StereoFilter::lowpass(sample_rate, mid_high),
-            high: StereoFilter::highpass(sample_rate, mid_high),
-        }
-    }
-
-    fn split(&mut self, left: f32, right: f32) -> [(f32, f32); 3] {
-        let low = self.low.process(left, right);
-        let (left, right) = self.above_low.process(left, right);
-        [low, self.mid.process(left, right), self.high.process(left, right)]
-    }
 
     fn flush_denormals(&mut self) {
-        for filter in [&mut self.low, &mut self.above_low, &mut self.mid, &mut self.high] {
-            filter.left.flush_denormals();
-            filter.right.flush_denormals();
-        }
+        self.left.flush_denormals();
+        self.right.flush_denormals();
     }
 }
+
+type BandSplitter = ThreeBand<StereoFilter>;
 
 #[derive(Debug, Clone, Copy)]
 struct Correlator {
@@ -246,7 +166,7 @@ impl StereometerProcessor {
             history: VecDeque::new(),
             band_history: Default::default(),
             history_channels: 0,
-            band_splitter: BandSplitter::new(config.sample_rate),
+            band_splitter: BandSplitter::cascaded(config.sample_rate, BAND_SPLITS_HZ),
             correlators: Correlators::new(config),
             config,
         }
@@ -277,7 +197,7 @@ impl StereometerProcessor {
             self.correlators.full.update(left, right);
 
             if analyze_bands {
-                let bands = self.band_splitter.split(left, right);
+                let bands = self.band_splitter.process((left, right));
                 for ((correlator, history), (left, right)) in self
                     .correlators
                     .bands
@@ -376,7 +296,7 @@ impl StereometerProcessor {
                 self.correlators.set_alpha(alpha);
             }
             if band_analysis_changed {
-                self.band_splitter = BandSplitter::new(config.sample_rate);
+                self.band_splitter = BandSplitter::cascaded(config.sample_rate, BAND_SPLITS_HZ);
                 self.correlators.reset_bands(alpha);
                 self.snapshot.band_correlation = BandCorrelation::default();
             }

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::dsp::AudioBlock;
+use crate::dsp::{AudioBlock, WindowedMeans};
 use crate::util::audio::{
     DEFAULT_SAMPLE_RATE, flush_denormal_f64, power_to_db, sanitize_sample_rate,
 };
@@ -195,47 +195,8 @@ impl KWeightingFilter {
 }
 
 #[derive(Debug)]
-struct WindowMeans {
-    buffer: Box<[f64]>,
-    capacities: [usize; 4],
-    sums: [f64; 4],
-    head: usize,
-    count: usize,
-}
-
-impl WindowMeans {
-    fn new(capacities: [usize; 4]) -> Self {
-        Self {
-            buffer: vec![0.0; capacities.into_iter().max().unwrap_or(1).max(1)].into_boxed_slice(),
-            capacities: capacities.map(|c| c.max(1)),
-            sums: [0.0; 4],
-            head: 0,
-            count: 0,
-        }
-    }
-
-    fn push(&mut self, value: f64) {
-        let len = self.buffer.len();
-        for (sum, &cap) in self.sums.iter_mut().zip(&self.capacities) {
-            if self.count >= cap {
-                *sum -= self.buffer[(self.head + len - cap) % len];
-            }
-            *sum += value;
-        }
-        self.buffer[self.head] = value;
-        self.head = (self.head + 1) % len;
-        self.count = (self.count + 1).min(len);
-    }
-
-    fn mean(&self, idx: usize) -> f64 {
-        let count = self.count.min(self.capacities[idx]);
-        if count == 0 { 0.0 } else { self.sums[idx] / count as f64 }
-    }
-}
-
-#[derive(Debug)]
 struct ChannelState {
-    windows: WindowMeans,
+    windows: WindowedMeans<f64, 1, 4>,
     filter: KWeightingFilter,
     true_peak: TruePeakMeter,
 }
@@ -243,7 +204,7 @@ struct ChannelState {
 impl ChannelState {
     fn new(capacities: [usize; 4], sample_rate: f64) -> Self {
         Self {
-            windows: WindowMeans::new(capacities),
+            windows: WindowedMeans::new(capacities),
             filter: KWeightingFilter::new(sample_rate),
             true_peak: TruePeakMeter::new(sample_rate),
         }
@@ -274,7 +235,7 @@ pub struct LoudnessSnapshot {
 }
 
 impl LoudnessSnapshot {
-    fn with_floor(floor_db: f32) -> Self {
+    pub(in crate::visuals) fn with_floor(floor_db: f32) -> Self {
         Self {
             short_term_loudness: floor_db,
             momentary_loudness: floor_db,
@@ -344,7 +305,7 @@ impl LoudnessProcessor {
         for frame in block.samples.chunks_exact(block.channels) {
             for (channel, &sample) in self.channels.iter_mut().zip(frame) {
                 let filtered = f64::from(channel.filter.process(sample));
-                channel.windows.push(filtered * filtered);
+                channel.windows.push([filtered * filtered]);
                 channel.true_peak.process(sample);
             }
         }
@@ -359,12 +320,12 @@ impl LoudnessProcessor {
 
         for (channel_index, channel_state) in self.channels.iter_mut().enumerate() {
             let weight = channel_weight(channel_index, num_channels);
-            weighted_short_term += channel_state.windows.mean(WIN_SHORT_TERM) * weight;
-            weighted_momentary += channel_state.windows.mean(WIN_MOMENTARY) * weight;
+            weighted_short_term += channel_state.windows.mean(WIN_SHORT_TERM)[0] * weight;
+            weighted_momentary += channel_state.windows.mean(WIN_MOMENTARY)[0] * weight;
             self.snapshot.rms_fast_db[channel_index] =
-                power_to_db(channel_state.windows.mean(WIN_RMS_FAST) as f32, floor);
+                power_to_db(channel_state.windows.mean(WIN_RMS_FAST)[0] as f32, floor);
             self.snapshot.rms_slow_db[channel_index] =
-                power_to_db(channel_state.windows.mean(WIN_RMS_SLOW) as f32, floor);
+                power_to_db(channel_state.windows.mean(WIN_RMS_SLOW)[0] as f32, floor);
             let peak = channel_state.true_peak.take_peak();
             self.snapshot.true_peak_db[channel_index] = power_to_db(peak * peak, floor);
         }
@@ -395,17 +356,17 @@ mod tests {
 
     #[test]
     fn rolling_mean_square_tracks_average() {
-        let mut window = WindowMeans::new([4, 2, 1, 4]);
-        window.push(1.0);
-        window.push(9.0);
-        assert!((window.mean(0) - 5.0).abs() < f64::EPSILON);
+        let mut window = WindowedMeans::<f64, 1, 4>::new([4, 2, 1, 4]);
+        window.push([1.0]);
+        window.push([9.0]);
+        assert!((window.mean(0)[0] - 5.0).abs() < f64::EPSILON);
 
-        window.push(16.0);
-        window.push(25.0);
-        window.push(36.0);
-        assert!((window.mean(0) - 21.5).abs() < f64::EPSILON);
-        assert!((window.mean(1) - 30.5).abs() < f64::EPSILON);
-        assert!((window.mean(2) - 36.0).abs() < f64::EPSILON);
+        window.push([16.0]);
+        window.push([25.0]);
+        window.push([36.0]);
+        assert!((window.mean(0)[0] - 21.5).abs() < f64::EPSILON);
+        assert!((window.mean(1)[0] - 30.5).abs() < f64::EPSILON);
+        assert!((window.mean(2)[0] - 36.0).abs() < f64::EPSILON);
     }
 
     #[test]

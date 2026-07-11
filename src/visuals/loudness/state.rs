@@ -66,14 +66,8 @@ impl PeakHold {
 
 #[derive(Debug, Clone)]
 pub(in crate::visuals) struct LoudnessState {
-    short_term_loudness: f32,
-    momentary_loudness: f32,
-    rms_fast_db: [f32; MAX_CHANNELS],
-    rms_slow_db: [f32; MAX_CHANNELS],
-    true_peak_db: [f32; MAX_CHANNELS],
-    channel_count: usize,
-    pub(in crate::visuals) left_mode: MeterMode,
-    pub(in crate::visuals) right_mode: MeterMode,
+    snapshot: LoudnessSnapshot,
+    settings: LoudnessSettings,
     pub(in crate::visuals) palette: [Color; LOUDNESS_PALETTE_SIZE],
     peaks: [PeakHold; VISIBLE_METER_COUNT],
     key: u64,
@@ -81,43 +75,34 @@ pub(in crate::visuals) struct LoudnessState {
 
 impl LoudnessState {
     pub fn new() -> Self {
-        let defaults = LoudnessSettings::default();
-        let now = Instant::now();
-        let peak = PeakHold::new(DEFAULT_RANGE.0, now);
+        let mut snapshot = LoudnessSnapshot::with_floor(DEFAULT_RANGE.0);
+        snapshot.channel_count = 2;
+        let peak = PeakHold::new(DEFAULT_RANGE.0, Instant::now());
         Self {
-            short_term_loudness: DEFAULT_RANGE.0,
-            momentary_loudness: DEFAULT_RANGE.0,
-            rms_fast_db: [DEFAULT_RANGE.0; MAX_CHANNELS],
-            rms_slow_db: [DEFAULT_RANGE.0; MAX_CHANNELS],
-            true_peak_db: [DEFAULT_RANGE.0; MAX_CHANNELS],
-            channel_count: 2,
-            left_mode: defaults.left_mode,
-            right_mode: defaults.right_mode,
+            snapshot,
+            settings: LoudnessSettings::default(),
             palette: palettes::loudness::COLORS,
             peaks: [peak; VISIBLE_METER_COUNT],
             key: crate::visuals::next_key(),
         }
     }
 
-    pub fn apply_snapshot(&mut self, snapshot: LoudnessSnapshot) {
-        self.short_term_loudness = snapshot.short_term_loudness;
-        self.momentary_loudness = snapshot.momentary_loudness;
-        self.channel_count = snapshot.channel_count.clamp(1, MAX_CHANNELS);
-        for i in 0..self.channel_count {
-            self.rms_fast_db[i] = snapshot.rms_fast_db[i];
-            self.rms_slow_db[i] = snapshot.rms_slow_db[i];
-            self.true_peak_db[i] = snapshot.true_peak_db[i];
-        }
-
+    pub fn apply_snapshot(&mut self, mut snapshot: LoudnessSnapshot) {
+        snapshot.channel_count = snapshot.channel_count.clamp(1, MAX_CHANNELS);
+        self.snapshot = snapshot;
         self.update_peak_holds(Instant::now());
     }
 
     pub fn set_modes(&mut self, left: MeterMode, right: MeterMode) {
-        if self.left_mode != left || self.right_mode != right {
+        if self.settings.left_mode != left || self.settings.right_mode != right {
             self.reset_peaks(Instant::now());
         }
-        self.left_mode = left;
-        self.right_mode = right;
+        self.settings.left_mode = left;
+        self.settings.right_mode = right;
+    }
+
+    pub fn export_settings(&self) -> LoudnessSettings {
+        self.settings.clone()
     }
 
     pub fn set_palette(&mut self, palette: &[Color; LOUDNESS_PALETTE_SIZE]) {
@@ -128,11 +113,11 @@ impl LoudnessState {
         let per_channel =
             |buf: &[f32; MAX_CHANNELS]| buf.get(channel).copied().unwrap_or(DEFAULT_RANGE.0);
         match mode {
-            MeterMode::LufsShortTerm => self.short_term_loudness,
-            MeterMode::LufsMomentary => self.momentary_loudness,
-            MeterMode::RmsFast => per_channel(&self.rms_fast_db),
-            MeterMode::RmsSlow => per_channel(&self.rms_slow_db),
-            MeterMode::TruePeak => per_channel(&self.true_peak_db),
+            MeterMode::LufsShortTerm => self.snapshot.short_term_loudness,
+            MeterMode::LufsMomentary => self.snapshot.momentary_loudness,
+            MeterMode::RmsFast => per_channel(&self.snapshot.rms_fast_db),
+            MeterMode::RmsSlow => per_channel(&self.snapshot.rms_slow_db),
+            MeterMode::TruePeak => per_channel(&self.snapshot.true_peak_db),
         }
     }
 
@@ -150,10 +135,10 @@ impl LoudnessState {
             bg_color,
             bars: [
                 [
-                    self.meter_fill(0, self.left_mode, values[0]),
-                    self.meter_fill(1, self.left_mode, values[1]),
+                    self.meter_fill(0, self.settings.left_mode, values[0]),
+                    self.meter_fill(1, self.settings.left_mode, values[1]),
                 ],
-                [self.meter_fill(2, self.right_mode, values[2]); 2],
+                [self.meter_fill(2, self.settings.right_mode, values[2]); 2],
             ],
             fill_counts: [2, 1],
             guides: &GUIDE_LEVELS,
@@ -168,9 +153,9 @@ impl LoudnessState {
         if matches!(mode, MeterMode::LufsShortTerm | MeterMode::LufsMomentary) {
             return self.get_value(mode, 0);
         }
-        (0..self.channel_count)
+        (0..self.snapshot.channel_count)
             .filter(|&ch| {
-                let side = fallback_side(ch, self.channel_count);
+                let side = fallback_side(ch, self.snapshot.channel_count);
                 side == MeterSide::Both || side == wanted
             })
             .map(|ch| self.get_value(mode, ch))
@@ -179,9 +164,9 @@ impl LoudnessState {
 
     fn visible_values(&self) -> [f32; VISIBLE_METER_COUNT] {
         [
-            self.aggregate_channels(self.left_mode, MeterSide::Left),
-            self.aggregate_channels(self.left_mode, MeterSide::Right),
-            self.get_value(self.right_mode, 0),
+            self.aggregate_channels(self.settings.left_mode, MeterSide::Left),
+            self.aggregate_channels(self.settings.left_mode, MeterSide::Right),
+            self.get_value(self.settings.right_mode, 0),
         ]
     }
 
@@ -320,8 +305,8 @@ crate::visuals::visualization_widget!(Loudness, LoudnessState, |this, renderer, 
             );
         }
 
-        let value = state.get_value(state.right_mode, 0);
-        let unit = meter_unit_label(state.right_mode);
+        let value = state.get_value(state.settings.right_mode, 0);
+        let unit = meter_unit_label(state.settings.right_mode);
         let y = y_of(value);
         let label = format!("{value:.1} {unit}");
 
@@ -429,7 +414,7 @@ mod tests {
         for (input, elapsed, expected) in
             [(-1.0, 0.0, -1.0), (-20.0, 1.0, -1.0), (-60.0, 2.5, -31.0)]
         {
-            state.true_peak_db[0] = input;
+            state.snapshot.true_peak_db[0] = input;
             state.update_peak_holds(start + Duration::from_secs_f32(elapsed));
             assert!((state.peaks[0].db - expected).abs() < 0.01);
         }

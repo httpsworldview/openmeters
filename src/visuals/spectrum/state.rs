@@ -24,46 +24,6 @@ const SECONDARY_LINE_THICKNESS: f32 = 0.75;
 const GRID_LABEL_SIZE: f32 = 10.0;
 const GRID_LABEL_GAP: f32 = 6.0;
 
-#[derive(Debug, Clone, Copy)]
-pub(in crate::visuals) struct SpectrumStyle {
-    pub min_db: f32,
-    pub highlight_threshold: f32,
-    pub spectrum_palette: [Color; 6],
-    pub frequency_scale: FrequencyScale,
-    pub source: Channel,
-    pub reverse_frequency: bool,
-    pub show_grid: bool,
-    pub show_peak_label: bool,
-    pub display_mode: SpectrumDisplayMode,
-    pub weighting_mode: SpectrumWeightingMode,
-    pub secondary_weighting_mode: SpectrumWeightingMode,
-    pub secondary_source: Channel,
-    pub bar_count: usize,
-    pub bar_gap: f32,
-}
-
-impl Default for SpectrumStyle {
-    fn default() -> Self {
-        let defaults = SpectrumSettings::default();
-        Self {
-            min_db: defaults.floor_db,
-            highlight_threshold: defaults.highlight_threshold,
-            spectrum_palette: palettes::spectrum::COLORS,
-            frequency_scale: defaults.frequency_scale,
-            source: defaults.source,
-            reverse_frequency: defaults.reverse_frequency,
-            show_grid: defaults.show_grid,
-            show_peak_label: defaults.show_peak_label,
-            display_mode: defaults.display_mode,
-            weighting_mode: defaults.weighting_mode,
-            secondary_weighting_mode: defaults.secondary_weighting_mode,
-            secondary_source: defaults.secondary_source,
-            bar_count: defaults.bar_count,
-            bar_gap: defaults.bar_gap,
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 struct PeakLabel {
     text: [String; 2],
@@ -76,7 +36,8 @@ type PeakUpdate = ([String; 2], [f32; 2]);
 
 #[derive(Debug, Clone)]
 pub(in crate::visuals) struct SpectrumState {
-    style: SpectrumStyle,
+    style: SpectrumSettings,
+    pub(in crate::visuals) spectrum_palette: [Color; 6],
     primary: Arc<[[f32; 2]]>,
     secondary: Arc<[[f32; 2]]>,
     key: u64,
@@ -89,7 +50,8 @@ pub(in crate::visuals) struct SpectrumState {
 impl SpectrumState {
     pub fn new() -> Self {
         Self {
-            style: SpectrumStyle::default(),
+            style: SpectrumSettings::default(),
+            spectrum_palette: palettes::spectrum::COLORS,
             primary: Arc::default(),
             secondary: Arc::default(),
             key: crate::visuals::next_key(),
@@ -100,22 +62,20 @@ impl SpectrumState {
         }
     }
 
-    pub fn style(&self) -> &SpectrumStyle {
-        &self.style
-    }
-    pub fn style_mut(&mut self) -> &mut SpectrumStyle {
-        &mut self.style
-    }
-
-    pub fn update_show_peak_label(&mut self, show: bool) {
-        self.style.show_peak_label = show;
-        if !show {
+    pub fn update_view_settings(&mut self, settings: &SpectrumSettings, floor_db: f32) {
+        self.style = settings.clone();
+        self.style.floor_db = floor_db;
+        if !settings.show_peak_label {
             self.peak = None;
         }
     }
 
+    pub fn export_settings(&self) -> SpectrumSettings {
+        self.style.clone()
+    }
+
     pub fn set_palette(&mut self, palette: &[Color; 6]) {
-        self.style.spectrum_palette = *palette;
+        self.spectrum_palette = *palette;
     }
 
     pub fn apply_snapshot(&mut self, snap: SpectrumSnapshot) {
@@ -134,12 +94,12 @@ impl SpectrumState {
         let min_f = MIN_FREQUENCY;
         let max_f = snap.frequency_bins[bins - 1].max(min_f * 1.02);
         let bins = snap.frequency_bins.as_slice();
-        let style = self.style;
         self.ensure_x_cache(min_f, max_f, bins);
+        let style = &self.style;
 
         let points = |idx, mode| {
             build_single_points(
-                &style,
+                style,
                 min_f,
                 max_f,
                 bins,
@@ -198,7 +158,7 @@ impl SpectrumState {
         let t = self.style.frequency_scale.pos_of(min_f, max_f, f);
         if !t.is_finite() || !m.is_finite() { return None; }
         let x = if self.style.reverse_frequency { 1.0 - t } else { t }.clamp(0.0, 1.0);
-        let y = ((m - self.style.min_db) / (MAX_DB - self.style.min_db).max(EPSILON))
+        let y = ((m - self.style.floor_db) / (MAX_DB - self.style.floor_db).max(EPSILON))
             .clamp(0.0, 1.0);
         if y < 0.08 { return None; }
         let unit = match self.style.weighting_mode {
@@ -260,7 +220,7 @@ impl SpectrumState {
             if show { Arc::clone(points) } else { Arc::default() }
         };
         let peak = self.peak();
-        let accent = self.style.spectrum_palette[5];
+        let accent = self.spectrum_palette[5];
         let (mut primary, mut secondary) = (
             visible(has_primary, &self.primary),
             visible(has_secondary, &self.secondary),
@@ -279,7 +239,7 @@ impl SpectrumState {
             secondary_line_color: color_to_rgba(with_alpha(pal.secondary.weak.text, 0.32)),
             secondary_line_width: SECONDARY_LINE_THICKNESS,
             highlight_threshold: self.style.highlight_threshold,
-            spectrum_palette: self.style.spectrum_palette.map(color_to_rgba),
+            spectrum_palette: self.spectrum_palette.map(color_to_rgba),
             display_mode: self.style.display_mode,
             bar_count: self.style.bar_count,
             bar_gap: self.style.bar_gap,
@@ -306,7 +266,7 @@ crate::visuals::visualization_widget!(Spectrum, SpectrumState, |this, r, th, b| 
     }
     r.draw_primitive(b, SpectrumPrimitive::new(params));
     if let Some((pk, layout)) = peak.zip(peak_layout) {
-        let accent = state.style.spectrum_palette[5];
+        let accent = state.spectrum_palette[5];
         r.with_layer(b, |r| draw_peak(r, th, pk, layout, accent));
     }
 });
@@ -381,11 +341,11 @@ mod tests {
     }
 }
 
-fn primary_trace(style: &SpectrumStyle) -> Option<usize> {
+fn primary_trace(style: &SpectrumSettings) -> Option<usize> {
     (style.source != Channel::None).then_some(0)
 }
 
-fn secondary_trace(style: &SpectrumStyle) -> Option<usize> {
+fn secondary_trace(style: &SpectrumSettings) -> Option<usize> {
     match (style.source, style.secondary_source) {
         (_, Channel::None) => None,
         (primary, secondary) if primary == secondary => Some(0),
@@ -405,15 +365,15 @@ fn trace_db(trace: &SpectrumTraceSnapshot, mode: SpectrumWeightingMode) -> &[f32
 }
 
 fn build_single_points(
-    style: &SpectrumStyle,
+    style: &SpectrumSettings,
     min_f: f32,
     max_f: f32,
     bins: &[f32],
     db: &[f32],
     x_cache: &[f32],
 ) -> Vec<[f32; 2]> {
-    let dr = (MAX_DB - style.min_db).max(EPSILON);
-    let y = |m: f32| ((m - style.min_db) / dr).clamp(0.0, 1.0);
+    let dr = (MAX_DB - style.floor_db).max(EPSILON);
+    let y = |m: f32| ((m - style.floor_db) / dr).clamp(0.0, 1.0);
     let mut out = Vec::with_capacity(x_cache.len());
     let mut xi = 0;
     let mut push = |m: f32| {
@@ -441,7 +401,7 @@ fn draw_grid(
     b: Rectangle,
     min_f: f32,
     max_f: f32,
-    style: &SpectrumStyle,
+    style: &SpectrumSettings,
 ) {
     if b.width <= 0.0 || b.height <= 0.0 {
         return;

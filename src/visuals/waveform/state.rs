@@ -7,42 +7,33 @@ use super::processor::{
 };
 use super::render::{WaveformParams, WaveformPrimitive};
 use crate::persistence::settings::WaveformSettings;
-use crate::util::{audio::Channel, color::color_to_rgba};
-use crate::visuals::options::{WaveformColorMode, WaveformHistoryMode};
+use crate::util::color::color_to_rgba;
 use crate::visuals::palettes;
 use iced::Color;
 use std::{cell::Cell, collections::VecDeque, sync::Arc};
 
 const COLUMN_WIDTH_PIXELS: f32 = 1.0;
 const INITIAL_VIEW_COLUMNS: usize = 512;
+
 #[derive(Debug)]
 pub(in crate::visuals) struct WaveformState {
     data: Arc<VecDeque<WaveFrame>>,
     preview: WaveformPreview,
     view_columns: Cell<usize>,
     pub(in crate::visuals) style: WaveformStyle,
+    settings: WaveformSettings,
     key: u64,
-    pub(in crate::visuals) channel_1: Channel,
-    pub(in crate::visuals) channel_2: Channel,
-    pub(in crate::visuals) color_mode: WaveformColorMode,
-    pub(in crate::visuals) history_mode: WaveformHistoryMode,
-    pub(in crate::visuals) band_db_floor: f32,
 }
 
 impl WaveformState {
     pub fn new() -> Self {
-        let defaults = WaveformSettings::default();
         Self {
             data: Arc::new(VecDeque::with_capacity(INITIAL_VIEW_COLUMNS)),
             preview: WaveformPreview::default(),
             view_columns: Cell::new(INITIAL_VIEW_COLUMNS),
             style: WaveformStyle::default(),
+            settings: WaveformSettings::default(),
             key: crate::visuals::next_key(),
-            channel_1: defaults.channel_1,
-            channel_2: defaults.channel_2,
-            color_mode: defaults.color_mode,
-            history_mode: defaults.history_mode,
-            band_db_floor: defaults.band_db_floor,
         }
     }
 
@@ -63,8 +54,12 @@ impl WaveformState {
         self.view_columns.get()
     }
 
-    pub fn set_channels(&mut self, channel_1: Channel, channel_2: Channel) {
-        (self.channel_1, self.channel_2) = (channel_1, channel_2);
+    pub fn update_view_settings(&mut self, settings: &WaveformSettings) {
+        self.settings = settings.clone();
+    }
+
+    pub fn export_settings(&self) -> WaveformSettings {
+        self.settings.clone()
     }
 
     pub fn set_palette(&mut self, palette: &[Color; NUM_BANDS]) {
@@ -97,9 +92,9 @@ impl WaveformState {
             columns: needed,
             data: Arc::clone(&self.data),
             preview: self.preview,
-            color_mode: self.color_mode,
-            history_mode: self.history_mode,
-            band_db_floor: self.band_db_floor,
+            color_mode: self.settings.color_mode,
+            history_mode: self.settings.history_mode,
+            band_db_floor: self.settings.band_db_floor,
             palette: self.style.palette.map(color_to_rgba),
             fill_alpha: self.style.fill_alpha,
             vertical_padding: self.style.vertical_padding,
@@ -131,7 +126,7 @@ impl WaveformState {
     fn selected_lanes(&self) -> ([usize; 2], usize) {
         let mut lanes = [0; 2];
         let mut len = 0;
-        for lane in [self.channel_1, self.channel_2]
+        for lane in [self.settings.channel_1, self.settings.channel_2]
             .into_iter()
             .filter_map(|channel| WAVEFORM_CHANNELS.iter().position(|&source| source == channel))
         {

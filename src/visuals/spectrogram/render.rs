@@ -6,6 +6,7 @@ use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
 use iced_wgpu::primitive::{self, Primitive};
 use std::collections::{HashMap, VecDeque};
+use wgpu::util::DeviceExt as _;
 
 use crate::visuals::render::common::{
     CacheTracker, RenderPipelineSpec, begin_load_pass, create_render_pipeline, create_shader_module,
@@ -619,17 +620,11 @@ impl Resources {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let quad_buf = device.create_buffer(&wgpu::BufferDescriptor {
+        let quad_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Spectrogram quad VB"),
-            size: std::mem::size_of_val(&UNIT_QUAD) as u64,
+            contents: bytemuck::cast_slice(&UNIT_QUAD),
             usage: wgpu::BufferUsages::VERTEX,
-            mapped_at_creation: true,
         });
-        quad_buf
-            .slice(..)
-            .get_mapped_range_mut()
-            .copy_from_slice(bytemuck::cast_slice(&UNIT_QUAD));
-        quad_buf.unmap();
         let ring = create_ring(device, bgls, &uniform_buf, p);
 
         Self {
