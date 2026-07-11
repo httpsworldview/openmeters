@@ -103,6 +103,15 @@ pub(super) fn pack_classic_db(db: f32) -> u16 {
         .clamp(0.0, 65535.0) as u16
 }
 
+// Correct coherent-gain power for ENBW and zero-padding after splat accumulation.
+fn reassigned_power_scale(window: &[f32], fft_size: usize) -> f32 {
+    let (sum, sum_squares) = window.iter().fold((0.0, 0.0), |(sum, squares), &x| {
+        let x = f64::from(x);
+        (sum + x, squares + x * x)
+    });
+    (sum * sum / (fft_size as f64 * sum_squares)) as f32
+}
+
 impl ReassignmentBuffers {
     fn rebuild(&mut self, planner: &mut FftPlanner<f32>, window: &[f32], bin_count: usize) {
         self.derivative_window = compute_derivative_spectral(planner, window);
@@ -132,6 +141,7 @@ pub struct SpectrogramUpdate {
     pub history_length: usize,
     pub reset: bool,
     pub points_per_column: usize,
+    pub reassigned_power_scale: f32,
     pub new_columns: Vec<SpectrogramColumn>,
 }
 
@@ -151,7 +161,9 @@ pub struct SpectrogramProcessor {
     classic_bins: Vec<u16>,
     reassign: ReassignmentBuffers,
     bin_norm: Vec<f32>,
+    reassigned_power_scale: f32,
     audio_buffer: VecDeque<f32>,
+    pending_skip_samples: usize,
     audio_front_sample: u64,
     audio_last_nonzero: Option<u64>,
     bin_hz: f32,
@@ -179,7 +191,9 @@ impl SpectrogramProcessor {
             classic_bins: Vec::new(),
             reassign: ReassignmentBuffers::default(),
             bin_norm: Vec::new(),
+            reassigned_power_scale: 1.0,
             audio_buffer: VecDeque::new(),
+            pending_skip_samples: 0,
             audio_front_sample: 0,
             audio_last_nonzero: None,
             bin_hz: 0.0,
@@ -228,14 +242,17 @@ impl SpectrogramProcessor {
         };
         resize_trim(&mut self.scratch, scratch_len, Complex32::ZERO);
         resize_trim(&mut self.classic_bins, bin_count, 0);
-        if use_reassignment {
+        self.bin_norm = compute_fft_bin_normalization(&self.window, self.fft_size);
+        self.reassigned_power_scale = if use_reassignment {
             self.reassign.rebuild(&mut planner, &self.window, bin_count);
+            reassigned_power_scale(&self.window, self.fft_size)
         } else {
             self.reassign = ReassignmentBuffers::default();
-        }
-        self.bin_norm = compute_fft_bin_normalization(&self.window, self.fft_size);
+            1.0
+        };
         let buffered_len = active_len.saturating_mul(2);
         self.drain_audio(self.audio_buffer.len().saturating_sub(buffered_len));
+        self.pending_skip_samples = 0;
         self.shrink_audio_buffer(buffered_len);
         self.bin_hz = self.config.sample_rate / self.fft_size.max(1) as f32;
     }
@@ -273,8 +290,7 @@ impl SpectrogramProcessor {
         let retained = self.max_retained_columns(bin_count);
         let skip = ready.saturating_sub(retained);
         let mut output = Vec::with_capacity(ready.min(retained));
-        let skipped_samples = skip.saturating_mul(hop_size).min(self.audio_buffer.len());
-        self.drain_audio(skipped_samples);
+        self.advance_audio(skip.saturating_mul(hop_size));
 
         for _ in skip..ready {
             if self.audio_is_silent() {
@@ -285,7 +301,7 @@ impl SpectrogramProcessor {
                     SpectrogramColumn::Classic(self.classic_bins[..bin_count].to_vec())
                 };
                 output.push(col);
-                self.drain_audio(hop_size);
+                self.advance_audio(hop_size);
                 continue;
             }
 
@@ -346,7 +362,7 @@ impl SpectrogramProcessor {
             };
 
             output.push(col);
-            self.drain_audio(hop_size);
+            self.advance_audio(hop_size);
         }
         self.shrink_audio_buffer(read_len.saturating_mul(4));
         output
@@ -373,10 +389,26 @@ impl SpectrogramProcessor {
         self.audio_front_sample = self.audio_front_sample.saturating_add(count as u64);
     }
 
+    fn advance_audio(&mut self, count: usize) {
+        let missing = count.saturating_sub(self.audio_buffer.len());
+        self.drain_audio(count);
+        self.pending_skip_samples = self.pending_skip_samples.saturating_add(missing);
+    }
+
     fn push_audio(&mut self, samples: &[f32], channels: usize) {
         if channels == 0 || samples.is_empty() {
             return;
         }
+
+        let frames = samples.len() / channels;
+        let skip = self.pending_skip_samples.min(frames);
+        self.pending_skip_samples -= skip;
+        self.audio_front_sample = self.audio_front_sample.saturating_add(skip as u64);
+        let samples = &samples[skip * channels..frames * channels];
+        if samples.is_empty() {
+            return;
+        }
+
         if channels == 1 {
             let base = self.audio_front_sample + self.audio_buffer.len() as u64;
             if let Some(i) = samples.iter().rposition(|&sample| sample != 0.0) {
@@ -473,6 +505,7 @@ impl SpectrogramProcessor {
                 history_length: self.config.history_length,
                 reset: std::mem::take(&mut self.reset),
                 points_per_column: bin_count,
+                reassigned_power_scale: self.reassigned_power_scale,
                 new_columns: cols,
             })
         }
@@ -498,10 +531,11 @@ impl SpectrogramProcessor {
                 self.audio_last_nonzero = None;
             }
         }
-        let reset = rebuild || prev.hop_size != cfg.hop_size;
-        if reset {
-            self.reset = true;
+        let hop_changed = prev.hop_size != cfg.hop_size;
+        if hop_changed {
+            self.pending_skip_samples = 0;
         }
+        self.reset |= rebuild || hop_changed;
     }
 }
 
@@ -708,6 +742,34 @@ mod tests {
     }
 
     #[test]
+    fn hops_larger_than_the_window_are_block_partition_independent() {
+        let cfg = SpectrogramConfig {
+            sample_rate: 32.0,
+            fft_size: 8,
+            hop_size: 16,
+            window: WindowKind::Rectangular,
+            history_length: 32,
+            use_reassignment: false,
+            ..Default::default()
+        };
+        let samples: Vec<_> = (0..29).map(|i| (i as f32 * 0.73).sin()).collect();
+
+        let whole = process_samples(cfg, &samples).new_columns;
+        let mut processor = SpectrogramProcessor::new(cfg);
+        let mut partitioned = Vec::new();
+        for chunk in samples.chunks(8) {
+            if let Some(update) = processor.process_block(&AudioBlock::new(chunk, 1, 32.0)) {
+                partitioned.extend(update.new_columns);
+            }
+        }
+
+        assert_eq!(whole.len(), partitioned.len());
+        for (expected, actual) in whole.iter().zip(&partitioned) {
+            assert_eq!(classic_mags(expected), classic_mags(actual));
+        }
+    }
+
+    #[test]
     fn classic_retention_budget_uses_packed_column_width() {
         let processor = SpectrogramProcessor::new(SpectrogramConfig {
             fft_size: 16_384,
@@ -773,8 +835,11 @@ mod tests {
     }
 
     #[test]
-    fn reassignment_places_peak_frequency_and_time() {
-        let cfg = cfg(2048, 512, true);
+    fn reassignment_places_peak_frequency_time_and_power() {
+        let cfg = SpectrogramConfig {
+            zero_padding_factor: 4,
+            ..cfg(2048, 512, true)
+        };
         let latency = (SpectrogramProcessor::hilbert_len_for(cfg.fft_size) - cfg.fft_size) / 2;
         let expected_time = -(latency as f32) / cfg.hop_size as f32;
 
@@ -794,7 +859,13 @@ mod tests {
                 "time offset {:.4} vs expected {expected_time:.4}",
                 peak.time_offset
             );
-            assert!(points.len() < cfg.fft_size / 2 + 1);
+            let accumulated_power = points
+                .iter()
+                .map(|point| db_to_power(point.magnitude_db))
+                .sum::<f32>();
+            let power = accumulated_power * update.reassigned_power_scale;
+            assert!((power - 1.0).abs() < 0.01, "deposited {power} power");
+            assert!(points.len() < update.points_per_column);
         }
     }
 }

@@ -44,7 +44,7 @@ struct Uniforms {
     bin_hz: f32,
     accum_width: f32,
     accum_height: f32,
-    _pad0: u32,
+    reassigned_power_scale: f32,
 
     // (pos1, pos2, pos3, spread0), (spread1, spread2, spread3, spread4).
     // Stops 0 and 4 are constant 0.0 / 1.0
@@ -313,7 +313,7 @@ fn accumulated_power(pos: vec2<f32>) -> f32 {
 
 @fragment
 fn fs_resolve(in: ResolveOutput) -> @location(0) vec4<f32> {
-    let power = accumulated_power(in.accum_pos);
+    let power = accumulated_power(in.accum_pos) * u.reassigned_power_scale;
     if power <= 0.0 {
         return vec4<f32>(0.0);
     }

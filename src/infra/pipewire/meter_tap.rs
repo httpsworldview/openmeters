@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::virtual_sink::{self, CaptureBuffer};
-use crate::util::audio::sanitize_sample_rate;
+use crate::util::audio::{DEFAULT_SAMPLE_RATE, sanitize_sample_rate};
 use async_channel::{Receiver as AsyncReceiver, Sender as AsyncSender};
 use std::sync::{Arc, LazyLock};
 use std::thread;
@@ -11,7 +11,7 @@ use tracing::{info, warn};
 
 const CHANNEL_CAPACITY: usize = 64;
 const POLL_BACKOFF: Duration = Duration::from_millis(50);
-const TARGET_BATCH_SAMPLES: usize = 2_048;
+const TARGET_BATCH_FRAMES_AT_48K: usize = 1_024;
 const MAX_BATCH_LATENCY: Duration = Duration::from_millis(25);
 const DROP_CHECK_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -34,18 +34,26 @@ pub struct MeterFormat {
 }
 
 struct SampleBatcher {
-    target_samples: usize,
+    target_frames_at_48k: usize,
     samples: Vec<f32>,
     format: Option<MeterFormat>,
 }
 
 impl SampleBatcher {
-    fn new(target_samples: usize) -> Self {
+    fn new(target_frames_at_48k: usize) -> Self {
         Self {
-            target_samples,
-            samples: Vec::with_capacity(target_samples),
+            target_frames_at_48k,
+            samples: Vec::with_capacity(target_frames_at_48k.saturating_mul(2)),
             format: None,
         }
+    }
+
+    fn target_samples(&self, format: MeterFormat) -> usize {
+        let frames = (self.target_frames_at_48k as f64 * f64::from(format.sample_rate)
+            / f64::from(DEFAULT_SAMPLE_RATE))
+        .round()
+        .max(1.0) as usize;
+        frames.saturating_mul(format.channels.max(1))
     }
 
     fn push(&mut self, samples: &[f32], format: MeterFormat) {
@@ -63,7 +71,8 @@ impl SampleBatcher {
     }
 
     fn should_flush(&self) -> bool {
-        self.samples.len() >= self.target_samples
+        self.format
+            .is_some_and(|format| self.samples.len() >= self.target_samples(format))
     }
 
     fn has_different_format(&self, format: MeterFormat) -> bool {
@@ -75,8 +84,9 @@ impl SampleBatcher {
             return None;
         }
         let format = self.format.take()?;
-        let max_capacity = self.target_samples.saturating_mul(4);
-        let next_capacity = self.samples.len().clamp(self.target_samples, max_capacity);
+        let target_samples = self.target_samples(format);
+        let max_capacity = target_samples.saturating_mul(4);
+        let next_capacity = self.samples.len().clamp(target_samples, max_capacity);
         let samples = std::mem::replace(&mut self.samples, Vec::with_capacity(next_capacity));
         Some(AudioBatch { samples, format })
     }
@@ -96,7 +106,7 @@ fn spawn_forwarder(sender: AsyncSender<AudioBatch>, buffer: Arc<CaptureBuffer>) 
 }
 
 fn forward_loop(sender: AsyncSender<AudioBatch>, buffer: Arc<CaptureBuffer>) {
-    let mut batcher = SampleBatcher::new(TARGET_BATCH_SAMPLES);
+    let mut batcher = SampleBatcher::new(TARGET_BATCH_FRAMES_AT_48K);
     let mut batch_started_at = Instant::now();
     let mut last_drop_check = Instant::now();
     let mut drop_baseline = buffer.dropped_frames();
@@ -198,7 +208,12 @@ mod tests {
 
     #[test]
     fn batches_chunks() {
-        let mut batcher = SampleBatcher::new(4);
+        let mut batcher = SampleBatcher::new(2);
+        let high_rate = MeterFormat {
+            sample_rate: 96_000.0,
+            ..STEREO_48K
+        };
+        assert_eq!(batcher.target_samples(high_rate), 8);
         batcher.push(&[0.0, 1.0], STEREO_48K);
         assert!(!batcher.should_flush());
         batcher.push(&[2.0, 3.0], STEREO_48K);

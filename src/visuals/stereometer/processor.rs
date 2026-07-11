@@ -2,7 +2,10 @@
 // Copyright (C) 2026 Maika Namuo
 
 use crate::dsp::AudioBlock;
-use crate::util::audio::{BAND_SPLITS_HZ, DEFAULT_SAMPLE_RATE, extend_interleaved_history};
+use crate::util::audio::{
+    BAND_SPLITS_HZ, DEFAULT_SAMPLE_RATE, extend_interleaved_history, flush_denormal_f32,
+    flush_denormal_f64,
+};
 use std::collections::VecDeque;
 
 const BAND_CHANNELS: usize = 2;
@@ -84,6 +87,13 @@ impl LR4 {
         }
         signal
     }
+
+    fn flush_denormals(&mut self) {
+        self.delays
+            .iter_mut()
+            .flatten()
+            .for_each(flush_denormal_f32);
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -132,6 +142,13 @@ impl BandSplitter {
         let (left, right) = self.above_low.process(left, right);
         [low, self.mid.process(left, right), self.high.process(left, right)]
     }
+
+    fn flush_denormals(&mut self) {
+        for filter in [&mut self.low, &mut self.above_low, &mut self.mid, &mut self.high] {
+            filter.left.flush_denormals();
+            filter.right.flush_denormals();
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -170,6 +187,12 @@ impl Correlator {
         } else {
             0.0
         }
+    }
+
+    fn flush_denormals(&mut self) {
+        [&mut self.cross, &mut self.left_power, &mut self.right_power]
+            .into_iter()
+            .for_each(flush_denormal_f64);
     }
 }
 
@@ -268,6 +291,14 @@ impl StereometerProcessor {
                     }
                 }
             }
+        }
+        self.correlators.full.flush_denormals();
+        if analyze_bands {
+            self.correlators
+                .bands
+                .iter_mut()
+                .for_each(Correlator::flush_denormals);
+            self.band_splitter.flush_denormals();
         }
 
         let frames = (self.config.sample_rate * self.config.segment_duration)

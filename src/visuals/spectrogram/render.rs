@@ -54,6 +54,7 @@ pub struct SpectrogramParams {
     pub freq_min: f32,
     pub freq_max: f32,
     pub bin_hz: f32,
+    pub reassigned_power_scale: f32,
     pub freq_scale: FrequencyScale,
     pub palette: [[f32; 4]; SPECTROGRAM_PALETTE_SIZE],
     pub stop_positions: [f32; SPECTROGRAM_PALETTE_SIZE],
@@ -263,8 +264,8 @@ struct Uniforms {
     col_stride_u16: u32,
     bin_hz: f32,
     accum_size: [f32; 2],
-    // 4 B pad so `stops` lands on a 16-byte boundary (array<vec4> align).
-    _pad: u32,
+    // Also fills the 4 B before the 16-byte-aligned `stops` array.
+    reassigned_power_scale: f32,
     // (pos1, pos2, pos3, spread0), (spread1, spread2, spread3, spread4).
     // Stops 0 and 4 are constant 0.0 / 1.0 and live in the shader.
     stops: [[f32; 4]; 2],
@@ -275,6 +276,7 @@ struct Uniforms {
 // offset 112 (16-aligned for array<vec4>), palette at 144, total 224 bytes.
 const _: () = assert!(std::mem::size_of::<Uniforms>() == 224);
 const _: () = assert!(std::mem::offset_of!(Uniforms, accum_size) == 100);
+const _: () = assert!(std::mem::offset_of!(Uniforms, reassigned_power_scale) == 108);
 const _: () = assert!(std::mem::offset_of!(Uniforms, stops) == 112);
 const _: () = assert!(std::mem::offset_of!(Uniforms, palette) == 144);
 
@@ -327,7 +329,7 @@ impl Uniforms {
             col_stride_u16,
             bin_hz: p.bin_hz,
             accum_size: [acc_sz[0] as f32, acc_sz[1] as f32],
-            _pad: 0,
+            reassigned_power_scale: p.reassigned_power_scale,
             stops: [
                 [
                     p.stop_positions[1],

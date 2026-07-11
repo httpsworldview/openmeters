@@ -2,10 +2,11 @@
 // Copyright (C) 2026 Maika Namuo
 
 use crate::dsp::AudioBlock;
-use crate::util::audio::{DEFAULT_SAMPLE_RATE, power_to_db, sanitize_sample_rate};
+use crate::util::audio::{
+    DEFAULT_SAMPLE_RATE, flush_denormal_f64, power_to_db, sanitize_sample_rate,
+};
 use std::{f64::consts::PI, sync::LazyLock};
 
-const MIN_MEAN_SQUARE: f64 = 1e-12;
 const LOUDNESS_OFFSET: f64 = -0.691;
 const DEFAULT_FLOOR_DB: f32 = -99.9;
 
@@ -52,13 +53,13 @@ fn k_weighting_coefficients(fs: f64) -> ([f64; 5], [f64; 5]) {
 }
 
 fn mean_square_to_lufs(mean_square: f64, floor: f32) -> f32 {
-    if mean_square <= MIN_MEAN_SQUARE {
-        floor
-    } else {
+    if mean_square > 0.0 {
         mean_square
             .log10()
             .mul_add(10.0, LOUDNESS_OFFSET)
             .max(f64::from(floor)) as f32
+    } else {
+        floor
     }
 }
 
@@ -67,68 +68,97 @@ const fn window_length(sample_rate: f32, window_secs: f32) -> usize {
     if len < 1.0 { 1 } else { len as usize }
 }
 
-const TAPS: usize = 48;
-const PHASES: usize = 4;
-const TAPS_PER_PHASE: usize = TAPS / PHASES;
+// Libebur128's 49-tap Hann-windowed interpolator has zero-valued endpoints,
+// leaving 48 effective taps. Integer phases are covered by the sample peak.
+const TRUE_PEAK_TAPS: usize = 48;
+const TRUE_PEAK_4X_DELAY: usize = TRUE_PEAK_TAPS / 4;
+const TRUE_PEAK_2X_DELAY: usize = TRUE_PEAK_TAPS / 2;
 
-fn compute_fir_coefficients() -> [[f32; PHASES]; TAPS_PER_PHASE] {
-    let mut h = [[0.0_f32; PHASES]; TAPS_PER_PHASE];
-    let n = (TAPS + 1) as f64; // Window length for symmetric Hann
-    for j in 0..TAPS {
-        let m = j as f64 - (n - 1.0) / 2.0;
-        let w = 0.5 * (1.0 - (2.0 * PI * j as f64 / (n - 1.0)).cos());
-        let sinc = if m.abs() > 1e-6 {
-            let x = m * PI / PHASES as f64;
-            x.sin() / x
-        } else {
-            1.0
-        };
-        h[j / PHASES][j % PHASES] = (w * sinc) as f32;
-    }
-    h
+type TruePeakFir4x = [[f32; 3]; TRUE_PEAK_4X_DELAY];
+type TruePeakFir2x = [f32; TRUE_PEAK_2X_DELAY];
+type TruePeakFirs = (TruePeakFir4x, TruePeakFir2x);
+
+fn true_peak_coefficient(j: usize, factor: usize) -> f32 {
+    let offset = j as f64 - TRUE_PEAK_TAPS as f64 * 0.5;
+    let window = 0.5 * (1.0 - (2.0 * PI * j as f64 / TRUE_PEAK_TAPS as f64).cos());
+    let x = offset * PI / factor as f64;
+    (window * x.sin() / x) as f32
 }
 
-static TRUE_PEAK_FIR: LazyLock<[[f32; PHASES]; TAPS_PER_PHASE]> =
-    LazyLock::new(compute_fir_coefficients);
+fn compute_true_peak_firs() -> TruePeakFirs {
+    let mut fir_4x = [[0.0; 3]; TRUE_PEAK_4X_DELAY];
+    let mut fir_2x = [0.0; TRUE_PEAK_2X_DELAY];
+    for j in 0..TRUE_PEAK_TAPS {
+        let phase = j % 4;
+        if phase != 0 {
+            fir_4x[j / 4][phase - 1] = true_peak_coefficient(j, 4);
+        }
+        if j % 2 != 0 {
+            fir_2x[j / 2] = true_peak_coefficient(j, 2);
+        }
+    }
+    (fir_4x, fir_2x)
+}
+
+static TRUE_PEAK_FIRS: LazyLock<TruePeakFirs> = LazyLock::new(compute_true_peak_firs);
 
 #[derive(Debug)]
 struct TruePeakMeter {
-    delay_buffer: [f32; TAPS_PER_PHASE * 2],
-    write_position: usize,
-    fir: &'static [[f32; PHASES]; TAPS_PER_PHASE],
+    delay: [f32; TRUE_PEAK_2X_DELAY * 2],
+    write: usize,
+    delay_len: usize,
+    firs: &'static TruePeakFirs,
     peak: f32,
 }
 
 impl TruePeakMeter {
-    fn new() -> Self {
+    fn new(sample_rate: f64) -> Self {
+        let delay_len = if sample_rate < 96_000.0 {
+            TRUE_PEAK_4X_DELAY
+        } else if sample_rate < 192_000.0 {
+            TRUE_PEAK_2X_DELAY
+        } else {
+            0
+        };
         Self {
-            delay_buffer: [0.0; TAPS_PER_PHASE * 2],
-            write_position: TAPS_PER_PHASE,
-            fir: &TRUE_PEAK_FIR,
+            delay: [0.0; TRUE_PEAK_2X_DELAY * 2],
+            write: delay_len,
+            delay_len,
+            firs: &TRUE_PEAK_FIRS,
             peak: 0.0,
         }
     }
 
     fn process(&mut self, sample: f32) {
-        self.write_position = if self.write_position == 0 {
-            TAPS_PER_PHASE
-        } else {
-            self.write_position
-        } - 1;
-        let pos = self.write_position;
-        self.delay_buffer[pos] = sample;
-        self.delay_buffer[pos + TAPS_PER_PHASE] = sample;
-
-        let mut out = [0.0_f32; PHASES];
-        for i in 0..TAPS_PER_PHASE {
-            let s = self.delay_buffer[pos + i];
-            let h = self.fir[i];
-            out[0] += s * h[0];
-            out[1] += s * h[1];
-            out[2] += s * h[2];
-            out[3] += s * h[3];
+        self.peak = self.peak.max(sample.abs());
+        if self.delay_len == 0 {
+            return;
         }
-        self.peak = out.into_iter().map(f32::abs).fold(self.peak, f32::max);
+
+        self.write = if self.write == 0 { self.delay_len } else { self.write } - 1;
+        let pos = self.write;
+        self.delay[pos] = sample;
+        self.delay[pos + self.delay_len] = sample;
+
+        if self.delay_len == TRUE_PEAK_4X_DELAY {
+            let mut output = [0.0; 3];
+            for (&sample, coefficients) in self.delay[pos..pos + self.delay_len]
+                .iter()
+                .zip(self.firs.0.iter())
+            {
+                for (out, &coefficient) in output.iter_mut().zip(coefficients) {
+                    *out += sample * coefficient;
+                }
+            }
+            self.peak = output.into_iter().map(f32::abs).fold(self.peak, f32::max);
+        } else {
+            let output = self.delay[pos..pos + self.delay_len]
+                .iter()
+                .zip(self.firs.1.iter())
+                .map(|(&sample, &coefficient)| sample * coefficient)
+                .sum::<f32>();
+            self.peak = self.peak.max(output.abs());
+        }
     }
 
     fn take_peak(&mut self) -> f32 {
@@ -157,6 +187,10 @@ impl KWeightingFilter {
         self.z[2] = self.b[3].mul_add(x, self.z[3]) - self.a[3] * y;
         self.z[3] = self.b[4] * x - self.a[4] * y;
         y as f32
+    }
+
+    fn flush_denormals(&mut self) {
+        self.z.iter_mut().for_each(flush_denormal_f64);
     }
 }
 
@@ -211,7 +245,7 @@ impl ChannelState {
         Self {
             windows: WindowMeans::new(capacities),
             filter: KWeightingFilter::new(sample_rate),
-            true_peak: TruePeakMeter::new(),
+            true_peak: TruePeakMeter::new(sample_rate),
         }
     }
 }
@@ -314,21 +348,23 @@ impl LoudnessProcessor {
                 channel.true_peak.process(sample);
             }
         }
+        for channel in &mut self.channels {
+            channel.filter.flush_denormals();
+        }
 
         let floor = self.config.floor_db;
         let num_channels = self.channels.len();
         let mut weighted_short_term = 0.0;
         let mut weighted_momentary = 0.0;
 
-        let window_mean = |ch: &ChannelState, idx: usize| ch.windows.mean(idx).max(MIN_MEAN_SQUARE);
         for (channel_index, channel_state) in self.channels.iter_mut().enumerate() {
             let weight = channel_weight(channel_index, num_channels);
-            weighted_short_term += window_mean(channel_state, WIN_SHORT_TERM) * weight;
-            weighted_momentary += window_mean(channel_state, WIN_MOMENTARY) * weight;
+            weighted_short_term += channel_state.windows.mean(WIN_SHORT_TERM) * weight;
+            weighted_momentary += channel_state.windows.mean(WIN_MOMENTARY) * weight;
             self.snapshot.rms_fast_db[channel_index] =
-                power_to_db(window_mean(channel_state, WIN_RMS_FAST) as f32, floor);
+                power_to_db(channel_state.windows.mean(WIN_RMS_FAST) as f32, floor);
             self.snapshot.rms_slow_db[channel_index] =
-                power_to_db(window_mean(channel_state, WIN_RMS_SLOW) as f32, floor);
+                power_to_db(channel_state.windows.mean(WIN_RMS_SLOW) as f32, floor);
             let peak = channel_state.true_peak.take_peak();
             self.snapshot.true_peak_db[channel_index] = power_to_db(peak * peak, floor);
         }
@@ -370,6 +406,21 @@ mod tests {
         assert!((window.mean(0) - 21.5).abs() < f64::EPSILON);
         assert!((window.mean(1) - 30.5).abs() < f64::EPSILON);
         assert!((window.mean(2) - 36.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn silence_respects_configured_floor() {
+        let samples = [0.0; 2048];
+        let snapshot = unwrap_snapshot(
+            LoudnessProcessor::new(LoudnessConfig {
+                floor_db: -140.0,
+                ..Default::default()
+            })
+            .process_block(&AudioBlock::new(&samples, 2, DEFAULT_SAMPLE_RATE)),
+        );
+
+        assert_eq!(snapshot.short_term_loudness, -140.0);
+        assert_eq!(snapshot.rms_fast_db[..2], [-140.0; 2]);
     }
 
     #[test]
@@ -426,31 +477,33 @@ mod tests {
     }
 
     #[test]
-    fn processor_matches_ebur128_true_peak() {
-        let sample_rate = 48000.0_f32;
-        let mono = sine_wave(sample_rate, 0.5, 17000.0, 0.9); // Near Nyquist for inter-sample peaks
-        let stereo: Vec<f32> = mono.iter().flat_map(|&s| [s, s]).collect();
-        let cfg = LoudnessConfig {
-            sample_rate,
-            ..Default::default()
-        };
-        let block = AudioBlock::new(&stereo, 2, sample_rate);
-        let ours = unwrap_snapshot(LoudnessProcessor::new(cfg).process_block(&block)).true_peak_db
-            [0] as f64;
+    fn true_peak_matches_ebur128_at_standard_rates() {
+        for (sample_rate, delay_len) in [
+            (48_000.0_f32, TRUE_PEAK_4X_DELAY),
+            (96_000.0, TRUE_PEAK_2X_DELAY),
+            (192_000.0, 0),
+        ] {
+            let meter = TruePeakMeter::new(f64::from(sample_rate));
+            assert_eq!(meter.delay_len, delay_len);
 
-        let mut reference = EbuR128::new(2, sample_rate as u32, Mode::TRUE_PEAK | Mode::S).unwrap();
-        reference.add_frames_planar_f32(&[&mono, &mono]).unwrap();
-        let ref_db = 20.0 * reference.true_peak(0).unwrap().log10();
-        let sample_peak_db =
-            20.0 * (mono.iter().map(|x| x.abs()).fold(0.0_f32, f32::max) as f64).log10();
+            let samples = sine_wave(sample_rate, 0.01, 17_000.0, 0.9);
+            let ours = unwrap_snapshot(
+                LoudnessProcessor::new(LoudnessConfig {
+                    sample_rate,
+                    ..Default::default()
+                })
+                .process_block(&AudioBlock::new(&samples, 1, sample_rate)),
+            )
+            .true_peak_db[0] as f64;
 
-        assert!(
-            (ours - ref_db).abs() < 0.1,
-            "true peak: {ours:.4} vs {ref_db:.4} dBTP"
-        );
-        assert!(
-            ours > sample_peak_db && ref_db > sample_peak_db,
-            "true peak should exceed sample peak {sample_peak_db:.4} dB"
-        );
+            let mut reference =
+                EbuR128::new(1, sample_rate as u32, Mode::TRUE_PEAK | Mode::S).unwrap();
+            reference.add_frames_f32(&samples).unwrap();
+            let expected = 20.0 * reference.true_peak(0).unwrap().log10();
+            assert!(
+                (ours - expected).abs() < 1.0e-3,
+                "{sample_rate} Hz true peak: {ours} vs {expected} dBTP"
+            );
+        }
     }
 }

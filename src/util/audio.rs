@@ -10,7 +10,11 @@ mod level;
 mod rate;
 mod window;
 
-pub(crate) use self::{channel::project_interleaved_channel_into, window::window_coefficients};
+pub(crate) use self::{
+    channel::project_interleaved_channel_into,
+    level::{flush_denormal_f32, flush_denormal_f64},
+    window::window_coefficients,
+};
 pub use self::{
     channel::{Channel, extend_interleaved_history},
     format::{fmt_duration, fmt_freq},

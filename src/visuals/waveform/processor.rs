@@ -3,7 +3,8 @@
 
 use crate::dsp::AudioBlock;
 use crate::util::audio::{
-    BAND_SPLITS_HZ, Channel, DB_FLOOR, DEFAULT_SAMPLE_RATE, power_to_db, sanitize_sample_rate,
+    BAND_SPLITS_HZ, Channel, DB_FLOOR, DEFAULT_SAMPLE_RATE, flush_denormal_f32, power_to_db,
+    sanitize_sample_rate,
 };
 
 pub const MIN_SCROLL_SPEED: f32 = 10.0;
@@ -19,7 +20,6 @@ pub(super) const DERIVED_CHANNELS: usize = WAVEFORM_CHANNELS.len();
 const REFERENCE_SAMPLE_RATE: f32 = 44_100.0;
 const BAND_COLOR_WINDOW_AT_44K1: usize = 2048;
 const BAND_SLOW_WINDOW_AT_44K1: usize = 16_384;
-const BAND_FILTER_Q: f32 = 0.71;
 const BAND_COLOR_GAINS: [f32; NUM_BANDS] = [1.0, 0.7, 2.0];
 pub(super) const WAVEFORM_SILENCE_AMPLITUDE: f32 = 1.584_893_1e-5;
 const MAX_TRACKER_SAMPLE_RATE: f32 = 1_000_000.0;
@@ -112,7 +112,7 @@ impl Biquad {
     fn new(kind: FilterKind, sample_rate: f32, frequency: f32) -> Self {
         let w0 = core::f32::consts::TAU * (frequency / sample_rate).clamp(1.0e-6, 0.49);
         let (sin, cos) = w0.sin_cos();
-        let alpha = sin / (2.0 * BAND_FILTER_Q);
+        let alpha = sin * core::f32::consts::FRAC_1_SQRT_2;
         let (b0, b1, b2) = match kind {
             FilterKind::LowPass => ((1.0 - cos) * 0.5, 1.0 - cos, (1.0 - cos) * 0.5),
             FilterKind::HighPass => ((1.0 + cos) * 0.5, -(1.0 + cos), (1.0 + cos) * 0.5),
@@ -141,6 +141,11 @@ impl Biquad {
             0.0
         }
     }
+
+    fn flush_denormals(&mut self) {
+        flush_denormal_f32(&mut self.z1);
+        flush_denormal_f32(&mut self.z2);
+    }
 }
 
 struct ThreeBand {
@@ -167,6 +172,12 @@ impl ThreeBand {
             self.mid_lp.process(self.mid_hp.process(x)),
             self.high.process(x),
         ]
+    }
+
+    fn flush_denormals(&mut self) {
+        for filter in [&mut self.low, &mut self.mid_hp, &mut self.mid_lp, &mut self.high] {
+            filter.flush_denormals();
+        }
     }
 }
 
@@ -267,7 +278,7 @@ pub struct WaveformProcessor {
     config: WaveformConfig,
     source_channels: usize,
     trackers: Option<[BandTracker; DERIVED_CHANNELS]>,
-    column_phase: f32,
+    column_phase: f64,
     current: [Option<(f32, f32, Option<f32>)>; DERIVED_CHANNELS],
     last_sample: [Option<f32>; DERIVED_CHANNELS],
     pending_columns: Vec<WaveFrame>,
@@ -368,29 +379,30 @@ impl WaveformProcessor {
             }
         }
         self.pending_columns.push(columns);
+        if self.pending_columns.len() >= self.config.max_columns * 2 {
+            self.cap_pending_columns();
+        }
         self.reset_column();
     }
 
     fn ingest_samples(&mut self, samples: &[f32], channels: usize) {
-        let step = (self.config.scroll_speed / self.config.sample_rate).clamp(0.0, 1.0);
+        let step = (f64::from(self.config.scroll_speed) / f64::from(self.config.sample_rate))
+            .clamp(0.0, 1.0);
         for frame in samples.chunks_exact(channels) {
             let derived = derived_frame(frame);
-            self.ingest_frame(derived, derived.map(f32::is_finite), step);
+            let finite = derived.map(f32::is_finite);
+            if let Some(trackers) = &mut self.trackers {
+                process_bands(trackers, derived, finite);
+            }
+            self.ingest_derived(derived, finite, step);
         }
-    }
-
-    fn ingest_frame(&mut self, derived: [f32; DERIVED_CHANNELS], finite: [bool; DERIVED_CHANNELS], step: f32) {
-        if let Some(trackers) = &mut self.trackers {
-            process_bands(trackers, derived, finite);
-        }
-        self.ingest_derived(derived, finite, step);
     }
 
     fn ingest_derived(
         &mut self,
         derived: [f32; DERIVED_CHANNELS],
         finite: [bool; DERIVED_CHANNELS],
-        step: f32,
+        step: f64,
     ) {
         for channel in 0..DERIVED_CHANNELS {
             if finite[channel] {
@@ -421,7 +433,7 @@ impl WaveformProcessor {
     }
 
     fn preview(&self) -> WaveformPreview {
-        let progress = self.column_phase.clamp(0.0, 1.0);
+        let progress = self.column_phase.clamp(0.0, 1.0) as f32;
         WaveformPreview {
             progress,
             columns: (progress > 0.0).then(|| std::array::from_fn(|ch| self.column_for(ch))),
@@ -443,6 +455,11 @@ impl WaveformProcessor {
         }
 
         self.ingest_samples(block.samples, channels);
+        if let Some(trackers) = &mut self.trackers {
+            for tracker in trackers {
+                tracker.filters.flush_denormals();
+            }
+        }
 
         self.cap_pending_columns();
         let reset = self.reset_pending;
@@ -645,6 +662,11 @@ mod tests {
         let update = processor.process_block(&block(&samples, 1, 1_000.0)).unwrap();
 
         assert!((update.columns.len() as isize - 3330).abs() <= 1);
+        assert!(
+            processor.column_phase.abs() < 1.0e-8,
+            "timing phase drifted to {}",
+            processor.column_phase
+        );
     }
 
     #[test]

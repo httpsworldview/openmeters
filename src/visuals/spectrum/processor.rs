@@ -101,6 +101,7 @@ pub struct SpectrumProcessor {
     scratch_buffer: Vec<Complex32>,
     bin_normalization: Vec<f32>,
     pcm_buffers: [VecDeque<f32>; TRACE_COUNT],
+    pending_skip_frames: usize,
     source_scratch: Vec<f32>,
     levels: [SpectrumLevelBuffers; TRACE_COUNT],
     a_weighting_db: Vec<f32>,
@@ -123,6 +124,7 @@ impl SpectrumProcessor {
             scratch_buffer: Vec::new(),
             bin_normalization: Vec::new(),
             pcm_buffers: [VecDeque::new(), VecDeque::new()],
+            pending_skip_frames: 0,
             source_scratch: Vec::new(),
             levels: Default::default(),
             a_weighting_db: Vec::new(),
@@ -158,6 +160,7 @@ impl SpectrumProcessor {
             .collect();
         self.reset_level_buffers();
         self.pcm_buffers.iter_mut().for_each(VecDeque::clear);
+        self.pending_skip_frames = 0;
     }
 
     fn reset_level_buffers(&mut self) {
@@ -196,12 +199,18 @@ impl SpectrumProcessor {
                     return produced;
                 }
             }
+            let mut drained = hop;
             for (trace, &active) in active.iter().enumerate() {
                 if active {
                     let buf = &mut self.pcm_buffers[trace];
-                    buf.drain(..hop.min(buf.len()));
+                    let count = hop.min(buf.len());
+                    buf.drain(..count);
+                    drained = drained.min(count);
                 }
             }
+            self.pending_skip_frames = self
+                .pending_skip_frames
+                .saturating_add(hop - drained);
             produced = true;
         }
 
@@ -266,13 +275,22 @@ impl SpectrumProcessor {
     }
 
     fn push_sources(&mut self, block: &AudioBlock<'_>) {
+        let frames = block.frame_count();
+        let skip = self.pending_skip_frames.min(frames);
+        self.pending_skip_frames -= skip;
+        let frames = frames - skip;
+        if frames == 0 {
+            return;
+        }
+        let samples = &block.samples[skip * block.channels..];
+
         let active = self.active_traces();
         for (idx, source) in self.sources().into_iter().enumerate().filter(|(idx, _)| active[*idx]) {
             if project_interleaved_channel_into(
                 &mut self.source_scratch,
-                block.samples,
+                samples,
                 block.channels,
-                block.frame_count(),
+                frames,
                 source,
             ) {
                 self.pcm_buffers[idx].extend(&self.source_scratch);
@@ -284,13 +302,19 @@ impl SpectrumProcessor {
         let old = self.config;
         config.normalize();
         self.config = config;
+        let averaging_mode_changed =
+            std::mem::discriminant(&old.averaging) != std::mem::discriminant(&config.averaging);
         if old.fft_size != config.fft_size || old.window != config.window {
             self.rebuild_fft();
-        } else if old.sample_rate != config.sample_rate || old.source != config.source
+        } else if old.sample_rate != config.sample_rate
+            || old.hop_size != config.hop_size
+            || old.source != config.source
             || old.secondary_source != config.secondary_source
         {
             self.reset_buffers();
-        } else if (old.floor_db - config.floor_db).abs() > f32::EPSILON {
+        } else if averaging_mode_changed
+            || (old.floor_db - config.floor_db).abs() > f32::EPSILON
+        {
             self.reset_level_buffers();
         }
     }
@@ -301,6 +325,12 @@ struct SpectrumLevelBuffers {
     averaged_power: Vec<f32>,
     peak_hold_power: Vec<f32>,
     scratch_power: Vec<f32>,
+}
+
+fn smoothing_state_floor(weighting_db: &[f32], floor: f32) -> f32 {
+    // Positive weighting can lift raw power from below the floor into view.
+    let headroom_db = weighting_db.iter().copied().fold(0.0_f32, f32::max);
+    db_to_power(floor - headroom_db).max(f32::MIN_POSITIVE)
 }
 
 impl SpectrumLevelBuffers {
@@ -328,16 +358,28 @@ impl SpectrumLevelBuffers {
         let powers = match mode {
             AveragingMode::None => &self.scratch_power,
             AveragingMode::Exponential { factor } => {
+                let state_floor = smoothing_state_floor(weighting_db, floor);
                 let alpha = factor.clamp(0.0, 0.9999);
                 for (avg, &power) in self.averaged_power.iter_mut().zip(&self.scratch_power) {
-                    *avg = if *avg <= 0.0 { power } else { *avg * alpha + power * (1.0 - alpha) };
+                    *avg = if *avg <= 0.0 {
+                        power
+                    } else {
+                        *avg * alpha + power * (1.0 - alpha)
+                    };
+                    if *avg < state_floor {
+                        *avg = 0.0;
+                    }
                 }
                 &self.averaged_power
             }
             AveragingMode::PeakHold { decay_per_second } => {
+                let state_floor = smoothing_state_floor(weighting_db, floor);
                 let decay = db_to_power(-decay_per_second.max(0.0) * dt_seconds);
                 for (hold, &power) in self.peak_hold_power.iter_mut().zip(&self.scratch_power) {
                     *hold = (*hold * decay).max(power);
+                    if *hold < state_floor {
+                        *hold = 0.0;
+                    }
                 }
                 &self.peak_hold_power
             }
@@ -512,6 +554,87 @@ mod tests {
             (-24.1..-23.9).contains(&held_db),
             "held peak should decay once per hop, got {held_db} dB"
         );
+    }
+
+    #[test]
+    fn changing_averaging_mode_clears_stale_state() {
+        let mut processor = SpectrumProcessor::new(SpectrumConfig::default());
+        processor.levels[0].averaged_power.fill(1.0);
+        let mut config = processor.config();
+        config.averaging = AveragingMode::Exponential { factor: 0.5 };
+
+        processor.update_config(config);
+
+        assert!(processor.levels[0].averaged_power.iter().all(|&power| power == 0.0));
+    }
+
+    #[test]
+    fn hops_larger_than_the_fft_are_block_partition_independent() {
+        let config = SpectrumConfig {
+            sample_rate: 32.0,
+            fft_size: 8,
+            hop_size: 16,
+            window: WindowKind::Rectangular,
+            source: Channel::Left,
+            ..Default::default()
+        };
+        let samples: Vec<_> = (0..29).map(|i| (i as f32 * 0.73).sin()).collect();
+
+        let mut whole_processor = SpectrumProcessor::new(config);
+        let whole = whole_processor
+            .process_block(&AudioBlock::new(&samples, 1, 32.0))
+            .unwrap();
+
+        let mut partitioned_processor = SpectrumProcessor::new(config);
+        let mut partitioned = None;
+        for chunk in samples.chunks(8) {
+            partitioned = partitioned_processor
+                .process_block(&AudioBlock::new(chunk, 1, 32.0))
+                .or(partitioned);
+        }
+        let partitioned = partitioned.unwrap();
+
+        assert_eq!(whole.traces[0], partitioned.traces[0]);
+    }
+
+    #[test]
+    fn averaged_power_is_zeroed_below_the_visible_floor() {
+        let mut buffers = SpectrumLevelBuffers::default();
+        buffers.reset(1);
+        buffers.averaged_power[0] = db_to_power(-101.0);
+        let mut outputs = [Vec::new(), Vec::new()];
+        buffers.update_outputs(
+            AveragingMode::Exponential { factor: 0.95 },
+            &mut outputs,
+            &[0.0],
+            1.0,
+            -100.0,
+        );
+        assert_eq!(buffers.averaged_power[0], 0.0);
+    }
+
+    #[test]
+    fn smoothing_retains_power_visible_after_weighting() {
+        for mode in [
+            AveragingMode::Exponential { factor: 0.95 },
+            AveragingMode::PeakHold {
+                decay_per_second: 12.0,
+            },
+        ] {
+            let mut buffers = SpectrumLevelBuffers::default();
+            buffers.reset(1);
+            buffers.scratch_power[0] = db_to_power(-100.5);
+            let mut outputs = [Vec::new(), Vec::new()];
+
+            buffers.update_outputs(mode, &mut outputs, &[1.2], 1.0, -100.0);
+
+            assert_eq!(outputs[1][0], -100.0);
+            assert!(
+                (-99.4..-99.2).contains(&outputs[0][0]),
+                "weighted output for {mode:?} was {} dB",
+                outputs[0][0]
+            );
+        }
     }
 
     #[test]

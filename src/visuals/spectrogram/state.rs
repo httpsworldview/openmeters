@@ -225,6 +225,7 @@ pub(in crate::visuals) struct SpectrogramState {
     sample_rate: f32,
     fft_size: usize,
     hop_size: usize,
+    reassigned_power_scale: f32,
     pub(in crate::visuals) freq_scale: FrequencyScale,
     zoom: f32,
     pan: f32,
@@ -246,6 +247,7 @@ impl SpectrogramState {
             sample_rate: cfg.sample_rate,
             fft_size: cfg.fft_size * cfg.zero_padding_factor.max(1),
             hop_size: cfg.hop_size,
+            reassigned_power_scale: 1.0,
             freq_scale: cfg.frequency_scale,
             zoom: 1.0,
             pan: 0.5,
@@ -288,6 +290,7 @@ impl SpectrogramState {
         self.sample_rate = snap.sample_rate;
         self.fft_size = snap.fft_size;
         self.hop_size = snap.hop_size;
+        self.reassigned_power_scale = snap.reassigned_power_scale;
         self.freq_scale = snap.frequency_scale;
         self.history.apply_update(snap);
     }
@@ -326,6 +329,7 @@ impl SpectrogramState {
             freq_min,
             freq_max,
             bin_hz,
+            reassigned_power_scale: self.reassigned_power_scale,
             freq_scale: self.freq_scale,
             palette: self.palette.map(to_rgba),
             stop_positions: self.stop_positions,
@@ -855,6 +859,7 @@ mod tests {
             history_length,
             reset,
             points_per_column: 2,
+            reassigned_power_scale: 1.0,
             new_columns: values
                 .iter()
                 .map(|&v| {
@@ -873,6 +878,7 @@ mod tests {
             history_length,
             reset,
             points_per_column: 8,
+            reassigned_power_scale: 0.25,
             new_columns: counts
                 .iter()
                 .map(|&n| {
@@ -948,6 +954,7 @@ mod tests {
         let params = visual_params(&mut state);
 
         assert_eq!(params.reassigned_points_per_slot, 2);
+        assert_eq!(params.reassigned_power_scale, 0.25);
         assert_eq!(&params.slot_counts[..4], &[0, 2, 1, 0]);
         assert_eq!(
             params
