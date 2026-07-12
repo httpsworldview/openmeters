@@ -53,8 +53,11 @@ macro_rules! settings_modules {
                 manager: &VisualManagerHandle,
                 settings: &SettingsHandle,
             ) {
-                match (self, message) {
-                    $((Self::$variant(pane), SettingsMessage::$variant(message)) => {
+                match self {
+                    $(Self::$variant(pane) => {
+                        let SettingsMessage::$variant(message) = message else {
+                            return;
+                        };
                         if pane.handle(message) {
                             persist_with_palette(
                                 manager, settings, VisualKind::$variant,
@@ -62,7 +65,6 @@ macro_rules! settings_modules {
                             );
                         }
                     })+
-                    _ => {}
                 }
             }
         }
