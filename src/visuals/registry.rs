@@ -32,24 +32,16 @@ fn resolve_palette<const N: usize>(
     let Some(custom) = custom else {
         return *default;
     };
-
-    if let Some(colors) = custom.to_array() {
-        return colors;
-    }
+    let Some(last) = custom.stops.last() else {
+        return *default;
+    };
 
     let mut colors = *default;
-    let mut last = None;
-    let mut used = 0;
-    for (dst, stop) in colors.iter_mut().zip(&custom.stops) {
-        let color = (*stop).into();
-        *dst = color;
-        last = Some(color);
-        used += 1;
-    }
-    if let Some(color) = last
-        && used < N
+    for (color, stop) in colors
+        .iter_mut()
+        .zip(custom.stops.iter().chain(std::iter::repeat(last)))
     {
-        colors[used..].fill(color);
+        *color = (*stop).into();
     }
     colors
 }
@@ -396,17 +388,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn short_palettes_extend_with_last_stop() {
-        let a = Color::from_rgb8(1, 2, 3);
-        let b = Color::from_rgb8(4, 5, 6);
-        let palette = PaletteSettings {
-            stops: vec![a.into(), b.into()],
-            ..Default::default()
-        };
+    fn palettes_fit_the_visual_stop_count() {
+        let stops = [1, 2, 3, 4, 5].map(|value| Color::from_rgb8(value, value, value));
+        let defaults = [Color::BLACK; 4];
 
-        assert_eq!(
-            resolve_palette(Some(&palette), &[Color::BLACK; 4]),
-            [a, b, b, b]
-        );
+        assert_eq!(resolve_palette(None, &defaults), defaults);
+        for (len, expected) in [
+            (0, defaults),
+            (2, [stops[0], stops[1], stops[1], stops[1]]),
+            (5, [stops[0], stops[1], stops[2], stops[3]]),
+        ] {
+            let palette = PaletteSettings {
+                stops: stops[..len].iter().copied().map(Into::into).collect(),
+                ..Default::default()
+            };
+            assert_eq!(resolve_palette(Some(&palette), &defaults), expected);
+        }
     }
 }
