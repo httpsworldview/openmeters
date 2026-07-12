@@ -215,7 +215,7 @@ fn registry_thread_main(
 
     let registry_context = RegistryContext {
         registry: registry.clone(),
-        runtime: runtime.clone(),
+        runtime,
         metadata_bindings: Rc::default(),
         routing_metadata_id: Rc::new(RefCell::new(None)),
     };
