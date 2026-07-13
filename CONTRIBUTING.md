@@ -4,9 +4,9 @@ I greatly appreciate you taking the time to read this. Throughout
 development, it has always felt as though I was building this project
 in a vacuum. Often it feels as though I'm the only person who will
 ever use this software, and that I am only talking to myself. So,
-thank you for being here. I hope you find this software
-useful, and if you have any feedback or suggestions, please don't
-hesitate to reach out.
+thank you for being here. I hope you find this software useful, and if
+you have any feedback or suggestions, please don't hesitate to reach
+out.
 
 ## What is OpenMeters?
 
@@ -17,8 +17,8 @@ illustrate that importance, I should be able to gesture towards any of
 the existing visuals, but in short:
 
 1. The spectrogram faithfully implements linear, log, and ERB
-   frequency scaling, and, most importantly, Auger and Flandrin's method
-   of spectral reassignment as described in their 1995 paper.
+   frequency scaling, and, most importantly, Auger and Flandrin's
+   method of spectral reassignment as described in their 1995 paper.
 2. The spectrum analyzer implements A-weighting according to IEC
    61672:2003, and shares the same linear, log, and ERB frequency
    scaling.
@@ -138,11 +138,10 @@ cargo clippy --workspace --locked --all-targets -- -D warnings
 cargo test --workspace --locked --all-targets
 ```
 
-Please run the same checks before committing. For documentation changes,
-please check formatting, links, examples, and spelling.
+Please run the same checks before committing. For documentation
+changes, please check formatting, links, examples, and spelling.
 
-Always test relevant behavior through tests and manual
-verification.
+Always test relevant behavior through tests and manual verification.
 
 ## Release tags
 
