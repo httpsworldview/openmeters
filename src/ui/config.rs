@@ -340,7 +340,7 @@ impl ConfigPage {
 
     fn build_device_choices(&self, snapshot: &RegistrySnapshot) -> Vec<DeviceOption> {
         let mut choices = vec![DeviceOption {
-            label: format!("Default sink - {}", &self.hardware_sink_label),
+            label: format!("Default sink - {}", self.hardware_sink_label),
             selection: DeviceSelection::Default,
         }];
         let mut devices: Vec<_> = snapshot
