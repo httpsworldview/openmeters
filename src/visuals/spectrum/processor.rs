@@ -254,7 +254,7 @@ impl SpectrumProcessor {
         true
     }
 
-    pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<SpectrumSnapshot> {
+    pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<&SpectrumSnapshot> {
         if block.is_empty() { return None; }
 
         if block.sample_rate != self.config.sample_rate {
@@ -268,7 +268,7 @@ impl SpectrumProcessor {
         self.push_sources(block);
 
         if self.process_ready_windows() {
-            Some(self.snapshot.clone())
+            Some(&self.snapshot)
         } else {
             None
         }
@@ -590,6 +590,7 @@ mod tests {
         for chunk in samples.chunks(8) {
             partitioned = partitioned_processor
                 .process_block(&AudioBlock::new(chunk, 1, 32.0))
+                .cloned()
                 .or(partitioned);
         }
         let partitioned = partitioned.unwrap();

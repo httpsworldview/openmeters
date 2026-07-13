@@ -552,8 +552,16 @@ pub struct OscilloscopeSnapshot {
     pub epoch: u64,
     pub channels: usize,
     pub slots: [usize; TRACE_COUNT],
-    pub samples: Vec<f32>,
+    pub samples: Arc<[f32]>,
     pub samples_per_channel: usize,
+}
+
+#[derive(Default)]
+struct SnapshotBuffer {
+    channels: usize,
+    slots: [usize; TRACE_COUNT],
+    samples: Vec<f32>,
+    samples_per_channel: usize,
 }
 
 #[derive(Default)]
@@ -564,7 +572,7 @@ struct TraceState {
 
 pub struct OscilloscopeProcessor {
     config: OscilloscopeConfig,
-    snapshot: OscilloscopeSnapshot,
+    snapshot: SnapshotBuffer,
     epoch: u64,
     history: VecDeque<f32>,
     history_channels: Option<usize>,
@@ -576,7 +584,7 @@ impl OscilloscopeProcessor {
     pub fn new(config: OscilloscopeConfig) -> Self {
         Self {
             config,
-            snapshot: OscilloscopeSnapshot::default(),
+            snapshot: SnapshotBuffer::default(),
             epoch: 0,
             history: VecDeque::new(),
             history_channels: None,
@@ -647,7 +655,29 @@ impl OscilloscopeProcessor {
                 trigger.capture(trace, sample_rate, probe_frames, base_frames, num_cycles)
             }),
         };
-        let linked_capture = if audio::project_interleaved_channel_into(
+        let mut active_traces = [false; TRACE_COUNT];
+        for ((trace, channel), active) in self
+            .traces
+            .iter_mut()
+            .zip(trace_channels)
+            .zip(&mut active_traces)
+        {
+            *active = audio::project_interleaved_channel_into(
+                &mut trace.buffer,
+                data,
+                channel_count,
+                available,
+                channel,
+            );
+        }
+
+        let matching_trace = trace_channels
+            .iter()
+            .position(|&channel| channel == trigger_source)
+            .filter(|&slot| active_traces[slot]);
+        let linked_capture = if let Some(slot) = matching_trace {
+            capture(&self.traces[slot].buffer, &mut self.source.trigger)
+        } else if audio::project_interleaved_channel_into(
             &mut self.source.buffer,
             data,
             channel_count,
@@ -658,26 +688,25 @@ impl OscilloscopeProcessor {
         } else {
             None
         };
+
         let mut captures = [None; TRACE_COUNT];
-
-        for (slot, (trace, channel)) in self.traces.iter_mut().zip(trace_channels).enumerate() {
-            if !audio::project_interleaved_channel_into(
-                &mut trace.buffer,
-                data,
-                channel_count,
-                available,
-                channel,
-            ) {
-                continue;
+        for (slot, (trace, active)) in self.traces.iter_mut().zip(active_traces).enumerate() {
+            if active {
+                captures[slot] =
+                    linked_capture.or_else(|| capture(&trace.buffer, &mut trace.trigger));
             }
-
-            captures[slot] = linked_capture.or_else(|| capture(&trace.buffer, &mut trace.trigger));
         }
 
         if captures.iter().all(Option::is_none) { return None; }
 
         self.write_snapshot(&captures);
-        Some(self.snapshot.clone())
+        Some(OscilloscopeSnapshot {
+            epoch: self.epoch,
+            channels: self.snapshot.channels,
+            slots: self.snapshot.slots,
+            samples: Arc::from(self.snapshot.samples.as_slice()),
+            samples_per_channel: self.snapshot.samples_per_channel,
+        })
     }
 
     fn clear_history(&mut self) {
@@ -701,7 +730,6 @@ impl OscilloscopeProcessor {
             .unwrap_or(2)
             .clamp(2, TARGET);
 
-        self.snapshot.epoch = self.epoch;
         self.snapshot.samples.clear();
         self.snapshot.channels = 0;
         for (slot, capture) in captures.iter().copied().enumerate() {

@@ -7,7 +7,7 @@ use crate::dsp::{
 use crate::util::audio::{
     BAND_SPLITS_HZ, DEFAULT_SAMPLE_RATE, extend_interleaved_history, flush_denormal_f64,
 };
-use std::collections::VecDeque;
+use std::{collections::VecDeque, sync::Arc};
 
 const BAND_CHANNELS: usize = 2;
 const BAND_DISPLAY_GAIN: f32 = 0.8;
@@ -39,10 +39,22 @@ pub struct BandCorrelation {
 
 #[derive(Debug, Clone, Default)]
 pub struct StereometerSnapshot {
-    pub xy_points: Vec<(f32, f32)>,
+    pub xy_points: Arc<[(f32, f32)]>,
     pub correlation: f32,
     pub band_correlation: BandCorrelation,
-    pub band_points: [Vec<(f32, f32)>; 3],
+    pub band_points: [Arc<[(f32, f32)]>; 3],
+}
+
+#[derive(Debug, Default)]
+struct SnapshotBuffer {
+    xy_points: Vec<(f32, f32)>,
+    correlation: f32,
+    band_correlation: BandCorrelation,
+    band_points: [Vec<(f32, f32)>; 3],
+}
+
+fn snapshot_points(points: &[(f32, f32)]) -> Arc<[(f32, f32)]> {
+    if points.is_empty() { Arc::default() } else { Arc::from(points) }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -151,7 +163,7 @@ impl Correlators {
 #[derive(Debug)]
 pub struct StereometerProcessor {
     config: StereometerConfig,
-    snapshot: StereometerSnapshot,
+    snapshot: SnapshotBuffer,
     history: VecDeque<f32>,
     band_history: [VecDeque<f32>; 3],
     history_channels: usize,
@@ -162,7 +174,7 @@ pub struct StereometerProcessor {
 impl StereometerProcessor {
     pub fn new(config: StereometerConfig) -> Self {
         Self {
-            snapshot: StereometerSnapshot::default(),
+            snapshot: SnapshotBuffer::default(),
             history: VecDeque::new(),
             band_history: Default::default(),
             history_channels: 0,
@@ -275,7 +287,12 @@ impl StereometerProcessor {
             BandCorrelation::default()
         };
 
-        Some(self.snapshot.clone())
+        Some(StereometerSnapshot {
+            xy_points: snapshot_points(&self.snapshot.xy_points),
+            correlation: self.snapshot.correlation,
+            band_correlation: self.snapshot.band_correlation,
+            band_points: self.snapshot.band_points.each_ref().map(|points| snapshot_points(points)),
+        })
     }
 
     fn reset(&mut self) {

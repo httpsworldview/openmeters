@@ -28,6 +28,7 @@ use crate::util::audio::{
     sanitize_sample_rate, window_coefficients,
 };
 use bytemuck::{Pod, Zeroable};
+use realfft::{RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex32;
 use rustfft::{Fft, FftPlanner};
 use std::collections::VecDeque;
@@ -148,6 +149,7 @@ pub struct SpectrogramUpdate {
 pub struct SpectrogramProcessor {
     config: SpectrogramConfig,
     fft: Arc<dyn Fft<f32>>,
+    classic_fft: Arc<dyn RealToComplex<f32>>,
     hilbert_fft: Arc<dyn Fft<f32>>,
     hilbert_ifft: Arc<dyn Fft<f32>>,
     window_size: usize,
@@ -175,9 +177,11 @@ impl SpectrogramProcessor {
         cfg.normalize();
         let mut planner = FftPlanner::new();
         let placeholder_fft = planner.plan_fft_forward(1024);
+        let classic_fft = RealFftPlanner::new().plan_fft_forward(1024);
         let mut processor = Self {
             config: cfg,
             fft: placeholder_fft.clone(),
+            classic_fft,
             hilbert_fft: placeholder_fft.clone(),
             hilbert_ifft: placeholder_fft,
             window_size: 0,
@@ -216,9 +220,10 @@ impl SpectrogramProcessor {
         self.fft_size = self.window_size * self.config.zero_padding_factor.max(1);
         let hilbert_len = Self::hilbert_len_for(self.window_size);
         let use_reassignment = self.config.use_reassignment;
-        let active_len = if use_reassignment { hilbert_len } else { self.window_size };
+        let active_len = if use_reassignment { hilbert_len } else { self.fft_size };
         let mut planner = FftPlanner::new();
         self.fft = planner.plan_fft_forward(self.fft_size);
+        self.classic_fft = RealFftPlanner::new().plan_fft_forward(self.fft_size);
         (self.hilbert_fft, self.hilbert_ifft) = if use_reassignment {
             (planner.plan_fft_forward(hilbert_len), planner.plan_fft_inverse(hilbert_len))
         } else {
@@ -227,18 +232,18 @@ impl SpectrogramProcessor {
         self.window = window_coefficients(self.config.window, self.window_size);
         let bin_count = self.fft_size / 2 + 1;
         let reassigned_len = if use_reassignment { hilbert_len } else { 0 };
-        let reassigned_bins = if use_reassignment { bin_count } else { 0 };
+        let complex_len = if use_reassignment { self.fft_size } else { 0 };
         resize_trim(&mut self.real, active_len, 0.0);
-        resize_trim(&mut self.complex_buf, self.fft_size, Complex32::ZERO);
+        resize_trim(&mut self.complex_buf, complex_len, Complex32::ZERO);
         resize_trim(&mut self.hilbert_buf, reassigned_len, Complex32::ZERO);
-        resize_trim(&mut self.spectrum, reassigned_bins, Complex32::ZERO);
+        resize_trim(&mut self.spectrum, bin_count, Complex32::ZERO);
         let scratch_len = if use_reassignment {
             self.fft
                 .get_inplace_scratch_len()
                 .max(self.hilbert_fft.get_inplace_scratch_len())
                 .max(self.hilbert_ifft.get_inplace_scratch_len())
         } else {
-            self.fft.get_inplace_scratch_len()
+            self.classic_fft.get_scratch_len()
         };
         resize_trim(&mut self.scratch, scratch_len, Complex32::ZERO);
         resize_trim(&mut self.classic_bins, bin_count, 0);
@@ -306,8 +311,6 @@ impl SpectrogramProcessor {
             }
 
             copy_dc_removed_from_deque(&mut self.real[..read_len], &self.audio_buffer);
-            let center = &self.real[center_offset..center_offset + self.window_size];
-
             let col = if reassignment_enabled {
                 // Use an analytic signal so low-frequency bins are not polluted
                 // by the negative-frequency mirror of the windowed real signal.
@@ -343,18 +346,25 @@ impl SpectrogramProcessor {
                     bin_count,
                 ))
             } else {
-                for (c, (&sample, &weight)) in self
-                    .complex_buf
+                for (sample, &weight) in self.real[..self.window_size]
                     .iter_mut()
-                    .zip(center.iter().zip(self.window.iter()))
-                {
-                    *c = Complex32::new(sample * weight, 0.0);
+                    .zip(self.window.iter()) {
+                    *sample *= weight;
                 }
-                self.complex_buf[self.window_size..].fill(Complex32::ZERO);
-                self.fft
-                    .process_with_scratch(&mut self.complex_buf, &mut self.scratch);
+                self.real[self.window_size..].fill(0.0);
+                if self
+                    .classic_fft
+                    .process_with_scratch(
+                        &mut self.real,
+                        &mut self.spectrum,
+                        &mut self.scratch,
+                    )
+                    .is_err()
+                {
+                    break;
+                }
                 Self::compute_classic_bins(
-                    &self.complex_buf[..bin_count],
+                    &self.spectrum,
                     &self.bin_norm,
                     &mut self.classic_bins,
                 );

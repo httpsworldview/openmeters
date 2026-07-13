@@ -30,9 +30,14 @@ pub(crate) fn project_interleaved_channel_into(
     match channel {
         Channel::Left => output.extend(chunks.map(|frame| frame[0])),
         Channel::Right => output.extend(chunks.map(right)),
-        Channel::Mid => {
-            output.extend(chunks.map(|frame| frame.iter().sum::<f32>() / channels as f32))
-        }
+        Channel::Mid => match channels {
+            1 => output.extend(chunks.map(|frame| frame[0])),
+            2 => output.extend(chunks.map(|frame| (frame[0] + frame[1]) * 0.5)),
+            _ => {
+                let gain = 1.0 / channels as f32;
+                output.extend(chunks.map(|frame| frame.iter().sum::<f32>() * gain));
+            }
+        },
         Channel::Side => output.extend(chunks.map(|frame| (frame[0] - right(frame)) * 0.5)),
         Channel::None => unreachable!(),
     }

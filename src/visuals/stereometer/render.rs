@@ -3,6 +3,7 @@
 
 use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
+use std::sync::Arc;
 
 use crate::visuals::render::common::sdf_primitive;
 use crate::visuals::options::{
@@ -48,8 +49,8 @@ fn scaled_point(x: f32, y: f32) -> (f32, f32) {
 pub struct StereometerParams {
     pub key: u64,
     pub bounds: Rectangle,
-    pub points: Vec<(f32, f32)>,
-    pub band_points: [Vec<(f32, f32)>; 3],
+    pub points: Arc<[(f32, f32)]>,
+    pub band_points: [Arc<[(f32, f32)]>; 3],
     pub palette: [[f32; 4]; 9],
     pub mode: StereometerMode,
     pub scale: StereometerScale,

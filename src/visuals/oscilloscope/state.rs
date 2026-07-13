@@ -7,6 +7,7 @@ use crate::persistence::settings::OscilloscopeSettings;
 use crate::util::color::color_to_rgba;
 use crate::visuals::palettes;
 use iced::Color;
+use std::sync::Arc;
 
 const OSCILLOSCOPE_PALETTE_SIZE: usize = TRACE_COUNT;
 const MAX_PERSISTENCE: f32 = 0.98;
@@ -62,7 +63,11 @@ impl OscilloscopeState {
             let persistence = self.settings.persistence.clamp(0.0, MAX_PERSISTENCE);
             if persistence > f32::EPSILON {
                 let fresh = 1.0 - persistence;
-                for (current, incoming) in self.snapshot.samples.iter_mut().zip(&snapshot.samples) {
+                for (current, incoming) in
+                    Arc::make_mut(&mut self.snapshot.samples)
+                        .iter_mut()
+                        .zip(snapshot.samples.iter())
+                {
                     *current = *current * persistence + incoming * fresh;
                 }
                 return;

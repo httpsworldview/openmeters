@@ -3,6 +3,7 @@
 
 use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
+use std::sync::Arc;
 
 use super::processor::TRACE_COUNT;
 use crate::util::color::rgba_with_alpha;
@@ -18,7 +19,7 @@ pub struct OscilloscopeParams {
     pub channels: usize,
     pub samples_per_channel: usize,
     pub slots: [usize; TRACE_COUNT],
-    pub samples: Vec<f32>,
+    pub samples: Arc<[f32]>,
     pub colors: [[f32; 4]; TRACE_COUNT],
     pub stacked: bool,
     pub fill_alpha: f32,

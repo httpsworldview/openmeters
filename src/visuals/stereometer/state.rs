@@ -10,7 +10,7 @@ use crate::visuals::{
     palettes,
 };
 use iced::Color;
-use std::collections::VecDeque;
+use std::{collections::VecDeque, sync::Arc};
 
 const TRAIL_LEN: usize = 32;
 
@@ -21,8 +21,8 @@ fn tracks_band_correlation(s: &StereometerSettings) -> bool {
 
 #[derive(Debug, Clone)]
 pub(in crate::visuals) struct StereometerState {
-    points: Vec<(f32, f32)>,
-    band_points: [Vec<(f32, f32)>; 3],
+    points: Arc<[(f32, f32)]>,
+    band_points: [Arc<[(f32, f32)]>; 3],
     corr_trail: VecDeque<f32>,
     band_trail: VecDeque<BandCorrelation>,
     pub(in crate::visuals) palette: [Color; 9],
@@ -34,7 +34,7 @@ impl StereometerState {
     pub fn new() -> Self {
         let defaults = StereometerSettings::default();
         Self {
-            points: Vec::new(),
+            points: Arc::default(),
             band_points: Default::default(),
             corr_trail: VecDeque::with_capacity(TRAIL_LEN),
             band_trail: VecDeque::with_capacity(TRAIL_LEN),
@@ -71,8 +71,8 @@ impl StereometerState {
 
     pub fn apply_snapshot(&mut self, snap: StereometerSnapshot) {
         if snap.xy_points.is_empty() {
-            self.points.clear();
-            self.band_points.iter_mut().for_each(Vec::clear);
+            self.points = Arc::default();
+            self.band_points = Default::default();
             self.corr_trail.clear();
             self.band_trail.clear();
             return;

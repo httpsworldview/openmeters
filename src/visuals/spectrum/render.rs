@@ -27,8 +27,8 @@ pub struct SpectrumPeakParams {
 #[derive(Debug, Clone)]
 pub struct SpectrumParams {
     pub bounds: Rectangle,
-    pub normalized_points: Arc<[[f32; 2]]>,
-    pub secondary_points: Arc<[[f32; 2]]>,
+    pub normalized_points: Arc<Vec<[f32; 2]>>,
+    pub secondary_points: Arc<Vec<[f32; 2]>>,
     pub key: u64,
     pub line_color: [f32; 4],
     pub line_width: f32,

@@ -14,7 +14,7 @@ use crate::visuals::render::common::{fill_rect, fill_snapped_bordered_rect, make
 use iced::advanced::Renderer as _;
 use iced::advanced::text::Renderer as _;
 use iced::{Color, Point, Rectangle, Size};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 const EPSILON: f32 = 1e-6;
 const MIN_FREQUENCY: f32 = 20.0;
@@ -33,13 +33,24 @@ struct PeakLabel {
 }
 
 type PeakUpdate = ([String; 2], [f32; 2]);
+// Keep the Vec allocation when publishing freshly built points; Vec -> Arc<[T]> copies them.
+type SharedPoints = Arc<Vec<[f32; 2]>>;
+
+fn empty_points() -> SharedPoints {
+    static EMPTY: LazyLock<SharedPoints> = LazyLock::new(|| Arc::new(Vec::new()));
+    Arc::clone(&EMPTY)
+}
+
+fn share_points(points: Vec<[f32; 2]>) -> SharedPoints {
+    if points.is_empty() { empty_points() } else { Arc::new(points) }
+}
 
 #[derive(Debug, Clone)]
 pub(in crate::visuals) struct SpectrumState {
     style: SpectrumSettings,
     pub(in crate::visuals) spectrum_palette: [Color; 6],
-    primary: Arc<[[f32; 2]]>,
-    secondary: Arc<[[f32; 2]]>,
+    primary: SharedPoints,
+    secondary: SharedPoints,
     key: u64,
     peak: Option<PeakLabel>,
     effective_range: Option<(f32, f32)>,
@@ -52,8 +63,8 @@ impl SpectrumState {
         Self {
             style: SpectrumSettings::default(),
             spectrum_palette: palettes::spectrum::COLORS,
-            primary: Arc::default(),
-            secondary: Arc::default(),
+            primary: empty_points(),
+            secondary: empty_points(),
             key: crate::visuals::next_key(),
             peak: None,
             effective_range: None,
@@ -78,7 +89,7 @@ impl SpectrumState {
         self.spectrum_palette = *palette;
     }
 
-    pub fn apply_snapshot(&mut self, snap: SpectrumSnapshot) {
+    pub fn apply_snapshot(&mut self, snap: &SpectrumSnapshot) {
         let bins = snap.frequency_bins.len();
         let (primary, secondary) = (primary_trace(&self.style), secondary_trace(&self.style));
         if bins == 0
@@ -117,14 +128,14 @@ impl SpectrumState {
             .filter(|_| self.style.show_peak_label)
             .and_then(|idx| self.build_peak(bins, trace_db(&snap.traces[idx], self.style.weighting_mode), min_f, max_f));
 
-        self.primary = Arc::from(primary_points);
-        self.secondary = Arc::from(secondary_points);
+        self.primary = share_points(primary_points);
+        self.secondary = share_points(secondary_points);
         self.effective_range = Some((min_f, max_f));
         self.fade_peak(pk);
     }
 
     fn clear_visuals(&mut self) {
-        (self.primary, self.secondary) = (Arc::default(), Arc::default());
+        (self.primary, self.secondary) = (empty_points(), empty_points());
         self.effective_range = None;
         self.peak = None;
     }
@@ -216,8 +227,8 @@ impl SpectrumState {
         if !has_primary && !has_secondary { return None; }
         let pal = theme.extended_palette();
 
-        let visible = |show: bool, points: &Arc<[[f32; 2]]>| {
-            if show { Arc::clone(points) } else { Arc::default() }
+        let visible = |show: bool, points: &SharedPoints| {
+            if show { Arc::clone(points) } else { empty_points() }
         };
         let peak = self.peak();
         let accent = self.spectrum_palette[5];
@@ -330,7 +341,7 @@ mod tests {
         state.style.source = Channel::None;
         state.style.secondary_source = Channel::Left;
 
-        state.apply_snapshot(SpectrumSnapshot {
+        state.apply_snapshot(&SpectrumSnapshot {
             frequency_bins: vec![0.0, 20.0, 40.0],
             traces: [SpectrumTraceSnapshot::default(), trace],
         });
