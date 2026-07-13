@@ -338,10 +338,6 @@ impl UiApp {
         Task::none()
     }
 
-    pub(super) fn popped_out_kinds(&self) -> Vec<VisualKind> {
-        self.popout_windows.values().map(|w| w.kind).collect()
-    }
-
     pub(super) fn sync_all_windows(&mut self) -> Task<Message> {
         let snapshot = self.visual_manager.borrow().snapshot();
         let close_settings_task = self
@@ -373,7 +369,9 @@ impl UiApp {
             });
         }
         self.visuals_page
-            .apply_snapshot_excluding(&snapshot, &self.popped_out_kinds());
+            .apply_snapshot_excluding(&snapshot, |kind| {
+                self.popout_windows.values().any(|w| w.kind == kind)
+            });
         Task::batch(
             close_settings_task.into_iter().chain(
                 stale_windows
@@ -444,7 +442,9 @@ impl UiApp {
     pub(super) fn sync_visuals_page(&mut self) {
         let snapshot = self.visual_manager.borrow().snapshot();
         self.visuals_page
-            .apply_snapshot_excluding(&snapshot, &self.popped_out_kinds());
+            .apply_snapshot_excluding(&snapshot, |kind| {
+                self.popout_windows.values().any(|w| w.kind == kind)
+            });
     }
 
     pub(super) fn apply_bar_layout(

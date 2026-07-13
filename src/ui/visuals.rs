@@ -48,7 +48,7 @@ impl VisualsPage {
             hovered_pane: None,
         };
         let snapshot = page.visual_manager.borrow().snapshot();
-        page.apply_snapshot_excluding(&snapshot, &[]);
+        page.apply_snapshot_excluding(&snapshot, |_| false);
         page
     }
 
@@ -118,13 +118,10 @@ impl VisualsPage {
     pub(in crate::ui) fn apply_snapshot_excluding(
         &mut self,
         snapshot: &[VisualSlotSnapshot],
-        exclude: &[VisualKind],
+        exclude: impl Fn(VisualKind) -> bool,
     ) {
-        let slots: Vec<_> = snapshot
-            .iter()
-            .filter(|s| s.enabled && !exclude.contains(&s.kind))
-            .collect();
-        if slots.is_empty() {
+        let slots = || snapshot.iter().filter(|s| s.enabled && !exclude(s.kind));
+        if slots().next().is_none() {
             self.panes = None;
             self.hovered_pane = None;
             return;
@@ -133,14 +130,27 @@ impl VisualsPage {
             panes
                 .iter()
                 .map(|(_, p)| p.kind)
-                .ne(slots.iter().map(|s| s.kind))
+                .ne(slots().map(|s| s.kind))
         }) {
-            self.panes = Some(self.build_panes(&slots));
+            let settings = self.settings.borrow();
+            let saved_width_basis = &settings.data.visuals.width_basis;
+            self.panes = Some(pane_grid::State::from_iter(slots().map(|slot| {
+                VisualPane {
+                    kind: slot.kind,
+                    content: slot.content.clone(),
+                    min_width: slot.min_width,
+                    width_basis: saved_width_basis
+                        .get(&slot.kind)
+                        .copied()
+                        .and_then(crate::util::finite_positive)
+                        .unwrap_or(slot.default_width_basis),
+                }
+            })));
             self.hovered_pane = None;
             return;
         }
         if let Some(panes) = self.panes.as_mut() {
-            for ((_, pane), slot) in panes.iter_mut().zip(slots) {
+            for ((_, pane), slot) in panes.iter_mut().zip(slots()) {
                 pane.content = slot.content.clone();
             }
         }
@@ -159,22 +169,5 @@ impl VisualsPage {
                 Some((visual.kind, basis))
             })
             .collect()
-    }
-
-    fn build_panes(&self, slots: &[&VisualSlotSnapshot]) -> pane_grid::State<VisualPane> {
-        let settings = self.settings.borrow();
-        let saved_width_basis = &settings.data.visuals.width_basis;
-        pane_grid::State::from_iter(slots.iter().map(|&slot| {
-            VisualPane {
-                kind: slot.kind,
-                content: slot.content.clone(),
-                min_width: slot.min_width,
-                width_basis: saved_width_basis
-                    .get(&slot.kind)
-                    .copied()
-                    .and_then(crate::util::finite_positive)
-                    .unwrap_or(slot.default_width_basis),
-            }
-        }))
     }
 }

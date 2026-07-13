@@ -201,11 +201,10 @@ impl<'a, Message: 'a> PaneGrid<'a, Message> {
             })
     }
 
-    fn width_specs(&self) -> Vec<(f32, f32)> {
+    fn width_specs(&self) -> impl Iterator<Item = (f32, f32)> + '_ {
         self.entries
             .iter()
             .map(|(_, content)| (content.min_width, content.basis_width))
-            .collect()
     }
 
     fn pair_widths(&self, widths: &[f32]) -> Vec<(Pane, f32)> {
@@ -265,7 +264,7 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer> for PaneGrid
                     && (r.current.iter().sum::<f32>() - available_width).abs() < 0.5
             })
             .map_or_else(
-                || solve_widths(&self.width_specs(), available_width),
+                || solve_widths(self.width_specs(), available_width),
                 |r| fit_sum(r.current.clone(), available_width),
             );
 
@@ -561,7 +560,7 @@ impl<'a, Message: 'a> PaneGrid<'a, Message> {
                     tree.state.downcast_mut::<Interaction>().resizing = Some(ResizeState {
                         divider,
                         origin_x: position.x,
-                        min: fit_mins(&self.width_specs(), start.iter().sum()),
+                        min: fit_mins(self.width_specs(), start.iter().sum()),
                         current: start.clone(),
                         start,
                     });
@@ -653,31 +652,34 @@ impl<'a, Message: 'a> PaneGrid<'a, Message> {
     }
 }
 
-fn solve_widths(specs: &[(f32, f32)], available: f32) -> Vec<f32> {
+fn solve_widths(specs: impl IntoIterator<Item = (f32, f32)>, available: f32) -> Vec<f32> {
     let available = finite_nonnegative(available);
-    let mut min = fit_mins(specs, available);
+    let mut free: Vec<_> = specs.into_iter().enumerate().collect();
+    let mut min = fit_mins(free.iter().map(|&(_, spec)| spec), available);
     if min.iter().sum::<f32>() >= available - EPS {
         return fit_sum(min, available);
     }
 
-    let mut free: Vec<_> = (0..specs.len()).collect();
     let mut remaining = available;
     while !free.is_empty() {
-        let basis_sum: f64 = free.iter().map(|&i| width_basis(specs[i], min[i])).sum();
+        let basis_sum: f64 = free
+            .iter()
+            .map(|&(i, spec)| width_basis(spec, min[i]))
+            .sum();
         let available = f64::from(remaining.max(0.0));
         let mut fixed = false;
-        for i in std::mem::take(&mut free) {
-            let width = (available * width_basis(specs[i], min[i]) / basis_sum) as f32;
+        for (i, spec) in std::mem::take(&mut free) {
+            let width = (available * width_basis(spec, min[i]) / basis_sum) as f32;
             if width < min[i] - EPS {
                 remaining -= min[i];
                 fixed = true;
             } else {
-                free.push(i);
+                free.push((i, spec));
             }
         }
         if !fixed {
-            for i in free {
-                min[i] = (available * width_basis(specs[i], min[i]) / basis_sum) as f32;
+            for (i, spec) in free {
+                min[i] = (available * width_basis(spec, min[i]) / basis_sum) as f32;
             }
             break;
         }
@@ -685,10 +687,10 @@ fn solve_widths(specs: &[(f32, f32)], available: f32) -> Vec<f32> {
     fit_sum(min, available)
 }
 
-fn fit_mins(specs: &[(f32, f32)], available: f32) -> Vec<f32> {
+fn fit_mins(specs: impl IntoIterator<Item = (f32, f32)>, available: f32) -> Vec<f32> {
     let mut min: Vec<_> = specs
-        .iter()
-        .map(|(min, _)| finite_nonnegative(*min))
+        .into_iter()
+        .map(|(min, _)| finite_nonnegative(min))
         .collect();
     let sum = min.iter().sum::<f32>();
     if sum > available && sum > EPS {
@@ -774,11 +776,11 @@ mod tests {
     #[test]
     fn solve_widths_uses_basis_and_minimums() {
         assert_eq!(
-            solve_widths(&[(0.0, 1.0), (0.0, 3.0)], 800.0),
+            solve_widths([(0.0, 1.0), (0.0, 3.0)], 800.0),
             [200.0, 600.0]
         );
         assert_eq!(
-            solve_widths(&[(300.0, 1.0), (0.0, 100.0)], 400.0),
+            solve_widths([(300.0, 1.0), (0.0, 100.0)], 400.0),
             [300.0, 100.0]
         );
     }
