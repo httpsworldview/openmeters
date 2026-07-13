@@ -557,7 +557,7 @@ fn channel_slider<'a>(
                 }
                 PaletteEvent::Adjust { index, color: nc }
             })
-            .step(0.01)
+            .step(0.01f32)
             .style(ui_theme::slider_style)
             .width(Length::Fill),
         )
