@@ -6,6 +6,7 @@ use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
 use iced_wgpu::primitive::{self, Primitive};
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 use wgpu::util::DeviceExt as _;
 
 use crate::visuals::render::common::{
@@ -50,7 +51,7 @@ pub struct SpectrogramParams {
     pub write_slot: u32,
     pub pending_uploads: VecDeque<PendingUpload>,
     pub copy_plan: Option<RingCopyPlan>,
-    pub slot_counts: Vec<u32>,
+    pub slot_counts: Arc<[u32]>,
     pub col_kind: ColumnKind,
     pub freq_min: f32,
     pub freq_max: f32,
@@ -525,7 +526,7 @@ struct Instance {
     col_count: u32,
     points_per_col: u32,
     reassigned_points_per_slot: u32,
-    slot_counts: Vec<u32>,
+    slot_counts: Arc<[u32]>,
     last_used: u64,
 }
 
@@ -552,11 +553,7 @@ impl Instance {
         self.col_count = p.col_count;
         self.points_per_col = p.points_per_column;
         self.reassigned_points_per_slot = p.reassigned_points_per_slot.max(1);
-        self.slot_counts = if p.col_kind == ColumnKind::Reassigned {
-            p.slot_counts.clone()
-        } else {
-            Vec::new()
-        };
+        self.slot_counts = Arc::clone(&p.slot_counts);
     }
 
     fn visible_slots(&self) -> u32 {

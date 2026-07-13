@@ -492,19 +492,21 @@ impl RegistryContext {
             return;
         }
 
-        let props = super::types::dict_to_map(global.props.as_ref().copied());
-        let metadata_name = props.get("metadata.name").cloned();
+        let metadata_name = global
+            .props
+            .as_ref()
+            .and_then(|props| props.get("metadata.name"))
+            .map(str::to_owned);
+        let is_preferred = metadata_name.as_deref().is_some_and(|name| {
+            PREFERRED_METADATA_NAMES
+                .iter()
+                .any(|preferred| preferred.eq_ignore_ascii_case(name))
+        });
 
         let Ok(metadata) = self.registry.bind::<Metadata, _>(global) else {
             warn!("[registry] failed to bind metadata {metadata_id}");
             return;
         };
-
-        let is_preferred = metadata_name.as_deref().is_some_and(|n| {
-            PREFERRED_METADATA_NAMES
-                .iter()
-                .any(|p| p.eq_ignore_ascii_case(n))
-        });
 
         let runtime = self.runtime.clone();
         let listener = metadata

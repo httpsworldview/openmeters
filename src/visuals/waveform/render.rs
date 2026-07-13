@@ -181,8 +181,8 @@ impl WaveformPrimitive {
         for ch in 0..channels {
             let center_y = layout.center_y(ch);
 
-            for i in 0..columns {
-                let column = data[start + i][params.lanes[ch]];
+            for (i, frame) in data.range(start..start + columns).enumerate() {
+                let column = frame[params.lanes[ch]];
                 let x = column_x(i);
                 push_column(vertices, center_y, x, x + col_width, column);
             }
@@ -205,8 +205,8 @@ impl WaveformPrimitive {
 
                     pts.clear();
                     pts.reserve(columns + 1);
-                    pts.extend((0..columns).map(|i| {
-                        let column = data[start + i][params.lanes[ch]];
+                    pts.extend(data.range(start..start + columns).enumerate().map(|(i, frame)| {
+                        let column = frame[params.lanes[ch]];
                         let db = history(column)[band].max(floor);
                         let level = ((db - floor) / -floor).clamp(0.0, 1.0);
                         (column_x(i), baseline - level * band_height)

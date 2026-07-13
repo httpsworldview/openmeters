@@ -460,7 +460,7 @@ impl StableTrigger {
         let frac_offset = if best.0 > 0 && best.0 < search {
             (parabolic_refine(
                 self.score_at(best.0 - 1, use_reference),
-                self.score_at(best.0, use_reference),
+                best.1,
                 self.score_at(best.0 + 1, use_reference),
                 best.0,
             ) - best.0 as f32)

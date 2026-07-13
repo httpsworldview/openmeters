@@ -350,6 +350,21 @@ mod tests {
         assert!(state.secondary.len() >= 2);
         assert!(state.peak().is_none());
     }
+
+    #[test]
+    fn point_build_emits_only_finite_coordinates() {
+        let points = build_single_points(
+            &SpectrumSettings::default(),
+            20.0,
+            40.0,
+            &[0.0, 20.0, 30.0, 40.0],
+            &[0.0, f32::NAN, -10.0, f32::INFINITY],
+            &[0.0, 0.5, 1.0],
+        );
+
+        assert_eq!(points.len(), 2);
+        assert!(points.iter().flatten().all(|value| value.is_finite()));
+    }
 }
 
 fn primary_trace(style: &SpectrumSettings) -> Option<usize> {
@@ -390,7 +405,10 @@ fn build_single_points(
     let mut push = |m: f32| {
         let Some(&x) = x_cache.get(xi) else { return; };
         xi += 1;
-        out.push([if style.reverse_frequency { 1.0 - x } else { x }, y(m)]);
+        let y = y(m);
+        if y.is_finite() {
+            out.push([if style.reverse_frequency { 1.0 - x } else { x }, y]);
+        }
     };
 
     push(value_at(bins, db, min_f));

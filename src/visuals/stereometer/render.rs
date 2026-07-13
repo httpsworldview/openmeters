@@ -15,8 +15,10 @@ use crate::visuals::render::common::{
     quad_vertices,
 };
 
-const SCALED_MODE_HEADROOM_GAIN: f32 = 0.66834;
-const SCALED_MODE_EXP: f32 = 0.3;
+// 0.66834.powf(0.3) and (1.0 / 0.66834).powi(2), respectively. Working
+// from squared length avoids a square root and division below saturation.
+const SCALED_MODE_SCALE: f32 = 0.886_133_7;
+const SCALED_MODE_SATURATION_SQUARED: f32 = 2.238_747_4;
 const LINEAR_GUIDE_LEVELS: [f32; 3] = [1.0 / 3.0, 2.0 / 3.0, 1.0];
 // -48, -24, -12, and 0 dBFS.
 const SCALED_GUIDE_LEVELS: [f32; 4] = [0.0039810717, 0.06309573, 0.25118864, 1.0];
@@ -32,17 +34,20 @@ const CORR_VPAD: f32 = 16.0;
 const CORR_EDGE: f32 = 6.0;
 const BAND_GAP: f32 = 2.0;
 
-fn scaled_radius(len: f32) -> f32 {
-    len.powf(SCALED_MODE_EXP).min(1.0)
-}
-
 fn scaled_point(x: f32, y: f32) -> (f32, f32) {
-    let len = x.hypot(y);
-    if len < f32::EPSILON {
+    let squared = x * x + y * y;
+    if squared < f32::EPSILON * f32::EPSILON {
         return (0.0, 0.0);
     }
-    let radius = scaled_radius(len * SCALED_MODE_HEADROOM_GAIN);
-    (x * radius / len, y * radius / len)
+    let scale = if squared < SCALED_MODE_SATURATION_SQUARED {
+        SCALED_MODE_SCALE * squared.powf(-0.35)
+    } else if squared.is_finite() {
+        squared.sqrt().recip()
+    } else {
+        let len = x.hypot(y);
+        return (x / len, y / len);
+    };
+    (x * scale, y * scale)
 }
 
 #[derive(Debug, Clone)]
@@ -448,8 +453,6 @@ mod tests {
 
     #[test]
     fn projection_centers_fits_and_flips() {
-        assert!(scaled_radius(std::f32::consts::SQRT_2 * SCALED_MODE_HEADROOM_GAIN) < 1.0);
-
         for scale in [Linear, Scaled] {
             for rotation in -4_i8..=4 {
                 for unipolar in [false, true] {
@@ -467,6 +470,24 @@ mod tests {
                         assert_close(flipped.project(l, r), normal.project(r, l));
                     }
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn scaled_projection_matches_radial_definition() {
+        let reference = |x: f32, y: f32| {
+            let len = x.hypot(y);
+            if len < f32::EPSILON {
+                return (0.0, 0.0);
+            }
+            let radius = (len * 0.66834).powf(0.3).min(1.0);
+            (x * radius / len, y * radius / len)
+        };
+        for x in -32..=32 {
+            for y in -32..=32 {
+                let point = (x as f32 / 16.0, y as f32 / 16.0);
+                assert_close(scaled_point(point.0, point.1), reference(point.0, point.1));
             }
         }
     }

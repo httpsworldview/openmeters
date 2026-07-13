@@ -64,18 +64,7 @@ pub(crate) fn window_coefficients(kind: WindowKind, len: usize) -> Arc<[f32]> {
         .clone()
 }
 
-pub fn apply_window(buffer: &mut [f32], window: &[f32]) {
-    debug_assert_eq!(buffer.len(), window.len());
-    for (sample, coeff) in buffer.iter_mut().zip(window.iter()) {
-        *sample *= *coeff;
-    }
-}
-
-/// Copies the front of `src` into `dst` and removes the copied window's DC offset.
-pub fn copy_dc_removed_from_deque(dst: &mut [f32], src: &VecDeque<f32>) {
-    if dst.is_empty() {
-        return;
-    }
+fn copy_front_from_deque(dst: &mut [f32], src: &VecDeque<f32>) {
     assert!(
         dst.len() <= src.len(),
         "destination longer than source deque"
@@ -87,9 +76,30 @@ pub fn copy_dc_removed_from_deque(dst: &mut [f32], src: &VecDeque<f32>) {
     if split < len {
         dst[split..].copy_from_slice(&tail[..len - split]);
     }
-    let mean = dst.iter().sum::<f32>() / len as f32;
+}
+
+/// Copies the front of `src` into `dst` and removes the copied window's DC offset.
+pub fn copy_dc_removed_from_deque(dst: &mut [f32], src: &VecDeque<f32>) {
+    if dst.is_empty() {
+        return;
+    }
+    copy_front_from_deque(dst, src);
+    let mean = dst.iter().sum::<f32>() / dst.len() as f32;
     for sample in dst {
         *sample -= mean;
+    }
+}
+
+/// Copies, DC-centers, and windows the front of `src` in one final pass.
+pub fn copy_dc_removed_windowed_from_deque(dst: &mut [f32], src: &VecDeque<f32>, window: &[f32]) {
+    assert_eq!(dst.len(), window.len());
+    if dst.is_empty() {
+        return;
+    }
+    copy_front_from_deque(dst, src);
+    let mean = dst.iter().sum::<f32>() / dst.len() as f32;
+    for (sample, &weight) in dst.iter_mut().zip(window) {
+        *sample = (*sample - mean) * weight;
     }
 }
 

@@ -3,17 +3,9 @@
 
 use crate::infra::pipewire::virtual_sink;
 use pipewire as pw;
-use pw::keys::*;
 use pw::registry::GlobalObject;
 use pw::spa::utils::dict::DictRef;
-use std::collections::HashMap;
-
-pub(super) fn dict_to_map(dict: Option<&DictRef>) -> HashMap<String, String> {
-    dict.into_iter()
-        .flat_map(|d| d.iter())
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect()
-}
+use std::{collections::HashMap, sync::Arc};
 
 crate::macros::choice_enum!(no_default all
     pub enum AudioChannel {
@@ -59,33 +51,53 @@ pub struct GraphPort {
 
 impl GraphPort {
     pub(super) fn from_global(global: &GlobalObject<&DictRef>) -> Option<Self> {
-        let props = dict_to_map(global.props.as_ref().copied());
-        let get = |primary, fallback| props.get(primary).or_else(|| props.get(fallback));
-        let parse = |p, f| get(p, f).and_then(|v| v.parse().ok());
+        let mut values = [None; 5];
+        for (key, value) in global.props.as_ref()?.iter() {
+            let slot = match key {
+                "port.id" => Some(0),
+                "node.id" => Some(1),
+                "port.direction" => Some(2),
+                "audio.channel" => Some(3),
+                "port.monitor" => Some(4),
+                _ => None,
+            };
+            if let Some(slot) = slot {
+                values[slot] = Some(value);
+            }
+        }
+        let [port_id, node_id, direction, channel, monitor] = values;
 
         Some(Self {
             global_id: global.id,
-            port_id: parse(*PORT_ID, "port.id")?,
-            node_id: parse(*NODE_ID, "node.id")?,
-            direction: pipewire_direction(
-                get(*PORT_DIRECTION, "port.direction").map(String::as_str),
-            ),
-            channel: get(*AUDIO_CHANNEL, "audio.channel").and_then(|v| AudioChannel::parse(v)),
-            is_monitor: get(*PORT_MONITOR, "port.monitor")
-                .is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1"),
+            port_id: port_id?.parse().ok()?,
+            node_id: node_id?.parse().ok()?,
+            direction: pipewire_direction(direction),
+            channel: channel.and_then(AudioChannel::parse),
+            is_monitor: monitor
+                .is_some_and(|value| value.eq_ignore_ascii_case("true") || value == "1"),
         })
     }
 }
 
-fn derive_node_direction(media_class: Option<&str>, props: &HashMap<String, String>) -> Direction {
-    let class = media_class.unwrap_or_default().to_ascii_lowercase();
+fn contains_ignore_ascii_case(value: &str, pattern: &str) -> bool {
+    pattern.is_empty()
+        || value
+            .as_bytes()
+            .windows(pattern.len())
+            .any(|window| window.eq_ignore_ascii_case(pattern.as_bytes()))
+}
 
-    if class.contains("sink") || class.contains("output") {
+fn derive_node_direction(media_class: Option<&str>, port_direction: Option<&str>) -> Direction {
+    let class = media_class.unwrap_or_default();
+
+    if contains_ignore_ascii_case(class, "sink") || contains_ignore_ascii_case(class, "output") {
         Direction::Output
-    } else if class.contains("source") || class.contains("input") {
+    } else if contains_ignore_ascii_case(class, "source")
+        || contains_ignore_ascii_case(class, "input")
+    {
         Direction::Input
     } else {
-        pipewire_direction(props.get(*PORT_DIRECTION).map(String::as_str))
+        pipewire_direction(port_direction)
     }
 }
 
@@ -243,38 +255,67 @@ impl RegistrySnapshot {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NodeInfo {
     pub id: u32,
-    pub name: Option<String>,
-    pub description: Option<String>,
-    pub media_class: Option<String>,
+    pub name: Option<Arc<str>>,
+    pub description: Option<Arc<str>>,
+    pub media_class: Option<Arc<str>>,
     pub direction: Direction,
     pub is_virtual: bool,
-    pub properties: HashMap<String, String>,
+    pub(super) app_name: Option<Arc<str>>,
+    pub(super) object_serial: Option<Arc<str>>,
     pub ports: Vec<GraphPort>,
 }
 
 impl NodeInfo {
     pub(super) fn from_global(global: &GlobalObject<&DictRef>) -> Self {
-        let props = dict_to_map(global.props.as_ref().copied());
-        let name = props.get(*NODE_NAME).cloned();
-        let description = props
-            .get(*NODE_DESCRIPTION)
-            .or_else(|| props.get("media.name"))
-            .or(name.as_ref())
-            .cloned();
-        let media_class = props.get(*MEDIA_CLASS).cloned();
-        let is_virtual = props.get("node.virtual").map_or_else(
+        let mut values = [None; 8];
+        if let Some(props) = global.props.as_ref() {
+            for (key, value) in props.iter() {
+                let slot = match key {
+                    "node.name" => Some(0),
+                    "node.description" => Some(1),
+                    "media.name" => Some(2),
+                    "media.class" => Some(3),
+                    "node.virtual" => Some(4),
+                    "port.direction" => Some(5),
+                    "application.name" => Some(6),
+                    "object.serial" => Some(7),
+                    _ => None,
+                };
+                if let Some(slot) = slot {
+                    values[slot] = Some(value);
+                }
+            }
+        }
+        let [
+            name,
+            description,
+            media_name,
+            media_class,
+            virtual_node,
+            port_direction,
+            app_name,
+            object_serial,
+        ] = values;
+        let name: Option<Arc<str>> = name.map(Arc::from);
+        let description = description
+            .or(media_name)
+            .map(Arc::from)
+            .or_else(|| name.clone());
+        let media_class = media_class.map(Arc::from);
+        let is_virtual = virtual_node.map_or_else(
             || name.as_deref() == Some(virtual_sink::NODE_NAME),
-            |v| v == "true",
+            |value| value == "true",
         );
 
         Self {
             id: global.id,
-            direction: derive_node_direction(media_class.as_deref(), &props),
+            direction: derive_node_direction(media_class.as_deref(), port_direction),
             name,
             description,
             media_class,
             is_virtual,
-            properties: props,
+            app_name: app_name.map(Arc::from),
+            object_serial: object_serial.map(Arc::from),
             ports: Vec::new(),
         }
     }
@@ -287,11 +328,11 @@ impl NodeInfo {
     }
 
     pub fn app_name(&self) -> Option<&str> {
-        self.properties.get(*APP_NAME).map(String::as_str)
+        self.app_name.as_deref()
     }
 
     pub fn object_serial(&self) -> Option<&str> {
-        self.properties.get("object.serial").map(String::as_str)
+        self.object_serial.as_deref()
     }
 
     pub fn matches_label(&self, label: &str) -> bool {
@@ -302,14 +343,14 @@ impl NodeInfo {
     }
 
     pub fn is_capture_device_candidate(&self) -> bool {
-        let contains = |opt: Option<&String>, pattern| {
-            opt.is_some_and(|s| s.to_ascii_lowercase().contains(pattern))
+        let contains = |value: Option<&str>, pattern| {
+            value.is_some_and(|value| contains_ignore_ascii_case(value, pattern))
         };
         !self.is_virtual
             && self.app_name().is_none()
-            && (contains(self.media_class.as_ref(), "audio")
-                || contains(self.name.as_ref(), "monitor")
-                || contains(self.description.as_ref(), "monitor"))
+            && (contains(self.media_class.as_deref(), "audio")
+                || contains(self.name.as_deref(), "monitor")
+                || contains(self.description.as_deref(), "monitor"))
     }
 
     pub fn should_route_to(&self, sink: &Self) -> bool {
@@ -321,7 +362,7 @@ impl NodeInfo {
             && self
                 .media_class
                 .as_deref()
-                .is_some_and(|c| c.to_ascii_lowercase().contains("audio"))
+                .is_some_and(|class| contains_ignore_ascii_case(class, "audio"))
             && self.app_name().is_some()
     }
 

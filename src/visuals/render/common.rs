@@ -311,8 +311,13 @@ impl GeometryScratch {
     }
 }
 
-pub fn decimate_line_in_place(pts: &mut Vec<(f32, f32)>, max_points: usize) {
-    pts.retain(|p| p.0.is_finite() && p.1.is_finite());
+/// Decimates points known to be finite and ordered by x.
+pub fn decimate_finite_ordered_line_in_place(pts: &mut Vec<(f32, f32)>, max_points: usize) {
+    debug_assert!(
+        pts.iter()
+            .all(|point| point.0.is_finite() && point.1.is_finite())
+    );
+    debug_assert!(pts.windows(2).all(|window| window[0].0 <= window[1].0));
     if max_points < 2 {
         pts.truncate(max_points);
         return;
@@ -321,9 +326,6 @@ pub fn decimate_line_in_place(pts: &mut Vec<(f32, f32)>, max_points: usize) {
         return;
     }
 
-    if pts.windows(2).any(|w| w[0].0 > w[1].0) {
-        pts.sort_by(|a, b| a.0.total_cmp(&b.0));
-    }
     let Some(&last) = pts.last() else { return };
     let (x0, width) = (pts[0].0, last.0 - pts[0].0);
     let bucketed = crate::util::finite_positive(width).is_some();
@@ -332,19 +334,30 @@ pub fn decimate_line_in_place(pts: &mut Vec<(f32, f32)>, max_points: usize) {
     } else {
         1
     };
-    let (mut read, mut out) = (0, 0);
+    let bucket_scale = if bucketed {
+        buckets as f32 / width
+    } else {
+        0.0
+    };
+    let bucket_width = if bucketed {
+        width / buckets as f32
+    } else {
+        0.0
+    };
+    let (mut read, mut out, mut groups) = (0, 0, 0);
 
     while read < pts.len() {
         let start = read;
         let bucket = if bucketed {
-            (((pts[start].0 - x0) / width) * buckets as f32)
-                .floor()
-                .clamp(0.0, (buckets - 1) as f32) as usize
+            ((pts[start].0 - x0) * bucket_scale).clamp(0.0, (buckets - 1) as f32) as usize
         } else {
             0
         };
-        let end_x = if bucketed {
-            x0 + width * (bucket + 1) as f32 / buckets as f32
+        groups += 1;
+        // A rounded edge can fall below a point assigned to its bucket. Let the
+        // last budgeted group consume the remainder rather than exceed the cap.
+        let end_x = if bucketed && groups < buckets {
+            x0 + bucket_width * (bucket + 1) as f32
         } else {
             f32::INFINITY
         };
@@ -691,7 +704,34 @@ mod tests {
     #[test]
     fn decimate_line_advances_when_bucket_edge_rounds_below_point() {
         let mut pts = vec![(667.6, 0.0), (3881.2603, 1.0)];
-        decimate_line_in_place(&mut pts, 5507);
+        decimate_finite_ordered_line_in_place(&mut pts, 5507);
         assert_eq!(pts.len(), 2);
+    }
+
+    #[test]
+    fn ordered_decimation_preserves_extrema_within_budget() {
+        let mut pts: Vec<_> = (0..16_385)
+            .map(|i| (i as f32 * 0.125, (i as f32 * 0.017).sin()))
+            .collect();
+        let min = pts.iter().map(|point| point.1).reduce(f32::min).unwrap();
+        let max = pts.iter().map(|point| point.1).reduce(f32::max).unwrap();
+
+        decimate_finite_ordered_line_in_place(&mut pts, 2_000);
+
+        assert!(pts.len() <= 2_000);
+        assert!(pts.windows(2).all(|window| window[0].0 <= window[1].0));
+        assert!(pts.iter().any(|point| point.1 == min));
+        assert!(pts.iter().any(|point| point.1 == max));
+    }
+
+    #[test]
+    fn ordered_decimation_honors_budget_at_rounded_bucket_edges() {
+        let mut pts = (0..8)
+            .map(|i| (0.1 + 1_000.3 * i as f32 / 7.0, (-1.0_f32).powi(i)))
+            .collect();
+
+        decimate_finite_ordered_line_in_place(&mut pts, 6);
+
+        assert!(pts.len() <= 6);
     }
 }

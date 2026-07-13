@@ -40,7 +40,10 @@ impl RegistryState {
         let Some(info) = self.nodes.remove(&id) else {
             return false;
         };
-        let fallback = info.name.or(info.description);
+        let fallback = info
+            .name
+            .or(info.description)
+            .map(|name| name.as_ref().to_owned());
         self.port_index.retain(|_, (node_id, _)| *node_id != id);
         if self.metadata_defaults.clear_node(id, fallback) {
             self.metadata_defaults.reconcile_with_nodes(&self.nodes);

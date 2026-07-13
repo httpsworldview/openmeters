@@ -94,6 +94,20 @@ impl StereometerState {
     pub fn visual_params(&self, bounds: iced::Rectangle) -> Option<StereometerParams> {
         if self.points.is_empty() { return None; }
         let s = &self.settings;
+        let (corr_trail, band_trail) = match s.correlation_meter {
+            CorrelationMeterMode::Off => (Vec::new(), Default::default()),
+            CorrelationMeterMode::SingleBand => {
+                (self.corr_trail.iter().copied().collect(), Default::default())
+            }
+            CorrelationMeterMode::MultiBand => (
+                Vec::new(),
+                [
+                    self.band_trail.iter().map(|values| values.low).collect(),
+                    self.band_trail.iter().map(|values| values.mid).collect(),
+                    self.band_trail.iter().map(|values| values.high).collect(),
+                ],
+            ),
+        };
         Some(StereometerParams {
             key: self.key,
             bounds,
@@ -108,12 +122,8 @@ impl StereometerState {
             unipolar: s.unipolar && s.mode != StereometerMode::Lissajous,
             correlation_meter: s.correlation_meter,
             correlation_meter_side: s.correlation_meter_side,
-            corr_trail: self.corr_trail.iter().copied().collect(),
-            band_trail: [
-                self.band_trail.iter().map(|values| values.low).collect(),
-                self.band_trail.iter().map(|values| values.mid).collect(),
-                self.band_trail.iter().map(|values| values.high).collect(),
-            ],
+            corr_trail,
+            band_trail,
         })
     }
 }

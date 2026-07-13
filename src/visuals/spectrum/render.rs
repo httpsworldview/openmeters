@@ -10,8 +10,10 @@ use crate::visuals::render::common::sdf_primitive;
 use crate::util::color::{rgba_with_alpha, sample_rgba_gradient};
 use crate::util::lerp;
 use crate::visuals::render::common::{
-    ClipTransform, GeometryScratch, SdfVertex, baseline_segment_vertices, decimate_line_in_place,
-    dot_vertices, extend_aa_line_list, gradient_quad_vertices, line_vertices, quad_vertices,
+    ClipTransform, GeometryScratch, SdfVertex, baseline_segment_vertices,
+    decimate_finite_ordered_line_in_place, dot_vertices, extend_aa_line_list,
+    gradient_quad_vertices,
+    line_vertices, quad_vertices,
 };
 
 const MIN_BAR_COUNT: usize = 4;
@@ -106,7 +108,7 @@ impl SpectrumPrimitive {
                     .iter()
                     .map(|&p| normalized_to_cartesian(bounds, p)),
             );
-            decimate_line_in_place(points2, pixel_budget);
+            decimate_finite_ordered_line_in_place(points2, pixel_budget);
             extend_aa_line_list(
                 vertices,
                 points2,
@@ -117,7 +119,7 @@ impl SpectrumPrimitive {
         }
 
         if has_primary {
-            decimate_line_in_place(points, pixel_budget);
+            decimate_finite_ordered_line_in_place(points, pixel_budget);
             extend_aa_line_list(
                 vertices,
                 points,
@@ -207,21 +209,50 @@ fn palette_color(palette: &[[f32; 4]], amp: f32, threshold: f32) -> [f32; 4] {
 fn sample_max(pts: &[[f32; 2]], t0: f32, t1: f32) -> f32 {
     let (lo, hi) = (t0.min(t1).clamp(0.0, 1.0), t0.max(t1).clamp(0.0, 1.0));
     let start = pts.partition_point(|p| p[0] < lo);
-    let end = pts.partition_point(|p| p[0] <= hi);
+    let hi_index = pts.partition_point(|p| p[0] < hi);
+    let mut end = hi_index;
+    while end < pts.len() && pts[end][0] <= hi {
+        end += 1;
+    }
     pts[start..end]
         .iter()
         .map(|p| p[1])
-        .fold(sample_lerp(pts, lo).max(sample_lerp(pts, hi)), f32::max)
+        .fold(sample_lerp_at(pts, lo, start).max(sample_lerp_at(pts, hi, hi_index)), f32::max)
 }
 
 fn sample_lerp(pts: &[[f32; 2]], t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
-    let i = pts.partition_point(|p| p[0] < t);
-    if i == 0 { return pts[0][1]; }
-    if i >= pts.len() { return pts[pts.len() - 1][1]; }
-    let a = pts[i - 1];
-    let b = pts[i];
+    let index = pts.partition_point(|p| p[0] < t);
+    sample_lerp_at(pts, t, index)
+}
+
+fn sample_lerp_at(pts: &[[f32; 2]], t: f32, index: usize) -> f32 {
+    if index == 0 { return pts[0][1]; }
+    if index >= pts.len() { return pts[pts.len() - 1][1]; }
+    let a = pts[index - 1];
+    let b = pts[index];
     lerp(a[1], b[1], (t - a[0]) / (b[0] - a[0]).max(1e-6))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn range_max_matches_reference_with_duplicate_positions() {
+        let points = [[0.0, 0.1], [0.25, 0.8], [0.25, 0.4], [0.6, 0.3], [1.0, 0.9]];
+        let reference = |lo: f32, hi: f32| {
+            let start = points.partition_point(|p| p[0] < lo);
+            let end = points.partition_point(|p| p[0] <= hi);
+            points[start..end]
+                .iter()
+                .map(|p| p[1])
+                .fold(sample_lerp(&points, lo).max(sample_lerp(&points, hi)), f32::max)
+        };
+        for (lo, hi) in [(0.1, 0.2), (0.25, 0.25), (0.2, 0.6), (0.6, 0.9)] {
+            assert_eq!(sample_max(&points, lo, hi), reference(lo, hi));
+        }
+    }
 }
 
 sdf_primitive!(

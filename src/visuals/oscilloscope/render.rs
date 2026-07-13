@@ -9,7 +9,8 @@ use super::processor::TRACE_COUNT;
 use crate::util::color::rgba_with_alpha;
 use crate::visuals::render::common::sdf_primitive;
 use crate::visuals::render::common::{
-    ChannelLayout, ClipTransform, GeometryScratch, decimate_line_in_place, extend_filled_line,
+    ChannelLayout, ClipTransform, GeometryScratch, decimate_finite_ordered_line_in_place,
+    extend_filled_line,
 };
 
 #[derive(Debug, Clone)]
@@ -66,13 +67,19 @@ impl OscilloscopePrimitive {
             let center = layout.center_y(if self.params.stacked { 0 } else { channel_idx });
 
             positions.clear();
-            positions.extend(channel_samples.iter().enumerate().map(|(i, &s)| {
-                (
-                    bounds.x + i as f32 * step,
-                    center - s.clamp(-1.0, 1.0) * layout.amplitude_scale,
-                )
-            }));
-            decimate_line_in_place(positions, pixel_width * 2);
+            positions.extend(
+                channel_samples
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, sample)| sample.is_finite())
+                    .map(|(i, &sample)| {
+                        (
+                            bounds.x + i as f32 * step,
+                            center - sample.clamp(-1.0, 1.0) * layout.amplitude_scale,
+                        )
+                    }),
+            );
+            decimate_finite_ordered_line_in_place(positions, pixel_width * 2);
 
             extend_filled_line(
                 vertices,

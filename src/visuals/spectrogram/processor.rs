@@ -24,8 +24,9 @@
 use crate::dsp::AudioBlock;
 use crate::util::audio::{
     DB_FLOOR, DEFAULT_SAMPLE_RATE, FrequencyScale, LN_TO_DB, WindowKind,
-    compute_fft_bin_normalization, copy_dc_removed_from_deque, db_to_power, power_to_db,
-    sanitize_sample_rate, window_coefficients,
+    compute_fft_bin_normalization, copy_dc_removed_from_deque,
+    copy_dc_removed_windowed_from_deque, db_to_power, power_to_db, sanitize_sample_rate,
+    window_coefficients,
 };
 use bytemuck::{Pod, Zeroable};
 use realfft::{RealFftPlanner, RealToComplex};
@@ -310,8 +311,8 @@ impl SpectrogramProcessor {
                 continue;
             }
 
-            copy_dc_removed_from_deque(&mut self.real[..read_len], &self.audio_buffer);
             let col = if reassignment_enabled {
+                copy_dc_removed_from_deque(&mut self.real[..read_len], &self.audio_buffer);
                 // Use an analytic signal so low-frequency bins are not polluted
                 // by the negative-frequency mirror of the windowed real signal.
                 hilbert_transform(
@@ -346,11 +347,11 @@ impl SpectrogramProcessor {
                     bin_count,
                 ))
             } else {
-                for (sample, &weight) in self.real[..self.window_size]
-                    .iter_mut()
-                    .zip(self.window.iter()) {
-                    *sample *= weight;
-                }
+                copy_dc_removed_windowed_from_deque(
+                    &mut self.real[..self.window_size],
+                    &self.audio_buffer,
+                    &self.window,
+                );
                 self.real[self.window_size..].fill(0.0);
                 if self
                     .classic_fft

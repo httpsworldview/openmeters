@@ -251,14 +251,17 @@ fn is_danger_zone(mode: MeterMode, db: f32) -> bool {
     db >= zone_thresholds(mode)[DANGER_THRESHOLD_INDEX]
 }
 
-fn visible_guide_labels(params: &LoudnessParams, bounds: Rectangle) -> Vec<(f32, Rectangle)> {
+fn visible_guide_labels(
+    params: &LoudnessParams,
+    bounds: Rectangle,
+) -> [Option<(f32, Rectangle)>; GUIDE_LABEL_ORDER.len()] {
+    let mut labels = [None; GUIDE_LABEL_ORDER.len()];
     if bounds.height < GUIDE_LABEL_HEIGHT {
-        return Vec::new();
+        return labels;
     }
 
     let max_top = bounds.y + bounds.height - GUIDE_LABEL_HEIGHT;
-    let mut labels: Vec<(f32, Rectangle)> = Vec::with_capacity(params.guides.len());
-
+    let mut len = 0;
     for &i in &GUIDE_LABEL_ORDER {
         let db = params.guides[i];
         let y = bounds.y + bounds.height * (1.0 - params.db_to_ratio(db));
@@ -267,11 +270,13 @@ fn visible_guide_labels(params: &LoudnessParams, bounds: Rectangle) -> Vec<(f32,
             Size::new(LEFT_PADDING, GUIDE_LABEL_HEIGHT),
         );
 
-        if !labels
+        if !labels[..len]
             .iter()
+            .flatten()
             .any(|(_, r)| r.expand(GUIDE_LABEL_GAP).intersects(&rect))
         {
-            labels.push((db, rect));
+            labels[len] = Some((db, rect));
+            len += 1;
         }
     }
 
@@ -290,7 +295,7 @@ crate::visuals::visualization_widget!(Loudness, LoudnessState, |this, renderer, 
     if let Some((meter_x, bar_width, stride)) = params.meter_bounds() {
         let y_of = |db| bounds.y + bounds.height * (1.0 - params.db_to_ratio(db));
 
-        for (db, rect) in visible_guide_labels(&params, bounds) {
+        for (db, rect) in visible_guide_labels(&params, bounds).into_iter().flatten() {
             let label = if db == 0.0 { "0".to_owned() } else { format!("{db:+.0}") };
 
             let mut text = make_text(label, LABEL_FONT_SIZE, rect.size());

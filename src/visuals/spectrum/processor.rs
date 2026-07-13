@@ -3,8 +3,8 @@
 
 use crate::dsp::AudioBlock;
 use crate::util::audio::{
-    Channel, DB_FLOOR, DEFAULT_SAMPLE_RATE, FrequencyScale, LN_TO_DB, WindowKind, apply_window,
-    compute_fft_bin_normalization, copy_dc_removed_from_deque, db_to_power,
+    Channel, DB_FLOOR, DEFAULT_SAMPLE_RATE, FrequencyScale, LN_TO_DB, WindowKind,
+    compute_fft_bin_normalization, copy_dc_removed_windowed_from_deque, db_to_power,
     project_interleaved_channel_into, sanitize_negative_db, sanitize_sample_rate,
     window_coefficients,
 };
@@ -169,7 +169,8 @@ impl SpectrumProcessor {
         for trace in &mut self.snapshot.traces {
             for db in trace { reset_to_floor(db, bins, floor); }
         }
-        for buffers in &mut self.levels { buffers.reset(bins); }
+        let state_floor = smoothing_state_floor(&self.a_weighting_db, floor);
+        for buffers in &mut self.levels { buffers.reset(bins, state_floor); }
     }
 
     fn sources(&self) -> [Channel; TRACE_COUNT] {
@@ -219,8 +220,11 @@ impl SpectrumProcessor {
 
     fn process_trace_window(&mut self, trace: usize, dt_seconds: f32, floor: f32) -> bool {
         let bins = self.config.fft_size / 2 + 1;
-        copy_dc_removed_from_deque(&mut self.real_buffer, &self.pcm_buffers[trace]);
-        apply_window(&mut self.real_buffer, &self.window);
+        copy_dc_removed_windowed_from_deque(
+            &mut self.real_buffer,
+            &self.pcm_buffers[trace],
+            &self.window,
+        );
         if self
             .fft
             .process_with_scratch(
@@ -325,6 +329,7 @@ struct SpectrumLevelBuffers {
     averaged_power: Vec<f32>,
     peak_hold_power: Vec<f32>,
     scratch_power: Vec<f32>,
+    state_floor: f32,
 }
 
 fn smoothing_state_floor(weighting_db: &[f32], floor: f32) -> f32 {
@@ -334,7 +339,8 @@ fn smoothing_state_floor(weighting_db: &[f32], floor: f32) -> f32 {
 }
 
 impl SpectrumLevelBuffers {
-    fn reset(&mut self, bins: usize) {
+    fn reset(&mut self, bins: usize, state_floor: f32) {
+        self.state_floor = state_floor;
         reset_to_floor(&mut self.averaged_power, bins, 0.0);
         reset_to_floor(&mut self.peak_hold_power, bins, 0.0);
         reset_to_floor(&mut self.scratch_power, bins, 0.0);
@@ -358,7 +364,6 @@ impl SpectrumLevelBuffers {
         let powers = match mode {
             AveragingMode::None => &self.scratch_power,
             AveragingMode::Exponential { factor } => {
-                let state_floor = smoothing_state_floor(weighting_db, floor);
                 let alpha = factor.clamp(0.0, 0.9999);
                 for (avg, &power) in self.averaged_power.iter_mut().zip(&self.scratch_power) {
                     *avg = if *avg <= 0.0 {
@@ -366,18 +371,17 @@ impl SpectrumLevelBuffers {
                     } else {
                         *avg * alpha + power * (1.0 - alpha)
                     };
-                    if *avg < state_floor {
+                    if *avg < self.state_floor {
                         *avg = 0.0;
                     }
                 }
                 &self.averaged_power
             }
             AveragingMode::PeakHold { decay_per_second } => {
-                let state_floor = smoothing_state_floor(weighting_db, floor);
                 let decay = db_to_power(-decay_per_second.max(0.0) * dt_seconds);
                 for (hold, &power) in self.peak_hold_power.iter_mut().zip(&self.scratch_power) {
                     *hold = (*hold * decay).max(power);
-                    if *hold < state_floor {
+                    if *hold < self.state_floor {
                         *hold = 0.0;
                     }
                 }
@@ -601,7 +605,7 @@ mod tests {
     #[test]
     fn averaged_power_is_zeroed_below_the_visible_floor() {
         let mut buffers = SpectrumLevelBuffers::default();
-        buffers.reset(1);
+        buffers.reset(1, smoothing_state_floor(&[0.0], -100.0));
         buffers.averaged_power[0] = db_to_power(-101.0);
         let mut outputs = [Vec::new(), Vec::new()];
         buffers.update_outputs(
@@ -623,7 +627,7 @@ mod tests {
             },
         ] {
             let mut buffers = SpectrumLevelBuffers::default();
-            buffers.reset(1);
+            buffers.reset(1, smoothing_state_floor(&[1.2], -100.0));
             buffers.scratch_power[0] = db_to_power(-100.5);
             let mut outputs = [Vec::new(), Vec::new()];
 

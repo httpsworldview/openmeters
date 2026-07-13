@@ -27,6 +27,7 @@ use iced::{Color, Element, Length, Point, Rectangle, Size, keyboard};
 use iced_wgpu::primitive::Renderer as _;
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::sync::Arc;
 
 const DB_CEILING: f32 = 0.0;
 const TOOLTIP_SIZE: f32 = 14.0;
@@ -79,7 +80,7 @@ struct SpectrogramHistory {
     gpu_capacity: u32,
     write_slot: u32,
     col_count: u32,
-    slot_counts: Vec<u32>,
+    slot_counts: Arc<[u32]>,
     pending: VecDeque<PendingUpload>,
     pending_copy: Option<RingCopyPlan>,
 }
@@ -94,7 +95,7 @@ impl Default for SpectrogramHistory {
             gpu_capacity: 0,
             write_slot: 0,
             col_count: 0,
-            slot_counts: Vec::new(),
+            slot_counts: Arc::from([]),
             pending: VecDeque::new(),
             pending_copy: None,
         }
@@ -123,7 +124,11 @@ impl SpectrogramHistory {
                 col_kind: new_kind,
                 points_per_column: ppc,
                 ring_capacity: capacity,
-                slot_counts: vec![0; capacity as usize],
+                slot_counts: if new_kind == ColumnKind::Reassigned {
+                    vec![0; capacity as usize].into()
+                } else {
+                    Arc::from([])
+                },
                 ..Default::default()
             };
         } else if capacity != self.ring_capacity {
@@ -139,14 +144,20 @@ impl SpectrogramHistory {
                 self.write_slot = 0;
             }
             self.ring_capacity = capacity;
-            self.slot_counts.resize(capacity as usize, 0);
+            if self.col_kind == ColumnKind::Reassigned
+                && self.slot_counts.len() != capacity as usize
+            {
+                let mut counts = self.slot_counts.to_vec();
+                counts.resize(capacity as usize, 0);
+                self.slot_counts = counts.into();
+            }
         }
 
         for col in snap.new_columns {
             let slot = self.write_slot;
             let upload = match col {
                 SpectrogramColumn::Reassigned(points) => {
-                    if let Some(count) = self.slot_counts.get_mut(slot as usize) {
+                    if let Some(count) = Arc::make_mut(&mut self.slot_counts).get_mut(slot as usize) {
                         *count = points.len() as u32;
                     }
                     PendingUpload::Reassigned { slot, points }
@@ -192,14 +203,16 @@ impl SpectrogramHistory {
             *slot = (*slot + old_cap - start) % old_cap;
             *slot < keep
         };
-        let mut counts = vec![0; keep as usize];
-        for (src, &count) in self.slot_counts.iter().enumerate().take(old_cap as usize) {
-            let mut dst = src as u32;
-            if remap(&mut dst) {
-                counts[dst as usize] = count;
+        if self.col_kind == ColumnKind::Reassigned {
+            let mut counts = vec![0; keep as usize];
+            for (src, &count) in self.slot_counts.iter().enumerate().take(old_cap as usize) {
+                let mut dst = src as u32;
+                if remap(&mut dst) {
+                    counts[dst as usize] = count;
+                }
             }
+            self.slot_counts = counts.into();
         }
-        self.slot_counts = counts;
         self.pending.retain_mut(|upload| {
             let (PendingUpload::Reassigned { slot, .. } | PendingUpload::Classic { slot, .. }) =
                 upload;
@@ -299,11 +312,7 @@ impl SpectrogramState {
         if history.col_count == 0 && history.pending.is_empty() { return None; }
         let copy_plan = history.pending_copy.take();
         history.gpu_capacity = history.ring_capacity;
-        let slot_counts = if history.col_kind == ColumnKind::Reassigned {
-            history.slot_counts.clone()
-        } else {
-            Vec::new()
-        };
+        let slot_counts = Arc::clone(&history.slot_counts);
         let op = self.style.opacity.clamp(0.0, 1.0);
         let to_rgba = |c: Color| rgba_with_alpha(color_to_rgba(c), c.a * op);
         let bin_hz = self.sample_rate / (self.fft_size.max(1) as f32);
@@ -928,6 +937,7 @@ mod tests {
         state.apply_snapshot(classic_update(6, false, &[6.0]));
         let params = visual_params(&mut state);
         assert_eq!((params.ring_capacity, params.col_count, params.write_slot), (6, 5, 5));
+        assert!(params.slot_counts.is_empty());
         assert_eq!(upload_slots(&params), vec![4]);
         assert_eq!(
             params.copy_plan,

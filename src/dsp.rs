@@ -58,14 +58,23 @@ where
     pub fn push(&mut self, values: [T; VALUES]) {
         let len = self.buffer.len();
         for (window, &capacity) in self.sums.iter_mut().zip(&self.capacities) {
-            let old =
-                (self.count >= capacity).then(|| &self.buffer[(self.head + len - capacity) % len]);
+            let old = (self.count >= capacity).then(|| {
+                let index = if self.head >= capacity {
+                    self.head - capacity
+                } else {
+                    self.head + len - capacity
+                };
+                &self.buffer[index]
+            });
             for value in 0..VALUES {
                 window[value] += values[value].into() - old.map_or(0.0, |old| old[value].into());
             }
         }
         self.buffer[self.head] = values;
-        self.head = (self.head + 1) % len;
+        self.head += 1;
+        if self.head == len {
+            self.head = 0;
+        }
         self.count = (self.count + 1).min(len);
     }
 

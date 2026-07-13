@@ -246,8 +246,15 @@ fn convert_samples_to_f32_into(
     }
 
     match format {
-        Fmt::F32LE | Fmt::F32BE => convert!(f32, |v| v),
-        Fmt::F64LE | Fmt::F64BE => convert!(f64, |v| v as f32),
+        Fmt::F32LE | Fmt::F32BE => {
+            convert!(f32, |v: f32| if v.is_finite() { v } else { 0.0 });
+        }
+        Fmt::F64LE | Fmt::F64BE => {
+            convert!(f64, |v: f64| {
+                let value = v as f32;
+                if value.is_finite() { value } else { 0.0 }
+            });
+        }
         Fmt::S16LE | Fmt::S16BE => convert!(i16, |v| v as f32 * I16_SCALE),
         Fmt::S24_32LE | Fmt::S24_32BE => {
             convert!(u32, |v| (((v & 0x00ff_ffff) as i32) << 8 >> 8) as f32
@@ -338,11 +345,6 @@ fn capture_audio_chunk(capture_buffer: &CaptureBuffer, bytes: &[u8], state: &Vir
         capture_buffer.recycle_samples(samples);
         capture_buffer.note_dropped_frame();
         return;
-    }
-    for sample in &mut samples {
-        if !sample.is_finite() {
-            *sample = 0.0;
-        }
     }
     capture_buffer.try_push(CapturedAudio {
         samples,
@@ -524,6 +526,7 @@ mod tests {
         let s16be = [0x80, 0x00, 0x7F, 0xFF];
         let u16be = [0x00, 0x00, 0xFF, 0xFF];
         let f32le = 0.123_456_78f32.to_le_bytes();
+        let f64_overflow = f64::MAX.to_le_bytes();
         let s24_32le = [0xff, 0xff, 0x7f, 0x55, 0x00, 0x00, 0x80, 0xaa];
         let s24_32be = [0x55, 0x7f, 0xff, 0xff, 0xaa, 0x80, 0x00, 0x00];
         let s32le = i32::MAX.to_le_bytes();
@@ -548,6 +551,7 @@ mod tests {
                 f32::EPSILON,
             ),
             (&f32le, Fmt::F32LE, 1, 0, 0.123_456_78, f32::EPSILON),
+            (&f64_overflow, Fmt::F64LE, 1, 0, 0.0, f32::EPSILON),
             (
                 &s24_32le,
                 Fmt::S24_32LE,
