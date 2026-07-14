@@ -2,17 +2,23 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::processor::{BandCorrelation, StereometerSnapshot};
-use super::render::{StereometerParams, StereometerPrimitive};
+use super::render::{
+    CORR_LABEL_GAP, CORR_LABEL_H, CORR_LABEL_W, StereometerParams, StereometerPrimitive,
+};
 use crate::persistence::settings::StereometerSettings;
 use crate::util::color::color_to_rgba;
 use crate::visuals::{
-    options::{CorrelationMeterMode, StereometerMode},
+    options::{CorrelationMeterMode, CorrelationMeterSide, StereometerMode},
     palettes,
+    render::common::{fill_rect, make_text},
 };
-use iced::Color;
+use iced::advanced::text;
+use iced::alignment::{Horizontal, Vertical};
+use iced::{Color, Point, Size};
 use std::{collections::VecDeque, sync::Arc};
 
 const TRAIL_LEN: usize = 32;
+const CORR_LABEL_SIZE: f32 = 10.0;
 
 fn tracks_band_correlation(s: &StereometerSettings) -> bool {
     s.mode == StereometerMode::DotCloudBands
@@ -100,7 +106,7 @@ impl StereometerState {
                 (self.corr_trail.iter().copied().collect(), Default::default())
             }
             CorrelationMeterMode::MultiBand => (
-                Vec::new(),
+                self.corr_trail.iter().copied().collect(),
                 [
                     self.band_trail.iter().map(|values| values.low).collect(),
                     self.band_trail.iter().map(|values| values.mid).collect(),
@@ -128,4 +134,35 @@ impl StereometerState {
     }
 }
 
-crate::visuals::visualization_widget!(Stereometer, StereometerState, StereometerPrimitive);
+crate::visuals::visualization_widget!(Stereometer, StereometerState, |this, renderer, theme, bounds| {
+    let state = this.state.borrow();
+    let Some(params) = state.visual_params(bounds) else {
+        fill_rect(renderer, bounds, theme.extended_palette().background.base.color);
+        return;
+    };
+    let side = params.correlation_meter_side;
+    let (_, meter) = StereometerPrimitive::meter_layout(&params);
+    renderer.draw_primitive(bounds, StereometerPrimitive::new(params));
+
+    if let Some(meter) = meter.filter(|meter| meter.width > 0.0 && meter.height > 0.0) {
+        let left = side == CorrelationMeterSide::Left;
+        let align = if left { Horizontal::Left } else { Horizontal::Right };
+        let x = if left {
+            meter.x + meter.width + CORR_LABEL_GAP
+        } else {
+            meter.x - CORR_LABEL_GAP
+        };
+        let color = theme.extended_palette().background.base.text;
+        for (label, value) in [("+1", 1.0), ("0", 0.0), ("-1", -1.0)] {
+            let mut text = make_text(
+                label,
+                CORR_LABEL_SIZE,
+                Size::new(CORR_LABEL_W, CORR_LABEL_H),
+            );
+            text.align_x = align.into();
+            text.align_y = Vertical::Center;
+            let y = StereometerPrimitive::correlation_y(meter, value);
+            text::Renderer::fill_text(renderer, text, Point::new(x, y), color, bounds);
+        }
+    }
+});

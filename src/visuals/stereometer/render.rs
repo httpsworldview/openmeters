@@ -30,9 +30,11 @@ const GRID_AXES: [((f32, f32), (f32, f32)); 2] =
 
 const CORR_W: f32 = 28.0;
 const CORR_PAD: f32 = 4.0;
-const CORR_VPAD: f32 = 16.0;
+pub(super) const CORR_LABEL_GAP: f32 = 5.0;
+pub(super) const CORR_LABEL_H: f32 = 12.0;
+pub(super) const CORR_LABEL_W: f32 = 16.0;
+const CORR_VPAD_RATIO: f32 = 5.0 / 64.0;
 const CORR_EDGE: f32 = 6.0;
-const BAND_GAP: f32 = 2.0;
 
 fn scaled_point(x: f32, y: f32) -> (f32, f32) {
     let squared = x * x + y * y;
@@ -245,33 +247,46 @@ impl StereometerPrimitive {
         }
     }
 
-    fn meter_bounds(p: &StereometerParams) -> (Rectangle, Option<Rectangle>) {
-        let has_corr = p.correlation_meter != CorrelationMeterMode::Off;
+    pub(super) fn correlation_y(bounds: Rectangle, value: f32) -> f32 {
+        bounds.y + (1.0 - value.clamp(-1.0, 1.0)) * bounds.height * 0.5
+    }
+
+    pub(super) fn meter_layout(p: &StereometerParams) -> (Rectangle, Option<Rectangle>) {
+        let has_meter = p.correlation_meter != CorrelationMeterMode::Off;
         let left = p.correlation_meter_side == CorrelationMeterSide::Left;
-        let margin = if has_corr {
-            CORR_W + CORR_PAD + CORR_EDGE
+        let scale = match p.correlation_meter {
+            CorrelationMeterMode::SingleBand => 0.5,
+            _ => 1.0,
+        };
+        let available_height = p.bounds.height.max(0.0);
+        let width = (available_height * 5.0 / 32.0).min(CORR_W) * scale;
+        let margin = if has_meter {
+            CORR_EDGE + width + CORR_LABEL_GAP + CORR_LABEL_W + CORR_PAD
         } else {
             0.0
         };
-        let vec_bounds = Rectangle {
+        let vector = Rectangle {
             x: p.bounds.x + if left { margin } else { 0.0 },
             width: (p.bounds.width - margin).max(0.0),
             ..p.bounds
         };
-        let corr_bounds = has_corr.then(|| {
+        let meter = has_meter.then(|| {
             let x = if left {
                 p.bounds.x + CORR_EDGE
             } else {
-                (p.bounds.x + p.bounds.width - CORR_W - CORR_EDGE).max(p.bounds.x)
+                (p.bounds.x + p.bounds.width - width - CORR_EDGE).max(p.bounds.x)
             };
+            let vpad = (available_height * CORR_VPAD_RATIO)
+                .max(CORR_LABEL_H * 0.5)
+                .min(available_height * 0.5);
             Rectangle {
                 x,
-                y: p.bounds.y + CORR_VPAD,
-                width: CORR_W,
-                height: (p.bounds.height - 2.0 * CORR_VPAD).max(0.0),
+                y: p.bounds.y + vpad,
+                width,
+                height: (available_height - 2.0 * vpad).max(0.0),
             }
         });
-        (vec_bounds, corr_bounds)
+        (vector, meter)
     }
 
     fn add_trace_vertices(
@@ -324,97 +339,113 @@ impl StereometerPrimitive {
         bounds: Rectangle,
         clip: ClipTransform,
     ) {
-        let multi_band = match p.correlation_meter {
-            CorrelationMeterMode::Off => return,
-            CorrelationMeterMode::SingleBand => false,
-            CorrelationMeterMode::MultiBand => true,
-        };
+        if bounds.width <= 0.0 || bounds.height <= 0.0 {
+            return;
+        }
+
+        let multi_band = p.correlation_meter == CorrelationMeterMode::MultiBand;
         let bars = if multi_band { p.band_trail.len() } else { 1 };
-        let gap = if multi_band { BAND_GAP } else { 0.0 };
-        let bar_w = (CORR_W - gap * (bars - 1) as f32) / bars as f32;
-        let half_h = bounds.height * 0.5;
-        let corr_cy = bounds.y + half_h;
-        let val_y = |val: f32| corr_cy - val.clamp(-1.0, 1.0) * half_h;
+        let bar_width = bounds.width / bars as f32;
+        let val_y = |value| Self::correlation_y(bounds, value);
+        let center = val_y(0.0);
+        let marker_h = (p.bounds.height / 128.0).clamp(1.0, 3.0) * 0.5;
         let y_min = bounds.y as i32;
         let height = (bounds.height as i32 + 1).max(0) as usize;
         let y_max = y_min + height as i32 - 1;
 
-        for band in 0..bars {
-            let bx = bounds.x + band as f32 * (bar_w + gap);
-            let (x0, x1) = (bx + 1.0, bx + bar_w - 1.0);
-            let trail: &[f32] = if multi_band {
-                &p.band_trail[band]
-            } else {
-                &p.corr_trail
-            };
-
+        out.extend(quad_vertices(
+            bounds.x,
+            bounds.y,
+            bounds.x + bounds.width,
+            bounds.y + bounds.height,
+            clip,
+            p.palette[1],
+        ));
+        for y in [val_y(1.0), center, val_y(-1.0)] {
             out.extend(quad_vertices(
-                bx,
-                bounds.y,
-                bx + bar_w,
-                bounds.y + bounds.height,
-                clip,
-                p.palette[1],
-            ));
-            out.extend(quad_vertices(
-                bx,
-                corr_cy - 0.5,
-                bx + bar_w,
-                corr_cy + 0.5,
+                bounds.x,
+                y - 0.5,
+                bounds.x + bounds.width,
+                y + 0.5,
                 clip,
                 p.palette[2],
             ));
+        }
 
-            if let Some(&current) = trail.first() {
-                let base = if multi_band {
-                    p.palette[5 + band]
-                } else {
-                    p.palette[if current < 0.0 { 4 } else { 3 }]
-                };
-
-                if trail.len() > 1 {
-                    alpha.resize(height, 0.0);
-                    alpha.fill(0.0);
-                    let trail_len = trail.len() as f32;
-                    for (j, pair) in trail.windows(2).enumerate() {
-                        let a = (1.0 - (j + 1) as f32 / trail_len).powf(2.4);
-                        if a <= 0.0 {
-                            continue;
-                        }
-                        let (y0, y1) = (val_y(pair[0]), val_y(pair[1]));
-                        let (top, bot) = (y0.min(y1) as i32, (y0.max(y1) + 2.0) as i32);
-                        for sy in top.max(y_min)..=bot.min(y_max) {
-                            let idx = (sy - y_min) as usize;
-                            alpha[idx] = alpha[idx].max(a);
-                        }
-                    }
-                    for (k, w) in alpha.windows(2).enumerate() {
-                        if w[0] > 0.0 || w[1] > 0.0 {
-                            let (mut c0, mut c1) = (base, base);
-                            c0[3] *= w[0];
-                            c1[3] *= w[1];
-                            let y = (y_min + k as i32) as f32;
-                            out.extend(gradient_quad_vertices(x0, y, x1, y + 1.0, clip, c0, c1));
-                        }
+        let mut draw_trail = |
+            x0: f32,
+            x1: f32,
+            trail: &[f32],
+            positive: [f32; 4],
+            negative: Option<[f32; 4]>,
+        | {
+            let color = |is_negative| {
+                if is_negative { negative.unwrap_or(positive) } else { positive }
+            };
+            if trail.len() > 1 {
+                alpha.resize(height, 0.0);
+                alpha.fill(0.0);
+                let len = trail.len() as f32;
+                for (age, pair) in trail.windows(2).enumerate() {
+                    let opacity = (1.0 - (age + 1) as f32 / len).powf(2.4);
+                    let (y0, y1) = (val_y(pair[0]), val_y(pair[1]));
+                    let (top, bottom) = (y0.min(y1) as i32, (y0.max(y1) + 2.0) as i32);
+                    for y in top.max(y_min)..=bottom.min(y_max) {
+                        let index = (y - y_min) as usize;
+                        alpha[index] = alpha[index].max(opacity);
                     }
                 }
-
-                let y = val_y(current);
-                out.extend(quad_vertices(x0, y - 1.0, x1, y + 1.0, clip, base));
+                for (index, opacity) in alpha.windows(2).enumerate() {
+                    if opacity[0] > 0.0 || opacity[1] > 0.0 {
+                        let y = (y_min + index as i32) as f32;
+                        let (mut top, mut bottom) = (color(y > center), color(y + 1.0 > center));
+                        top[3] *= opacity[0];
+                        bottom[3] *= opacity[1];
+                        out.extend(gradient_quad_vertices(x0, y, x1, y + 1.0, clip, top, bottom));
+                    }
+                }
             }
+            if let Some(&current) = trail.first() {
+                let y = val_y(current);
+                let color = color(current < 0.0);
+                out.extend(quad_vertices(x0, y - marker_h, x1, y + marker_h, clip, color));
+            }
+        };
+
+        if multi_band {
+            let mut color = p.palette[2];
+            color[3] *= 0.25;
+            let inset = (bounds.width * 0.5).min(0.25);
+            draw_trail(
+                bounds.x + inset,
+                bounds.x + bounds.width - inset,
+                &p.corr_trail,
+                color,
+                None,
+            );
+        }
+        let inset = (bar_width * 0.5).min(0.25);
+        for band in 0..bars {
+            let x0 = bounds.x + band as f32 * bar_width;
+            let (trail, positive, negative) = if multi_band {
+                (&p.band_trail[band][..], p.palette[5 + band], None)
+            } else {
+                (&p.corr_trail[..], p.palette[3], Some(p.palette[4]))
+            };
+            draw_trail(x0 + inset, x0 + bar_width - inset, trail, positive, negative);
         }
     }
 
     fn build_vertices(&self, viewport: &Viewport, scratch: &mut GeometryScratch) {
         let clip = ClipTransform::from_viewport(viewport);
         let p = &self.params;
-        let (vec_bounds, corr_bounds) = Self::meter_bounds(p);
-        let projection = Projection::from_params(p, vec_bounds);
+        let (vector, correlation) = Self::meter_layout(p);
+        let projection = Projection::from_params(p, vector);
         let vertices = &mut scratch.vertices;
         self.add_grid_vertices(vertices, projection, clip);
         Self::add_trace_vertices(vertices, p, projection, clip);
-        if let Some(bounds) = corr_bounds {
-            Self::add_correlation_vertices(vertices, &mut scratch.scalars, p, bounds, clip);
+        if let Some(meter) = correlation {
+            Self::add_correlation_vertices(vertices, &mut scratch.scalars, p, meter, clip);
         }
     }
 }
