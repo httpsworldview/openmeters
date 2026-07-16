@@ -7,6 +7,20 @@ use pw::registry::GlobalObject;
 use pw::spa::utils::dict::DictRef;
 use std::{collections::HashMap, sync::Arc};
 
+macro_rules! extract_properties {
+    ($properties:expr; $($key:literal => $binding:ident),+ $(,)?) => {
+        $(let mut $binding = None;)+
+        if let Some(properties) = $properties {
+            for (key, value) in properties.iter() {
+                match key {
+                    $($key => $binding = Some(value),)+
+                    _ => {}
+                }
+            }
+        }
+    };
+}
+
 crate::macros::choice_enum!(no_default all
     pub enum AudioChannel {
         FrontLeft => "FL", FrontRight => "FR", FrontCenter => "FC", LowFrequency => "LFE",
@@ -51,21 +65,13 @@ pub struct GraphPort {
 
 impl GraphPort {
     pub(super) fn from_global(global: &GlobalObject<&DictRef>) -> Option<Self> {
-        let mut values = [None; 5];
-        for (key, value) in global.props.as_ref()?.iter() {
-            let slot = match key {
-                "port.id" => Some(0),
-                "node.id" => Some(1),
-                "port.direction" => Some(2),
-                "audio.channel" => Some(3),
-                "port.monitor" => Some(4),
-                _ => None,
-            };
-            if let Some(slot) = slot {
-                values[slot] = Some(value);
-            }
-        }
-        let [port_id, node_id, direction, channel, monitor] = values;
+        extract_properties!(global.props.as_ref();
+            "port.id" => port_id,
+            "node.id" => node_id,
+            "port.direction" => direction,
+            "audio.channel" => channel,
+            "port.monitor" => monitor,
+        );
 
         Some(Self {
             global_id: global.id,
@@ -267,35 +273,16 @@ pub struct NodeInfo {
 
 impl NodeInfo {
     pub(super) fn from_global(global: &GlobalObject<&DictRef>) -> Self {
-        let mut values = [None; 8];
-        if let Some(props) = global.props.as_ref() {
-            for (key, value) in props.iter() {
-                let slot = match key {
-                    "node.name" => Some(0),
-                    "node.description" => Some(1),
-                    "media.name" => Some(2),
-                    "media.class" => Some(3),
-                    "node.virtual" => Some(4),
-                    "port.direction" => Some(5),
-                    "application.name" => Some(6),
-                    "object.serial" => Some(7),
-                    _ => None,
-                };
-                if let Some(slot) = slot {
-                    values[slot] = Some(value);
-                }
-            }
-        }
-        let [
-            name,
-            description,
-            media_name,
-            media_class,
-            virtual_node,
-            port_direction,
-            app_name,
-            object_serial,
-        ] = values;
+        extract_properties!(global.props.as_ref();
+            "node.name" => name,
+            "node.description" => description,
+            "media.name" => media_name,
+            "media.class" => media_class,
+            "node.virtual" => virtual_node,
+            "port.direction" => port_direction,
+            "application.name" => app_name,
+            "object.serial" => object_serial,
+        );
         let name: Option<Arc<str>> = name.map(Arc::from);
         let description = description
             .or(media_name)
