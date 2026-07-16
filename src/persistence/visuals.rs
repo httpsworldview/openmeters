@@ -28,22 +28,14 @@ fn is_true(value: &bool) -> bool {
     *value
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct PopoutWindowSettings {
-    pub width: u32,
-    pub height: u32,
-    #[serde(skip_serializing_if = "is_true")]
-    pub popped_out: bool,
-}
-
-impl Default for PopoutWindowSettings {
-    fn default() -> Self {
-        Self {
-            width: 0,
-            height: 0,
-            popped_out: true,
-        }
+crate::macros::default_struct! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(default)]
+    pub struct PopoutWindowSettings {
+        pub width: u32 = 0,
+        pub height: u32 = 0,
+        #[serde(skip_serializing_if = "is_true")]
+        pub popped_out: bool = true,
     }
 }
 

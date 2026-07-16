@@ -17,40 +17,24 @@ pub fn clamp_bar_height(height: u32) -> u32 {
 
 crate::macros::choice_enum!(all pub enum BarAlignment { #[default] Top => "Top", Bottom => "Bottom" });
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct MainWindowSettings {
-    pub width: u32,
-    pub height: u32,
-}
-
-impl Default for MainWindowSettings {
-    fn default() -> Self {
-        Self {
-            width: MAIN_WINDOW_DEFAULT_WIDTH,
-            height: MAIN_WINDOW_DEFAULT_HEIGHT,
-        }
+crate::macros::default_struct! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(default)]
+    pub struct MainWindowSettings {
+        pub width: u32 = MAIN_WINDOW_DEFAULT_WIDTH,
+        pub height: u32 = MAIN_WINDOW_DEFAULT_HEIGHT,
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct BarSettings {
-    pub enabled: bool,
-    pub alignment: BarAlignment,
-    pub height: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub monitor: Option<String>,
-}
-
-impl Default for BarSettings {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            alignment: BarAlignment::default(),
-            height: BAR_DEFAULT_HEIGHT,
-            monitor: None,
-        }
+crate::macros::default_struct! {
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(default)]
+    pub struct BarSettings {
+        pub enabled: bool = false,
+        pub alignment: BarAlignment = BarAlignment::default(),
+        pub height: u32 = BAR_DEFAULT_HEIGHT,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub monitor: Option<String> = None,
     }
 }
 
@@ -106,6 +90,24 @@ mod tests {
     use super::super::visuals::{PopoutWindowSettings, SpectrumSettings};
     use super::*;
     use crate::domain::visuals::VisualKind;
+
+    #[test]
+    fn persisted_container_defaults_are_stable() {
+        let main = MainWindowSettings::default();
+        assert_eq!((main.width, main.height), (420, 520));
+
+        let bar = BarSettings::default();
+        assert_eq!(
+            (bar.enabled, bar.alignment, bar.height, bar.monitor),
+            (false, BarAlignment::Top, 180, None)
+        );
+
+        let popout = PopoutWindowSettings::default();
+        assert_eq!(
+            (popout.width, popout.height, popout.popped_out),
+            (0, 0, true)
+        );
+    }
 
     #[test]
     fn popout_json_omits_default_active_state() {

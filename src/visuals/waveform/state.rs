@@ -137,24 +137,14 @@ impl WaveformState {
     }
 }
 
-#[derive(Debug)]
-pub(in crate::visuals) struct WaveformStyle {
-    pub fill_alpha: f32,
-    pub vertical_padding: f32,
-    pub channel_gap: f32,
-    pub amplitude_scale: f32,
-    pub(in crate::visuals) palette: [Color; NUM_BANDS],
-}
-
-impl Default for WaveformStyle {
-    fn default() -> Self {
-        Self {
-            fill_alpha: 1.0,
-            vertical_padding: 8.0,
-            channel_gap: 12.0,
-            amplitude_scale: 1.0,
-            palette: palettes::waveform::COLORS,
-        }
+crate::macros::default_struct! {
+    #[derive(Debug)]
+    pub(in crate::visuals) struct WaveformStyle {
+        pub fill_alpha: f32 = 1.0,
+        pub vertical_padding: f32 = 8.0,
+        pub channel_gap: f32 = 12.0,
+        pub amplitude_scale: f32 = 1.0,
+        pub(in crate::visuals) palette: [Color; NUM_BANDS] = palettes::waveform::COLORS,
     }
 }
 

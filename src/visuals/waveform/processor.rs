@@ -49,24 +49,14 @@ impl WaveformConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct WaveColumn {
-    pub min: f32,
-    pub max: f32,
-    pub color_bands: [f32; NUM_BANDS],
-    pub rms_fast_db: [f32; NUM_BANDS],
-    pub rms_slow_db: [f32; NUM_BANDS],
-}
-
-impl Default for WaveColumn {
-    fn default() -> Self {
-        Self {
-            min: 0.0,
-            max: 0.0,
-            color_bands: [0.0; NUM_BANDS],
-            rms_fast_db: [DB_FLOOR; NUM_BANDS],
-            rms_slow_db: [DB_FLOOR; NUM_BANDS],
-        }
+crate::macros::default_struct! {
+    #[derive(Debug, Clone, Copy)]
+    pub struct WaveColumn {
+        pub min: f32 = 0.0,
+        pub max: f32 = 0.0,
+        pub color_bands: [f32; NUM_BANDS] = [0.0; NUM_BANDS],
+        pub rms_fast_db: [f32; NUM_BANDS] = [DB_FLOOR; NUM_BANDS],
+        pub rms_slow_db: [f32; NUM_BANDS] = [DB_FLOOR; NUM_BANDS],
     }
 }
 

@@ -293,21 +293,12 @@ pub fn capture_buffer_handle() -> Arc<CaptureBuffer> {
     Arc::clone(&CAPTURE_BUFFER)
 }
 
-struct VirtualSinkState {
-    frame_bytes: usize,
-    channels: u32,
-    sample_rate: u32,
-    format: spa::param::audio::AudioFormat,
-}
-
-impl Default for VirtualSinkState {
-    fn default() -> Self {
-        Self {
-            frame_bytes: 2 * size_of::<f32>(),
-            channels: 2,
-            sample_rate: VIRTUAL_SINK_SAMPLE_RATE,
-            format: spa::param::audio::AudioFormat::F32LE,
-        }
+crate::macros::default_struct! {
+    struct VirtualSinkState {
+        frame_bytes: usize = 2 * size_of::<f32>(),
+        channels: u32 = 2,
+        sample_rate: u32 = VIRTUAL_SINK_SAMPLE_RATE,
+        format: spa::param::audio::AudioFormat = spa::param::audio::AudioFormat::F32LE,
     }
 }
 

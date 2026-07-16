@@ -53,52 +53,28 @@ fn display_axis(sample_rate: f32) -> (f32, f32) {
     (DISPLAY_MIN_HZ.min(nyq * 0.5), nyq)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(in crate::visuals) struct SpectrogramStyle {
-    pub background: Color,
-    pub ceiling_db: f32,
-    pub opacity: f32,
-    pub contrast: f32,
-}
-
-impl Default for SpectrogramStyle {
-    fn default() -> Self {
-        Self {
-            background: with_alpha(palettes::BG_BASE, 0.0),
-            ceiling_db: DB_CEILING,
-            opacity: 0.95,
-            contrast: 1.0,
-        }
+crate::macros::default_struct! {
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    pub(in crate::visuals) struct SpectrogramStyle {
+        pub background: Color = with_alpha(palettes::BG_BASE, 0.0),
+        pub ceiling_db: f32 = DB_CEILING,
+        pub opacity: f32 = 0.95,
+        pub contrast: f32 = 1.0,
     }
 }
 
-struct SpectrogramHistory {
-    col_kind: ColumnKind,
-    points_per_column: usize,
-    reassigned_points_per_slot: u32,
-    ring_capacity: u32,
-    gpu_capacity: u32,
-    write_slot: u32,
-    col_count: u32,
-    slot_counts: Arc<[u32]>,
-    pending: VecDeque<PendingUpload>,
-    pending_copy: Option<RingCopyPlan>,
-}
-
-impl Default for SpectrogramHistory {
-    fn default() -> Self {
-        Self {
-            col_kind: ColumnKind::Reassigned,
-            points_per_column: 0,
-            reassigned_points_per_slot: 1,
-            ring_capacity: 0,
-            gpu_capacity: 0,
-            write_slot: 0,
-            col_count: 0,
-            slot_counts: Arc::from([]),
-            pending: VecDeque::new(),
-            pending_copy: None,
-        }
+crate::macros::default_struct! {
+    struct SpectrogramHistory {
+        col_kind: ColumnKind = ColumnKind::Reassigned,
+        points_per_column: usize = 0,
+        reassigned_points_per_slot: u32 = 1,
+        ring_capacity: u32 = 0,
+        gpu_capacity: u32 = 0,
+        write_slot: u32 = 0,
+        col_count: u32 = 0,
+        slot_counts: Arc<[u32]> = Arc::from([]),
+        pending: VecDeque<PendingUpload> = VecDeque::new(),
+        pending_copy: Option<RingCopyPlan> = None,
     }
 }
 
