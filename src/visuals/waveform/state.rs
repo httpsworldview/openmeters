@@ -37,6 +37,11 @@ impl WaveformState {
         }
     }
 
+    pub fn reset_audio(&mut self) {
+        Arc::make_mut(&mut self.data).clear();
+        self.preview = WaveformPreview::default();
+    }
+
     pub fn apply_snapshot(&mut self, update: WaveformUpdate<'_>) {
         self.preview = update.preview;
         if !update.reset && update.columns.is_empty() {

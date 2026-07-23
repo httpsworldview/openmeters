@@ -1,0 +1,205 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Maika Namuo
+
+//! Owned PipeWire graph tap and its two narrow cross-thread interfaces.
+
+mod graph;
+mod policy;
+mod runtime;
+mod stream;
+mod transport;
+
+#[cfg(test)]
+mod live_tests;
+
+use crate::domain::routing::{CaptureConfig, StreamIdentity};
+use crate::util::unpoison;
+use std::io;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, RwLock, mpsc};
+use std::thread;
+use tracing::{error, info};
+
+pub use transport::{AudioReader, CapturedSpan};
+
+#[cfg(test)]
+pub(crate) fn test_audio_reader() -> AudioReader {
+    transport::channel().1
+}
+
+pub(crate) const MAX_CAPTURE_CHANNELS: usize = crate::dsp::MAX_AUDIO_CHANNELS;
+const MAX_CAPTURE_SAMPLE_RATE: u32 = crate::util::audio::MAX_SAMPLE_RATE as u32;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ApplicationView {
+    pub identity: StreamIdentity,
+    pub label: Arc<str>,
+    pub active: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CaptureView {
+    pub revision: u64,
+    pub applications: Arc<[ApplicationView]>,
+    pub devices: Arc<[Arc<str>]>,
+    pub default_sink: Arc<str>,
+    pub selected_device: Option<Arc<str>>,
+}
+
+enum Command {
+    Configure(CaptureConfig),
+    Shutdown,
+}
+
+#[derive(Default)]
+struct PublicState {
+    alive: AtomicBool,
+    view: RwLock<Arc<CaptureView>>,
+}
+
+impl PublicState {
+    fn set_alive(&self, alive: bool) {
+        self.alive.store(alive, Ordering::Release);
+    }
+
+    fn publish(&self, mut view: CaptureView) {
+        let mut current = unpoison(self.view.write());
+        if current.applications == view.applications
+            && current.devices == view.devices
+            && current.default_sink == view.default_sink
+            && current.selected_device == view.selected_device
+        {
+            return;
+        }
+        view.revision = current.revision.wrapping_add(1).max(1);
+        *current = Arc::new(view);
+    }
+
+    fn view(&self) -> Arc<CaptureView> {
+        unpoison(self.view.read()).clone()
+    }
+}
+
+#[derive(Clone)]
+pub struct CaptureControl {
+    commands: mpsc::Sender<Command>,
+    public: Arc<PublicState>,
+}
+
+impl CaptureControl {
+    pub fn configure(&self, config: CaptureConfig) -> bool {
+        self.commands.send(Command::Configure(config)).is_ok()
+    }
+
+    pub fn view(&self) -> Arc<CaptureView> {
+        self.public.view()
+    }
+
+    pub fn is_alive(&self) -> bool {
+        self.public.alive.load(Ordering::Acquire)
+    }
+}
+
+pub struct AudioBackend {
+    control: CaptureControl,
+    audio: Option<AudioReader>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+impl AudioBackend {
+    pub fn start(config: CaptureConfig) -> io::Result<Self> {
+        Self::start_with_socket(config, None)
+    }
+
+    fn start_with_socket(config: CaptureConfig, socket: Option<PathBuf>) -> io::Result<Self> {
+        let (writer, audio) = transport::channel();
+        let (commands, receiver) = mpsc::channel();
+        let public = Arc::new(PublicState::default());
+        let control = CaptureControl {
+            commands,
+            public: Arc::clone(&public),
+        };
+        let thread = thread::Builder::new()
+            .name("openmeters-pipewire".into())
+            .spawn(move || runtime::run(receiver, config, writer, public, socket))?;
+
+        Ok(Self {
+            control,
+            audio: Some(audio),
+            thread: Some(thread),
+        })
+    }
+
+    pub fn control(&self) -> CaptureControl {
+        self.control.clone()
+    }
+
+    pub fn take_audio(&mut self) -> AudioReader {
+        self.audio.take().expect("audio reader already taken")
+    }
+
+    pub fn shutdown(&mut self) {
+        let Some(thread) = self.thread.take() else {
+            return;
+        };
+        let _ = self.control.commands.send(Command::Shutdown);
+        if thread.join().is_err() {
+            error!("[pipewire] backend thread panicked");
+        }
+        info!("[pipewire] backend stopped");
+    }
+}
+
+impl Drop for AudioBackend {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn unavailable_socket_faults_and_stops_cleanly() {
+        let runtime = tempfile::tempdir().unwrap();
+        let mut backend = AudioBackend::start_with_socket(
+            CaptureConfig::default(),
+            Some(runtime.path().join("missing")),
+        )
+        .unwrap();
+        let control = backend.control();
+        let mut audio = backend.take_audio();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let mut reset = false;
+        while !reset && Instant::now() < deadline {
+            audio.drain(Instant::now(), |span| {
+                reset |= matches!(span, CapturedSpan::Reset)
+            });
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(reset);
+        assert!(!control.is_alive());
+        backend.shutdown();
+    }
+
+    #[test]
+    fn view_revision_changes_only_with_visible_content() {
+        let state = PublicState::default();
+        state.publish(CaptureView::default());
+        assert_eq!(state.view().revision, 0);
+        state.publish(CaptureView {
+            default_sink: "sink".into(),
+            ..Default::default()
+        });
+        assert_eq!(state.view().revision, 1);
+        state.publish(CaptureView {
+            revision: 99,
+            default_sink: "sink".into(),
+            ..Default::default()
+        });
+        assert_eq!(state.view().revision, 1);
+    }
+}

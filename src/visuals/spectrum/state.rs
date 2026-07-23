@@ -89,6 +89,10 @@ impl SpectrumState {
         self.spectrum_palette = *palette;
     }
 
+    pub fn reset_audio(&mut self) {
+        self.clear_visuals();
+    }
+
     pub fn apply_snapshot(&mut self, snap: &SpectrumSnapshot) {
         let bins = snap.frequency_bins.len();
         let (primary, secondary) = (primary_trace(&self.style), secondary_trace(&self.style));

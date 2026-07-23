@@ -25,8 +25,8 @@ use crate::dsp::AudioBlock;
 use crate::util::audio::{
     DB_FLOOR, DEFAULT_SAMPLE_RATE, FrequencyScale, LN_TO_DB, WindowKind,
     compute_fft_bin_normalization, copy_dc_removed_from_deque,
-    copy_dc_removed_windowed_from_deque, db_to_power, power_to_db, sanitize_sample_rate,
-    window_coefficients,
+    copy_dc_removed_windowed_from_deque, db_to_power, mix_stereo, power_to_db,
+    sanitize_sample_rate, window_coefficients,
 };
 use bytemuck::{Pod, Zeroable};
 use realfft::{RealFftPlanner, RealToComplex};
@@ -210,6 +210,14 @@ impl SpectrogramProcessor {
 
     pub fn config(&self) -> SpectrogramConfig {
         self.config
+    }
+
+    pub fn reset_audio(&mut self) {
+        self.audio_buffer.clear();
+        self.pending_skip_samples = 0;
+        self.audio_front_sample = 0;
+        self.audio_last_nonzero = None;
+        self.reset = true;
     }
 
     fn hilbert_len_for(window_size: usize) -> usize {
@@ -406,7 +414,7 @@ impl SpectrogramProcessor {
         self.pending_skip_samples = self.pending_skip_samples.saturating_add(missing);
     }
 
-    fn push_audio(&mut self, samples: &[f32], channels: usize) {
+    fn push_audio(&mut self, samples: &[f32], channels: usize, matrix: &[[f32; 2]]) {
         if channels == 0 || samples.is_empty() {
             return;
         }
@@ -430,9 +438,9 @@ impl SpectrogramProcessor {
         }
 
         self.audio_buffer.reserve(samples.len() / channels);
-        let inv = 1.0 / channels as f32;
         for frame in samples.chunks_exact(channels) {
-            let sample = frame.iter().sum::<f32>() * inv;
+            let [left, right] = mix_stereo(frame, matrix);
+            let sample = (left + right) * 0.5;
             if sample != 0.0 {
                 self.audio_last_nonzero =
                     Some(self.audio_front_sample + self.audio_buffer.len() as u64);
@@ -502,7 +510,7 @@ impl SpectrogramProcessor {
             self.audio_last_nonzero = None;
             self.reset = true;
         }
-        self.push_audio(block.samples, block.channels);
+        self.push_audio(block.samples, block.channels, block.stereo_matrix());
         let cols = self.process_ready_windows();
         let bin_count = self.fft_size / 2 + 1;
         if cols.is_empty() {
@@ -817,7 +825,8 @@ mod tests {
     fn fft_rebuild_keeps_newest_pending_audio() {
         let mut p = SpectrogramProcessor::new(cfg(64, 16, false));
         let samples: Vec<_> = (0..200).map(|i| i as f32).collect();
-        p.push_audio(&samples, 1);
+        let matrix = crate::dsp::stereo_matrix(1, crate::dsp::ChannelPosition::fallback(1));
+        p.push_audio(&samples, 1, &matrix);
         let mut next = p.config();
         next.fft_size = 16;
         p.update_config(next);

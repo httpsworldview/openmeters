@@ -137,6 +137,12 @@ impl SpectrumProcessor {
         self.config
     }
 
+    pub fn reset_audio(&mut self) {
+        self.reset_level_buffers();
+        self.pcm_buffers.iter_mut().for_each(VecDeque::clear);
+        self.pending_skip_frames = 0;
+    }
+
     fn rebuild_fft(&mut self) {
         self.config.normalize();
         let fft_size = self.config.fft_size;
@@ -295,6 +301,7 @@ impl SpectrumProcessor {
                 samples,
                 block.channels,
                 frames,
+                block.stereo_matrix(),
                 source,
             ) {
                 self.pcm_buffers[idx].extend(&self.source_scratch);

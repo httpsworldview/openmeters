@@ -269,6 +269,10 @@ impl SpectrogramState {
         self.settings.clone()
     }
 
+    pub fn reset_audio(&mut self) {
+        self.history = SpectrogramHistory::default();
+    }
+
     pub fn apply_snapshot(&mut self, snap: SpectrogramUpdate) {
         if snap.new_columns.is_empty() && !snap.reset { return; }
         self.sample_rate = snap.sample_rate;

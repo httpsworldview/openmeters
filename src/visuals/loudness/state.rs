@@ -3,6 +3,7 @@
 
 use super::processor::{LoudnessSnapshot, MAX_CHANNELS};
 use super::render::{LoudnessParams, LoudnessPrimitive, MeterFill};
+use crate::dsp::ChannelPosition;
 use crate::persistence::settings::LoudnessSettings;
 use crate::visuals::options::MeterMode;
 use crate::visuals::palettes;
@@ -87,6 +88,13 @@ impl LoudnessState {
         }
     }
 
+    pub fn reset_audio(&mut self) {
+        let mut snapshot = LoudnessSnapshot::with_floor(DEFAULT_RANGE.0);
+        snapshot.channel_count = 2;
+        self.snapshot = snapshot;
+        self.peaks = [PeakHold::new(DEFAULT_RANGE.0, Instant::now()); VISIBLE_METER_COUNT];
+    }
+
     pub fn apply_snapshot(&mut self, mut snapshot: LoudnessSnapshot) {
         snapshot.channel_count = snapshot.channel_count.clamp(1, MAX_CHANNELS);
         self.snapshot = snapshot;
@@ -155,7 +163,11 @@ impl LoudnessState {
         }
         (0..self.snapshot.channel_count)
             .filter(|&ch| {
-                let side = fallback_side(ch, self.snapshot.channel_count);
+                let side = channel_side(
+                    self.snapshot.positions[ch],
+                    ch,
+                    self.snapshot.channel_count,
+                );
                 side == MeterSide::Both || side == wanted
             })
             .map(|ch| self.get_value(mode, ch))
@@ -217,18 +229,27 @@ enum MeterSide {
     Neither,
 }
 
-fn fallback_side(channel_index: usize, total_channels: usize) -> MeterSide {
-    match (total_channels, channel_index) {
-        (1, 0) => MeterSide::Both,
-        (_, 0) => MeterSide::Left,
-        (_, 1) => MeterSide::Right,
-        (3 | 5, 2) | (6.., 2) => MeterSide::Both,
-        (4, 2) | (5, 3) => MeterSide::Left,
-        (4, 3) | (5, 4) => MeterSide::Right,
-        (6.., 3) => MeterSide::Neither,
-        (6.., i) if i % 2 == 0 => MeterSide::Left,
-        (6.., _) => MeterSide::Right,
-        _ => MeterSide::Neither,
+fn channel_side(
+    position: ChannelPosition,
+    channel_index: usize,
+    total_channels: usize,
+) -> MeterSide {
+    let position = if matches!(position, ChannelPosition::Aux(_) | ChannelPosition::Unknown) {
+        ChannelPosition::fallback(total_channels)[channel_index]
+    } else {
+        position
+    };
+    match position {
+        ChannelPosition::FrontLeft | ChannelPosition::RearLeft | ChannelPosition::SideLeft => {
+            MeterSide::Left
+        }
+        ChannelPosition::FrontRight | ChannelPosition::RearRight | ChannelPosition::SideRight => {
+            MeterSide::Right
+        }
+        ChannelPosition::FrontCenter | ChannelPosition::Mono => MeterSide::Both,
+        ChannelPosition::LowFrequency | ChannelPosition::Aux(_) | ChannelPosition::Unknown => {
+            MeterSide::Neither
+        }
     }
 }
 
@@ -378,6 +399,7 @@ mod tests {
             rms_slow_db: [-14.0, -8.0, -20.0, -60.0, -6.0, -3.0, 0.0, 0.0],
             true_peak_db: [-12.0, -18.0, -2.0, -60.0, -9.0, -6.0, 0.0, 0.0],
             channel_count: 6,
+            positions: ChannelPosition::fallback(6),
         });
 
         assert_eq!(visible_bar_values(&state), vec![vec![-2.0, -2.0], vec![-9.0]]);
@@ -395,6 +417,7 @@ mod tests {
             rms_slow_db: [DEFAULT_RANGE.0; MAX_CHANNELS],
             true_peak_db,
             channel_count,
+            positions: [ChannelPosition::Unknown; MAX_CHANNELS],
         };
         let mut state = LoudnessState::new();
         state.set_modes(MeterMode::TruePeak, MeterMode::LufsShortTerm);

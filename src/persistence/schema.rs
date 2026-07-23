@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 use super::{lossy, palette::ColorSetting, visuals::VisualSettings};
-use crate::domain::routing::CaptureMode;
+use crate::domain::routing::{CaptureConfig, CaptureMode, DeviceSelection, StreamIdentity};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 const MAIN_WINDOW_DEFAULT_WIDTH: u32 = 420;
 const MAIN_WINDOW_DEFAULT_HEIGHT: u32 = 520;
@@ -49,11 +50,25 @@ pub struct UiSettings {
     pub bar: BarSettings,
     pub capture_mode: CaptureMode,
     pub last_device_name: Option<String>,
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub disabled_streams: BTreeSet<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
 }
 
 impl UiSettings {
+    pub(crate) fn capture_config(&self) -> CaptureConfig {
+        CaptureConfig {
+            mode: self.capture_mode,
+            device: DeviceSelection::from_token(self.last_device_name.as_deref()),
+            disabled_streams: self
+                .disabled_streams
+                .iter()
+                .map(|identity| StreamIdentity::new(identity.as_str()))
+                .collect(),
+        }
+    }
+
     pub(super) fn from_json_lossy(raw: &str) -> Result<Self, serde_json::Error> {
         serde_json::from_str(raw).map(Self::from_value_lossy)
     }
@@ -79,7 +94,7 @@ impl UiSettings {
                 });
             }
             lossy::fields!(map, out, "settings";
-                background_color, decorations, capture_mode, last_device_name, theme
+                background_color, decorations, capture_mode, last_device_name, disabled_streams, theme
             );
         })
     }

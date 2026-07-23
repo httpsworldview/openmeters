@@ -4,17 +4,15 @@
 mod message;
 mod windowing;
 
-use crate::domain::routing::RoutingCommand;
-use crate::infra::pipewire::{meter_tap::AudioBatch, registry::RegistrySnapshot};
+use crate::infra::pipewire::{AudioReader, CaptureControl};
+use crate::meter::MeterEngine;
 use crate::persistence::settings::{BarAlignment, BarSettings, SettingsHandle, clamp_bar_height};
 use crate::ui::config::ConfigPage;
 use crate::ui::settings::ActiveSettings;
-use crate::ui::subscription::channel_subscription;
 use crate::ui::theme;
 use crate::ui::visuals::VisualsPage;
 use crate::ui::widgets::{fill, scroll_glow::ScrollGlow};
 use crate::visuals::registry::{VisualManager, VisualManagerHandle};
-use async_channel::Receiver as AsyncReceiver;
 use iced::alignment::{Horizontal, Vertical};
 use iced::event::{self, Event};
 use iced::widget::{container, mouse_area, row, stack, text};
@@ -27,7 +25,6 @@ use message::{Message, keyboard_shortcut, update, view};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 use windowing::{
     APP_ID, BarResizeState, PopoutWindow, layershell_available, main_window_size, open_main_window,
@@ -35,13 +32,38 @@ use windowing::{
 };
 
 const TOAST_DISPLAY_DURATION: Duration = Duration::from_secs(2);
+const WATCHDOG_INTERVAL: Duration = Duration::from_millis(50);
+const MAINTENANCE_INTERVAL: Duration = Duration::from_millis(100);
 const BAR_RESIZE_HANDLE_THICKNESS: f32 = 6.0;
+
+fn advance_due(last: &mut Option<Instant>, now: Instant, interval: Duration) -> bool {
+    if last.is_some_and(|last| now <= last || now.saturating_duration_since(last) < interval) {
+        return false;
+    }
+    *last = Some(now);
+    true
+}
+
+fn clock(period: &Duration) -> async_channel::Receiver<()> {
+    let (sender, receiver) = async_channel::bounded(1);
+    let period = *period;
+    if let Err(err) = std::thread::Builder::new()
+        .name("openmeters-ui-clock".into())
+        .spawn(move || {
+            while let Ok(()) | Err(async_channel::TrySendError::Full(_)) = sender.try_send(()) {
+                std::thread::sleep(period);
+            }
+        })
+    {
+        tracing::error!("[ui] failed to start presentation clock: {err}");
+    }
+    receiver
+}
 
 #[derive(Clone)]
 pub(crate) struct UiConfig {
-    pub(crate) routing_sender: mpsc::Sender<RoutingCommand>,
-    pub(crate) registry_updates: Option<Arc<AsyncReceiver<RegistrySnapshot>>>,
-    pub(crate) audio_frames: Arc<AsyncReceiver<AudioBatch>>,
+    pub(crate) capture: CaptureControl,
+    pub(crate) audio: Rc<RefCell<Option<AudioReader>>>,
     pub(crate) settings_handle: SettingsHandle,
 }
 
@@ -85,11 +107,13 @@ struct UiApp {
     config_page: ConfigPage,
     visuals_page: VisualsPage,
     visual_manager: VisualManagerHandle,
+    meter: MeterEngine,
+    last_frame: Option<Instant>,
     settings_handle: SettingsHandle,
-    audio_frames: Arc<AsyncReceiver<AudioBatch>>,
     config_window: Option<window::Id>,
     bar_resize_state: Option<BarResizeState>,
     rendering_paused: bool,
+    next_maintenance: Instant,
     toast_until: Option<Instant>,
     main_window_id: window::Id,
     main_window_size: Size,
@@ -105,9 +129,8 @@ struct UiApp {
 impl UiApp {
     fn new(config: UiConfig, use_layershell: bool) -> (Self, Task<Message>) {
         let UiConfig {
-            routing_sender,
-            registry_updates,
-            audio_frames,
+            capture,
+            audio,
             settings_handle,
         } = config;
         let (visual_settings, use_decorations, bar_settings, main_window, theme_file) = {
@@ -126,10 +149,19 @@ impl UiApp {
         if let Some(theme_file) = theme_file {
             manager.apply_theme(&theme_file);
         }
+        let visuals_active = manager.has_enabled();
         let visual_manager = Rc::new(RefCell::new(manager));
+        let reader = audio
+            .borrow_mut()
+            .take()
+            .expect("audio reader already taken");
+        let mut meter_engine = MeterEngine::new(reader, visual_manager.clone());
+        if !visuals_active {
+            meter_engine.set_active(false);
+        }
+
         let config_page = ConfigPage::new(
-            routing_sender,
-            registry_updates,
+            capture,
             visual_manager.clone(),
             settings_handle.clone(),
             use_layershell,
@@ -142,11 +174,13 @@ impl UiApp {
             config_page,
             visuals_page,
             visual_manager,
+            meter: meter_engine,
+            last_frame: None,
             settings_handle,
-            audio_frames,
             config_window: None,
             bar_resize_state: None,
             rendering_paused: false,
+            next_maintenance: Instant::now(),
             toast_until: None,
             main_window_id: main_id,
             main_window_size: main_size,
@@ -167,7 +201,6 @@ impl UiApp {
 
     fn subscription(&self) -> Subscription<Message> {
         let mut subs = vec![
-            self.config_page.subscription().map(Message::Config),
             event::listen_with(keyboard_shortcut),
             window::close_events().map(Message::WindowClosed),
             window::resize_events().map(|(id, size)| Message::WindowResized(id, size)),
@@ -178,17 +211,76 @@ impl UiApp {
                 _ => None,
             }),
         ];
-        subs.push(channel_subscription(Arc::clone(&self.audio_frames)).map(Message::AudioFrame));
         if self.bar_resize_state.is_some() {
             subs.push(event::listen_with(message::bar_drag_events));
         }
+        let visuals_enabled = self.visual_manager.borrow().has_enabled();
+        if visuals_enabled {
+            subs.push(window::frames().map(Message::Frame));
+        }
+        if visuals_enabled || self.maintenance_active() {
+            subs.push(
+                Subscription::run_with(
+                    if visuals_enabled {
+                        WATCHDOG_INTERVAL
+                    } else {
+                        MAINTENANCE_INTERVAL
+                    },
+                    clock,
+                )
+                .map(|_| Message::Tick),
+            );
+        }
         Subscription::batch(subs)
+    }
+
+    fn visuals_active(&self) -> bool {
+        self.visual_manager.borrow().has_enabled()
+    }
+
+    fn maintenance_active(&self) -> bool {
+        self.config_window.is_some()
+            || self.toast_until.is_some()
+            || self.exit_warning_until.is_some()
+    }
+
+    fn frame(&mut self, now: Instant) {
+        if self.visuals_active() && advance_due(&mut self.last_frame, now, Duration::ZERO) {
+            self.meter.advance(now);
+        }
+    }
+
+    fn tick(&mut self) {
+        let now = Instant::now();
+        if self.visuals_active() && advance_due(&mut self.last_frame, now, WATCHDOG_INTERVAL) {
+            self.meter.advance(now);
+        }
+        if now >= self.next_maintenance {
+            if self.config_window.is_some() {
+                self.config_page.refresh_registry();
+            }
+            self.toast_until.take_if(|deadline| now >= *deadline);
+            self.exit_warning_until.take_if(|deadline| now >= *deadline);
+            self.next_maintenance = now + MAINTENANCE_INTERVAL;
+        }
+    }
+
+    fn sync_meter_activity(&mut self) {
+        self.meter.set_active(self.visuals_active());
+        self.last_frame = None;
+    }
+
+    fn set_rendering_paused(&mut self, paused: bool) {
+        self.rendering_paused = paused;
+        self.meter.set_paused(paused, Instant::now());
+        self.last_frame = None;
     }
 
     fn toggle_config_window(&mut self) -> Task<Message> {
         if let Some(id) = self.config_window.take() {
             return window::close(id);
         }
+        self.config_page.refresh_registry();
         let (id, task) = open_tool_base_window(self.use_layershell);
         self.config_window = Some(id);
         self.toast_until = Some(Instant::now() + TOAST_DISPLAY_DURATION);
@@ -319,5 +411,33 @@ impl UiApp {
         } else {
             stack![content, handle_layer].into()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frame_gate_rejects_duplicate_and_early_watchdog_ticks() {
+        let start = Instant::now();
+        let mut last = None;
+        assert!(advance_due(&mut last, start, Duration::ZERO));
+        assert!(!advance_due(&mut last, start, Duration::ZERO));
+        assert!(advance_due(
+            &mut last,
+            start + Duration::from_millis(1),
+            Duration::ZERO
+        ));
+        assert!(!advance_due(
+            &mut last,
+            start + Duration::from_millis(50),
+            WATCHDOG_INTERVAL
+        ));
+        assert!(advance_due(
+            &mut last,
+            start + Duration::from_millis(51),
+            WATCHDOG_INTERVAL
+        ));
     }
 }

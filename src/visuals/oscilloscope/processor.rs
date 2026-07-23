@@ -566,15 +566,39 @@ struct SnapshotBuffer {
 
 #[derive(Default)]
 struct TraceState {
-    buffer: Vec<f32>,
+    buffer: VecDeque<f32>,
     trigger: StableTrigger,
+}
+
+fn extend_projected_history(
+    history: &mut VecDeque<f32>,
+    block: &AudioBlock<'_>,
+    capacity: usize,
+    channel: Channel,
+) -> bool {
+    if channel == Channel::None {
+        history.clear();
+        return false;
+    }
+    let matrix = block.stereo_matrix();
+    history.extend(block.samples.chunks_exact(block.channels).map(|frame| {
+        let [left, right] = audio::mix_stereo(frame, matrix);
+        match channel {
+            Channel::Left => left,
+            Channel::Right => right,
+            Channel::Mid => (left + right) * 0.5,
+            Channel::Side => (left - right) * 0.5,
+            Channel::None => unreachable!(),
+        }
+    }));
+    history.drain(..history.len().saturating_sub(capacity));
+    !history.is_empty()
 }
 
 pub struct OscilloscopeProcessor {
     config: OscilloscopeConfig,
     snapshot: SnapshotBuffer,
     epoch: u64,
-    history: VecDeque<f32>,
     history_channels: Option<usize>,
     traces: [TraceState; TRACE_COUNT],
     source: TraceState,
@@ -586,7 +610,6 @@ impl OscilloscopeProcessor {
             config,
             snapshot: SnapshotBuffer::default(),
             epoch: 0,
-            history: VecDeque::new(),
             history_channels: None,
             traces: std::array::from_fn(|_| TraceState::default()),
             source: TraceState::default(),
@@ -595,6 +618,11 @@ impl OscilloscopeProcessor {
 
     pub fn config(&self) -> OscilloscopeConfig {
         self.config
+    }
+
+    pub fn reset_audio(&mut self) {
+        self.clear_history();
+        self.snapshot = SnapshotBuffer::default();
     }
 
     #[cfg(test)]
@@ -617,9 +645,7 @@ impl OscilloscopeProcessor {
         }
 
         let channel_count = block.channels;
-        if self.history_channels.is_some_and(|channels| channels != channel_count)
-            || (!self.history.is_empty() && !self.history.len().is_multiple_of(channel_count))
-        {
+        if self.history_channels.is_some_and(|channels| channels != channel_count) {
             self.clear_history();
         }
         self.history_channels = Some(channel_count);
@@ -638,15 +664,7 @@ impl OscilloscopeProcessor {
         };
         let trace_channels = [self.config.channel_1, self.config.channel_2];
         let trigger_source = self.config.trigger_source;
-        let samples = &block.samples[..block.frame_count() * channel_count];
-        audio::extend_interleaved_history(
-            &mut self.history,
-            samples,
-            probe_frames.max(base_frames).max(trigger_frames) * channel_count,
-            channel_count,
-        );
-        let available = self.history.len() / channel_count;
-        let data = self.history.make_contiguous();
+        let history_frames = probe_frames.max(base_frames).max(trigger_frames);
         let mode = self.config.trigger_mode;
         let sample_rate = self.config.sample_rate;
         let capture = |trace: &[f32], trigger: &mut StableTrigger| match mode {
@@ -662,13 +680,7 @@ impl OscilloscopeProcessor {
             .zip(trace_channels)
             .zip(&mut active_traces)
         {
-            *active = audio::project_interleaved_channel_into(
-                &mut trace.buffer,
-                data,
-                channel_count,
-                available,
-                channel,
-            );
+            *active = extend_projected_history(&mut trace.buffer, block, history_frames, channel);
         }
 
         let matching_trace = trace_channels
@@ -676,15 +688,17 @@ impl OscilloscopeProcessor {
             .position(|&channel| channel == trigger_source)
             .filter(|&slot| active_traces[slot]);
         let linked_capture = if let Some(slot) = matching_trace {
-            capture(&self.traces[slot].buffer, &mut self.source.trigger)
-        } else if audio::project_interleaved_channel_into(
+            capture(
+                self.traces[slot].buffer.make_contiguous(),
+                &mut self.source.trigger,
+            )
+        } else if extend_projected_history(
             &mut self.source.buffer,
-            data,
-            channel_count,
-            available,
+            block,
+            history_frames,
             trigger_source,
         ) {
-            capture(&self.source.buffer, &mut self.source.trigger)
+            capture(self.source.buffer.make_contiguous(), &mut self.source.trigger)
         } else {
             None
         };
@@ -692,8 +706,8 @@ impl OscilloscopeProcessor {
         let mut captures = [None; TRACE_COUNT];
         for (slot, (trace, active)) in self.traces.iter_mut().zip(active_traces).enumerate() {
             if active {
-                captures[slot] =
-                    linked_capture.or_else(|| capture(&trace.buffer, &mut trace.trigger));
+                captures[slot] = linked_capture
+                    .or_else(|| capture(trace.buffer.make_contiguous(), &mut trace.trigger));
             }
         }
 
@@ -711,7 +725,7 @@ impl OscilloscopeProcessor {
 
     fn clear_history(&mut self) {
         self.epoch = self.epoch.wrapping_add(1);
-        self.history.clear();
+        self.history_channels = None;
         self.traces.iter_mut().for_each(|trace| {
             trace.buffer.clear();
             trace.trigger.unlock();
@@ -736,7 +750,7 @@ impl OscilloscopeProcessor {
             let Some(capture) = capture else { continue };
             if downsample_trace(
                 &mut self.snapshot.samples,
-                &self.traces[slot].buffer,
+                self.traces[slot].buffer.make_contiguous(),
                 capture,
                 target,
             ) {
@@ -1077,12 +1091,14 @@ mod tests {
         }
 
         let mut projected = Vec::new();
+        let matrix = crate::dsp::stereo_matrix(2, crate::dsp::ChannelPosition::fallback(2));
         let same_stereo: Vec<f32> = mono.iter().flat_map(|&s| [s, s]).collect();
         assert!(audio::project_interleaved_channel_into(
             &mut projected,
             &same_stereo,
             2,
             mono.len(),
+            &matrix,
             Channel::Mid,
         ));
         let c = find_rising_zero_crossing(&projected, (0..=3840).rev()).unwrap();
@@ -1095,6 +1111,7 @@ mod tests {
                 &inverted,
                 2,
                 mono.len(),
+                &matrix,
                 channel,
             ));
             assert_eq!(
@@ -1142,7 +1159,7 @@ mod tests {
         let silence = vec![0.0; BLOCK * 2];
         processor.process_block(&make_block(&silence, 2, RATE));
 
-        assert_eq!(processor.history.len(), silence.len());
+        assert_eq!(processor.traces[0].buffer.len(), silence.len() / 2);
         assert!(processor.last_cycle_rate().is_none());
     }
 

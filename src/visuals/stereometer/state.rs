@@ -75,6 +75,13 @@ impl StereometerState {
         self.settings.clone()
     }
 
+    pub fn reset_audio(&mut self) {
+        self.points = Arc::default();
+        self.band_points = Default::default();
+        self.corr_trail.clear();
+        self.band_trail.clear();
+    }
+
     pub fn apply_snapshot(&mut self, snap: StereometerSnapshot) {
         if snap.xy_points.is_empty() {
             self.points = Arc::default();

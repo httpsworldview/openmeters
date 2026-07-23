@@ -3,7 +3,8 @@
 
 use crate::dsp::{AudioBlock, Biquad, ThreeBand, WindowedMeans};
 use crate::util::audio::{
-    BAND_SPLITS_HZ, Channel, DB_FLOOR, DEFAULT_SAMPLE_RATE, power_to_db, sanitize_sample_rate,
+    BAND_SPLITS_HZ, Channel, DB_FLOOR, DEFAULT_SAMPLE_RATE, mix_stereo, power_to_db,
+    sanitize_sample_rate,
 };
 
 pub const MIN_SCROLL_SPEED: f32 = 10.0;
@@ -128,11 +129,9 @@ impl BandTracker {
     }
 }
 
-fn derived_frame(frame: &[f32]) -> [f32; DERIVED_CHANNELS] {
-    let left = frame[0];
-    let right = frame.get(1).copied().unwrap_or(left);
-    let side = if frame.len() > 1 { (left - right) * 0.5 } else { 0.0 };
-    [left, right, frame.iter().sum::<f32>() / frame.len() as f32, side]
+fn derived_frame(frame: &[f32], matrix: &[[f32; 2]]) -> [f32; DERIVED_CHANNELS] {
+    let [left, right] = mix_stereo(frame, matrix);
+    [left, right, (left + right) * 0.5, (left - right) * 0.5]
 }
 
 fn process_bands(
@@ -173,6 +172,10 @@ impl WaveformProcessor {
 
     pub fn config(&self) -> WaveformConfig {
         self.config
+    }
+
+    pub fn reset_audio(&mut self) {
+        self.rebuild();
     }
 
     fn rebuild(&mut self) {
@@ -256,11 +259,11 @@ impl WaveformProcessor {
         self.reset_column();
     }
 
-    fn ingest_samples(&mut self, samples: &[f32], channels: usize) {
+    fn ingest_samples(&mut self, samples: &[f32], channels: usize, matrix: &[[f32; 2]]) {
         let step = (f64::from(self.config.scroll_speed) / f64::from(self.config.sample_rate))
             .clamp(0.0, 1.0);
         for frame in samples.chunks_exact(channels) {
-            let derived = derived_frame(frame);
+            let derived = derived_frame(frame, matrix);
             let finite = derived.map(f32::is_finite);
             if let Some(trackers) = &mut self.trackers {
                 process_bands(trackers, derived, finite);
@@ -325,7 +328,7 @@ impl WaveformProcessor {
             self.rebuild();
         }
 
-        self.ingest_samples(block.samples, channels);
+        self.ingest_samples(block.samples, channels, block.stereo_matrix());
         if let Some(trackers) = &mut self.trackers {
             for tracker in trackers {
                 tracker.filters.flush_denormals();
@@ -423,7 +426,10 @@ mod tests {
             &[1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
             4,
         );
-        assert_eq!((column(&update, 2, 0).min, column(&update, 2, 0).max), (0.25, 0.75));
+        assert_eq!(
+            (column(&update, 2, 0).min, column(&update, 2, 0).max),
+            (0.5, 0.5 + std::f32::consts::FRAC_1_SQRT_2)
+        );
     }
 
     #[test]
