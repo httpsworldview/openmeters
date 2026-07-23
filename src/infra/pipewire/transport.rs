@@ -66,7 +66,6 @@ struct Shared {
     fault_epoch: AtomicU64,
     activity_epoch: AtomicU64,
     accepting: AtomicBool,
-    faults: AtomicU64,
     reconnects: AtomicU64,
 }
 
@@ -84,7 +83,6 @@ impl Shared {
             fault_epoch: AtomicU64::new(0),
             activity_epoch: AtomicU64::new(0),
             accepting: AtomicBool::new(true),
-            faults: AtomicU64::new(0),
             reconnects: AtomicU64::new(0),
         }
     }
@@ -98,7 +96,6 @@ impl Shared {
     }
 
     fn fault(&self) {
-        self.faults.fetch_add(1, Ordering::Relaxed);
         self.fault_epoch.fetch_add(1, Ordering::AcqRel);
     }
 }
@@ -257,11 +254,26 @@ impl CaptureWriter {
         positions: [ChannelPosition; MAX_CAPTURE_CHANNELS],
     ) -> AudioFormat {
         self.flush_pending();
-        self.generation = self.generation.wrapping_add(1).max(1);
-        let format = AudioFormat::new(channels, rate, self.generation, positions);
+        let format = self.publish_format(channels, rate, positions);
         self.configure_pool(format);
         self.format = Some(format);
         self.disconnected = false;
+        format
+    }
+
+    pub(super) fn publish_format(
+        &mut self,
+        channels: usize,
+        rate: u32,
+        positions: [ChannelPosition; MAX_CAPTURE_CHANNELS],
+    ) -> AudioFormat {
+        let current = self.shared.format();
+        let candidate = AudioFormat::new(channels, rate, current.generation, positions);
+        if current.generation != 0 && candidate == current {
+            return current;
+        }
+        self.generation = current.generation.max(self.generation).saturating_add(1);
+        let format = AudioFormat::new(channels, rate, self.generation, positions);
         *unpoison(self.shared.format.write()) = format;
         format
     }
@@ -530,9 +542,6 @@ impl AudioReader {
             0
         });
         if format.generation == 0 {
-            // Generation zero is only a packing sentinel. Advancing the cursor
-            // without publishing fake default-format silence prevents the first
-            // negotiated stream from looking like a runtime format change.
             self.cursor = target;
             return;
         }
@@ -690,7 +699,7 @@ impl Drop for AudioReader {
     fn drop(&mut self) {
         info!(
             "[capture] stopped after {} fault(s) and {} reconnect(s)",
-            self.shared.faults.load(Ordering::Relaxed),
+            self.shared.fault_epoch.load(Ordering::Relaxed),
             self.shared.reconnects.load(Ordering::Relaxed)
         );
     }
@@ -761,19 +770,26 @@ mod tests {
 
     #[test]
     fn format_and_packet_timeline_remain_authoritative() {
-        let positions = [
-            ChannelPosition::FrontRight,
-            ChannelPosition::FrontLeft,
-            ChannelPosition::LowFrequency,
-            ChannelPosition::Aux(3),
-            ChannelPosition::Unknown,
-            ChannelPosition::Unknown,
-            ChannelPosition::Unknown,
-            ChannelPosition::Unknown,
-        ];
-        let (mut writer, reader) = channel_with_capacity(4);
-        let published = writer.set_format(4, 192_000, positions);
-        assert_eq!(reader.shared.format(), published);
+        let (mut writer, mut reader) = channel_with_capacity(4);
+        let start = reader.shared.epoch + Duration::from_millis(10);
+        let mut emitted = false;
+        reader.drain(start, |_| emitted = true);
+        assert!(!emitted);
+        let positions = ChannelPosition::fallback(2);
+        let hint = writer.publish_format(2, DEFAULT_SAMPLE_RATE as u32, positions);
+        let mut seeded = 0;
+        reader.drain(start + Duration::from_millis(10), |span| {
+            if let CapturedSpan::Silence { frames, .. } = span {
+                seeded = frames;
+            }
+        });
+        assert_eq!(seeded, 480);
+        assert_eq!(writer.channels(), None);
+        assert_eq!(writer.set_format(2, 48_000, positions), hint);
+        assert_ne!(
+            writer.set_format(2, 96_000, positions).generation,
+            hint.generation
+        );
 
         let (_, mut reader, format) = mono(4, 1_000);
         let mut spans = Vec::new();

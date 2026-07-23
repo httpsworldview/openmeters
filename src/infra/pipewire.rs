@@ -12,8 +12,9 @@ mod transport;
 #[cfg(test)]
 mod live_tests;
 
-use crate::domain::routing::{CaptureConfig, StreamIdentity};
-use crate::util::unpoison;
+use crate::domain::routing::{CaptureConfig, CaptureMode, StreamIdentity};
+use crate::dsp::ChannelPosition;
+use crate::util::{audio::DEFAULT_SAMPLE_RATE, unpoison};
 use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -113,7 +114,12 @@ impl AudioBackend {
     }
 
     fn start_with_socket(config: CaptureConfig, socket: Option<PathBuf>) -> io::Result<Self> {
-        let (writer, audio) = transport::channel();
+        let (mut writer, audio) = transport::channel();
+        let (channels, positions) = match config.mode {
+            CaptureMode::Applications => (MAX_CAPTURE_CHANNELS, ChannelPosition::SURROUND),
+            CaptureMode::Device => (2, ChannelPosition::fallback(2)),
+        };
+        writer.publish_format(channels, DEFAULT_SAMPLE_RATE as u32, positions);
         let (commands, receiver) = mpsc::channel();
         let public = Arc::new(PublicState::default());
         let control = CaptureControl {
@@ -173,14 +179,16 @@ mod tests {
         let control = backend.control();
         let mut audio = backend.take_audio();
         let deadline = Instant::now() + Duration::from_secs(1);
-        let mut reset = false;
-        while !reset && Instant::now() < deadline {
-            audio.drain(Instant::now(), |span| {
-                reset |= matches!(span, CapturedSpan::Reset)
+        let (mut reset, mut seeded) = (false, false);
+        while !(reset && seeded) && Instant::now() < deadline {
+            audio.drain(Instant::now(), |span| match span {
+                CapturedSpan::Reset => reset = true,
+                CapturedSpan::Silence { format, .. } => seeded |= format.channels == 8,
+                CapturedSpan::Pcm { .. } => {}
             });
             std::thread::sleep(Duration::from_millis(1));
         }
-        assert!(reset);
+        assert!(reset && seeded);
         assert!(!control.is_alive());
         backend.shutdown();
     }
