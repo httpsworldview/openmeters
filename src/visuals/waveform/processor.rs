@@ -82,7 +82,7 @@ fn window_len(samples_at_reference_rate: usize, sample_rate: f32) -> usize {
         .max(1)
 }
 
-type BandWindow = WindowedMeans<f32, NUM_BANDS, 1>;
+type BandWindow = WindowedMeans<NUM_BANDS, 1>;
 type BandFilter = ThreeBand<Biquad>;
 
 fn band_window(len: usize) -> BandWindow {
@@ -94,7 +94,6 @@ fn band_means(window: &BandWindow) -> [f32; NUM_BANDS] {
 }
 
 struct BandTracker {
-    filters: BandFilter,
     color: BandWindow,
     fast: Option<BandWindow>,
     slow: Option<BandWindow>,
@@ -104,7 +103,6 @@ impl BandTracker {
     fn new(sample_rate: f32, track_history: bool) -> Self {
         let color_len = window_len(BAND_COLOR_WINDOW_AT_44K1, sample_rate);
         Self {
-            filters: BandFilter::parallel(sample_rate, BAND_SPLITS_HZ),
             color: band_window(color_len),
             fast: track_history.then(|| band_window(color_len)),
             slow: track_history
@@ -112,8 +110,7 @@ impl BandTracker {
         }
     }
 
-    fn process(&mut self, sample: f32) {
-        let bands = self.filters.process(sample);
+    fn process(&mut self, bands: [f32; NUM_BANDS]) {
         self.color.push(std::array::from_fn(|band| {
             let value = bands[band].abs() * BAND_COLOR_GAINS[band];
             if value.is_finite() { value } else { 0.0 }
@@ -134,20 +131,10 @@ fn derived_frame(frame: &[f32], matrix: &[[f32; 2]]) -> [f32; DERIVED_CHANNELS] 
     [left, right, (left + right) * 0.5, (left - right) * 0.5]
 }
 
-fn process_bands(
-    trackers: &mut [BandTracker; DERIVED_CHANNELS],
-    derived: [f32; DERIVED_CHANNELS],
-    finite: [bool; DERIVED_CHANNELS],
-) {
-    for channel in 0..DERIVED_CHANNELS {
-        trackers[channel].process(if finite[channel] { derived[channel] } else { 0.0 });
-    }
-}
-
 pub struct WaveformProcessor {
     config: WaveformConfig,
     source_channels: usize,
-    trackers: Option<[BandTracker; DERIVED_CHANNELS]>,
+    band_analysis: Option<([BandFilter; 2], [BandTracker; DERIVED_CHANNELS])>,
     column_phase: f64,
     current: [Option<(f32, f32, Option<f32>)>; DERIVED_CHANNELS],
     last_sample: [Option<f32>; DERIVED_CHANNELS],
@@ -161,7 +148,7 @@ impl WaveformProcessor {
         Self {
             config,
             source_channels: 2,
-            trackers: Self::trackers(config),
+            band_analysis: Self::band_analysis(config),
             column_phase: 0.0,
             current: [None; DERIVED_CHANNELS],
             last_sample: [None; DERIVED_CHANNELS],
@@ -187,14 +174,19 @@ impl WaveformProcessor {
         self.reset_pending = true;
     }
 
-    fn trackers(config: WaveformConfig) -> Option<[BandTracker; DERIVED_CHANNELS]> {
-        config
-            .analyze_bands
-            .then(|| std::array::from_fn(|_| BandTracker::new(config.sample_rate, config.track_history)))
+    fn band_analysis(
+        config: WaveformConfig,
+    ) -> Option<([BandFilter; 2], [BandTracker; DERIVED_CHANNELS])> {
+        config.analyze_bands.then(|| {
+            (
+                std::array::from_fn(|_| BandFilter::parallel(config.sample_rate, BAND_SPLITS_HZ)),
+                std::array::from_fn(|_| BandTracker::new(config.sample_rate, config.track_history)),
+            )
+        })
     }
 
     fn reset_trackers(&mut self) {
-        self.trackers = Self::trackers(self.config);
+        self.band_analysis = Self::band_analysis(self.config);
     }
 
     fn fit_pending_capacity(&mut self) {
@@ -224,7 +216,7 @@ impl WaveformProcessor {
             max,
             ..WaveColumn::default()
         };
-        if let Some(trackers) = &self.trackers {
+        if let Some((_, trackers)) = &self.band_analysis {
             let tracker = &trackers[channel];
             column.color_bands = band_means(&tracker.color);
             if self.config.track_history {
@@ -265,8 +257,19 @@ impl WaveformProcessor {
         for frame in samples.chunks_exact(channels) {
             let derived = derived_frame(frame, matrix);
             let finite = derived.map(f32::is_finite);
-            if let Some(trackers) = &mut self.trackers {
-                process_bands(trackers, derived, finite);
+            if let Some((filters, trackers)) = &mut self.band_analysis {
+                let filtered: [[f32; NUM_BANDS]; 2] = std::array::from_fn(|channel| {
+                    filters[channel].process(if finite[channel] { derived[channel] } else { 0.0 })
+                });
+                let bands = [
+                    filtered[0],
+                    filtered[1],
+                    std::array::from_fn(|band| (filtered[0][band] + filtered[1][band]) * 0.5),
+                    std::array::from_fn(|band| (filtered[0][band] - filtered[1][band]) * 0.5),
+                ];
+                for (channel, tracker) in trackers.iter_mut().enumerate() {
+                    tracker.process(if finite[channel] { bands[channel] } else { [0.0; NUM_BANDS] });
+                }
             }
             self.ingest_derived(derived, finite, step);
         }
@@ -329,10 +332,8 @@ impl WaveformProcessor {
         }
 
         self.ingest_samples(block.samples, channels, block.stereo_matrix());
-        if let Some(trackers) = &mut self.trackers {
-            for tracker in trackers {
-                tracker.filters.flush_denormals();
-            }
+        if let Some((filters, _)) = &mut self.band_analysis {
+            filters.iter_mut().for_each(BandFilter::flush_denormals);
         }
 
         self.cap_pending_columns();
@@ -404,6 +405,35 @@ mod tests {
 
     fn band(update: &WaveformUpdate, channel: usize, band: usize) -> f32 {
         latest(update, channel).color_bands[band]
+    }
+
+    #[test]
+    fn derived_band_filters_preserve_all_channel_history() {
+        let mut shared: [BandFilter; 2] =
+            std::array::from_fn(|_| BandFilter::parallel(RATE, BAND_SPLITS_HZ));
+        let mut separate: [BandFilter; DERIVED_CHANNELS] =
+            std::array::from_fn(|_| BandFilter::parallel(RATE, BAND_SPLITS_HZ));
+        let mut max_error = 0.0_f32;
+        for n in 0..RATE as usize {
+            let derived = derived_frame(
+                &[(2.0 * PI * 137.0 * n as f32 / RATE).sin(),
+                  (2.0 * PI * 263.0 * n as f32 / RATE).sin()],
+                &crate::dsp::stereo_matrix(2, crate::dsp::ChannelPosition::fallback(2)),
+            );
+            let expected: [[f32; NUM_BANDS]; DERIVED_CHANNELS] =
+                std::array::from_fn(|channel| separate[channel].process(derived[channel]));
+            let filtered: [[f32; NUM_BANDS]; 2] =
+                std::array::from_fn(|channel| shared[channel].process(derived[channel]));
+            let actual = [
+                filtered[0], filtered[1],
+                std::array::from_fn(|band| (filtered[0][band] + filtered[1][band]) * 0.5),
+                std::array::from_fn(|band| (filtered[0][band] - filtered[1][band]) * 0.5),
+            ];
+            for (actual, expected) in actual.into_iter().flatten().zip(expected.into_iter().flatten()) {
+                max_error = max_error.max((actual - expected).abs());
+            }
+        }
+        assert!(max_error < 5.0e-5, "maximum filter error was {max_error}");
     }
 
     #[test]

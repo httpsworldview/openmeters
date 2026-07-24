@@ -2,27 +2,30 @@
 // Copyright (C) 2026 Maika Namuo
 
 use bytemuck::{Pod, Zeroable};
-use iced::advanced::graphics::Viewport;
 use iced::advanced::text::Text as IcedText;
 use iced::{Border, Color, Rectangle, Renderer, Size};
 use std::collections::HashMap;
 use std::mem::size_of;
 
 #[derive(Clone, Copy)]
-pub struct ClipTransform(f32, f32);
+pub struct ClipTransform {
+    origin: [f32; 2],
+    scale: [f32; 2],
+}
 
 impl ClipTransform {
-    fn new(w: f32, h: f32) -> Self {
-        Self(2.0 / w.max(1.0), 2.0 / h.max(1.0))
-    }
-
-    pub fn from_viewport(vp: &Viewport) -> Self {
-        let s = vp.logical_size();
-        Self::new(s.width, s.height)
+    pub fn from_bounds(bounds: Rectangle) -> Self {
+        Self {
+            origin: [bounds.x, bounds.y],
+            scale: [2.0 / bounds.width.max(1.0), 2.0 / bounds.height.max(1.0)],
+        }
     }
 
     pub fn to_clip(self, x: f32, y: f32) -> [f32; 2] {
-        [x * self.0 - 1.0, 1.0 - y * self.1]
+        [
+            (x - self.origin[0]) * self.scale[0] - 1.0,
+            1.0 - (y - self.origin[1]) * self.scale[1],
+        ]
     }
 }
 
@@ -119,165 +122,177 @@ pub(in crate::visuals) fn fill_snapped_bordered_rect(
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct SdfVertex {
-    pub position: [f32; 2],
-    pub color: [f32; 4],
-    pub params: [f32; 4],
+pub struct SdfInstance {
+    p0: [f32; 2],
+    p1: [f32; 2],
+    color0: [f32; 4],
+    color1: [f32; 4],
+    params: [f32; 4],
 }
 
-impl SdfVertex {
-    const SOLID_PARAMS: [f32; 4] = [0.0, 0.0, 1000.0, 0.0];
+impl SdfInstance {
+    const BASELINE: f32 = 1.0;
+    const LINE: f32 = 2.0;
+    const DOT: f32 = 3.0;
+    const RADIAL_DOT: f32 = 4.0;
 
     pub fn layout() -> wgpu::VertexBufferLayout<'static> {
-        const ATTRS: [wgpu::VertexAttribute; 3] =
-            wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x4, 2 => Float32x4];
+        const ATTRS: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
+            0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4
+        ];
         wgpu::VertexBufferLayout {
             array_stride: size_of::<Self>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Vertex,
+            step_mode: wgpu::VertexStepMode::Instance,
             attributes: &ATTRS,
         }
     }
-
-    pub fn solid(pos: [f32; 2], color: [f32; 4]) -> Self {
-        Self {
-            position: pos,
-            color,
-            params: Self::SOLID_PARAMS,
-        }
-    }
-
-    fn antialiased(pos: [f32; 2], color: [f32; 4], dist: f32, radius: f32) -> Self {
-        Self {
-            position: pos,
-            color,
-            params: [dist, 0.0, radius, 0.0],
-        }
-    }
 }
 
-pub fn quad_vertices(
+pub fn quad_instance(
     x0: f32,
     y0: f32,
     x1: f32,
     y1: f32,
     clip: ClipTransform,
     color: [f32; 4],
-) -> [SdfVertex; 6] {
-    gradient_quad_vertices(x0, y0, x1, y1, clip, color, color)
+) -> SdfInstance {
+    gradient_quad_instance(x0, y0, x1, y1, clip, color, color)
 }
 
-pub(in crate::visuals) fn gradient_quad_vertices(
+pub(in crate::visuals) fn gradient_quad_instance(
     x0: f32,
     y0: f32,
     x1: f32,
     y1: f32,
     clip: ClipTransform,
     top: [f32; 4],
-    bot: [f32; 4],
-) -> [SdfVertex; 6] {
-    let (tl, tr, bl, br) = (
-        clip.to_clip(x0, y0),
-        clip.to_clip(x1, y0),
-        clip.to_clip(x0, y1),
-        clip.to_clip(x1, y1),
-    );
-    [
-        SdfVertex::solid(tl, top),
-        SdfVertex::solid(bl, bot),
-        SdfVertex::solid(br, bot),
-        SdfVertex::solid(tl, top),
-        SdfVertex::solid(br, bot),
-        SdfVertex::solid(tr, top),
-    ]
+    bottom: [f32; 4],
+) -> SdfInstance {
+    SdfInstance {
+        p0: clip.to_clip(x0, y0),
+        p1: clip.to_clip(x1, y1),
+        color0: top,
+        color1: bottom,
+        params: [0.0; 4],
+    }
 }
 
-pub(in crate::visuals) fn baseline_segment_vertices(
+pub(in crate::visuals) fn baseline_segment_instance(
     p0: (f32, f32),
     p1: (f32, f32),
     baseline: f32,
     clip: ClipTransform,
-    colors: [[f32; 4]; 2],
-) -> [SdfVertex; 6] {
-    let (t0, b0) = (p0.1.min(baseline), p0.1.max(baseline));
-    let (t1, b1) = (p1.1.min(baseline), p1.1.max(baseline));
-    let [c0, c1] = colors;
-    [
-        SdfVertex::solid(clip.to_clip(p0.0, t0), c0),
-        SdfVertex::solid(clip.to_clip(p0.0, b0), c0),
-        SdfVertex::solid(clip.to_clip(p1.0, b1), c1),
-        SdfVertex::solid(clip.to_clip(p0.0, t0), c0),
-        SdfVertex::solid(clip.to_clip(p1.0, b1), c1),
-        SdfVertex::solid(clip.to_clip(p1.0, t1), c1),
-    ]
+    [color0, color1]: [[f32; 4]; 2],
+) -> SdfInstance {
+    SdfInstance {
+        p0: clip.to_clip(p0.0, p0.1),
+        p1: clip.to_clip(p1.0, p1.1),
+        color0,
+        color1,
+        params: [
+            1.0 - (baseline - clip.origin[1]) * clip.scale[1],
+            0.0,
+            0.0,
+            SdfInstance::BASELINE,
+        ],
+    }
 }
 
-pub fn line_vertices(
+pub fn line_instance(
     p0: (f32, f32),
     p1: (f32, f32),
-    c0: [f32; 4],
-    c1: [f32; 4],
+    color0: [f32; 4],
+    color1: [f32; 4],
     width: f32,
     clip: ClipTransform,
-) -> [SdfVertex; 6] {
+) -> SdfInstance {
     let (dx, dy) = (p1.0 - p0.0, p1.1 - p0.1);
-    let inv = (dx * dx + dy * dy).max(1e-12).sqrt().recip();
-    let (half, outer) = (width * 0.5, width * 0.5 + 1.0);
-    let (ox, oy) = (-dy * inv * outer, dx * inv * outer);
-    let v = |px, py, c, d| SdfVertex::antialiased(clip.to_clip(px, py), c, d, half);
-    [
-        v(p0.0 - ox, p0.1 - oy, c0, -outer),
-        v(p0.0 + ox, p0.1 + oy, c0, outer),
-        v(p1.0 + ox, p1.1 + oy, c1, outer),
-        v(p0.0 - ox, p0.1 - oy, c0, -outer),
-        v(p1.0 + ox, p1.1 + oy, c1, outer),
-        v(p1.0 - ox, p1.1 - oy, c1, -outer),
-    ]
+    let scale = (dx * dx + dy * dy).max(1e-12).sqrt().recip() * (width * 0.5 + 1.0);
+    SdfInstance {
+        p0: clip.to_clip(p0.0, p0.1),
+        p1: clip.to_clip(p1.0, p1.1),
+        color0,
+        color1,
+        params: [
+            -dy * scale * clip.scale[0],
+            -dx * scale * clip.scale[1],
+            width * 0.5,
+            SdfInstance::LINE,
+        ],
+    }
 }
 
-pub fn dot_vertices(
+pub fn radial_dot_instance(
+    point: (f32, f32),
+    center_radius: [f32; 3],
+    scale: f32,
+    dot_radius: f32,
+    color: [f32; 4],
+    clip: ClipTransform,
+    additive: bool,
+) -> SdfInstance {
+    let center = clip.to_clip(center_radius[0], center_radius[1]);
+    SdfInstance {
+        p0: [point.0, point.1],
+        p1: [clip.scale[0], -clip.scale[1]],
+        color0: color,
+        color1: [
+            center[0],
+            center[1],
+            center_radius[2] * clip.scale[0],
+            -center_radius[2] * clip.scale[1],
+        ],
+        params: [
+            dot_radius,
+            if additive { 1.0 } else { 0.0 },
+            scale,
+            SdfInstance::RADIAL_DOT,
+        ],
+    }
+}
+
+pub fn dot_instance(
     cx: f32,
     cy: f32,
     radius: f32,
     color: [f32; 4],
     clip: ClipTransform,
     additive: bool,
-) -> [SdfVertex; 6] {
+) -> SdfInstance {
     let outer = radius + 1.0;
-    let flag = if additive { 1.0 } else { 0.0 };
-    let v = |ox, oy| SdfVertex {
-        position: clip.to_clip(cx + ox, cy + oy),
-        color,
-        params: [ox, oy, radius, flag],
-    };
-    [
-        v(-outer, -outer),
-        v(-outer, outer),
-        v(outer, -outer),
-        v(outer, -outer),
-        v(-outer, outer),
-        v(outer, outer),
-    ]
+    SdfInstance {
+        p0: clip.to_clip(cx, cy),
+        p1: [outer * clip.scale[0], -outer * clip.scale[1]],
+        color0: color,
+        color1: color,
+        params: [
+            radius,
+            if additive { 1.0 } else { 0.0 },
+            0.0,
+            SdfInstance::DOT,
+        ],
+    }
 }
 
 pub fn extend_aa_line_list(
-    out: &mut Vec<SdfVertex>,
+    out: &mut Vec<SdfInstance>,
     pts: &[(f32, f32)],
     stroke: f32,
     color: [f32; 4],
     clip: ClipTransform,
 ) {
     let width = stroke.max(0.1);
-    out.reserve(pts.len().saturating_sub(1) * 6);
+    out.reserve(pts.len().saturating_sub(1));
     for seg in pts.windows(2) {
         let (dx, dy) = (seg[1].0 - seg[0].0, seg[1].1 - seg[0].1);
         if (dx * dx + dy * dy) >= 1e-8 {
-            out.extend(line_vertices(seg[0], seg[1], color, color, width, clip));
+            out.push(line_instance(seg[0], seg[1], color, color, width, clip));
         }
     }
 }
 
 pub fn extend_filled_line(
-    out: &mut Vec<SdfVertex>,
+    out: &mut Vec<SdfInstance>,
     pts: &[(f32, f32)],
     baseline: f32,
     stroke: f32,
@@ -285,9 +300,9 @@ pub fn extend_filled_line(
     fill: [f32; 4],
     clip: ClipTransform,
 ) {
-    out.reserve(pts.len().saturating_sub(1) * 12);
+    out.reserve(pts.len().saturating_sub(1) * 2);
     for seg in pts.windows(2) {
-        out.extend(baseline_segment_vertices(
+        out.push(baseline_segment_instance(
             seg[0], seg[1], baseline, clip, [fill; 2],
         ));
     }
@@ -296,7 +311,7 @@ pub fn extend_filled_line(
 
 #[derive(Default)]
 pub struct GeometryScratch {
-    pub vertices: Vec<SdfVertex>,
+    pub instances: Vec<SdfInstance>,
     pub points: Vec<(f32, f32)>,
     pub points2: Vec<(f32, f32)>,
     pub scalars: Vec<f32>,
@@ -304,7 +319,7 @@ pub struct GeometryScratch {
 
 impl GeometryScratch {
     pub fn clear(&mut self) {
-        self.vertices.clear();
+        self.instances.clear();
         self.points.clear();
         self.points2.clear();
         self.scalars.clear();
@@ -431,15 +446,15 @@ impl InstanceBuffer {
         }
     }
 
-    pub fn write(&mut self, queue: &wgpu::Queue, vertices: &[SdfVertex]) {
-        self.vertex_count = vertices.len() as u32;
-        if !vertices.is_empty() {
-            queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(vertices));
+    pub fn write(&mut self, queue: &wgpu::Queue, instances: &[SdfInstance]) {
+        self.vertex_count = instances.len() as u32;
+        if !instances.is_empty() {
+            queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(instances));
         }
     }
 
     pub fn used_bytes(&self) -> wgpu::BufferAddress {
-        self.vertex_count as wgpu::BufferAddress * size_of::<SdfVertex>() as wgpu::BufferAddress
+        self.vertex_count as wgpu::BufferAddress * size_of::<SdfInstance>() as wgpu::BufferAddress
     }
 }
 
@@ -568,7 +583,7 @@ fn create_sdf_pipeline(
             shader: &shader,
             vertex_entry: "vs_main",
             fragment_entry: "fs_main",
-            buffers: &[SdfVertex::layout()],
+            buffers: &[SdfInstance::layout()],
             bind_group_layouts: &[],
             topology,
             blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
@@ -579,6 +594,7 @@ fn create_sdf_pipeline(
 
 struct CachedInstance {
     buffer: InstanceBuffer,
+    fingerprint: Option<[u64; 2]>,
     last_used: u64,
 }
 
@@ -602,24 +618,33 @@ impl<K: std::hash::Hash + Eq + Copy> SdfPipeline<K> {
         }
     }
 
+    pub fn is_current(&self, key: K, fingerprint: [u64; 2]) -> bool {
+        self.instances
+            .get(&key)
+            .is_some_and(|entry| entry.fingerprint == Some(fingerprint))
+    }
+
     pub fn prepare_instance(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         label: &'static str,
         key: K,
-        vertices: &[SdfVertex],
+        fingerprint: Option<[u64; 2]>,
+        instances: &[SdfInstance],
     ) {
         let (frame, threshold) = self.cache.advance();
-        let required =
-            size_of::<SdfVertex>() as wgpu::BufferAddress * vertices.len() as wgpu::BufferAddress;
+        let required = size_of::<SdfInstance>() as wgpu::BufferAddress
+            * instances.len() as wgpu::BufferAddress;
         let entry = self.instances.entry(key).or_insert_with(|| CachedInstance {
             buffer: InstanceBuffer::new(device, label, required),
+            fingerprint,
             last_used: frame,
         });
+        entry.fingerprint = fingerprint;
         entry.last_used = frame;
         entry.buffer.ensure_capacity(device, label, required);
-        entry.buffer.write(queue, vertices);
+        entry.buffer.write(queue, instances);
         if let Some(t) = threshold {
             self.instances.retain(|_, e| e.last_used >= t);
         }
@@ -637,7 +662,7 @@ macro_rules! sdf_primitive {
         impl $primitive { pub fn new(params: $params) -> Self { Self { params } } }
         $crate::visuals::render::common::sdf_primitive!(@impl $primitive, $($rest)+);
     };
-    (@impl $primitive:ident, $pipeline:ident, $key_ty:ty, $label:expr, $topology:ident, |$self:ident| $key_expr:expr) => {
+    (@impl $primitive:ident, $pipeline:ident, $key_ty:ty, $label:expr, $topology:ident, |$self:ident| $key_expr:expr $(, $fingerprint_expr:expr)?) => {
         impl iced_wgpu::primitive::Primitive for $primitive {
             type Pipeline = $pipeline;
 
@@ -650,27 +675,36 @@ macro_rules! sdf_primitive {
                 viewport: &iced::advanced::graphics::Viewport,
             ) {
                 let key: $key_ty = $key_expr;
+                let fingerprint = $crate::visuals::render::common::sdf_primitive!(
+                    @fingerprint $self $(, $fingerprint_expr)?
+                );
+                if fingerprint.is_some_and(|fingerprint| pipeline.inner.is_current(key, fingerprint)) {
+                    return;
+                }
                 pipeline.scratch.clear();
                 $self.build_vertices(viewport, &mut pipeline.scratch);
-                pipeline.inner.prepare_instance(device, queue, $label, key, &pipeline.scratch.vertices);
+                pipeline.inner.prepare_instance(
+                    device,
+                    queue,
+                    $label,
+                    key,
+                    fingerprint,
+                    &pipeline.scratch.instances,
+                );
             }
 
-            fn render(
+            fn draw(
                 &$self,
                 pipeline: &Self::Pipeline,
-                encoder: &mut wgpu::CommandEncoder,
-                target: &wgpu::TextureView,
-                clip: &iced::Rectangle<u32>,
-            ) {
+                pass: &mut wgpu::RenderPass<'_>,
+            ) -> bool {
                 let key: $key_ty = $key_expr;
-                let Some(inst) = pipeline.inner.instance(key) else { return };
-                if inst.vertex_count == 0 { return }
-                let mut pass = $crate::visuals::render::common::begin_load_pass(
-                    encoder, target, clip, $label,
-                );
-                pass.set_pipeline(&pipeline.inner.pipeline);
-                pass.set_vertex_buffer(0, inst.vertex_buffer.slice(0..inst.used_bytes()));
-                pass.draw(0..inst.vertex_count, 0..1);
+                if let Some(inst) = pipeline.inner.instance(key).filter(|inst| inst.vertex_count > 0) {
+                    pass.set_pipeline(&pipeline.inner.pipeline);
+                    pass.set_vertex_buffer(0, inst.vertex_buffer.slice(0..inst.used_bytes()));
+                    pass.draw(0..6, 0..inst.vertex_count);
+                }
+                true
             }
         }
 
@@ -693,6 +727,8 @@ macro_rules! sdf_primitive {
             }
         }
     };
+    (@fingerprint $self:ident) => { None };
+    (@fingerprint $self:ident, $fingerprint_expr:expr) => { Some($fingerprint_expr) };
 }
 
 pub(in crate::visuals) use sdf_primitive;

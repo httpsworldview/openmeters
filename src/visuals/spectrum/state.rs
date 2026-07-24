@@ -52,6 +52,7 @@ pub(in crate::visuals) struct SpectrumState {
     primary: SharedPoints,
     secondary: SharedPoints,
     key: u64,
+    geometry_revision: u64,
     peak: Option<PeakLabel>,
     effective_range: Option<(f32, f32)>,
     x_cache_key: (usize, u32, FrequencyScale),
@@ -66,6 +67,7 @@ impl SpectrumState {
             primary: empty_points(),
             secondary: empty_points(),
             key: crate::visuals::next_key(),
+            geometry_revision: 0,
             peak: None,
             effective_range: None,
             x_cache_key: (0, 0, FrequencyScale::default()),
@@ -79,6 +81,7 @@ impl SpectrumState {
         if !settings.show_peak_label {
             self.peak = None;
         }
+        self.invalidate_geometry();
     }
 
     pub fn export_settings(&self) -> SpectrumSettings {
@@ -87,6 +90,7 @@ impl SpectrumState {
 
     pub fn set_palette(&mut self, palette: &[Color; 6]) {
         self.spectrum_palette = *palette;
+        self.invalidate_geometry();
     }
 
     pub fn reset_audio(&mut self) {
@@ -136,12 +140,18 @@ impl SpectrumState {
         self.secondary = share_points(secondary_points);
         self.effective_range = Some((min_f, max_f));
         self.fade_peak(pk);
+        self.invalidate_geometry();
     }
 
     fn clear_visuals(&mut self) {
         (self.primary, self.secondary) = (empty_points(), empty_points());
         self.effective_range = None;
         self.peak = None;
+        self.invalidate_geometry();
+    }
+
+    fn invalidate_geometry(&mut self) {
+        self.geometry_revision = self.geometry_revision.wrapping_add(1);
     }
 
     fn ensure_x_cache(&mut self, min_f: f32, max_f: f32, bins: &[f32]) {
@@ -249,6 +259,7 @@ impl SpectrumState {
             normalized_points: primary,
             secondary_points: secondary,
             key: self.key,
+            geometry_revision: self.geometry_revision,
             line_color: color_to_rgba(with_alpha(pal.background.base.text, 0.92)),
             line_width: LINE_THICKNESS,
             secondary_line_color: color_to_rgba(with_alpha(pal.secondary.weak.text, 0.32)),

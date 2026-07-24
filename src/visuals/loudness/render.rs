@@ -5,7 +5,7 @@ use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
 
 use crate::visuals::render::common::sdf_primitive;
-use crate::visuals::render::common::{GeometryScratch, ClipTransform, line_vertices, quad_vertices};
+use crate::visuals::render::common::{GeometryScratch, ClipTransform, line_instance, quad_instance};
 
 const GAP_FRACTION: f32 = 0.1;
 const BAR_WIDTH_SCALE: f32 = 0.6;
@@ -73,8 +73,8 @@ fn sub_bar_gap(bar_width: f32, fill_count: usize) -> f32 {
 }
 
 impl LoudnessPrimitive {
-    fn build_vertices(&self, viewport: &Viewport, scratch: &mut GeometryScratch) {
-        let clip = ClipTransform::from_viewport(viewport);
+    fn build_vertices(&self, _viewport: &Viewport, scratch: &mut GeometryScratch) {
+        let clip = ClipTransform::from_bounds(self.params.bounds);
         let Some((meter_x, bar_width, stride)) = self.params.meter_bounds() else {
             return;
         };
@@ -86,8 +86,8 @@ impl LoudnessPrimitive {
         let y_of = |db| (y1 - height * self.params.db_to_ratio(db)).clamp(y0, y1);
         let bar_count = self.params.bars.len();
         let fill_count: usize = self.params.fill_counts.iter().sum();
-        let vertices = &mut scratch.vertices;
-        vertices.reserve(bar_count * 12 + fill_count * 30 + self.params.guides.len() * 6);
+        let vertices = &mut scratch.instances;
+        vertices.reserve(bar_count * 2 + fill_count * 5 + self.params.guides.len());
 
         for (i, (bar, &sub_bar_count)) in self.params.bars.iter().zip(&self.params.fill_counts).enumerate() {
             let sub_bar_count = sub_bar_count.min(bar.len());
@@ -95,7 +95,7 @@ impl LoudnessPrimitive {
             let x0 = meter_x + i as f32 * stride;
             let x1 = x0 + bar_width;
 
-            vertices.extend(quad_vertices(x0, y0, x1, y1, clip, self.params.bg_color));
+            vertices.push(quad_instance(x0, y0, x1, y1, clip, self.params.bg_color));
             let inner_gap = sub_bar_gap(bar_width, sub_bar_count);
             let total_inner = inner_gap * (sub_bar_count - 1) as f32;
             let seg_width = ((bar_width - total_inner) / sub_bar_count as f32).max(0.0);
@@ -113,7 +113,7 @@ impl LoudnessPrimitive {
                     let ceiling = ceiling.clamp(self.params.min_db, self.params.max_db);
                     let upper = value.min(ceiling);
                     if upper > lower {
-                        vertices.extend(quad_vertices(
+                        vertices.push(quad_instance(
                             sx0,
                             y_of(upper),
                             sx1,
@@ -130,7 +130,7 @@ impl LoudnessPrimitive {
 
                 if let Some((db, color)) = fill.peak {
                     let cy = y_of(db);
-                    vertices.extend(line_vertices(
+                    vertices.push(line_instance(
                         (sx0, cy),
                         (sx1, cy),
                         color,
@@ -145,7 +145,7 @@ impl LoudnessPrimitive {
         let guide_anchor = meter_x - GUIDE_PADDING;
         for &db in self.params.guides {
             let cy = y_of(db);
-            vertices.extend(line_vertices(
+            vertices.push(line_instance(
                 (guide_anchor - GUIDE_LENGTH, cy),
                 (guide_anchor, cy),
                 self.params.guide_color,
@@ -160,7 +160,7 @@ impl LoudnessPrimitive {
             for i in 0..bar_count {
                 let x0 = meter_x + i as f32 * stride;
                 let x1 = x0 + bar_width;
-                vertices.extend(line_vertices(
+                vertices.push(line_instance(
                     (x0, cy),
                     (x1, cy),
                     self.params.guide_color,

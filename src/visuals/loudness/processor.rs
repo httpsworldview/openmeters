@@ -187,10 +187,10 @@ impl KWeightingFilter {
 
     fn process(&mut self, sample: f32) -> f32 {
         let x = f64::from(sample);
-        let y = self.b[0].mul_add(x, self.z[0]);
-        self.z[0] = self.b[1].mul_add(x, self.z[1]) - self.a[1] * y;
-        self.z[1] = self.b[2].mul_add(x, self.z[2]) - self.a[2] * y;
-        self.z[2] = self.b[3].mul_add(x, self.z[3]) - self.a[3] * y;
+        let y = self.b[0] * x + self.z[0];
+        self.z[0] = self.b[1] * x + self.z[1] - self.a[1] * y;
+        self.z[1] = self.b[2] * x + self.z[2] - self.a[2] * y;
+        self.z[2] = self.b[3] * x + self.z[3] - self.a[3] * y;
         self.z[3] = self.b[4] * x - self.a[4] * y;
         y as f32
     }
@@ -206,7 +206,7 @@ impl KWeightingFilter {
 
 #[derive(Debug)]
 struct ChannelState {
-    windows: WindowedMeans<f64, 1, 4>,
+    windows: WindowedMeans<1, 4>,
     filter: KWeightingFilter,
     true_peak: TruePeakMeter,
 }
@@ -380,7 +380,7 @@ mod tests {
 
     #[test]
     fn rolling_mean_square_tracks_average() {
-        let mut window = WindowedMeans::<f64, 1, 4>::new([4, 2, 1, 4]);
+        let mut window = WindowedMeans::<1, 4>::new([4, 2, 1, 4]);
         window.push([1.0]);
         window.push([9.0]);
         assert!((window.mean(0)[0] - 5.0).abs() < f64::EPSILON);

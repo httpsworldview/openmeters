@@ -232,67 +232,52 @@ impl<'a> AudioBlock<'a> {
 /// Running means for several values over one or more independently sized windows.
 /// All windows share the ring sized for the longest duration.
 #[derive(Debug)]
-pub struct WindowedMeans<T, const VALUES: usize, const WINDOWS: usize> {
-    buffer: Box<[[T; VALUES]]>,
+pub struct WindowedMeans<const VALUES: usize, const WINDOWS: usize> {
+    prefix: Box<[[f64; VALUES]]>,
     capacities: [usize; WINDOWS],
-    sums: [[f64; VALUES]; WINDOWS],
+    total: [f64; VALUES],
     head: usize,
     count: usize,
 }
 
-impl<T, const VALUES: usize, const WINDOWS: usize> WindowedMeans<T, VALUES, WINDOWS>
-where
-    T: Copy + Default + Into<f64>,
-{
+impl<const VALUES: usize, const WINDOWS: usize> WindowedMeans<VALUES, WINDOWS> {
     pub fn new(capacities: [usize; WINDOWS]) -> Self {
         let capacities = capacities.map(|capacity| capacity.max(1));
-        let len = capacities.iter().copied().max().unwrap_or(1);
+        let len = capacities.iter().copied().max().unwrap_or(1) + 1;
         Self {
-            buffer: vec![[T::default(); VALUES]; len].into_boxed_slice(),
+            prefix: vec![[0.0; VALUES]; len].into_boxed_slice(),
             capacities,
-            sums: [[0.0; VALUES]; WINDOWS],
+            total: [0.0; VALUES],
             head: 0,
             count: 0,
         }
     }
 
-    pub fn push(&mut self, values: [T; VALUES]) {
-        let len = self.buffer.len();
-        for (window, &capacity) in self.sums.iter_mut().zip(&self.capacities) {
-            let old = (self.count >= capacity).then(|| {
-                let index = if self.head >= capacity {
-                    self.head - capacity
-                } else {
-                    self.head + len - capacity
-                };
-                &self.buffer[index]
-            });
-            for value in 0..VALUES {
-                window[value] += values[value].into() - old.map_or(0.0, |old| old[value].into());
-            }
+    pub fn push<T: Copy + Into<f64>>(&mut self, values: [T; VALUES]) {
+        for (total, value) in self.total.iter_mut().zip(values) {
+            *total += value.into();
         }
-        self.advance(values);
-    }
-
-    fn advance(&mut self, values: [T; VALUES]) {
-        let len = self.buffer.len();
-        self.buffer[self.head] = values;
         self.head += 1;
-        if self.head == len {
+        if self.head == self.prefix.len() {
             self.head = 0;
         }
-        self.count = (self.count + 1).min(len);
+        self.prefix[self.head] = self.total;
+        self.count = self.count.saturating_add(1);
     }
 
     pub fn mean(&self, window: usize) -> [f64; VALUES] {
-        let count = self.count.min(self.capacities[window]).max(1);
-        self.sums[window].map(|sum| sum / count as f64)
+        let count = self.count.min(self.capacities[window]);
+        let old = (self.head + self.prefix.len() - count) % self.prefix.len();
+        std::array::from_fn(|value| {
+            (self.total[value] - self.prefix[old][value]) / count.max(1) as f64
+        })
     }
 
     pub fn clear(&mut self) {
-        self.sums = [[0.0; VALUES]; WINDOWS];
+        self.total = [0.0; VALUES];
         self.head = 0;
         self.count = 0;
+        self.prefix[0] = [0.0; VALUES];
     }
 }
 
@@ -336,7 +321,7 @@ impl Biquad {
     }
 
     pub fn process(&mut self, sample: f32) -> f32 {
-        let output = self.b[0].mul_add(sample, self.z[0]);
+        let output = self.b[0] * sample + self.z[0];
         self.z[0] = self.b[1] * sample - self.a[0] * output + self.z[1];
         self.z[1] = self.b[2] * sample - self.a[1] * output;
         if output.is_finite() {
@@ -558,15 +543,15 @@ mod tests {
 
     #[test]
     fn running_means_clear_without_reallocating_or_replaying_old_values() {
-        let mut means = WindowedMeans::<f32, 1, 2>::new([2, 4]);
+        let mut means = WindowedMeans::<1, 2>::new([2, 4]);
         for value in [1.0, 2.0, 3.0, 4.0] {
             means.push([value]);
         }
-        let storage = means.buffer.as_ptr();
+        let storage = means.prefix.as_ptr();
         means.clear();
         assert_eq!(means.mean(0), [0.0]);
         assert_eq!(means.mean(1), [0.0]);
-        assert_eq!(means.buffer.as_ptr(), storage);
+        assert_eq!(means.prefix.as_ptr(), storage);
 
         means.push([10.0]);
         means.push([20.0]);

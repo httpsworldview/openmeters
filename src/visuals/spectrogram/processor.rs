@@ -330,7 +330,11 @@ impl SpectrogramProcessor {
                     &*self.hilbert_ifft,
                     &mut self.scratch,
                 );
-                let analytic = &self.hilbert_buf[center_offset..center_offset + self.window_size];
+                let scale = (self.hilbert_buf.len() as f32).recip();
+                let analytic = &mut self.hilbert_buf[center_offset..center_offset + self.window_size];
+                for sample in analytic.iter_mut() {
+                    *sample *= scale;
+                }
                 let fft = &*self.fft;
                 let r = &mut self.reassign;
                 let stages: [(&[f32], &mut [Complex32]); 3] = [
@@ -574,11 +578,6 @@ fn hilbert_transform(
     fft.process_with_scratch(analytic, scratch);
     analytic[n / 2 + 1..].fill(Complex32::ZERO);
     ifft.process_with_scratch(analytic, scratch);
-
-    let inv_n = 1.0 / n as f32;
-    for c in analytic.iter_mut() {
-        *c *= inv_n;
-    }
 }
 
 fn fft_windowed(

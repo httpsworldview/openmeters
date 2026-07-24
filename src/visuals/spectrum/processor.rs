@@ -397,6 +397,11 @@ impl SpectrumLevelBuffers {
         };
         let [weighted_out, raw_out] = outputs;
         for i in 0..bins {
+            if powers[i] < self.state_floor {
+                raw_out[i] = floor;
+                weighted_out[i] = floor;
+                continue;
+            }
             let db = powers[i].ln() * LN_TO_DB;
             raw_out[i] = db.max(floor);
             weighted_out[i] = (db + weighting_db[i]).max(floor);

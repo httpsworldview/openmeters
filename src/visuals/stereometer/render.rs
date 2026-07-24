@@ -11,8 +11,8 @@ use crate::visuals::options::{
 };
 use crate::util::lerp;
 use crate::visuals::render::common::{
-    ClipTransform, GeometryScratch, SdfVertex, dot_vertices, gradient_quad_vertices, line_vertices,
-    quad_vertices,
+    ClipTransform, GeometryScratch, SdfInstance, gradient_quad_instance, line_instance,
+    quad_instance, radial_dot_instance,
 };
 
 // 0.66834.powf(0.3) and (1.0 / 0.66834).powi(2), respectively. Working
@@ -128,13 +128,11 @@ impl Projection {
     }
 
     fn project(self, l: f32, r: f32) -> (f32, f32) {
-        let (x, y) = self.unit(l, r);
-        let point = if self.unipolar && y > 0.0 {
-            (-x, -y)
-        } else {
-            (x, y)
-        };
-        self.to_screen(point)
+        self.to_screen(self.visible(self.unit(l, r)))
+    }
+
+    fn visible(self, (x, y): (f32, f32)) -> (f32, f32) {
+        if self.unipolar && y > 0.0 { (-x, -y) } else { (x, y) }
     }
 
     fn segment(self, a: (f32, f32), b: (f32, f32)) -> Option<((f32, f32), (f32, f32))> {
@@ -188,7 +186,7 @@ fn clip_segment_to_visible_unipolar_half(
 }
 
 fn projected_line(
-    out: &mut Vec<SdfVertex>,
+    out: &mut Vec<SdfInstance>,
     projection: Projection,
     a: (f32, f32),
     b: (f32, f32),
@@ -202,7 +200,7 @@ fn projected_line(
             (lerp(a.0, b.0, t0), lerp(a.1, b.1, t0)),
             (lerp(a.0, b.0, t1), lerp(a.1, b.1, t1)),
         ) {
-            out.extend(line_vertices(p0, p1, color, color, GRID_LINE_WIDTH, clip));
+            out.push(line_instance(p0, p1, color, color, GRID_LINE_WIDTH, clip));
         }
     }
 }
@@ -210,7 +208,7 @@ fn projected_line(
 impl StereometerPrimitive {
     fn add_grid_vertices(
         &self,
-        vertices: &mut Vec<SdfVertex>,
+        vertices: &mut Vec<SdfInstance>,
         projection: Projection,
         clip: ClipTransform,
     ) {
@@ -290,31 +288,45 @@ impl StereometerPrimitive {
     }
 
     fn add_trace_vertices(
-        out: &mut Vec<SdfVertex>,
+        out: &mut Vec<SdfInstance>,
         p: &StereometerParams,
         projection: Projection,
         clip: ClipTransform,
     ) {
         let [cr, cg, cb, ca] = p.palette[0];
         let dot_r = p.dot_radius;
+        let radial_scale = match projection.scale {
+            StereometerScale::Linear => projection.fit,
+            StereometerScale::Scaled => -1.0,
+        };
+        let dot = |l, r, color, additive| {
+            radial_dot_instance(
+                projection.visible(projection.rotated(l, r)),
+                [projection.cx, projection.cy, projection.radius],
+                radial_scale,
+                dot_r,
+                color,
+                clip,
+                additive,
+            )
+        };
 
         match p.mode {
             StereometerMode::DotCloud => {
                 let count = p.points.len() as f32;
-                out.extend(p.points.iter().enumerate().flat_map(|(i, &(l, r))| {
-                    let (px, py) = projection.project(l, r);
+                out.extend(p.points.iter().enumerate().map(|(i, &(l, r))| {
                     let alpha = ca * (i + 1) as f32 / count;
-                    dot_vertices(px, py, dot_r, [cr, cg, cb, alpha], clip, false)
+                    dot(l, r, [cr, cg, cb, alpha], false)
                 }));
             }
             StereometerMode::Lissajous => {
                 if p.points.len() >= 2 {
                     let last = (p.points.len() - 1) as f32;
-                    out.extend(p.points.windows(2).enumerate().flat_map(|(i, w)| {
+                    out.extend(p.points.windows(2).enumerate().map(|(i, w)| {
                         let p0 = projection.project(w[0].0, w[0].1);
                         let p1 = projection.project(w[1].0, w[1].1);
                         let (t0, t1) = (i as f32 / last, (i + 1) as f32 / last);
-                        line_vertices(p0, p1, [cr, cg, cb, ca * t0], [cr, cg, cb, ca * t1], 1.5, clip)
+                        line_instance(p0, p1, [cr, cg, cb, ca * t0], [cr, cg, cb, ca * t1], 1.5, clip)
                     }));
                 }
             }
@@ -322,10 +334,9 @@ impl StereometerPrimitive {
                 for (pts, color) in p.band_points.iter().zip(&p.palette[5..8]) {
                     let count = pts.len() as f32;
                     let [cr, cg, cb, ca] = *color;
-                    out.extend(pts.iter().enumerate().flat_map(|(i, &(l, r))| {
-                        let (px, py) = projection.project(l, r);
+                    out.extend(pts.iter().enumerate().map(|(i, &(l, r))| {
                         let factor = ca * (i + 1) as f32 / count;
-                        dot_vertices(px, py, dot_r, [cr * factor, cg * factor, cb * factor, 0.0], clip, true)
+                        dot(l, r, [cr * factor, cg * factor, cb * factor, 0.0], true)
                     }));
                 }
             }
@@ -333,7 +344,7 @@ impl StereometerPrimitive {
     }
 
     fn add_correlation_vertices(
-        out: &mut Vec<SdfVertex>,
+        out: &mut Vec<SdfInstance>,
         alpha: &mut Vec<f32>,
         p: &StereometerParams,
         bounds: Rectangle,
@@ -353,7 +364,7 @@ impl StereometerPrimitive {
         let height = (bounds.height as i32 + 1).max(0) as usize;
         let y_max = y_min + height as i32 - 1;
 
-        out.extend(quad_vertices(
+        out.push(quad_instance(
             bounds.x,
             bounds.y,
             bounds.x + bounds.width,
@@ -362,7 +373,7 @@ impl StereometerPrimitive {
             p.palette[1],
         ));
         for y in [val_y(1.0), center, val_y(-1.0)] {
-            out.extend(quad_vertices(
+            out.push(quad_instance(
                 bounds.x,
                 y - 0.5,
                 bounds.x + bounds.width,
@@ -401,14 +412,14 @@ impl StereometerPrimitive {
                         let (mut top, mut bottom) = (color(y > center), color(y + 1.0 > center));
                         top[3] *= opacity[0];
                         bottom[3] *= opacity[1];
-                        out.extend(gradient_quad_vertices(x0, y, x1, y + 1.0, clip, top, bottom));
+                        out.push(gradient_quad_instance(x0, y, x1, y + 1.0, clip, top, bottom));
                     }
                 }
             }
             if let Some(&current) = trail.first() {
                 let y = val_y(current);
                 let color = color(current < 0.0);
-                out.extend(quad_vertices(x0, y - marker_h, x1, y + marker_h, clip, color));
+                out.push(quad_instance(x0, y - marker_h, x1, y + marker_h, clip, color));
             }
         };
 
@@ -436,12 +447,12 @@ impl StereometerPrimitive {
         }
     }
 
-    fn build_vertices(&self, viewport: &Viewport, scratch: &mut GeometryScratch) {
-        let clip = ClipTransform::from_viewport(viewport);
+    fn build_vertices(&self, _viewport: &Viewport, scratch: &mut GeometryScratch) {
         let p = &self.params;
+        let clip = ClipTransform::from_bounds(p.bounds);
         let (vector, correlation) = Self::meter_layout(p);
         let projection = Projection::from_params(p, vector);
-        let vertices = &mut scratch.vertices;
+        let vertices = &mut scratch.instances;
         self.add_grid_vertices(vertices, projection, clip);
         Self::add_trace_vertices(vertices, p, projection, clip);
         if let Some(meter) = correlation {
@@ -449,6 +460,16 @@ impl StereometerPrimitive {
         }
     }
 }
+
+
+sdf_primitive!(
+    StereometerPrimitive(StereometerParams),
+    Pipeline,
+    u64,
+    "Stereometer",
+    TriangleList,
+    |self| self.params.key
+);
 
 #[cfg(test)]
 mod tests {
@@ -537,12 +558,3 @@ mod tests {
         }
     }
 }
-
-sdf_primitive!(
-    StereometerPrimitive(StereometerParams),
-    Pipeline,
-    u64,
-    "Stereometer",
-    TriangleList,
-    |self| self.params.key
-);
