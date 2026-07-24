@@ -16,11 +16,11 @@ use std::time::{Duration, Instant};
 
 const DEFAULT_RANGE: (f32, f32) = (-60.0, 4.0);
 const GUIDE_LEVELS: [f32; 6] = [0.0, -6.0, -12.0, -18.0, -24.0, -36.0];
+const GUIDE_LABELS: [&str; 6] = ["0", "-6", "-12", "-18", "-24", "-36"];
 const PEAK_HOLD: Duration = Duration::from_secs(2);
 const PEAK_DECAY_DB_PER_SEC: f32 = 60.0;
 const LEFT_PADDING: f32 = 28.0;
 const RIGHT_PADDING: f32 = 64.0;
-const LABEL_FONT_SIZE: f32 = 10.0;
 const GUIDE_LABEL_HEIGHT: f32 = 12.0;
 const GUIDE_LABEL_GAP: f32 = 2.0;
 const GUIDE_LABEL_ORDER: [usize; GUIDE_LEVELS.len()] = [0, 2, 5, 3, 4, 1];
@@ -275,7 +275,7 @@ fn is_danger_zone(mode: MeterMode, db: f32) -> bool {
 fn visible_guide_labels(
     params: &LoudnessParams,
     bounds: Rectangle,
-) -> [Option<(f32, Rectangle)>; GUIDE_LABEL_ORDER.len()] {
+) -> [Option<(usize, Rectangle)>; GUIDE_LABEL_ORDER.len()] {
     let mut labels = [None; GUIDE_LABEL_ORDER.len()];
     if bounds.height < GUIDE_LABEL_HEIGHT {
         return labels;
@@ -296,7 +296,7 @@ fn visible_guide_labels(
             .flatten()
             .any(|(_, r)| r.expand(GUIDE_LABEL_GAP).intersects(&rect))
         {
-            labels[len] = Some((db, rect));
+            labels[len] = Some((i, rect));
             len += 1;
         }
     }
@@ -316,10 +316,10 @@ crate::visuals::visualization_widget!(Loudness, LoudnessState, |this, renderer, 
     if let Some((meter_x, bar_width, stride)) = params.meter_bounds() {
         let y_of = |db| bounds.y + bounds.height * (1.0 - params.db_to_ratio(db));
 
-        for (db, rect) in visible_guide_labels(&params, bounds).into_iter().flatten() {
-            let label = if db == 0.0 { "0".to_owned() } else { format!("{db:+.0}") };
+        for (i, rect) in visible_guide_labels(&params, bounds).into_iter().flatten() {
+            let label = GUIDE_LABELS[i].to_owned();
 
-            let mut text = make_text(label, LABEL_FONT_SIZE, rect.size());
+            let mut text = make_text(label, 10.0, rect.size());
             text.align_x = Horizontal::Right.into();
             text.align_y = Vertical::Center;
             text::Renderer::fill_text(

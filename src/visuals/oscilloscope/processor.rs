@@ -202,7 +202,6 @@ impl StableTuning {
     const NORMALIZE_FLOOR: f32 = 0.01;
     const MEAN_RESPONSIVENESS: f32 = 0.25;
     const EDGE_STRENGTH: f32 = 1.0;
-    const BUFFER_STRENGTH: f32 = 1.0;
     const BUFFER_RESPONSIVENESS: f32 = 0.5;
     const BUFFER_FALLOFF_PERIODS: f32 = 0.5;
     const BUFFER_RETUNE_SEMITONES: f32 = 1.0;
@@ -233,10 +232,10 @@ fn gaussian(len: usize, index: usize, std: f32) -> f32 {
     (-0.5 * (x / std).powi(2)).exp()
 }
 
-fn normalized_correlation(pairs: impl Iterator<Item = (f32, f32)>) -> f32 {
+fn normalized_correlation(x: &[f32], y: &[f32]) -> f32 {
     let (mut len, mut sum_x, mut sum_y, mut sum_xx, mut sum_yy, mut sum_xy) =
         (0, 0.0, 0.0, 0.0, 0.0, 0.0);
-    for (x, y) in pairs {
+    for (&x, &y) in x.iter().zip(y) {
         len += 1;
         sum_x += x;
         sum_y += y;
@@ -386,7 +385,8 @@ impl StableTrigger {
         self.prepare(&trace[left - before..right + after], len, period);
 
         let use_reference = self.reference.iter().any(|sample| sample.abs() > 1.0e-3);
-        let (mut offset, mut frac_offset) = self.find_best(search, period, use_reference);
+        self.prepare_template(use_reference);
+        let (mut offset, mut frac_offset) = self.find_best(search, period, &self.candidate);
         let confident = estimate.confidence >= PeriodTuning::MIN_PERIODICITY;
         let segment = |offset| &trace[left + offset - before..left + offset - before + len];
         let reset = confident
@@ -394,7 +394,8 @@ impl StableTrigger {
             && self.write_candidate(segment(offset), period) < StableTuning::RESET_BELOW_MATCH;
         if reset {
             self.reference.fill(0.0);
-            (offset, frac_offset) = self.find_best(search, period, false);
+            self.prepare_template(false);
+            (offset, frac_offset) = self.find_best(search, period, &self.candidate);
         }
         if confident {
             if !use_reference || reset {
@@ -433,11 +434,19 @@ impl StableTrigger {
         self.work.extend(data.iter().map(|sample| sample - self.mean));
     }
 
-    fn find_best(&self, search: usize, period: f32, use_reference: bool) -> (usize, f32) {
+    fn prepare_template(&mut self, use_reference: bool) {
+        let gain = if use_reference { 1.0 } else { 0.0 };
+        self.candidate.clear();
+        let values = self.kernel.iter().zip(&self.reference).map(|(&x, &y)| x + y * gain);
+        self.candidate.extend(values);
+    }
+
+    fn find_best(&self, search: usize, period: f32, template: &[f32]) -> (usize, f32) {
+        let score_at = |offset| normalized_correlation(&self.work[offset..offset + template.len()], template);
         let stride = ((period / 16.0).round() as usize).clamp(1, 128).min(search.max(1));
         let mut best = (search / 2, f32::NEG_INFINITY);
         for offset in (0..=search).rev().step_by(stride).chain([0]) {
-            let score = self.score_at(offset, use_reference);
+            let score = score_at(offset);
             if score > best.1 {
                 best = (offset, score);
             }
@@ -449,7 +458,7 @@ impl StableTrigger {
                 .rev()
                 .step_by(next)
             {
-                let score = self.score_at(offset, use_reference);
+                let score = score_at(offset);
                 if score > best.1 {
                     best = (offset, score);
                 }
@@ -459,9 +468,9 @@ impl StableTrigger {
 
         let frac_offset = if best.0 > 0 && best.0 < search {
             (parabolic_refine(
-                self.score_at(best.0 - 1, use_reference),
+                score_at(best.0 - 1),
                 best.1,
-                self.score_at(best.0 + 1, use_reference),
+                score_at(best.0 + 1),
                 best.0,
             ) - best.0 as f32)
                 .clamp(-0.5, 0.5)
@@ -469,17 +478,6 @@ impl StableTrigger {
             0.0
         };
         (best.0, frac_offset)
-    }
-
-    fn score_at(&self, offset: usize, use_reference: bool) -> f32 {
-        let reference_gain = if use_reference { StableTuning::BUFFER_STRENGTH } else { 0.0 };
-        normalized_correlation(
-            self.work[offset..offset + self.kernel.len()]
-                .iter()
-                .zip(&self.kernel)
-                .zip(&self.reference)
-                .map(|((&x, &slope), &reference)| (x, slope + reference * reference_gain)),
-        )
     }
 
     fn retune_reference(&mut self, len: usize, period: f32) {
@@ -520,7 +518,7 @@ impl StableTrigger {
             *sample *= gaussian(len, i, std);
         }
 
-        normalized_correlation(self.reference.iter().copied().zip(self.candidate.iter().copied()))
+        normalized_correlation(&self.reference, &self.candidate)
     }
 }
 
@@ -1070,7 +1068,7 @@ mod tests {
                 work: Vec::from(work),
                 ..Default::default()
             };
-            assert_eq!(trigger.find_best(4, 16.0, true).0, 0);
+            assert_eq!(trigger.find_best(4, 16.0, &trigger.reference).0, 0);
         }
 
         let mut trigger = StableTrigger {

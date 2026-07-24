@@ -101,10 +101,7 @@ impl MeterEngine {
     }
 
     pub fn advance(&mut self, now: Instant) {
-        if !self.active {
-            return;
-        }
-        if self.paused {
+        if !self.active || self.paused {
             return;
         }
         let Self {
@@ -127,19 +124,17 @@ impl MeterEngine {
     }
 
     pub fn set_active(&mut self, active: bool) {
-        if self.active == active {
+        if std::mem::replace(&mut self.active, active) == active {
             return;
         }
-        self.active = active;
         self.audio.set_active(active && !self.paused);
         self.batcher.clear();
     }
 
     pub fn set_paused(&mut self, paused: bool, now: Instant) {
-        if self.paused == paused {
+        if std::mem::replace(&mut self.paused, paused) == paused {
             return;
         }
-        self.paused = paused;
         if !self.audio.set_active(self.active && !paused) {
             self.audio.discard(now);
         }
