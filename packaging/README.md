@@ -64,7 +64,7 @@ dist/
 - `libgcc_s.so.1`
 - `libpipewire-0.3.so.0` >= 0.3.65 (audio I/O and virtual sink)
 - `libvulkan.so.1` (wgpu uses the distro's Vulkan loader + ICDs)
-- Wayland: `libwayland-client.so.0`, `libwayland-cursor.so.0`
+- Wayland: `libwayland-client.so.0`
 - X11: `libX11.so.6`, `libX11-xcb.so.1`, `libxcb.so.1`,
   `libXcursor.so.1`, `libXi.so.6`
 - Keyboard input: `libxkbcommon.so.0`, `libxkbcommon-x11.so.0`
