@@ -8,8 +8,9 @@ use crate::persistence::settings::LoudnessSettings;
 use crate::visuals::options::MeterMode;
 use crate::visuals::palettes;
 use crate::util::color::color_to_rgba;
-use crate::visuals::render::common::{fill_rect, make_text};
-use iced::advanced::text;
+use crate::visuals::render::common::{fill_rect, make_text, text as raw_text};
+use iced::advanced::{graphics::text::Paragraph, text};
+use iced::advanced::text::Paragraph as _;
 use iced::alignment::{Horizontal, Vertical};
 use iced::{Color, Point, Rectangle, Size};
 use std::time::{Duration, Instant};
@@ -71,6 +72,7 @@ pub(in crate::visuals) struct LoudnessState {
     settings: LoudnessSettings,
     pub(in crate::visuals) palette: [Color; LOUDNESS_PALETTE_SIZE],
     peaks: [PeakHold; VISIBLE_METER_COUNT],
+    guide_labels: [Paragraph; GUIDE_LABELS.len()],
     key: u64,
 }
 
@@ -84,6 +86,12 @@ impl LoudnessState {
             settings: LoudnessSettings::default(),
             palette: palettes::loudness::COLORS,
             peaks: [peak; VISIBLE_METER_COUNT],
+            guide_labels: GUIDE_LABELS.map(|label| {
+                let mut text = raw_text(label, 10.0, Size::new(LEFT_PADDING, GUIDE_LABEL_HEIGHT));
+                text.align_x = Horizontal::Right.into();
+                text.align_y = Vertical::Center;
+                Paragraph::with_text(text)
+            }),
             key: crate::visuals::next_key(),
         }
     }
@@ -317,15 +325,11 @@ crate::visuals::visualization_widget!(Loudness, LoudnessState, |this, renderer, 
         let y_of = |db| bounds.y + bounds.height * (1.0 - params.db_to_ratio(db));
 
         for (i, rect) in visible_guide_labels(&params, bounds).into_iter().flatten() {
-            let label = GUIDE_LABELS[i].to_owned();
-
-            let mut text = make_text(label, 10.0, rect.size());
-            text.align_x = Horizontal::Right.into();
-            text.align_y = Vertical::Center;
-            text::Renderer::fill_text(
+            let size = state.guide_labels[i].min_bounds();
+            text::Renderer::fill_paragraph(
                 renderer,
-                text,
-                Point::new(rect.x + rect.width - 4.0, rect.y + rect.height * 0.5),
+                &state.guide_labels[i],
+                Point::new(rect.x + rect.width - 4.0 - size.width, rect.y + (rect.height - size.height) * 0.5),
                 label_color,
                 bounds,
             );

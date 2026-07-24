@@ -232,20 +232,20 @@ fn gaussian(len: usize, index: usize, std: f32) -> f32 {
     (-0.5 * (x / std).powi(2)).exp()
 }
 
-fn normalized_correlation(x: &[f32], y: &[f32]) -> f32 {
-    let (mut len, mut sum_x, mut sum_y, mut sum_xx, mut sum_yy, mut sum_xy) =
-        (0, 0.0, 0.0, 0.0, 0.0, 0.0);
+fn correlation_stats(y: &[f32]) -> [f32; 2] {
+    y.iter().fold([0.0; 2], |[sum, squares], &y| [sum + y, squares + y * y])
+}
+
+fn normalized_correlation(x: &[f32], y: &[f32], [sum_y, sum_yy]: [f32; 2]) -> f32 {
+    let (mut sum_x, mut sum_xx, mut sum_xy) = (0.0, 0.0, 0.0);
     for (&x, &y) in x.iter().zip(y) {
-        len += 1;
         sum_x += x;
-        sum_y += y;
         sum_xx += x * x;
-        sum_yy += y * y;
         sum_xy += x * y;
     }
-    if len == 0 { return 0.0; }
+    if x.is_empty() { return 0.0; }
 
-    let n = len as f32;
+    let n = x.len() as f32;
     let dot = sum_xy - sum_x * sum_y / n;
     let energy_x = (sum_xx - sum_x * sum_x / n).max(0.0);
     let energy_y = (sum_yy - sum_y * sum_y / n).max(0.0);
@@ -386,7 +386,7 @@ impl StableTrigger {
 
         let use_reference = self.reference.iter().any(|sample| sample.abs() > 1.0e-3);
         self.prepare_template(use_reference);
-        let (mut offset, mut frac_offset) = self.find_best(search, period, &self.candidate);
+        let (mut offset, mut frac_offset) = self.find_best(search, period);
         let confident = estimate.confidence >= PeriodTuning::MIN_PERIODICITY;
         let segment = |offset| &trace[left + offset - before..left + offset - before + len];
         let reset = confident
@@ -395,7 +395,7 @@ impl StableTrigger {
         if reset {
             self.reference.fill(0.0);
             self.prepare_template(false);
-            (offset, frac_offset) = self.find_best(search, period, &self.candidate);
+            (offset, frac_offset) = self.find_best(search, period);
         }
         if confident {
             if !use_reference || reset {
@@ -441,8 +441,19 @@ impl StableTrigger {
         self.candidate.extend(values);
     }
 
-    fn find_best(&self, search: usize, period: f32, template: &[f32]) -> (usize, f32) {
-        let score_at = |offset| normalized_correlation(&self.work[offset..offset + template.len()], template);
+    fn find_best(&mut self, search: usize, period: f32) -> (usize, f32) {
+        let template = &self.candidate;
+        let stats = correlation_stats(template);
+        let scores = &mut self.estimator.periodicity;
+        scores.clear();
+        scores.resize(search + 1, f32::NEG_INFINITY);
+        let mut score_at = |offset| {
+            if scores[offset] == f32::NEG_INFINITY {
+                let x = &self.work[offset..offset + template.len()];
+                scores[offset] = normalized_correlation(x, template, stats);
+            }
+            scores[offset]
+        };
         let stride = ((period / 16.0).round() as usize).clamp(1, 128).min(search.max(1));
         let mut best = (search / 2, f32::NEG_INFINITY);
         for offset in (0..=search).rev().step_by(stride).chain([0]) {
@@ -467,13 +478,8 @@ impl StableTrigger {
         }
 
         let frac_offset = if best.0 > 0 && best.0 < search {
-            (parabolic_refine(
-                score_at(best.0 - 1),
-                best.1,
-                score_at(best.0 + 1),
-                best.0,
-            ) - best.0 as f32)
-                .clamp(-0.5, 0.5)
+            let (prev, next) = (score_at(best.0 - 1), score_at(best.0 + 1));
+            (parabolic_refine(prev, best.1, next, best.0) - best.0 as f32).clamp(-0.5, 0.5)
         } else {
             0.0
         };
@@ -518,7 +524,7 @@ impl StableTrigger {
             *sample *= gaussian(len, i, std);
         }
 
-        normalized_correlation(&self.reference, &self.candidate)
+        normalized_correlation(&self.reference, &self.candidate, correlation_stats(&self.candidate))
     }
 }
 
@@ -1062,13 +1068,13 @@ mod tests {
             [1.0, -1.0, 1.0, -1.0, 10.0, -10.0, 0.0, 0.0],
             [11.0, 9.0, 11.0, 9.0, 1.0, -1.0, 0.0, 0.0],
         ] {
-            let trigger = StableTrigger {
+            let mut trigger = StableTrigger {
                 kernel: vec![0.0; 4],
-                reference: vec![1.0, -1.0, 1.0, -1.0],
+                candidate: vec![1.0, -1.0, 1.0, -1.0],
                 work: Vec::from(work),
                 ..Default::default()
             };
-            assert_eq!(trigger.find_best(4, 16.0, &trigger.reference).0, 0);
+            assert_eq!(trigger.find_best(4, 16.0).0, 0);
         }
 
         let mut trigger = StableTrigger {

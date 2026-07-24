@@ -10,10 +10,10 @@ use crate::util::color::color_to_rgba;
 use crate::visuals::{
     options::{CorrelationMeterMode, CorrelationMeterSide, StereometerMode},
     palettes,
-    render::common::{fill_rect, make_text},
+    render::common::{fill_rect, text as raw_text},
 };
-use iced::advanced::text;
-use iced::alignment::{Horizontal, Vertical};
+use iced::advanced::{graphics::text::Paragraph, text};
+use iced::advanced::text::Paragraph as _;
 use iced::{Color, Point, Size};
 use std::{collections::VecDeque, sync::Arc};
 
@@ -33,6 +33,7 @@ pub(in crate::visuals) struct StereometerState {
     band_trail: VecDeque<BandCorrelation>,
     pub(in crate::visuals) palette: [Color; 9],
     settings: StereometerSettings,
+    labels: [Paragraph; 3],
     key: u64,
 }
 
@@ -46,6 +47,9 @@ impl StereometerState {
             band_trail: VecDeque::with_capacity(TRAIL_LEN),
             palette: palettes::stereometer::COLORS,
             settings: defaults,
+            labels: ["+1", "0", "-1"].map(|label| {
+                Paragraph::with_text(raw_text(label, CORR_LABEL_SIZE, Size::new(CORR_LABEL_W, CORR_LABEL_H)))
+            }),
             key: crate::visuals::next_key(),
         }
     }
@@ -153,23 +157,17 @@ crate::visuals::visualization_widget!(Stereometer, StereometerState, |this, rend
 
     if let Some(meter) = meter.filter(|meter| meter.width > 0.0 && meter.height > 0.0) {
         let left = side == CorrelationMeterSide::Left;
-        let align = if left { Horizontal::Left } else { Horizontal::Right };
         let x = if left {
             meter.x + meter.width + CORR_LABEL_GAP
         } else {
             meter.x - CORR_LABEL_GAP
         };
         let color = theme.extended_palette().background.base.text;
-        for (label, value) in [("+1", 1.0), ("0", 0.0), ("-1", -1.0)] {
-            let mut text = make_text(
-                label,
-                CORR_LABEL_SIZE,
-                Size::new(CORR_LABEL_W, CORR_LABEL_H),
-            );
-            text.align_x = align.into();
-            text.align_y = Vertical::Center;
-            let y = StereometerPrimitive::correlation_y(meter, value);
-            text::Renderer::fill_text(renderer, text, Point::new(x, y), color, bounds);
+        for (label, value) in state.labels.iter().zip([1.0, 0.0, -1.0]) {
+            let size = label.min_bounds();
+            let x = if left { x } else { x - size.width };
+            let y = StereometerPrimitive::correlation_y(meter, value) - size.height * 0.5;
+            text::Renderer::fill_paragraph(renderer, label, Point::new(x, y), color, bounds);
         }
     }
 });

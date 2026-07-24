@@ -142,21 +142,18 @@ impl TruePeakMeter {
 
         if self.delay_len == TRUE_PEAK_4X_DELAY {
             let mut output = [0.0; 3];
-            for (&sample, coefficients) in self.delay[pos..pos + self.delay_len]
-                .iter()
-                .zip(self.firs.0.iter())
-            {
-                for (out, &coefficient) in output.iter_mut().zip(coefficients) {
-                    *out += sample * coefficient;
+            for i in 0..self.delay_len {
+                let (sample, coefficients) = (self.delay[pos + i], self.firs.0[i]);
+                for phase in 0..3 {
+                    output[phase] += sample * coefficients[phase];
                 }
             }
             self.peak = output.into_iter().map(f32::abs).fold(self.peak, f32::max);
         } else {
-            let output = self.delay[pos..pos + self.delay_len]
-                .iter()
-                .zip(self.firs.1.iter())
-                .map(|(&sample, &coefficient)| sample * coefficient)
-                .sum::<f32>();
+            let mut output = 0.0;
+            for i in 0..self.delay_len {
+                output += self.delay[pos + i] * self.firs.1[i];
+            }
             self.peak = self.peak.max(output.abs());
         }
     }

@@ -17,7 +17,7 @@ use crate::{
     util::audio::{Channel, DEFAULT_SAMPLE_RATE},
     util::color::{sanitize_stop_positions, sanitize_stop_spreads},
 };
-use iced::{Color, Element, Length, widget::container};
+use iced::{Color, Element};
 use std::{cell::RefCell, rc::Rc};
 
 type Shared<T> = Rc<RefCell<T>>;
@@ -74,13 +74,9 @@ macro_rules! visuals {
 
         impl VisualContent {
             pub(crate) fn render<M: 'static>(&self) -> Element<'_, M> {
-                container(match &self.0 {
+                match &self.0 {
                     $(VisualContentInner::$variant(s) => $module::widget(s)),*
-                })
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .center(Length::Fill)
-                .into()
+                }
             }
         }
 

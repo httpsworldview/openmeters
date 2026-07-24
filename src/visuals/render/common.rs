@@ -56,7 +56,7 @@ impl ChannelLayout {
     }
 }
 
-fn text<C>(content: C, px: f32, bounds: Size) -> IcedText<C> {
+pub(in crate::visuals) fn text<C>(content: C, px: f32, bounds: Size) -> IcedText<C> {
     use iced::advanced::text;
     text::Text {
         content,
