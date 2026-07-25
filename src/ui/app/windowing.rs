@@ -7,10 +7,8 @@ use crate::persistence::settings::{
     BarAlignment, BarSettings, MainWindowSettings, PopoutWindowSettings, clamp_bar_height,
 };
 use crate::ui::config::ConfigMessage;
-use crate::ui::theme;
 use crate::ui::visuals::VisualsMessage;
 use crate::ui::widgets::{fill, scroll_glow::ScrollGlow};
-use crate::util::color::with_alpha;
 use crate::visuals::registry::{VisualContent, VisualKind, VisualSlotSnapshot};
 use iced::widget::{mouse_area, text};
 use iced::{Element, Size, Task, exit, window};
@@ -61,22 +59,6 @@ pub(super) fn bar_anchor(alignment: BarAlignment) -> Anchor {
     }
 }
 
-fn bar_layershell_settings(bar: &BarSettings, height: u32) -> NewLayerShellSettings {
-    NewLayerShellSettings {
-        size: Some((0, height)),
-        layer: Layer::Top,
-        anchor: bar_anchor(bar.alignment),
-        exclusive_zone: Some(height as i32),
-        keyboard_interactivity: KeyboardInteractivity::OnDemand,
-        output_option: bar
-            .monitor
-            .clone()
-            .map(OutputOption::OutputName)
-            .unwrap_or_default(),
-        ..Default::default()
-    }
-}
-
 fn clamp_window_size(size: Size) -> Size {
     Size::new(
         size.width.max(WINDOW_MIN_SIZE.width),
@@ -93,23 +75,6 @@ pub(super) fn main_window_size(settings: MainWindowSettings) -> Size {
     clamp_window_size(Size::new(settings.width as f32, settings.height as f32))
 }
 
-fn main_window_settings(size: Size) -> MainWindowSettings {
-    let (width, height) = persisted_window_size(size);
-    MainWindowSettings { width, height }
-}
-
-fn base_window_settings(size: Size, decorations: bool) -> window::Settings {
-    window::Settings {
-        size,
-        min_size: Some(WINDOW_MIN_SIZE),
-        resizable: true,
-        decorations,
-        // Keep one alpha mode across base windows; visual windows need it for background opacity.
-        transparent: true,
-        ..Default::default()
-    }
-}
-
 fn open_base_window(
     layershell: bool,
     size: Size,
@@ -122,7 +87,15 @@ fn open_base_window(
         };
         message::base_window_open(settings)
     } else {
-        let (id, task) = window::open(base_window_settings(size, decorations));
+        let (id, task) = window::open(window::Settings {
+            size,
+            min_size: Some(WINDOW_MIN_SIZE),
+            resizable: true,
+            decorations,
+            // Keep one alpha mode across base windows; visual windows need it for background opacity.
+            transparent: true,
+            ..Default::default()
+        });
         (id, task.discard())
     }
 }
@@ -139,20 +112,25 @@ pub(super) fn open_main_window(
 ) -> (window::Id, Task<Message>, bool, Size) {
     if use_layershell && bar_settings.enabled {
         let height = clamp_bar_height(bar_settings.height);
-        let settings = bar_layershell_settings(&bar_settings, height);
-        let (id, task) = message::layershell_open(settings);
+        let (id, task) = message::layershell_open(NewLayerShellSettings {
+            size: Some((0, height)),
+            layer: Layer::Top,
+            anchor: bar_anchor(bar_settings.alignment),
+            exclusive_zone: Some(height as i32),
+            keyboard_interactivity: KeyboardInteractivity::OnDemand,
+            output_option: bar_settings
+                .monitor
+                .clone()
+                .map(OutputOption::OutputName)
+                .unwrap_or_default(),
+            ..Default::default()
+        });
         let new_size = Size::new(base_size.width, height as f32);
         return (id, task, true, new_size);
     }
 
     let (id, task) = open_base_window(use_layershell, base_size, with_decorations);
     (id, task, false, base_size)
-}
-
-fn popout_window_size(saved: Option<PopoutWindowSettings>) -> Size {
-    let saved = saved.unwrap_or_default();
-    let dim = |saved: u32, default| if saved > 0 { saved as f32 } else { default };
-    clamp_window_size(Size::new(dim(saved.width, 400.0), dim(saved.height, 300.0)))
 }
 
 fn popout_window_settings(size: Size, popped_out: bool) -> PopoutWindowSettings {
@@ -241,7 +219,10 @@ impl UiApp {
             .iter()
             .enumerate()
             .find(|(_, s)| s.kind == kind && s.enabled)?;
-        let window_size = popout_window_size(saved_size);
+        let saved = saved_size.unwrap_or_default();
+        let dim = |saved: u32, default| if saved > 0 { saved as f32 } else { default };
+        let window_size =
+            clamp_window_size(Size::new(dim(saved.width, 400.0), dim(saved.height, 300.0)));
         let use_decorations = self.settings_handle.borrow().data.decorations;
         let (new_id, open_task) =
             open_base_window(self.use_layershell, window_size, use_decorations);
@@ -406,24 +387,17 @@ impl UiApp {
     }
 
     pub(super) fn theme(&self, window_id: window::Id) -> iced::Theme {
-        let is_config = self.config_window == Some(window_id);
-        let is_settings = matches!(&self.settings_window, Some((w, _)) if *w == window_id);
-        let is_tool = is_config || is_settings;
-        // Tool windows force opaque alpha: they have no wgpu visual backdrop, so a
-        // translucent user background would let the desktop bleed through the chrome.
-        let custom_bg = if is_tool
-            || window_id == self.main_window_id
-            || self.popout_windows.contains_key(&window_id)
+        let [fallback, visual, tool] = &self.config_page.window_themes;
+        if self.config_window == Some(window_id)
+            || matches!(&self.settings_window, Some((id, _)) if *id == window_id)
         {
-            self.settings_handle.borrow().data.background_color
+            tool
+        } else if window_id == self.main_window_id || self.popout_windows.contains_key(&window_id) {
+            visual
         } else {
-            None
+            fallback
         }
-        .map(|c| {
-            let c: iced::Color = c.into();
-            if is_tool { with_alpha(c, 1.0) } else { c }
-        });
-        theme::theme(custom_bg)
+        .clone()
     }
 
     pub(super) fn handle_popout_or_dock(&mut self, source_window: window::Id) -> Task<Message> {
@@ -506,7 +480,8 @@ impl UiApp {
             ]);
         }
 
-        let settings = main_window_settings(new_size);
+        let (width, height) = persisted_window_size(new_size);
+        let settings = MainWindowSettings { width, height };
         let size = main_window_size(settings);
         self.main_window_size = size;
         self.last_base_window_size = size;

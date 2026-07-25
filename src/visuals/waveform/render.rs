@@ -3,7 +3,8 @@
 
 use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
-use std::{collections::VecDeque, sync::Arc};
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 
 use crate::util::{
     audio::{DB_FLOOR, power_to_db, sanitize_negative_db},
@@ -31,7 +32,7 @@ pub struct WaveformParams {
     pub channels: usize,
     pub column_width: f32,
     pub columns: usize,
-    pub data: Arc<VecDeque<WaveFrame>>,
+    pub data: Arc<Mutex<VecDeque<WaveFrame>>>,
     pub preview: WaveformPreview,
     pub color_mode: WaveformColorMode,
     pub history_mode: WaveformHistoryMode,
@@ -118,7 +119,7 @@ fn with_fill_alpha(color: [f32; 4], alpha: f32) -> [f32; 4] {
 impl WaveformPrimitive {
     fn build_vertices(&self, _viewport: &Viewport, scratch: &mut GeometryScratch) {
         let params = &self.params;
-        let data = &params.data;
+        let data = crate::util::unpoison(params.data.lock());
         let (channels, columns) = (params.channels.max(1), params.columns.min(data.len()));
         let start = data.len().saturating_sub(columns);
         let preview_active = params.preview_active();

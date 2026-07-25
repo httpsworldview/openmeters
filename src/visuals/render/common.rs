@@ -71,20 +71,6 @@ pub(in crate::visuals) fn text<C>(content: C, px: f32, bounds: Size) -> IcedText
     }
 }
 
-pub(in crate::visuals) fn measure_text(s: &str, px: f32) -> Size {
-    use iced::advanced::graphics::text::Paragraph;
-    use iced::advanced::text::Paragraph as _;
-    Paragraph::with_text(text(s, px, Size::INFINITE)).min_bounds()
-}
-
-pub(in crate::visuals) fn make_text(
-    s: impl Into<String>,
-    px: f32,
-    bounds: Size,
-) -> IcedText<String> {
-    text(s.into(), px, bounds)
-}
-
 fn fill_rect_quad(r: &mut Renderer, bounds: Rectangle, color: Color, border: Border, snap: bool) {
     use iced::advanced::{Renderer as _, renderer::Quad};
     r.fill_quad(
@@ -107,17 +93,9 @@ pub(in crate::visuals) fn fill_bordered_rect(
     bounds: Rectangle,
     color: Color,
     border: Border,
+    snap: bool,
 ) {
-    fill_rect_quad(r, bounds, color, border, false);
-}
-
-pub(in crate::visuals) fn fill_snapped_bordered_rect(
-    r: &mut Renderer,
-    bounds: Rectangle,
-    color: Color,
-    border: Border,
-) {
-    fill_rect_quad(r, bounds, color, border, true);
+    fill_rect_quad(r, bounds, color, border, snap);
 }
 
 #[repr(C)]
@@ -618,10 +596,15 @@ impl<K: std::hash::Hash + Eq + Copy> SdfPipeline<K> {
         }
     }
 
-    pub fn is_current(&self, key: K, fingerprint: [u64; 2]) -> bool {
-        self.instances
-            .get(&key)
-            .is_some_and(|entry| entry.fingerprint == Some(fingerprint))
+    pub fn touch_if_current(&mut self, key: K, fingerprint: [u64; 2]) -> bool {
+        let last_used = self.cache.frame;
+        self.instances.get_mut(&key).is_some_and(|entry| {
+            let current = entry.fingerprint == Some(fingerprint);
+            if current {
+                entry.last_used = last_used;
+            }
+            current
+        })
     }
 
     pub fn prepare_instance(
@@ -678,7 +661,9 @@ macro_rules! sdf_primitive {
                 let fingerprint = $crate::visuals::render::common::sdf_primitive!(
                     @fingerprint $self $(, $fingerprint_expr)?
                 );
-                if fingerprint.is_some_and(|fingerprint| pipeline.inner.is_current(key, fingerprint)) {
+                if fingerprint
+                    .is_some_and(|fingerprint| pipeline.inner.touch_if_current(key, fingerprint))
+                {
                     return;
                 }
                 pipeline.scratch.clear();

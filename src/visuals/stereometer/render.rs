@@ -3,16 +3,16 @@
 
 use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
-use std::sync::Arc;
+use std::ops::Deref;
+use std::sync::{Arc, LazyLock};
 
-use crate::visuals::render::common::sdf_primitive;
 use crate::visuals::options::{
     CorrelationMeterMode, CorrelationMeterSide, StereometerMode, StereometerScale,
 };
 use crate::util::lerp;
 use crate::visuals::render::common::{
-    ClipTransform, GeometryScratch, SdfInstance, gradient_quad_instance, line_instance,
-    quad_instance, radial_dot_instance,
+    ClipTransform, GeometryScratch, SdfInstance, SdfPipeline, gradient_quad_instance,
+    line_instance, quad_instance, radial_dot_instance,
 };
 
 // 0.66834.powf(0.3) and (1.0 / 0.66834).powi(2), respectively. Working
@@ -24,6 +24,7 @@ const LINEAR_GUIDE_LEVELS: [f32; 3] = [1.0 / 3.0, 2.0 / 3.0, 1.0];
 const SCALED_GUIDE_LEVELS: [f32; 4] = [0.0039810717, 0.06309573, 0.25118864, 1.0];
 const GRID_SEGMENTS: usize = 16;
 const GRID_LINE_WIDTH: f32 = 1.0;
+const RENDER_LABEL: &str = "Stereometer";
 const GRID_CORNERS: [(f32, f32); 4] = [(1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0)];
 const GRID_AXES: [((f32, f32), (f32, f32)); 2] =
     [((1.0, 1.0), (-1.0, -1.0)), ((1.0, -1.0), (-1.0, 1.0))];
@@ -33,8 +34,13 @@ const CORR_PAD: f32 = 4.0;
 pub(super) const CORR_LABEL_GAP: f32 = 5.0;
 pub(super) const CORR_LABEL_H: f32 = 12.0;
 pub(super) const CORR_LABEL_W: f32 = 16.0;
+pub(super) const CORR_TRAIL_LEN: usize = 32;
 const CORR_VPAD_RATIO: f32 = 5.0 / 64.0;
 const CORR_EDGE: f32 = 6.0;
+
+static CORR_OPACITIES: LazyLock<[f32; CORR_TRAIL_LEN - 1]> = LazyLock::new(|| {
+    std::array::from_fn(|age| (1.0 - (age + 1) as f32 / CORR_TRAIL_LEN as f32).powf(2.4))
+});
 
 fn scaled_point(x: f32, y: f32) -> (f32, f32) {
     let squared = x * x + y * y;
@@ -52,9 +58,29 @@ fn scaled_point(x: f32, y: f32) -> (f32, f32) {
     (x * scale, y * scale)
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FixedTrail([f32; CORR_TRAIL_LEN], usize);
+
+impl FromIterator<f32> for FixedTrail {
+    fn from_iter<T: IntoIterator<Item = f32>>(iter: T) -> Self {
+        let mut out = Self::default();
+        for value in iter.into_iter().take(CORR_TRAIL_LEN) {
+            out.0[out.1] = value;
+            out.1 += 1;
+        }
+        out
+    }
+}
+
+impl Deref for FixedTrail {
+    type Target = [f32];
+    fn deref(&self) -> &Self::Target { &self.0[..self.1] }
+}
+
 #[derive(Debug, Clone)]
 pub struct StereometerParams {
     pub key: u64,
+    pub grid_revision: u64,
     pub bounds: Rectangle,
     pub points: Arc<[(f32, f32)]>,
     pub band_points: [Arc<[(f32, f32)]>; 3],
@@ -67,8 +93,17 @@ pub struct StereometerParams {
     pub unipolar: bool,
     pub correlation_meter: CorrelationMeterMode,
     pub correlation_meter_side: CorrelationMeterSide,
-    pub corr_trail: Vec<f32>,
-    pub band_trail: [Vec<f32>; 3],
+    pub corr_trail: FixedTrail,
+    pub band_trail: [FixedTrail; 3],
+}
+
+#[derive(Debug)]
+pub struct StereometerPrimitive {
+    params: StereometerParams,
+}
+
+impl StereometerPrimitive {
+    pub fn new(params: StereometerParams) -> Self { Self { params } }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -221,17 +256,13 @@ impl StereometerPrimitive {
             StereometerScale::Linear => &LINEAR_GUIDE_LEVELS,
             StereometerScale::Scaled => &SCALED_GUIDE_LEVELS,
         };
+        let mut add_line = |start, end| {
+            projected_line(vertices, projection, start, end, color, clip);
+        };
         for &radius in levels {
             for (edge, &(x, y)) in GRID_CORNERS.iter().enumerate() {
                 let (nx, ny) = GRID_CORNERS[(edge + 1) % GRID_CORNERS.len()];
-                projected_line(
-                    vertices,
-                    projection,
-                    (x * radius, y * radius),
-                    (nx * radius, ny * radius),
-                    color,
-                    clip,
-                );
+                add_line((x * radius, y * radius), (nx * radius, ny * radius));
             }
         }
 
@@ -240,9 +271,7 @@ impl StereometerPrimitive {
         } else {
             &GRID_AXES[..]
         };
-        for &(start, end) in axes {
-            projected_line(vertices, projection, start, end, color, clip);
-        }
+        axes.iter().copied().for_each(|(a, b)| add_line(a, b));
     }
 
     pub(super) fn correlation_y(bounds: Rectangle, value: f32) -> f32 {
@@ -364,23 +393,21 @@ impl StereometerPrimitive {
         let height = (bounds.height as i32 + 1).max(0) as usize;
         let y_max = y_min + height as i32 - 1;
 
-        out.push(quad_instance(
-            bounds.x,
-            bounds.y,
-            bounds.x + bounds.width,
-            bounds.y + bounds.height,
-            clip,
-            p.palette[1],
-        ));
-        for y in [val_y(1.0), center, val_y(-1.0)] {
-            out.push(quad_instance(
-                bounds.x,
-                y - 0.5,
-                bounds.x + bounds.width,
-                y + 0.5,
-                clip,
-                p.palette[2],
-            ));
+        {
+            let mut quad = |y0, y1, color| {
+                out.push(quad_instance(
+                    bounds.x,
+                    y0,
+                    bounds.x + bounds.width,
+                    y1,
+                    clip,
+                    color,
+                ));
+            };
+            quad(bounds.y, bounds.y + bounds.height, p.palette[1]);
+            for y in [val_y(1.0), center, val_y(-1.0)] {
+                quad(y - 0.5, y + 0.5, p.palette[2]);
+            }
         }
 
         let mut draw_trail = |
@@ -390,15 +417,18 @@ impl StereometerPrimitive {
             positive: [f32; 4],
             negative: Option<[f32; 4]>,
         | {
-            let color = |is_negative| {
-                if is_negative { negative.unwrap_or(positive) } else { positive }
-            };
+            let negative = negative.unwrap_or(positive);
+            let color = |is_negative| if is_negative { negative } else { positive };
             if trail.len() > 1 {
                 alpha.resize(height, 0.0);
                 alpha.fill(0.0);
                 let len = trail.len() as f32;
                 for (age, pair) in trail.windows(2).enumerate() {
-                    let opacity = (1.0 - (age + 1) as f32 / len).powf(2.4);
+                    let opacity = if trail.len() == CORR_TRAIL_LEN {
+                        CORR_OPACITIES[age]
+                    } else {
+                        (1.0 - (age + 1) as f32 / len).powf(2.4)
+                    };
                     let (y0, y1) = (val_y(pair[0]), val_y(pair[1]));
                     let (top, bottom) = (y0.min(y1) as i32, (y0.max(y1) + 2.0) as i32);
                     for y in top.max(y_min)..=bottom.min(y_max) {
@@ -453,23 +483,112 @@ impl StereometerPrimitive {
         let (vector, correlation) = Self::meter_layout(p);
         let projection = Projection::from_params(p, vector);
         let vertices = &mut scratch.instances;
-        self.add_grid_vertices(vertices, projection, clip);
         Self::add_trace_vertices(vertices, p, projection, clip);
         if let Some(meter) = correlation {
             Self::add_correlation_vertices(vertices, &mut scratch.scalars, p, meter, clip);
         }
     }
+
+    fn build_grid_vertices(&self, scratch: &mut GeometryScratch) {
+        let p = &self.params;
+        self.add_grid_vertices(
+            &mut scratch.instances,
+            Projection::from_params(p, Self::meter_layout(p).0),
+            ClipTransform::from_bounds(p.bounds),
+        );
+    }
+
+    fn grid_key(&self) -> StereometerKey {
+        let p = &self.params;
+        StereometerKey::Grid(
+            p.key,
+            [p.bounds.x, p.bounds.y, p.bounds.width, p.bounds.height].map(f32::to_bits),
+        )
+    }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum StereometerKey {
+    Dynamic(u64),
+    Grid(u64, [u32; 4]),
+}
 
-sdf_primitive!(
-    StereometerPrimitive(StereometerParams),
-    Pipeline,
-    u64,
-    "Stereometer",
-    TriangleList,
-    |self| self.params.key
-);
+impl iced_wgpu::primitive::Primitive for StereometerPrimitive {
+    type Pipeline = Pipeline;
+
+    fn prepare(
+        &self,
+        pipeline: &mut Self::Pipeline,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        _bounds: &Rectangle,
+        viewport: &Viewport,
+    ) {
+        let dynamic_key = StereometerKey::Dynamic(self.params.key);
+        pipeline.scratch.clear();
+        self.build_vertices(viewport, &mut pipeline.scratch);
+        pipeline.inner.prepare_instance(
+            device,
+            queue,
+            RENDER_LABEL,
+            dynamic_key,
+            None,
+            &pipeline.scratch.instances,
+        );
+
+        let grid_key = self.grid_key();
+        let grid_fingerprint = [self.params.grid_revision, 0];
+        if !pipeline
+            .inner
+            .touch_if_current(grid_key, grid_fingerprint)
+        {
+            pipeline.scratch.clear();
+            self.build_grid_vertices(&mut pipeline.scratch);
+            pipeline.inner.prepare_instance(
+                device,
+                queue,
+                RENDER_LABEL,
+                grid_key,
+                Some(grid_fingerprint),
+                &pipeline.scratch.instances,
+            );
+        }
+    }
+
+    fn draw(&self, pipeline: &Self::Pipeline, pass: &mut wgpu::RenderPass<'_>) -> bool {
+        pass.set_pipeline(&pipeline.inner.pipeline);
+        for key in [self.grid_key(), StereometerKey::Dynamic(self.params.key)] {
+            if let Some(instance) = pipeline
+                .inner
+                .instance(key)
+                .filter(|instance| instance.vertex_count > 0)
+            {
+                pass.set_vertex_buffer(0, instance.vertex_buffer.slice(0..instance.used_bytes()));
+                pass.draw(0..6, 0..instance.vertex_count);
+            }
+        }
+        true
+    }
+}
+
+pub struct Pipeline {
+    inner: SdfPipeline<StereometerKey>,
+    scratch: GeometryScratch,
+}
+
+impl iced_wgpu::primitive::Pipeline for Pipeline {
+    fn new(device: &wgpu::Device, _queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
+        Self {
+            inner: SdfPipeline::new(
+                device,
+                format,
+                RENDER_LABEL,
+                wgpu::PrimitiveTopology::TriangleList,
+            ),
+            scratch: GeometryScratch::default(),
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

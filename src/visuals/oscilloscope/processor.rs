@@ -145,7 +145,7 @@ impl PeriodEstimator {
     }
 
     fn compute_periodicity(&mut self, samples: &[f32], mean: f32, max_lag: usize) -> Option<()> {
-        let fft_size = (samples.len() * 2).next_power_of_two();
+        let fft_size = (samples.len() + max_lag).next_power_of_two();
         self.rebuild_fft(fft_size);
         let Self { periodicity, energy_prefix, fft, .. } = self;
         let fft = fft.as_mut()?;
@@ -159,7 +159,7 @@ impl PeriodEstimator {
         {
             let centered = sample - mean;
             *dst = centered;
-            energy_prefix[i + 1] = centered.mul_add(centered, energy_prefix[i]);
+            energy_prefix[i + 1] = centered * centered + energy_prefix[i];
         }
         fft.input[samples.len()..].fill(0.0);
 
@@ -237,8 +237,18 @@ fn correlation_stats(y: &[f32]) -> [f32; 2] {
 }
 
 fn normalized_correlation(x: &[f32], y: &[f32], [sum_y, sum_yy]: [f32; 2]) -> f32 {
-    let (mut sum_x, mut sum_xx, mut sum_xy) = (0.0, 0.0, 0.0);
-    for (&x, &y) in x.iter().zip(y) {
+    debug_assert_eq!(x.len(), y.len());
+    let mut sums = [[0.0; 4]; 3];
+    for (x, y) in x.chunks_exact(4).zip(y.chunks_exact(4)) {
+        for lane in 0..4 {
+            sums[0][lane] += x[lane];
+            sums[1][lane] += x[lane] * x[lane];
+            sums[2][lane] += x[lane] * y[lane];
+        }
+    }
+    let [mut sum_x, mut sum_xx, mut sum_xy] = sums.map(|sum| sum.into_iter().sum::<f32>());
+    let remainder = x.len() / 4 * 4;
+    for (&x, &y) in x[remainder..].iter().zip(&y[remainder..]) {
         sum_x += x;
         sum_xx += x * x;
         sum_xy += x * y;
@@ -423,9 +433,11 @@ impl StableTrigger {
         let midpoint = len / 2;
         let max_width = (midpoint.max(1) as f32 / 3.0).max(1.0);
         let width = (StableTuning::SLOPE_WIDTH_PERIODS * period).clamp(1.0, max_width);
-        for (i, value) in self.kernel.iter_mut().enumerate() {
-            let side = if i < midpoint { -0.5 } else { 0.5 };
-            *value = side * StableTuning::EDGE_STRENGTH * 2.0 * gaussian(len, i, width);
+        for i in 0..len.div_ceil(2) {
+            let mirror = len - 1 - i;
+            let weight = gaussian(len, i, width);
+            self.kernel[i] = -0.5 * StableTuning::EDGE_STRENGTH * 2.0 * weight;
+            self.kernel[mirror] = 0.5 * StableTuning::EDGE_STRENGTH * 2.0 * weight;
         }
 
         let mean = data.iter().sum::<f32>() / data.len().max(1) as f32;
@@ -520,8 +532,13 @@ impl StableTrigger {
 
         let std = (period * StableTuning::BUFFER_FALLOFF_PERIODS).max(1.0);
         let len = self.candidate.len();
-        for (i, sample) in self.candidate.iter_mut().enumerate() {
-            *sample *= gaussian(len, i, std);
+        for i in 0..len.div_ceil(2) {
+            let mirror = len - 1 - i;
+            let weight = gaussian(len, i, std);
+            self.candidate[i] *= weight;
+            if mirror != i {
+                self.candidate[mirror] *= weight;
+            }
         }
 
         normalized_correlation(&self.reference, &self.candidate, correlation_stats(&self.candidate))

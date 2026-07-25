@@ -55,7 +55,18 @@ impl VisualsPage {
     pub fn update(&mut self, message: VisualsMessage) -> Task<VisualsMessage> {
         match message {
             VisualsMessage::PaneResized(widths) => {
-                let bases = self.apply_resize_width_basis(&widths);
+                let Some(panes) = self.panes.as_mut() else {
+                    return Task::none();
+                };
+                let bases: Vec<_> = widths
+                    .into_iter()
+                    .filter_map(|(pane, basis)| {
+                        let basis = crate::util::finite_positive(basis)?;
+                        let visual = panes.get_mut(pane)?;
+                        visual.width_basis = basis;
+                        Some((visual.kind, basis))
+                    })
+                    .collect();
                 if !bases.is_empty() {
                     self.settings
                         .update(|s| s.data.visuals.width_basis.extend(bases));
@@ -109,10 +120,7 @@ impl VisualsPage {
         if reorder_enabled {
             grid = grid.on_drag(VisualsMessage::PaneDragged);
         }
-        container(grid)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+        grid.into()
     }
 
     pub(in crate::ui) fn apply_snapshot_excluding(
@@ -154,20 +162,5 @@ impl VisualsPage {
                 pane.content = slot.content.clone();
             }
         }
-    }
-
-    fn apply_resize_width_basis(&mut self, widths: &[(Pane, f32)]) -> Vec<(VisualKind, f32)> {
-        let Some(panes) = self.panes.as_mut() else {
-            return Vec::new();
-        };
-        widths
-            .iter()
-            .filter_map(|&(pane, basis)| {
-                let basis = crate::util::finite_positive(basis)?;
-                let visual = panes.get_mut(pane)?;
-                visual.width_basis = basis;
-                Some((visual.kind, basis))
-            })
-            .collect()
     }
 }

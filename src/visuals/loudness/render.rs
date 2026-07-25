@@ -64,14 +64,6 @@ impl LoudnessParams {
     }
 }
 
-fn sub_bar_gap(bar_width: f32, fill_count: usize) -> f32 {
-    if fill_count <= 1 || bar_width <= 2.0 { return 0.0; }
-
-    let desired = (bar_width * INNER_GAP_RATIO).max(0.5);
-    let max_gap = bar_width / (fill_count - 1) as f32 * 0.5;
-    desired.min(max_gap)
-}
-
 impl LoudnessPrimitive {
     fn build_vertices(&self, _viewport: &Viewport, scratch: &mut GeometryScratch) {
         let clip = ClipTransform::from_bounds(self.params.bounds);
@@ -96,7 +88,13 @@ impl LoudnessPrimitive {
             let x1 = x0 + bar_width;
 
             vertices.push(quad_instance(x0, y0, x1, y1, clip, self.params.bg_color));
-            let inner_gap = sub_bar_gap(bar_width, sub_bar_count);
+            let inner_gap = if sub_bar_count <= 1 || bar_width <= 2.0 {
+                0.0
+            } else {
+                (bar_width * INNER_GAP_RATIO)
+                    .max(0.5)
+                    .min(bar_width / (sub_bar_count - 1) as f32 * 0.5)
+            };
             let total_inner = inner_gap * (sub_bar_count - 1) as f32;
             let seg_width = ((bar_width - total_inner) / sub_bar_count as f32).max(0.0);
 

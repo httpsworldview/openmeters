@@ -21,7 +21,16 @@ const ACCENT_PRIMARY: Color = Color::from_rgba(0.157, 0.157, 0.157, 1.0);
 const ACCENT_SUCCESS: Color = Color::from_rgba(0.478, 0.557, 0.502, 1.0);
 const ACCENT_DANGER: Color = Color::from_rgba(0.557, 0.478, 0.478, 1.0);
 
-pub fn theme(custom_bg: Option<Color>) -> Theme {
+pub fn window_themes(background: Option<Color>) -> [Theme; 3] {
+    [
+        None,
+        background,
+        background.map(|color| with_alpha(color, 1.0)),
+    ]
+    .map(theme)
+}
+
+fn theme(custom_bg: Option<Color>) -> Theme {
     Theme::custom_with_fn("OpenMeters Monochrome", palette(custom_bg), |base| {
         let mut extended = Extended::generate(base);
         extended.background.weak = extended.background.neutral;
@@ -58,11 +67,9 @@ pub fn border_color(theme: &Theme, emphasized: bool) -> Color {
 }
 
 pub fn border(theme: &Theme, emphasized: bool) -> Border {
-    Border {
-        color: border_color(theme, emphasized),
-        width: 1.0,
-        ..Default::default()
-    }
+    Border::default()
+        .color(border_color(theme, emphasized))
+        .width(1)
 }
 
 pub fn button_style(theme: &Theme, selected: bool, status: button::Status) -> button::Style {
@@ -79,21 +86,18 @@ pub fn button_style(theme: &Theme, selected: bool, status: button::Status) -> bu
         base
     };
     button::Style {
-        background: Some(Background::Color(background)),
         text_color: readable_text(background),
         border: border(theme, status == Pressed),
-        ..Default::default()
+        ..button::Style::default().with_background(background)
     }
 }
 
 pub fn weak_container(theme: &Theme) -> container::Style {
     let palette = theme.extended_palette();
-    container::Style {
-        background: Some(Background::Color(palette.background.weak.color)),
-        text_color: Some(palette.background.base.text),
-        border: border(theme, false),
-        ..Default::default()
-    }
+    container::Style::default()
+        .background(palette.background.weak.color)
+        .color(palette.background.base.text)
+        .border(border(theme, false))
 }
 
 pub fn weak_text_style(theme: &Theme) -> text::Style {
@@ -103,15 +107,10 @@ pub fn weak_text_style(theme: &Theme) -> text::Style {
 }
 
 pub fn resize_overlay(theme: &Theme) -> container::Style {
-    let palette = theme.extended_palette();
-    container::Style {
-        background: Some(Background::Color(with_alpha(
-            palette.background.base.color,
-            0.7,
-        ))),
-        text_color: Some(palette.background.base.text),
-        ..Default::default()
-    }
+    let background = theme.extended_palette().background.base;
+    container::Style::default()
+        .background(with_alpha(background.color, 0.7))
+        .color(background.text)
 }
 
 pub fn slider_style(theme: &Theme, status: slider::Status) -> slider::Style {

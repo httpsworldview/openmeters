@@ -18,9 +18,9 @@ use crate::util::{
 };
 use crate::visuals::options::PianoRollOverlay;
 use crate::visuals::palettes;
-use crate::visuals::render::common::{fill_bordered_rect, fill_rect, make_text, measure_text};
-use iced::advanced::renderer;
-use iced::advanced::text::Renderer as _;
+use crate::visuals::render::common::{fill_bordered_rect, fill_rect, text as raw_text};
+use iced::advanced::{graphics::text::Paragraph, renderer};
+use iced::advanced::text::{Paragraph as _, Renderer as _};
 use iced::advanced::widget::{Tree, tree};
 use iced::advanced::{Layout, Renderer as _, Widget, layout, mouse};
 use iced::{Color, Element, Length, Point, Rectangle, Size, keyboard};
@@ -488,9 +488,10 @@ impl<'a> Spectrogram<'a> {
             .map_or_else(|| String::from("--"), |ni| ni.fmt_note_cents());
         let time_text = time_ago.map_or_else(|| String::from("--"), fmt_duration);
 
-        let fsz = measure_text(&freq_text, TOOLTIP_SIZE);
-        let nsz = measure_text(&note_text, TOOLTIP_SIZE);
-        let tsz = measure_text(&time_text, TOOLTIP_SIZE);
+        let texts = [freq_text, note_text, time_text];
+        let [fsz, nsz, tsz] = texts.each_ref().map(|text| {
+            Paragraph::with_text(raw_text(text.as_str(), TOOLTIP_SIZE, Size::INFINITE)).min_bounds()
+        });
         let line_h = fsz.height;
         let content_w = fsz.width.max(nsz.width).max(tsz.width);
         let content_h = line_h * 3.0 + TOOLTIP_GAP * 2.0;
@@ -507,15 +508,16 @@ impl<'a> Spectrogram<'a> {
                 width: 1.0,
                 ..Default::default()
             },
+            false,
         );
 
         let text_color = pal.background.base.text;
         let tx = tb.x + TOOLTIP_PAD;
         let mut ty = tb.y + TOOLTIP_PAD;
-        for (text, sz) in [(&freq_text, fsz), (&note_text, nsz), (&time_text, tsz)] {
+        for (text, sz) in texts.into_iter().zip([fsz, nsz, tsz]) {
             let pt = Point::new(tx, ty);
             renderer.fill_text(
-                make_text(text, TOOLTIP_SIZE, sz),
+                raw_text(text, TOOLTIP_SIZE, sz),
                 pt,
                 text_color,
                 Rectangle::new(pt, sz),
@@ -637,17 +639,22 @@ impl<'a> Spectrogram<'a> {
                 } else {
                     strip
                 };
-                fill_bordered_rect(renderer, orient_rect(lo, key_len, anchor, w), fill, brd);
+                fill_bordered_rect(renderer, orient_rect(lo, key_len, anchor, w), fill, brd, false);
                 if note.midi_number % 12 == 0 && key_len >= PIANO_LABEL_SIZE {
                     let s = format!("C{}", note.octave);
-                    let tsz = measure_text(&s, PIANO_LABEL_SIZE);
+                    let tsz = Paragraph::with_text(raw_text(
+                        s.as_str(),
+                        PIANO_LABEL_SIZE,
+                        Size::INFINITE,
+                    ))
+                    .min_bounds();
                     let fp = lo + (key_len - if horizontal { tsz.width } else { tsz.height }) * 0.5;
                     let tp = strip
                         + (PIANO_ROLL_WIDTH - if horizontal { tsz.height } else { tsz.width })
                             * 0.5;
                     let pt = orient_point(fp, tp);
                     renderer.fill_text(
-                        make_text(s, PIANO_LABEL_SIZE, tsz),
+                        raw_text(s, PIANO_LABEL_SIZE, tsz),
                         pt,
                         black,
                         Rectangle::new(pt, tsz),

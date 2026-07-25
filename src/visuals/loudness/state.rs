@@ -8,7 +8,7 @@ use crate::persistence::settings::LoudnessSettings;
 use crate::visuals::options::MeterMode;
 use crate::visuals::palettes;
 use crate::util::color::color_to_rgba;
-use crate::visuals::render::common::{fill_rect, make_text, text as raw_text};
+use crate::visuals::render::common::{fill_rect, text as raw_text};
 use iced::advanced::{graphics::text::Paragraph, text};
 use iced::advanced::text::Paragraph as _;
 use iced::alignment::{Horizontal, Vertical};
@@ -25,14 +25,11 @@ const RIGHT_PADDING: f32 = 64.0;
 const GUIDE_LABEL_HEIGHT: f32 = 12.0;
 const GUIDE_LABEL_GAP: f32 = 2.0;
 const GUIDE_LABEL_ORDER: [usize; GUIDE_LEVELS.len()] = [0, 2, 5, 3, 4, 1];
-const VALUE_FONT_SIZE: f32 = 12.0;
 
 pub const LOUDNESS_PALETTE_SIZE: usize = palettes::loudness::COLORS.len();
 
 const PAL_BACKGROUND: usize = 0;
 const PAL_LOW: usize = 1;
-const PAL_MID: usize = 2;
-const PAL_HIGH: usize = 3;
 const PAL_DANGER: usize = 4;
 const PAL_PEAK: usize = 5;
 const PAL_GUIDE: usize = 6;
@@ -73,6 +70,7 @@ pub(in crate::visuals) struct LoudnessState {
     pub(in crate::visuals) palette: [Color; LOUDNESS_PALETTE_SIZE],
     peaks: [PeakHold; VISIBLE_METER_COUNT],
     guide_labels: [Paragraph; GUIDE_LABELS.len()],
+    value_label: (String, Paragraph),
     key: u64,
 }
 
@@ -81,7 +79,7 @@ impl LoudnessState {
         let mut snapshot = LoudnessSnapshot::with_floor(DEFAULT_RANGE.0);
         snapshot.channel_count = 2;
         let peak = PeakHold::new(DEFAULT_RANGE.0, Instant::now());
-        Self {
+        let mut state = Self {
             snapshot,
             settings: LoudnessSettings::default(),
             palette: palettes::loudness::COLORS,
@@ -92,8 +90,11 @@ impl LoudnessState {
                 text.align_y = Vertical::Center;
                 Paragraph::with_text(text)
             }),
+            value_label: (String::new(), Paragraph::default()),
             key: crate::visuals::next_key(),
-        }
+        };
+        state.refresh_value_label();
+        state
     }
 
     pub fn reset_audio(&mut self) {
@@ -101,20 +102,24 @@ impl LoudnessState {
         snapshot.channel_count = 2;
         self.snapshot = snapshot;
         self.peaks = [PeakHold::new(DEFAULT_RANGE.0, Instant::now()); VISIBLE_METER_COUNT];
+        self.refresh_value_label();
     }
 
     pub fn apply_snapshot(&mut self, mut snapshot: LoudnessSnapshot) {
         snapshot.channel_count = snapshot.channel_count.clamp(1, MAX_CHANNELS);
         self.snapshot = snapshot;
         self.update_peak_holds(Instant::now());
+        self.refresh_value_label();
     }
 
     pub fn set_modes(&mut self, left: MeterMode, right: MeterMode) {
         if self.settings.left_mode != left || self.settings.right_mode != right {
-            self.reset_peaks(Instant::now());
+            self.peaks
+                .fill(PeakHold::new(DEFAULT_RANGE.0, Instant::now()));
         }
         self.settings.left_mode = left;
         self.settings.right_mode = right;
+        self.refresh_value_label();
     }
 
     pub fn export_settings(&self) -> LoudnessSettings {
@@ -196,11 +201,8 @@ impl LoudnessState {
             db,
             segments: self.meter_segments(mode),
             peak: (peak_db > DEFAULT_RANGE.0).then(|| {
-                let color = self.palette[if is_danger_zone(mode, peak_db) {
-                    PAL_DANGER
-                } else {
-                    PAL_PEAK
-                }];
+                let danger = peak_db >= zone_thresholds(mode)[DANGER_THRESHOLD_INDEX];
+                let color = self.palette[if danger { PAL_DANGER } else { PAL_PEAK }];
                 (peak_db, color_to_rgba(color))
             }),
         }
@@ -208,16 +210,22 @@ impl LoudnessState {
 
     fn meter_segments(&self, mode: MeterMode) -> [(f32, [f32; 4]); ZONE_COUNT] {
         let [low, mid, high] = zone_thresholds(mode);
-        [
-            (low, color_to_rgba(self.palette[PAL_LOW])),
-            (mid, color_to_rgba(self.palette[PAL_MID])),
-            (high, color_to_rgba(self.palette[PAL_HIGH])),
-            (DEFAULT_RANGE.1, color_to_rgba(self.palette[PAL_DANGER])),
-        ]
+        let thresholds = [low, mid, high, DEFAULT_RANGE.1];
+        std::array::from_fn(|i| (thresholds[i], color_to_rgba(self.palette[PAL_LOW + i])))
     }
 
-    fn reset_peaks(&mut self, now: Instant) {
-        self.peaks.fill(PeakHold::new(DEFAULT_RANGE.0, now));
+    fn refresh_value_label(&mut self) {
+        let mode = self.settings.right_mode;
+        let unit = match mode {
+            MeterMode::LufsShortTerm | MeterMode::LufsMomentary => "LUFS",
+            MeterMode::RmsFast | MeterMode::RmsSlow => "dB",
+            MeterMode::TruePeak => "dBTP",
+        };
+        let text = format!("{:.1} {unit}", self.get_value(mode, 0));
+        if self.value_label.0 != text {
+            let paragraph = value_label(&text);
+            self.value_label = (text, paragraph);
+        }
     }
 
     fn update_peak_holds(&mut self, now: Instant) {
@@ -268,16 +276,13 @@ fn zone_thresholds(mode: MeterMode) -> [f32; 3] {
     }
 }
 
-fn meter_unit_label(mode: MeterMode) -> &'static str {
-    match mode {
-        MeterMode::LufsShortTerm | MeterMode::LufsMomentary => "LUFS",
-        MeterMode::RmsFast | MeterMode::RmsSlow => "dB",
-        MeterMode::TruePeak => "dBTP",
-    }
-}
-
-fn is_danger_zone(mode: MeterMode, db: f32) -> bool {
-    db >= zone_thresholds(mode)[DANGER_THRESHOLD_INDEX]
+fn value_label(label: &str) -> Paragraph {
+    let mut text = raw_text(label, 12.0, Size::INFINITE);
+    text.font = iced::Font {
+        weight: iced::font::Weight::Bold,
+        ..Default::default()
+    };
+    Paragraph::with_text(text)
 }
 
 fn visible_guide_labels(
@@ -336,9 +341,7 @@ crate::visuals::visualization_widget!(Loudness, LoudnessState, |this, renderer, 
         }
 
         let value = state.get_value(state.settings.right_mode, 0);
-        let unit = meter_unit_label(state.settings.right_mode);
         let y = y_of(value);
-        let label = format!("{value:.1} {unit}");
 
         let label_x = meter_x + stride + bar_width + 4.0;
         let clamp_max = (bounds.y + bounds.height - 20.0).max(bounds.y);
@@ -355,23 +358,14 @@ crate::visuals::visualization_widget!(Loudness, LoudnessState, |this, renderer, 
             state.palette[PAL_BACKGROUND],
         );
 
-        let mut text = make_text(
-            label,
-            VALUE_FONT_SIZE,
-            Size::new(label_rect.width, label_rect.height),
-        );
-        text.font = iced::Font {
-            weight: iced::font::Weight::Bold,
-            ..Default::default()
-        };
-        text.align_x = Horizontal::Center.into();
-        text.align_y = Vertical::Center;
-        text::Renderer::fill_text(
+        let label = &state.value_label.1;
+        let label_size = label.min_bounds();
+        text::Renderer::fill_paragraph(
             renderer,
-            text,
+            label,
             Point::new(
-                label_rect.x + label_rect.width / 2.0,
-                label_rect.y + label_rect.height / 2.0,
+                label_rect.center_x() - label_size.width * 0.5,
+                label_rect.center_y() - label_size.height * 0.5,
             ),
             palette.background.base.text,
             bounds,

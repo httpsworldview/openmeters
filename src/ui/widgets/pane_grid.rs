@@ -409,7 +409,7 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer> for PaneGrid
         viewport: &Rectangle,
     ) {
         let interaction = tree.state.downcast_ref::<Interaction>();
-        let accent = theme.extended_palette().primary.base.color;
+        let accent = || theme.extended_palette().primary.base.color;
         for (((pane, content), child), child_layout) in self
             .entries
             .iter()
@@ -433,13 +433,13 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer> for PaneGrid
                         bounds: child_layout.bounds(),
                         border: iced::Border {
                             width: 2.0,
-                            color: with_alpha(accent, 0.9),
+                            color: with_alpha(accent(), 0.9),
                             ..Default::default()
                         },
                         snap: true,
                         ..Default::default()
                     },
-                    Background::Color(with_alpha(accent, 0.4)),
+                    Background::Color(with_alpha(accent(), 0.4)),
                 );
             }
         }
@@ -456,7 +456,7 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer> for PaneGrid
                     snap: true,
                     ..Default::default()
                 },
-                Background::Color(with_alpha(accent, 0.75)),
+                Background::Color(with_alpha(accent(), 0.75)),
             );
         }
     }

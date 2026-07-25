@@ -15,7 +15,7 @@ use crate::ui::widgets::{fill, scroll_glow::ScrollGlow};
 use crate::visuals::registry::{VisualManager, VisualManagerHandle};
 use iced::alignment::{Horizontal, Vertical};
 use iced::event::{self, Event};
-use iced::widget::{container, mouse_area, row, stack, text};
+use iced::widget::{Space, container, mouse_area, row, stack, text};
 use iced::{
     Element, Length, Settings as IcedSettings, Size, Subscription, Task, daemon as iced_daemon,
     window,
@@ -358,7 +358,7 @@ impl UiApp {
             is_active(self.exit_warning_until).then_some("q again to exit"),
         ];
 
-        let base: Element<'_, Message> = fill(visuals_view).into();
+        let base: Element<'_, Message> = visuals_view;
         if !toast_msgs.iter().any(Option::is_some) {
             return base;
         }
@@ -387,7 +387,7 @@ impl UiApp {
             return content;
         }
         let handle = mouse_area(
-            container(text(" "))
+            Space::new()
                 .width(Length::Fill)
                 .height(BAR_RESIZE_HANDLE_THICKNESS),
         )

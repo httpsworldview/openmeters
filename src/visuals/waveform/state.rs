@@ -7,17 +7,19 @@ use super::processor::{
 };
 use super::render::{WaveformParams, WaveformPrimitive};
 use crate::persistence::settings::WaveformSettings;
-use crate::util::color::color_to_rgba;
+use crate::util::{color::color_to_rgba, unpoison};
 use crate::visuals::palettes;
 use iced::Color;
-use std::{cell::Cell, collections::VecDeque, sync::Arc};
+use std::cell::Cell;
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 
 const COLUMN_WIDTH_PIXELS: f32 = 1.0;
 const INITIAL_VIEW_COLUMNS: usize = 512;
 
 #[derive(Debug)]
 pub(in crate::visuals) struct WaveformState {
-    data: Arc<VecDeque<WaveFrame>>,
+    data: Arc<Mutex<VecDeque<WaveFrame>>>,
     preview: WaveformPreview,
     view_columns: Cell<usize>,
     pub(in crate::visuals) style: WaveformStyle,
@@ -28,7 +30,7 @@ pub(in crate::visuals) struct WaveformState {
 impl WaveformState {
     pub fn new() -> Self {
         Self {
-            data: Arc::new(VecDeque::with_capacity(INITIAL_VIEW_COLUMNS)),
+            data: Arc::new(Mutex::new(VecDeque::with_capacity(INITIAL_VIEW_COLUMNS))),
             preview: WaveformPreview::default(),
             view_columns: Cell::new(INITIAL_VIEW_COLUMNS),
             style: WaveformStyle::default(),
@@ -38,7 +40,7 @@ impl WaveformState {
     }
 
     pub fn reset_audio(&mut self) {
-        Arc::make_mut(&mut self.data).clear();
+        unpoison(self.data.lock()).clear();
         self.preview = WaveformPreview::default();
     }
 
@@ -48,10 +50,10 @@ impl WaveformState {
             return;
         }
         let max_columns = self.view_columns.get().clamp(1, MAX_COLUMN_CAPACITY);
-        let data = Arc::make_mut(&mut self.data);
-        Self::configure_ring(data, max_columns, update.reset);
+        let mut data = unpoison(self.data.lock());
+        Self::configure_ring(&mut data, max_columns, update.reset);
         for &columns in update.columns {
-            Self::push_column(data, columns, max_columns);
+            Self::push_column(&mut data, columns, max_columns);
         }
     }
 
@@ -78,7 +80,7 @@ impl WaveformState {
             self.view_columns.set(needed);
         }
 
-        let total_columns = self.data.len();
+        let total_columns = unpoison(self.data.lock()).len();
         let (lanes, selected_channels) = self.selected_lanes();
         if bounds.width <= 0.0
             || selected_channels == 0

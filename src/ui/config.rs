@@ -86,6 +86,7 @@ pub struct ConfigPage {
     scroll: ScrollGlow,
     theme_choices: Vec<ThemeChoice>,
     save_theme_name: String,
+    pub(super) window_themes: [iced::Theme; 3],
 }
 
 impl ConfigPage {
@@ -105,6 +106,7 @@ impl ConfigPage {
                 guard.theme_store().list(),
             )
         };
+        let window_themes = theme::window_themes(Some(current_bg));
         let mut bg_pal = theme::Palette::new(&bg::COLORS, &bg::DEFAULT_POSITIONS, bg::LABELS);
         bg_pal.set_colors(&[current_bg]);
         let bg_palette = PaletteEditor::new(bg_pal);
@@ -125,6 +127,7 @@ impl ConfigPage {
             scroll: ScrollGlow::default(),
             theme_choices,
             save_theme_name: String::new(),
+            window_themes,
         }
     }
 
@@ -186,6 +189,7 @@ impl ConfigPage {
                         s.data.background_color = color.map(Into::into);
                         s.update_active_theme(|theme| theme.background = color.map(Into::into));
                     });
+                    self.window_themes = theme::window_themes(color);
                     self.refresh_theme_choices_if_needed();
                 }
             }
@@ -389,6 +393,7 @@ impl ConfigPage {
             s.data.background_color = Some(bg.into());
             s.data.theme = theme_val;
         });
+        self.window_themes = theme::window_themes(Some(bg));
     }
 
     fn save_current_as_theme(&mut self, name: &str) -> Option<String> {
