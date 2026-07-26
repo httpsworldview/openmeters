@@ -229,13 +229,44 @@ impl<'a> AudioBlock<'a> {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct CompensatedSum {
+    sum: f64,
+    correction: f64,
+}
+
+impl CompensatedSum {
+    const ZERO: Self = Self {
+        sum: 0.0,
+        correction: 0.0,
+    };
+
+    // Kahan-Babuska-Neumaier compensated addition.
+    fn add(&mut self, value: f64) {
+        let next = self.sum + value;
+        self.correction += if self.sum.abs() >= value.abs() {
+            (self.sum - next) + value
+        } else {
+            (value - next) + self.sum
+        };
+        self.sum = next;
+    }
+
+    fn value(self) -> f64 {
+        self.sum + self.correction
+    }
+}
+
 /// Running means for several values over one or more independently sized windows.
 /// All windows share the ring sized for the longest duration.
 #[derive(Debug)]
 pub struct WindowedMeans<const VALUES: usize, const WINDOWS: usize> {
-    prefix: Box<[[f64; VALUES]]>,
+    buffer: Box<[[f64; VALUES]]>,
     capacities: [usize; WINDOWS],
-    total: [f64; VALUES],
+    sums: [[CompensatedSum; VALUES]; WINDOWS],
+    // Periodic full-window sums bound compensation error without rescanning the ring.
+    refresh_sums: [[CompensatedSum; VALUES]; WINDOWS],
+    refresh_counts: [usize; WINDOWS],
     head: usize,
     count: usize,
 }
@@ -243,41 +274,58 @@ pub struct WindowedMeans<const VALUES: usize, const WINDOWS: usize> {
 impl<const VALUES: usize, const WINDOWS: usize> WindowedMeans<VALUES, WINDOWS> {
     pub fn new(capacities: [usize; WINDOWS]) -> Self {
         let capacities = capacities.map(|capacity| capacity.max(1));
-        let len = capacities.iter().copied().max().unwrap_or(1) + 1;
+        let len = capacities.iter().copied().max().unwrap_or(1);
         Self {
-            prefix: vec![[0.0; VALUES]; len].into_boxed_slice(),
+            buffer: vec![[0.0; VALUES]; len].into_boxed_slice(),
             capacities,
-            total: [0.0; VALUES],
+            sums: [[CompensatedSum::ZERO; VALUES]; WINDOWS],
+            refresh_sums: [[CompensatedSum::ZERO; VALUES]; WINDOWS],
+            refresh_counts: [0; WINDOWS],
             head: 0,
             count: 0,
         }
     }
 
     pub fn push<T: Copy + Into<f64>>(&mut self, values: [T; VALUES]) {
-        for (total, value) in self.total.iter_mut().zip(values) {
-            *total += value.into();
+        let values = values.map(|value| {
+            let value = value.into();
+            if value.is_finite() { value } else { 0.0 }
+        });
+        let len = self.buffer.len();
+        for window in 0..WINDOWS {
+            let capacity = self.capacities[window];
+            let old =
+                (self.count >= capacity).then(|| self.buffer[(self.head + len - capacity) % len]);
+            for value in 0..VALUES {
+                self.sums[window][value].add(values[value]);
+                if let Some(old) = old {
+                    self.sums[window][value].add(-old[value]);
+                }
+                self.refresh_sums[window][value].add(values[value]);
+            }
+            self.refresh_counts[window] += 1;
+            if self.refresh_counts[window] == capacity {
+                self.sums[window] = self.refresh_sums[window];
+                self.refresh_sums[window] = [CompensatedSum::ZERO; VALUES];
+                self.refresh_counts[window] = 0;
+            }
         }
-        self.head += 1;
-        if self.head == self.prefix.len() {
-            self.head = 0;
-        }
-        self.prefix[self.head] = self.total;
-        self.count = self.count.saturating_add(1);
+        self.buffer[self.head] = values;
+        self.head = (self.head + 1) % len;
+        self.count = (self.count + 1).min(len);
     }
 
     pub fn mean(&self, window: usize) -> [f64; VALUES] {
-        let count = self.count.min(self.capacities[window]);
-        let old = (self.head + self.prefix.len() - count) % self.prefix.len();
-        std::array::from_fn(|value| {
-            (self.total[value] - self.prefix[old][value]) / count.max(1) as f64
-        })
+        let count = self.count.min(self.capacities[window]).max(1);
+        std::array::from_fn(|value| self.sums[window][value].value() / count as f64)
     }
 
     pub fn clear(&mut self) {
-        self.total = [0.0; VALUES];
+        self.sums = [[CompensatedSum::ZERO; VALUES]; WINDOWS];
+        self.refresh_sums = [[CompensatedSum::ZERO; VALUES]; WINDOWS];
+        self.refresh_counts = [0; WINDOWS];
         self.head = 0;
         self.count = 0;
-        self.prefix[0] = [0.0; VALUES];
     }
 }
 
@@ -547,16 +595,48 @@ mod tests {
         for value in [1.0, 2.0, 3.0, 4.0] {
             means.push([value]);
         }
-        let storage = means.prefix.as_ptr();
+        let storage = means.buffer.as_ptr();
         means.clear();
         assert_eq!(means.mean(0), [0.0]);
         assert_eq!(means.mean(1), [0.0]);
-        assert_eq!(means.prefix.as_ptr(), storage);
+        assert_eq!(means.buffer.as_ptr(), storage);
 
         means.push([10.0]);
         means.push([20.0]);
         assert_eq!(means.mean(0), [15.0]);
         assert_eq!(means.mean(1), [15.0]);
+    }
+
+    #[test]
+    fn running_means_sanitize_non_finite_values_without_poisoning_state() {
+        let mut means = WindowedMeans::<1, 1>::new([1]);
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            means.push([value]);
+            assert_eq!(means.mean(0), [0.0]);
+        }
+        means.push([1.0]);
+        assert_eq!(means.mean(0), [1.0]);
+    }
+
+    #[test]
+    fn running_means_preserve_small_values_after_a_large_value_expires() {
+        let mut means = WindowedMeans::<1, 1>::new([4]);
+        for value in [1.0, 1.0e100, 1.0, -1.0e100] {
+            means.push([value]);
+        }
+        assert_eq!(means.mean(0), [0.5]);
+
+        let mut means = WindowedMeans::<1, 1>::new([2]);
+        for value in [2.0_f64.powi(53), 1.0, 1.0] {
+            means.push([value]);
+        }
+        assert_eq!(means.mean(0), [1.0]);
+
+        means.clear();
+        for value in [1.0e100, 2.0, 1.0e-100, 1.0e-100] {
+            means.push([value]);
+        }
+        assert_eq!(means.mean(0), [1.0e-100]);
     }
 
     #[test]

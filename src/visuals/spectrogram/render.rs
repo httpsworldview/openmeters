@@ -125,13 +125,13 @@ impl Primitive for SpectrogramPrimitive {
             return;
         };
         if inst.col_count == 0
-            || (r.ring.kind == ColumnKind::Reassigned
+            || (r.ring.layout.kind == ColumnKind::Reassigned
                 && !(0..inst.visible_slots()).any(|slot| inst.slot_count(slot) > 0))
         {
             return;
         }
 
-        match r.ring.kind {
+        match r.ring.layout.kind {
             ColumnKind::Reassigned => {
                 let Some(accum) = r.accum.as_ref() else {
                     return;
@@ -545,7 +545,7 @@ impl Instance {
             return;
         }
         let res = match &mut self.resources {
-            Some(r) if r.ring.kind == p.col_kind => r,
+            Some(r) if r.ring.layout.kind == p.col_kind => r,
             slot => slot.insert(Resources::new(device, bgls, p)),
         };
         res.sync(device, queue, bgls, p, viewport, scale_factor);
@@ -584,12 +584,34 @@ fn stored_points_per_col(p: &SpectrogramParams) -> u32 {
     }
 }
 
-struct ColumnRing {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RingLayout {
     kind: ColumnKind,
-    buf: wgpu::Buffer,
-    capacity: u64,
     stride: u64,
     slots: u64,
+}
+
+impl RingLayout {
+    fn bytes(self) -> u64 {
+        self.stride * self.slots
+    }
+}
+
+fn ring_layout(p: &SpectrogramParams) -> RingLayout {
+    RingLayout {
+        kind: p.col_kind,
+        stride: col_byte_stride(p.col_kind, stored_points_per_col(p)),
+        slots: u64::from(p.ring_capacity),
+    }
+}
+
+fn can_reuse_ring(current: RingLayout, requested: RingLayout, copy_pending: bool) -> bool {
+    current == requested && !copy_pending
+}
+
+struct ColumnRing {
+    layout: RingLayout,
+    buf: wgpu::Buffer,
     bg: wgpu::BindGroup,
 }
 
@@ -656,42 +678,41 @@ impl Resources {
         bgls: Bgls<'_>,
         p: &SpectrogramParams,
     ) {
-        let stride = col_byte_stride(p.col_kind, stored_points_per_col(p));
-        let needed = p.ring_capacity as u64 * stride;
+        let layout = ring_layout(p);
         let copy_plan = p
             .copy_plan
             .as_ref()
             .filter(|(_, copies)| p.col_count > 0 && !copies.is_empty());
-        if needed == self.ring.capacity && copy_plan.is_none() {
+        if can_reuse_ring(self.ring.layout, layout, copy_plan.is_some()) {
             return;
         }
 
-        let old_stride = self.ring.stride;
+        let old_layout = self.ring.layout;
         let new_ring = create_ring(device, bgls, &self.uniform_buf, p);
         if let Some((source_cap, copies)) = copy_plan {
-            let source_cap = u64::from(*source_cap).min(self.ring.slots);
+            let source_cap = u64::from(*source_cap).min(old_layout.slots);
             if source_cap > 0 {
                 let mut encoder =
                     device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
                 for &[src, dst] in copies {
                     if u64::from(src) < source_cap && dst < p.ring_capacity {
-                        let bytes = match p.col_kind {
+                        let bytes = match layout.kind {
                             ColumnKind::Reassigned => p
                                 .slot_counts
                                 .get(dst as usize)
                                 .copied()
                                 .unwrap_or(0) as u64
                                 * std::mem::size_of::<SpectrogramPoint>() as u64,
-                            ColumnKind::Classic => stride,
+                            ColumnKind::Classic => layout.stride,
                         }
-                        .min(old_stride)
-                        .min(stride);
+                        .min(old_layout.stride)
+                        .min(layout.stride);
                         if bytes > 0 {
                             encoder.copy_buffer_to_buffer(
                                 &self.ring.buf,
-                                u64::from(src) * old_stride,
+                                u64::from(src) * old_layout.stride,
                                 &new_ring.buf,
-                                u64::from(dst) * stride,
+                                u64::from(dst) * layout.stride,
                                 bytes,
                             );
                         }
@@ -743,7 +764,7 @@ impl Resources {
     }
 
     fn upload_pending(&mut self, queue: &wgpu::Queue, p: &SpectrogramParams) {
-        let stride = col_byte_stride(p.col_kind, stored_points_per_col(p));
+        let stride = ring_layout(p).stride;
         let ring_buf = &self.ring.buf;
         let write = |slot: u32, data: &[u8]| {
             queue.write_buffer(ring_buf, slot as u64 * stride, data);
@@ -804,7 +825,8 @@ fn create_ring(
     p: &SpectrogramParams,
 ) -> ColumnRing {
     let copy = wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC;
-    let (label, usage, layout) = match p.col_kind {
+    let ring_layout = ring_layout(p);
+    let (label, usage, bgl) = match ring_layout.kind {
         ColumnKind::Reassigned => (
             "Spectrogram point ring",
             copy | wgpu::BufferUsages::VERTEX,
@@ -816,22 +838,17 @@ fn create_ring(
             bgls.classic,
         ),
     };
-    let stride = col_byte_stride(p.col_kind, stored_points_per_col(p));
-    let capacity = p.ring_capacity as u64 * stride;
     let buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(label),
-        size: capacity,
+        size: ring_layout.bytes(),
         usage,
         mapped_at_creation: false,
     });
-    let mag = (p.col_kind == ColumnKind::Classic).then_some(&buf);
-    let bg = make_bind_group(device, layout, uniform_buf, mag, None);
+    let mag = (ring_layout.kind == ColumnKind::Classic).then_some(&buf);
+    let bg = make_bind_group(device, bgl, uniform_buf, mag, None);
     ColumnRing {
-        kind: p.col_kind,
+        layout: ring_layout,
         buf,
-        capacity,
-        stride,
-        slots: p.ring_capacity as u64,
         bg,
     }
 }
@@ -856,4 +873,26 @@ fn make_bind_group(
         layout,
         entries: &entries,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn equal_byte_capacity_does_not_reuse_a_different_ring_layout() {
+        let current = RingLayout {
+            kind: ColumnKind::Classic,
+            stride: col_byte_stride(ColumnKind::Classic, 513),
+            slots: 513,
+        };
+        let requested = RingLayout {
+            kind: ColumnKind::Classic,
+            stride: col_byte_stride(ColumnKind::Classic, 1025),
+            slots: 257,
+        };
+
+        assert_eq!(current.bytes(), requested.bytes());
+        assert!(!can_reuse_ring(current, requested, false));
+    }
 }
