@@ -127,10 +127,10 @@ pub struct PaneGrid<'a, Message> {
     entries: Vec<(Pane, Content<'a, Message>)>,
     width: Length,
     height: Length,
-    on_drag: Option<Box<dyn Fn(DragEvent) -> Message + 'a>>,
-    on_resize: Option<Box<dyn Fn(ResizeWidths) -> Message + 'a>>,
-    on_context: Option<Box<dyn Fn(Pane) -> Message + 'a>>,
-    on_hover: Option<Box<dyn Fn(Option<Pane>) -> Message + 'a>>,
+    on_drag: Option<fn(DragEvent) -> Message>,
+    on_resize: Option<fn(ResizeWidths) -> Message>,
+    on_context: Option<fn(Pane) -> Message>,
+    on_hover: Option<fn(Option<Pane>) -> Message>,
 }
 
 impl<'a, Message: 'a> PaneGrid<'a, Message> {
@@ -159,23 +159,23 @@ impl<'a, Message: 'a> PaneGrid<'a, Message> {
         self
     }
 
-    pub fn on_drag(mut self, callback: impl Fn(DragEvent) -> Message + 'a) -> Self {
-        self.on_drag = Some(Box::new(callback));
+    pub fn on_drag(mut self, callback: fn(DragEvent) -> Message) -> Self {
+        self.on_drag = Some(callback);
         self
     }
 
-    pub fn on_resize(mut self, callback: impl Fn(ResizeWidths) -> Message + 'a) -> Self {
-        self.on_resize = Some(Box::new(callback));
+    pub fn on_resize(mut self, callback: fn(ResizeWidths) -> Message) -> Self {
+        self.on_resize = Some(callback);
         self
     }
 
-    pub fn on_context_request(mut self, callback: impl Fn(Pane) -> Message + 'a) -> Self {
-        self.on_context = Some(Box::new(callback));
+    pub fn on_context_request(mut self, callback: fn(Pane) -> Message) -> Self {
+        self.on_context = Some(callback);
         self
     }
 
-    pub fn on_hover(mut self, callback: impl Fn(Option<Pane>) -> Message + 'a) -> Self {
-        self.on_hover = Some(Box::new(callback));
+    pub fn on_hover(mut self, callback: fn(Option<Pane>) -> Message) -> Self {
+        self.on_hover = Some(callback);
         self
     }
 
@@ -409,7 +409,7 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer> for PaneGrid
         viewport: &Rectangle,
     ) {
         let interaction = tree.state.downcast_ref::<Interaction>();
-        let accent = theme.extended_palette().primary.base.color;
+        let accent = || theme.extended_palette().primary.base.color;
         for (((pane, content), child), child_layout) in self
             .entries
             .iter()
@@ -433,13 +433,13 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer> for PaneGrid
                         bounds: child_layout.bounds(),
                         border: iced::Border {
                             width: 2.0,
-                            color: with_alpha(accent, 0.9),
+                            color: with_alpha(accent(), 0.9),
                             ..Default::default()
                         },
                         snap: true,
                         ..Default::default()
                     },
-                    Background::Color(with_alpha(accent, 0.4)),
+                    Background::Color(with_alpha(accent(), 0.4)),
                 );
             }
         }
@@ -456,7 +456,7 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer> for PaneGrid
                     snap: true,
                     ..Default::default()
                 },
-                Background::Color(with_alpha(accent, 0.75)),
+                Background::Color(with_alpha(accent(), 0.75)),
             );
         }
     }
@@ -668,15 +668,14 @@ fn solve_widths(specs: impl IntoIterator<Item = (f32, f32)>, available: f32) -> 
             .sum();
         let available = f64::from(remaining.max(0.0));
         let mut fixed = false;
-        for (i, spec) in std::mem::take(&mut free) {
-            let width = (available * width_basis(spec, min[i]) / basis_sum) as f32;
-            if width < min[i] - EPS {
+        free.retain(|&(i, spec)| {
+            let keep = (available * width_basis(spec, min[i]) / basis_sum) as f32 >= min[i] - EPS;
+            if !keep {
                 remaining -= min[i];
                 fixed = true;
-            } else {
-                free.push((i, spec));
             }
-        }
+            keep
+        });
         if !fixed {
             for (i, spec) in free {
                 min[i] = (available * width_basis(spec, min[i]) / basis_sum) as f32;

@@ -5,7 +5,7 @@ use crate::dsp::{
     AudioBlock, CrossoverFilter, FilterKind, LinkwitzRiley, ThreeBand,
 };
 use crate::util::audio::{
-    BAND_SPLITS_HZ, DEFAULT_SAMPLE_RATE, extend_interleaved_history, flush_denormal_f64,
+    BAND_SPLITS_HZ, DEFAULT_SAMPLE_RATE, flush_denormal_f64, mix_stereo,
 };
 use std::{collections::VecDeque, sync::Arc};
 
@@ -78,6 +78,11 @@ impl CrossoverFilter for StereoFilter {
     fn flush_denormals(&mut self) {
         self.left.flush_denormals();
         self.right.flush_denormals();
+    }
+
+    fn clear(&mut self) {
+        self.left.clear();
+        self.right.clear();
     }
 }
 
@@ -188,9 +193,18 @@ impl StereometerProcessor {
         self.config
     }
 
+    pub fn reset_audio(&mut self) {
+        self.history.clear();
+        self.band_history.iter_mut().for_each(VecDeque::clear);
+        self.band_splitter.clear();
+        self.correlators = Correlators::new(self.config);
+        self.snapshot = SnapshotBuffer::default();
+    }
+
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<StereometerSnapshot> {
         let channel_count = block.channels;
-        if block.is_empty() || channel_count < 2 { return None; }
+        if block.is_empty() { return None; }
+        let matrix = block.stereo_matrix();
 
         let sample_rate = block.sample_rate;
         if self.config.sample_rate != sample_rate {
@@ -205,7 +219,8 @@ impl StereometerProcessor {
 
         let analyze_bands = self.config.needs_band_analysis();
         for frame in block.samples.chunks_exact(channel_count) {
-            let (left, right) = (frame[0], frame[1]);
+            let [left, right] = mix_stereo(frame, matrix);
+            self.history.extend([left, right]);
             self.correlators.full.update(left, right);
 
             if analyze_bands {
@@ -236,9 +251,9 @@ impl StereometerProcessor {
         let frames = (self.config.sample_rate * self.config.segment_duration)
             .round()
             .max(1.0) as usize;
-        let capacity = frames * channel_count;
-
-        extend_interleaved_history(&mut self.history, block.samples, capacity, channel_count);
+        let capacity = frames * 2;
+        self.history
+            .drain(..self.history.len().saturating_sub(capacity));
 
         let band_capacity = frames * BAND_CHANNELS;
         if self.config.emit_band_points {
@@ -256,7 +271,7 @@ impl StereometerProcessor {
             self.snapshot.xy_points.clear();
             self.snapshot.xy_points.reserve(target);
             for i in 0..target {
-                let idx = (i * frames / target) * channel_count;
+                let idx = (i * frames / target) * 2;
                 self.snapshot.xy_points.push((data[idx], data[idx + 1]));
             }
         }

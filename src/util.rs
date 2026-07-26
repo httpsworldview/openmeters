@@ -7,6 +7,10 @@ pub fn finite_positive(value: f32) -> Option<f32> {
     (value.is_finite() && value > 0.0).then_some(value)
 }
 
+pub(crate) fn unpoison<T>(lock: std::sync::LockResult<T>) -> T {
+    lock.unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 pub fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }

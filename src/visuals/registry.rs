@@ -10,15 +10,14 @@ use super::{
 };
 pub use crate::domain::visuals::VisualKind;
 use crate::{
-    dsp::AudioBlock,
-    infra::pipewire::meter_tap::MeterFormat,
+    dsp::{AudioBlock, AudioFormat},
     persistence::settings::{
         self as settings_cfg, ModuleSettings, PaletteSettings, ThemeFile, VisualSettings,
     },
     util::audio::{Channel, DEFAULT_SAMPLE_RATE},
     util::color::{sanitize_stop_positions, sanitize_stop_spreads},
 };
-use iced::{Color, Element, Length, widget::container};
+use iced::{Color, Element};
 use std::{cell::RefCell, rc::Rc};
 
 type Shared<T> = Rc<RefCell<T>>;
@@ -75,13 +74,9 @@ macro_rules! visuals {
 
         impl VisualContent {
             pub(crate) fn render<M: 'static>(&self) -> Element<'_, M> {
-                container(match &self.0 {
+                match &self.0 {
                     $(VisualContentInner::$variant(s) => $module::widget(s)),*
-                })
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .center(Length::Fill)
-                .into()
+                }
             }
         }
 
@@ -99,18 +94,19 @@ macro_rules! visuals {
         }),*];
 
         $(impl VisualModule for Visual<$module::$processor, Shared<$module::$state>> {
-            fn ingest(&mut self, samples: &[f32], fmt: MeterFormat) {
+            fn ingest(&mut self, block: &AudioBlock<'_>) {
                 $({
                     let ($pip, $pis) = (&mut self.processor, &self.state);
                     $pre_ingest_body
                 })?
-                if let Some(snap) = self.processor.process_block(&AudioBlock::new(
-                    samples,
-                    fmt.channels,
-                    fmt.sample_rate,
-                )) {
+                if let Some(snap) = self.processor.process_block(block) {
                     self.state.borrow_mut().apply_snapshot(snap);
                 }
+            }
+
+            fn reset_audio(&mut self) {
+                self.processor.reset_audio();
+                self.state.borrow_mut().reset_audio();
             }
 
             fn content(&self) -> VisualContent {
@@ -231,7 +227,8 @@ struct Visual<P, S> {
 }
 
 pub trait VisualModule {
-    fn ingest(&mut self, samples: &[f32], format: MeterFormat);
+    fn ingest(&mut self, block: &AudioBlock<'_>);
+    fn reset_audio(&mut self);
     fn content(&self) -> VisualContent;
     fn apply(&mut self, settings: &ModuleSettings);
     fn export(&self) -> ModuleSettings;
@@ -269,6 +266,7 @@ pub(crate) struct VisualSlotSnapshot {
 
 pub(crate) struct VisualManager {
     entries: Vec<Entry>,
+    format_generation: Option<u64>,
 }
 impl Default for VisualManager {
     fn default() -> Self {
@@ -281,6 +279,7 @@ impl Default for VisualManager {
                     module: (descriptor.build)(),
                 })
                 .collect(),
+            format_generation: None,
         }
     }
 }
@@ -344,6 +343,15 @@ impl VisualManager {
             self.entries[index].enabled = enabled;
         }
     }
+    pub fn has_enabled(&self) -> bool {
+        self.entries.iter().any(|entry| entry.enabled)
+    }
+    pub fn reset_audio(&mut self) {
+        self.format_generation = None;
+        for entry in &mut self.entries {
+            entry.module.reset_audio();
+        }
+    }
     pub fn apply_visual_settings(&mut self, settings: &VisualSettings) {
         let default_settings = ModuleSettings::default();
         for entry in &mut self.entries {
@@ -368,14 +376,28 @@ impl VisualManager {
             entry.module.apply(&settings);
         }
     }
-    pub fn ingest_samples(&mut self, samples: &[f32], format: MeterFormat) {
+    pub fn ingest_samples(&mut self, samples: &[f32], format: AudioFormat) {
         if samples.is_empty() {
             return;
         }
-
+        if self
+            .format_generation
+            .replace(format.generation)
+            .is_some_and(|generation| generation != format.generation)
+        {
+            for entry in &mut self.entries {
+                entry.module.reset_audio();
+            }
+        }
+        let block = AudioBlock::with_positions(
+            samples,
+            format.channels,
+            format.sample_rate,
+            format.positions,
+        );
         for entry in &mut self.entries {
             if entry.enabled {
-                entry.module.ingest(samples, format);
+                entry.module.ingest(&block);
             }
         }
     }

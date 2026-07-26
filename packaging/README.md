@@ -62,7 +62,7 @@ dist/
 - `glibc` >= 2.39 for pre-built release artifacts. Local packages
   declare the highest `GLIBC_*` symbol required by the built binary.
 - `libgcc_s.so.1`
-- `libpipewire-0.3.so.0` >= 0.3.65 (audio I/O and virtual sink)
+- `libpipewire-0.3.so.0` >= 0.3.77 (audio capture and graph integration)
 - `libvulkan.so.1` (wgpu uses the distro's Vulkan loader + ICDs)
 - Wayland: `libwayland-client.so.0`
 - X11: `libX11.so.6`, `libX11-xcb.so.1`, `libxcb.so.1`,

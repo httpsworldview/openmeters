@@ -1,21 +1,23 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
+#![forbid(unsafe_code)]
+
 mod domain;
 mod dsp;
 mod infra;
 mod macros;
+mod meter;
 mod persistence;
 mod ui;
 mod util;
 mod visuals;
-use domain::routing::{DeviceSelection, RoutingCommand, RoutingConfig};
-use infra::pipewire::{meter_tap, monitor, registry, virtual_sink};
+
+use infra::pipewire::AudioBackend;
 use persistence::settings::SettingsHandle;
-use std::{
-    process::ExitCode,
-    sync::{Arc, mpsc},
-};
+use std::cell::RefCell;
+use std::process::ExitCode;
+use std::rc::Rc;
 use ui::UiConfig;
 use util::telemetry;
 
@@ -25,30 +27,20 @@ fn main() -> ExitCode {
     telemetry::init();
     info!("OpenMeters starting up");
 
-    let (routing_tx, routing_rx) = mpsc::channel::<RoutingCommand>();
-    let (snapshot_tx, snapshot_rx) = async_channel::bounded::<registry::RegistrySnapshot>(64);
-
     let settings_handle = SettingsHandle::load_or_default();
-    let routing_config = {
-        let guard = settings_handle.borrow();
-        let settings = &guard.data;
-        RoutingConfig {
-            capture_mode: settings.capture_mode,
-            preferred_device: DeviceSelection::from_token(settings.last_device_name.clone()),
+    let capture_config = settings_handle.borrow().data.capture_config();
+    let mut backend = match AudioBackend::start(capture_config) {
+        Ok(backend) => backend,
+        Err(err) => {
+            error!("[capture] failed to start PipeWire backend: {err}");
+            return ExitCode::FAILURE;
         }
     };
-
-    let registry_thread = monitor::init_registry_monitor(routing_rx, snapshot_tx, routing_config);
-
-    virtual_sink::run();
-
     let ui_config = UiConfig {
-        routing_sender: routing_tx,
-        registry_updates: registry_thread.is_some().then(|| Arc::new(snapshot_rx)),
-        audio_frames: meter_tap::audio_sample_stream(),
+        capture: backend.control(),
+        audio: Rc::new(RefCell::new(Some(backend.take_audio()))),
         settings_handle: settings_handle.clone(),
     };
-
     let exit_code = match ui::run(ui_config) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
@@ -57,11 +49,6 @@ fn main() -> ExitCode {
         }
     };
     settings_handle.flush();
-
-    if let Some(handle) = registry_thread {
-        info!("[main] shutdown requested; waiting for registry monitor to exit...");
-        let _ = handle.join();
-    }
-
+    backend.shutdown();
     exit_code
 }

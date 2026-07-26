@@ -145,7 +145,7 @@ impl PeriodEstimator {
     }
 
     fn compute_periodicity(&mut self, samples: &[f32], mean: f32, max_lag: usize) -> Option<()> {
-        let fft_size = (samples.len() * 2).next_power_of_two();
+        let fft_size = (samples.len() + max_lag).next_power_of_two();
         self.rebuild_fft(fft_size);
         let Self { periodicity, energy_prefix, fft, .. } = self;
         let fft = fft.as_mut()?;
@@ -159,7 +159,7 @@ impl PeriodEstimator {
         {
             let centered = sample - mean;
             *dst = centered;
-            energy_prefix[i + 1] = centered.mul_add(centered, energy_prefix[i]);
+            energy_prefix[i + 1] = centered * centered + energy_prefix[i];
         }
         fft.input[samples.len()..].fill(0.0);
 
@@ -202,7 +202,6 @@ impl StableTuning {
     const NORMALIZE_FLOOR: f32 = 0.01;
     const MEAN_RESPONSIVENESS: f32 = 0.25;
     const EDGE_STRENGTH: f32 = 1.0;
-    const BUFFER_STRENGTH: f32 = 1.0;
     const BUFFER_RESPONSIVENESS: f32 = 0.5;
     const BUFFER_FALLOFF_PERIODS: f32 = 0.5;
     const BUFFER_RETUNE_SEMITONES: f32 = 1.0;
@@ -233,20 +232,30 @@ fn gaussian(len: usize, index: usize, std: f32) -> f32 {
     (-0.5 * (x / std).powi(2)).exp()
 }
 
-fn normalized_correlation(pairs: impl Iterator<Item = (f32, f32)>) -> f32 {
-    let (mut len, mut sum_x, mut sum_y, mut sum_xx, mut sum_yy, mut sum_xy) =
-        (0, 0.0, 0.0, 0.0, 0.0, 0.0);
-    for (x, y) in pairs {
-        len += 1;
+fn correlation_stats(y: &[f32]) -> [f32; 2] {
+    y.iter().fold([0.0; 2], |[sum, squares], &y| [sum + y, squares + y * y])
+}
+
+fn normalized_correlation(x: &[f32], y: &[f32], [sum_y, sum_yy]: [f32; 2]) -> f32 {
+    debug_assert_eq!(x.len(), y.len());
+    let mut sums = [[0.0; 4]; 3];
+    for (x, y) in x.chunks_exact(4).zip(y.chunks_exact(4)) {
+        for lane in 0..4 {
+            sums[0][lane] += x[lane];
+            sums[1][lane] += x[lane] * x[lane];
+            sums[2][lane] += x[lane] * y[lane];
+        }
+    }
+    let [mut sum_x, mut sum_xx, mut sum_xy] = sums.map(|sum| sum.into_iter().sum::<f32>());
+    let remainder = x.len() / 4 * 4;
+    for (&x, &y) in x[remainder..].iter().zip(&y[remainder..]) {
         sum_x += x;
-        sum_y += y;
         sum_xx += x * x;
-        sum_yy += y * y;
         sum_xy += x * y;
     }
-    if len == 0 { return 0.0; }
+    if x.is_empty() { return 0.0; }
 
-    let n = len as f32;
+    let n = x.len() as f32;
     let dot = sum_xy - sum_x * sum_y / n;
     let energy_x = (sum_xx - sum_x * sum_x / n).max(0.0);
     let energy_y = (sum_yy - sum_y * sum_y / n).max(0.0);
@@ -386,7 +395,8 @@ impl StableTrigger {
         self.prepare(&trace[left - before..right + after], len, period);
 
         let use_reference = self.reference.iter().any(|sample| sample.abs() > 1.0e-3);
-        let (mut offset, mut frac_offset) = self.find_best(search, period, use_reference);
+        self.prepare_template(use_reference);
+        let (mut offset, mut frac_offset) = self.find_best(search, period);
         let confident = estimate.confidence >= PeriodTuning::MIN_PERIODICITY;
         let segment = |offset| &trace[left + offset - before..left + offset - before + len];
         let reset = confident
@@ -394,7 +404,8 @@ impl StableTrigger {
             && self.write_candidate(segment(offset), period) < StableTuning::RESET_BELOW_MATCH;
         if reset {
             self.reference.fill(0.0);
-            (offset, frac_offset) = self.find_best(search, period, false);
+            self.prepare_template(false);
+            (offset, frac_offset) = self.find_best(search, period);
         }
         if confident {
             if !use_reference || reset {
@@ -422,9 +433,11 @@ impl StableTrigger {
         let midpoint = len / 2;
         let max_width = (midpoint.max(1) as f32 / 3.0).max(1.0);
         let width = (StableTuning::SLOPE_WIDTH_PERIODS * period).clamp(1.0, max_width);
-        for (i, value) in self.kernel.iter_mut().enumerate() {
-            let side = if i < midpoint { -0.5 } else { 0.5 };
-            *value = side * StableTuning::EDGE_STRENGTH * 2.0 * gaussian(len, i, width);
+        for i in 0..len.div_ceil(2) {
+            let mirror = len - 1 - i;
+            let weight = gaussian(len, i, width);
+            self.kernel[i] = -0.5 * StableTuning::EDGE_STRENGTH * 2.0 * weight;
+            self.kernel[mirror] = 0.5 * StableTuning::EDGE_STRENGTH * 2.0 * weight;
         }
 
         let mean = data.iter().sum::<f32>() / data.len().max(1) as f32;
@@ -433,11 +446,30 @@ impl StableTrigger {
         self.work.extend(data.iter().map(|sample| sample - self.mean));
     }
 
-    fn find_best(&self, search: usize, period: f32, use_reference: bool) -> (usize, f32) {
+    fn prepare_template(&mut self, use_reference: bool) {
+        let gain = if use_reference { 1.0 } else { 0.0 };
+        self.candidate.clear();
+        let values = self.kernel.iter().zip(&self.reference).map(|(&x, &y)| x + y * gain);
+        self.candidate.extend(values);
+    }
+
+    fn find_best(&mut self, search: usize, period: f32) -> (usize, f32) {
+        let template = &self.candidate;
+        let stats = correlation_stats(template);
+        let scores = &mut self.estimator.periodicity;
+        scores.clear();
+        scores.resize(search + 1, f32::NEG_INFINITY);
+        let mut score_at = |offset| {
+            if scores[offset] == f32::NEG_INFINITY {
+                let x = &self.work[offset..offset + template.len()];
+                scores[offset] = normalized_correlation(x, template, stats);
+            }
+            scores[offset]
+        };
         let stride = ((period / 16.0).round() as usize).clamp(1, 128).min(search.max(1));
         let mut best = (search / 2, f32::NEG_INFINITY);
         for offset in (0..=search).rev().step_by(stride).chain([0]) {
-            let score = self.score_at(offset, use_reference);
+            let score = score_at(offset);
             if score > best.1 {
                 best = (offset, score);
             }
@@ -449,7 +481,7 @@ impl StableTrigger {
                 .rev()
                 .step_by(next)
             {
-                let score = self.score_at(offset, use_reference);
+                let score = score_at(offset);
                 if score > best.1 {
                     best = (offset, score);
                 }
@@ -458,28 +490,12 @@ impl StableTrigger {
         }
 
         let frac_offset = if best.0 > 0 && best.0 < search {
-            (parabolic_refine(
-                self.score_at(best.0 - 1, use_reference),
-                best.1,
-                self.score_at(best.0 + 1, use_reference),
-                best.0,
-            ) - best.0 as f32)
-                .clamp(-0.5, 0.5)
+            let (prev, next) = (score_at(best.0 - 1), score_at(best.0 + 1));
+            (parabolic_refine(prev, best.1, next, best.0) - best.0 as f32).clamp(-0.5, 0.5)
         } else {
             0.0
         };
         (best.0, frac_offset)
-    }
-
-    fn score_at(&self, offset: usize, use_reference: bool) -> f32 {
-        let reference_gain = if use_reference { StableTuning::BUFFER_STRENGTH } else { 0.0 };
-        normalized_correlation(
-            self.work[offset..offset + self.kernel.len()]
-                .iter()
-                .zip(&self.kernel)
-                .zip(&self.reference)
-                .map(|((&x, &slope), &reference)| (x, slope + reference * reference_gain)),
-        )
     }
 
     fn retune_reference(&mut self, len: usize, period: f32) {
@@ -516,11 +532,16 @@ impl StableTrigger {
 
         let std = (period * StableTuning::BUFFER_FALLOFF_PERIODS).max(1.0);
         let len = self.candidate.len();
-        for (i, sample) in self.candidate.iter_mut().enumerate() {
-            *sample *= gaussian(len, i, std);
+        for i in 0..len.div_ceil(2) {
+            let mirror = len - 1 - i;
+            let weight = gaussian(len, i, std);
+            self.candidate[i] *= weight;
+            if mirror != i {
+                self.candidate[mirror] *= weight;
+            }
         }
 
-        normalized_correlation(self.reference.iter().copied().zip(self.candidate.iter().copied()))
+        normalized_correlation(&self.reference, &self.candidate, correlation_stats(&self.candidate))
     }
 }
 
@@ -566,15 +587,39 @@ struct SnapshotBuffer {
 
 #[derive(Default)]
 struct TraceState {
-    buffer: Vec<f32>,
+    buffer: VecDeque<f32>,
     trigger: StableTrigger,
+}
+
+fn extend_projected_history(
+    history: &mut VecDeque<f32>,
+    block: &AudioBlock<'_>,
+    capacity: usize,
+    channel: Channel,
+) -> bool {
+    if channel == Channel::None {
+        history.clear();
+        return false;
+    }
+    let matrix = block.stereo_matrix();
+    history.extend(block.samples.chunks_exact(block.channels).map(|frame| {
+        let [left, right] = audio::mix_stereo(frame, matrix);
+        match channel {
+            Channel::Left => left,
+            Channel::Right => right,
+            Channel::Mid => (left + right) * 0.5,
+            Channel::Side => (left - right) * 0.5,
+            Channel::None => unreachable!(),
+        }
+    }));
+    history.drain(..history.len().saturating_sub(capacity));
+    !history.is_empty()
 }
 
 pub struct OscilloscopeProcessor {
     config: OscilloscopeConfig,
     snapshot: SnapshotBuffer,
     epoch: u64,
-    history: VecDeque<f32>,
     history_channels: Option<usize>,
     traces: [TraceState; TRACE_COUNT],
     source: TraceState,
@@ -586,7 +631,6 @@ impl OscilloscopeProcessor {
             config,
             snapshot: SnapshotBuffer::default(),
             epoch: 0,
-            history: VecDeque::new(),
             history_channels: None,
             traces: std::array::from_fn(|_| TraceState::default()),
             source: TraceState::default(),
@@ -595,6 +639,11 @@ impl OscilloscopeProcessor {
 
     pub fn config(&self) -> OscilloscopeConfig {
         self.config
+    }
+
+    pub fn reset_audio(&mut self) {
+        self.clear_history();
+        self.snapshot = SnapshotBuffer::default();
     }
 
     #[cfg(test)]
@@ -617,9 +666,7 @@ impl OscilloscopeProcessor {
         }
 
         let channel_count = block.channels;
-        if self.history_channels.is_some_and(|channels| channels != channel_count)
-            || (!self.history.is_empty() && !self.history.len().is_multiple_of(channel_count))
-        {
+        if self.history_channels.is_some_and(|channels| channels != channel_count) {
             self.clear_history();
         }
         self.history_channels = Some(channel_count);
@@ -638,15 +685,7 @@ impl OscilloscopeProcessor {
         };
         let trace_channels = [self.config.channel_1, self.config.channel_2];
         let trigger_source = self.config.trigger_source;
-        let samples = &block.samples[..block.frame_count() * channel_count];
-        audio::extend_interleaved_history(
-            &mut self.history,
-            samples,
-            probe_frames.max(base_frames).max(trigger_frames) * channel_count,
-            channel_count,
-        );
-        let available = self.history.len() / channel_count;
-        let data = self.history.make_contiguous();
+        let history_frames = probe_frames.max(base_frames).max(trigger_frames);
         let mode = self.config.trigger_mode;
         let sample_rate = self.config.sample_rate;
         let capture = |trace: &[f32], trigger: &mut StableTrigger| match mode {
@@ -662,13 +701,7 @@ impl OscilloscopeProcessor {
             .zip(trace_channels)
             .zip(&mut active_traces)
         {
-            *active = audio::project_interleaved_channel_into(
-                &mut trace.buffer,
-                data,
-                channel_count,
-                available,
-                channel,
-            );
+            *active = extend_projected_history(&mut trace.buffer, block, history_frames, channel);
         }
 
         let matching_trace = trace_channels
@@ -676,15 +709,17 @@ impl OscilloscopeProcessor {
             .position(|&channel| channel == trigger_source)
             .filter(|&slot| active_traces[slot]);
         let linked_capture = if let Some(slot) = matching_trace {
-            capture(&self.traces[slot].buffer, &mut self.source.trigger)
-        } else if audio::project_interleaved_channel_into(
+            capture(
+                self.traces[slot].buffer.make_contiguous(),
+                &mut self.source.trigger,
+            )
+        } else if extend_projected_history(
             &mut self.source.buffer,
-            data,
-            channel_count,
-            available,
+            block,
+            history_frames,
             trigger_source,
         ) {
-            capture(&self.source.buffer, &mut self.source.trigger)
+            capture(self.source.buffer.make_contiguous(), &mut self.source.trigger)
         } else {
             None
         };
@@ -692,8 +727,8 @@ impl OscilloscopeProcessor {
         let mut captures = [None; TRACE_COUNT];
         for (slot, (trace, active)) in self.traces.iter_mut().zip(active_traces).enumerate() {
             if active {
-                captures[slot] =
-                    linked_capture.or_else(|| capture(&trace.buffer, &mut trace.trigger));
+                captures[slot] = linked_capture
+                    .or_else(|| capture(trace.buffer.make_contiguous(), &mut trace.trigger));
             }
         }
 
@@ -711,7 +746,7 @@ impl OscilloscopeProcessor {
 
     fn clear_history(&mut self) {
         self.epoch = self.epoch.wrapping_add(1);
-        self.history.clear();
+        self.history_channels = None;
         self.traces.iter_mut().for_each(|trace| {
             trace.buffer.clear();
             trace.trigger.unlock();
@@ -736,7 +771,7 @@ impl OscilloscopeProcessor {
             let Some(capture) = capture else { continue };
             if downsample_trace(
                 &mut self.snapshot.samples,
-                &self.traces[slot].buffer,
+                self.traces[slot].buffer.make_contiguous(),
                 capture,
                 target,
             ) {
@@ -1050,13 +1085,13 @@ mod tests {
             [1.0, -1.0, 1.0, -1.0, 10.0, -10.0, 0.0, 0.0],
             [11.0, 9.0, 11.0, 9.0, 1.0, -1.0, 0.0, 0.0],
         ] {
-            let trigger = StableTrigger {
+            let mut trigger = StableTrigger {
                 kernel: vec![0.0; 4],
-                reference: vec![1.0, -1.0, 1.0, -1.0],
+                candidate: vec![1.0, -1.0, 1.0, -1.0],
                 work: Vec::from(work),
                 ..Default::default()
             };
-            assert_eq!(trigger.find_best(4, 16.0, true).0, 0);
+            assert_eq!(trigger.find_best(4, 16.0).0, 0);
         }
 
         let mut trigger = StableTrigger {
@@ -1077,12 +1112,14 @@ mod tests {
         }
 
         let mut projected = Vec::new();
+        let matrix = crate::dsp::stereo_matrix(2, crate::dsp::ChannelPosition::fallback(2));
         let same_stereo: Vec<f32> = mono.iter().flat_map(|&s| [s, s]).collect();
         assert!(audio::project_interleaved_channel_into(
             &mut projected,
             &same_stereo,
             2,
             mono.len(),
+            &matrix,
             Channel::Mid,
         ));
         let c = find_rising_zero_crossing(&projected, (0..=3840).rev()).unwrap();
@@ -1095,6 +1132,7 @@ mod tests {
                 &inverted,
                 2,
                 mono.len(),
+                &matrix,
                 channel,
             ));
             assert_eq!(
@@ -1142,7 +1180,7 @@ mod tests {
         let silence = vec![0.0; BLOCK * 2];
         processor.process_block(&make_block(&silence, 2, RATE));
 
-        assert_eq!(processor.history.len(), silence.len());
+        assert_eq!(processor.traces[0].buffer.len(), silence.len() / 2);
         assert!(processor.last_cycle_rate().is_none());
     }
 

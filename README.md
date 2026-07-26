@@ -30,16 +30,16 @@ open an issue or pull request.
 ### General
 
 - PipeWire audio capture
-  - Per-application capture through a PipeWire virtual sink.
-  - Device/default-sink capture.
-  - Application routes touched by OpenMeters are reset on clean
-    shutdown.
+  - Per-application capture.
+  - Direct device/default-sink capture with negotiated layouts of up
+    to eight channels.
 - Windowing
   - Normal desktop windows on X11 or Wayland.
-  - Wayland layer-shell bar mode when the compositor exposes
+  - Wayland layer-shell "bar mode" when the compositor exposes
     `zwlr_layer_shell_v1`, anchored to the top or bottom of a given
     monitor.
   - Pop-out windows for individual visuals.
+  - Configurable 30, 60, 120 FPS, or vertical-synced frame cadence.
   - Window decoration toggle.
 - Appearance and persistence
   - Configurable RGBA background color.
@@ -74,7 +74,8 @@ open an issue or pull request.
   - Adjustable color map, stop positions, and stop spreads.
 - **Spectrum analyzer**
   - A multitude of window types, lengths, and hop sizes.
-  - Selectable primary and secondary source: left, right, mid, side, or none.
+  - Selectable primary and secondary source: left, right, mid, side,
+    or none.
   - Raw or IEC 61672-1 A-weighted display.
   - Peak label with frequency, note, and level.
   - No averaging, exponential averaging, or peak hold.
@@ -100,7 +101,7 @@ open an issue or pull request.
 OpenMeters requires:
 
 1. A graphical Linux session on X11 or Wayland.
-2. PipeWire installed and running.
+2. PipeWire 0.3.77 or newer, installed and running.
 3. Vulkan support through your distribution's Vulkan loader and driver
    stack.
 4. For pre-built release artifacts: x86_64 GNU/Linux with `glibc` >=
@@ -153,7 +154,7 @@ an issue and I will try to help.
    and native development packages for PipeWire, Wayland/X11,
    xkbcommon, fontconfig/freetype, and the Vulkan loader/development
    headers. PipeWire/SPA development headers must be from PipeWire
-   0.3.65 or newer. The recommended way to install Rust is
+   0.3.77 or newer. The recommended way to install Rust is
    [rustup](https://rustup.rs/). OpenMeters currently requires the
    Rust version declared in `Cargo.toml` or newer.
 2. Clone the repository:
@@ -214,8 +215,8 @@ when `XDG_CONFIG_HOME` is unset.
 
 `settings.json` is intentionally editable. GUI ranges are not hard
 limits; processors normalize only the bare minimum necessary for
-runtime. Unsupported keys or structurally invalid values are logged and
-ignored at the narrowest practical scope.
+runtime. Unsupported keys or structurally invalid values are logged
+and ignored at the narrowest practical scope.
 
 Invalid JSON syntax is ignored and default settings are used for that
 run. Your configuration file will not be overwritten unless you change
@@ -239,7 +240,7 @@ when `XDG_CONFIG_HOME` is unset. Theme files own palettes and
 background color; `settings.json` stores the selected theme name and
 non-palette module settings.
 
-You can create and switch between themes in the **Theme** tab of the
+You can create and switch between themes in the **Appearance** section of the
 configuration page. Saving a theme refreshes the list of available
 themes, including any files that appeared in the theme directory while
 OpenMeters was running. The built-in theme is read-only in the UI and
@@ -278,8 +279,7 @@ out.
 - **Corrscope** (<https://github.com/corrscope/corrscope>) was a key
   reference for correlation-triggered oscilloscope stability.
 - **EasyEffects** (<https://github.com/wwmm/easyeffects>) has been a
-  valuable reference, especially for the virtual-sink approach to
-  per-application capture.
+  valuable reference for PipeWire integration and audio processing.
 - **Ardura's Scrolloscope** (<https://github.com/ardura/Scrollscope>)
 - **Tim Strasser's Oszilloskop**
   (<https://github.com/timstr/oszilloskop>)
@@ -322,8 +322,7 @@ samples used by the transform**.
 
 Some other applications, including MiniMeters and Wave Candy, label
 the visible positive-frequency bins instead. This is because for
-real-valued audio, only the 0 Hz..Nyquist half of the FFT is
-unique.
+real-valued audio, only the 0 Hz..Nyquist half of the FFT is unique.
 
 If you are matching settings from MiniMeters or Wave Candy, use
 approximately double their displayed band count as the FFT size within

@@ -4,20 +4,22 @@
 mod message;
 mod windowing;
 
-use crate::domain::routing::RoutingCommand;
-use crate::infra::pipewire::{meter_tap::AudioBatch, registry::RegistrySnapshot};
+use crate::infra::pipewire::{AudioReader, CaptureControl};
+use crate::meter::MeterEngine;
 use crate::persistence::settings::{BarAlignment, BarSettings, SettingsHandle, clamp_bar_height};
 use crate::ui::config::ConfigPage;
 use crate::ui::settings::ActiveSettings;
-use crate::ui::subscription::channel_subscription;
 use crate::ui::theme;
 use crate::ui::visuals::VisualsPage;
-use crate::ui::widgets::{fill, scroll_glow::ScrollGlow};
+use crate::ui::widgets::{
+    fill,
+    frame_clock::{FrameCoordinator, frame_clock, frame_watchdog},
+    scroll_glow::ScrollGlow,
+};
 use crate::visuals::registry::{VisualManager, VisualManagerHandle};
-use async_channel::Receiver as AsyncReceiver;
 use iced::alignment::{Horizontal, Vertical};
 use iced::event::{self, Event};
-use iced::widget::{container, mouse_area, row, stack, text};
+use iced::widget::{Space, container, mouse_area, row, stack, text};
 use iced::{
     Element, Length, Settings as IcedSettings, Size, Subscription, Task, daemon as iced_daemon,
     window,
@@ -27,7 +29,6 @@ use message::{Message, keyboard_shortcut, update, view};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 use windowing::{
     APP_ID, BarResizeState, PopoutWindow, layershell_available, main_window_size, open_main_window,
@@ -35,13 +36,29 @@ use windowing::{
 };
 
 const TOAST_DISPLAY_DURATION: Duration = Duration::from_secs(2);
+const MAINTENANCE_INTERVAL: Duration = Duration::from_millis(100);
 const BAR_RESIZE_HANDLE_THICKNESS: f32 = 6.0;
+
+fn clock(period: &Duration) -> async_channel::Receiver<()> {
+    let (sender, receiver) = async_channel::bounded(1);
+    let period = *period;
+    if let Err(err) = std::thread::Builder::new()
+        .name("openmeters-ui-maintenance".into())
+        .spawn(move || {
+            while let Ok(()) | Err(async_channel::TrySendError::Full(_)) = sender.try_send(()) {
+                std::thread::sleep(period);
+            }
+        })
+    {
+        tracing::error!("[ui] failed to start maintenance clock: {err}");
+    }
+    receiver
+}
 
 #[derive(Clone)]
 pub(crate) struct UiConfig {
-    pub(crate) routing_sender: mpsc::Sender<RoutingCommand>,
-    pub(crate) registry_updates: Option<Arc<AsyncReceiver<RegistrySnapshot>>>,
-    pub(crate) audio_frames: Arc<AsyncReceiver<AudioBatch>>,
+    pub(crate) capture: CaptureControl,
+    pub(crate) audio: Rc<RefCell<Option<AudioReader>>>,
     pub(crate) settings_handle: SettingsHandle,
 }
 
@@ -85,11 +102,12 @@ struct UiApp {
     config_page: ConfigPage,
     visuals_page: VisualsPage,
     visual_manager: VisualManagerHandle,
+    frames: Rc<RefCell<FrameCoordinator>>,
     settings_handle: SettingsHandle,
-    audio_frames: Arc<AsyncReceiver<AudioBatch>>,
     config_window: Option<window::Id>,
     bar_resize_state: Option<BarResizeState>,
     rendering_paused: bool,
+    next_maintenance: Instant,
     toast_until: Option<Instant>,
     main_window_id: window::Id,
     main_window_size: Size,
@@ -105,11 +123,11 @@ struct UiApp {
 impl UiApp {
     fn new(config: UiConfig, use_layershell: bool) -> (Self, Task<Message>) {
         let UiConfig {
-            routing_sender,
-            registry_updates,
-            audio_frames,
+            capture,
+            audio,
             settings_handle,
         } = config;
+        let visual_frame_rate = settings_handle.borrow().data.visual_frame_rate;
         let (visual_settings, use_decorations, bar_settings, main_window, theme_file) = {
             let guard = settings_handle.borrow();
             let settings = &guard.data;
@@ -126,10 +144,19 @@ impl UiApp {
         if let Some(theme_file) = theme_file {
             manager.apply_theme(&theme_file);
         }
+        let visuals_active = manager.has_enabled();
         let visual_manager = Rc::new(RefCell::new(manager));
+        let reader = audio
+            .borrow_mut()
+            .take()
+            .expect("audio reader already taken");
+        let mut meter_engine = MeterEngine::new(reader, visual_manager.clone());
+        if !visuals_active {
+            meter_engine.set_active(false);
+        }
+
         let config_page = ConfigPage::new(
-            routing_sender,
-            registry_updates,
+            capture,
             visual_manager.clone(),
             settings_handle.clone(),
             use_layershell,
@@ -138,15 +165,20 @@ impl UiApp {
         let base_size = main_window_size(main_window);
         let (main_id, open_task, main_is_layer, main_size) =
             open_main_window(use_layershell, bar_settings, base_size, use_decorations);
+        let frames = Rc::new(RefCell::new(FrameCoordinator::new(
+            meter_engine,
+            visual_frame_rate,
+        )));
         let mut app = Self {
             config_page,
             visuals_page,
             visual_manager,
+            frames,
             settings_handle,
-            audio_frames,
             config_window: None,
             bar_resize_state: None,
             rendering_paused: false,
+            next_maintenance: Instant::now(),
             toast_until: None,
             main_window_id: main_id,
             main_window_size: main_size,
@@ -167,7 +199,6 @@ impl UiApp {
 
     fn subscription(&self) -> Subscription<Message> {
         let mut subs = vec![
-            self.config_page.subscription().map(Message::Config),
             event::listen_with(keyboard_shortcut),
             window::close_events().map(Message::WindowClosed),
             window::resize_events().map(|(id, size)| Message::WindowResized(id, size)),
@@ -178,17 +209,55 @@ impl UiApp {
                 _ => None,
             }),
         ];
-        subs.push(channel_subscription(Arc::clone(&self.audio_frames)).map(Message::AudioFrame));
         if self.bar_resize_state.is_some() {
             subs.push(event::listen_with(message::bar_drag_events));
         }
+        if self.visuals_active() && !self.rendering_paused {
+            let heartbeat = self.frames.borrow().heartbeat_handle();
+            subs.push(Subscription::run_with(heartbeat, frame_watchdog).map(Message::Watchdog));
+        }
+        if self.maintenance_active() {
+            subs.push(Subscription::run_with(MAINTENANCE_INTERVAL, clock).map(|_| Message::Tick));
+        }
         Subscription::batch(subs)
+    }
+
+    fn visuals_active(&self) -> bool {
+        self.visual_manager.borrow().has_enabled()
+    }
+
+    fn maintenance_active(&self) -> bool {
+        self.config_window.is_some()
+            || self.toast_until.is_some()
+            || self.exit_warning_until.is_some()
+    }
+
+    fn tick(&mut self) {
+        let now = Instant::now();
+        if now >= self.next_maintenance {
+            if self.config_window.is_some() {
+                self.config_page.refresh_registry();
+            }
+            self.toast_until.take_if(|deadline| now >= *deadline);
+            self.exit_warning_until.take_if(|deadline| now >= *deadline);
+            self.next_maintenance = now + MAINTENANCE_INTERVAL;
+        }
+    }
+
+    fn sync_meter_activity(&mut self) {
+        self.frames.borrow_mut().set_active(self.visuals_active());
+    }
+
+    fn set_rendering_paused(&mut self, paused: bool) {
+        self.rendering_paused = paused;
+        self.frames.borrow_mut().set_paused(paused, Instant::now());
     }
 
     fn toggle_config_window(&mut self) -> Task<Message> {
         if let Some(id) = self.config_window.take() {
             return window::close(id);
         }
+        self.config_page.refresh_registry();
         let (id, task) = open_tool_base_window(self.use_layershell);
         self.config_window = Some(id);
         self.toast_until = Some(Instant::now() + TOAST_DISPLAY_DURATION);
@@ -250,7 +319,28 @@ impl UiApp {
     fn main_window_view(&self) -> Element<'_, Message> {
         let bar = self.settings_handle.borrow().data.bar.clone();
         let content = self.visuals_with_toasts();
-        self.wrap_bar_resize(content, &bar)
+        let content = self.wrap_bar_resize(content, &bar);
+        self.with_frame_clock(self.main_window_id, content)
+    }
+
+    fn with_frame_clock<'a>(
+        &self,
+        window: window::Id,
+        content: Element<'a, Message>,
+    ) -> Element<'a, Message> {
+        if self.visuals_active() && !self.rendering_paused {
+            stack![
+                content,
+                frame_clock(
+                    Rc::clone(&self.frames),
+                    window,
+                    window == self.main_window_id
+                )
+            ]
+            .into()
+        } else {
+            content
+        }
     }
 
     fn visuals_with_toasts(&self) -> Element<'_, Message> {
@@ -266,7 +356,7 @@ impl UiApp {
             is_active(self.exit_warning_until).then_some("q again to exit"),
         ];
 
-        let base: Element<'_, Message> = fill(visuals_view).into();
+        let base: Element<'_, Message> = visuals_view;
         if !toast_msgs.iter().any(Option::is_some) {
             return base;
         }
@@ -295,7 +385,7 @@ impl UiApp {
             return content;
         }
         let handle = mouse_area(
-            container(text(" "))
+            Space::new()
                 .width(Length::Fill)
                 .height(BAR_RESIZE_HANDLE_THICKNESS),
         )

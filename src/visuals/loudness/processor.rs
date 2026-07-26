@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::dsp::{AudioBlock, WindowedMeans};
+use crate::dsp::{AudioBlock, ChannelPosition, WindowedMeans};
 use crate::util::audio::{
     DEFAULT_SAMPLE_RATE, flush_denormal_f64, power_to_db, sanitize_sample_rate,
 };
@@ -142,27 +142,30 @@ impl TruePeakMeter {
 
         if self.delay_len == TRUE_PEAK_4X_DELAY {
             let mut output = [0.0; 3];
-            for (&sample, coefficients) in self.delay[pos..pos + self.delay_len]
-                .iter()
-                .zip(self.firs.0.iter())
-            {
-                for (out, &coefficient) in output.iter_mut().zip(coefficients) {
-                    *out += sample * coefficient;
+            for i in 0..self.delay_len {
+                let (sample, coefficients) = (self.delay[pos + i], self.firs.0[i]);
+                for phase in 0..3 {
+                    output[phase] += sample * coefficients[phase];
                 }
             }
             self.peak = output.into_iter().map(f32::abs).fold(self.peak, f32::max);
         } else {
-            let output = self.delay[pos..pos + self.delay_len]
-                .iter()
-                .zip(self.firs.1.iter())
-                .map(|(&sample, &coefficient)| sample * coefficient)
-                .sum::<f32>();
+            let mut output = 0.0;
+            for i in 0..self.delay_len {
+                output += self.delay[pos + i] * self.firs.1[i];
+            }
             self.peak = self.peak.max(output.abs());
         }
     }
 
     fn take_peak(&mut self) -> f32 {
         std::mem::take(&mut self.peak)
+    }
+
+    fn clear(&mut self) {
+        self.delay.fill(0.0);
+        self.write = self.delay_len;
+        self.peak = 0.0;
     }
 }
 
@@ -181,10 +184,10 @@ impl KWeightingFilter {
 
     fn process(&mut self, sample: f32) -> f32 {
         let x = f64::from(sample);
-        let y = self.b[0].mul_add(x, self.z[0]);
-        self.z[0] = self.b[1].mul_add(x, self.z[1]) - self.a[1] * y;
-        self.z[1] = self.b[2].mul_add(x, self.z[2]) - self.a[2] * y;
-        self.z[2] = self.b[3].mul_add(x, self.z[3]) - self.a[3] * y;
+        let y = self.b[0] * x + self.z[0];
+        self.z[0] = self.b[1] * x + self.z[1] - self.a[1] * y;
+        self.z[1] = self.b[2] * x + self.z[2] - self.a[2] * y;
+        self.z[2] = self.b[3] * x + self.z[3] - self.a[3] * y;
         self.z[3] = self.b[4] * x - self.a[4] * y;
         y as f32
     }
@@ -192,11 +195,15 @@ impl KWeightingFilter {
     fn flush_denormals(&mut self) {
         self.z.iter_mut().for_each(flush_denormal_f64);
     }
+
+    fn clear(&mut self) {
+        self.z = [0.0; 4];
+    }
 }
 
 #[derive(Debug)]
 struct ChannelState {
-    windows: WindowedMeans<f64, 1, 4>,
+    windows: WindowedMeans<1, 4>,
     filter: KWeightingFilter,
     true_peak: TruePeakMeter,
 }
@@ -209,17 +216,23 @@ impl ChannelState {
             true_peak: TruePeakMeter::new(sample_rate),
         }
     }
+
+    fn clear(&mut self) {
+        self.windows.clear();
+        self.filter.clear();
+        self.true_peak.clear();
+    }
 }
 
 pub const MAX_CHANNELS: usize = 8;
 
-fn channel_weight(channel_index: usize, total_channels: usize) -> f64 {
-    match total_channels {
-        1..=3 => 1.0,
-        4 => [1.0, 1.0, 1.41, 1.41][channel_index.min(3)],
-        5 => [1.0, 1.0, 1.0, 1.41, 1.41][channel_index.min(4)],
-        _ if channel_index == 3 => 0.0,
-        _ if channel_index >= 4 => 1.41,
+fn channel_weight(position: ChannelPosition) -> f64 {
+    match position {
+        ChannelPosition::LowFrequency => 0.0,
+        ChannelPosition::RearLeft
+        | ChannelPosition::RearRight
+        | ChannelPosition::SideLeft
+        | ChannelPosition::SideRight => 1.41,
         _ => 1.0,
     }
 }
@@ -232,6 +245,7 @@ pub struct LoudnessSnapshot {
     pub rms_slow_db: [f32; MAX_CHANNELS],
     pub true_peak_db: [f32; MAX_CHANNELS],
     pub channel_count: usize,
+    pub positions: [ChannelPosition; MAX_CHANNELS],
 }
 
 impl LoudnessSnapshot {
@@ -243,6 +257,7 @@ impl LoudnessSnapshot {
             rms_slow_db: [floor_db; MAX_CHANNELS],
             true_peak_db: [floor_db; MAX_CHANNELS],
             channel_count: 0,
+            positions: [ChannelPosition::Unknown; MAX_CHANNELS],
         }
     }
 }
@@ -270,6 +285,11 @@ impl LoudnessProcessor {
             snapshot: LoudnessSnapshot::default(),
             config,
         }
+    }
+
+    pub fn reset_audio(&mut self) {
+        self.channels.iter_mut().for_each(ChannelState::clear);
+        self.snapshot = LoudnessSnapshot::with_floor(self.config.floor_db);
     }
 
     fn ensure_state(&mut self, requested_channels: usize, sample_rate: f32) {
@@ -319,7 +339,7 @@ impl LoudnessProcessor {
         let mut weighted_momentary = 0.0;
 
         for (channel_index, channel_state) in self.channels.iter_mut().enumerate() {
-            let weight = channel_weight(channel_index, num_channels);
+            let weight = channel_weight(block.positions[channel_index]);
             weighted_short_term += channel_state.windows.mean(WIN_SHORT_TERM)[0] * weight;
             weighted_momentary += channel_state.windows.mean(WIN_MOMENTARY)[0] * weight;
             self.snapshot.rms_fast_db[channel_index] =
@@ -333,6 +353,7 @@ impl LoudnessProcessor {
         self.snapshot.short_term_loudness = mean_square_to_lufs(weighted_short_term, floor);
         self.snapshot.momentary_loudness = mean_square_to_lufs(weighted_momentary, floor);
         self.snapshot.channel_count = num_channels;
+        self.snapshot.positions = block.positions;
 
         Some(self.snapshot)
     }
@@ -356,7 +377,7 @@ mod tests {
 
     #[test]
     fn rolling_mean_square_tracks_average() {
-        let mut window = WindowedMeans::<f64, 1, 4>::new([4, 2, 1, 4]);
+        let mut window = WindowedMeans::<1, 4>::new([4, 2, 1, 4]);
         window.push([1.0]);
         window.push([9.0]);
         assert!((window.mean(0)[0] - 5.0).abs() < f64::EPSILON);
@@ -432,9 +453,9 @@ mod tests {
 
     #[test]
     fn fallback_channel_weights_match_common_bs1770_layouts() {
-        assert_eq!(channel_weight(2, 4), 1.41);
-        assert_eq!(channel_weight(3, 6), 0.0);
-        assert_eq!(channel_weight(4, 6), 1.41);
+        assert_eq!(channel_weight(ChannelPosition::RearLeft), 1.41);
+        assert_eq!(channel_weight(ChannelPosition::LowFrequency), 0.0);
+        assert_eq!(channel_weight(ChannelPosition::SideLeft), 1.41);
     }
 
     #[test]

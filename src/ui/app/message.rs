@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::{TOAST_DISPLAY_DURATION, UiApp};
-use crate::infra::pipewire::meter_tap::AudioBatch;
 use crate::ui::config::ConfigMessage;
 use crate::ui::settings::SettingsMessage;
 use crate::ui::visuals::VisualsMessage;
@@ -21,7 +20,8 @@ use std::time::Instant;
 pub(super) enum Message {
     Config(ConfigMessage),
     Visuals(VisualsMessage),
-    AudioFrame(AudioBatch),
+    Tick,
+    Watchdog(u64),
     BarOutputResolved(window::Id, Option<OutputSnapshot>),
     ToggleConfig,
     TogglePause,
@@ -101,20 +101,35 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
             };
             let bar_task = app.handle_bar_config_message(&config_msg);
             let theme_changed = matches!(&config_msg, ConfigMessage::ThemeChanged(_));
+            let topology_changed = matches!(&config_msg, ConfigMessage::VisualToggled { .. });
+            let frame_rate = match &config_msg {
+                ConfigMessage::VisualFrameRateChanged(rate) => Some(*rate),
+                _ => None,
+            };
             app.config_page.update(config_msg);
+            if let Some(rate) = frame_rate {
+                app.frames.borrow_mut().set_rate(rate);
+            }
+            if topology_changed {
+                app.sync_meter_activity();
+            }
             if theme_changed {
                 app.refresh_settings_panel();
             }
             let restore_task =
                 restore_popout.map_or_else(Task::none, |kind| app.restore_popout_window(kind));
-            let sync_task = app.sync_all_windows();
-            Task::batch([decoration_task, bar_task, restore_task, sync_task])
+            let topology_task = if topology_changed {
+                app.sync_all_windows()
+            } else {
+                Task::none()
+            };
+            Task::batch([decoration_task, bar_task, restore_task, topology_task])
         }
         Message::Visuals(VisualsMessage::SettingsRequested(kind)) => app.open_settings_window(kind),
         Message::Visuals(visuals_msg) => app.visuals_page.update(visuals_msg).map(Message::Visuals),
         Message::ToggleConfig => app.toggle_config_window(),
         Message::TogglePause => {
-            app.rendering_paused = !app.rendering_paused;
+            app.set_rendering_paused(!app.rendering_paused);
             Task::none()
         }
         Message::PopOutOrDock(window_id) => app.handle_popout_or_dock(window_id),
@@ -134,11 +149,13 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
             app.exit_warning_until = Some(Instant::now() + TOAST_DISPLAY_DURATION);
             Task::none()
         }
-        Message::AudioFrame(AudioBatch { samples, format }) if !app.rendering_paused => {
-            app.visual_manager
-                .borrow_mut()
-                .ingest_samples(&samples, format);
-            app.sync_all_windows()
+        Message::Tick => {
+            app.tick();
+            Task::none()
+        }
+        Message::Watchdog(generation) => {
+            app.frames.borrow_mut().watchdog(generation, Instant::now());
+            Task::none()
         }
         Message::BarOutputResolved(id, Some(snapshot))
             if app.main_window_is_layer && id == app.main_window_id =>
@@ -189,8 +206,8 @@ pub(super) fn view(app: &UiApp, window_id: window::Id) -> Element<'_, Message> {
         )
         .into();
     }
-    app.popout_windows.get(&window_id).map_or_else(
-        || fill(text("")).into(),
-        |popout| popout.view().map(Message::Visuals),
-    )
+    let Some(popout) = app.popout_windows.get(&window_id) else {
+        return fill(text("")).into();
+    };
+    app.with_frame_clock(window_id, popout.view().map(Message::Visuals))
 }

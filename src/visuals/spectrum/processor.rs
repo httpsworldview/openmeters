@@ -137,6 +137,12 @@ impl SpectrumProcessor {
         self.config
     }
 
+    pub fn reset_audio(&mut self) {
+        self.reset_level_buffers();
+        self.pcm_buffers.iter_mut().for_each(VecDeque::clear);
+        self.pending_skip_frames = 0;
+    }
+
     fn rebuild_fft(&mut self) {
         self.config.normalize();
         let fft_size = self.config.fft_size;
@@ -295,6 +301,7 @@ impl SpectrumProcessor {
                 samples,
                 block.channels,
                 frames,
+                block.stereo_matrix(),
                 source,
             ) {
                 self.pcm_buffers[idx].extend(&self.source_scratch);
@@ -390,6 +397,11 @@ impl SpectrumLevelBuffers {
         };
         let [weighted_out, raw_out] = outputs;
         for i in 0..bins {
+            if powers[i] < self.state_floor {
+                raw_out[i] = floor;
+                weighted_out[i] = floor;
+                continue;
+            }
             let db = powers[i].ln() * LN_TO_DB;
             raw_out[i] = db.max(floor);
             weighted_out[i] = (db + weighting_db[i]).max(floor);

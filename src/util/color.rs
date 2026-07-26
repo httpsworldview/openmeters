@@ -44,22 +44,14 @@ pub fn rgba_with_alpha(color: [f32; 4], alpha: f32) -> [f32; 4] {
     [color[0], color[1], color[2], alpha.clamp(0.0, 1.0)]
 }
 
-fn gradient_segment(count: usize, t: f32) -> Option<(usize, f32)> {
-    (count >= 2).then(|| {
-        let pos = t.clamp(0.0, 1.0) * (count - 1) as f32;
-        let i = (pos as usize).min(count - 2);
-        (i, pos - i as f32)
-    })
-}
-
 pub fn sample_rgba_gradient(palette: &[[f32; 4]], t: f32) -> [f32; 4] {
-    match gradient_segment(palette.len(), t) {
-        Some((i, f)) => {
-            let [a, b] = [palette[i], palette[i + 1]];
-            std::array::from_fn(|ch| lerp(a[ch], b[ch], f))
-        }
-        None => palette.first().copied().unwrap_or([0.0; 4]),
+    if palette.len() < 2 {
+        return palette.first().copied().unwrap_or([0.0; 4]);
     }
+    let pos = t.clamp(0.0, 1.0) * (palette.len() - 1) as f32;
+    let i = (pos as usize).min(palette.len() - 2);
+    let [a, b] = [palette[i], palette[i + 1]];
+    std::array::from_fn(|ch| lerp(a[ch], b[ch], pos - i as f32))
 }
 
 pub fn sanitize_stop_positions(raw: Option<&[f32]>, defaults: &[f32]) -> Vec<f32> {

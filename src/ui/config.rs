@@ -1,27 +1,28 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::domain::routing::{CaptureMode, DeviceSelection, RoutingCommand};
-use crate::infra::pipewire::registry::RegistrySnapshot;
+use crate::domain::routing::{CaptureMode, DeviceSelection, StreamIdentity};
+use crate::infra::pipewire::{ApplicationView, CaptureControl, CaptureView};
 use crate::persistence::settings::{
     BAR_MAX_HEIGHT, BAR_MIN_HEIGHT, BUILTIN_THEME, BarAlignment, SettingsHandle, ThemeChoice,
-    ThemeFile, ThemeOrigin, canonical_theme_name,
+    ThemeFile, ThemeOrigin, VisualFrameRate, canonical_theme_name,
 };
-use crate::ui::subscription::channel_subscription;
 use crate::ui::theme;
 use crate::ui::widgets::palette_editor::{PaletteEditor, PaletteEvent};
 use crate::ui::widgets::scroll_glow::ScrollGlow;
-use crate::ui::widgets::{SliderRange, action_button, card, pick, selectable_button, toggle};
+use crate::ui::widgets::{
+    SliderRange, action_button, card, pick, selectable_button, split, toggle,
+};
 use crate::visuals::registry::{VisualKind, VisualManagerHandle, VisualSlotSnapshot};
-use async_channel::Receiver as AsyncReceiver;
-use iced::widget::{Column, Row, column, container, pick_list, row, text, text_input};
-use iced::{Element, Length, Subscription};
+use iced::alignment::Vertical;
+use iced::widget::{Column, column, container, pick_list, row, text, text_input};
+use iced::{Element, Length};
 use iced_layershell::actions::OutputSnapshot;
-use std::collections::HashSet;
-use std::sync::{Arc, mpsc};
+use std::sync::Arc;
 
 const GRID_COLUMNS: usize = 2;
 const MAX_DEVICE_NAME_LEN: usize = 48;
+const REGISTRY_UNAVAILABLE_MESSAGE: &str = "PipeWire unavailable; reconnecting...";
 
 fn truncate_label(label: &str, max_chars: usize) -> (&str, bool) {
     if label.chars().count() <= max_chars {
@@ -49,13 +50,19 @@ impl std::fmt::Display for DeviceOption {
 
 #[derive(Debug, Clone)]
 pub enum ConfigMessage {
-    RegistryUpdated(RegistrySnapshot),
-    ToggleChanged { node_id: u32, enabled: bool },
+    ToggleChanged {
+        identity: StreamIdentity,
+        enabled: bool,
+    },
     ToggleApplicationsVisibility,
-    VisualToggled { kind: VisualKind, enabled: bool },
+    VisualToggled {
+        kind: VisualKind,
+        enabled: bool,
+    },
     CaptureModeChanged(CaptureMode),
     CaptureDeviceChanged(DeviceSelection),
     BgPalette(PaletteEvent),
+    VisualFrameRateChanged(VisualFrameRate),
     DecorationsToggled(bool),
     BarModeToggled(bool),
     BarAlignmentChanged(BarAlignment),
@@ -67,118 +74,95 @@ pub enum ConfigMessage {
     Scrolled(ScrollGlow),
 }
 
-struct ApplicationRow {
-    node_id: u32,
-    label: String,
-}
-
-impl ApplicationRow {
-    fn from_node(node: &crate::infra::pipewire::registry::NodeInfo) -> Self {
-        let primary = node
-            .app_name()
-            .map(str::to_owned)
-            .filter(|name| !name.trim().is_empty())
-            .unwrap_or_else(|| node.capture_device_token());
-        let node_label = node.capture_device_token();
-        let label = if primary.eq_ignore_ascii_case(&node_label) {
-            primary
-        } else {
-            format!("{primary} ({node_label})")
-        };
-        Self {
-            node_id: node.id,
-            label,
-        }
-    }
-}
-
 pub struct ConfigPage {
-    routing_sender: mpsc::Sender<RoutingCommand>,
-    registry_updates: Option<Arc<AsyncReceiver<RegistrySnapshot>>>,
+    capture: CaptureControl,
+    view_revision: Option<u64>,
     visual_manager: VisualManagerHandle,
     settings: SettingsHandle,
     bar_supported: bool,
     bar_monitors: Vec<String>,
-    disabled_applications: HashSet<u32>,
-    applications: Vec<ApplicationRow>,
+    applications: Arc<[ApplicationView]>,
     hardware_sink_label: String,
-    hardware_sink_last_known: Option<String>,
-    registry_ready: bool,
+    registry_alive: bool,
     applications_expanded: bool,
     device_choices: Vec<DeviceOption>,
-    selected_device: DeviceSelection,
     bg_palette: PaletteEditor,
     scroll: ScrollGlow,
     theme_choices: Vec<ThemeChoice>,
     save_theme_name: String,
+    pub(super) window_themes: [iced::Theme; 3],
 }
 
 impl ConfigPage {
     pub fn new(
-        routing_sender: mpsc::Sender<RoutingCommand>,
-        registry_updates: Option<Arc<AsyncReceiver<RegistrySnapshot>>>,
+        capture: CaptureControl,
         visual_manager: VisualManagerHandle,
         settings: SettingsHandle,
         bar_supported: bool,
     ) -> Self {
         use theme::background as bg;
 
-        let (current_bg, last_device_name, theme_choices) = {
+        let (current_bg, theme_choices) = {
             let guard = settings.borrow();
             let data = &guard.data;
             (
                 data.background_color.map_or(theme::BG_BASE, Into::into),
-                data.last_device_name.clone(),
                 guard.theme_store().list(),
             )
         };
+        let window_themes = theme::window_themes(Some(current_bg));
         let mut bg_pal = theme::Palette::new(&bg::COLORS, &bg::DEFAULT_POSITIONS, bg::LABELS);
         bg_pal.set_colors(&[current_bg]);
         let bg_palette = PaletteEditor::new(bg_pal);
 
         Self {
-            routing_sender,
-            registry_updates,
+            capture,
+            view_revision: None,
             visual_manager,
             settings,
             bar_supported,
             bar_monitors: Vec::new(),
-            disabled_applications: HashSet::new(),
-            applications: Vec::new(),
+            applications: Arc::default(),
             hardware_sink_label: String::from("(detecting hardware sink...)"),
-            hardware_sink_last_known: None,
-            registry_ready: false,
+            registry_alive: true,
             applications_expanded: false,
             device_choices: Vec::new(),
-            selected_device: DeviceSelection::from_token(last_device_name),
             bg_palette,
             scroll: ScrollGlow::default(),
             theme_choices,
             save_theme_name: String::new(),
+            window_themes,
         }
     }
 
-    pub fn subscription(&self) -> Subscription<ConfigMessage> {
-        self.registry_updates
-            .as_ref()
-            .map_or_else(Subscription::none, |receiver| {
-                channel_subscription(Arc::clone(receiver)).map(ConfigMessage::RegistryUpdated)
-            })
+    pub(in crate::ui) fn refresh_registry(&mut self) {
+        self.registry_alive = self.capture.is_alive();
+        if !self.registry_alive {
+            self.view_revision = None;
+            self.applications = Arc::default();
+            self.device_choices.clear();
+            self.hardware_sink_label = "(unavailable)".into();
+            return;
+        }
+        let view = self.capture.view();
+        if self.view_revision != Some(view.revision) {
+            self.view_revision = Some(view.revision);
+            self.apply_capture_view(&view);
+        }
     }
 
     pub fn update(&mut self, message: ConfigMessage) {
         match message {
-            ConfigMessage::RegistryUpdated(snapshot) => {
-                self.registry_ready = true;
-                self.apply_snapshot(snapshot);
-            }
-            ConfigMessage::ToggleChanged { node_id, enabled } => {
-                if enabled {
-                    self.disabled_applications.remove(&node_id);
-                } else {
-                    self.disabled_applications.insert(node_id);
-                }
-                self.send_routing(RoutingCommand::SetApplicationEnabled { node_id, enabled });
+            ConfigMessage::ToggleChanged { identity, enabled } => {
+                let key = identity.as_str().to_owned();
+                self.settings.update(|settings| {
+                    if enabled {
+                        settings.data.disabled_streams.remove(&key);
+                    } else {
+                        settings.data.disabled_streams.insert(key);
+                    }
+                });
+                self.dispatch_capture_config();
             }
             ConfigMessage::ToggleApplicationsVisibility => {
                 self.applications_expanded = !self.applications_expanded;
@@ -192,15 +176,14 @@ impl ConfigPage {
             ConfigMessage::CaptureModeChanged(mode) => {
                 if self.settings.borrow().data.capture_mode != mode {
                     self.settings.update(|s| s.data.capture_mode = mode);
-                    self.dispatch_capture_state();
+                    self.dispatch_capture_config();
                 }
             }
             ConfigMessage::CaptureDeviceChanged(selection) => {
-                if self.selected_device != selection {
-                    let token = selection.token().map(str::to_owned);
-                    self.selected_device = selection;
-                    self.dispatch_capture_state();
+                let token = selection.token().map(str::to_owned);
+                if self.settings.borrow().data.last_device_name != token {
                     self.settings.update(|s| s.data.last_device_name = token);
+                    self.dispatch_capture_config();
                 }
             }
             ConfigMessage::BgPalette(event) => {
@@ -210,8 +193,12 @@ impl ConfigPage {
                         s.data.background_color = color.map(Into::into);
                         s.update_active_theme(|theme| theme.background = color.map(Into::into));
                     });
+                    self.window_themes = theme::window_themes(color);
                     self.refresh_theme_choices_if_needed();
                 }
+            }
+            ConfigMessage::VisualFrameRateChanged(rate) => {
+                self.settings.update(|s| s.data.visual_frame_rate = rate);
             }
             ConfigMessage::DecorationsToggled(v) => {
                 self.settings.update(|s| s.data.decorations = v);
@@ -244,13 +231,13 @@ impl ConfigPage {
         let mut content = column![
             self.render_capture_card(),
             self.render_visuals_card(&snapshot),
-            self.render_theme_card(),
             self.render_global_card(),
         ]
         .spacing(theme::SECTION_GAP);
         if self.bar_supported {
             content = content.push(self.render_bar_card());
         }
+        content = content.push(self.render_appearance_card());
         self.scroll.vertical(content, ConfigMessage::Scrolled)
     }
 
@@ -269,8 +256,8 @@ impl ConfigPage {
     fn render_applications_section(&self) -> Column<'_, ConfigMessage> {
         let status_suffix: String = match (
             self.applications.len(),
-            self.registry_updates.is_some(),
-            self.registry_ready,
+            self.registry_alive,
+            self.view_revision.is_some(),
         ) {
             (0, false, _) => " - unavailable".into(),
             (0, true, false) => " - waiting...".into(),
@@ -289,21 +276,26 @@ impl ConfigPage {
             .spacing(theme::CONTROL_GAP)
             .push(summary_button);
         if self.applications_expanded {
+            let settings = self.settings.borrow();
+            let disabled = &settings.data.disabled_streams;
             let content: Element<'_, _> = if self.applications.is_empty() {
-                let message = match (self.registry_updates.is_some(), self.registry_ready) {
-                    (false, _) => "Registry unavailable; routing controls disabled.",
-                    (_, true) => "No audio applications detected. Launch something to see it here.",
-                    _ => "Waiting for PipeWire registry snapshots...",
+                let message = if !self.registry_alive {
+                    REGISTRY_UNAVAILABLE_MESSAGE
+                } else if self.view_revision.is_some() {
+                    "No audio applications detected. Launch something to see it here."
+                } else {
+                    "Waiting for PipeWire registry..."
                 };
                 text(message).size(theme::BODY_TEXT_SIZE).into()
             } else {
-                render_toggle_grid(&self.applications, |entry| {
-                    let enabled = !self.disabled_applications.contains(&entry.node_id);
+                render_toggle_grid(&self.applications, |application| {
+                    let enabled = !disabled.contains(application.identity.as_str());
                     (
-                        entry.label.as_str(),
+                        application.label.as_ref(),
+                        if application.active { "" } else { " (paused)" },
                         enabled,
                         ConfigMessage::ToggleChanged {
-                            node_id: entry.node_id,
+                            identity: application.identity.clone(),
                             enabled: !enabled,
                         },
                     )
@@ -316,10 +308,21 @@ impl ConfigPage {
     }
 
     fn render_device_section(&self) -> Column<'_, ConfigMessage> {
+        if !self.registry_alive {
+            return column![
+                text(REGISTRY_UNAVAILABLE_MESSAGE)
+                    .size(theme::BODY_TEXT_SIZE)
+                    .style(theme::weak_text_style)
+            ];
+        }
+
+        let settings = self.settings.borrow();
+        let selected_device =
+            DeviceSelection::from_token(settings.data.last_device_name.as_deref());
         let selected = self
             .device_choices
             .iter()
-            .find(|opt| opt.selection == self.selected_device);
+            .find(|opt| opt.selection == selected_device);
         let mut picker = pick_list(self.device_choices.as_slice(), selected, |opt| {
             ConfigMessage::CaptureDeviceChanged(opt.selection)
         })
@@ -331,47 +334,14 @@ impl ConfigPage {
 
         column![
             container(picker).width(Length::Fill).clip(true),
-            text("Direct device capture. Application routing disabled.")
+            text("Direct device capture. Per-application taps disabled.")
                 .size(theme::BODY_TEXT_SIZE)
                 .style(theme::weak_text_style)
         ]
         .spacing(6)
     }
 
-    fn build_device_choices(&self, snapshot: &RegistrySnapshot) -> Vec<DeviceOption> {
-        let mut choices = vec![DeviceOption {
-            label: format!("Default sink - {}", self.hardware_sink_label),
-            selection: DeviceSelection::Default,
-        }];
-        let mut devices: Vec<_> = snapshot
-            .nodes
-            .iter()
-            .filter(|node| node.is_capture_device_candidate())
-            .map(|node| {
-                let token = node.capture_device_token();
-                DeviceOption {
-                    label: token.clone(),
-                    selection: DeviceSelection::Device(token),
-                }
-            })
-            .collect();
-        devices.sort_by_cached_key(|opt| opt.label.to_ascii_lowercase());
-        choices.extend(devices);
-        choices
-    }
-
-    fn render_global_card(&self) -> container::Container<'_, ConfigMessage> {
-        use ConfigMessage::{BgPalette, DecorationsToggled};
-        let decorations = self.settings.borrow().data.decorations;
-        let content = column![
-            self.bg_palette.view().map(BgPalette),
-            toggle("Window decorations", decorations, DecorationsToggled),
-        ]
-        .spacing(theme::SECTION_GAP);
-        card("Global", content)
-    }
-
-    fn render_theme_card(&self) -> container::Container<'_, ConfigMessage> {
+    fn render_appearance_card(&self) -> container::Container<'_, ConfigMessage> {
         let active = self.settings.borrow().active_theme().to_owned();
         let selected = self.theme_choices.iter().find(|c| c.name == active);
         let is_builtin = selected.is_some_and(|c| c.origin == ThemeOrigin::BuiltIn);
@@ -403,8 +373,23 @@ impl ConfigPage {
         let content = form!(
             row![picker, save_btn].spacing(theme::CONTROL_GAP);
             row![save_as_input, save_as_btn].spacing(theme::CONTROL_GAP);
+            self.bg_palette.view().map(ConfigMessage::BgPalette);
         );
-        card("Theme", content)
+        card("Appearance", content)
+    }
+
+    fn render_global_card(&self) -> container::Container<'_, ConfigMessage> {
+        use ConfigMessage::{
+            DecorationsToggled as Decorations, VisualFrameRateChanged as FrameRate,
+        };
+        let data = &self.settings.borrow().data;
+        let frame_rate = data.visual_frame_rate;
+        let frame_rate = pick("Frame rate", VisualFrameRate::ALL, frame_rate, FrameRate);
+        let decorations = toggle("Window decorations", data.decorations, Decorations);
+        card(
+            "Global",
+            split(frame_rate, decorations).align_y(Vertical::Center),
+        )
     }
 
     fn apply_theme(&mut self, name: &str) {
@@ -419,6 +404,7 @@ impl ConfigPage {
             s.data.background_color = Some(bg.into());
             s.data.theme = theme_val;
         });
+        self.window_themes = theme::window_themes(Some(bg));
     }
 
     fn save_current_as_theme(&mut self, name: &str) -> Option<String> {
@@ -476,11 +462,10 @@ impl ConfigPage {
         use ConfigMessage::{
             BarAlignmentChanged as Alignment, BarHeightChanged, BarModeToggled, BarMonitorChanged,
         };
-        let bar = self.settings.borrow().data.bar.clone();
-        let mut content = column![toggle("Bar mode", bar.enabled, BarModeToggled)].spacing(10);
+        let bar = &self.settings.borrow().data.bar;
+        let mut content = form!(toggle("Enabled", bar.enabled, BarModeToggled););
         if bar.enabled {
             let height = bar.height.clamp(BAR_MIN_HEIGHT, BAR_MAX_HEIGHT);
-            let height_range = SliderRange::new(BAR_MIN_HEIGHT as f32, BAR_MAX_HEIGHT as f32, 1.0);
             let monitor = row![
                 text("Monitor").size(theme::BODY_TEXT_SIZE),
                 pick_list(
@@ -493,8 +478,10 @@ impl ConfigPage {
                 .width(Length::Fill),
             ]
             .spacing(theme::CONTROL_GAP)
+            .align_y(Vertical::Center)
             .width(Length::Fill);
             let alignment = pick("Alignment", BarAlignment::ALL, bar.alignment, Alignment);
+            let height_range = SliderRange::new(BAR_MIN_HEIGHT as f32, BAR_MAX_HEIGHT as f32, 1.0);
             let height_slider = slider!(
                 "Height",
                 height as f32,
@@ -502,7 +489,7 @@ impl ConfigPage {
                 |value| BarHeightChanged(value.round() as u32),
                 format!("{height} px")
             );
-            content = content.push(monitor).push(alignment).push(height_slider);
+            content = content.push(split(monitor, alignment)).push(height_slider);
         }
         card("Bar Mode", content)
     }
@@ -511,12 +498,12 @@ impl ConfigPage {
         &self,
         snapshot: &[VisualSlotSnapshot],
     ) -> container::Container<'_, ConfigMessage> {
-        let enabled = snapshot.iter().filter(|slot| slot.enabled).count();
         card(
-            format!("Visual Modules ({enabled}/{})", snapshot.len()),
+            "Visuals",
             render_toggle_grid(snapshot, |slot| {
                 (
                     slot.kind.label(),
+                    "",
                     slot.enabled,
                     ConfigMessage::VisualToggled {
                         kind: slot.kind,
@@ -527,99 +514,63 @@ impl ConfigPage {
         )
     }
 
-    fn update_hardware_sink_label(&mut self, snapshot: &RegistrySnapshot) {
-        let summary = snapshot.describe_default_target(snapshot.defaults.audio_sink.as_ref());
-        let known = summary.display != "(none)" || summary.raw != "(none)";
-        if known {
-            self.hardware_sink_last_known = Some(summary.display.clone());
-            self.hardware_sink_label = summary.display;
-        } else {
-            self.hardware_sink_label = self
-                .hardware_sink_last_known
-                .clone()
-                .unwrap_or(summary.display);
+    fn apply_capture_view(&mut self, view: &CaptureView) {
+        self.hardware_sink_label = view.default_sink.to_string();
+        if let Some(selected) = &view.selected_device {
+            let changed =
+                self.settings.borrow().data.last_device_name.as_deref() != Some(selected.as_ref());
+            if changed {
+                let selected = selected.to_string();
+                self.settings
+                    .update(|settings| settings.data.last_device_name = Some(selected));
+            }
         }
-    }
-
-    fn apply_snapshot(&mut self, snapshot: RegistrySnapshot) {
-        self.update_hardware_sink_label(&snapshot);
-        let mut choices = self.build_device_choices(&snapshot);
-        if sync_selected_device_with_choices(&mut self.selected_device, &mut choices, &snapshot) {
-            let token = self.selected_device.token().map(str::to_owned);
-            self.settings.update(|s| s.data.last_device_name = token);
-            self.dispatch_capture_state();
+        let mut choices = vec![DeviceOption {
+            label: format!("Default sink - {}", self.hardware_sink_label),
+            selection: DeviceSelection::Default,
+        }];
+        choices.extend(view.devices.iter().map(|token| DeviceOption {
+            label: token.to_string(),
+            selection: DeviceSelection::Device(token.to_string()),
+        }));
+        if let Some(token) = self.settings.borrow().data.last_device_name.as_deref()
+            && !choices
+                .iter()
+                .any(|choice| choice.selection.token() == Some(token))
+        {
+            choices.push(DeviceOption {
+                label: format!("{token} (unavailable)"),
+                selection: DeviceSelection::Device(token.to_owned()),
+            });
         }
         self.device_choices = choices;
-
-        let mut seen = HashSet::new();
-        let mut entries: Vec<_> = snapshot
-            .virtual_sink()
-            .into_iter()
-            .flat_map(|sink| snapshot.route_candidates(sink))
-            .map(|node| {
-                seen.insert(node.id);
-                ApplicationRow::from_node(node)
-            })
-            .collect();
-        self.disabled_applications.retain(|id| seen.contains(id));
-        entries.sort_by_cached_key(|entry| (entry.label.to_ascii_lowercase(), entry.node_id));
-        self.applications = entries;
+        self.applications = Arc::clone(&view.applications);
     }
 
-    fn dispatch_capture_state(&self) {
-        self.send_routing(RoutingCommand::SetCaptureState(
-            self.settings.borrow().data.capture_mode,
-            self.selected_device.clone(),
-        ));
-    }
-
-    fn send_routing(&self, command: RoutingCommand) {
-        if let Err(err) = self.routing_sender.send(command) {
-            tracing::error!("[ui] failed to send routing command: {err}");
+    fn dispatch_capture_config(&self) {
+        if !self
+            .capture
+            .configure(self.settings.borrow().data.capture_config())
+        {
+            tracing::error!("[ui] PipeWire capture backend is unavailable");
         }
     }
-}
-
-fn sync_selected_device_with_choices(
-    selected: &mut DeviceSelection,
-    choices: &mut Vec<DeviceOption>,
-    snapshot: &RegistrySnapshot,
-) -> bool {
-    let DeviceSelection::Device(token) = selected else {
-        return false;
-    };
-    let mut changed = false;
-    if let Some(node) = snapshot.find_capture_device_by_token(token) {
-        let canonical = node.capture_device_token();
-        changed = token.as_str() != canonical;
-        *token = canonical;
-    }
-    if !choices
-        .iter()
-        .any(|opt| opt.selection.token() == Some(token.as_str()))
-    {
-        choices.push(DeviceOption {
-            label: format!("{token} (unavailable)"),
-            selection: DeviceSelection::Device(token.clone()),
-        });
-    }
-    changed
 }
 
 fn render_toggle_grid<'a, T, F>(items: &[T], mut project: F) -> Column<'a, ConfigMessage>
 where
-    for<'b> F: FnMut(&'b T) -> (&'b str, bool, ConfigMessage),
+    for<'b> F: FnMut(&'b T) -> (&'b str, &'static str, bool, ConfigMessage),
 {
-    let mut grid = Column::new().spacing(6);
-    for chunk in items.chunks(GRID_COLUMNS) {
-        let mut row = Row::new().spacing(6);
-        for item in chunk {
-            let (name, enabled, message) = project(item);
-            let label = format!("{name} ({})", if enabled { "enabled" } else { "disabled" });
-            row =
-                row.push(selectable_button(label, enabled, message).width(Length::FillPortion(1)));
-        }
-        grid = grid.push(row);
-    }
-    grid
+    column(items.chunks(GRID_COLUMNS).map(|chunk| {
+        row(chunk.iter().map(|item| {
+            let (name, suffix, enabled, message) = project(item);
+            let state = if enabled { "enabled" } else { "disabled" };
+            selectable_button(format!("{name}{suffix} ({state})"), enabled, message)
+                .width(Length::FillPortion(1))
+                .into()
+        }))
+        .spacing(6)
+        .into()
+    }))
+    .spacing(6)
 }

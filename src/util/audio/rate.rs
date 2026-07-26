@@ -4,7 +4,10 @@
 use crate::util::finite_positive;
 
 pub const DEFAULT_SAMPLE_RATE: f32 = 48_000.0;
+pub const MAX_SAMPLE_RATE: f32 = 768_000.0;
 
 pub fn sanitize_sample_rate(sample_rate: f32) -> f32 {
-    finite_positive(sample_rate).unwrap_or(DEFAULT_SAMPLE_RATE)
+    finite_positive(sample_rate)
+        .unwrap_or(DEFAULT_SAMPLE_RATE)
+        .clamp(1.0, MAX_SAMPLE_RATE)
 }

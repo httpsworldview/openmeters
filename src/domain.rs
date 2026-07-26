@@ -3,11 +3,20 @@
 
 pub mod routing {
     use serde::{Deserialize, Serialize};
+    use std::{collections::HashSet, sync::Arc};
 
-    #[derive(Debug, Clone)]
-    pub enum RoutingCommand {
-        SetApplicationEnabled { node_id: u32, enabled: bool },
-        SetCaptureState(CaptureMode, DeviceSelection),
+    /// Stable key for one application's capture policy.
+    #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+    pub struct StreamIdentity(Arc<str>);
+
+    impl StreamIdentity {
+        pub fn new(value: impl Into<Arc<str>>) -> Self {
+            Self(value.into())
+        }
+
+        pub fn as_str(&self) -> &str {
+            &self.0
+        }
     }
 
     crate::macros::choice_enum!(all pub enum CaptureMode { #[default] Applications => "Applications", Device => "Devices" });
@@ -21,10 +30,10 @@ pub mod routing {
     }
 
     impl DeviceSelection {
-        pub fn from_token(token: Option<String>) -> Self {
+        pub fn from_token(token: Option<&str>) -> Self {
             token
                 .filter(|token| !token.is_empty())
-                .map_or(Self::Default, Self::Device)
+                .map_or(Self::Default, |token| Self::Device(token.to_owned()))
         }
 
         pub fn token(&self) -> Option<&str> {
@@ -35,10 +44,11 @@ pub mod routing {
         }
     }
 
-    #[derive(Debug, Clone)]
-    pub struct RoutingConfig {
-        pub capture_mode: CaptureMode,
-        pub preferred_device: DeviceSelection,
+    #[derive(Debug, Clone, Default, PartialEq, Eq)]
+    pub struct CaptureConfig {
+        pub mode: CaptureMode,
+        pub device: DeviceSelection,
+        pub disabled_streams: HashSet<StreamIdentity>,
     }
 }
 

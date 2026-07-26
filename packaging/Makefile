@@ -5,7 +5,7 @@ VERSION := $(shell awk '/^\[package\]/{p=1;next} /^\[/{p=0} p && /^version[[:spa
 $(if $(VERSION),,$(error could not parse version from $(REPO_ROOT)/Cargo.toml))
 
 RELEASE ?= 1
-MIN_PIPEWIRE_VERSION ?= 0.3.65
+MIN_PIPEWIRE_VERSION ?= 0.3.77
 MAX_GLIBC_VERSION ?=
 
 TRIPLE := $(shell rustc -vV 2>/dev/null | awk '/^host:/ {sub(/unknown-/,""); print $$2}')

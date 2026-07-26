@@ -10,9 +10,10 @@ use crate::util::audio::{Channel, FrequencyScale, fmt_freq};
 use crate::util::color::{color_to_rgba, with_alpha};
 use crate::util::lerp;
 use crate::visuals::palettes;
-use crate::visuals::render::common::{fill_rect, fill_snapped_bordered_rect, make_text, measure_text};
+use crate::visuals::render::common::{fill_bordered_rect, fill_rect, text as raw_text};
 use iced::advanced::Renderer as _;
-use iced::advanced::text::Renderer as _;
+use iced::advanced::text::{Paragraph as _, Renderer as _};
+use iced::advanced::graphics::text::Paragraph;
 use iced::{Color, Point, Rectangle, Size};
 use std::sync::{Arc, LazyLock};
 
@@ -26,23 +27,22 @@ const GRID_LABEL_GAP: f32 = 6.0;
 
 #[derive(Debug, Clone)]
 struct PeakLabel {
-    text: [String; 2],
+    text: [Paragraph; 2],
     label_pos: [f32; 2],
     marker_pos: [f32; 2],
     opacity: f32,
 }
 
-type PeakUpdate = ([String; 2], [f32; 2]);
+type PeakUpdate = ([Paragraph; 2], [f32; 2]);
+
+type GridLabel = (f32, bool, Paragraph);
 // Keep the Vec allocation when publishing freshly built points; Vec -> Arc<[T]> copies them.
 type SharedPoints = Arc<Vec<[f32; 2]>>;
 
-fn empty_points() -> SharedPoints {
-    static EMPTY: LazyLock<SharedPoints> = LazyLock::new(|| Arc::new(Vec::new()));
-    Arc::clone(&EMPTY)
-}
+static EMPTY_POINTS: LazyLock<SharedPoints> = LazyLock::new(|| Arc::new(Vec::new()));
 
 fn share_points(points: Vec<[f32; 2]>) -> SharedPoints {
-    if points.is_empty() { empty_points() } else { Arc::new(points) }
+    if points.is_empty() { Arc::clone(&EMPTY_POINTS) } else { Arc::new(points) }
 }
 
 #[derive(Debug, Clone)]
@@ -52,10 +52,12 @@ pub(in crate::visuals) struct SpectrumState {
     primary: SharedPoints,
     secondary: SharedPoints,
     key: u64,
+    geometry_revision: u64,
     peak: Option<PeakLabel>,
     effective_range: Option<(f32, f32)>,
     x_cache_key: (usize, u32, FrequencyScale),
     x_cache: Vec<f32>,
+    grid_labels: Vec<GridLabel>,
 }
 
 impl SpectrumState {
@@ -63,13 +65,15 @@ impl SpectrumState {
         Self {
             style: SpectrumSettings::default(),
             spectrum_palette: palettes::spectrum::COLORS,
-            primary: empty_points(),
-            secondary: empty_points(),
+            primary: Arc::clone(&EMPTY_POINTS),
+            secondary: Arc::clone(&EMPTY_POINTS),
             key: crate::visuals::next_key(),
+            geometry_revision: 0,
             peak: None,
             effective_range: None,
             x_cache_key: (0, 0, FrequencyScale::default()),
             x_cache: Vec::new(),
+            grid_labels: Vec::new(),
         }
     }
 
@@ -79,6 +83,7 @@ impl SpectrumState {
         if !settings.show_peak_label {
             self.peak = None;
         }
+        self.invalidate_geometry();
     }
 
     pub fn export_settings(&self) -> SpectrumSettings {
@@ -87,11 +92,21 @@ impl SpectrumState {
 
     pub fn set_palette(&mut self, palette: &[Color; 6]) {
         self.spectrum_palette = *palette;
+        self.invalidate_geometry();
+    }
+
+    pub fn reset_audio(&mut self) {
+        self.clear_visuals();
     }
 
     pub fn apply_snapshot(&mut self, snap: &SpectrumSnapshot) {
         let bins = snap.frequency_bins.len();
-        let (primary, secondary) = (primary_trace(&self.style), secondary_trace(&self.style));
+        let primary = (self.style.source != Channel::None).then_some(0);
+        let secondary = match (self.style.source, self.style.secondary_source) {
+            (_, Channel::None) => None,
+            (primary, secondary) if primary == secondary => Some(0),
+            _ => Some(1),
+        };
         if bins == 0
             || (primary.is_none() && secondary.is_none())
             || [primary, secondary]
@@ -132,12 +147,19 @@ impl SpectrumState {
         self.secondary = share_points(secondary_points);
         self.effective_range = Some((min_f, max_f));
         self.fade_peak(pk);
+        self.invalidate_geometry();
     }
 
     fn clear_visuals(&mut self) {
-        (self.primary, self.secondary) = (empty_points(), empty_points());
+        (self.primary, self.secondary) =
+            (Arc::clone(&EMPTY_POINTS), Arc::clone(&EMPTY_POINTS));
         self.effective_range = None;
         self.peak = None;
+        self.invalidate_geometry();
+    }
+
+    fn invalidate_geometry(&mut self) {
+        self.geometry_revision = self.geometry_revision.wrapping_add(1);
     }
 
     fn ensure_x_cache(&mut self, min_f: f32, max_f: f32, bins: &[f32]) {
@@ -154,6 +176,20 @@ impl SpectrumState {
             let x = scale.pos_of(min_f, max_f, f).clamp(0.0, 1.0);
             self.x_cache.push(if x.is_finite() { x } else { 0.0 });
         }
+        self.grid_labels.clear();
+        let exponents = min_f.max(1.0).log10().floor() as i32..=max_f.log10().ceil() as i32;
+        self.grid_labels.extend(
+            exponents
+                .flat_map(|exponent| {
+                    let base = 10f32.powi(exponent);
+                    [1, 2, 5].map(move |multiplier| (base * multiplier as f32, multiplier == 1))
+                })
+                .filter(|(frequency, _)| (min_f..=max_f).contains(frequency))
+                .map(|(frequency, major)| {
+                    let text = raw_text(fmt_freq(frequency), GRID_LABEL_SIZE, Size::INFINITE);
+                    (frequency, major, Paragraph::with_text(text.as_ref()))
+                }),
+        );
         self.x_cache_key = key;
     }
 
@@ -181,6 +217,8 @@ impl SpectrumState {
             Some(ni) => [ni.fmt_note_cents(), format!("{freq}   {m:.1} {unit}")],
             None => [freq, format!("{m:.1} {unit}")],
         };
+        let text = [(&text[0], 12.0), (&text[1], 10.0)]
+            .map(|(text, size)| Paragraph::with_text(raw_text(text, size, Size::INFINITE).as_ref()));
         Some((text, [x, y]))
     }
 
@@ -228,7 +266,7 @@ impl SpectrumState {
         let pal = theme.extended_palette();
 
         let visible = |show: bool, points: &SharedPoints| {
-            if show { Arc::clone(points) } else { empty_points() }
+            if show { Arc::clone(points) } else { Arc::clone(&EMPTY_POINTS) }
         };
         let peak = self.peak();
         let accent = self.spectrum_palette[5];
@@ -245,6 +283,7 @@ impl SpectrumState {
             normalized_points: primary,
             secondary_points: secondary,
             key: self.key,
+            geometry_revision: self.geometry_revision,
             line_color: color_to_rgba(with_alpha(pal.background.base.text, 0.92)),
             line_width: LINE_THICKNESS,
             secondary_line_color: color_to_rgba(with_alpha(pal.secondary.weak.text, 0.32)),
@@ -272,8 +311,8 @@ crate::visuals::visualization_widget!(Spectrum, SpectrumState, |this, r, th, b| 
         fill_rect(r, b, th.extended_palette().background.base.color);
         return;
     };
-    if let Some((min_f, max_f)) = state.effective_range.filter(|_| state.style.show_grid) {
-        r.with_layer(b, |r| draw_grid(r, th, b, min_f, max_f, &state.style));
+    if let Some(range) = state.effective_range.filter(|_| state.style.show_grid) {
+        r.with_layer(b, |r| draw_grid(r, th, b, range, &state));
     }
     r.draw_primitive(b, SpectrumPrimitive::new(params));
     if let Some((pk, layout)) = peak.zip(peak_layout) {
@@ -335,6 +374,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn theme_colors_invalidate_cached_geometry_without_audio_update() {
+        let mut state = SpectrumState::new();
+        state.style.source = Channel::Left;
+        state.primary = share_points(vec![[0.0, 0.0], [1.0, 1.0]]);
+        let bounds = Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 50.0,
+        };
+
+        let dark = state
+            .visual_params(bounds, &iced::Theme::Dark, None)
+            .unwrap();
+        let light = state
+            .visual_params(bounds, &iced::Theme::Light, None)
+            .unwrap();
+
+        assert_eq!(dark.geometry_revision, light.geometry_revision);
+        assert_ne!(dark.line_color, light.line_color);
+        assert_ne!(dark.geometry_fingerprint(), light.geometry_fingerprint());
+    }
+
+    #[test]
     fn secondary_trace_can_render_without_primary_source() {
         let trace = [vec![-20.0; 3], vec![-20.0; 3]];
         let mut state = SpectrumState::new();
@@ -367,27 +430,11 @@ mod tests {
     }
 }
 
-fn primary_trace(style: &SpectrumSettings) -> Option<usize> {
-    (style.source != Channel::None).then_some(0)
-}
-
-fn secondary_trace(style: &SpectrumSettings) -> Option<usize> {
-    match (style.source, style.secondary_source) {
-        (_, Channel::None) => None,
-        (primary, secondary) if primary == secondary => Some(0),
-        _ => Some(1),
-    }
-}
-
-fn weighting_slot(mode: SpectrumWeightingMode) -> usize {
-    match mode {
+fn trace_db(trace: &SpectrumTraceSnapshot, mode: SpectrumWeightingMode) -> &[f32] {
+    &trace[match mode {
         SpectrumWeightingMode::AWeighted => 0,
         SpectrumWeightingMode::Raw => 1,
-    }
-}
-
-fn trace_db(trace: &SpectrumTraceSnapshot, mode: SpectrumWeightingMode) -> &[f32] {
-    &trace[weighting_slot(mode)]
+    }]
 }
 
 fn build_single_points(
@@ -428,9 +475,8 @@ fn draw_grid(
     r: &mut iced::Renderer,
     th: &iced::Theme,
     b: Rectangle,
-    min_f: f32,
-    max_f: f32,
-    style: &SpectrumSettings,
+    (min_f, max_f): (f32, f32),
+    state: &SpectrumState,
 ) {
     if b.width <= 0.0 || b.height <= 0.0 {
         return;
@@ -441,6 +487,7 @@ fn draw_grid(
         return;
     }
 
+    let style = &state.style;
     let reverse = style.reverse_frequency;
     let pal = th.extended_palette();
     let txt = pal.background.base.text;
@@ -481,37 +528,32 @@ fn draw_grid(
     let ty = b.y + GRID_LABEL_GAP;
     let clamp_lo = b.x + GRID_LABEL_GAP;
     let clamp_hi = (b.x + b.width - GRID_LABEL_GAP - slot.width).max(clamp_lo);
-    let mults: [u32; 3] = if reverse { [5, 2, 1] } else { [1, 2, 5] };
     let mut last_right = f32::NEG_INFINITY;
+    let mut draw_label = |(frequency, major, text): &GridLabel| {
+        let Some(x) = tick_x(*frequency) else { return };
+        let (lc, tc) = if *major {
+            (major_lc, major_tc)
+        } else {
+            (minor_lc, minor_tc)
+        };
+        vline(r, x, b.y, b.height, lc);
 
-    for di in 0..=(end_exp - start_exp) {
-        let base = 10f32.powi(exp_of(di));
-        for &mult in &mults {
-            let f = base * mult as f32;
-            let Some(x) = tick_x(f) else { continue };
-            let (lc, tc) = if mult == 1 {
-                (major_lc, major_tc)
-            } else {
-                (minor_lc, minor_tc)
-            };
-
-            vline(r, x, b.y, b.height, lc);
-
-            let tx = (x - slot.width * 0.5).clamp(clamp_lo, clamp_hi);
-            if tx < last_right {
-                continue;
-            }
-            last_right = tx + slot.width + GRID_LABEL_GAP;
-
-            let mut text = make_text(fmt_freq(f), GRID_LABEL_SIZE, slot);
-            text.align_x = iced::alignment::Horizontal::Center.into();
-            r.fill_text(
-                text,
-                Point::new(tx + slot.width * 0.5, ty),
-                tc,
-                Rectangle::new(Point::new(tx, ty), slot),
-            );
+        let tx = (x - slot.width * 0.5).clamp(clamp_lo, clamp_hi);
+        if tx < last_right {
+            return;
         }
+        last_right = tx + slot.width + GRID_LABEL_GAP;
+        r.fill_paragraph(
+            text,
+            Point::new(tx + (slot.width - text.min_bounds().width) * 0.5, ty),
+            tc,
+            Rectangle::new(Point::new(tx, ty), slot),
+        );
+    };
+    if reverse {
+        state.grid_labels.iter().rev().for_each(&mut draw_label);
+    } else {
+        state.grid_labels.iter().for_each(draw_label);
     }
 }
 
@@ -530,8 +572,8 @@ fn point_to_normalized(b: Rectangle, p: Point) -> [f32; 2] {
 
 fn peak_label_layout(b: Rectangle, pk: &PeakLabel) -> Option<PeakLayout> {
     if pk.opacity < 0.01 || b.width < 8.0 || b.height < 8.0 { return None; }
-    let title = measure_text(&pk.text[0], 12.0);
-    let detail = measure_text(&pk.text[1], 10.0);
+    let title = pk.text[0].min_bounds();
+    let detail = pk.text[1].min_bounds();
     let [px, py] = pk.label_pos;
     let p = Point::new(b.x + b.width * px, b.y + b.height * (1.0 - py));
     let (w, h) = (
@@ -558,7 +600,7 @@ fn draw_peak(
     accent: Color,
 ) {
     let pal = th.extended_palette();
-    fill_snapped_bordered_rect(
+    fill_bordered_rect(
         r,
         layout.rect,
         with_alpha(pal.background.strong.color, 0.90 * pk.opacity),
@@ -567,16 +609,17 @@ fn draw_peak(
             width: 1.0,
             radius: 2.0.into(),
         },
+        true,
     );
-    r.fill_text(
-        make_text(&pk.text[0], 12.0, layout.title),
+    r.fill_paragraph(
+        &pk.text[0],
         layout.text,
         with_alpha(pal.background.base.text, pk.opacity),
         Rectangle::new(layout.text, layout.title),
     );
     let pos = Point::new(layout.text.x, layout.text.y + layout.title.height + 2.0);
-    r.fill_text(
-        make_text(&pk.text[1], 10.0, layout.detail),
+    r.fill_paragraph(
+        &pk.text[1],
         pos,
         with_alpha(pal.secondary.weak.text, 0.84 * pk.opacity),
         Rectangle::new(pos, layout.detail),

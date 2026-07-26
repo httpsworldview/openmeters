@@ -31,6 +31,10 @@ impl OscilloscopeState {
         }
     }
 
+    pub fn reset_audio(&mut self) {
+        self.snapshot = OscilloscopeSnapshot::default();
+    }
+
     pub fn update_view_settings(&mut self, settings: &OscilloscopeSettings, reset_snapshot: bool) {
         self.settings = settings.clone();
         self.settings.persistence = if settings.persistence.is_finite() {

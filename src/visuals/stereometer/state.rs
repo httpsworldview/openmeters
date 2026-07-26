@@ -3,21 +3,21 @@
 
 use super::processor::{BandCorrelation, StereometerSnapshot};
 use super::render::{
-    CORR_LABEL_GAP, CORR_LABEL_H, CORR_LABEL_W, StereometerParams, StereometerPrimitive,
+    CORR_LABEL_GAP, CORR_LABEL_H, CORR_LABEL_W, CORR_TRAIL_LEN, StereometerParams,
+    StereometerPrimitive,
 };
 use crate::persistence::settings::StereometerSettings;
 use crate::util::color::color_to_rgba;
 use crate::visuals::{
     options::{CorrelationMeterMode, CorrelationMeterSide, StereometerMode},
     palettes,
-    render::common::{fill_rect, make_text},
+    render::common::{fill_rect, text as raw_text},
 };
-use iced::advanced::text;
-use iced::alignment::{Horizontal, Vertical};
+use iced::advanced::{graphics::text::Paragraph, text};
+use iced::advanced::text::Paragraph as _;
 use iced::{Color, Point, Size};
 use std::{collections::VecDeque, sync::Arc};
 
-const TRAIL_LEN: usize = 32;
 const CORR_LABEL_SIZE: f32 = 10.0;
 
 fn tracks_band_correlation(s: &StereometerSettings) -> bool {
@@ -33,7 +33,9 @@ pub(in crate::visuals) struct StereometerState {
     band_trail: VecDeque<BandCorrelation>,
     pub(in crate::visuals) palette: [Color; 9],
     settings: StereometerSettings,
+    labels: [Paragraph; 3],
     key: u64,
+    grid_revision: u64,
 }
 
 impl StereometerState {
@@ -42,11 +44,15 @@ impl StereometerState {
         Self {
             points: Arc::default(),
             band_points: Default::default(),
-            corr_trail: VecDeque::with_capacity(TRAIL_LEN),
-            band_trail: VecDeque::with_capacity(TRAIL_LEN),
+            corr_trail: VecDeque::with_capacity(CORR_TRAIL_LEN),
+            band_trail: VecDeque::with_capacity(CORR_TRAIL_LEN),
             palette: palettes::stereometer::COLORS,
             settings: defaults,
+            labels: ["+1", "0", "-1"].map(|label| {
+                Paragraph::with_text(raw_text(label, CORR_LABEL_SIZE, Size::new(CORR_LABEL_W, CORR_LABEL_H)))
+            }),
             key: crate::visuals::next_key(),
+            grid_revision: 0,
         }
     }
 
@@ -65,14 +71,23 @@ impl StereometerState {
             rotation: s.rotation.clamp(-4, 4),
             ..s.clone()
         };
+        self.grid_revision = self.grid_revision.wrapping_add(1);
     }
 
     pub fn set_palette(&mut self, palette: &[Color; 9]) {
         self.palette = *palette;
+        self.grid_revision = self.grid_revision.wrapping_add(1);
     }
 
     pub fn export_settings(&self) -> StereometerSettings {
         self.settings.clone()
+    }
+
+    pub fn reset_audio(&mut self) {
+        self.points = Arc::default();
+        self.band_points = Default::default();
+        self.corr_trail.clear();
+        self.band_trail.clear();
     }
 
     pub fn apply_snapshot(&mut self, snap: StereometerSnapshot) {
@@ -90,18 +105,18 @@ impl StereometerState {
         self.corr_trail.push_front(snap.correlation);
         if tracks_band_correlation(&self.settings) {
             self.band_trail.push_front(snap.band_correlation);
-            self.band_trail.truncate(TRAIL_LEN);
+            self.band_trail.truncate(CORR_TRAIL_LEN);
         } else {
             self.band_trail.clear();
         }
-        self.corr_trail.truncate(TRAIL_LEN);
+        self.corr_trail.truncate(CORR_TRAIL_LEN);
     }
 
     pub fn visual_params(&self, bounds: iced::Rectangle) -> Option<StereometerParams> {
         if self.points.is_empty() { return None; }
         let s = &self.settings;
         let (corr_trail, band_trail) = match s.correlation_meter {
-            CorrelationMeterMode::Off => (Vec::new(), Default::default()),
+            CorrelationMeterMode::Off => (Default::default(), Default::default()),
             CorrelationMeterMode::SingleBand => {
                 (self.corr_trail.iter().copied().collect(), Default::default())
             }
@@ -116,6 +131,7 @@ impl StereometerState {
         };
         Some(StereometerParams {
             key: self.key,
+            grid_revision: self.grid_revision,
             bounds,
             points: self.points.clone(),
             band_points: self.band_points.clone(),
@@ -146,23 +162,17 @@ crate::visuals::visualization_widget!(Stereometer, StereometerState, |this, rend
 
     if let Some(meter) = meter.filter(|meter| meter.width > 0.0 && meter.height > 0.0) {
         let left = side == CorrelationMeterSide::Left;
-        let align = if left { Horizontal::Left } else { Horizontal::Right };
         let x = if left {
             meter.x + meter.width + CORR_LABEL_GAP
         } else {
             meter.x - CORR_LABEL_GAP
         };
         let color = theme.extended_palette().background.base.text;
-        for (label, value) in [("+1", 1.0), ("0", 0.0), ("-1", -1.0)] {
-            let mut text = make_text(
-                label,
-                CORR_LABEL_SIZE,
-                Size::new(CORR_LABEL_W, CORR_LABEL_H),
-            );
-            text.align_x = align.into();
-            text.align_y = Vertical::Center;
-            let y = StereometerPrimitive::correlation_y(meter, value);
-            text::Renderer::fill_text(renderer, text, Point::new(x, y), color, bounds);
+        for (label, value) in state.labels.iter().zip([1.0, 0.0, -1.0]) {
+            let size = label.min_bounds();
+            let x = if left { x } else { x - size.width };
+            let y = StereometerPrimitive::correlation_y(meter, value) - size.height * 0.5;
+            text::Renderer::fill_paragraph(renderer, label, Point::new(x, y), color, bounds);
         }
     }
 });

@@ -3,7 +3,8 @@
 
 use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
-use std::{collections::VecDeque, sync::Arc};
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 
 use crate::util::{
     audio::{DB_FLOOR, power_to_db, sanitize_negative_db},
@@ -12,7 +13,7 @@ use crate::util::{
 use crate::visuals::options::{WaveformColorMode, WaveformHistoryMode};
 use crate::visuals::render::common::sdf_primitive;
 use crate::visuals::render::common::{
-    ChannelLayout, ClipTransform, GeometryScratch, extend_filled_line, quad_vertices,
+    ChannelLayout, ClipTransform, GeometryScratch, extend_filled_line, quad_instance,
 };
 use crate::visuals::waveform::processor::{
     DEFAULT_BAND_DB_FLOOR, NUM_BANDS, WAVEFORM_SILENCE_AMPLITUDE, WaveColumn, WaveFrame,
@@ -31,7 +32,7 @@ pub struct WaveformParams {
     pub channels: usize,
     pub column_width: f32,
     pub columns: usize,
-    pub data: Arc<VecDeque<WaveFrame>>,
+    pub data: Arc<Mutex<VecDeque<WaveFrame>>>,
     pub preview: WaveformPreview,
     pub color_mode: WaveformColorMode,
     pub history_mode: WaveformHistoryMode,
@@ -116,9 +117,9 @@ fn with_fill_alpha(color: [f32; 4], alpha: f32) -> [f32; 4] {
 }
 
 impl WaveformPrimitive {
-    fn build_vertices(&self, viewport: &Viewport, scratch: &mut GeometryScratch) {
+    fn build_vertices(&self, _viewport: &Viewport, scratch: &mut GeometryScratch) {
         let params = &self.params;
-        let data = &params.data;
+        let data = crate::util::unpoison(params.data.lock());
         let (channels, columns) = (params.channels.max(1), params.columns.min(data.len()));
         let start = data.len().saturating_sub(columns);
         let preview_active = params.preview_active();
@@ -127,7 +128,7 @@ impl WaveformPrimitive {
             return;
         }
 
-        let clip = ClipTransform::from_viewport(viewport);
+        let clip = ClipTransform::from_bounds(params.bounds);
         let col_width = params.column_width.max(0.5);
         let preview_width = if preview_active { col_width } else { 0.0 };
         let right_edge = params.bounds.x + params.bounds.width;
@@ -147,10 +148,10 @@ impl WaveformPrimitive {
         let history_active = history.is_some() && columns >= 2;
         let floor = sanitize_negative_db(params.band_db_floor, DEFAULT_BAND_DB_FLOOR);
 
-        let vertices = &mut scratch.vertices;
+        let vertices = &mut scratch.instances;
         vertices.reserve(
-            channels * (columns + 1) * 6
-                + usize::from(history_active) * channels * NUM_BANDS * columns * 12,
+            channels * (columns + 1)
+                + usize::from(history_active) * channels * NUM_BANDS * columns * 2,
         );
 
         let static_color = (params.color_mode == WaveformColorMode::Static)
@@ -174,7 +175,7 @@ impl WaveformPrimitive {
             {
                 let color = static_color
                     .unwrap_or_else(|| with_fill_alpha(params.column_color(column), params.fill_alpha));
-                vertices.extend(quad_vertices(x0, y0, x1, y1, clip, color));
+                vertices.push(quad_instance(x0, y0, x1, y1, clip, color));
             }
         };
 
