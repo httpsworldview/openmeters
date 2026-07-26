@@ -104,10 +104,11 @@ rustup toolchain install 1.95
 rustup component add rustfmt clippy --toolchain 1.95
 ```
 
-You also need native development packages for PipeWire, Wayland/X11,
-xkbcommon, fontconfig/freetype, libclang, pkg-config, and Vulkan. The
-ignored live capture tests additionally need `pipewire`, `pw-cli`,
-`pw-link`, `pw-loopback`, `pw-dump`, and `wireplumber` executables.
+You also need native development packages for PipeWire/SPA 0.3.77 or
+newer, Wayland/X11, xkbcommon, fontconfig/freetype, libclang,
+pkg-config, and Vulkan. The ignored live capture tests additionally
+need `pipewire`, `pw-cli`, `pw-link`, `pw-loopback`, `pw-dump`, and
+`wireplumber` executables.
 
 ## Getting started
 

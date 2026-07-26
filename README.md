@@ -101,7 +101,7 @@ open an issue or pull request.
 OpenMeters requires:
 
 1. A graphical Linux session on X11 or Wayland.
-2. PipeWire installed and running.
+2. PipeWire 0.3.77 or newer, installed and running.
 3. Vulkan support through your distribution's Vulkan loader and driver
    stack.
 4. For pre-built release artifacts: x86_64 GNU/Linux with `glibc` >=
@@ -154,7 +154,7 @@ an issue and I will try to help.
    and native development packages for PipeWire, Wayland/X11,
    xkbcommon, fontconfig/freetype, and the Vulkan loader/development
    headers. PipeWire/SPA development headers must be from PipeWire
-   0.3.65 or newer. The recommended way to install Rust is
+   0.3.77 or newer. The recommended way to install Rust is
    [rustup](https://rustup.rs/). OpenMeters currently requires the
    Rust version declared in `Cargo.toml` or newer.
 2. Clone the repository:

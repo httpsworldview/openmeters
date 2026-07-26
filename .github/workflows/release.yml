@@ -26,7 +26,7 @@ jobs:
       GO_VERSION: 1.25.0 # nFPM v2.46.3 go directive
       GOTOOLCHAIN: local
       RELEASE_GLIBC_VERSION: 2.39
-      MIN_PIPEWIRE_VERSION: 0.3.65
+      MIN_PIPEWIRE_VERSION: 0.3.77
     outputs:
       version: ${{ steps.release.outputs.version }}
       package_release: ${{ steps.release.outputs.package_release }}
