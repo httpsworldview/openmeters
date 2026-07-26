@@ -30,19 +30,16 @@ open an issue or pull request.
 ### General
 
 - PipeWire audio capture
-  - Non-driving taps of playback applications already routed by
-    PipeWire, with persistent per-application enablement and a stable
-    internal 7.1 mix bus that preserves channel semantics through DSP.
+  - Per-application capture.
   - Direct device/default-sink capture with negotiated layouts of up
     to eight channels.
-  - OpenMeters does not move or rewrite existing application routes.
 - Windowing
   - Normal desktop windows on X11 or Wayland.
-  - Wayland layer-shell bar mode when the compositor exposes
+  - Wayland layer-shell "bar mode" when the compositor exposes
     `zwlr_layer_shell_v1`, anchored to the top or bottom of a given
     monitor.
   - Pop-out windows for individual visuals.
-  - A shared 30, 60, 120 FPS, or main-display frame cadence.
+  - Configurable 30, 60, 120 FPS, or vertical-synced frame cadence.
   - Window decoration toggle.
 - Appearance and persistence
   - Configurable RGBA background color.
