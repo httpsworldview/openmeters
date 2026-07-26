@@ -3,7 +3,7 @@
 use super::{lossy, palette::ColorSetting, visuals::VisualSettings};
 use crate::domain::routing::{CaptureConfig, CaptureMode, DeviceSelection, StreamIdentity};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, time::Duration};
 
 const MAIN_WINDOW_DEFAULT_WIDTH: u32 = 420;
 const MAIN_WINDOW_DEFAULT_HEIGHT: u32 = 520;
@@ -17,6 +17,24 @@ pub fn clamp_bar_height(height: u32) -> u32 {
 }
 
 crate::macros::choice_enum!(all pub enum BarAlignment { #[default] Top => "Top", Bottom => "Bottom" });
+crate::macros::choice_enum!(all pub enum VisualFrameRate {
+    Fps30 => "30 FPS",
+    #[default] Fps60 => "60 FPS",
+    Fps120 => "120 FPS",
+    Display => "Match main display",
+});
+
+impl VisualFrameRate {
+    pub const fn interval(self) -> Option<Duration> {
+        let fps = match self {
+            Self::Fps30 => 30,
+            Self::Fps60 => 60,
+            Self::Fps120 => 120,
+            Self::Display => return None,
+        };
+        Some(Duration::from_nanos(1_000_000_000_u64.div_ceil(fps)))
+    }
+}
 
 crate::macros::default_struct! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,6 +61,7 @@ crate::macros::default_struct! {
 #[serde(default)]
 pub struct UiSettings {
     pub visuals: VisualSettings,
+    pub visual_frame_rate: VisualFrameRate,
     #[serde(skip_serializing)]
     pub background_color: Option<ColorSetting>,
     pub decorations: bool,
@@ -94,7 +113,8 @@ impl UiSettings {
                 });
             }
             lossy::fields!(map, out, "settings";
-                background_color, decorations, capture_mode, last_device_name, disabled_streams, theme
+                visual_frame_rate, background_color, decorations, capture_mode, last_device_name,
+                disabled_streams, theme
             );
         })
     }
@@ -105,6 +125,19 @@ mod tests {
     use super::super::visuals::{PopoutWindowSettings, SpectrumSettings};
     use super::*;
     use crate::domain::visuals::VisualKind;
+
+    #[test]
+    fn visual_frame_rate_defaults_to_60_fps() {
+        let default = UiSettings::from_json_lossy("{}").unwrap().visual_frame_rate;
+        let display = UiSettings::from_json_lossy(r#"{"visual_frame_rate":"display"}"#)
+            .unwrap()
+            .visual_frame_rate;
+        assert_eq!(default, VisualFrameRate::Fps60);
+        assert_eq!(display, VisualFrameRate::Display);
+        assert_eq!(display.label(), "Match main display");
+        assert_eq!(default.interval(), Some(Duration::from_nanos(16_666_667)));
+        assert_eq!(display.interval(), None);
+    }
 
     #[test]
     fn persisted_container_defaults_are_stable() {
@@ -154,6 +187,7 @@ mod tests {
     fn lossy_value_ignores_invalid_fields_at_their_scope() {
         let settings = UiSettings::from_value_lossy(serde_json::json!({
             "decorations": true,
+            "visual_frame_rate": "not_a_rate",
             "capture_mode": "not_a_mode",
             "main_window": {
                 "width": 640,
@@ -194,6 +228,7 @@ mod tests {
         }));
 
         assert!(settings.decorations);
+        assert_eq!(settings.visual_frame_rate, VisualFrameRate::Fps60);
         assert_eq!(settings.capture_mode, CaptureMode::default());
         assert_eq!(settings.main_window.width, 640);
         assert_eq!(settings.main_window.height, MAIN_WINDOW_DEFAULT_HEIGHT);

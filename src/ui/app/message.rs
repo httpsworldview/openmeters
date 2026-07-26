@@ -20,8 +20,8 @@ use std::time::Instant;
 pub(super) enum Message {
     Config(ConfigMessage),
     Visuals(VisualsMessage),
-    Frame(Instant),
     Tick,
+    Watchdog(u64),
     BarOutputResolved(window::Id, Option<OutputSnapshot>),
     ToggleConfig,
     TogglePause,
@@ -102,7 +102,14 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
             let bar_task = app.handle_bar_config_message(&config_msg);
             let theme_changed = matches!(&config_msg, ConfigMessage::ThemeChanged(_));
             let topology_changed = matches!(&config_msg, ConfigMessage::VisualToggled { .. });
+            let frame_rate = match &config_msg {
+                ConfigMessage::VisualFrameRateChanged(rate) => Some(*rate),
+                _ => None,
+            };
             app.config_page.update(config_msg);
+            if let Some(rate) = frame_rate {
+                app.frames.borrow_mut().set_rate(rate);
+            }
             if topology_changed {
                 app.sync_meter_activity();
             }
@@ -142,12 +149,12 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
             app.exit_warning_until = Some(Instant::now() + TOAST_DISPLAY_DURATION);
             Task::none()
         }
-        Message::Frame(now) => {
-            app.frame(now);
-            Task::none()
-        }
         Message::Tick => {
             app.tick();
+            Task::none()
+        }
+        Message::Watchdog(generation) => {
+            app.frames.borrow_mut().watchdog(generation, Instant::now());
             Task::none()
         }
         Message::BarOutputResolved(id, Some(snapshot))
@@ -202,5 +209,5 @@ pub(super) fn view(app: &UiApp, window_id: window::Id) -> Element<'_, Message> {
     let Some(popout) = app.popout_windows.get(&window_id) else {
         return fill(text("")).into();
     };
-    popout.view().map(Message::Visuals)
+    app.with_frame_clock(window_id, popout.view().map(Message::Visuals))
 }

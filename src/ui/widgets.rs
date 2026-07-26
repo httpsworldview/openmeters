@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
+pub(super) mod frame_clock;
 pub(super) mod palette_editor;
 pub(super) mod pane_grid;
 pub(super) mod scroll_glow;

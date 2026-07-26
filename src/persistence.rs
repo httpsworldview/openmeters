@@ -23,7 +23,7 @@ pub mod settings {
     pub use super::palette::{HasPalette, PaletteSettings};
     pub use super::schema::{
         BAR_MAX_HEIGHT, BAR_MIN_HEIGHT, BarAlignment, BarSettings, MainWindowSettings,
-        clamp_bar_height,
+        VisualFrameRate, clamp_bar_height,
     };
     pub use super::store::SettingsHandle;
     pub(crate) use super::theme::canonical_theme_name;

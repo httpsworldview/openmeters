@@ -5,7 +5,7 @@ use crate::domain::routing::{CaptureMode, DeviceSelection, StreamIdentity};
 use crate::infra::pipewire::{ApplicationView, CaptureControl, CaptureView};
 use crate::persistence::settings::{
     BAR_MAX_HEIGHT, BAR_MIN_HEIGHT, BUILTIN_THEME, BarAlignment, SettingsHandle, ThemeChoice,
-    ThemeFile, ThemeOrigin, canonical_theme_name,
+    ThemeFile, ThemeOrigin, VisualFrameRate, canonical_theme_name,
 };
 use crate::ui::theme;
 use crate::ui::widgets::palette_editor::{PaletteEditor, PaletteEvent};
@@ -59,6 +59,7 @@ pub enum ConfigMessage {
     CaptureModeChanged(CaptureMode),
     CaptureDeviceChanged(DeviceSelection),
     BgPalette(PaletteEvent),
+    VisualFrameRateChanged(VisualFrameRate),
     DecorationsToggled(bool),
     BarModeToggled(bool),
     BarAlignmentChanged(BarAlignment),
@@ -192,6 +193,9 @@ impl ConfigPage {
                     self.window_themes = theme::window_themes(color);
                     self.refresh_theme_choices_if_needed();
                 }
+            }
+            ConfigMessage::VisualFrameRateChanged(rate) => {
+                self.settings.update(|s| s.data.visual_frame_rate = rate);
             }
             ConfigMessage::DecorationsToggled(v) => {
                 self.settings.update(|s| s.data.decorations = v);
@@ -335,10 +339,17 @@ impl ConfigPage {
     }
 
     fn render_global_card(&self) -> container::Container<'_, ConfigMessage> {
-        use ConfigMessage::{BgPalette, DecorationsToggled};
+        use ConfigMessage::{BgPalette, DecorationsToggled, VisualFrameRateChanged};
+        let frame_rate = self.settings.borrow().data.visual_frame_rate;
         let decorations = self.settings.borrow().data.decorations;
         let content = column![
             self.bg_palette.view().map(BgPalette),
+            pick(
+                "Visual frame rate",
+                VisualFrameRate::ALL,
+                frame_rate,
+                VisualFrameRateChanged,
+            ),
             toggle("Window decorations", decorations, DecorationsToggled),
         ]
         .spacing(theme::SECTION_GAP);
