@@ -537,7 +537,7 @@ impl iced_wgpu::primitive::Primitive for StereometerPrimitive {
         );
 
         let grid_key = self.grid_key();
-        let grid_fingerprint = [self.params.grid_revision, 0];
+        let grid_fingerprint = [self.params.grid_revision, 0, 0, 0, 0, 0];
         if !pipeline
             .inner
             .touch_if_current(grid_key, grid_fingerprint)

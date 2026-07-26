@@ -570,9 +570,11 @@ fn create_sdf_pipeline(
     )
 }
 
+pub type GeometryFingerprint = [u64; 6];
+
 struct CachedInstance {
     buffer: InstanceBuffer,
-    fingerprint: Option<[u64; 2]>,
+    fingerprint: Option<GeometryFingerprint>,
     last_used: u64,
 }
 
@@ -596,7 +598,7 @@ impl<K: std::hash::Hash + Eq + Copy> SdfPipeline<K> {
         }
     }
 
-    pub fn touch_if_current(&mut self, key: K, fingerprint: [u64; 2]) -> bool {
+    pub fn touch_if_current(&mut self, key: K, fingerprint: GeometryFingerprint) -> bool {
         let last_used = self.cache.frame;
         self.instances.get_mut(&key).is_some_and(|entry| {
             let current = entry.fingerprint == Some(fingerprint);
@@ -613,7 +615,7 @@ impl<K: std::hash::Hash + Eq + Copy> SdfPipeline<K> {
         queue: &wgpu::Queue,
         label: &'static str,
         key: K,
-        fingerprint: Option<[u64; 2]>,
+        fingerprint: Option<GeometryFingerprint>,
         instances: &[SdfInstance],
     ) {
         let (frame, threshold) = self.cache.advance();

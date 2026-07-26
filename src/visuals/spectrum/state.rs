@@ -374,6 +374,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn theme_colors_invalidate_cached_geometry_without_audio_update() {
+        let mut state = SpectrumState::new();
+        state.style.source = Channel::Left;
+        state.primary = share_points(vec![[0.0, 0.0], [1.0, 1.0]]);
+        let bounds = Rectangle {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 50.0,
+        };
+
+        let dark = state
+            .visual_params(bounds, &iced::Theme::Dark, None)
+            .unwrap();
+        let light = state
+            .visual_params(bounds, &iced::Theme::Light, None)
+            .unwrap();
+
+        assert_eq!(dark.geometry_revision, light.geometry_revision);
+        assert_ne!(dark.line_color, light.line_color);
+        assert_ne!(dark.geometry_fingerprint(), light.geometry_fingerprint());
+    }
+
+    #[test]
     fn secondary_trace_can_render_without_primary_source() {
         let trace = [vec![-20.0; 3], vec![-20.0; 3]];
         let mut state = SpectrumState::new();

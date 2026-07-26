@@ -30,16 +30,19 @@ open an issue or pull request.
 ### General
 
 - PipeWire audio capture
-  - Per-application capture through a PipeWire virtual sink.
-  - Device/default-sink capture.
-  - Application routes touched by OpenMeters are reset on clean
-    shutdown.
+  - Non-driving taps of playback applications already routed by
+    PipeWire, with persistent per-application enablement and a stable
+    internal 7.1 mix bus that preserves channel semantics through DSP.
+  - Direct device/default-sink capture with negotiated layouts of up
+    to eight channels.
+  - OpenMeters does not move or rewrite existing application routes.
 - Windowing
   - Normal desktop windows on X11 or Wayland.
   - Wayland layer-shell bar mode when the compositor exposes
     `zwlr_layer_shell_v1`, anchored to the top or bottom of a given
     monitor.
   - Pop-out windows for individual visuals.
+  - A shared 30, 60, 120 FPS, or main-display frame cadence.
   - Window decoration toggle.
 - Appearance and persistence
   - Configurable RGBA background color.
@@ -74,7 +77,8 @@ open an issue or pull request.
   - Adjustable color map, stop positions, and stop spreads.
 - **Spectrum analyzer**
   - A multitude of window types, lengths, and hop sizes.
-  - Selectable primary and secondary source: left, right, mid, side, or none.
+  - Selectable primary and secondary source: left, right, mid, side,
+    or none.
   - Raw or IEC 61672-1 A-weighted display.
   - Peak label with frequency, note, and level.
   - No averaging, exponential averaging, or peak hold.
@@ -214,8 +218,8 @@ when `XDG_CONFIG_HOME` is unset.
 
 `settings.json` is intentionally editable. GUI ranges are not hard
 limits; processors normalize only the bare minimum necessary for
-runtime. Unsupported keys or structurally invalid values are logged and
-ignored at the narrowest practical scope.
+runtime. Unsupported keys or structurally invalid values are logged
+and ignored at the narrowest practical scope.
 
 Invalid JSON syntax is ignored and default settings are used for that
 run. Your configuration file will not be overwritten unless you change
@@ -278,8 +282,7 @@ out.
 - **Corrscope** (<https://github.com/corrscope/corrscope>) was a key
   reference for correlation-triggered oscilloscope stability.
 - **EasyEffects** (<https://github.com/wwmm/easyeffects>) has been a
-  valuable reference, especially for the virtual-sink approach to
-  per-application capture.
+  valuable reference for PipeWire integration and audio processing.
 - **Ardura's Scrolloscope** (<https://github.com/ardura/Scrollscope>)
 - **Tim Strasser's Oszilloskop**
   (<https://github.com/timstr/oszilloskop>)
@@ -322,8 +325,7 @@ samples used by the transform**.
 
 Some other applications, including MiniMeters and Wave Candy, label
 the visible positive-frequency bins instead. This is because for
-real-valued audio, only the 0 Hz..Nyquist half of the FFT is
-unique.
+real-valued audio, only the 0 Hz..Nyquist half of the FFT is unique.
 
 If you are matching settings from MiniMeters or Wave Candy, use
 approximately double their displayed band count as the FFT size within

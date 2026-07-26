@@ -105,7 +105,9 @@ rustup component add rustfmt clippy --toolchain 1.95
 ```
 
 You also need native development packages for PipeWire, Wayland/X11,
-xkbcommon, fontconfig/freetype, libclang, pkg-config, and Vulkan.
+xkbcommon, fontconfig/freetype, libclang, pkg-config, and Vulkan. The
+ignored live capture tests additionally need `pipewire`, `pw-cli`,
+`pw-link`, `pw-loopback`, `pw-dump`, and `wireplumber` executables.
 
 ## Getting started
 
@@ -138,6 +140,13 @@ cargo clippy --workspace --locked --all-targets -- -D warnings
 cargo test --workspace --locked --all-targets
 ```
 
+The PipeWire back-end also has ignored integration tests:
+
+```bash
+cargo test --workspace --locked infra::pipewire::live_tests -- \
+    --ignored --nocapture --test-threads=1
+```
+
 Please run the same checks before committing. For documentation
 changes, please check formatting, links, examples, and spelling.
 
@@ -154,15 +163,16 @@ Debian/RPM release number.
 ## Repository layout
 
 ```text
-src/domain.rs              shared application enums and routing/visual identifiers
+src/domain.rs              shared capture policy and visual identifiers
 src/dsp.rs                 AudioBlock and small DSP types
+src/meter.rs               capture timeline, silence handling, and DSP batching
 src/util/                  low-level audio math, color, musical, and telemetry helpers
-src/infra/pipewire/        PipeWire registry monitor, routing, virtual sink, tap.
+src/infra/pipewire/        owned PipeWire graph, tap policy, stream, and audio transport
 src/persistence/           settings schema, lossy loading, store, themes, visual config
 src/visuals.rs             visual module declarations, option enums, widget macros
 src/visuals/               visual processors, state, render primitives, palettes, registry
 src/visuals/render/        shared render helpers and WGSL shaders
-src/ui/                    iced app, subscriptions, pages, widgets, theme, windowing
+src/ui/                    iced app, pages, widgets, frame driver, theme, windowing
 src/main.rs                application wiring and shutdown flow
 packaging/                 Debian/RPM/tarball packaging things
 ```
@@ -171,11 +181,11 @@ Keep dependencies between these areas shallow and one-way where
 possible:
 
 - `domain`, `dsp`, and `util` should not depend on UI or PipeWire.
-- `infra` should stay focused on PipeWire integration and routing.
+- `infra` should stay focused on PipeWire graph ownership and capture.
 - `persistence` owns serialized settings and theme file behavior.
 - `visuals` owns processor/state/render code and the visual registry.
-- `ui` composes application state, settings handles, subscriptions,
-  windows, pages, and widgets.
+- `ui` composes application state, settings handles, windows, pages,
+  and widgets.
 
 ## Working on visuals
 

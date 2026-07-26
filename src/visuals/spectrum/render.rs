@@ -10,12 +10,16 @@ use crate::visuals::render::common::sdf_primitive;
 use crate::util::color::{rgba_with_alpha, sample_rgba_gradient};
 use crate::util::lerp;
 use crate::visuals::render::common::{
-    ClipTransform, GeometryScratch, SdfInstance, baseline_segment_instance,
+    ClipTransform, GeometryFingerprint, GeometryScratch, SdfInstance, baseline_segment_instance,
     decimate_finite_ordered_line_in_place, dot_instance, extend_aa_line_list,
     gradient_quad_instance, line_instance, quad_instance,
 };
 
 const MIN_BAR_COUNT: usize = 4;
+
+fn pack_f32_pair(first: f32, second: f32) -> u64 {
+    u64::from(first.to_bits()) << 32 | u64::from(second.to_bits())
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct SpectrumPeakParams {
@@ -42,6 +46,21 @@ pub struct SpectrumParams {
     pub bar_count: usize,
     pub bar_gap: f32,
     pub peak: Option<SpectrumPeakParams>,
+}
+
+impl SpectrumParams {
+    pub(super) fn geometry_fingerprint(&self) -> GeometryFingerprint {
+        let line = self.line_color;
+        let secondary = self.secondary_line_color;
+        [
+            self.geometry_revision,
+            pack_f32_pair(self.bounds.width, self.bounds.height),
+            pack_f32_pair(line[0], line[1]),
+            pack_f32_pair(line[2], line[3]),
+            pack_f32_pair(secondary[0], secondary[1]),
+            pack_f32_pair(secondary[2], secondary[3]),
+        ]
+    }
 }
 
 impl SpectrumPrimitive {
@@ -261,9 +280,5 @@ sdf_primitive!(
     "Spectrum",
     TriangleList,
     |self| self.params.key,
-    [
-        self.params.geometry_revision,
-        u64::from(self.params.bounds.width.to_bits()) << 32
-            | u64::from(self.params.bounds.height.to_bits()),
-    ]
+    self.params.geometry_fingerprint()
 );
