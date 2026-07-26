@@ -112,7 +112,9 @@ where
 {
     row![
         clipped_text(label, theme::BODY_TEXT_SIZE).width(Shrink),
-        pick_list(options.into(), Some(selected), on_select).width(Fill),
+        pick_list(options.into(), Some(selected), on_select)
+            .text_size(theme::BODY_TEXT_SIZE)
+            .width(Fill),
     ]
     .spacing(theme::CONTROL_GAP)
     .align_y(Vertical::Center)
@@ -127,7 +129,7 @@ pub(super) fn toggle<'a, M: 'a>(
     toggler(value)
         .label(label)
         .spacing(4)
-        .text_size(11)
+        .text_size(theme::BODY_TEXT_SIZE)
         .on_toggle(on_toggle)
 }
 

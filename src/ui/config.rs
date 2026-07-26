@@ -10,9 +10,12 @@ use crate::persistence::settings::{
 use crate::ui::theme;
 use crate::ui::widgets::palette_editor::{PaletteEditor, PaletteEvent};
 use crate::ui::widgets::scroll_glow::ScrollGlow;
-use crate::ui::widgets::{SliderRange, action_button, card, pick, selectable_button, toggle};
+use crate::ui::widgets::{
+    SliderRange, action_button, card, pick, selectable_button, split, toggle,
+};
 use crate::visuals::registry::{VisualKind, VisualManagerHandle, VisualSlotSnapshot};
-use iced::widget::{Column, Row, column, container, pick_list, row, text, text_input};
+use iced::alignment::Vertical;
+use iced::widget::{Column, column, container, pick_list, row, text, text_input};
 use iced::{Element, Length};
 use iced_layershell::actions::OutputSnapshot;
 use std::sync::Arc;
@@ -228,13 +231,13 @@ impl ConfigPage {
         let mut content = column![
             self.render_capture_card(),
             self.render_visuals_card(&snapshot),
-            self.render_theme_card(),
             self.render_global_card(),
         ]
         .spacing(theme::SECTION_GAP);
         if self.bar_supported {
             content = content.push(self.render_bar_card());
         }
+        content = content.push(self.render_appearance_card());
         self.scroll.vertical(content, ConfigMessage::Scrolled)
     }
 
@@ -338,25 +341,7 @@ impl ConfigPage {
         .spacing(6)
     }
 
-    fn render_global_card(&self) -> container::Container<'_, ConfigMessage> {
-        use ConfigMessage::{BgPalette, DecorationsToggled, VisualFrameRateChanged};
-        let frame_rate = self.settings.borrow().data.visual_frame_rate;
-        let decorations = self.settings.borrow().data.decorations;
-        let content = column![
-            self.bg_palette.view().map(BgPalette),
-            pick(
-                "Visual frame rate",
-                VisualFrameRate::ALL,
-                frame_rate,
-                VisualFrameRateChanged,
-            ),
-            toggle("Window decorations", decorations, DecorationsToggled),
-        ]
-        .spacing(theme::SECTION_GAP);
-        card("Global", content)
-    }
-
-    fn render_theme_card(&self) -> container::Container<'_, ConfigMessage> {
+    fn render_appearance_card(&self) -> container::Container<'_, ConfigMessage> {
         let active = self.settings.borrow().active_theme().to_owned();
         let selected = self.theme_choices.iter().find(|c| c.name == active);
         let is_builtin = selected.is_some_and(|c| c.origin == ThemeOrigin::BuiltIn);
@@ -388,8 +373,23 @@ impl ConfigPage {
         let content = form!(
             row![picker, save_btn].spacing(theme::CONTROL_GAP);
             row![save_as_input, save_as_btn].spacing(theme::CONTROL_GAP);
+            self.bg_palette.view().map(ConfigMessage::BgPalette);
         );
-        card("Theme", content)
+        card("Appearance", content)
+    }
+
+    fn render_global_card(&self) -> container::Container<'_, ConfigMessage> {
+        use ConfigMessage::{
+            DecorationsToggled as Decorations, VisualFrameRateChanged as FrameRate,
+        };
+        let data = &self.settings.borrow().data;
+        let frame_rate = data.visual_frame_rate;
+        let frame_rate = pick("Frame rate", VisualFrameRate::ALL, frame_rate, FrameRate);
+        let decorations = toggle("Window decorations", data.decorations, Decorations);
+        card(
+            "Global",
+            split(frame_rate, decorations).align_y(Vertical::Center),
+        )
     }
 
     fn apply_theme(&mut self, name: &str) {
@@ -462,11 +462,10 @@ impl ConfigPage {
         use ConfigMessage::{
             BarAlignmentChanged as Alignment, BarHeightChanged, BarModeToggled, BarMonitorChanged,
         };
-        let bar = self.settings.borrow().data.bar.clone();
-        let mut content = column![toggle("Bar mode", bar.enabled, BarModeToggled)].spacing(10);
+        let bar = &self.settings.borrow().data.bar;
+        let mut content = form!(toggle("Enabled", bar.enabled, BarModeToggled););
         if bar.enabled {
             let height = bar.height.clamp(BAR_MIN_HEIGHT, BAR_MAX_HEIGHT);
-            let height_range = SliderRange::new(BAR_MIN_HEIGHT as f32, BAR_MAX_HEIGHT as f32, 1.0);
             let monitor = row![
                 text("Monitor").size(theme::BODY_TEXT_SIZE),
                 pick_list(
@@ -479,8 +478,10 @@ impl ConfigPage {
                 .width(Length::Fill),
             ]
             .spacing(theme::CONTROL_GAP)
+            .align_y(Vertical::Center)
             .width(Length::Fill);
             let alignment = pick("Alignment", BarAlignment::ALL, bar.alignment, Alignment);
+            let height_range = SliderRange::new(BAR_MIN_HEIGHT as f32, BAR_MAX_HEIGHT as f32, 1.0);
             let height_slider = slider!(
                 "Height",
                 height as f32,
@@ -488,7 +489,7 @@ impl ConfigPage {
                 |value| BarHeightChanged(value.round() as u32),
                 format!("{height} px")
             );
-            content = content.push(monitor).push(alignment).push(height_slider);
+            content = content.push(split(monitor, alignment)).push(height_slider);
         }
         card("Bar Mode", content)
     }
@@ -497,9 +498,8 @@ impl ConfigPage {
         &self,
         snapshot: &[VisualSlotSnapshot],
     ) -> container::Container<'_, ConfigMessage> {
-        let enabled = snapshot.iter().filter(|slot| slot.enabled).count();
         card(
-            format!("Visual Modules ({enabled}/{})", snapshot.len()),
+            "Visuals",
             render_toggle_grid(snapshot, |slot| {
                 (
                     slot.kind.label(),
@@ -561,19 +561,16 @@ fn render_toggle_grid<'a, T, F>(items: &[T], mut project: F) -> Column<'a, Confi
 where
     for<'b> F: FnMut(&'b T) -> (&'b str, &'static str, bool, ConfigMessage),
 {
-    let mut grid = Column::new().spacing(6);
-    for chunk in items.chunks(GRID_COLUMNS) {
-        let mut row = Row::new().spacing(6);
-        for item in chunk {
+    column(items.chunks(GRID_COLUMNS).map(|chunk| {
+        row(chunk.iter().map(|item| {
             let (name, suffix, enabled, message) = project(item);
-            let label = format!(
-                "{name}{suffix} ({})",
-                if enabled { "enabled" } else { "disabled" }
-            );
-            row =
-                row.push(selectable_button(label, enabled, message).width(Length::FillPortion(1)));
-        }
-        grid = grid.push(row);
-    }
-    grid
+            let state = if enabled { "enabled" } else { "disabled" };
+            selectable_button(format!("{name}{suffix} ({state})"), enabled, message)
+                .width(Length::FillPortion(1))
+                .into()
+        }))
+        .spacing(6)
+        .into()
+    }))
+    .spacing(6)
 }

@@ -243,7 +243,7 @@ when `XDG_CONFIG_HOME` is unset. Theme files own palettes and
 background color; `settings.json` stores the selected theme name and
 non-palette module settings.
 
-You can create and switch between themes in the **Theme** tab of the
+You can create and switch between themes in the **Appearance** section of the
 configuration page. Saving a theme refreshes the list of available
 themes, including any files that appeared in the theme directory while
 OpenMeters was running. The built-in theme is read-only in the UI and
