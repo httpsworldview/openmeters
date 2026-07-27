@@ -13,14 +13,17 @@ use iced::Color;
 use std::cell::Cell;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 const COLUMN_WIDTH_PIXELS: f32 = 1.0;
 const INITIAL_VIEW_COLUMNS: usize = 512;
+const SCROLL_CLOCK_TIMEOUT: Duration = Duration::from_millis(100);
 
 #[derive(Debug)]
 pub(in crate::visuals) struct WaveformState {
     data: Arc<Mutex<VecDeque<WaveFrame>>>,
     preview: WaveformPreview,
+    scroll: Cell<(Instant, f32)>,
     view_columns: Cell<usize>,
     pub(in crate::visuals) style: WaveformStyle,
     settings: WaveformSettings,
@@ -32,6 +35,7 @@ impl WaveformState {
         Self {
             data: Arc::new(Mutex::new(VecDeque::with_capacity(INITIAL_VIEW_COLUMNS))),
             preview: WaveformPreview::default(),
+            scroll: Cell::new((Instant::now(), 0.0)),
             view_columns: Cell::new(INITIAL_VIEW_COLUMNS),
             style: WaveformStyle::default(),
             settings: WaveformSettings::default(),
@@ -42,9 +46,18 @@ impl WaveformState {
     pub fn reset_audio(&mut self) {
         unpoison(self.data.lock()).clear();
         self.preview = WaveformPreview::default();
+        self.scroll.set((Instant::now(), 0.0));
     }
 
     pub fn apply_snapshot(&mut self, update: WaveformUpdate<'_>) {
+        if update.reset {
+            self.scroll
+                .set((Instant::now(), update.preview.progress));
+        } else {
+            let (last, offset) = self.scroll.get();
+            self.scroll
+                .set((last, offset - update.columns.len() as f32));
+        }
         self.preview = update.preview;
         if !update.reset && update.columns.is_empty() {
             return;
@@ -74,6 +87,19 @@ impl WaveformState {
     }
 
     pub fn visual_params(&self, bounds: iced::Rectangle) -> Option<WaveformParams> {
+        let now = Instant::now();
+        let (last, offset) = self.scroll.get();
+        let elapsed = now.saturating_duration_since(last);
+        let scroll_offset = if elapsed <= SCROLL_CLOCK_TIMEOUT {
+            (offset
+                + elapsed.as_secs_f32()
+                    * crate::util::finite_positive(self.settings.scroll_speed).unwrap_or(0.0))
+            .max(0.0)
+        } else {
+            self.preview.progress
+        };
+        self.scroll.set((now, scroll_offset));
+
         let needed = ((bounds.width / COLUMN_WIDTH_PIXELS).ceil() as usize)
             .clamp(1, MAX_COLUMN_CAPACITY);
         if bounds.width > 0.0 {
@@ -98,7 +124,10 @@ impl WaveformState {
             column_width: COLUMN_WIDTH_PIXELS,
             columns: needed,
             data: Arc::clone(&self.data),
-            preview: self.preview,
+            preview: WaveformPreview {
+                progress: scroll_offset,
+                ..self.preview
+            },
             color_mode: self.settings.color_mode,
             history_mode: self.settings.history_mode,
             band_db_floor: self.settings.band_db_floor,

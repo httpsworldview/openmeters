@@ -130,7 +130,6 @@ impl WaveformPrimitive {
 
         let clip = ClipTransform::from_bounds(params.bounds);
         let col_width = params.column_width.max(0.5);
-        let preview_width = if preview_active { col_width } else { 0.0 };
         let right_edge = params.bounds.x + params.bounds.width;
 
         let layout = ChannelLayout::new(
@@ -166,8 +165,7 @@ impl WaveformPrimitive {
 
         let column_x = |i: usize| -> f32 {
             let dist_steps = (columns - 1 - i) as f32;
-            (right_edge - preview_width - dist_steps * col_width - scroll_offset - col_width)
-                .floor()
+            right_edge - dist_steps * col_width - scroll_offset - col_width
         };
         let push_column = |vertices: &mut Vec<_>, center_y, x0, x1, column: WaveColumn| {
             if let Some((y0, y1)) =
@@ -189,8 +187,7 @@ impl WaveformPrimitive {
             }
 
             if let Some(preview_columns) = preview_columns {
-                let raw_last_x = right_edge - preview_width - scroll_offset;
-                let start_x = raw_last_x.floor();
+                let start_x = right_edge - scroll_offset;
                 let end_x = right_edge;
 
                 let ps = preview_columns[params.lanes[ch]];
