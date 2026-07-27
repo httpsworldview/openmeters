@@ -56,7 +56,7 @@ tempfile = "3.27.0"
 opt-level = 1
 
 [profile.release]
-lto = "thin"
+lto = "fat"
 codegen-units = 1
 opt-level = 3
 strip = true
