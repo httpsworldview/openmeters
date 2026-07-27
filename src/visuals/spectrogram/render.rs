@@ -171,9 +171,9 @@ impl Primitive for SpectrogramPrimitive {
                             while slot < visible && inst.slot_count(slot).min(stride) == stride {
                                 slot += 1;
                             }
-                            pass.draw(0..6, first..slot * stride);
+                            pass.draw(0..4, first..slot * stride);
                         } else {
-                            pass.draw(0..6, first..first + count);
+                            pass.draw(0..4, first..first + count);
                             slot += 1;
                         }
                     }
@@ -183,7 +183,7 @@ impl Primitive for SpectrogramPrimitive {
                 pass.set_pipeline(&pipeline.resolve_pipeline);
                 pass.set_bind_group(0, &accum.bg, &[]);
                 pass.set_vertex_buffer(0, r.quad_buf.slice(..));
-                pass.draw(0..6, 0..1);
+                pass.draw(0..4, 0..1);
             }
             ColumnKind::Classic => {
                 if inst.points_per_col < 2 {
@@ -193,7 +193,7 @@ impl Primitive for SpectrogramPrimitive {
                 pass.set_pipeline(&pipeline.classic_pipeline);
                 pass.set_bind_group(0, &r.ring.bg, &[]);
                 pass.set_vertex_buffer(0, r.quad_buf.slice(..));
-                pass.draw(0..6, 0..1);
+                pass.draw(0..4, 0..1);
             }
         }
     }
@@ -201,13 +201,11 @@ impl Primitive for SpectrogramPrimitive {
 
 type QuadCorner = [f32; 2];
 
-const UNIT_QUAD: [QuadCorner; 6] = [
-    [-0.5, -0.5],
-    [0.5, -0.5],
-    [0.5, 0.5],
-    [-0.5, -0.5],
-    [0.5, 0.5],
+const UNIT_QUAD: [QuadCorner; 4] = [
     [-0.5, 0.5],
+    [-0.5, -0.5],
+    [0.5, 0.5],
+    [0.5, -0.5],
 ];
 
 fn quad_corner_layout() -> wgpu::VertexBufferLayout<'static> {
@@ -418,7 +416,7 @@ impl primitive::Pipeline for Pipeline {
                 fragment_entry: "fs_accum",
                 buffers: &[quad_corner_layout(), point_instance_layout()],
                 bind_group_layouts: &[&splat_bgl],
-                topology: wgpu::PrimitiveTopology::TriangleList,
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
                 blend: Some(wgpu::BlendState {
                     color: wgpu::BlendComponent {
                         src_factor: wgpu::BlendFactor::One,
@@ -444,7 +442,7 @@ impl primitive::Pipeline for Pipeline {
                 fragment_entry: "fs_resolve",
                 buffers: &[quad_corner_layout()],
                 bind_group_layouts: &[&resolve_bgl],
-                topology: wgpu::PrimitiveTopology::TriangleList,
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
                 blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                 write_mask: wgpu::ColorWrites::ALL,
             },
@@ -459,7 +457,7 @@ impl primitive::Pipeline for Pipeline {
                 fragment_entry: "fs_classic",
                 buffers: &[quad_corner_layout()],
                 bind_group_layouts: &[&classic_bgl],
-                topology: wgpu::PrimitiveTopology::TriangleList,
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
                 blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                 write_mask: wgpu::ColorWrites::ALL,
             },

@@ -161,12 +161,6 @@ impl TruePeakMeter {
     fn take_peak(&mut self) -> f32 {
         std::mem::take(&mut self.peak)
     }
-
-    fn clear(&mut self) {
-        self.delay.fill(0.0);
-        self.write = self.delay_len;
-        self.peak = 0.0;
-    }
 }
 
 #[derive(Debug)]
@@ -195,33 +189,14 @@ impl KWeightingFilter {
     fn flush_denormals(&mut self) {
         self.z.iter_mut().for_each(flush_denormal_f64);
     }
-
-    fn clear(&mut self) {
-        self.z = [0.0; 4];
-    }
 }
 
-#[derive(Debug)]
+type ActiveChannel = (WindowedMeans<1, 4>, KWeightingFilter, TruePeakMeter);
+
+#[derive(Debug, Default)]
 struct ChannelState {
-    windows: WindowedMeans<1, 4>,
-    filter: KWeightingFilter,
-    true_peak: TruePeakMeter,
-}
-
-impl ChannelState {
-    fn new(capacities: [usize; 4], sample_rate: f64) -> Self {
-        Self {
-            windows: WindowedMeans::new(capacities),
-            filter: KWeightingFilter::new(sample_rate),
-            true_peak: TruePeakMeter::new(sample_rate),
-        }
-    }
-
-    fn clear(&mut self) {
-        self.windows.clear();
-        self.filter.clear();
-        self.true_peak.clear();
-    }
+    active: Option<ActiveChannel>,
+    silent_frames: usize,
 }
 
 pub const MAX_CHANNELS: usize = 8;
@@ -237,7 +212,7 @@ fn channel_weight(position: ChannelPosition) -> f64 {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct LoudnessSnapshot {
     pub short_term_loudness: f32,
     pub momentary_loudness: f32,
@@ -288,7 +263,7 @@ impl LoudnessProcessor {
     }
 
     pub fn reset_audio(&mut self) {
-        self.channels.iter_mut().for_each(ChannelState::clear);
+        self.channels.iter_mut().for_each(|channel| *channel = ChannelState::default());
         self.snapshot = LoudnessSnapshot::with_floor(self.config.floor_db);
     }
 
@@ -307,14 +282,7 @@ impl LoudnessProcessor {
     }
 
     fn rebuild_state(&mut self, channels: usize) {
-        let capacities = self
-            .config
-            .windows
-            .map(|w| window_length(self.config.sample_rate, w));
-        let sample_rate = f64::from(self.config.sample_rate);
-        self.channels = (0..channels)
-            .map(|_| ChannelState::new(capacities, sample_rate))
-            .collect();
+        self.channels = (0..channels).map(|_| ChannelState::default()).collect();
         self.snapshot = LoudnessSnapshot::with_floor(self.config.floor_db);
     }
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<LoudnessSnapshot> {
@@ -322,15 +290,32 @@ impl LoudnessProcessor {
 
         self.ensure_state(block.channels, block.sample_rate);
 
+        let capacities = self
+            .config
+            .windows
+            .map(|window| window_length(self.config.sample_rate, window));
+        let sample_rate = f64::from(self.config.sample_rate);
         for frame in block.samples.chunks_exact(block.channels) {
             for (channel, &sample) in self.channels.iter_mut().zip(frame) {
-                let filtered = f64::from(channel.filter.process(sample));
-                channel.windows.push([filtered * filtered]);
-                channel.true_peak.process(sample);
+                if channel.active.is_none() {
+                    if sample.to_bits() == 0 {
+                        channel.silent_frames += 1;
+                        continue;
+                    }
+                    channel.active = Some((
+                        WindowedMeans::with_leading_zeros(capacities, channel.silent_frames),
+                        KWeightingFilter::new(sample_rate),
+                        TruePeakMeter::new(sample_rate),
+                    ));
+                }
+                let (windows, filter, true_peak) = channel.active.as_mut().unwrap();
+                let filtered = f64::from(filter.process(sample));
+                windows.push([filtered * filtered]);
+                true_peak.process(sample);
             }
         }
         for channel in &mut self.channels {
-            channel.filter.flush_denormals();
+            if let Some((_, filter, _)) = &mut channel.active { filter.flush_denormals(); }
         }
 
         let floor = self.config.floor_db;
@@ -339,14 +324,15 @@ impl LoudnessProcessor {
         let mut weighted_momentary = 0.0;
 
         for (channel_index, channel_state) in self.channels.iter_mut().enumerate() {
+            let Some((windows, _, true_peak)) = &mut channel_state.active else { continue };
             let weight = channel_weight(block.positions[channel_index]);
-            weighted_short_term += channel_state.windows.mean(WIN_SHORT_TERM)[0] * weight;
-            weighted_momentary += channel_state.windows.mean(WIN_MOMENTARY)[0] * weight;
+            weighted_short_term += windows.mean(WIN_SHORT_TERM)[0] * weight;
+            weighted_momentary += windows.mean(WIN_MOMENTARY)[0] * weight;
             self.snapshot.rms_fast_db[channel_index] =
-                power_to_db(channel_state.windows.mean(WIN_RMS_FAST)[0] as f32, floor);
+                power_to_db(windows.mean(WIN_RMS_FAST)[0] as f32, floor);
             self.snapshot.rms_slow_db[channel_index] =
-                power_to_db(channel_state.windows.mean(WIN_RMS_SLOW)[0] as f32, floor);
-            let peak = channel_state.true_peak.take_peak();
+                power_to_db(windows.mean(WIN_RMS_SLOW)[0] as f32, floor);
+            let peak = true_peak.take_peak();
             self.snapshot.true_peak_db[channel_index] = power_to_db(peak * peak, floor);
         }
 
@@ -449,6 +435,25 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn leading_silence_matches_eager_channel_state() {
+        let mut samples = vec![0.0; 48_001 * 2];
+        samples.extend(sine_wave(48_000.0, 0.1, 1_000.0, 0.5).into_iter().flat_map(|x| [x; 2]));
+        let block = AudioBlock::new(&samples, 2, 48_000.0);
+        let mut lazy = LoudnessProcessor::new(LoudnessConfig::default());
+        let mut eager = LoudnessProcessor::new(LoudnessConfig::default());
+        eager.ensure_state(2, 48_000.0);
+        let capacities = eager.config.windows.map(|window| window_length(48_000.0, window));
+        for channel in &mut eager.channels {
+            channel.active = Some((
+                WindowedMeans::new(capacities),
+                KWeightingFilter::new(48_000.0),
+                TruePeakMeter::new(48_000.0),
+            ));
+        }
+        assert_eq!(lazy.process_block(&block), eager.process_block(&block));
     }
 
     #[test]

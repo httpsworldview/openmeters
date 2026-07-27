@@ -82,31 +82,26 @@ fn window_len(samples_at_reference_rate: usize, sample_rate: f32) -> usize {
         .max(1)
 }
 
-type BandWindow = WindowedMeans<NUM_BANDS, 1>;
+type BandWindow = WindowedMeans<NUM_BANDS, 1, f32>;
+type BandHistory = WindowedMeans<NUM_BANDS, 2, f32>;
 type BandFilter = ThreeBand<Biquad>;
 
-fn band_window(len: usize) -> BandWindow {
-    BandWindow::new([len])
-}
-
-fn band_means(window: &BandWindow) -> [f32; NUM_BANDS] {
-    window.mean(0).map(|mean| mean.max(0.0) as f32)
+fn band_means(means: [f64; NUM_BANDS]) -> [f32; NUM_BANDS] {
+    means.map(|mean| mean.max(0.0) as f32)
 }
 
 struct BandTracker {
     color: BandWindow,
-    fast: Option<BandWindow>,
-    slow: Option<BandWindow>,
+    history: Option<BandHistory>,
 }
 
 impl BandTracker {
     fn new(sample_rate: f32, track_history: bool) -> Self {
         let color_len = window_len(BAND_COLOR_WINDOW_AT_44K1, sample_rate);
+        let slow_len = window_len(BAND_SLOW_WINDOW_AT_44K1, sample_rate);
         Self {
-            color: band_window(color_len),
-            fast: track_history.then(|| band_window(color_len)),
-            slow: track_history
-                .then(|| band_window(window_len(BAND_SLOW_WINDOW_AT_44K1, sample_rate))),
+            color: BandWindow::new([color_len]),
+            history: track_history.then(|| BandHistory::new([color_len, slow_len])),
         }
     }
 
@@ -115,13 +110,11 @@ impl BandTracker {
             let value = bands[band].abs() * BAND_COLOR_GAINS[band];
             if value.is_finite() { value } else { 0.0 }
         }));
-        if let (Some(fast), Some(slow)) = (&mut self.fast, &mut self.slow) {
-            let power = bands.map(|value| {
+        if let Some(history) = &mut self.history {
+            history.push(bands.map(|value| {
                 let power = value * value;
                 if power.is_finite() { power } else { 0.0 }
-            });
-            fast.push(power);
-            slow.push(power);
+            }));
         }
     }
 }
@@ -218,18 +211,18 @@ impl WaveformProcessor {
         };
         if let Some((_, trackers)) = &self.band_analysis {
             let tracker = &trackers[channel];
-            column.color_bands = band_means(&tracker.color);
+            column.color_bands = band_means(tracker.color.mean(0));
             if self.config.track_history {
                 column.rms_fast_db = tracker
-                    .fast
+                    .history
                     .as_ref()
-                    .map(band_means)
+                    .map(|history| band_means(history.mean(0)))
                     .unwrap_or_default()
                     .map(|power| power_to_db(power, DB_FLOOR));
                 column.rms_slow_db = tracker
-                    .slow
+                    .history
                     .as_ref()
-                    .map(band_means)
+                    .map(|history| band_means(history.mean(1)))
                     .unwrap_or_default()
                     .map(|power| power_to_db(power, DB_FLOOR));
             }
