@@ -3,10 +3,9 @@
 
 use crate::dsp::AudioBlock;
 use crate::util::audio::{
-    Channel, DB_FLOOR, DEFAULT_SAMPLE_RATE, FrequencyScale, LN_TO_DB, WindowKind,
+    Channel, DB_FLOOR, DEFAULT_SAMPLE_RATE, LN_TO_DB, WindowKind,
     compute_fft_bin_normalization, copy_dc_removed_windowed_from_deque, db_to_power,
-    project_interleaved_channel_into, sanitize_negative_db, sanitize_sample_rate,
-    window_coefficients,
+    sanitize_negative_db, sanitize_sample_rate, window_coefficients,
 };
 use realfft::{RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex32;
@@ -53,10 +52,6 @@ crate::macros::default_struct! {
         pub averaging: AveragingMode = AveragingMode::None,
         pub source: Channel = Channel::Mid,
         pub secondary_source: Channel = Channel::None,
-        pub frequency_scale: FrequencyScale = FrequencyScale::Logarithmic,
-        pub reverse_frequency: bool = false,
-        pub show_grid: bool = true,
-        pub show_peak_label: bool = true,
         pub floor_db: f32 = DEFAULT_SPECTRUM_DB_FLOOR,
     }
 }
@@ -102,7 +97,6 @@ pub struct SpectrumProcessor {
     bin_normalization: Vec<f32>,
     pcm_buffers: [VecDeque<f32>; TRACE_COUNT],
     pending_skip_frames: usize,
-    source_scratch: Vec<f32>,
     levels: [SpectrumLevelBuffers; TRACE_COUNT],
     a_weighting_db: Vec<f32>,
 }
@@ -125,7 +119,6 @@ impl SpectrumProcessor {
             bin_normalization: Vec::new(),
             pcm_buffers: [VecDeque::new(), VecDeque::new()],
             pending_skip_frames: 0,
-            source_scratch: Vec::new(),
             levels: Default::default(),
             a_weighting_db: Vec::new(),
         };
@@ -288,24 +281,36 @@ impl SpectrumProcessor {
         let frames = block.frame_count();
         let skip = self.pending_skip_frames.min(frames);
         self.pending_skip_frames -= skip;
-        let frames = frames - skip;
-        if frames == 0 {
+        if skip == frames {
             return;
         }
-        let samples = &block.samples[skip * block.channels..];
 
+        let [primary_source, secondary_source] = self.sources();
         let active = self.active_traces();
-        for (idx, source) in self.sources().into_iter().enumerate().filter(|(idx, _)| active[*idx]) {
-            if project_interleaved_channel_into(
-                &mut self.source_scratch,
-                samples,
-                block.channels,
-                frames,
-                block.stereo_matrix(),
-                source,
-            ) {
-                self.pcm_buffers[idx].extend(&self.source_scratch);
+        let [primary, secondary] = self.pcm_buffers.each_mut();
+        match active {
+            [true, true] => {
+                let remaining = frames - skip;
+                primary.reserve(remaining);
+                secondary.reserve(remaining);
+                for stereo in block.stereo_frames().skip(skip) {
+                    primary.push_back(primary_source.project(stereo));
+                    secondary.push_back(secondary_source.project(stereo));
+                }
             }
+            [true, false] => primary.extend(
+                block
+                    .stereo_frames()
+                    .skip(skip)
+                    .map(|stereo| primary_source.project(stereo)),
+            ),
+            [false, true] => secondary.extend(
+                block
+                    .stereo_frames()
+                    .skip(skip)
+                    .map(|stereo| secondary_source.project(stereo)),
+            ),
+            [false, false] => {}
         }
     }
 

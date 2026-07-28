@@ -151,25 +151,6 @@ impl ModuleSettings {
             .filter(|value| !value.is_null())
             .map(|value| T::from_value_lossy(value, "config"))
     }
-    pub(crate) fn override_palette(&mut self, palette: Option<&PaletteSettings>) {
-        let obj = self
-            .config
-            .get_or_insert_with(|| Value::Object(serde_json::Map::new()));
-        if let Value::Object(map) = obj {
-            match palette.and_then(|p| serde_json::to_value(p).ok()) {
-                Some(value) => map.insert("palette".into(), value),
-                None => map.remove("palette"),
-            };
-        }
-    }
-
-    pub(crate) fn extract_palette(&self) -> Option<PaletteSettings> {
-        self.config
-            .as_ref()
-            .and_then(|v| v.get("palette"))
-            .and_then(|pal| PaletteSettings::deserialize(pal).ok())
-    }
-
     pub(super) fn strip_palette(&mut self) {
         if let Some(Value::Object(map)) = &mut self.config {
             map.remove("palette");
@@ -234,10 +215,10 @@ visual_settings!(WaveformSettings from WaveformConfig {
 
 visual_settings!(SpectrumSettings from SpectrumConfig {
     fft_size: usize, hop_size: usize, window: WindowKind, averaging: AveragingMode,
-    source: Channel, secondary_source: Channel,
-    frequency_scale: FrequencyScale, reverse_frequency: bool, show_grid: bool, show_peak_label: bool,
-    floor_db: f32,
+    source: Channel, secondary_source: Channel, floor_db: f32,
 } extra {
+    frequency_scale: FrequencyScale = FrequencyScale::Logarithmic,
+    reverse_frequency: bool = false, show_grid: bool = true, show_peak_label: bool = true,
     display_mode: SpectrumDisplayMode = SpectrumDisplayMode::default(),
     weighting_mode: SpectrumWeightingMode = SpectrumWeightingMode::default(),
     secondary_weighting_mode: SpectrumWeightingMode = SpectrumWeightingMode::default(),
@@ -247,10 +228,10 @@ visual_settings!(SpectrumSettings from SpectrumConfig {
 });
 
 visual_settings!(SpectrogramSettings from SpectrogramConfig {
-    fft_size: usize, hop_size: usize, window: WindowKind, frequency_scale: FrequencyScale,
-    use_reassignment: bool,
+    fft_size: usize, hop_size: usize, window: WindowKind, use_reassignment: bool,
     zero_padding_factor: usize,
 } extra {
+    frequency_scale: FrequencyScale = FrequencyScale::default(),
     floor_db: f32 = -96.0,
     tilt_db: f32 = 0.0,
     piano_roll_overlay: PianoRollOverlay = PianoRollOverlay::default(),

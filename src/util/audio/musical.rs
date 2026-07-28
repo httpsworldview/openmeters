@@ -13,8 +13,6 @@ const NOTE_NAMES: [&str; 12] = [
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MusicalNote {
     pub midi_number: i32,
-    pub name: &'static str,
-    pub octave: i32,
 }
 
 fn freq_to_midi(freq_hz: f32) -> Option<f32> {
@@ -29,13 +27,15 @@ impl MusicalNote {
     }
 
     pub fn from_midi(midi_number: i32) -> Self {
-        let note_index = midi_number.rem_euclid(SEMITONES_PER_OCTAVE) as usize;
-        let octave = midi_number.div_euclid(SEMITONES_PER_OCTAVE) - MIDI_OCTAVE_OFFSET;
-        Self {
-            midi_number,
-            name: NOTE_NAMES[note_index],
-            octave,
-        }
+        Self { midi_number }
+    }
+
+    fn name(self) -> &'static str {
+        NOTE_NAMES[self.midi_number.rem_euclid(SEMITONES_PER_OCTAVE) as usize]
+    }
+
+    pub fn octave(self) -> i32 {
+        self.midi_number.div_euclid(SEMITONES_PER_OCTAVE) - MIDI_OCTAVE_OFFSET
     }
 
     pub fn to_frequency(self) -> f32 {
@@ -43,13 +43,16 @@ impl MusicalNote {
     }
 
     pub fn is_black(self) -> bool {
-        matches!(self.name, "C#" | "D#" | "F#" | "G#" | "A#")
+        matches!(
+            self.midi_number.rem_euclid(SEMITONES_PER_OCTAVE),
+            1 | 3 | 6 | 8 | 10
+        )
     }
 }
 
 impl std::fmt::Display for MusicalNote {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}{}", self.name, self.octave)
+        write!(f, "{}{}", self.name(), self.octave())
     }
 }
 
@@ -73,7 +76,7 @@ impl NoteInfo {
     }
 
     // `"F4  + 42 Cents"`
-    pub fn fmt_note_cents(&self) -> String {
+    pub fn fmt_note_cents(self) -> String {
         let sign = if self.cents >= 0 { '+' } else { '-' };
         format!("{:<4}{sign} {} Cents", self.note, self.cents.abs())
     }

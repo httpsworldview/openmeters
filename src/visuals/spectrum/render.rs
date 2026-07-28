@@ -6,6 +6,7 @@ use iced::advanced::graphics::Viewport;
 use std::sync::Arc;
 
 use crate::visuals::options::SpectrumDisplayMode;
+use crate::visuals::palettes::spectrum::SIZE as PALETTE_SIZE;
 use crate::visuals::render::common::sdf_primitive;
 use crate::util::color::{rgba_with_alpha, sample_rgba_gradient};
 use crate::util::lerp;
@@ -16,6 +17,8 @@ use crate::visuals::render::common::{
 };
 
 const MIN_BAR_COUNT: usize = 4;
+const LINE_THICKNESS: f32 = 1.0;
+const SECONDARY_LINE_THICKNESS: f32 = 0.75;
 
 fn pack_f32_pair(first: f32, second: f32) -> u64 {
     u64::from(first.to_bits()) << 32 | u64::from(second.to_bits())
@@ -37,11 +40,9 @@ pub struct SpectrumParams {
     pub key: u64,
     pub geometry_revision: u64,
     pub line_color: [f32; 4],
-    pub line_width: f32,
     pub secondary_line_color: [f32; 4],
-    pub secondary_line_width: f32,
     pub highlight_threshold: f32,
-    pub spectrum_palette: [[f32; 4]; 6],
+    pub spectrum_palette: [[f32; 4]; PALETTE_SIZE],
     pub display_mode: SpectrumDisplayMode,
     pub bar_count: usize,
     pub bar_gap: f32,
@@ -131,7 +132,7 @@ impl SpectrumPrimitive {
             extend_aa_line_list(
                 vertices,
                 points2,
-                self.params.secondary_line_width,
+                SECONDARY_LINE_THICKNESS,
                 self.params.secondary_line_color,
                 clip,
             );
@@ -141,7 +142,7 @@ impl SpectrumPrimitive {
             extend_aa_line_list(
                 vertices,
                 points,
-                self.params.line_width,
+                LINE_THICKNESS,
                 self.params.line_color,
                 clip,
             );
@@ -183,7 +184,7 @@ impl SpectrumPrimitive {
 
             if let Some(secondary) = secondary {
                 let sec_y = y_at(sample_lerp(secondary, (t0 + t1) * 0.5));
-                let h = p.secondary_line_width.max(1.0) * 0.5;
+                let h = SECONDARY_LINE_THICKNESS.max(1.0) * 0.5;
                 verts.push(quad_instance(
                     x0,
                     sec_y - h,

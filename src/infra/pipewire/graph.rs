@@ -83,21 +83,18 @@ channel_positions! {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct CaptureLayout {
     pub channels: Vec<Channel>,
-    pub truncated: usize,
 }
 
 impl CaptureLayout {
     pub(super) fn stereo() -> Self {
         Self {
             channels: vec![Channel::FrontLeft, Channel::FrontRight],
-            truncated: 0,
         }
     }
 
     pub(super) fn surround() -> Self {
         Self {
             channels: Channel::SURROUND.into(),
-            truncated: 0,
         }
     }
 

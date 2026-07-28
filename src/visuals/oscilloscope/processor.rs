@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Maika Namuo
 
 use crate::dsp::AudioBlock;
-use crate::util::audio::{self, Channel, DEFAULT_SAMPLE_RATE};
+use crate::util::audio::{Channel, DEFAULT_SAMPLE_RATE};
 use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex;
 use serde::{Deserialize, Serialize};
@@ -601,17 +601,7 @@ fn extend_projected_history(
         history.clear();
         return false;
     }
-    let matrix = block.stereo_matrix();
-    history.extend(block.samples.chunks_exact(block.channels).map(|frame| {
-        let [left, right] = audio::mix_stereo(frame, matrix);
-        match channel {
-            Channel::Left => left,
-            Channel::Right => right,
-            Channel::Mid => (left + right) * 0.5,
-            Channel::Side => (left - right) * 0.5,
-            Channel::None => unreachable!(),
-        }
-    }));
+    history.extend(block.stereo_frames().map(|stereo| channel.project(stereo)));
     history.drain(..history.len().saturating_sub(capacity));
     !history.is_empty()
 }
@@ -1112,29 +1102,17 @@ mod tests {
         }
 
         let mut projected = Vec::new();
-        let matrix = crate::dsp::stereo_matrix(2, crate::dsp::ChannelPosition::fallback(2));
         let same_stereo: Vec<f32> = mono.iter().flat_map(|&s| [s, s]).collect();
-        assert!(audio::project_interleaved_channel_into(
-            &mut projected,
-            &same_stereo,
-            2,
-            mono.len(),
-            &matrix,
-            Channel::Mid,
-        ));
+        let block = make_block(&same_stereo, 2, RATE);
+        projected.extend(block.stereo_frames().map(|stereo| Channel::Mid.project(stereo)));
         let c = find_rising_zero_crossing(&projected, (0..=3840).rev()).unwrap();
         assert!(projected[c] > 0.0 && projected[c - 1] <= 0.0);
 
         let inverted: Vec<f32> = mono.iter().flat_map(|&s| [s, -s]).collect();
+        let block = make_block(&inverted, 2, RATE);
         for (channel, should_cross) in [(Channel::Mid, false), (Channel::Left, true)] {
-            assert!(audio::project_interleaved_channel_into(
-                &mut projected,
-                &inverted,
-                2,
-                mono.len(),
-                &matrix,
-                channel,
-            ));
+            projected.clear();
+            projected.extend(block.stereo_frames().map(|stereo| channel.project(stereo)));
             assert_eq!(
                 find_rising_zero_crossing(&projected, 0..=4799).is_some(),
                 should_cross

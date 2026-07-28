@@ -10,7 +10,7 @@ use crate::ui::config::ConfigMessage;
 use crate::ui::visuals::VisualsMessage;
 use crate::ui::widgets::{fill, scroll_glow::ScrollGlow};
 use crate::visuals::registry::{VisualContent, VisualKind, VisualSlotSnapshot};
-use iced::widget::{mouse_area, text};
+use iced::widget::mouse_area;
 use iced::{Element, Size, Task, exit, window};
 use iced_layershell::actions::OutputSnapshotCallback;
 use iced_layershell::reexport::{
@@ -120,7 +120,6 @@ pub(super) fn open_main_window(
             keyboard_interactivity: KeyboardInteractivity::OnDemand,
             output_option: bar_settings
                 .monitor
-                .clone()
                 .map(OutputOption::OutputName)
                 .unwrap_or_default(),
             ..Default::default()
@@ -153,23 +152,13 @@ pub(super) struct PopoutWindow {
     pub kind: VisualKind,
     pub original_index: usize,
     pub size: Size,
-    pub cached: Option<VisualContent>,
+    pub cached: VisualContent,
 }
 
 impl PopoutWindow {
-    pub fn sync_from_snapshot(&mut self, snapshot: &[VisualSlotSnapshot]) {
-        self.cached = snapshot
-            .iter()
-            .find(|slot| slot.kind == self.kind && slot.enabled)
-            .map(|slot| slot.content.clone());
-    }
-
     pub fn view(&self) -> Element<'_, VisualsMessage> {
-        let Some(content) = &self.cached else {
-            return fill(text("")).into();
-        };
         let msg = VisualsMessage::SettingsRequested(self.kind);
-        mouse_area(fill(content.render()))
+        mouse_area(fill(self.cached.render()))
             .on_right_press(msg)
             .into()
     }
@@ -202,6 +191,16 @@ impl UiApp {
         }
     }
 
+    fn saved_popout(&self, kind: VisualKind) -> Option<PopoutWindowSettings> {
+        self.settings_handle
+            .borrow()
+            .data
+            .visuals
+            .popouts
+            .get(&kind)
+            .copied()
+    }
+
     fn create_popout_window(
         &mut self,
         kind: VisualKind,
@@ -215,10 +214,10 @@ impl UiApp {
             return None;
         }
         let snapshot = self.visual_manager.borrow().snapshot();
-        let (index, _) = snapshot
+        let (index, slot) = snapshot
             .iter()
             .enumerate()
-            .find(|(_, s)| s.kind == kind && s.enabled)?;
+            .find(|(_, slot)| slot.kind == kind && slot.enabled)?;
         let saved = saved_size.unwrap_or_default();
         let dim = |saved: u32, default| if saved > 0 { saved as f32 } else { default };
         let window_size =
@@ -226,13 +225,12 @@ impl UiApp {
         let use_decorations = self.settings_handle.borrow().data.decorations;
         let (new_id, open_task) =
             open_base_window(self.use_layershell, window_size, use_decorations);
-        let mut popout = PopoutWindow {
+        let popout = PopoutWindow {
             kind,
             original_index: index,
             size: window_size,
-            cached: None,
+            cached: slot.content.clone(),
         };
-        popout.sync_from_snapshot(&snapshot);
         self.popout_windows.insert(new_id, popout);
         Some((popout_window_settings(window_size, true), open_task))
     }
@@ -250,16 +248,9 @@ impl UiApp {
     }
 
     pub(super) fn restore_popout_window(&mut self, kind: VisualKind) -> Task<Message> {
-        let saved = {
-            self.settings_handle
-                .borrow()
-                .data
-                .visuals
-                .popouts
-                .get(&kind)
-                .copied()
-                .filter(|s| s.popped_out)
-        };
+        let saved = self
+            .saved_popout(kind)
+            .filter(|settings| settings.popped_out);
         let Some(settings) = saved else {
             return Task::none();
         };
@@ -268,14 +259,7 @@ impl UiApp {
     }
 
     fn open_popout_window(&mut self, kind: VisualKind) -> Task<Message> {
-        let saved_size = self
-            .settings_handle
-            .borrow()
-            .data
-            .visuals
-            .popouts
-            .get(&kind)
-            .copied();
+        let saved_size = self.saved_popout(kind);
         let Some((settings, task)) = self.create_popout_window(kind, saved_size) else {
             return Task::none();
         };
@@ -329,12 +313,18 @@ impl UiApp {
                     .any(|slot| slot.kind == panel.kind && slot.enabled)
             })
             .map(|(id, _)| window::close::<Message>(id));
-        self.popout_windows
-            .values_mut()
-            .for_each(|popout| popout.sync_from_snapshot(&snapshot));
         let stale_windows: Vec<_> = self
             .popout_windows
-            .extract_if(|_, popout| popout.cached.is_none())
+            .extract_if(|_, popout| {
+                let Some(slot) = snapshot
+                    .iter()
+                    .find(|slot| slot.kind == popout.kind && slot.enabled)
+                else {
+                    return true;
+                };
+                popout.cached = slot.content.clone();
+                false
+            })
             .map(|(id, popout)| (id, popout.kind, popout.size))
             .collect();
         // keep disabled popouts restorable when re-enabled.
@@ -349,10 +339,7 @@ impl UiApp {
                 }
             });
         }
-        self.visuals_page
-            .apply_snapshot_excluding(&snapshot, |kind| {
-                self.popout_windows.values().any(|w| w.kind == kind)
-            });
+        self.apply_visual_snapshot(&snapshot);
         Task::batch(
             close_settings_task.into_iter().chain(
                 stale_windows
@@ -413,12 +400,18 @@ impl UiApp {
         task
     }
 
+    fn apply_visual_snapshot(&mut self, snapshot: &[VisualSlotSnapshot]) {
+        self.visuals_page
+            .apply_snapshot_excluding(snapshot, |kind| {
+                self.popout_windows
+                    .values()
+                    .any(|window| window.kind == kind)
+            });
+    }
+
     pub(super) fn sync_visuals_page(&mut self) {
         let snapshot = self.visual_manager.borrow().snapshot();
-        self.visuals_page
-            .apply_snapshot_excluding(&snapshot, |kind| {
-                self.popout_windows.values().any(|w| w.kind == kind)
-            });
+        self.apply_visual_snapshot(&snapshot);
     }
 
     pub(super) fn apply_bar_layout(

@@ -13,6 +13,8 @@ use crate::visuals::render::common::{
     extend_filled_line,
 };
 
+const FILL_ALPHA: f32 = 0.15;
+
 #[derive(Debug, Clone)]
 pub struct OscilloscopeParams {
     pub key: u64,
@@ -23,7 +25,6 @@ pub struct OscilloscopeParams {
     pub samples: Arc<[f32]>,
     pub colors: [[f32; 4]; TRACE_COUNT],
     pub stacked: bool,
-    pub fill_alpha: f32,
 }
 
 impl OscilloscopePrimitive {
@@ -87,7 +88,7 @@ impl OscilloscopePrimitive {
                 center,
                 STROKE_WIDTH,
                 color,
-                rgba_with_alpha(color, color[3] * self.params.fill_alpha),
+                rgba_with_alpha(color, color[3] * FILL_ALPHA),
                 clip,
             );
         }

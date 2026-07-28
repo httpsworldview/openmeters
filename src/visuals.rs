@@ -14,15 +14,9 @@ macro_rules! visual_modules {
 }
 
 macro_rules! visualization_widget {
-    (@base $widget:ident, $state:ty, |$this:ident, $renderer:ident, $theme:ident, $bounds:ident| $draw:block) => {
+    ($widget:ident, $state:ty, |$this:ident, $renderer:ident, $theme:ident, $bounds:ident| $draw:block) => {
         struct $widget<'a> {
             state: &'a std::cell::RefCell<$state>,
-        }
-
-        impl<'a> $widget<'a> {
-            fn new(state: &'a std::cell::RefCell<$state>) -> Self {
-                Self { state }
-            }
         }
 
         impl<M> iced::advanced::widget::Widget<M, iced::Theme, iced::Renderer> for $widget<'_> {
@@ -59,15 +53,14 @@ macro_rules! visualization_widget {
             }
         }
 
-        pub(in crate::visuals) fn widget<'a, M: 'a>(state: &'a std::cell::RefCell<$state>) -> iced::Element<'a, M> {
-            iced::Element::new($widget::new(state))
+        pub(in crate::visuals) fn widget<'a, M: 'a>(
+            state: &'a std::cell::RefCell<$state>,
+        ) -> iced::Element<'a, M> {
+            iced::Element::new($widget { state })
         }
     };
-    ($widget:ident, $state:ty, |$this:ident, $renderer:ident, $theme:ident, $bounds:ident| $draw:block) => {
-        $crate::visuals::visualization_widget!(@base $widget, $state, |$this, $renderer, $theme, $bounds| $draw);
-    };
     ($widget:ident, $state:ty, $primitive:ty) => {
-        $crate::visuals::visualization_widget!(@base $widget, $state, |this, renderer, theme, bounds| {
+        $crate::visuals::visualization_widget!($widget, $state, |this, renderer, theme, bounds| {
             let state = this.state.borrow();
             match state.visual_params(bounds) {
                 Some(params) => renderer.draw_primitive(bounds, <$primitive>::new(params)),

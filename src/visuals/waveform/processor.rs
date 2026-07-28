@@ -3,8 +3,7 @@
 
 use crate::dsp::{AudioBlock, Biquad, ThreeBand, WindowedMeans};
 use crate::util::audio::{
-    BAND_SPLITS_HZ, Channel, DB_FLOOR, DEFAULT_SAMPLE_RATE, mix_stereo, power_to_db,
-    sanitize_sample_rate,
+    BAND_SPLITS_HZ, Channel, DB_FLOOR, DEFAULT_SAMPLE_RATE, power_to_db, sanitize_sample_rate,
 };
 
 pub const MIN_SCROLL_SPEED: f32 = 10.0;
@@ -24,7 +23,7 @@ const BAND_COLOR_GAINS: [f32; NUM_BANDS] = [1.0, 0.7, 2.0];
 pub(super) const WAVEFORM_SILENCE_AMPLITUDE: f32 = 1.584_893_1e-5;
 const MAX_TRACKER_SAMPLE_RATE: f32 = 1_000_000.0;
 
-pub const NUM_BANDS: usize = 3;
+pub(super) const NUM_BANDS: usize = BAND_SPLITS_HZ.len() + 1;
 pub const MIN_BAND_DB_FLOOR: f32 = -96.0;
 pub const MAX_BAND_DB_FLOOR: f32 = -12.0;
 
@@ -119,9 +118,8 @@ impl BandTracker {
     }
 }
 
-fn derived_frame(frame: &[f32], matrix: &[[f32; 2]]) -> [f32; DERIVED_CHANNELS] {
-    let [left, right] = mix_stereo(frame, matrix);
-    [left, right, (left + right) * 0.5, (left - right) * 0.5]
+fn derived_frame(stereo: [f32; 2]) -> [f32; DERIVED_CHANNELS] {
+    WAVEFORM_CHANNELS.map(|channel| channel.project(stereo))
 }
 
 pub struct WaveformProcessor {
@@ -162,7 +160,7 @@ impl WaveformProcessor {
         self.column_phase = 0.0;
         self.last_sample = [None; DERIVED_CHANNELS];
         self.pending_columns.clear();
-        self.reset_column();
+        self.current = [None; DERIVED_CHANNELS];
         self.reset_trackers();
         self.reset_pending = true;
     }
@@ -192,10 +190,6 @@ impl WaveformProcessor {
         }
     }
 
-    fn reset_column(&mut self) {
-        self.current = [None; DERIVED_CHANNELS];
-    }
-
     fn column_for(&self, channel: usize) -> WaveColumn {
         let (min, max) = self.current[channel].map_or((0.0, 0.0), |(mut min, mut max, _)| {
             if let Some(last) = self.last_sample[channel] {
@@ -212,19 +206,11 @@ impl WaveformProcessor {
         if let Some((_, trackers)) = &self.band_analysis {
             let tracker = &trackers[channel];
             column.color_bands = band_means(tracker.color.mean(0));
-            if self.config.track_history {
-                column.rms_fast_db = tracker
-                    .history
-                    .as_ref()
-                    .map(|history| band_means(history.mean(0)))
-                    .unwrap_or_default()
-                    .map(|power| power_to_db(power, DB_FLOOR));
-                column.rms_slow_db = tracker
-                    .history
-                    .as_ref()
-                    .map(|history| band_means(history.mean(1)))
-                    .unwrap_or_default()
-                    .map(|power| power_to_db(power, DB_FLOOR));
+            if let Some(history) = &tracker.history {
+                column.rms_fast_db =
+                    band_means(history.mean(0)).map(|power| power_to_db(power, DB_FLOOR));
+                column.rms_slow_db =
+                    band_means(history.mean(1)).map(|power| power_to_db(power, DB_FLOOR));
             }
         }
         column
@@ -241,14 +227,14 @@ impl WaveformProcessor {
         if self.pending_columns.len() >= self.config.max_columns * 2 {
             self.cap_pending_columns();
         }
-        self.reset_column();
+        self.current = [None; DERIVED_CHANNELS];
     }
 
-    fn ingest_samples(&mut self, samples: &[f32], channels: usize, matrix: &[[f32; 2]]) {
+    fn ingest_samples(&mut self, block: &AudioBlock<'_>) {
         let step = (f64::from(self.config.scroll_speed) / f64::from(self.config.sample_rate))
             .clamp(0.0, 1.0);
-        for frame in samples.chunks_exact(channels) {
-            let derived = derived_frame(frame, matrix);
+        for stereo in block.stereo_frames() {
+            let derived = derived_frame(stereo);
             let finite = derived.map(f32::is_finite);
             if let Some((filters, trackers)) = &mut self.band_analysis {
                 let filtered: [[f32; NUM_BANDS]; 2] = std::array::from_fn(|channel| {
@@ -324,7 +310,7 @@ impl WaveformProcessor {
             self.rebuild();
         }
 
-        self.ingest_samples(block.samples, channels, block.stereo_matrix());
+        self.ingest_samples(block);
         if let Some((filters, _)) = &mut self.band_analysis {
             filters.iter_mut().for_each(BandFilter::flush_denormals);
         }
@@ -408,11 +394,10 @@ mod tests {
             std::array::from_fn(|_| BandFilter::parallel(RATE, BAND_SPLITS_HZ));
         let mut max_error = 0.0_f32;
         for n in 0..RATE as usize {
-            let derived = derived_frame(
-                &[(2.0 * PI * 137.0 * n as f32 / RATE).sin(),
-                  (2.0 * PI * 263.0 * n as f32 / RATE).sin()],
-                &crate::dsp::stereo_matrix(2, crate::dsp::ChannelPosition::fallback(2)),
-            );
+            let derived = derived_frame([
+                (2.0 * PI * 137.0 * n as f32 / RATE).sin(),
+                (2.0 * PI * 263.0 * n as f32 / RATE).sin(),
+            ]);
             let expected: [[f32; NUM_BANDS]; DERIVED_CHANNELS] =
                 std::array::from_fn(|channel| separate[channel].process(derived[channel]));
             let filtered: [[f32; NUM_BANDS]; 2] =

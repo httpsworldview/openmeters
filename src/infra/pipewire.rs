@@ -66,11 +66,8 @@ impl PublicState {
 
     fn publish(&self, mut view: CaptureView) {
         let mut current = unpoison(self.view.write());
-        if current.applications == view.applications
-            && current.devices == view.devices
-            && current.default_sink == view.default_sink
-            && current.selected_device == view.selected_device
-        {
+        view.revision = current.revision;
+        if **current == view {
             return;
         }
         view.revision = current.revision.wrapping_add(1).max(1);
@@ -114,7 +111,7 @@ impl AudioBackend {
     }
 
     fn start_with_socket(config: CaptureConfig, socket: Option<PathBuf>) -> io::Result<Self> {
-        let (mut writer, audio) = transport::channel();
+        let (writer, audio) = transport::channel();
         let (channels, positions) = match config.mode {
             CaptureMode::Applications => (MAX_CAPTURE_CHANNELS, ChannelPosition::SURROUND),
             CaptureMode::Device => (2, ChannelPosition::fallback(2)),

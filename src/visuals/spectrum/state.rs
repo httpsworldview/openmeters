@@ -9,7 +9,7 @@ use crate::util::audio::musical::NoteInfo;
 use crate::util::audio::{Channel, FrequencyScale, fmt_freq};
 use crate::util::color::{color_to_rgba, with_alpha};
 use crate::util::lerp;
-use crate::visuals::palettes;
+use crate::visuals::palettes::{self, spectrum::SIZE as PALETTE_SIZE};
 use crate::visuals::render::common::{fill_bordered_rect, fill_rect, text as raw_text};
 use iced::advanced::Renderer as _;
 use iced::advanced::text::{Paragraph as _, Renderer as _};
@@ -20,8 +20,6 @@ use std::sync::{Arc, LazyLock};
 const EPSILON: f32 = 1e-6;
 const MIN_FREQUENCY: f32 = 20.0;
 const MAX_DB: f32 = 0.0;
-const LINE_THICKNESS: f32 = 1.0;
-const SECONDARY_LINE_THICKNESS: f32 = 0.75;
 const GRID_LABEL_SIZE: f32 = 10.0;
 const GRID_LABEL_GAP: f32 = 6.0;
 
@@ -35,7 +33,7 @@ struct PeakLabel {
 
 type PeakUpdate = ([Paragraph; 2], [f32; 2]);
 
-type GridLabel = (f32, bool, Paragraph);
+type GridTick = (f32, bool, Option<Paragraph>);
 // Keep the Vec allocation when publishing freshly built points; Vec -> Arc<[T]> copies them.
 type SharedPoints = Arc<Vec<[f32; 2]>>;
 
@@ -47,8 +45,8 @@ fn share_points(points: Vec<[f32; 2]>) -> SharedPoints {
 
 #[derive(Debug, Clone)]
 pub(in crate::visuals) struct SpectrumState {
-    style: SpectrumSettings,
-    pub(in crate::visuals) spectrum_palette: [Color; 6],
+    pub(in crate::visuals) style: SpectrumSettings,
+    pub(in crate::visuals) palette: [Color; PALETTE_SIZE],
     primary: SharedPoints,
     secondary: SharedPoints,
     key: u64,
@@ -57,14 +55,14 @@ pub(in crate::visuals) struct SpectrumState {
     effective_range: Option<(f32, f32)>,
     x_cache_key: (usize, u32, FrequencyScale),
     x_cache: Vec<f32>,
-    grid_labels: Vec<GridLabel>,
+    grid_ticks: Vec<GridTick>,
 }
 
 impl SpectrumState {
     pub fn new() -> Self {
         Self {
             style: SpectrumSettings::default(),
-            spectrum_palette: palettes::spectrum::COLORS,
+            palette: palettes::spectrum::COLORS,
             primary: Arc::clone(&EMPTY_POINTS),
             secondary: Arc::clone(&EMPTY_POINTS),
             key: crate::visuals::next_key(),
@@ -73,7 +71,7 @@ impl SpectrumState {
             effective_range: None,
             x_cache_key: (0, 0, FrequencyScale::default()),
             x_cache: Vec::new(),
-            grid_labels: Vec::new(),
+            grid_ticks: Vec::new(),
         }
     }
 
@@ -86,12 +84,8 @@ impl SpectrumState {
         self.invalidate_geometry();
     }
 
-    pub fn export_settings(&self) -> SpectrumSettings {
-        self.style.clone()
-    }
-
-    pub fn set_palette(&mut self, palette: &[Color; 6]) {
-        self.spectrum_palette = *palette;
+    pub fn set_palette(&mut self, palette: &[Color; PALETTE_SIZE]) {
+        self.palette = *palette;
         self.invalidate_geometry();
     }
 
@@ -176,18 +170,21 @@ impl SpectrumState {
             let x = scale.pos_of(min_f, max_f, f).clamp(0.0, 1.0);
             self.x_cache.push(if x.is_finite() { x } else { 0.0 });
         }
-        self.grid_labels.clear();
+        self.grid_ticks.clear();
         let exponents = min_f.max(1.0).log10().floor() as i32..=max_f.log10().ceil() as i32;
-        self.grid_labels.extend(
+        self.grid_ticks.extend(
             exponents
                 .flat_map(|exponent| {
                     let base = 10f32.powi(exponent);
-                    [1, 2, 5].map(move |multiplier| (base * multiplier as f32, multiplier == 1))
+                    (1..10).map(move |multiplier| (base * multiplier as f32, multiplier))
                 })
                 .filter(|(frequency, _)| (min_f..=max_f).contains(frequency))
-                .map(|(frequency, major)| {
-                    let text = raw_text(fmt_freq(frequency), GRID_LABEL_SIZE, Size::INFINITE);
-                    (frequency, major, Paragraph::with_text(text.as_ref()))
+                .map(|(frequency, multiplier)| {
+                    let label = matches!(multiplier, 1 | 2 | 5).then(|| {
+                        let text = raw_text(fmt_freq(frequency), GRID_LABEL_SIZE, Size::INFINITE);
+                        Paragraph::with_text(text.as_ref())
+                    });
+                    (frequency, multiplier == 1, label)
                 }),
         );
         self.x_cache_key = key;
@@ -269,7 +266,7 @@ impl SpectrumState {
             if show { Arc::clone(points) } else { Arc::clone(&EMPTY_POINTS) }
         };
         let peak = self.peak();
-        let accent = self.spectrum_palette[5];
+        let accent = self.palette[5];
         let (mut primary, mut secondary) = (
             visible(has_primary, &self.primary),
             visible(has_secondary, &self.secondary),
@@ -285,11 +282,9 @@ impl SpectrumState {
             key: self.key,
             geometry_revision: self.geometry_revision,
             line_color: color_to_rgba(with_alpha(pal.background.base.text, 0.92)),
-            line_width: LINE_THICKNESS,
             secondary_line_color: color_to_rgba(with_alpha(pal.secondary.weak.text, 0.32)),
-            secondary_line_width: SECONDARY_LINE_THICKNESS,
             highlight_threshold: self.style.highlight_threshold,
-            spectrum_palette: self.spectrum_palette.map(color_to_rgba),
+            spectrum_palette: self.palette.map(color_to_rgba),
             display_mode: self.style.display_mode,
             bar_count: self.style.bar_count,
             bar_gap: self.style.bar_gap,
@@ -316,7 +311,7 @@ crate::visuals::visualization_widget!(Spectrum, SpectrumState, |this, r, th, b| 
     }
     r.draw_primitive(b, SpectrumPrimitive::new(params));
     if let Some((pk, layout)) = peak.zip(peak_layout) {
-        let accent = state.spectrum_palette[5];
+        let accent = state.palette[5];
         r.with_layer(b, |r| draw_peak(r, th, pk, layout, accent));
     }
 });
@@ -481,12 +476,6 @@ fn draw_grid(
     if b.width <= 0.0 || b.height <= 0.0 {
         return;
     }
-    let start_exp = min_f.max(1.0).log10().floor() as i32;
-    let end_exp = max_f.log10().ceil() as i32;
-    if end_exp < start_exp {
-        return;
-    }
-
     let style = &state.style;
     let reverse = style.reverse_frequency;
     let pal = th.extended_palette();
@@ -494,13 +483,6 @@ fn draw_grid(
     let (major_lc, major_tc) = (with_alpha(txt, 0.25), with_alpha(txt, 0.75));
     let (minor_lc, minor_tc) = (with_alpha(txt, 0.10), with_alpha(txt, 0.20));
 
-    let exp_of = |di| {
-        if reverse {
-            end_exp - di
-        } else {
-            start_exp + di
-        }
-    };
     let tick_x = |f: f32| -> Option<f32> {
         if !(min_f..=max_f).contains(&f) { return None; }
         let pos = style
@@ -515,21 +497,12 @@ fn draw_grid(
         fill_rect(r, Rectangle::new(Point::new(sx, top), Size::new(1.0, h)), c);
     };
 
-    for di in 0..=(end_exp - start_exp) {
-        let base = 10f32.powi(exp_of(di));
-        for &mult in &[3u32, 4, 6, 7, 8, 9] {
-            if let Some(x) = tick_x(base * mult as f32) {
-                vline(r, x, b.y, b.height, minor_lc);
-            }
-        }
-    }
-
     let slot = Size::new(48.0_f32, 12.0);
     let ty = b.y + GRID_LABEL_GAP;
     let clamp_lo = b.x + GRID_LABEL_GAP;
     let clamp_hi = (b.x + b.width - GRID_LABEL_GAP - slot.width).max(clamp_lo);
     let mut last_right = f32::NEG_INFINITY;
-    let mut draw_label = |(frequency, major, text): &GridLabel| {
+    let mut draw_tick = |(frequency, major, text): &GridTick| {
         let Some(x) = tick_x(*frequency) else { return };
         let (lc, tc) = if *major {
             (major_lc, major_tc)
@@ -537,6 +510,7 @@ fn draw_grid(
             (minor_lc, minor_tc)
         };
         vline(r, x, b.y, b.height, lc);
+        let Some(text) = text else { return };
 
         let tx = (x - slot.width * 0.5).clamp(clamp_lo, clamp_hi);
         if tx < last_right {
@@ -551,9 +525,9 @@ fn draw_grid(
         );
     };
     if reverse {
-        state.grid_labels.iter().rev().for_each(&mut draw_label);
+        state.grid_ticks.iter().rev().for_each(&mut draw_tick);
     } else {
-        state.grid_labels.iter().for_each(draw_label);
+        state.grid_ticks.iter().for_each(draw_tick);
     }
 }
 

@@ -14,7 +14,7 @@ use crate::{
     persistence::settings::{
         self as settings_cfg, ModuleSettings, PaletteSettings, ThemeFile, VisualSettings,
     },
-    util::audio::{Channel, DEFAULT_SAMPLE_RATE},
+    util::audio::Channel,
     util::color::{sanitize_stop_positions, sanitize_stop_spreads},
 };
 use iced::{Color, Element};
@@ -46,23 +46,44 @@ fn resolve_palette<const N: usize>(
 }
 
 macro_rules! visuals {
-    (@export_palette $state:expr, $default:expr) => {
-        PaletteSettings::if_differs_from($state, $default)
+    (@sync_export none, $out:ident, $processor:ident) => {};
+    (@sync_export config, $out:ident, $processor:ident) => {
+        $out.sync_from_config(&$processor.config());
+    };
+    (@export_palette spectrogram, $state:ident) => {
+        PaletteSettings::from_state(
+            &$state.palette,
+            &palettes::spectrogram::COLORS,
+            &$state.stop_positions,
+            &palettes::spectrogram::DEFAULT_POSITIONS,
+            &$state.stop_spreads,
+        )
+    };
+    (@export_palette $module:ident, $state:ident) => {
+        PaletteSettings::if_differs_from(&$state.palette, &palettes::$module::COLORS)
     };
     (@apply_config $proc:ident, $settings:ident) => {{
         let mut config = $proc.config();
         $settings.apply_to(&mut config);
         $proc.update_config(config)
     }};
-    (@apply_palette $st:expr, $settings:ident, $default:expr) => {
-        $st.set_palette(&resolve_palette($settings.palette.as_ref(), $default))
-    };
+    (@apply_palette spectrogram, $state:ident, $palette:ident) => {{
+        $state.set_stop_positions(&sanitize_stop_positions(
+            $palette.and_then(|palette| palette.stop_positions.as_deref()),
+            &palettes::spectrogram::DEFAULT_POSITIONS,
+        ));
+        $state.set_stop_spreads(&sanitize_stop_spreads(
+            $palette.and_then(|palette| palette.stop_spreads.as_deref()),
+            palettes::spectrogram::SIZE,
+        ));
+    }};
+    (@apply_palette $module:ident, $state:ident, $palette:ident) => {};
     ($($variant:ident($default_width_basis:expr, $min_w:expr) =>
-       $module:ident :: $processor:ident, $config:ident, $state:ident;
+       $module:ident :: $processor:ident, $config:ident, $state:ident.$state_settings:ident;
        $settings_ty:ty;
        $(pre_ingest($pip:ident, $pis:ident) $pre_ingest_body:expr;)?
        apply($ap:ident, $as:ident, $aset:ident) $apply_body:expr;
-       export($ep:ident, $es:ident) $export_body:expr;
+       export($ep:ident, $es:ident) $sync:ident;
     )*) => {
         #[derive(Clone)]
         pub(crate) struct VisualContent(VisualContentInner);
@@ -85,10 +106,7 @@ macro_rules! visuals {
             default_width_basis: $default_width_basis,
             min_width: $min_w,
             build: || Box::new(Visual {
-                processor: $module::$processor::new($module::$config {
-                    sample_rate: DEFAULT_SAMPLE_RATE,
-                    ..Default::default()
-                }),
+                processor: $module::$processor::new($module::$config::default()),
                 state: Rc::new(RefCell::new($module::$state::new())),
             }),
         }),*];
@@ -117,11 +135,27 @@ macro_rules! visuals {
                 let $aset: $settings_ty = module_cfg.parse_config().unwrap_or_default();
                 let ($ap, $as) = (&mut self.processor, &self.state);
                 $apply_body
+                self.apply_palette($aset.palette.as_ref());
             }
 
             fn export(&self) -> ModuleSettings {
                 let ($ep, $es) = (&self.processor, &self.state);
-                ModuleSettings::with_config(&{ let out: $settings_ty = $export_body; out })
+                let st = $es.borrow();
+                let mut out: $settings_ty = st.$state_settings.clone();
+                visuals!(@sync_export $sync, out, $ep);
+                out.palette = visuals!(@export_palette $module, st);
+                ModuleSettings::with_config(&out)
+            }
+
+            fn export_palette(&self) -> Option<PaletteSettings> {
+                let st = self.state.borrow();
+                visuals!(@export_palette $module, st)
+            }
+
+            fn apply_palette(&mut self, palette: Option<&PaletteSettings>) {
+                let mut state = self.state.borrow_mut();
+                state.set_palette(&resolve_palette(palette, &palettes::$module::COLORS));
+                visuals!(@apply_palette $module, state, palette);
             }
         })*
     };
@@ -129,25 +163,23 @@ macro_rules! visuals {
 
 visuals! {
     Loudness(140.0, 80.0) =>
-        loudness::LoudnessProcessor, LoudnessConfig, LoudnessState;
+        loudness::LoudnessProcessor, LoudnessConfig, LoudnessState.settings;
         settings_cfg::LoudnessSettings;
-        apply(_p, s, set) { let mut st = s.borrow_mut();
-            st.set_modes(set.left_mode, set.right_mode);
-            visuals!(@apply_palette st, set, &palettes::loudness::COLORS); };
-        export(_p, s) { let st = s.borrow(); let mut out = st.export_settings();
-            out.palette = visuals!(@export_palette &st.palette, &palettes::loudness::COLORS); out };
+        apply(_p, s, set) {
+            s.borrow_mut().set_modes(set.left_mode, set.right_mode);
+        };
+        export(_p, s) none;
 
     Oscilloscope(150.0, 100.0) =>
-        oscilloscope::OscilloscopeProcessor, OscilloscopeConfig, OscilloscopeState;
+        oscilloscope::OscilloscopeProcessor, OscilloscopeConfig, OscilloscopeState.settings;
         settings_cfg::OscilloscopeSettings;
         apply(p, s, set) { visuals!(@apply_config p, set); let reset = [set.channel_1, set.channel_2] == [Channel::None; 2];
-            let mut st = s.borrow_mut(); st.update_view_settings(&set, reset);
-            visuals!(@apply_palette st, set, &palettes::oscilloscope::COLORS); };
-        export(p, s) { let st = s.borrow(); let mut out = st.export_settings(); out.sync_from_config(&p.config());
-            out.palette = visuals!(@export_palette &st.colors, &palettes::oscilloscope::COLORS); out };
+            s.borrow_mut().update_view_settings(&set, reset);
+        };
+        export(p, s) config;
 
     Waveform(220.0, 220.0) =>
-        waveform::WaveformProcessor, WaveformConfig, WaveformState;
+        waveform::WaveformProcessor, WaveformConfig, WaveformState.settings;
         settings_cfg::WaveformSettings;
         pre_ingest(p, s) {
             let max_columns = s.borrow().view_columns().min(waveform::processor::MAX_COLUMN_CAPACITY);
@@ -163,13 +195,12 @@ visuals! {
             cfg.track_history = set.history_mode != WaveformHistoryMode::Off;
             cfg.analyze_bands = set.color_mode == WaveformColorMode::Frequency || cfg.track_history;
             p.update_config(cfg);
-            let mut st = s.borrow_mut(); st.update_view_settings(&set);
-            visuals!(@apply_palette st, set, &palettes::waveform::COLORS); };
-        export(p, s) { let st = s.borrow(); let mut out = st.export_settings(); out.sync_from_config(&p.config());
-            out.palette = visuals!(@export_palette &st.style.palette, &palettes::waveform::COLORS); out };
+            s.borrow_mut().update_view_settings(&set);
+        };
+        export(p, s) config;
 
     Spectrogram(320.0, 300.0) =>
-        spectrogram::SpectrogramProcessor, SpectrogramConfig, SpectrogramState;
+        spectrogram::SpectrogramProcessor, SpectrogramConfig, SpectrogramState.settings;
         settings_cfg::SpectrogramSettings;
         pre_ingest(p, s) {
             let vw = { s.borrow().view_width };
@@ -182,29 +213,20 @@ visuals! {
                 }
             }
         };
-        apply(p, s, set) { visuals!(@apply_config p, set); let mut st = s.borrow_mut();
-            visuals!(@apply_palette st, set, &palettes::spectrogram::COLORS);
-            st.set_stop_positions(&sanitize_stop_positions(
-                set.palette.as_ref().and_then(|p| p.stop_positions.as_deref()),
-                &palettes::spectrogram::DEFAULT_POSITIONS));
-            st.set_stop_spreads(&sanitize_stop_spreads(
-                set.palette.as_ref().and_then(|p| p.stop_spreads.as_deref()),
-                palettes::spectrogram::COLORS.len()));
-            st.update_view_settings(&set); };
-        export(p, s) { let st = s.borrow(); let mut out = st.export_settings(); out.sync_from_config(&p.config());
-            out.palette = PaletteSettings::from_state(&st.palette, &palettes::spectrogram::COLORS, &st.stop_positions, &palettes::spectrogram::DEFAULT_POSITIONS, &st.stop_spreads); out };
+        apply(p, s, set) { visuals!(@apply_config p, set);
+            s.borrow_mut().update_view_settings(&set); };
+        export(p, s) config;
 
     Spectrum(400.0, 400.0) =>
-        spectrum::SpectrumProcessor, SpectrumConfig, SpectrumState;
+        spectrum::SpectrumProcessor, SpectrumConfig, SpectrumState.style;
         settings_cfg::SpectrumSettings;
-        apply(p, s, set) { visuals!(@apply_config p, set); let cfg = p.config(); let mut st = s.borrow_mut();
-            st.update_view_settings(&set, cfg.floor_db);
-            visuals!(@apply_palette st, set, &palettes::spectrum::COLORS); };
-        export(p, s) { let st = s.borrow(); let mut out = st.export_settings(); out.sync_from_config(&p.config());
-            out.palette = visuals!(@export_palette &st.spectrum_palette, &palettes::spectrum::COLORS); out };
+        apply(p, s, set) { visuals!(@apply_config p, set); let cfg = p.config();
+            s.borrow_mut().update_view_settings(&set, cfg.floor_db);
+        };
+        export(p, s) config;
 
     Stereometer(150.0, 100.0) =>
-        stereometer::StereometerProcessor, StereometerConfig, StereometerState;
+        stereometer::StereometerProcessor, StereometerConfig, StereometerState.settings;
         settings_cfg::StereometerSettings;
         apply(p, s, set) {
             let mut cfg = p.config();
@@ -213,12 +235,9 @@ visuals! {
             cfg.analyze_bands = cfg.emit_band_points
                 || set.correlation_meter == CorrelationMeterMode::MultiBand;
             p.update_config(cfg);
-            let mut st = s.borrow_mut();
-            st.update_view_settings(&set);
-            visuals!(@apply_palette st, set, &palettes::stereometer::COLORS);
+            s.borrow_mut().update_view_settings(&set);
         };
-        export(p, s) { let st = s.borrow(); let mut out = st.export_settings(); out.sync_from_config(&p.config());
-            out.palette = visuals!(@export_palette &st.palette, &palettes::stereometer::COLORS); out };
+        export(p, s) config;
 }
 
 struct Visual<P, S> {
@@ -232,6 +251,8 @@ pub trait VisualModule {
     fn content(&self) -> VisualContent;
     fn apply(&mut self, settings: &ModuleSettings);
     fn export(&self) -> ModuleSettings;
+    fn export_palette(&self) -> Option<PaletteSettings>;
+    fn apply_palette(&mut self, palette: Option<&PaletteSettings>);
 }
 
 struct Descriptor {
@@ -327,8 +348,7 @@ impl VisualManager {
         self.entries.iter().filter_map(|entry| {
             entry
                 .module
-                .export()
-                .extract_palette()
+                .export_palette()
                 .map(|palette| (entry.descriptor.kind, palette))
         })
     }
@@ -371,9 +391,9 @@ impl VisualManager {
     }
     pub fn apply_theme(&mut self, theme: &ThemeFile) {
         for entry in &mut self.entries {
-            let mut settings = entry.module.export();
-            settings.override_palette(theme.palettes.get(&entry.descriptor.kind));
-            entry.module.apply(&settings);
+            entry
+                .module
+                .apply_palette(theme.palettes.get(&entry.descriptor.kind));
         }
     }
     pub fn ingest_samples(&mut self, samples: &[f32], format: AudioFormat) {

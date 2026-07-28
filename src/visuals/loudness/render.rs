@@ -7,6 +7,12 @@ use iced::advanced::graphics::Viewport;
 use crate::visuals::render::common::sdf_primitive;
 use crate::visuals::render::common::{GeometryScratch, ClipTransform, line_instance, quad_instance};
 
+pub(super) const DB_RANGE: (f32, f32) = (-60.0, 4.0);
+pub(super) const GUIDE_LEVELS: [f32; 6] = [0.0, -6.0, -12.0, -18.0, -24.0, -36.0];
+
+const FILL_COUNTS: [usize; 2] = [2, 1];
+pub(super) const LEFT_PADDING: f32 = 28.0;
+const RIGHT_PADDING: f32 = 64.0;
 const GAP_FRACTION: f32 = 0.1;
 const BAR_WIDTH_SCALE: f32 = 0.6;
 const INNER_GAP_RATIO: f32 = 0.09;
@@ -23,33 +29,27 @@ pub struct MeterFill {
     pub peak: Option<(f32, [f32; 4])>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct LoudnessParams {
     pub key: u64,
     pub bounds: Rectangle,
-    pub min_db: f32,
-    pub max_db: f32,
     pub bg_color: [f32; 4],
     pub bars: [[MeterFill; 2]; 2],
-    pub fill_counts: [usize; 2],
-    pub guides: &'static [f32],
     pub guide_color: [f32; 4],
-    pub threshold_db: Option<f32>,
-    pub left_padding: f32,
-    pub right_padding: f32,
+}
+
+pub(super) fn db_to_ratio(db: f32) -> f32 {
+    let (min_db, max_db) = DB_RANGE;
+    let range = max_db - min_db;
+    if range <= f32::EPSILON { return 0.0; }
+    let raw = ((db - min_db) / range).clamp(0.0, 1.0);
+    raw.powf(0.9)
 }
 
 impl LoudnessParams {
-    pub fn db_to_ratio(&self, db: f32) -> f32 {
-        let range = self.max_db - self.min_db;
-        if range <= f32::EPSILON { return 0.0; }
-        let raw = ((db - self.min_db) / range).clamp(0.0, 1.0);
-        raw.powf(0.9)
-    }
-
     pub fn meter_bounds(&self) -> Option<(f32, f32, f32)> {
         let bar_count = self.bars.len();
-        let meter_width = (self.bounds.width - self.left_padding - self.right_padding).max(0.0);
+        let meter_width = (self.bounds.width - LEFT_PADDING - RIGHT_PADDING).max(0.0);
         if meter_width <= 0.0 { return None; }
 
         let gap = meter_width * GAP_FRACTION;
@@ -58,7 +58,7 @@ impl LoudnessParams {
         let bar_width = bar_slot * BAR_WIDTH_SCALE;
         let bar_offset = (bar_slot - bar_width) * 0.5;
         let stride = bar_width + gap;
-        let meter_x = self.bounds.x + self.left_padding + bar_offset;
+        let meter_x = self.bounds.x + LEFT_PADDING + bar_offset;
 
         Some((meter_x, bar_width, stride))
     }
@@ -75,13 +75,12 @@ impl LoudnessPrimitive {
         let y0 = bounds.y;
         let y1 = bounds.y + bounds.height;
         let height = y1 - y0;
-        let y_of = |db| (y1 - height * self.params.db_to_ratio(db)).clamp(y0, y1);
+        let y_of = |db| (y1 - height * db_to_ratio(db)).clamp(y0, y1);
         let bar_count = self.params.bars.len();
-        let fill_count: usize = self.params.fill_counts.iter().sum();
         let vertices = &mut scratch.instances;
-        vertices.reserve(bar_count * 2 + fill_count * 5 + self.params.guides.len());
+        vertices.reserve(bar_count * 2 + FILL_COUNTS.iter().sum::<usize>() * 5 + GUIDE_LEVELS.len());
 
-        for (i, (bar, &sub_bar_count)) in self.params.bars.iter().zip(&self.params.fill_counts).enumerate() {
+        for (i, (bar, &sub_bar_count)) in self.params.bars.iter().zip(&FILL_COUNTS).enumerate() {
             let sub_bar_count = sub_bar_count.min(bar.len());
             if sub_bar_count == 0 { continue; }
             let x0 = meter_x + i as f32 * stride;
@@ -105,10 +104,10 @@ impl LoudnessPrimitive {
                 } else {
                     sx0 + seg_width
                 };
-                let value = fill.db.clamp(self.params.min_db, self.params.max_db);
-                let mut lower = self.params.min_db;
+                let value = fill.db.clamp(DB_RANGE.0, DB_RANGE.1);
+                let mut lower = DB_RANGE.0;
                 for &(ceiling, color) in &fill.segments {
-                    let ceiling = ceiling.clamp(self.params.min_db, self.params.max_db);
+                    let ceiling = ceiling.clamp(DB_RANGE.0, DB_RANGE.1);
                     let upper = value.min(ceiling);
                     if upper > lower {
                         vertices.push(quad_instance(
@@ -141,7 +140,7 @@ impl LoudnessPrimitive {
         }
 
         let guide_anchor = meter_x - GUIDE_PADDING;
-        for &db in self.params.guides {
+        for db in GUIDE_LEVELS {
             let cy = y_of(db);
             vertices.push(line_instance(
                 (guide_anchor - GUIDE_LENGTH, cy),
@@ -153,20 +152,18 @@ impl LoudnessPrimitive {
             ));
         }
 
-        if let Some(db) = self.params.threshold_db {
-            let cy = y_of(db);
-            for i in 0..bar_count {
-                let x0 = meter_x + i as f32 * stride;
-                let x1 = x0 + bar_width;
-                vertices.push(line_instance(
-                    (x0, cy),
-                    (x1, cy),
-                    self.params.guide_color,
-                    self.params.guide_color,
-                    THRESHOLD_THICKNESS,
-                    clip,
-                ));
-            }
+        let cy = y_of(0.0);
+        for i in 0..bar_count {
+            let x0 = meter_x + i as f32 * stride;
+            let x1 = x0 + bar_width;
+            vertices.push(line_instance(
+                (x0, cy),
+                (x1, cy),
+                self.params.guide_color,
+                self.params.guide_color,
+                THRESHOLD_THICKNESS,
+                clip,
+            ));
         }
 
     }

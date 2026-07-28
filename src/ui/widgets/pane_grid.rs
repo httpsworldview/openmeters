@@ -106,18 +106,12 @@ pub struct Content<'a, Message> {
 }
 
 impl<'a, Message> Content<'a, Message> {
-    pub fn new(body: impl Into<Element<'a, Message>>) -> Self {
+    pub fn new(body: impl Into<Element<'a, Message>>, min_width: f32, basis_width: f32) -> Self {
         Self {
             body: body.into(),
-            min_width: 0.0,
-            basis_width: 0.0,
+            min_width,
+            basis_width,
         }
-    }
-
-    pub fn with_width_basis(mut self, min: f32, basis: f32) -> Self {
-        self.min_width = min;
-        self.basis_width = basis;
-        self
     }
 }
 
@@ -125,57 +119,34 @@ impl<'a, Message> Content<'a, Message> {
 #[allow(missing_debug_implementations)]
 pub struct PaneGrid<'a, Message> {
     entries: Vec<(Pane, Content<'a, Message>)>,
-    width: Length,
-    height: Length,
     on_drag: Option<fn(DragEvent) -> Message>,
-    on_resize: Option<fn(ResizeWidths) -> Message>,
-    on_context: Option<fn(Pane) -> Message>,
-    on_hover: Option<fn(Option<Pane>) -> Message>,
+    on_resize: fn(ResizeWidths) -> Message,
+    on_context: fn(Pane) -> Message,
+    on_hover: fn(Option<Pane>) -> Message,
 }
 
 impl<'a, Message: 'a> PaneGrid<'a, Message> {
-    pub fn new<T>(state: &'a State<T>, view: impl Fn(Pane, &'a T) -> Content<'a, Message>) -> Self {
+    pub fn new<T>(
+        state: &'a State<T>,
+        view: impl Fn(Pane, &'a T) -> Content<'a, Message>,
+        on_resize: fn(ResizeWidths) -> Message,
+        on_context: fn(Pane) -> Message,
+        on_hover: fn(Option<Pane>) -> Message,
+    ) -> Self {
         Self {
             entries: state
                 .iter()
                 .map(|(pane, value)| (*pane, view(*pane, value)))
                 .collect(),
-            width: Length::Fill,
-            height: Length::Fill,
             on_drag: None,
-            on_resize: None,
-            on_context: None,
-            on_hover: None,
+            on_resize,
+            on_context,
+            on_hover,
         }
-    }
-
-    pub fn width(mut self, width: impl Into<Length>) -> Self {
-        self.width = width.into();
-        self
-    }
-
-    pub fn height(mut self, height: impl Into<Length>) -> Self {
-        self.height = height.into();
-        self
     }
 
     pub fn on_drag(mut self, callback: fn(DragEvent) -> Message) -> Self {
         self.on_drag = Some(callback);
-        self
-    }
-
-    pub fn on_resize(mut self, callback: fn(ResizeWidths) -> Message) -> Self {
-        self.on_resize = Some(callback);
-        self
-    }
-
-    pub fn on_context_request(mut self, callback: fn(Pane) -> Message) -> Self {
-        self.on_context = Some(callback);
-        self
-    }
-
-    pub fn on_hover(mut self, callback: fn(Option<Pane>) -> Message) -> Self {
-        self.on_hover = Some(callback);
         self
     }
 
@@ -241,7 +212,7 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer> for PaneGrid
     }
 
     fn size(&self) -> Size<Length> {
-        Size::new(self.width, self.height)
+        Size::new(Length::Fill, Length::Fill)
     }
 
     fn layout(
@@ -251,7 +222,7 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer> for PaneGrid
         limits: &layout::Limits,
     ) -> layout::Node {
         let count = self.entries.len();
-        let size = limits.resolve(self.width, self.height, Size::ZERO);
+        let size = limits.resolve(Length::Fill, Length::Fill, Size::ZERO);
         if count == 0 {
             return layout::Node::new(size);
         }
@@ -367,10 +338,9 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer> for PaneGrid
             return mouse::Interaction::Grabbing;
         }
         if interaction.resizing.is_some()
-            || (self.on_resize.is_some()
-                && cursor
-                    .position()
-                    .is_some_and(|p| self.divider_at(layout, p).is_some()))
+            || cursor
+                .position()
+                .is_some_and(|p| self.divider_at(layout, p).is_some())
         {
             return mouse::Interaction::ResizingHorizontally;
         }
@@ -467,9 +437,7 @@ impl<'a, Message: 'a> PaneGrid<'a, Message> {
         let interaction = tree.state.downcast_mut::<Interaction>();
         if interaction.cursor_over != pane {
             interaction.cursor_over = pane;
-            if let Some(on_hover) = &self.on_hover {
-                shell.publish(on_hover(pane));
-            }
+            shell.publish((self.on_hover)(pane));
         }
     }
 
@@ -550,9 +518,7 @@ impl<'a, Message: 'a> PaneGrid<'a, Message> {
                 let Some(position) = cursor.position() else {
                     return false;
                 };
-                if self.on_resize.is_some()
-                    && let Some(divider) = self.divider_at(layout, position)
-                {
+                if let Some(divider) = self.divider_at(layout, position) {
                     let start: Vec<_> = layout
                         .children()
                         .map(|c| c.bounds().width.max(0.0))
@@ -579,11 +545,10 @@ impl<'a, Message: 'a> PaneGrid<'a, Message> {
                 }
             }
             mouse::Event::ButtonPressed(Button::Right) => {
-                if let Some(on_context) = &self.on_context
-                    && let Some(position) = cursor.position()
+                if let Some(position) = cursor.position()
                     && let Some(pane) = self.pane_at(layout, position)
                 {
-                    shell.publish(on_context(pane));
+                    shell.publish((self.on_context)(pane));
                     shell.capture_event();
                     return true;
                 }
@@ -631,9 +596,7 @@ impl<'a, Message: 'a> PaneGrid<'a, Message> {
             }
             mouse::Event::ButtonReleased(Button::Left) => {
                 if !widths_equal(&resizing.current, &resizing.start) {
-                    if let Some(on_resize) = &self.on_resize {
-                        shell.publish(on_resize(self.pair_widths(&resizing.current)));
-                    }
+                    shell.publish((self.on_resize)(self.pair_widths(&resizing.current)));
                     shell.invalidate_layout();
                 }
                 shell.request_redraw();

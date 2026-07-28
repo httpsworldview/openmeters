@@ -199,7 +199,7 @@ struct ChannelState {
     silent_frames: usize,
 }
 
-pub const MAX_CHANNELS: usize = 8;
+pub(super) const MAX_CHANNELS: usize = crate::dsp::MAX_AUDIO_CHANNELS;
 
 fn channel_weight(position: ChannelPosition) -> f64 {
     match position {
@@ -241,7 +241,6 @@ crate::macros::default_struct! {
     #[derive(Debug, Clone, Copy)]
     pub struct LoudnessConfig {
         pub sample_rate: f32 = DEFAULT_SAMPLE_RATE,
-        pub windows: [f32; 4] = DEFAULT_WINDOWS,
         pub floor_db: f32 = DEFAULT_FLOOR_DB,
     }
 }
@@ -250,21 +249,18 @@ crate::macros::default_struct! {
 pub struct LoudnessProcessor {
     config: LoudnessConfig,
     channels: Vec<ChannelState>,
-    snapshot: LoudnessSnapshot,
 }
 
 impl LoudnessProcessor {
     pub fn new(config: LoudnessConfig) -> Self {
         Self {
             channels: Vec::new(),
-            snapshot: LoudnessSnapshot::default(),
             config,
         }
     }
 
     pub fn reset_audio(&mut self) {
         self.channels.iter_mut().for_each(|channel| *channel = ChannelState::default());
-        self.snapshot = LoudnessSnapshot::with_floor(self.config.floor_db);
     }
 
     fn ensure_state(&mut self, requested_channels: usize, sample_rate: f32) {
@@ -283,17 +279,14 @@ impl LoudnessProcessor {
 
     fn rebuild_state(&mut self, channels: usize) {
         self.channels = (0..channels).map(|_| ChannelState::default()).collect();
-        self.snapshot = LoudnessSnapshot::with_floor(self.config.floor_db);
     }
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<LoudnessSnapshot> {
         if block.is_empty() { return None; }
 
         self.ensure_state(block.channels, block.sample_rate);
 
-        let capacities = self
-            .config
-            .windows
-            .map(|window| window_length(self.config.sample_rate, window));
+        let capacities =
+            DEFAULT_WINDOWS.map(|window| window_length(self.config.sample_rate, window));
         let sample_rate = f64::from(self.config.sample_rate);
         for frame in block.samples.chunks_exact(block.channels) {
             for (channel, &sample) in self.channels.iter_mut().zip(frame) {
@@ -320,6 +313,7 @@ impl LoudnessProcessor {
 
         let floor = self.config.floor_db;
         let num_channels = self.channels.len();
+        let mut snapshot = LoudnessSnapshot::with_floor(floor);
         let mut weighted_short_term = 0.0;
         let mut weighted_momentary = 0.0;
 
@@ -328,20 +322,20 @@ impl LoudnessProcessor {
             let weight = channel_weight(block.positions[channel_index]);
             weighted_short_term += windows.mean(WIN_SHORT_TERM)[0] * weight;
             weighted_momentary += windows.mean(WIN_MOMENTARY)[0] * weight;
-            self.snapshot.rms_fast_db[channel_index] =
+            snapshot.rms_fast_db[channel_index] =
                 power_to_db(windows.mean(WIN_RMS_FAST)[0] as f32, floor);
-            self.snapshot.rms_slow_db[channel_index] =
+            snapshot.rms_slow_db[channel_index] =
                 power_to_db(windows.mean(WIN_RMS_SLOW)[0] as f32, floor);
             let peak = true_peak.take_peak();
-            self.snapshot.true_peak_db[channel_index] = power_to_db(peak * peak, floor);
+            snapshot.true_peak_db[channel_index] = power_to_db(peak * peak, floor);
         }
 
-        self.snapshot.short_term_loudness = mean_square_to_lufs(weighted_short_term, floor);
-        self.snapshot.momentary_loudness = mean_square_to_lufs(weighted_momentary, floor);
-        self.snapshot.channel_count = num_channels;
-        self.snapshot.positions = block.positions;
+        snapshot.short_term_loudness = mean_square_to_lufs(weighted_short_term, floor);
+        snapshot.momentary_loudness = mean_square_to_lufs(weighted_momentary, floor);
+        snapshot.channel_count = num_channels;
+        snapshot.positions = block.positions;
 
-        Some(self.snapshot)
+        Some(snapshot)
     }
 
 }
@@ -445,7 +439,7 @@ mod tests {
         let mut lazy = LoudnessProcessor::new(LoudnessConfig::default());
         let mut eager = LoudnessProcessor::new(LoudnessConfig::default());
         eager.ensure_state(2, 48_000.0);
-        let capacities = eager.config.windows.map(|window| window_length(48_000.0, window));
+        let capacities = DEFAULT_WINDOWS.map(|window| window_length(48_000.0, window));
         for channel in &mut eager.channels {
             channel.active = Some((
                 WindowedMeans::new(capacities),

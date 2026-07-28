@@ -22,7 +22,6 @@ pub use self::{
     },
 };
 pub(crate) use self::{
-    channel::{mix_stereo, project_interleaved_channel_into},
     level::{flush_denormal_f32, flush_denormal_f64},
     window::window_coefficients,
 };

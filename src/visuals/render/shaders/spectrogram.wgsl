@@ -24,7 +24,6 @@ struct Uniforms {
 
     history_length: u32,
     col_count: u32,
-    write_slot: u32,
     rotation: u32,
 
     bounds: vec4<f32>,              // (x, y, w, h) logical pixels
@@ -33,8 +32,6 @@ struct Uniforms {
     scale_factor: f32,
 
     floor_db: f32,
-    ceiling_db: f32,
-    contrast: f32,
     tilt_db: f32,
 
     newest_col: u32,
@@ -261,15 +258,11 @@ fn apply_tilt(mut_mag: f32, freq_hz: f32) -> f32 {
 }
 
 fn shade_db(mag: f32) -> vec4<f32> {
-    let range = max(u.ceiling_db - u.floor_db, 0.001);
-    let normalized = clamp((mag - u.floor_db) / range, 0.0, 1.0);
-    var adjusted = normalized;
-    if abs(u.contrast - 1.0) > 1e-4 {
-        adjusted = pow(normalized, max(u.contrast, 0.01));
-    }
+    let range = max(-u.floor_db, 0.001);
+    let level = clamp((mag - u.floor_db) / range, 0.0, 1.0);
 
     // Mix palette stops in sRGB space (web-colors pipeline).
-    let color = palette_color(adjusted);
+    let color = palette_color(level);
 
     // iced expects premultiplied alpha
     return vec4<f32>(color.rgb * color.a, color.a);

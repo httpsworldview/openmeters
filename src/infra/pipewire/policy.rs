@@ -3,7 +3,7 @@
 
 use super::MAX_CAPTURE_CHANNELS;
 use super::graph::{CaptureLayout, Channel, Graph, Node, NodeKind, Port};
-use super::stream::{DeviceTarget, StreamConfig};
+use super::stream::StreamConfig;
 use crate::domain::routing::{CaptureConfig, CaptureMode, DeviceSelection};
 use std::collections::HashSet;
 
@@ -71,7 +71,6 @@ fn application_plan(sources: Vec<&Node>) -> Plan {
             layout: CaptureLayout::surround(),
             target: None,
             passive: true,
-            drive: false,
         },
         sources: sources.into_iter().map(|node| node.id).collect(),
         truncated,
@@ -79,20 +78,15 @@ fn application_plan(sources: Vec<&Node>) -> Plan {
 }
 
 fn device_plan(device: &Node) -> Plan {
-    let layout = capture_layout(device);
-    let truncated = layout.truncated;
+    let (layout, truncated) = capture_layout(device);
     if matches!(device.kind, NodeKind::Sink | NodeKind::Source)
         && let Some(object) = device.target_object()
     {
         return Plan {
             stream: StreamConfig {
                 layout,
-                target: Some(DeviceTarget {
-                    object,
-                    capture_sink: device.kind == NodeKind::Sink,
-                }),
+                target: Some(object),
                 passive: device.kind == NodeKind::Sink,
-                drive: false,
             },
             sources: Vec::new(),
             truncated,
@@ -105,7 +99,6 @@ fn device_plan(device: &Node) -> Plan {
             layout,
             target: None,
             passive,
-            drive: !passive,
         },
         sources: vec![device.id],
         truncated,
@@ -124,19 +117,19 @@ fn port_layout(ports: &[&Port]) -> ([Channel; MAX_CAPTURE_CHANNELS], usize) {
     )
 }
 
-fn capture_layout(source: &Node) -> CaptureLayout {
+fn capture_layout(source: &Node) -> (CaptureLayout, usize) {
     let ports = source.output_ports();
     if ports.is_empty() {
-        return CaptureLayout::stereo();
+        return (CaptureLayout::stereo(), 0);
     }
     let (positions, truncated) = port_layout(&ports);
-    CaptureLayout {
+    let layout = CaptureLayout {
         channels: positions
             .into_iter()
             .take(ports.len().min(MAX_CAPTURE_CHANNELS))
             .collect(),
-        truncated,
-    }
+    };
+    (layout, truncated)
 }
 
 pub(super) fn desired_links(graph: &Graph, plan: &Plan, tap: &Node) -> Vec<LinkSpec> {

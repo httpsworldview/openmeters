@@ -4,13 +4,12 @@
 use crate::dsp::{
     AudioBlock, CrossoverFilter, FilterKind, LinkwitzRiley, ThreeBand,
 };
-use crate::util::audio::{
-    BAND_SPLITS_HZ, DEFAULT_SAMPLE_RATE, flush_denormal_f64, mix_stereo,
-};
+use crate::util::audio::{BAND_SPLITS_HZ, DEFAULT_SAMPLE_RATE, flush_denormal_f64};
 use std::{collections::VecDeque, sync::Arc};
 
 const BAND_CHANNELS: usize = 2;
 const BAND_DISPLAY_GAIN: f32 = 0.8;
+pub(super) const BAND_COUNT: usize = BAND_SPLITS_HZ.len() + 1;
 
 crate::macros::default_struct! {
     #[derive(Debug, Clone, Copy)]
@@ -30,27 +29,18 @@ impl StereometerConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub struct BandCorrelation {
-    pub low: f32,
-    pub mid: f32,
-    pub high: f32,
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct StereometerSnapshot {
     pub xy_points: Arc<[(f32, f32)]>,
     pub correlation: f32,
-    pub band_correlation: BandCorrelation,
-    pub band_points: [Arc<[(f32, f32)]>; 3],
+    pub band_correlation: [f32; BAND_COUNT],
+    pub band_points: [Arc<[(f32, f32)]>; BAND_COUNT],
 }
 
 #[derive(Debug, Default)]
 struct SnapshotBuffer {
     xy_points: Vec<(f32, f32)>,
-    correlation: f32,
-    band_correlation: BandCorrelation,
-    band_points: [Vec<(f32, f32)>; 3],
+    band_points: [Vec<(f32, f32)>; BAND_COUNT],
 }
 
 fn snapshot_points(points: &[(f32, f32)]) -> Arc<[(f32, f32)]> {
@@ -136,7 +126,7 @@ impl Correlator {
 #[derive(Debug, Clone, Copy)]
 struct Correlators {
     full: Correlator,
-    bands: [Correlator; 3],
+    bands: [Correlator; BAND_COUNT],
 }
 
 impl Correlators {
@@ -144,7 +134,7 @@ impl Correlators {
         let alpha = ema_alpha(config.sample_rate, config.correlation_window);
         Self {
             full: Correlator::new(alpha),
-            bands: [Correlator::new(alpha); 3],
+            bands: [Correlator::new(alpha); BAND_COUNT],
         }
     }
 
@@ -156,12 +146,11 @@ impl Correlators {
     }
 
     fn reset_bands(&mut self, alpha: f64) {
-        self.bands = [Correlator::new(alpha); 3];
+        self.bands = [Correlator::new(alpha); BAND_COUNT];
     }
 
-    fn band_correlation(&self) -> BandCorrelation {
-        let [low, mid, high] = self.bands.each_ref().map(Correlator::value);
-        BandCorrelation { low, mid, high }
+    fn band_correlation(&self) -> [f32; BAND_COUNT] {
+        self.bands.each_ref().map(Correlator::value)
     }
 }
 
@@ -170,7 +159,7 @@ pub struct StereometerProcessor {
     config: StereometerConfig,
     snapshot: SnapshotBuffer,
     history: VecDeque<f32>,
-    band_history: [VecDeque<f32>; 3],
+    band_history: [VecDeque<f32>; BAND_COUNT],
     history_channels: usize,
     band_splitter: BandSplitter,
     correlators: Correlators,
@@ -204,8 +193,6 @@ impl StereometerProcessor {
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<StereometerSnapshot> {
         let channel_count = block.channels;
         if block.is_empty() { return None; }
-        let matrix = block.stereo_matrix();
-
         let sample_rate = block.sample_rate;
         if self.config.sample_rate != sample_rate {
             let mut config = self.config;
@@ -218,8 +205,7 @@ impl StereometerProcessor {
         }
 
         let analyze_bands = self.config.needs_band_analysis();
-        for frame in block.samples.chunks_exact(channel_count) {
-            let [left, right] = mix_stereo(frame, matrix);
+        for [left, right] in block.stereo_frames() {
             self.history.extend([left, right]);
             self.correlators.full.update(left, right);
 
@@ -295,17 +281,16 @@ impl StereometerProcessor {
             }
         }
 
-        self.snapshot.correlation = self.correlators.full.value();
-        self.snapshot.band_correlation = if analyze_bands {
+        let band_correlation = if analyze_bands {
             self.correlators.band_correlation()
         } else {
-            BandCorrelation::default()
+            [0.0; BAND_COUNT]
         };
 
         Some(StereometerSnapshot {
             xy_points: snapshot_points(&self.snapshot.xy_points),
-            correlation: self.snapshot.correlation,
-            band_correlation: self.snapshot.band_correlation,
+            correlation: self.correlators.full.value(),
+            band_correlation,
             band_points: self.snapshot.band_points.each_ref().map(|points| snapshot_points(points)),
         })
     }
@@ -330,7 +315,6 @@ impl StereometerProcessor {
             if band_analysis_changed {
                 self.band_splitter = BandSplitter::cascaded(config.sample_rate, BAND_SPLITS_HZ);
                 self.correlators.reset_bands(alpha);
-                self.snapshot.band_correlation = BandCorrelation::default();
             }
         }
 

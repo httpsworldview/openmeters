@@ -9,15 +9,13 @@ use crate::visuals::palettes;
 use iced::Color;
 use std::sync::Arc;
 
-const OSCILLOSCOPE_PALETTE_SIZE: usize = TRACE_COUNT;
 const MAX_PERSISTENCE: f32 = 0.98;
-const FILL_ALPHA: f32 = 0.15;
 
 #[derive(Debug, Clone)]
 pub(in crate::visuals) struct OscilloscopeState {
     snapshot: OscilloscopeSnapshot,
-    pub(in crate::visuals) colors: [Color; OSCILLOSCOPE_PALETTE_SIZE],
-    settings: OscilloscopeSettings,
+    pub(in crate::visuals) palette: [Color; TRACE_COUNT],
+    pub(in crate::visuals) settings: OscilloscopeSettings,
     key: u64,
 }
 
@@ -25,7 +23,7 @@ impl OscilloscopeState {
     pub fn new() -> Self {
         Self {
             snapshot: OscilloscopeSnapshot::default(),
-            colors: palettes::oscilloscope::COLORS,
+            palette: palettes::oscilloscope::COLORS,
             settings: OscilloscopeSettings::default(),
             key: crate::visuals::next_key(),
         }
@@ -47,12 +45,8 @@ impl OscilloscopeState {
         }
     }
 
-    pub fn export_settings(&self) -> OscilloscopeSettings {
-        self.settings.clone()
-    }
-
-    pub fn set_palette(&mut self, palette: &[Color; OSCILLOSCOPE_PALETTE_SIZE]) {
-        self.colors = *palette;
+    pub fn set_palette(&mut self, palette: &[Color; TRACE_COUNT]) {
+        self.palette = *palette;
     }
 
     pub fn apply_snapshot(&mut self, snapshot: OscilloscopeSnapshot) {
@@ -96,9 +90,8 @@ impl OscilloscopeState {
             samples_per_channel,
             slots: self.snapshot.slots,
             samples: self.snapshot.samples.clone(),
-            colors: self.colors.map(color_to_rgba),
+            colors: self.palette.map(color_to_rgba),
             stacked: self.settings.stacked,
-            fill_alpha: FILL_ALPHA,
         })
     }
 }

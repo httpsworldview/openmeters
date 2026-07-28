@@ -191,7 +191,6 @@ pub(super) struct CaptureWriter {
     retired: Vec<Box<[f32]>>,
     pool_samples: usize,
     pool_limit: usize,
-    generation: u64,
     activity_epoch: u64,
     previous_end: u64,
     previous_callback: u64,
@@ -226,7 +225,7 @@ impl CaptureWriter {
     pub(super) fn reclaim_buffers(&mut self) {
         self.retired.clear();
         while let Ok(samples) = self.recycled.pop() {
-            if samples.len() == self.pool_samples && self.pool.len() < self.pool_limit {
+            if self.can_pool(&samples) {
                 self.pool.push(samples);
             }
         }
@@ -262,7 +261,7 @@ impl CaptureWriter {
     }
 
     pub(super) fn publish_format(
-        &mut self,
+        &self,
         channels: usize,
         rate: u32,
         positions: [ChannelPosition; MAX_CAPTURE_CHANNELS],
@@ -272,8 +271,8 @@ impl CaptureWriter {
         if current.generation != 0 && candidate == current {
             return current;
         }
-        self.generation = current.generation.max(self.generation).saturating_add(1);
-        let format = AudioFormat::new(channels, rate, self.generation, positions);
+        let generation = current.generation.saturating_add(1);
+        let format = AudioFormat::new(channels, rate, generation, positions);
         *unpoison(self.shared.format.write()) = format;
         format
     }
@@ -318,7 +317,7 @@ impl CaptureWriter {
         while offset < frames {
             let block_start = start + scale(end - start, offset, frames);
             if !self.start_packet(pcm, format, block_start) {
-                self.overflow(frames - offset);
+                self.overflow();
                 return;
             }
             let packet = self.pending.as_mut().expect("pending packet");
@@ -332,7 +331,7 @@ impl CaptureWriter {
             packet.frames += count;
             packet.end = start + scale(end - start, offset, frames);
             if packet.frames == packet_frames && !self.flush_pending() {
-                self.overflow(frames - offset);
+                self.overflow();
                 return;
             }
         }
@@ -416,9 +415,13 @@ impl CaptureWriter {
         self.pool_limit = 0;
     }
 
+    fn can_pool(&self, samples: &[f32]) -> bool {
+        samples.len() == self.pool_samples && self.pool.len() < self.pool_limit
+    }
+
     fn take_samples(&mut self) -> Option<Box<[f32]>> {
         while let Ok(samples) = self.recycled.pop() {
-            if samples.len() == self.pool_samples && self.pool.len() < self.pool_limit {
+            if self.can_pool(&samples) {
                 return Some(samples);
             }
             self.retired.push(samples);
@@ -428,7 +431,7 @@ impl CaptureWriter {
 
     fn reclaim_samples(&mut self, samples: Option<Box<[f32]>>) {
         if let Some(samples) = samples {
-            if samples.len() == self.pool_samples && self.pool.len() < self.pool_limit {
+            if self.can_pool(&samples) {
                 self.pool.push(samples);
             } else {
                 self.retired.push(samples);
@@ -445,10 +448,9 @@ impl CaptureWriter {
         let Some(packet) = self.pending.take().filter(|packet| packet.frames > 0) else {
             return true;
         };
-        let frames = packet.frames;
         if let Err(PushError::Full(packet)) = self.producer.push(packet) {
             self.reclaim_samples(packet.samples);
-            self.overflow(frames);
+            self.overflow();
             false
         } else {
             self.overflowed = false;
@@ -473,7 +475,7 @@ impl CaptureWriter {
         (start, self.previous_end)
     }
 
-    fn overflow(&mut self, _frames: u64) {
+    fn overflow(&mut self) {
         if !self.overflowed {
             self.shared.fault();
             self.overflowed = true;
@@ -725,7 +727,6 @@ fn channel_with_capacity(capacity: usize) -> (CaptureWriter, AudioReader) {
             retired: Vec::new(),
             pool_samples: 0,
             pool_limit: 0,
-            generation: 0,
             activity_epoch: 0,
             previous_end: 0,
             previous_callback: 0,

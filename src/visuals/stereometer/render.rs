@@ -6,9 +6,11 @@ use iced::advanced::graphics::Viewport;
 use std::ops::Deref;
 use std::sync::{Arc, LazyLock};
 
+use super::processor::BAND_COUNT;
 use crate::visuals::options::{
     CorrelationMeterMode, CorrelationMeterSide, StereometerMode, StereometerScale,
 };
+use crate::visuals::palettes::stereometer::SIZE as PALETTE_SIZE;
 use crate::util::lerp;
 use crate::visuals::render::common::{
     ClipTransform, GeometryScratch, SdfInstance, SdfPipeline, gradient_quad_instance,
@@ -83,8 +85,8 @@ pub struct StereometerParams {
     pub grid_revision: u64,
     pub bounds: Rectangle,
     pub points: Arc<[(f32, f32)]>,
-    pub band_points: [Arc<[(f32, f32)]>; 3],
-    pub palette: [[f32; 4]; 9],
+    pub band_points: [Arc<[(f32, f32)]>; BAND_COUNT],
+    pub palette: [[f32; 4]; PALETTE_SIZE],
     pub mode: StereometerMode,
     pub scale: StereometerScale,
     pub dot_radius: f32,
@@ -94,7 +96,7 @@ pub struct StereometerParams {
     pub correlation_meter: CorrelationMeterMode,
     pub correlation_meter_side: CorrelationMeterSide,
     pub corr_trail: FixedTrail,
-    pub band_trail: [FixedTrail; 3],
+    pub band_trail: [FixedTrail; BAND_COUNT],
 }
 
 #[derive(Debug)]

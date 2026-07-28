@@ -16,40 +16,36 @@ use crate::visuals::render::common::{
     ChannelLayout, ClipTransform, GeometryScratch, extend_filled_line, quad_instance,
 };
 use crate::visuals::waveform::processor::{
-    DEFAULT_BAND_DB_FLOOR, NUM_BANDS, WAVEFORM_SILENCE_AMPLITUDE, WaveColumn, WaveFrame,
+    DEFAULT_BAND_DB_FLOOR, MAX_COLUMN_CAPACITY, NUM_BANDS, WAVEFORM_SILENCE_AMPLITUDE, WaveColumn,
+    WaveFrame,
     WaveformPreview,
 };
+
+pub(super) const COLUMN_WIDTH_PIXELS: f32 = 1.0;
 
 const BAND_LINE_WIDTH: f32 = 1.5;
 const BAND_FILL_ALPHA: f32 = 0.15;
 const MIN_COLUMN_HEIGHT_PIXELS: f32 = 1.0;
 const LOUDNESS_QUIET_DB: f32 = -36.0;
+const VERTICAL_PADDING: f32 = 8.0;
+const CHANNEL_GAP: f32 = 12.0;
+const AMPLITUDE_SCALE: f32 = 1.0;
 
 #[derive(Debug)]
 pub struct WaveformParams {
     pub bounds: Rectangle,
     pub lanes: [usize; 2],
     pub channels: usize,
-    pub column_width: f32,
-    pub columns: usize,
     pub data: Arc<Mutex<VecDeque<WaveFrame>>>,
     pub preview: WaveformPreview,
     pub color_mode: WaveformColorMode,
     pub history_mode: WaveformHistoryMode,
     pub band_db_floor: f32,
     pub palette: [[f32; 4]; NUM_BANDS],
-    pub fill_alpha: f32,
-    pub vertical_padding: f32,
-    pub channel_gap: f32,
-    pub amplitude_scale: f32,
     pub key: u64,
 }
 
 impl WaveformParams {
-    fn preview_active(&self) -> bool {
-        self.channels > 0 && self.preview.progress > 0.0 && self.preview.columns.is_some()
-    }
-
     fn column_color(&self, column: WaveColumn) -> [f32; 4] {
         match self.color_mode {
             WaveformColorMode::Frequency => self.band_mix_color(column.color_bands),
@@ -112,32 +108,32 @@ fn sample_y_span(center_y: f32, amplitude_scale: f32, min: f32, max: f32) -> Opt
     Some((y0.min(y1), y0.max(y1)))
 }
 
-fn with_fill_alpha(color: [f32; 4], alpha: f32) -> [f32; 4] {
-    rgba_with_alpha(color, color[3] * alpha)
-}
-
 impl WaveformPrimitive {
     fn build_vertices(&self, _viewport: &Viewport, scratch: &mut GeometryScratch) {
         let params = &self.params;
         let data = crate::util::unpoison(params.data.lock());
-        let (channels, columns) = (params.channels.max(1), params.columns.min(data.len()));
+        let channels = params.channels.max(1);
+        let columns = ((params.bounds.width / COLUMN_WIDTH_PIXELS).ceil() as usize)
+            .clamp(1, MAX_COLUMN_CAPACITY)
+            .min(data.len());
         let start = data.len().saturating_sub(columns);
-        let preview_active = params.preview_active();
+        let preview_active =
+            params.channels > 0 && params.preview.progress > 0.0 && params.preview.columns.is_some();
 
         if columns == 0 && !preview_active {
             return;
         }
 
         let clip = ClipTransform::from_bounds(params.bounds);
-        let col_width = params.column_width.max(0.5);
+        let col_width = COLUMN_WIDTH_PIXELS;
         let right_edge = params.bounds.x + params.bounds.width;
 
         let layout = ChannelLayout::new(
             params.bounds,
             channels,
-            params.vertical_padding,
-            params.channel_gap,
-            params.amplitude_scale,
+            VERTICAL_PADDING,
+            CHANNEL_GAP,
+            AMPLITUDE_SCALE,
         );
         let history: Option<fn(WaveColumn) -> [f32; NUM_BANDS]> = match params.history_mode {
             WaveformHistoryMode::Off => None,
@@ -153,8 +149,8 @@ impl WaveformPrimitive {
                 + usize::from(history_active) * channels * NUM_BANDS * columns * 2,
         );
 
-        let static_color = (params.color_mode == WaveformColorMode::Static)
-            .then(|| with_fill_alpha(params.palette[0], params.fill_alpha));
+        let static_color =
+            (params.color_mode == WaveformColorMode::Static).then_some(params.palette[0]);
 
         let preview_columns = preview_active.then_some(params.preview.columns).flatten();
         let scroll_offset = if preview_columns.is_some() {
@@ -171,8 +167,7 @@ impl WaveformPrimitive {
             if let Some((y0, y1)) =
                 sample_y_span(center_y, layout.amplitude_scale, column.min, column.max)
             {
-                let color = static_color
-                    .unwrap_or_else(|| with_fill_alpha(params.column_color(column), params.fill_alpha));
+                let color = static_color.unwrap_or_else(|| params.column_color(column));
                 vertices.push(quad_instance(x0, y0, x1, y1, clip, color));
             }
         };
@@ -199,7 +194,7 @@ impl WaveformPrimitive {
                 let band_height = layout.channel_height;
                 let pts = &mut scratch.points;
                 for (band, &color) in params.palette.iter().enumerate() {
-                    let fill_color = with_fill_alpha(color, BAND_FILL_ALPHA);
+                    let fill_color = rgba_with_alpha(color, color[3] * BAND_FILL_ALPHA);
 
                     pts.clear();
                     pts.reserve(columns + 1);

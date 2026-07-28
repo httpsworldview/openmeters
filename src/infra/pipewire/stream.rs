@@ -25,17 +25,10 @@ const EMPTY: i32 = spa::sys::SPA_CHUNK_FLAG_EMPTY as i32;
 type DynError = Box<dyn Error + Send + Sync>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct DeviceTarget {
-    pub object: String,
-    pub capture_sink: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct StreamConfig {
     pub layout: CaptureLayout,
-    pub target: Option<DeviceTarget>,
+    pub target: Option<String>,
     pub passive: bool,
-    pub drive: bool,
 }
 
 impl StreamConfig {
@@ -44,7 +37,6 @@ impl StreamConfig {
             layout: CaptureLayout::stereo(),
             target: None,
             passive: true,
-            drive: false,
         }
     }
 }
@@ -75,10 +67,7 @@ impl TapStream {
         }
     }
 
-    pub(super) fn configure(&mut self, config: StreamConfig) -> Result<bool, DynError> {
-        if self.config.as_ref() == Some(&config) {
-            return Ok(false);
-        }
+    pub(super) fn configure(&mut self, config: StreamConfig) -> Result<(), DynError> {
         self.session = None;
         self.config = None;
         let mut writer = self.writer.borrow_mut();
@@ -97,7 +86,7 @@ impl TapStream {
         )?);
         self.writer.borrow().mark_reconnect();
         self.config = Some(config);
-        Ok(true)
+        Ok(())
     }
 
     pub(super) fn node_id(&self) -> Option<u32> {
@@ -148,19 +137,19 @@ impl Session {
             *pw::keys::NODE_DESCRIPTION => DESCRIPTION,
             *pw::keys::NODE_VIRTUAL => "true",
             *pw::keys::NODE_LATENCY => format!("{LATENCY_FRAMES}/{}", DEFAULT_SAMPLE_RATE as u32),
-            *pw::keys::NODE_ALWAYS_PROCESS => if config.drive { "true" } else { "false" },
+            *pw::keys::NODE_ALWAYS_PROCESS => if !config.passive && config.target.is_none() { "true" } else { "false" },
             *pw::keys::NODE_PASSIVE => if config.passive { "in" } else { "false" },
             *pw::keys::NODE_AUTOCONNECT => if config.target.is_some() { "true" } else { "false" },
             *pw::keys::APP_NAME => "OpenMeters",
         };
         if let Some(target) = &config.target {
-            props.insert(*pw::keys::TARGET_OBJECT, target.object.clone());
+            props.insert(*pw::keys::TARGET_OBJECT, target.clone());
             props.insert(*pw::keys::NODE_DONT_RECONNECT, "true");
             props.insert("node.dont-fallback", "true");
             props.insert("node.dont-move", "true");
             props.insert(
                 *pw::keys::STREAM_CAPTURE_SINK,
-                if target.capture_sink { "true" } else { "false" },
+                if config.passive { "true" } else { "false" },
             );
         }
 

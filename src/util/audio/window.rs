@@ -3,7 +3,7 @@
 
 use std::{
     collections::{HashMap, VecDeque},
-    sync::{Arc, LazyLock, PoisonError, RwLock},
+    sync::{Arc, LazyLock, RwLock},
 };
 
 crate::macros::choice_enum!(no_default all
@@ -50,15 +50,13 @@ pub(crate) fn window_coefficients(kind: WindowKind, len: usize) -> Arc<[f32]> {
         return Arc::from([]);
     }
     let key = (kind, len);
-    let cache = CACHE.read().unwrap_or_else(PoisonError::into_inner);
+    let cache = crate::util::unpoison(CACHE.read());
     if let Some(window) = cache.get(&key).cloned() {
         return window;
     }
     drop(cache);
 
-    CACHE
-        .write()
-        .unwrap_or_else(PoisonError::into_inner)
+    crate::util::unpoison(CACHE.write())
         .entry(key)
         .or_insert_with(|| Arc::from(kind.coefficients(len)))
         .clone()

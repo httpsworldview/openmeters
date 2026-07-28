@@ -85,99 +85,82 @@ impl Palette {
     }
 }
 
-pub mod spectrogram {
-    use super::{Color, HEAT_RAMP};
-    pub const COLORS: [Color; 5] = HEAT_RAMP;
-    pub const LABELS: &[&str] = &["Quietest", "->", "->", "->", "Loud"];
-
-    pub const DEFAULT_POSITIONS: [f32; COLORS.len()] =
-        [0.0, 0.402_523_83, 0.679_189_3, 0.869_322_26, 1.0];
+const fn evenly_spaced<const N: usize>() -> [f32; N] {
+    let mut positions = [0.0; N];
+    let mut i = 1;
+    while i < N {
+        positions[i] = i as f32 / (N - 1) as f32;
+        i += 1;
+    }
+    positions
 }
 
-pub mod spectrum {
-    use super::{Color, HEAT_RAMP};
-    pub const COLORS: [Color; 6] = {
-        let [floor, low, low_mid, mid, high] = HEAT_RAMP;
-        [floor, low, low_mid, mid, high, high]
+macro_rules! palette {
+    (@define $name:ident { $($color:expr => $label:expr),+ } $positions:expr) => {
+        pub mod $name {
+            use super::Color;
+            pub const LABELS: &[&str] = &[$($label),+];
+            pub const COLORS: [Color; LABELS.len()] = [$($color),+];
+            pub const SIZE: usize = COLORS.len();
+            pub const DEFAULT_POSITIONS: [f32; SIZE] = $positions;
+        }
     };
-    pub const LABELS: &[&str] = &["Floor", "Low", "Low-Mid", "Mid", "High", "Peak"];
-    pub const DEFAULT_POSITIONS: [f32; COLORS.len()] = [0.0, 0.2, 0.4, 0.6, 0.8, 1.0];
+    ($name:ident { $($color:expr => $label:expr),+ $(,)? }) => {
+        palette!(@define $name { $($color => $label),+ } super::evenly_spaced());
+    };
+    ($name:ident { $($color:expr => $label:expr),+ $(,)? } => $positions:expr) => {
+        palette!(@define $name { $($color => $label),+ } $positions);
+    };
 }
 
-pub mod waveform {
-    use super::Color;
-    pub const COLORS: [Color; 3] = [
-        Color::from_rgb8(0xFF, 0x00, 0x00),
-        Color::from_rgb8(0x00, 0xFF, 0x00),
-        Color::from_rgb8(0x00, 0x00, 0xFF),
-    ];
-    pub const LABELS: &[&str] = &["Low", "Mid", "High"];
-    pub const DEFAULT_POSITIONS: [f32; COLORS.len()] = [0.0, 0.5, 1.0];
-}
+palette!(spectrogram {
+    super::HEAT_RAMP[0] => "Quietest",
+    super::HEAT_RAMP[1] => "->",
+    super::HEAT_RAMP[2] => "->",
+    super::HEAT_RAMP[3] => "->",
+    super::HEAT_RAMP[4] => "Loud",
+} => [0.0, 0.402_523_83, 0.679_189_3, 0.869_322_26, 1.0]);
 
-pub mod oscilloscope {
-    use super::Color;
-    pub const COLORS: [Color; 2] = [
-        Color::from_rgb8(0xFF, 0xFF, 0xFF),
-        Color::from_rgb8(0xFF, 0xFF, 0xFF),
-    ];
-    pub const LABELS: &[&str] = &["Channel 1", "Channel 2"];
-    pub const DEFAULT_POSITIONS: [f32; COLORS.len()] = [0.0, 1.0];
-}
+palette!(spectrum {
+    super::HEAT_RAMP[0] => "Floor",
+    super::HEAT_RAMP[1] => "Low",
+    super::HEAT_RAMP[2] => "Low-Mid",
+    super::HEAT_RAMP[3] => "Mid",
+    super::HEAT_RAMP[4] => "High",
+    super::HEAT_RAMP[4] => "Peak",
+});
 
-pub mod stereometer {
-    use super::Color;
-    pub const COLORS: [Color; 9] = [
-        Color::from_rgb8(0xFF, 0xFF, 0xFF),
-        Color::from_rgb8(0x1A, 0x1A, 0x1A),
-        Color::from_rgb8(0x80, 0x80, 0x80),
-        Color::from_rgb8(0x73, 0xA6, 0x80),
-        Color::from_rgb8(0xB3, 0x59, 0x59),
-        Color::from_rgb8(0xFF, 0x00, 0x00),
-        Color::from_rgb8(0x00, 0xFF, 0x00),
-        Color::from_rgb8(0x00, 0x00, 0xFF),
-        Color::from_rgba8(0x80, 0x80, 0x80, 64.0 / 255.0),
-    ];
-    pub const LABELS: &[&str] = &[
-        "Trace",
-        "Corr BG",
-        "Corr Center",
-        "Corr +",
-        "Corr -",
-        "Low",
-        "Mid",
-        "High",
-        "Grid",
-    ];
-    pub const DEFAULT_POSITIONS: [f32; COLORS.len()] =
-        [0.0, 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875, 1.0];
-}
+palette!(waveform {
+    Color::from_rgb8(0xFF, 0x00, 0x00) => "Low",
+    Color::from_rgb8(0x00, 0xFF, 0x00) => "Mid",
+    Color::from_rgb8(0x00, 0x00, 0xFF) => "High",
+});
 
-pub mod loudness {
-    use super::Color;
-    pub const COLORS: [Color; 7] = [
-        Color::from_rgb8(0x29, 0x29, 0x29),
-        Color::from_rgb8(0xA0, 0xAA, 0xAD),
-        Color::from_rgb8(0xAB, 0xCF, 0xAD),
-        Color::from_rgb8(0xFF, 0xB7, 0x54),
-        Color::from_rgb8(0xFF, 0x5C, 0x4F),
-        Color::from_rgb8(0xF5, 0xED, 0xC4),
-        Color::from_rgba8(0xB7, 0xC2, 0xC9, 224.0 / 255.0),
-    ];
-    pub const LABELS: &[&str] = &[
-        "Background",
-        "Low",
-        "Mid",
-        "High",
-        "Danger",
-        "Peak",
-        "Guide",
-    ];
-    pub const DEFAULT_POSITIONS: [f32; COLORS.len()] = [0.0, 0.16, 0.32, 0.48, 0.64, 0.80, 1.0];
-}
-pub mod background {
-    use super::{BG_BASE, Color};
-    pub const COLORS: [Color; 1] = [BG_BASE];
-    pub const LABELS: &[&str] = &["Background"];
-    pub const DEFAULT_POSITIONS: [f32; COLORS.len()] = [0.0];
-}
+palette!(oscilloscope {
+    Color::from_rgb8(0xFF, 0xFF, 0xFF) => "Channel 1",
+    Color::from_rgb8(0xFF, 0xFF, 0xFF) => "Channel 2",
+});
+
+palette!(stereometer {
+    Color::from_rgb8(0xFF, 0xFF, 0xFF) => "Trace",
+    Color::from_rgb8(0x1A, 0x1A, 0x1A) => "Corr BG",
+    Color::from_rgb8(0x80, 0x80, 0x80) => "Corr Center",
+    Color::from_rgb8(0x73, 0xA6, 0x80) => "Corr +",
+    Color::from_rgb8(0xB3, 0x59, 0x59) => "Corr -",
+    Color::from_rgb8(0xFF, 0x00, 0x00) => "Low",
+    Color::from_rgb8(0x00, 0xFF, 0x00) => "Mid",
+    Color::from_rgb8(0x00, 0x00, 0xFF) => "High",
+    Color::from_rgba8(0x80, 0x80, 0x80, 64.0 / 255.0) => "Grid",
+});
+
+palette!(loudness {
+    Color::from_rgb8(0x29, 0x29, 0x29) => "Background",
+    Color::from_rgb8(0xA0, 0xAA, 0xAD) => "Low",
+    Color::from_rgb8(0xAB, 0xCF, 0xAD) => "Mid",
+    Color::from_rgb8(0xFF, 0xB7, 0x54) => "High",
+    Color::from_rgb8(0xFF, 0x5C, 0x4F) => "Danger",
+    Color::from_rgb8(0xF5, 0xED, 0xC4) => "Peak",
+    Color::from_rgba8(0xB7, 0xC2, 0xC9, 224.0 / 255.0) => "Guide",
+} => [0.0, 0.16, 0.32, 0.48, 0.64, 0.80, 1.0]);
+
+palette!(background { super::BG_BASE => "Background" });

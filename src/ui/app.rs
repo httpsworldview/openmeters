@@ -244,7 +244,7 @@ impl UiApp {
         }
     }
 
-    fn sync_meter_activity(&mut self) {
+    fn sync_meter_activity(&self) {
         self.frames.borrow_mut().set_active(self.visuals_active());
     }
 

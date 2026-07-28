@@ -2,11 +2,13 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::processor::{LoudnessSnapshot, MAX_CHANNELS};
-use super::render::{LoudnessParams, LoudnessPrimitive, MeterFill};
+use super::render::{
+    DB_RANGE, GUIDE_LEVELS, LEFT_PADDING, LoudnessParams, LoudnessPrimitive, MeterFill, db_to_ratio,
+};
 use crate::dsp::ChannelPosition;
 use crate::persistence::settings::LoudnessSettings;
 use crate::visuals::options::MeterMode;
-use crate::visuals::palettes;
+use crate::visuals::palettes::{self, loudness::SIZE as PALETTE_SIZE};
 use crate::util::color::color_to_rgba;
 use crate::visuals::render::common::{fill_rect, text as raw_text};
 use iced::advanced::{graphics::text::Paragraph, text};
@@ -15,18 +17,12 @@ use iced::alignment::{Horizontal, Vertical};
 use iced::{Color, Point, Rectangle, Size};
 use std::time::{Duration, Instant};
 
-const DEFAULT_RANGE: (f32, f32) = (-60.0, 4.0);
-const GUIDE_LEVELS: [f32; 6] = [0.0, -6.0, -12.0, -18.0, -24.0, -36.0];
 const GUIDE_LABELS: [&str; 6] = ["0", "-6", "-12", "-18", "-24", "-36"];
 const PEAK_HOLD: Duration = Duration::from_secs(2);
 const PEAK_DECAY_DB_PER_SEC: f32 = 60.0;
-const LEFT_PADDING: f32 = 28.0;
-const RIGHT_PADDING: f32 = 64.0;
 const GUIDE_LABEL_HEIGHT: f32 = 12.0;
 const GUIDE_LABEL_GAP: f32 = 2.0;
 const GUIDE_LABEL_ORDER: [usize; GUIDE_LEVELS.len()] = [0, 2, 5, 3, 4, 1];
-
-pub const LOUDNESS_PALETTE_SIZE: usize = palettes::loudness::COLORS.len();
 
 const PAL_BACKGROUND: usize = 0;
 const PAL_LOW: usize = 1;
@@ -66,8 +62,8 @@ impl PeakHold {
 #[derive(Debug, Clone)]
 pub(in crate::visuals) struct LoudnessState {
     snapshot: LoudnessSnapshot,
-    settings: LoudnessSettings,
-    pub(in crate::visuals) palette: [Color; LOUDNESS_PALETTE_SIZE],
+    pub(in crate::visuals) settings: LoudnessSettings,
+    pub(in crate::visuals) palette: [Color; PALETTE_SIZE],
     peaks: [PeakHold; VISIBLE_METER_COUNT],
     guide_labels: [Paragraph; GUIDE_LABELS.len()],
     value_label: (String, Paragraph),
@@ -76,9 +72,9 @@ pub(in crate::visuals) struct LoudnessState {
 
 impl LoudnessState {
     pub fn new() -> Self {
-        let mut snapshot = LoudnessSnapshot::with_floor(DEFAULT_RANGE.0);
+        let mut snapshot = LoudnessSnapshot::with_floor(DB_RANGE.0);
         snapshot.channel_count = 2;
-        let peak = PeakHold::new(DEFAULT_RANGE.0, Instant::now());
+        let peak = PeakHold::new(DB_RANGE.0, Instant::now());
         let mut state = Self {
             snapshot,
             settings: LoudnessSettings::default(),
@@ -98,10 +94,10 @@ impl LoudnessState {
     }
 
     pub fn reset_audio(&mut self) {
-        let mut snapshot = LoudnessSnapshot::with_floor(DEFAULT_RANGE.0);
+        let mut snapshot = LoudnessSnapshot::with_floor(DB_RANGE.0);
         snapshot.channel_count = 2;
         self.snapshot = snapshot;
-        self.peaks = [PeakHold::new(DEFAULT_RANGE.0, Instant::now()); VISIBLE_METER_COUNT];
+        self.peaks = [PeakHold::new(DB_RANGE.0, Instant::now()); VISIBLE_METER_COUNT];
         self.refresh_value_label();
     }
 
@@ -115,24 +111,20 @@ impl LoudnessState {
     pub fn set_modes(&mut self, left: MeterMode, right: MeterMode) {
         if self.settings.left_mode != left || self.settings.right_mode != right {
             self.peaks
-                .fill(PeakHold::new(DEFAULT_RANGE.0, Instant::now()));
+                .fill(PeakHold::new(DB_RANGE.0, Instant::now()));
         }
         self.settings.left_mode = left;
         self.settings.right_mode = right;
         self.refresh_value_label();
     }
 
-    pub fn export_settings(&self) -> LoudnessSettings {
-        self.settings.clone()
-    }
-
-    pub fn set_palette(&mut self, palette: &[Color; LOUDNESS_PALETTE_SIZE]) {
+    pub fn set_palette(&mut self, palette: &[Color; PALETTE_SIZE]) {
         self.palette = *palette;
     }
 
     fn get_value(&self, mode: MeterMode, channel: usize) -> f32 {
         let per_channel =
-            |buf: &[f32; MAX_CHANNELS]| buf.get(channel).copied().unwrap_or(DEFAULT_RANGE.0);
+            |buf: &[f32; MAX_CHANNELS]| buf.get(channel).copied().unwrap_or(DB_RANGE.0);
         match mode {
             MeterMode::LufsShortTerm => self.snapshot.short_term_loudness,
             MeterMode::LufsMomentary => self.snapshot.momentary_loudness,
@@ -143,17 +135,11 @@ impl LoudnessState {
     }
 
     fn visual_params(&self, bounds: Rectangle) -> LoudnessParams {
-        let (min, max) = DEFAULT_RANGE;
-        let guide_color = color_to_rgba(self.palette[PAL_GUIDE]);
-        let bg_color = color_to_rgba(self.palette[PAL_BACKGROUND]);
         let values = self.visible_values();
-
         LoudnessParams {
             key: self.key,
             bounds,
-            min_db: min,
-            max_db: max,
-            bg_color,
+            bg_color: color_to_rgba(self.palette[PAL_BACKGROUND]),
             bars: [
                 [
                     self.meter_fill(0, self.settings.left_mode, values[0]),
@@ -161,12 +147,7 @@ impl LoudnessState {
                 ],
                 [self.meter_fill(2, self.settings.right_mode, values[2]); 2],
             ],
-            fill_counts: [2, 1],
-            guides: &GUIDE_LEVELS,
-            guide_color,
-            threshold_db: Some(0.0),
-            left_padding: LEFT_PADDING,
-            right_padding: RIGHT_PADDING,
+            guide_color: color_to_rgba(self.palette[PAL_GUIDE]),
         }
     }
 
@@ -184,7 +165,7 @@ impl LoudnessState {
                 side == MeterSide::Both || side == wanted
             })
             .map(|ch| self.get_value(mode, ch))
-            .fold(DEFAULT_RANGE.0, f32::max)
+            .fold(DB_RANGE.0, f32::max)
     }
 
     fn visible_values(&self) -> [f32; VISIBLE_METER_COUNT] {
@@ -200,7 +181,7 @@ impl LoudnessState {
         MeterFill {
             db,
             segments: self.meter_segments(mode),
-            peak: (peak_db > DEFAULT_RANGE.0).then(|| {
+            peak: (peak_db > DB_RANGE.0).then(|| {
                 let danger = peak_db >= zone_thresholds(mode)[DANGER_THRESHOLD_INDEX];
                 let color = self.palette[if danger { PAL_DANGER } else { PAL_PEAK }];
                 (peak_db, color_to_rgba(color))
@@ -210,7 +191,7 @@ impl LoudnessState {
 
     fn meter_segments(&self, mode: MeterMode) -> [(f32, [f32; 4]); ZONE_COUNT] {
         let [low, mid, high] = zone_thresholds(mode);
-        let thresholds = [low, mid, high, DEFAULT_RANGE.1];
+        let thresholds = [low, mid, high, DB_RANGE.1];
         std::array::from_fn(|i| (thresholds[i], color_to_rgba(self.palette[PAL_LOW + i])))
     }
 
@@ -230,7 +211,7 @@ impl LoudnessState {
 
     fn update_peak_holds(&mut self, now: Instant) {
         let values = self.visible_values();
-        let (min, max) = DEFAULT_RANGE;
+        let (min, max) = DB_RANGE;
         for (peak, value) in self.peaks.iter_mut().zip(values) {
             peak.update(value.clamp(min, max), now);
         }
@@ -286,7 +267,6 @@ fn value_label(label: &str) -> Paragraph {
 }
 
 fn visible_guide_labels(
-    params: &LoudnessParams,
     bounds: Rectangle,
 ) -> [Option<(usize, Rectangle)>; GUIDE_LABEL_ORDER.len()] {
     let mut labels = [None; GUIDE_LABEL_ORDER.len()];
@@ -297,8 +277,8 @@ fn visible_guide_labels(
     let max_top = bounds.y + bounds.height - GUIDE_LABEL_HEIGHT;
     let mut len = 0;
     for &i in &GUIDE_LABEL_ORDER {
-        let db = params.guides[i];
-        let y = bounds.y + bounds.height * (1.0 - params.db_to_ratio(db));
+        let db = GUIDE_LEVELS[i];
+        let y = bounds.y + bounds.height * (1.0 - db_to_ratio(db));
         let rect = Rectangle::new(
             Point::new(bounds.x, (y - GUIDE_LABEL_HEIGHT * 0.5).clamp(bounds.y, max_top)),
             Size::new(LEFT_PADDING, GUIDE_LABEL_HEIGHT),
@@ -320,16 +300,17 @@ fn visible_guide_labels(
 crate::visuals::visualization_widget!(Loudness, LoudnessState, |this, renderer, theme, bounds| {
     let state = this.state.borrow();
     let params = state.visual_params(bounds);
+    let meter_bounds = params.meter_bounds();
 
-    renderer.draw_primitive(bounds, LoudnessPrimitive::new(params.clone()));
+    renderer.draw_primitive(bounds, LoudnessPrimitive::new(params));
 
     let palette = theme.extended_palette();
     let label_color = state.palette[PAL_GUIDE];
 
-    if let Some((meter_x, bar_width, stride)) = params.meter_bounds() {
-        let y_of = |db| bounds.y + bounds.height * (1.0 - params.db_to_ratio(db));
+    if let Some((meter_x, bar_width, stride)) = meter_bounds {
+        let y_of = |db| bounds.y + bounds.height * (1.0 - db_to_ratio(db));
 
-        for (i, rect) in visible_guide_labels(&params, bounds).into_iter().flatten() {
+        for (i, rect) in visible_guide_labels(bounds).into_iter().flatten() {
             let size = state.guide_labels[i].min_bounds();
             text::Renderer::fill_paragraph(
                 renderer,
@@ -382,7 +363,7 @@ mod tests {
         params
             .bars
             .iter()
-            .zip(params.fill_counts)
+            .zip([2, 1])
             .map(|(bar, n)| bar.iter().take(n).map(|fill| fill.db).collect())
             .collect()
     }
@@ -411,8 +392,8 @@ mod tests {
         let snapshot = |true_peak_db, channel_count| LoudnessSnapshot {
             short_term_loudness: -9.0,
             momentary_loudness: -9.0,
-            rms_fast_db: [DEFAULT_RANGE.0; MAX_CHANNELS],
-            rms_slow_db: [DEFAULT_RANGE.0; MAX_CHANNELS],
+            rms_fast_db: [DB_RANGE.0; MAX_CHANNELS],
+            rms_slow_db: [DB_RANGE.0; MAX_CHANNELS],
             true_peak_db,
             channel_count,
             positions: [ChannelPosition::Unknown; MAX_CHANNELS],
@@ -420,12 +401,12 @@ mod tests {
         let mut state = LoudnessState::new();
         state.set_modes(MeterMode::TruePeak, MeterMode::LufsShortTerm);
 
-        let mut mono = [DEFAULT_RANGE.0; MAX_CHANNELS];
+        let mut mono = [DB_RANGE.0; MAX_CHANNELS];
         mono[0] = -12.0;
         state.apply_snapshot(snapshot(mono, 1));
         assert_eq!(visible_bar_values(&state)[0], vec![-12.0, -12.0]);
 
-        let mut quad = [DEFAULT_RANGE.0; MAX_CHANNELS];
+        let mut quad = [DB_RANGE.0; MAX_CHANNELS];
         quad[2] = -6.0;
         quad[3] = -3.0;
         state.apply_snapshot(snapshot(quad, 4));

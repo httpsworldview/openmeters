@@ -2,12 +2,12 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::processor::{
-    MAX_SPECTROGRAM_HISTORY_COLUMNS, SPECTROGRAM_HISTORY_BYTE_BUDGET, SpectrogramColumn,
-    SpectrogramConfig, SpectrogramUpdate,
+    ColumnKind, MAX_SPECTROGRAM_HISTORY_COLUMNS, SPECTROGRAM_HISTORY_BYTE_BUDGET,
+    SpectrogramColumn, SpectrogramConfig, SpectrogramUpdate, col_byte_stride,
 };
 use super::render::{
-    ColumnKind, PendingUpload, RingCopyPlan, SPECTROGRAM_PALETTE_SIZE, SpectrogramParams,
-    SpectrogramPrimitive, col_byte_stride,
+    PendingUpload, RingCopyPlan, SPECTROGRAM_PALETTE_SIZE, SpectrogramParams,
+    SpectrogramPrimitive,
 };
 use crate::persistence::settings::SpectrogramSettings;
 use crate::ui::{scroll_delta_lines, theme};
@@ -29,7 +29,8 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-const DB_CEILING: f32 = 0.0;
+const SPECTROGRAM_DB_CEILING: f32 = 0.0;
+const SPECTROGRAM_OPACITY: f32 = 0.95;
 const TOOLTIP_SIZE: f32 = 14.0;
 const TOOLTIP_PAD: f32 = 8.0;
 const TOOLTIP_GAP: f32 = 2.0;
@@ -54,16 +55,6 @@ fn display_axis(sample_rate: f32) -> (f32, f32) {
 }
 
 crate::macros::default_struct! {
-    #[derive(Debug, Clone, Copy, PartialEq)]
-    pub(in crate::visuals) struct SpectrogramStyle {
-        pub background: Color = with_alpha(palettes::BG_BASE, 0.0),
-        pub ceiling_db: f32 = DB_CEILING,
-        pub opacity: f32 = 0.95,
-        pub contrast: f32 = 1.0,
-    }
-}
-
-crate::macros::default_struct! {
     struct SpectrogramHistory {
         col_kind: ColumnKind = ColumnKind::Reassigned,
         points_per_column: usize = 0,
@@ -82,11 +73,10 @@ impl SpectrogramHistory {
     fn apply_update(&mut self, snap: SpectrogramUpdate) {
         let ppc = snap.points_per_column;
         if ppc == 0 { return; }
-        let new_kind = match snap.new_columns.first() {
-            Some(SpectrogramColumn::Reassigned(_)) => ColumnKind::Reassigned,
-            Some(SpectrogramColumn::Classic(_)) => ColumnKind::Classic,
-            None => self.col_kind,
-        };
+        let new_kind = snap
+            .new_columns
+            .first()
+            .map_or(self.col_kind, SpectrogramColumn::kind);
         let max_bytes = SPECTROGRAM_HISTORY_BYTE_BUDGET as u64
             * (1 + u64::from(new_kind == ColumnKind::Reassigned));
         let max_cols = (max_bytes / col_byte_stride(new_kind, ppc as u32)) as u32;
@@ -201,12 +191,11 @@ impl SpectrogramHistory {
 }
 
 pub(in crate::visuals) struct SpectrogramState {
-    pub(in crate::visuals) style: SpectrogramStyle,
     pub(in crate::visuals) palette: [Color; SPECTROGRAM_PALETTE_SIZE],
     pub(in crate::visuals) stop_positions: [f32; SPECTROGRAM_PALETTE_SIZE],
     pub(in crate::visuals) stop_spreads: [f32; SPECTROGRAM_PALETTE_SIZE],
     key: u64,
-    settings: SpectrogramSettings,
+    pub(in crate::visuals) settings: SpectrogramSettings,
     sample_rate: f32,
     fft_size: usize,
     hop_size: usize,
@@ -221,7 +210,6 @@ impl SpectrogramState {
     pub fn new() -> Self {
         let cfg = SpectrogramConfig::default();
         Self {
-            style: SpectrogramStyle::default(),
             palette: palettes::spectrogram::COLORS,
             stop_positions: palettes::spectrogram::DEFAULT_POSITIONS,
             stop_spreads: [1.0; SPECTROGRAM_PALETTE_SIZE],
@@ -260,13 +248,9 @@ impl SpectrogramState {
     pub fn update_view_settings(&mut self, settings: &SpectrogramSettings) {
         self.settings = settings.clone();
         self.settings.floor_db = sanitize_negative_db(settings.floor_db, DB_FLOOR)
-            .min(self.style.ceiling_db - 1.0);
+            .min(SPECTROGRAM_DB_CEILING - 1.0);
         self.settings.tilt_db = if settings.tilt_db.is_finite() { settings.tilt_db } else { 0.0 };
         self.settings.rotation = settings.rotation.clamp(-1, 2);
-    }
-
-    pub fn export_settings(&self) -> SpectrogramSettings {
-        self.settings.clone()
     }
 
     pub fn reset_audio(&mut self) {
@@ -279,7 +263,6 @@ impl SpectrogramState {
         self.fft_size = snap.fft_size;
         self.hop_size = snap.hop_size;
         self.reassigned_power_scale = snap.reassigned_power_scale;
-        self.settings.frequency_scale = snap.frequency_scale;
         self.history.apply_update(snap);
     }
 
@@ -293,8 +276,9 @@ impl SpectrogramState {
         let copy_plan = history.pending_copy.take();
         history.gpu_capacity = history.ring_capacity;
         let slot_counts = Arc::clone(&history.slot_counts);
-        let op = self.style.opacity.clamp(0.0, 1.0);
-        let to_rgba = |c: Color| rgba_with_alpha(color_to_rgba(c), c.a * op);
+        let to_rgba = |c: Color| {
+            rgba_with_alpha(color_to_rgba(c), c.a * SPECTROGRAM_OPACITY)
+        };
         let bin_hz = self.sample_rate / (self.fft_size.max(1) as f32);
         let (freq_min, freq_max) = display_axis(self.sample_rate);
 
@@ -318,9 +302,7 @@ impl SpectrogramState {
             palette: self.palette.map(to_rgba),
             stop_positions: self.stop_positions,
             stop_spreads: self.stop_spreads,
-            contrast: self.style.contrast,
             floor_db: self.settings.floor_db,
-            ceiling_db: self.style.ceiling_db,
             tilt_db: self.settings.tilt_db,
             uv_y_range,
             rotation: self.settings.rotation,
@@ -444,11 +426,7 @@ fn place_tooltip(bounds: Rectangle, cursor: Point, sz: Size, horizontal: bool) -
     Rectangle::new(Point::new(x, y), sz)
 }
 
-impl<'a> Spectrogram<'a> {
-    pub fn new(state: &'a RefCell<SpectrogramState>) -> Self {
-        Self { state }
-    }
-
+impl Spectrogram<'_> {
     fn draw_crosshair(
         renderer: &mut iced::Renderer,
         theme: &iced::Theme,
@@ -485,7 +463,7 @@ impl<'a> Spectrogram<'a> {
 
         let freq_text = fmt_freq(freq);
         let note_text = NoteInfo::from_frequency(freq)
-            .map_or_else(|| String::from("--"), |ni| ni.fmt_note_cents());
+            .map_or_else(|| String::from("--"), NoteInfo::fmt_note_cents);
         let time_text = time_ago.map_or_else(|| String::from("--"), fmt_duration);
 
         let texts = [freq_text, note_text, time_text];
@@ -641,7 +619,7 @@ impl<'a> Spectrogram<'a> {
                 };
                 fill_bordered_rect(renderer, orient_rect(lo, key_len, anchor, w), fill, brd, false);
                 if note.midi_number % 12 == 0 && key_len >= PIANO_LABEL_SIZE {
-                    let s = format!("C{}", note.octave);
+                    let s = format!("C{}", note.octave());
                     let tsz = Paragraph::with_text(raw_text(
                         s.as_str(),
                         PIANO_LABEL_SIZE,
@@ -665,7 +643,7 @@ impl<'a> Spectrogram<'a> {
     }
 }
 
-impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'a> {
+impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'_> {
     fn tag(&self) -> tree::Tag {
         tree::Tag::of::<InteractionState>()
     }
@@ -788,7 +766,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
             };
             uv_y_range = state.uv_y_range();
             piano_roll = state.settings.piano_roll_overlay;
-            bg = state.style.background;
+            bg = Color::TRANSPARENT;
             params = state.visual_params(bounds, uv_y_range);
         }
         let interaction = tree.state.downcast_ref::<InteractionState>();
@@ -834,20 +812,18 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
 pub(in crate::visuals) fn widget<'a, Message: 'a>(
     state: &'a RefCell<SpectrogramState>,
 ) -> Element<'a, Message> {
-    Element::new(Spectrogram::new(state))
+    Element::new(Spectrogram { state })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::util::audio::FrequencyScale;
 
     fn classic_update(history_length: usize, reset: bool, values: &[f32]) -> SpectrogramUpdate {
         SpectrogramUpdate {
             fft_size: 2,
             hop_size: 1,
             sample_rate: 48_000.0,
-            frequency_scale: FrequencyScale::Linear,
             history_length,
             reset,
             points_per_column: 2,
@@ -866,7 +842,6 @@ mod tests {
             fft_size: 8,
             hop_size: 1,
             sample_rate: 48_000.0,
-            frequency_scale: FrequencyScale::Linear,
             history_length,
             reset,
             points_per_column: 8,

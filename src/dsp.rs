@@ -146,7 +146,7 @@ fn stereo_indices(channels: usize, positions: [ChannelPosition; MAX_AUDIO_CHANNE
     [left, right]
 }
 
-pub(crate) fn stereo_matrix(
+fn stereo_matrix(
     channels: usize,
     positions: [ChannelPosition; MAX_AUDIO_CHANNELS],
 ) -> [[f32; 2]; MAX_AUDIO_CHANNELS] {
@@ -226,12 +226,26 @@ impl<'a> AudioBlock<'a> {
         }
     }
 
-    pub fn stereo_matrix(&self) -> &[[f32; 2]] {
+    fn stereo_matrix(&self) -> &[[f32; 2]] {
         &self.stereo[..self.stereo_channels]
     }
 
     pub fn frame_count(&self) -> usize {
         self.samples.len() / self.channels.max(1)
+    }
+
+    pub fn stereo_frames(
+        &self,
+    ) -> impl ExactSizeIterator<Item = [f32; 2]> + DoubleEndedIterator + '_ {
+        let matrix = self.stereo_matrix();
+        self.samples.chunks_exact(self.channels).map(move |frame| {
+            frame
+                .iter()
+                .zip(matrix)
+                .fold([0.0; 2], |[left, right], (&sample, weights)| {
+                    [left + sample * weights[0], right + sample * weights[1]]
+                })
+        })
     }
 
     pub fn is_empty(&self) -> bool {
@@ -581,16 +595,7 @@ mod tests {
             48_000.0,
             ChannelPosition::SURROUND,
         );
-        let matrix = block.stereo_matrix();
-        let mixed = samples
-            .iter()
-            .zip(matrix)
-            .fold([0.0; 2], |mixed, (&sample, weights)| {
-                [
-                    mixed[0] + sample * weights[0],
-                    mixed[1] + sample * weights[1],
-                ]
-            });
+        let mixed = block.stereo_frames().next().unwrap();
         let gain = std::f32::consts::FRAC_1_SQRT_2;
         assert_eq!(mixed, [1.0 + gain * 13.0, 2.0 + gain * 15.0]);
 

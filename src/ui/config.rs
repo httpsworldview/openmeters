@@ -82,7 +82,6 @@ pub struct ConfigPage {
     bar_supported: bool,
     bar_monitors: Vec<String>,
     applications: Arc<[ApplicationView]>,
-    hardware_sink_label: String,
     registry_alive: bool,
     applications_expanded: bool,
     device_choices: Vec<DeviceOption>,
@@ -123,7 +122,6 @@ impl ConfigPage {
             bar_supported,
             bar_monitors: Vec::new(),
             applications: Arc::default(),
-            hardware_sink_label: String::from("(detecting hardware sink...)"),
             registry_alive: true,
             applications_expanded: false,
             device_choices: Vec::new(),
@@ -141,7 +139,6 @@ impl ConfigPage {
             self.view_revision = None;
             self.applications = Arc::default();
             self.device_choices.clear();
-            self.hardware_sink_label = "(unavailable)".into();
             return;
         }
         let view = self.capture.view();
@@ -230,7 +227,7 @@ impl ConfigPage {
         let snapshot = self.visual_manager.borrow().snapshot();
         let mut content = column![
             self.render_capture_card(),
-            self.render_visuals_card(&snapshot),
+            Self::render_visuals_card(&snapshot),
             self.render_global_card(),
         ]
         .spacing(theme::SECTION_GAP);
@@ -495,9 +492,8 @@ impl ConfigPage {
     }
 
     fn render_visuals_card(
-        &self,
         snapshot: &[VisualSlotSnapshot],
-    ) -> container::Container<'_, ConfigMessage> {
+    ) -> container::Container<'static, ConfigMessage> {
         card(
             "Visuals",
             render_toggle_grid(snapshot, |slot| {
@@ -515,7 +511,6 @@ impl ConfigPage {
     }
 
     fn apply_capture_view(&mut self, view: &CaptureView) {
-        self.hardware_sink_label = view.default_sink.to_string();
         if let Some(selected) = &view.selected_device {
             let changed =
                 self.settings.borrow().data.last_device_name.as_deref() != Some(selected.as_ref());
@@ -526,7 +521,7 @@ impl ConfigPage {
             }
         }
         let mut choices = vec![DeviceOption {
-            label: format!("Default sink - {}", self.hardware_sink_label),
+            label: format!("Default sink - {}", view.default_sink),
             selection: DeviceSelection::Default,
         }];
         choices.extend(view.devices.iter().map(|token| DeviceOption {
@@ -557,7 +552,7 @@ impl ConfigPage {
     }
 }
 
-fn render_toggle_grid<'a, T, F>(items: &[T], mut project: F) -> Column<'a, ConfigMessage>
+fn render_toggle_grid<T, F>(items: &[T], mut project: F) -> Column<'static, ConfigMessage>
 where
     for<'b> F: FnMut(&'b T) -> (&'b str, &'static str, bool, ConfigMessage),
 {

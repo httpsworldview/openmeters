@@ -5,7 +5,7 @@ use super::processor::{
     MAX_COLUMN_CAPACITY, NUM_BANDS, WAVEFORM_CHANNELS, WaveFrame, WaveformPreview,
     WaveformUpdate,
 };
-use super::render::{WaveformParams, WaveformPrimitive};
+use super::render::{COLUMN_WIDTH_PIXELS, WaveformParams, WaveformPrimitive};
 use crate::persistence::settings::WaveformSettings;
 use crate::util::{color::color_to_rgba, unpoison};
 use crate::visuals::palettes;
@@ -15,7 +15,6 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-const COLUMN_WIDTH_PIXELS: f32 = 1.0;
 const INITIAL_VIEW_COLUMNS: usize = 512;
 const SCROLL_CLOCK_TIMEOUT: Duration = Duration::from_millis(100);
 
@@ -25,8 +24,8 @@ pub(in crate::visuals) struct WaveformState {
     preview: WaveformPreview,
     scroll: Cell<(Instant, f32)>,
     view_columns: Cell<usize>,
-    pub(in crate::visuals) style: WaveformStyle,
-    settings: WaveformSettings,
+    pub(in crate::visuals) palette: [Color; NUM_BANDS],
+    pub(in crate::visuals) settings: WaveformSettings,
     key: u64,
 }
 
@@ -37,7 +36,7 @@ impl WaveformState {
             preview: WaveformPreview::default(),
             scroll: Cell::new((Instant::now(), 0.0)),
             view_columns: Cell::new(INITIAL_VIEW_COLUMNS),
-            style: WaveformStyle::default(),
+            palette: palettes::waveform::COLORS,
             settings: WaveformSettings::default(),
             key: crate::visuals::next_key(),
         }
@@ -78,12 +77,8 @@ impl WaveformState {
         self.settings = settings.clone();
     }
 
-    pub fn export_settings(&self) -> WaveformSettings {
-        self.settings.clone()
-    }
-
     pub fn set_palette(&mut self, palette: &[Color; NUM_BANDS]) {
-        self.style.palette = *palette;
+        self.palette = *palette;
     }
 
     pub fn visual_params(&self, bounds: iced::Rectangle) -> Option<WaveformParams> {
@@ -121,8 +116,6 @@ impl WaveformState {
             bounds,
             lanes: [lanes[0], lanes.get(1).copied().unwrap_or(0)],
             channels: selected_channels,
-            column_width: COLUMN_WIDTH_PIXELS,
-            columns: needed,
             data: Arc::clone(&self.data),
             preview: WaveformPreview {
                 progress: scroll_offset,
@@ -131,11 +124,7 @@ impl WaveformState {
             color_mode: self.settings.color_mode,
             history_mode: self.settings.history_mode,
             band_db_floor: self.settings.band_db_floor,
-            palette: self.style.palette.map(color_to_rgba),
-            fill_alpha: self.style.fill_alpha,
-            vertical_padding: self.style.vertical_padding,
-            channel_gap: self.style.channel_gap,
-            amplitude_scale: self.style.amplitude_scale,
+            palette: self.palette.map(color_to_rgba),
             key: self.key,
         })
     }
@@ -170,17 +159,6 @@ impl WaveformState {
             len += 1;
         }
         (lanes, len)
-    }
-}
-
-crate::macros::default_struct! {
-    #[derive(Debug)]
-    pub(in crate::visuals) struct WaveformStyle {
-        pub fill_alpha: f32 = 1.0,
-        pub vertical_padding: f32 = 8.0,
-        pub channel_gap: f32 = 12.0,
-        pub amplitude_scale: f32 = 1.0,
-        pub(in crate::visuals) palette: [Color; NUM_BANDS] = palettes::waveform::COLORS,
     }
 }
 

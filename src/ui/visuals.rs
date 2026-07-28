@@ -28,7 +28,7 @@ struct VisualPane {
 
 impl VisualPane {
     fn view(&self) -> PaneContent<'_, VisualsMessage> {
-        PaneContent::new(self.content.render()).with_width_basis(self.min_width, self.width_basis)
+        PaneContent::new(self.content.render(), self.min_width, self.width_basis)
     }
 }
 
@@ -110,12 +110,13 @@ impl VisualsPage {
                 .into();
         };
 
-        let mut grid = pane_grid::PaneGrid::new(panes, |_, p| p.view())
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .on_resize(VisualsMessage::PaneResized)
-            .on_context_request(VisualsMessage::PaneContextRequested)
-            .on_hover(VisualsMessage::PaneHovered);
+        let mut grid = pane_grid::PaneGrid::new(
+            panes,
+            |_, p| p.view(),
+            VisualsMessage::PaneResized,
+            VisualsMessage::PaneContextRequested,
+            VisualsMessage::PaneHovered,
+        );
 
         if reorder_enabled {
             grid = grid.on_drag(VisualsMessage::PaneDragged);

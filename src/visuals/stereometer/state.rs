@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::processor::{BandCorrelation, StereometerSnapshot};
+use super::processor::{BAND_COUNT, StereometerSnapshot};
 use super::render::{
     CORR_LABEL_GAP, CORR_LABEL_H, CORR_LABEL_W, CORR_TRAIL_LEN, StereometerParams,
     StereometerPrimitive,
@@ -10,7 +10,7 @@ use crate::persistence::settings::StereometerSettings;
 use crate::util::color::color_to_rgba;
 use crate::visuals::{
     options::{CorrelationMeterMode, CorrelationMeterSide, StereometerMode},
-    palettes,
+    palettes::{self, stereometer::SIZE as PALETTE_SIZE},
     render::common::{fill_rect, text as raw_text},
 };
 use iced::advanced::{graphics::text::Paragraph, text};
@@ -28,11 +28,11 @@ fn tracks_band_correlation(s: &StereometerSettings) -> bool {
 #[derive(Debug, Clone)]
 pub(in crate::visuals) struct StereometerState {
     points: Arc<[(f32, f32)]>,
-    band_points: [Arc<[(f32, f32)]>; 3],
+    band_points: [Arc<[(f32, f32)]>; BAND_COUNT],
     corr_trail: VecDeque<f32>,
-    band_trail: VecDeque<BandCorrelation>,
-    pub(in crate::visuals) palette: [Color; 9],
-    settings: StereometerSettings,
+    band_trail: VecDeque<[f32; BAND_COUNT]>,
+    pub(in crate::visuals) palette: [Color; PALETTE_SIZE],
+    pub(in crate::visuals) settings: StereometerSettings,
     labels: [Paragraph; 3],
     key: u64,
     grid_revision: u64,
@@ -74,13 +74,9 @@ impl StereometerState {
         self.grid_revision = self.grid_revision.wrapping_add(1);
     }
 
-    pub fn set_palette(&mut self, palette: &[Color; 9]) {
+    pub fn set_palette(&mut self, palette: &[Color; PALETTE_SIZE]) {
         self.palette = *palette;
         self.grid_revision = self.grid_revision.wrapping_add(1);
-    }
-
-    pub fn export_settings(&self) -> StereometerSettings {
-        self.settings.clone()
     }
 
     pub fn reset_audio(&mut self) {
@@ -122,11 +118,9 @@ impl StereometerState {
             }
             CorrelationMeterMode::MultiBand => (
                 self.corr_trail.iter().copied().collect(),
-                [
-                    self.band_trail.iter().map(|values| values.low).collect(),
-                    self.band_trail.iter().map(|values| values.mid).collect(),
-                    self.band_trail.iter().map(|values| values.high).collect(),
-                ],
+                std::array::from_fn(|band| {
+                    self.band_trail.iter().map(|values| values[band]).collect()
+                }),
             ),
         };
         Some(StereometerParams {

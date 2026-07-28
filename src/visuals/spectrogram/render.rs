@@ -13,18 +13,12 @@ use crate::visuals::render::common::{
     CacheTracker, RenderPipelineSpec, begin_load_pass, create_render_pipeline, create_shader_module,
 };
 
-use super::processor::SpectrogramPoint;
+use super::processor::{ColumnKind, SpectrogramPoint, col_byte_stride};
 use crate::util::audio::FrequencyScale;
 
-pub const SPECTROGRAM_PALETTE_SIZE: usize = 5;
+pub const SPECTROGRAM_PALETTE_SIZE: usize = crate::visuals::palettes::spectrogram::SIZE;
 
 const ACCUM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Float;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ColumnKind {
-    Reassigned,
-    Classic,
-}
 
 #[derive(Debug, Clone)]
 pub enum PendingUpload {
@@ -52,7 +46,7 @@ pub struct SpectrogramParams {
     pub pending_uploads: VecDeque<PendingUpload>,
     pub copy_plan: Option<RingCopyPlan>,
     pub slot_counts: Arc<[u32]>,
-    pub col_kind: ColumnKind,
+    pub(super) col_kind: ColumnKind,
     pub freq_min: f32,
     pub freq_max: f32,
     pub bin_hz: f32,
@@ -61,9 +55,7 @@ pub struct SpectrogramParams {
     pub palette: [[f32; 4]; SPECTROGRAM_PALETTE_SIZE],
     pub stop_positions: [f32; SPECTROGRAM_PALETTE_SIZE],
     pub stop_spreads: [f32; SPECTROGRAM_PALETTE_SIZE],
-    pub contrast: f32,
     pub floor_db: f32,
-    pub ceiling_db: f32,
     pub tilt_db: f32,
     pub uv_y_range: [f32; 2],
     pub rotation: i8,
@@ -84,9 +76,6 @@ impl SpectrogramPrimitive {
     pub fn new(params: SpectrogramParams) -> Self {
         Self { params }
     }
-    fn key(&self) -> u64 {
-        self.params.key
-    }
 }
 
 impl Primitive for SpectrogramPrimitive {
@@ -104,7 +93,7 @@ impl Primitive for SpectrogramPrimitive {
         pipeline.prepare(
             device,
             queue,
-            self.key(),
+            self.params.key,
             &self.params,
             [ls.width, ls.height],
             vp.scale_factor(),
@@ -118,15 +107,16 @@ impl Primitive for SpectrogramPrimitive {
         target: &wgpu::TextureView,
         clip: &Rectangle<u32>,
     ) {
-        let Some(inst) = pipeline.instances.get(&self.key()) else {
+        let Some(inst) = pipeline.instances.get(&self.params.key) else {
             return;
         };
         let Some(r) = inst.resources.as_ref() else {
             return;
         };
-        if inst.col_count == 0
+        let visible_slots = r.uniform_cache.col_count.min(r.ring.layout.slots as u32);
+        if visible_slots == 0
             || (r.ring.layout.kind == ColumnKind::Reassigned
-                && !(0..inst.visible_slots()).any(|slot| inst.slot_count(slot) > 0))
+                && !(0..visible_slots).any(|slot| inst.slot_count(slot) > 0))
         {
             return;
         }
@@ -152,14 +142,15 @@ impl Primitive for SpectrogramPrimitive {
                         timestamp_writes: None,
                         occlusion_query_set: None,
                     });
-                    let stride = inst.reassigned_points_per_slot.max(1);
+                    let stride = (r.ring.layout.stride
+                        / std::mem::size_of::<SpectrogramPoint>() as u64)
+                        as u32;
                     pass.set_pipeline(&pipeline.accum_pipeline);
                     pass.set_bind_group(0, &r.ring.bg, &[]);
                     pass.set_vertex_buffer(0, r.quad_buf.slice(..));
                     pass.set_vertex_buffer(1, r.ring.buf.slice(..));
-                    let visible = inst.visible_slots();
                     let mut slot = 0;
-                    while slot < visible {
+                    while slot < visible_slots {
                         let count = inst.slot_count(slot).min(stride);
                         if count == 0 {
                             slot += 1;
@@ -168,7 +159,7 @@ impl Primitive for SpectrogramPrimitive {
                         let first = slot * stride;
                         if count == stride {
                             slot += 1;
-                            while slot < visible && inst.slot_count(slot).min(stride) == stride {
+                            while slot < visible_slots && inst.slot_count(slot).min(stride) == stride {
                                 slot += 1;
                             }
                             pass.draw(0..4, first..slot * stride);
@@ -186,7 +177,7 @@ impl Primitive for SpectrogramPrimitive {
                 pass.draw(0..4, 0..1);
             }
             ColumnKind::Classic => {
-                if inst.points_per_col < 2 {
+                if r.uniform_cache.points_per_col < 2 {
                     return;
                 }
                 let mut pass = begin_load_pass(encoder, target, clip, "Spectrogram pass");
@@ -249,23 +240,22 @@ struct Uniforms {
     points_per_col: u32, // reassigned slot stride, or classic FFT bins
     history_length: u32,
     col_count: u32,
-    write_slot: u32,
     rotation: u32,
+    _header_padding: u32,
     bounds: [f32; 4],
     clip_scale: [f32; 2],
     uv_y_range: [f32; 2],
     scale_factor: f32,
     floor_db: f32,
-    ceiling_db: f32,
-    contrast: f32,
     tilt_db: f32,
     newest_col: u32,
     inv_uv_range: f32,
     col_stride_u16: u32,
     bin_hz: f32,
     accum_size: [f32; 2],
-    // Also fills the 4 B before the 16-byte-aligned `stops` array.
     reassigned_power_scale: f32,
+    // Match WGSL's 16-byte array alignment.
+    _padding: [f32; 2],
     // (pos1, pos2, pos3, spread0), (spread1, spread2, spread3, spread4).
     // Stops 0 and 4 are constant 0.0 / 1.0 and live in the shader.
     stops: [[f32; 4]; 2],
@@ -275,8 +265,8 @@ struct Uniforms {
 // Locks layout to what the WGSL Uniforms struct expects. Stops must land at
 // offset 112 (16-aligned for array<vec4>), palette at 144, total 224 bytes.
 const _: () = assert!(std::mem::size_of::<Uniforms>() == 224);
-const _: () = assert!(std::mem::offset_of!(Uniforms, accum_size) == 100);
-const _: () = assert!(std::mem::offset_of!(Uniforms, reassigned_power_scale) == 108);
+const _: () = assert!(std::mem::offset_of!(Uniforms, accum_size) == 92);
+const _: () = assert!(std::mem::offset_of!(Uniforms, reassigned_power_scale) == 100);
 const _: () = assert!(std::mem::offset_of!(Uniforms, stops) == 112);
 const _: () = assert!(std::mem::offset_of!(Uniforms, palette) == 144);
 
@@ -306,8 +296,8 @@ impl Uniforms {
             },
             history_length: p.ring_capacity,
             col_count: p.col_count,
-            write_slot: p.write_slot,
             rotation,
+            _header_padding: 0,
             bounds: [
                 p.bounds.x * sf,
                 p.bounds.y * sf,
@@ -321,8 +311,6 @@ impl Uniforms {
             uv_y_range: p.uv_y_range,
             scale_factor: sf,
             floor_db: p.floor_db,
-            ceiling_db: p.ceiling_db,
-            contrast: p.contrast.max(0.01),
             tilt_db: p.tilt_db,
             newest_col,
             inv_uv_range,
@@ -330,6 +318,7 @@ impl Uniforms {
             bin_hz: p.bin_hz,
             accum_size: [acc_sz[0] as f32, acc_sz[1] as f32],
             reassigned_power_scale: p.reassigned_power_scale,
+            _padding: [0.0; 2],
             stops: [
                 [
                     p.stop_positions[1],
@@ -520,10 +509,6 @@ struct Bgls<'a> {
 #[derive(Default)]
 struct Instance {
     resources: Option<Resources>,
-    ring_capacity: u32,
-    col_count: u32,
-    points_per_col: u32,
-    reassigned_points_per_slot: u32,
     slot_counts: Arc<[u32]>,
     last_used: u64,
 }
@@ -547,31 +532,11 @@ impl Instance {
             slot => slot.insert(Resources::new(device, bgls, p)),
         };
         res.sync(device, queue, bgls, p, viewport, scale_factor);
-        self.ring_capacity = p.ring_capacity;
-        self.col_count = p.col_count;
-        self.points_per_col = p.points_per_column;
-        self.reassigned_points_per_slot = p.reassigned_points_per_slot.max(1);
         self.slot_counts = Arc::clone(&p.slot_counts);
-    }
-
-    fn visible_slots(&self) -> u32 {
-        self.col_count.min(self.ring_capacity)
     }
 
     fn slot_count(&self, slot: u32) -> u32 {
         self.slot_counts.get(slot as usize).copied().unwrap_or(0)
-    }
-}
-
-// Column stride in bytes for the active storage kind. Reassigned uses the
-// compact per-slot point capacity; classic uses FFT bins. Packed classic rounds
-// u16 pairs up to a full u32 so pack/unpack2x16 never straddles a word boundary.
-pub(super) fn col_byte_stride(kind: ColumnKind, points_per_col: u32) -> u64 {
-    match kind {
-        ColumnKind::Reassigned => {
-            points_per_col as u64 * std::mem::size_of::<SpectrogramPoint>() as u64
-        }
-        ColumnKind::Classic => (points_per_col as u64).div_ceil(2) * 4,
     }
 }
 
