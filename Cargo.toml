@@ -13,17 +13,17 @@ readme = "README.md"
 [dependencies]
 pipewire = { version = "0.10.0", features = ["v0_3_77"] }
 rtrb = "0.3.4"
-serde_json = "1.0.150"
+serde_json = "1.0.151"
 async-channel = "2.5"
 iced_wgpu = { version = "0.14.0", default-features = false }
 wgpu = { version = "27.0.1", default-features = false, features = [ "std", "wgsl", "vulkan" ] }
 rustfft = "6.4.1"
 realfft = "3.5"
 tracing = "0.1.44"
-wayland-client = "0.31.14"
+wayland-client = "0.31.15"
 
   [dependencies.serde]
-  version = "1.0.228"
+  version = "1.0.229"
   features = [ "derive" ]
 
   [dependencies.iced]
@@ -32,7 +32,7 @@ wayland-client = "0.31.14"
   features = [ "advanced", "wgpu-bare", "wayland", "x11", "thread-pool", "web-colors" ]
 
   [dependencies.bytemuck]
-  version = "1.25.0"
+  version = "1.25.2"
   features = [ "derive" ]
 
   [dependencies.tracing-subscriber]
