@@ -23,6 +23,7 @@ pub(in crate::visuals) struct WaveformState {
     data: Arc<Mutex<VecDeque<WaveFrame>>>,
     preview: WaveformPreview,
     scroll: Cell<(Instant, f32)>,
+    snapshot_at: Cell<Instant>,
     view_columns: Cell<usize>,
     pub(in crate::visuals) palette: [Color; NUM_BANDS],
     pub(in crate::visuals) settings: WaveformSettings,
@@ -31,10 +32,12 @@ pub(in crate::visuals) struct WaveformState {
 
 impl WaveformState {
     pub fn new() -> Self {
+        let now = Instant::now();
         Self {
             data: Arc::new(Mutex::new(VecDeque::with_capacity(INITIAL_VIEW_COLUMNS))),
             preview: WaveformPreview::default(),
-            scroll: Cell::new((Instant::now(), 0.0)),
+            scroll: Cell::new((now, 0.0)),
+            snapshot_at: Cell::new(now),
             view_columns: Cell::new(INITIAL_VIEW_COLUMNS),
             palette: palettes::waveform::COLORS,
             settings: WaveformSettings::default(),
@@ -45,18 +48,23 @@ impl WaveformState {
     pub fn reset_audio(&mut self) {
         unpoison(self.data.lock()).clear();
         self.preview = WaveformPreview::default();
-        self.scroll.set((Instant::now(), 0.0));
+        let now = Instant::now();
+        self.scroll.set((now, 0.0));
+        self.snapshot_at.set(now);
     }
 
     pub fn apply_snapshot(&mut self, update: WaveformUpdate<'_>) {
-        if update.reset {
-            self.scroll
-                .set((Instant::now(), update.preview.progress));
+        let now = Instant::now();
+        if update.reset
+            || now.saturating_duration_since(self.snapshot_at.get()) > SCROLL_CLOCK_TIMEOUT
+        {
+            self.scroll.set((now, update.preview.progress));
         } else {
             let (last, offset) = self.scroll.get();
             self.scroll
                 .set((last, offset - update.columns.len() as f32));
         }
+        self.snapshot_at.set(now);
         self.preview = update.preview;
         if !update.reset && update.columns.is_empty() {
             return;
@@ -85,14 +93,16 @@ impl WaveformState {
         let now = Instant::now();
         let (last, offset) = self.scroll.get();
         let elapsed = now.saturating_duration_since(last);
-        let scroll_offset = if elapsed <= SCROLL_CLOCK_TIMEOUT {
-            (offset
+        let scroll_offset = if elapsed <= SCROLL_CLOCK_TIMEOUT
+            && now.saturating_duration_since(self.snapshot_at.get()) <= SCROLL_CLOCK_TIMEOUT
+        {
+            offset
                 + elapsed.as_secs_f32()
-                    * crate::util::finite_positive(self.settings.scroll_speed).unwrap_or(0.0))
-            .max(0.0)
+                    * crate::util::finite_positive(self.settings.scroll_speed).unwrap_or(0.0)
         } else {
             self.preview.progress
-        };
+        }
+        .clamp(0.0, 1.0);
         self.scroll.set((now, scroll_offset));
 
         let needed = ((bounds.width / COLUMN_WIDTH_PIXELS).ceil() as usize)
