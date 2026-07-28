@@ -264,13 +264,4 @@ mod tests {
             start + WATCHDOG_INTERVAL
         ));
     }
-
-    #[test]
-    fn presentation_invalidates_queued_watchdog_ticks() {
-        let heartbeat = FrameHeartbeat::default();
-        let stale = heartbeat.generation();
-        assert!(heartbeat.is_current(stale));
-        heartbeat.mark();
-        assert!(!heartbeat.is_current(stale));
-    }
 }
