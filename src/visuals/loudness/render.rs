@@ -5,7 +5,10 @@ use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
 
 use crate::visuals::render::common::sdf_primitive;
-use crate::visuals::render::common::{GeometryScratch, ClipTransform, line_instance, quad_instance};
+use crate::visuals::render::common::{
+    ClipTransform, GeometryFingerprint, GeometryScratch, bounds_fingerprint, line_instance,
+    quad_instance,
+};
 
 pub(super) const DB_RANGE: (f32, f32) = (-60.0, 4.0);
 pub(super) const GUIDE_LEVELS: [f32; 6] = [0.0, -6.0, -12.0, -18.0, -24.0, -36.0];
@@ -32,6 +35,7 @@ pub struct MeterFill {
 #[derive(Debug)]
 pub struct LoudnessParams {
     pub key: u64,
+    pub geometry_revision: u64,
     pub bounds: Rectangle,
     pub bg_color: [f32; 4],
     pub bars: [[MeterFill; 2]; 2],
@@ -47,6 +51,10 @@ pub(super) fn db_to_ratio(db: f32) -> f32 {
 }
 
 impl LoudnessParams {
+    fn geometry_fingerprint(&self) -> GeometryFingerprint {
+        bounds_fingerprint(self.geometry_revision, self.bounds)
+    }
+
     pub fn meter_bounds(&self) -> Option<(f32, f32, f32)> {
         let bar_count = self.bars.len();
         let meter_width = (self.bounds.width - LEFT_PADDING - RIGHT_PADDING).max(0.0);
@@ -175,5 +183,6 @@ sdf_primitive!(
     u64,
     "Loudness",
     TriangleList,
-    |self| self.params.key
+    |self| self.params.key,
+    self.params.geometry_fingerprint()
 );

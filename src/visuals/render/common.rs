@@ -200,32 +200,43 @@ pub fn line_instance(
     }
 }
 
-pub fn radial_dot_instance(
-    point: (f32, f32),
-    center_radius: [f32; 3],
-    scale: f32,
-    dot_radius: f32,
-    color: [f32; 4],
-    clip: ClipTransform,
-    additive: bool,
-) -> SdfInstance {
-    let center = clip.to_clip(center_radius[0], center_radius[1]);
-    SdfInstance {
-        p0: [point.0, point.1],
-        p1: [clip.scale[0], -clip.scale[1]],
-        color0: color,
-        color1: [
-            center[0],
-            center[1],
-            center_radius[2] * clip.scale[0],
-            -center_radius[2] * clip.scale[1],
-        ],
-        params: [
-            dot_radius,
-            if additive { 1.0 } else { 0.0 },
-            scale,
-            SdfInstance::RADIAL_DOT,
-        ],
+#[derive(Clone, Copy)]
+pub struct RadialDotTemplate(SdfInstance);
+
+impl RadialDotTemplate {
+    pub fn new(
+        center_radius: [f32; 3],
+        scale: f32,
+        dot_radius: f32,
+        clip: ClipTransform,
+        additive: bool,
+    ) -> Self {
+        let center = clip.to_clip(center_radius[0], center_radius[1]);
+        Self(SdfInstance {
+            p0: [0.0; 2],
+            p1: [clip.scale[0], -clip.scale[1]],
+            color0: [0.0; 4],
+            color1: [
+                center[0],
+                center[1],
+                center_radius[2] * clip.scale[0],
+                -center_radius[2] * clip.scale[1],
+            ],
+            params: [
+                dot_radius,
+                if additive { 1.0 } else { 0.0 },
+                scale,
+                SdfInstance::RADIAL_DOT,
+            ],
+        })
+    }
+
+    pub fn instance(self, point: (f32, f32), color: [f32; 4]) -> SdfInstance {
+        SdfInstance {
+            p0: [point.0, point.1],
+            color0: color,
+            ..self.0
+        }
     }
 }
 
@@ -354,23 +365,20 @@ pub fn decimate_finite_ordered_line_in_place(pts: &mut Vec<(f32, f32)>, max_poin
         } else {
             f32::INFINITY
         };
+        let (mut mn, mut mx) = (start, start);
+        read = start + 1;
         while read < pts.len() && pts[read].0 <= end_x {
+            if pts[read].1 < pts[mn].1 {
+                mn = read;
+            }
+            if pts[read].1 > pts[mx].1 {
+                mx = read;
+            }
             read += 1;
         }
-        read = read.max(start + 1);
-
-        let (mut mn, mut mx) = (start, start);
-        for i in start + 1..read {
-            if pts[i].1 < pts[mn].1 {
-                mn = i;
-            }
-            if pts[i].1 > pts[mx].1 {
-                mx = i;
-            }
-        }
-        let push = |pts: &mut [(f32, f32)], out: &mut usize, p| {
-            if *out == 0 || pts[*out - 1] != p {
-                pts[*out] = p;
+        let push = |pts: &mut [(f32, f32)], out: &mut usize, point| {
+            if *out == 0 || pts[*out - 1] != point {
+                pts[*out] = point;
                 *out += 1;
             }
         };
@@ -379,8 +387,8 @@ pub fn decimate_finite_ordered_line_in_place(pts: &mut Vec<(f32, f32)>, max_poin
             push(pts, &mut out, (x, lo));
             push(pts, &mut out, (x, hi));
         } else {
-            for p in [pts[mn.min(mx)], pts[mn.max(mx)]] {
-                push(pts, &mut out, p);
+            for point in [pts[mn.min(mx)], pts[mn.max(mx)]] {
+                push(pts, &mut out, point);
             }
         }
     }
@@ -572,6 +580,18 @@ fn create_sdf_pipeline(
 
 pub type GeometryFingerprint = [u64; 6];
 
+pub fn bounds_fingerprint(revision: u64, bounds: Rectangle) -> GeometryFingerprint {
+    let pack = |a: f32, b: f32| u64::from(a.to_bits()) << 32 | u64::from(b.to_bits());
+    [
+        revision,
+        pack(bounds.x, bounds.y),
+        pack(bounds.width, bounds.height),
+        0,
+        0,
+        0,
+    ]
+}
+
 struct CachedInstance {
     buffer: InstanceBuffer,
     fingerprint: Option<GeometryFingerprint>,
@@ -598,15 +618,22 @@ impl<K: std::hash::Hash + Eq + Copy> SdfPipeline<K> {
         }
     }
 
-    pub fn touch_if_current(&mut self, key: K, fingerprint: GeometryFingerprint) -> bool {
-        let last_used = self.cache.frame;
-        self.instances.get_mut(&key).is_some_and(|entry| {
-            let current = entry.fingerprint == Some(fingerprint);
-            if current {
-                entry.last_used = last_used;
-            }
-            current
-        })
+    pub fn prepare_required(&mut self, key: K, fingerprint: Option<GeometryFingerprint>) -> bool {
+        let (frame, threshold) = self.cache.advance();
+        let current = fingerprint.is_some_and(|fingerprint| {
+            self.instances.get_mut(&key).is_some_and(|entry| {
+                let current = entry.fingerprint == Some(fingerprint);
+                if current {
+                    entry.last_used = frame;
+                }
+                current
+            })
+        });
+        if let Some(threshold) = threshold {
+            self.instances
+                .retain(|_, entry| entry.last_used >= threshold);
+        }
+        !current
     }
 
     pub fn prepare_instance(
@@ -618,9 +645,9 @@ impl<K: std::hash::Hash + Eq + Copy> SdfPipeline<K> {
         fingerprint: Option<GeometryFingerprint>,
         instances: &[SdfInstance],
     ) {
-        let (frame, threshold) = self.cache.advance();
         let required = size_of::<SdfInstance>() as wgpu::BufferAddress
             * instances.len() as wgpu::BufferAddress;
+        let frame = self.cache.frame;
         let entry = self.instances.entry(key).or_insert_with(|| CachedInstance {
             buffer: InstanceBuffer::new(device, label, required),
             fingerprint,
@@ -630,9 +657,6 @@ impl<K: std::hash::Hash + Eq + Copy> SdfPipeline<K> {
         entry.last_used = frame;
         entry.buffer.ensure_capacity(device, label, required);
         entry.buffer.write(queue, instances);
-        if let Some(t) = threshold {
-            self.instances.retain(|_, e| e.last_used >= t);
-        }
     }
 
     pub fn instance(&self, key: K) -> Option<&InstanceBuffer> {
@@ -663,9 +687,7 @@ macro_rules! sdf_primitive {
                 let fingerprint = $crate::visuals::render::common::sdf_primitive!(
                     @fingerprint $self $(, $fingerprint_expr)?
                 );
-                if fingerprint
-                    .is_some_and(|fingerprint| pipeline.inner.touch_if_current(key, fingerprint))
-                {
+                if !pipeline.inner.prepare_required(key, fingerprint) {
                     return;
                 }
                 pipeline.scratch.clear();
@@ -726,35 +748,35 @@ mod tests {
 
     #[test]
     fn decimate_line_advances_when_bucket_edge_rounds_below_point() {
-        let mut pts = vec![(667.6, 0.0), (3881.2603, 1.0)];
-        decimate_finite_ordered_line_in_place(&mut pts, 5507);
-        assert_eq!(pts.len(), 2);
+        let mut points = vec![(667.6, 0.0), (3881.2603, 1.0)];
+        decimate_finite_ordered_line_in_place(&mut points, 5507);
+        assert_eq!(points.len(), 2);
     }
 
     #[test]
     fn ordered_decimation_preserves_extrema_within_budget() {
-        let mut pts: Vec<_> = (0..16_385)
+        let mut points: Vec<_> = (0..16_385)
             .map(|i| (i as f32 * 0.125, (i as f32 * 0.017).sin()))
             .collect();
-        let min = pts.iter().map(|point| point.1).reduce(f32::min).unwrap();
-        let max = pts.iter().map(|point| point.1).reduce(f32::max).unwrap();
+        let min = points.iter().map(|point| point.1).reduce(f32::min).unwrap();
+        let max = points.iter().map(|point| point.1).reduce(f32::max).unwrap();
 
-        decimate_finite_ordered_line_in_place(&mut pts, 2_000);
+        decimate_finite_ordered_line_in_place(&mut points, 2_000);
 
-        assert!(pts.len() <= 2_000);
-        assert!(pts.windows(2).all(|window| window[0].0 <= window[1].0));
-        assert!(pts.iter().any(|point| point.1 == min));
-        assert!(pts.iter().any(|point| point.1 == max));
+        assert!(points.len() <= 2_000);
+        assert!(points.windows(2).all(|window| window[0].0 <= window[1].0));
+        assert!(points.iter().any(|point| point.1 == min));
+        assert!(points.iter().any(|point| point.1 == max));
     }
 
     #[test]
     fn ordered_decimation_honors_budget_at_rounded_bucket_edges() {
-        let mut pts = (0..8)
+        let mut points = (0..8)
             .map(|i| (0.1 + 1_000.3 * i as f32 / 7.0, (-1.0_f32).powi(i)))
             .collect();
 
-        decimate_finite_ordered_line_in_place(&mut pts, 6);
+        decimate_finite_ordered_line_in_place(&mut points, 6);
 
-        assert!(pts.len() <= 6);
+        assert!(points.len() <= 6);
     }
 }

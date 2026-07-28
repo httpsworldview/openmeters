@@ -35,6 +35,7 @@ pub(in crate::visuals) struct StereometerState {
     pub(in crate::visuals) settings: StereometerSettings,
     labels: [Paragraph; 3],
     key: u64,
+    geometry_revision: u64,
     grid_revision: u64,
 }
 
@@ -52,6 +53,7 @@ impl StereometerState {
                 Paragraph::with_text(raw_text(label, CORR_LABEL_SIZE, Size::new(CORR_LABEL_W, CORR_LABEL_H)))
             }),
             key: crate::visuals::next_key(),
+            geometry_revision: 0,
             grid_revision: 0,
         }
     }
@@ -71,11 +73,13 @@ impl StereometerState {
             rotation: s.rotation.clamp(-4, 4),
             ..s.clone()
         };
+        self.geometry_revision = self.geometry_revision.wrapping_add(1);
         self.grid_revision = self.grid_revision.wrapping_add(1);
     }
 
     pub fn set_palette(&mut self, palette: &[Color; PALETTE_SIZE]) {
         self.palette = *palette;
+        self.geometry_revision = self.geometry_revision.wrapping_add(1);
         self.grid_revision = self.grid_revision.wrapping_add(1);
     }
 
@@ -84,9 +88,11 @@ impl StereometerState {
         self.band_points = Default::default();
         self.corr_trail.clear();
         self.band_trail.clear();
+        self.geometry_revision = self.geometry_revision.wrapping_add(1);
     }
 
     pub fn apply_snapshot(&mut self, snap: StereometerSnapshot) {
+        self.geometry_revision = self.geometry_revision.wrapping_add(1);
         if snap.xy_points.is_empty() {
             self.points = Arc::default();
             self.band_points = Default::default();
@@ -125,6 +131,7 @@ impl StereometerState {
         };
         Some(StereometerParams {
             key: self.key,
+            geometry_revision: self.geometry_revision,
             grid_revision: self.grid_revision,
             bounds,
             points: self.points.clone(),

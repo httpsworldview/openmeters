@@ -9,8 +9,8 @@ use super::processor::TRACE_COUNT;
 use crate::util::color::rgba_with_alpha;
 use crate::visuals::render::common::sdf_primitive;
 use crate::visuals::render::common::{
-    ChannelLayout, ClipTransform, GeometryScratch, decimate_finite_ordered_line_in_place,
-    extend_filled_line,
+    ChannelLayout, ClipTransform, GeometryFingerprint, GeometryScratch, bounds_fingerprint,
+    decimate_finite_ordered_line_in_place, extend_filled_line,
 };
 
 const FILL_ALPHA: f32 = 0.15;
@@ -18,6 +18,7 @@ const FILL_ALPHA: f32 = 0.15;
 #[derive(Debug, Clone)]
 pub struct OscilloscopeParams {
     pub key: u64,
+    pub geometry_revision: u64,
     pub bounds: Rectangle,
     pub channels: usize,
     pub samples_per_channel: usize,
@@ -25,6 +26,12 @@ pub struct OscilloscopeParams {
     pub samples: Arc<[f32]>,
     pub colors: [[f32; 4]; TRACE_COUNT],
     pub stacked: bool,
+}
+
+impl OscilloscopeParams {
+    fn geometry_fingerprint(&self) -> GeometryFingerprint {
+        bounds_fingerprint(self.geometry_revision, self.bounds)
+    }
 }
 
 impl OscilloscopePrimitive {
@@ -101,5 +108,6 @@ sdf_primitive!(
     u64,
     "Oscilloscope",
     TriangleList,
-    |self| self.params.key
+    |self| self.params.key,
+    self.params.geometry_fingerprint()
 );

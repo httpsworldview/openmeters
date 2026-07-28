@@ -17,6 +17,7 @@ pub(in crate::visuals) struct OscilloscopeState {
     pub(in crate::visuals) palette: [Color; TRACE_COUNT],
     pub(in crate::visuals) settings: OscilloscopeSettings,
     key: u64,
+    geometry_revision: u64,
 }
 
 impl OscilloscopeState {
@@ -26,11 +27,13 @@ impl OscilloscopeState {
             palette: palettes::oscilloscope::COLORS,
             settings: OscilloscopeSettings::default(),
             key: crate::visuals::next_key(),
+            geometry_revision: 0,
         }
     }
 
     pub fn reset_audio(&mut self) {
         self.snapshot = OscilloscopeSnapshot::default();
+        self.geometry_revision = self.geometry_revision.wrapping_add(1);
     }
 
     pub fn update_view_settings(&mut self, settings: &OscilloscopeSettings, reset_snapshot: bool) {
@@ -43,13 +46,16 @@ impl OscilloscopeState {
         if reset_snapshot {
             self.snapshot = OscilloscopeSnapshot::default();
         }
+        self.geometry_revision = self.geometry_revision.wrapping_add(1);
     }
 
     pub fn set_palette(&mut self, palette: &[Color; TRACE_COUNT]) {
         self.palette = *palette;
+        self.geometry_revision = self.geometry_revision.wrapping_add(1);
     }
 
     pub fn apply_snapshot(&mut self, snapshot: OscilloscopeSnapshot) {
+        self.geometry_revision = self.geometry_revision.wrapping_add(1);
         if !snapshot.samples.is_empty()
             && !self.snapshot.samples.is_empty()
             && snapshot.epoch == self.snapshot.epoch
@@ -85,6 +91,7 @@ impl OscilloscopeState {
 
         Some(OscilloscopeParams {
             key: self.key,
+            geometry_revision: self.geometry_revision,
             bounds,
             channels,
             samples_per_channel,

@@ -68,6 +68,7 @@ pub(in crate::visuals) struct LoudnessState {
     guide_labels: [Paragraph; GUIDE_LABELS.len()],
     value_label: (String, Paragraph),
     key: u64,
+    geometry_revision: u64,
 }
 
 impl LoudnessState {
@@ -88,6 +89,7 @@ impl LoudnessState {
             }),
             value_label: (String::new(), Paragraph::default()),
             key: crate::visuals::next_key(),
+            geometry_revision: 0,
         };
         state.refresh_value_label();
         state
@@ -99,6 +101,7 @@ impl LoudnessState {
         self.snapshot = snapshot;
         self.peaks = [PeakHold::new(DB_RANGE.0, Instant::now()); VISIBLE_METER_COUNT];
         self.refresh_value_label();
+        self.geometry_revision = self.geometry_revision.wrapping_add(1);
     }
 
     pub fn apply_snapshot(&mut self, mut snapshot: LoudnessSnapshot) {
@@ -106,6 +109,7 @@ impl LoudnessState {
         self.snapshot = snapshot;
         self.update_peak_holds(Instant::now());
         self.refresh_value_label();
+        self.geometry_revision = self.geometry_revision.wrapping_add(1);
     }
 
     pub fn set_modes(&mut self, left: MeterMode, right: MeterMode) {
@@ -116,10 +120,12 @@ impl LoudnessState {
         self.settings.left_mode = left;
         self.settings.right_mode = right;
         self.refresh_value_label();
+        self.geometry_revision = self.geometry_revision.wrapping_add(1);
     }
 
     pub fn set_palette(&mut self, palette: &[Color; PALETTE_SIZE]) {
         self.palette = *palette;
+        self.geometry_revision = self.geometry_revision.wrapping_add(1);
     }
 
     fn get_value(&self, mode: MeterMode, channel: usize) -> f32 {
@@ -138,6 +144,7 @@ impl LoudnessState {
         let values = self.visible_values();
         LoudnessParams {
             key: self.key,
+            geometry_revision: self.geometry_revision,
             bounds,
             bg_color: color_to_rgba(self.palette[PAL_BACKGROUND]),
             bars: [

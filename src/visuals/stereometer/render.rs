@@ -13,8 +13,8 @@ use crate::visuals::options::{
 use crate::visuals::palettes::stereometer::SIZE as PALETTE_SIZE;
 use crate::util::lerp;
 use crate::visuals::render::common::{
-    ClipTransform, GeometryScratch, SdfInstance, SdfPipeline, gradient_quad_instance,
-    line_instance, quad_instance, radial_dot_instance,
+    ClipTransform, GeometryScratch, RadialDotTemplate, SdfInstance, SdfPipeline,
+    bounds_fingerprint, gradient_quad_instance, line_instance, quad_instance,
 };
 
 // 0.66834.powf(0.3) and (1.0 / 0.66834).powi(2), respectively. Working
@@ -82,6 +82,7 @@ impl Deref for FixedTrail {
 #[derive(Debug, Clone)]
 pub struct StereometerParams {
     pub key: u64,
+    pub geometry_revision: u64,
     pub grid_revision: u64,
     pub bounds: Rectangle,
     pub points: Arc<[(f32, f32)]>,
@@ -330,16 +331,13 @@ impl StereometerPrimitive {
             StereometerScale::Linear => projection.fit,
             StereometerScale::Scaled => -1.0,
         };
+        let center_radius = [projection.cx, projection.cy, projection.radius];
+        let dots = [false, true].map(|additive| {
+            RadialDotTemplate::new(center_radius, radial_scale, dot_r, clip, additive)
+        });
         let dot = |l, r, color, additive| {
-            radial_dot_instance(
-                projection.visible(projection.rotated(l, r)),
-                [projection.cx, projection.cy, projection.radius],
-                radial_scale,
-                dot_r,
-                color,
-                clip,
-                additive,
-            )
+            dots[usize::from(additive)]
+                .instance(projection.visible(projection.rotated(l, r)), color)
         };
 
         match p.mode {
@@ -500,6 +498,10 @@ impl StereometerPrimitive {
         );
     }
 
+    fn dynamic_fingerprint(&self) -> [u64; 6] {
+        bounds_fingerprint(self.params.geometry_revision, self.params.bounds)
+    }
+
     fn grid_key(&self) -> StereometerKey {
         let p = &self.params;
         StereometerKey::Grid(
@@ -527,22 +529,28 @@ impl iced_wgpu::primitive::Primitive for StereometerPrimitive {
         viewport: &Viewport,
     ) {
         let dynamic_key = StereometerKey::Dynamic(self.params.key);
-        pipeline.scratch.clear();
-        self.build_vertices(viewport, &mut pipeline.scratch);
-        pipeline.inner.prepare_instance(
-            device,
-            queue,
-            RENDER_LABEL,
-            dynamic_key,
-            None,
-            &pipeline.scratch.instances,
-        );
+        let dynamic_fingerprint = self.dynamic_fingerprint();
+        if pipeline
+            .inner
+            .prepare_required(dynamic_key, Some(dynamic_fingerprint))
+        {
+            pipeline.scratch.clear();
+            self.build_vertices(viewport, &mut pipeline.scratch);
+            pipeline.inner.prepare_instance(
+                device,
+                queue,
+                RENDER_LABEL,
+                dynamic_key,
+                Some(dynamic_fingerprint),
+                &pipeline.scratch.instances,
+            );
+        }
 
         let grid_key = self.grid_key();
         let grid_fingerprint = [self.params.grid_revision, 0, 0, 0, 0, 0];
-        if !pipeline
+        if pipeline
             .inner
-            .touch_if_current(grid_key, grid_fingerprint)
+            .prepare_required(grid_key, Some(grid_fingerprint))
         {
             pipeline.scratch.clear();
             self.build_grid_vertices(&mut pipeline.scratch);

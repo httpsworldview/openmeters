@@ -7,7 +7,6 @@ use crate::dsp::{
 use crate::util::audio::{BAND_SPLITS_HZ, DEFAULT_SAMPLE_RATE, flush_denormal_f64};
 use std::{collections::VecDeque, sync::Arc};
 
-const BAND_CHANNELS: usize = 2;
 const BAND_DISPLAY_GAIN: f32 = 0.8;
 pub(super) const BAND_COUNT: usize = BAND_SPLITS_HZ.len() + 1;
 
@@ -158,8 +157,8 @@ impl Correlators {
 pub struct StereometerProcessor {
     config: StereometerConfig,
     snapshot: SnapshotBuffer,
-    history: VecDeque<f32>,
-    band_history: [VecDeque<f32>; BAND_COUNT],
+    history: VecDeque<(f32, f32)>,
+    band_history: [VecDeque<(f32, f32)>; BAND_COUNT],
     history_channels: usize,
     band_splitter: BandSplitter,
     correlators: Correlators,
@@ -206,7 +205,7 @@ impl StereometerProcessor {
 
         let analyze_bands = self.config.needs_band_analysis();
         for [left, right] in block.stereo_frames() {
-            self.history.extend([left, right]);
+            self.history.push_back((left, right));
             self.correlators.full.update(left, right);
 
             if analyze_bands {
@@ -220,7 +219,7 @@ impl StereometerProcessor {
                 {
                     correlator.update(left, right);
                     if self.config.emit_band_points {
-                        history.extend([left, right]);
+                        history.push_back((left, right));
                     }
                 }
             }
@@ -237,11 +236,11 @@ impl StereometerProcessor {
         let frames = (self.config.sample_rate * self.config.segment_duration)
             .round()
             .max(1.0) as usize;
-        let capacity = frames * 2;
+        let capacity = frames;
         self.history
             .drain(..self.history.len().saturating_sub(capacity));
 
-        let band_capacity = frames * BAND_CHANNELS;
+        let band_capacity = frames;
         if self.config.emit_band_points {
             for bh in &mut self.band_history {
                 let drop = bh.len().saturating_sub(band_capacity);
@@ -257,8 +256,7 @@ impl StereometerProcessor {
             self.snapshot.xy_points.clear();
             self.snapshot.xy_points.reserve(target);
             for i in 0..target {
-                let idx = (i * frames / target) * 2;
-                self.snapshot.xy_points.push((data[idx], data[idx + 1]));
+                self.snapshot.xy_points.push(data[i * frames / target]);
             }
         }
 
@@ -275,8 +273,8 @@ impl StereometerProcessor {
                 let data = bh.make_contiguous();
                 buf.reserve(target);
                 for i in 0..target {
-                    let idx = (i * frames / target) * BAND_CHANNELS;
-                    buf.push((data[idx] * BAND_DISPLAY_GAIN, data[idx + 1] * BAND_DISPLAY_GAIN));
+                    let (left, right) = data[i * frames / target];
+                    buf.push((left * BAND_DISPLAY_GAIN, right * BAND_DISPLAY_GAIN));
                 }
             }
         }
@@ -343,6 +341,22 @@ mod tests {
 
     fn assert_close(a: f32, b: f32) {
         assert!((a - b).abs() <= 1e-6, "{a} != {b}");
+    }
+
+    #[test]
+    fn snapshot_downsampling_preserves_stereo_pairs() {
+        let mut processor = StereometerProcessor::new(StereometerConfig {
+            sample_rate: 4.0,
+            segment_duration: 1.0,
+            target_sample_count: 2,
+            ..Default::default()
+        });
+        let samples = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+        let snapshot = processor
+            .process_block(&AudioBlock::new(&samples, 2, 4.0))
+            .unwrap();
+
+        assert_eq!(&*snapshot.xy_points, &[(1.0, 2.0), (5.0, 6.0)]);
     }
 
     #[test]
