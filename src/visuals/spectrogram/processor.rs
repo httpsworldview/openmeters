@@ -460,7 +460,7 @@ impl SpectrogramProcessor {
         let capacity = bin_count
             .saturating_sub(2)
             .min(self.config.fft_size / 2);
-        let mut points = Vec::with_capacity(capacity);
+        let mut points = Vec::new();
         let (spectrum, auxiliary) = self.reassign.spectra.split_at(self.fft_size);
         let (derivative_spectrum, time_weighted_spectrum) =
             auxiliary.split_at(self.fft_size);
@@ -483,6 +483,9 @@ impl SpectrogramProcessor {
                 continue;
             }
 
+            if points.is_empty() {
+                points.reserve(capacity);
+            }
             points.push(SpectrogramPoint {
                 time_offset: (t.re * base.re + t.im * base.im) * inv_pow * inv_hop
                     - latency_hops,
@@ -890,14 +893,17 @@ mod tests {
     }
 
     #[test]
-    fn reassignment_removes_constant_dc() {
+    fn reassignment_removes_constant_dc_without_allocating_points() {
         let config = cfg(64, 16, true);
         let update = process_samples(config, &[0.25; 128]);
 
-        assert!(update
-            .new_columns
-            .iter()
-            .all(|column| reassigned_points(column).is_empty()));
+        for column in &update.new_columns {
+            let SpectrogramColumn::Reassigned(points) = column else {
+                panic!("expected reassigned column");
+            };
+            assert!(points.is_empty());
+            assert_eq!(points.capacity(), 0);
+        }
     }
 
     #[test]
