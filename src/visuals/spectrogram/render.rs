@@ -843,6 +843,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn shader_is_valid() {
+        let module = wgpu::naga::front::wgsl::parse_str(include_str!(
+            "../render/shaders/spectrogram.wgsl"
+        ))
+        .expect("spectrogram shader should parse");
+        wgpu::naga::valid::Validator::new(
+            wgpu::naga::valid::ValidationFlags::all(),
+            wgpu::naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("spectrogram shader should validate");
+    }
+
+    #[test]
     fn equal_byte_capacity_does_not_reuse_a_different_ring_layout() {
         let current = RingLayout {
             kind: ColumnKind::Classic,

@@ -15,6 +15,8 @@ const DB_STORE_RANGE: f32 = DB_STORE_HI - DB_STORE_LO;
 // Analysis floor -- keep in sync with util::audio::DB_FLOOR.
 const DB_ANALYSIS_FLOOR: f32 = -140.0;
 const DB_FLOOR_EPS: f32 = 0.01;
+// DB_ANALYSIS_FLOOR + DB_FLOOR_EPS in linear power.
+const ANALYSIS_POWER_EPS: f32 = 1.0023052e-14;
 
 // Must match Rust-side Uniforms layout exactly.
 struct Uniforms {
@@ -52,7 +54,7 @@ struct Uniforms {
 
 struct AccumOutput {
     @builtin(position) position: vec4<f32>,
-    @location(0) @interpolate(flat) magnitude_db: f32,
+    @location(0) @interpolate(flat) power: f32,
     @location(1) @interpolate(flat) freq_hz: f32,
 }
 
@@ -159,18 +161,18 @@ fn vs_accum_splat(
     @location(0) corner: vec2<f32>,
     @location(1) time_offset: f32,
     @location(2) freq_hz: f32,
-    @location(3) magnitude_db: f32,
+    @location(3) power: f32,
     @builtin(instance_index) inst: u32,
 ) -> AccumOutput {
     let zoomed = (freq_to_norm(freq_hz) - u.uv_y_range.x) * u.inv_uv_range;
-    if magnitude_db < -900.0 || zoomed < -0.01 || zoomed > 1.01 {
-        return AccumOutput(CULL_POS, magnitude_db, freq_hz);
+    if !(power > 0.0) || zoomed < -0.01 || zoomed > 1.01 {
+        return AccumOutput(CULL_POS, power, freq_hz);
     }
     let ext = extents();
     let age = compute_age(inst / max(u.points_per_col, 1u));
     let pos = vec2<f32>(ext.x - (f32(age) - time_offset) * u.scale_factor, (1.0 - zoomed) * ext.y)
         + corner * u.scale_factor;
-    return AccumOutput(place_accum(pos), magnitude_db, freq_hz);
+    return AccumOutput(place_accum(pos), power, freq_hz);
 }
 
 @vertex
@@ -257,6 +259,19 @@ fn apply_tilt(mut_mag: f32, freq_hz: f32) -> f32 {
     return mag;
 }
 
+fn apply_tilt_power(input_power: f32, freq_hz: f32) -> f32 {
+    if u.tilt_db == 0.0 {
+        return input_power;
+    }
+    if !(input_power > ANALYSIS_POWER_EPS) {
+        return 0.0;
+    }
+    if freq_hz > 0.0 {
+        return input_power * exp2(u.tilt_db * log2(freq_hz / 1000.0) * DB_TO_LOG2);
+    }
+    return input_power;
+}
+
 fn shade_db(mag: f32) -> vec4<f32> {
     let range = max(-u.floor_db, 0.001);
     let level = clamp((mag - u.floor_db) / range, 0.0, 1.0);
@@ -276,21 +291,13 @@ fn shade(mut_mag: f32, freq_hz: f32) -> vec4<f32> {
     return shade_db(mag);
 }
 
-fn db_to_power(db: f32) -> f32 {
-    return exp2(db * DB_TO_LOG2);
-}
-
 fn power_to_db(power: f32) -> f32 {
     return max(log(max(power, 1e-20)) * LN_TO_DB, DB_ANALYSIS_FLOOR);
 }
 
 @fragment
 fn fs_accum(in: AccumOutput) -> @location(0) vec2<f32> {
-    let mag = apply_tilt(in.magnitude_db, in.freq_hz);
-    if mag < -9000.0 {
-        return vec2<f32>(0.0);
-    }
-    let power = db_to_power(mag);
+    let power = apply_tilt_power(in.power, in.freq_hz);
     return vec2<f32>(power, power * LOW_POWER_SCALE);
 }
 

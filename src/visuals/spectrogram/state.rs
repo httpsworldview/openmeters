@@ -853,7 +853,7 @@ mod tests {
                         super::super::processor::SpectrogramPoint {
                             time_offset: 0.0,
                             freq_hz: 100.0,
-                            magnitude_db: -20.0,
+                            power: 0.01,
                         };
                         n
                     ])

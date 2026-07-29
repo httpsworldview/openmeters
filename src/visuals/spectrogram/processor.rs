@@ -23,9 +23,8 @@
 
 use crate::dsp::AudioBlock;
 use crate::util::audio::{
-    Channel, DB_FLOOR, DEFAULT_SAMPLE_RATE, LN_TO_DB, WindowKind,
-    compute_fft_bin_normalization, copy_dc_removed_from_deque,
-    copy_dc_removed_windowed_from_deque, db_to_power, power_to_db,
+    Channel, DB_FLOOR, DEFAULT_SAMPLE_RATE, WindowKind, compute_fft_bin_normalization,
+    copy_dc_removed_windowed_from_deque, copy_from_deque, db_to_power, power_to_db,
     sanitize_sample_rate, window_coefficients,
 };
 use bytemuck::{Pod, Zeroable};
@@ -40,7 +39,7 @@ use std::sync::Arc;
 pub struct SpectrogramPoint {
     pub time_offset: f32,
     pub freq_hz: f32,
-    pub magnitude_db: f32,
+    pub power: f32,
 }
 
 crate::macros::default_struct! {
@@ -85,8 +84,7 @@ impl SpectrogramConfig {
 struct ReassignmentBuffers {
     derivative_window: Vec<f32>,
     time_weighted_window: Vec<f32>,
-    derivative_spectrum: Vec<Complex32>,
-    time_weighted_spectrum: Vec<Complex32>,
+    spectra: Vec<Complex32>,
     floor_linear: f32,
 }
 
@@ -114,16 +112,15 @@ fn reassigned_power_scale(window: &[f32], fft_size: usize) -> f32 {
 }
 
 impl ReassignmentBuffers {
-    fn rebuild(&mut self, planner: &mut FftPlanner<f32>, window: &[f32], bin_count: usize) {
+    fn rebuild(&mut self, planner: &mut FftPlanner<f32>, window: &[f32], fft_size: usize) {
         self.derivative_window = compute_derivative_spectral(planner, window);
         self.time_weighted_window = compute_time_weighted(window);
-        self.derivative_spectrum = vec![Complex32::ZERO; bin_count];
-        self.time_weighted_spectrum = vec![Complex32::ZERO; bin_count];
+        self.spectra = vec![Complex32::ZERO; fft_size * 3];
         self.floor_linear = db_to_power(DB_FLOOR);
     }
 }
 
-// Reassigned ships only visible fractional (t, f, mag) splats; bins below
+// Reassigned ships only visible fractional (t, f, power) splats; bins below
 // the analysis floor are omitted instead of sent as invisible sentinels.
 // Classic ships packed fixed-domain dB per bin; freq is implicit (k * bin_hz)
 // and the renderer fills between adjacent bins.
@@ -178,7 +175,6 @@ pub struct SpectrogramProcessor {
     fft_size: usize,
     window: Arc<[f32]>,
     real: Vec<f32>,
-    complex_buf: Vec<Complex32>,
     hilbert_buf: Vec<Complex32>,
     spectrum: Vec<Complex32>,
     scratch: Vec<Complex32>,
@@ -207,7 +203,6 @@ impl SpectrogramProcessor {
             fft_size: 0,
             window: Arc::from([]),
             real: Vec::new(),
-            complex_buf: Vec::new(),
             hilbert_buf: Vec::new(),
             spectrum: Vec::new(),
             scratch: Vec::new(),
@@ -256,11 +251,10 @@ impl SpectrogramProcessor {
         self.window = window_coefficients(self.config.window, window_size);
         let bin_count = self.fft_size / 2 + 1;
         let reassigned_len = if use_reassignment { hilbert_len } else { 0 };
-        let complex_len = if use_reassignment { self.fft_size } else { 0 };
+        let classic_bin_count = if use_reassignment { 0 } else { bin_count };
         resize_trim(&mut self.real, active_len, 0.0);
-        resize_trim(&mut self.complex_buf, complex_len, Complex32::ZERO);
         resize_trim(&mut self.hilbert_buf, reassigned_len, Complex32::ZERO);
-        resize_trim(&mut self.spectrum, bin_count, Complex32::ZERO);
+        resize_trim(&mut self.spectrum, classic_bin_count, Complex32::ZERO);
         let scratch_len = if use_reassignment {
             self.fft
                 .get_inplace_scratch_len()
@@ -270,10 +264,14 @@ impl SpectrogramProcessor {
             self.classic_fft.get_scratch_len()
         };
         resize_trim(&mut self.scratch, scratch_len, Complex32::ZERO);
-        resize_trim(&mut self.classic_bins, bin_count, 0);
+        resize_trim(&mut self.classic_bins, classic_bin_count, 0);
         self.bin_norm = compute_fft_bin_normalization(&self.window, self.fft_size);
         self.reassigned_power_scale = if use_reassignment {
-            self.reassign.rebuild(&mut planner, &self.window, bin_count);
+            let inv_hilbert_len = (hilbert_len as f32).recip();
+            for norm in &mut self.bin_norm {
+                *norm *= inv_hilbert_len * inv_hilbert_len;
+            }
+            self.reassign.rebuild(&mut planner, &self.window, self.fft_size);
             reassigned_power_scale(&self.window, self.fft_size)
         } else {
             self.reassign = ReassignmentBuffers::default();
@@ -331,7 +329,7 @@ impl SpectrogramProcessor {
             }
 
             let col = if reassignment_enabled {
-                copy_dc_removed_from_deque(&mut self.real[..read_len], &self.audio_buffer);
+                copy_from_deque(&mut self.real[..read_len], &self.audio_buffer);
                 // Use an analytic signal so low-frequency bins are not polluted
                 // by the negative-frequency mirror of the windowed real signal.
                 hilbert_transform(
@@ -341,28 +339,15 @@ impl SpectrogramProcessor {
                     &*self.hilbert_ifft,
                     &mut self.scratch,
                 );
-                let scale = (self.hilbert_buf.len() as f32).recip();
-                let analytic = &mut self.hilbert_buf[center_offset..center_offset + window_size];
-                for sample in analytic.iter_mut() {
-                    *sample *= scale;
-                }
+                let analytic = &self.hilbert_buf[center_offset..center_offset + window_size];
                 let fft = &*self.fft;
                 let r = &mut self.reassign;
-                let stages: [(&[f32], &mut [Complex32]); 3] = [
-                    (&self.window, &mut self.spectrum),
-                    (&r.derivative_window, &mut r.derivative_spectrum),
-                    (&r.time_weighted_window, &mut r.time_weighted_spectrum),
-                ];
-                for (window, out) in stages {
-                    fft_windowed(
-                        analytic,
-                        window,
-                        &mut self.complex_buf,
-                        out,
-                        fft,
-                        &mut self.scratch,
-                    );
-                }
+                let (base, auxiliary) = r.spectra.split_at_mut(self.fft_size);
+                let (derivative, time_weighted) = auxiliary.split_at_mut(self.fft_size);
+                apply_complex_window(analytic, &self.window, base);
+                apply_complex_window(analytic, &r.derivative_window, derivative);
+                apply_complex_window(analytic, &r.time_weighted_window, time_weighted);
+                fft.process_with_scratch(&mut r.spectra, &mut self.scratch);
                 SpectrogramColumn::Reassigned(self.reassigned_points(
                     sample_rate,
                     hop_size,
@@ -471,19 +456,26 @@ impl SpectrogramProcessor {
         let floor_linear = self.reassign.floor_linear;
         let inv_2pi = sample_rate / core::f32::consts::TAU;
         let inv_hop = 1.0 / hop_size.max(1) as f32;
-        let mut points = Vec::new();
+        let latency_hops = latency_samples as f32 * inv_hop;
+        let capacity = bin_count
+            .saturating_sub(2)
+            .min(self.config.fft_size / 2);
+        let mut points = Vec::with_capacity(capacity);
+        let (spectrum, auxiliary) = self.reassign.spectra.split_at(self.fft_size);
+        let (derivative_spectrum, time_weighted_spectrum) =
+            auxiliary.split_at(self.fft_size);
 
         for i in 0..bin_count {
-            let base = self.spectrum[i];
+            let base = spectrum[i];
             let energy_scale = self.bin_norm[i];
             let pow = base.re * base.re + base.im * base.im;
             let scaled_power = pow * energy_scale;
-            if !(scaled_power >= floor_linear && energy_scale > 0.0) {
+            if scaled_power < floor_linear {
                 continue;
             }
 
-            let d = self.reassign.derivative_spectrum[i];
-            let t = self.reassign.time_weighted_spectrum[i];
+            let d = derivative_spectrum[i];
+            let t = time_weighted_spectrum[i];
             let inv_pow = 1.0 / pow;
             let d_omega = -(d.im * base.re - d.re * base.im) * inv_pow;
             let freq_hz = i as f32 * bin_hz + d_omega * inv_2pi;
@@ -493,9 +485,9 @@ impl SpectrogramProcessor {
 
             points.push(SpectrogramPoint {
                 time_offset: (t.re * base.re + t.im * base.im) * inv_pow * inv_hop
-                    - latency_samples as f32 * inv_hop,
+                    - latency_hops,
                 freq_hz,
-                magnitude_db: (scaled_power.ln() * LN_TO_DB).max(DB_FLOOR),
+                power: scaled_power,
             });
         }
 
@@ -572,27 +564,19 @@ fn hilbert_transform(
     analytic[real.len()..].fill(Complex32::ZERO);
 
     fft.process_with_scratch(analytic, scratch);
+    analytic[0] = Complex32::ZERO;
     analytic[n / 2 + 1..].fill(Complex32::ZERO);
     ifft.process_with_scratch(analytic, scratch);
 }
 
-fn fft_windowed(
-    analytic: &[Complex32],
-    window: &[f32],
-    complex_buf: &mut [Complex32],
-    output: &mut [Complex32],
-    fft: &dyn Fft<f32>,
-    scratch: &mut [Complex32],
-) {
-    for (c, (&a, &w)) in complex_buf
+fn apply_complex_window(analytic: &[Complex32], window: &[f32], output: &mut [Complex32]) {
+    for (out, (&sample, &weight)) in output
         .iter_mut()
         .zip(analytic.iter().zip(window.iter()))
     {
-        *c = a * w;
+        *out = sample * weight;
     }
-    complex_buf[window.len()..].fill(Complex32::ZERO);
-    fft.process_with_scratch(complex_buf, scratch);
-    output.copy_from_slice(&complex_buf[..output.len()]);
+    output[window.len()..].fill(Complex32::ZERO);
 }
 
 fn compute_derivative_spectral(planner: &mut FftPlanner<f32>, window: &[f32]) -> Vec<f32> {
@@ -676,8 +660,8 @@ mod tests {
     fn peak_point(points: &[SpectrogramPoint]) -> &SpectrogramPoint {
         points
             .iter()
-            .filter(|p| p.magnitude_db > DB_FLOOR)
-            .max_by(|a, b| a.magnitude_db.total_cmp(&b.magnitude_db))
+            .filter(|p| p.power > db_to_power(DB_FLOOR))
+            .max_by(|a, b| a.power.total_cmp(&b.power))
             .expect("expected non-sentinel point")
     }
 
@@ -716,6 +700,29 @@ mod tests {
         assert_eq!(processor.config.fft_size, DEFAULT_SPECTROGRAM_FFT_SIZE);
         assert_eq!(processor.config.hop_size, DEFAULT_SPECTROGRAM_HOP_SIZE);
         assert_eq!(processor.config.zero_padding_factor, 1);
+    }
+
+    #[test]
+    fn switching_analysis_modes_rebuilds_the_active_buffers() {
+        let mut processor = SpectrogramProcessor::new(cfg(64, 16, true));
+        let mut config = processor.config();
+        config.use_reassignment = false;
+        processor.update_config(config);
+        let classic = processor
+            .process_block(&AudioBlock::new(&[0.25; 64], 1, config.sample_rate))
+            .expect("expected classic snapshot");
+        assert!(matches!(classic.new_columns[0], SpectrogramColumn::Classic(_)));
+
+        config.use_reassignment = true;
+        processor.update_config(config);
+        processor.reset_audio();
+        let reassigned = processor
+            .process_block(&AudioBlock::new(&[0.25; 128], 1, config.sample_rate))
+            .expect("expected reassigned snapshot");
+        assert!(matches!(
+            reassigned.new_columns[0],
+            SpectrogramColumn::Reassigned(_)
+        ));
     }
 
     #[test]
@@ -860,11 +867,56 @@ mod tests {
             );
             let accumulated_power = points
                 .iter()
-                .map(|point| db_to_power(point.magnitude_db))
+                .map(|point| point.power)
                 .sum::<f32>();
             let power = accumulated_power * update.reassigned_power_scale;
             assert!((power - 1.0).abs() < 0.01, "deposited {power} power");
             assert!(points.len() < update.points_per_column);
         }
+    }
+
+    #[test]
+    fn reassignment_resolves_a_low_fractional_fft_bin() {
+        let config = SpectrogramConfig {
+            zero_padding_factor: 4,
+            ..cfg(2048, 512, true)
+        };
+        let frequency = 1.37 * config.sample_rate / config.fft_size as f32;
+        let update = process_sine(config, frequency, 4096);
+        let peak = peak_point(reassigned_points(update.new_columns.last().unwrap()));
+
+        assert!(frequency < config.sample_rate / config.fft_size as f32 * 2.0);
+        assert!((peak.freq_hz - frequency).abs() < 2.0);
+    }
+
+    #[test]
+    fn reassignment_removes_constant_dc() {
+        let config = cfg(64, 16, true);
+        let update = process_samples(config, &[0.25; 128]);
+
+        assert!(update
+            .new_columns
+            .iter()
+            .all(|column| reassigned_points(column).is_empty()));
+    }
+
+    #[test]
+    fn reassignment_localizes_a_centered_impulse_in_time() {
+        let config = cfg(256, 32, true);
+        let read_len = SpectrogramProcessor::hilbert_len_for(config.fft_size);
+        let center_offset = (read_len - config.fft_size) / 2;
+        let position = config.fft_size / 2;
+        let mut samples = vec![0.0; read_len];
+        samples[center_offset + position] = 1.0;
+        let update = process_samples(config, &samples);
+        let points = reassigned_points(update.new_columns.last().unwrap());
+        let expected = (position as f32 - (config.fft_size - 1) as f32 * 0.5
+            - center_offset as f32)
+            / config.hop_size as f32;
+
+        assert!(!points.is_empty());
+        assert!(points
+            .iter()
+            .all(|point| (point.time_offset - expected).abs() < 1.0e-4));
     }
 }
