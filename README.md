@@ -2,8 +2,10 @@
 
 ![https://github.com/user-attachments/assets/52d0202e-f6e7-47aa-9952-e3a0be975f42](https://github.com/user-attachments/assets/e7b15cd0-eb12-4e99-b036-79b11e04bb46)
 
-An open-source audio metering and visualization suite for Linux,
-designed for enthusiasts, professionals, and everyone in between.
+Professional, fast, and open-source audio meters for Linux.
+
+Capture any PipeWire application or device, inspect loudness,
+frequency, waveform, and stereo image in one comprehensive suite.
 
 ## Quick links
 
