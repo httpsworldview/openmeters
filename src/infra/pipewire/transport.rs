@@ -5,7 +5,7 @@ use super::{MAX_CAPTURE_CHANNELS, MAX_CAPTURE_SAMPLE_RATE};
 use crate::dsp::{AudioFormat, ChannelPosition};
 use crate::util::{audio::DEFAULT_SAMPLE_RATE, unpoison};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
-use std::mem::size_of;
+use std::io::Read;
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
@@ -148,14 +148,6 @@ impl PcmChunk {
     pub(super) fn len(&self) -> usize {
         self.first.len() + self.second.len()
     }
-
-    fn byte(&self, bytes: &[u8], index: usize) -> u8 {
-        if index < self.first.len() {
-            bytes[self.first.start + index]
-        } else {
-            bytes[self.second.start + index - self.first.len()]
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -283,12 +275,14 @@ impl CaptureWriter {
 
     pub(super) fn push_pcm(&mut self, bytes: &[u8], chunk: &PcmChunk, frames: u64) {
         let Some(format) = self.format else { return };
-        self.push_frames(format, frames, true, |samples, source| {
-            for (index, sample) in samples.iter_mut().enumerate() {
-                let logical = (source + index) * size_of::<f32>();
-                let raw = std::array::from_fn(|byte| chunk.byte(bytes, logical + byte));
-                let value = f32::from_ne_bytes(raw);
-                *sample = if value.is_finite() { value } else { 0.0 };
+        let mut source = Read::chain(&bytes[chunk.first.clone()], &bytes[chunk.second.clone()]);
+        self.push_frames(format, frames, true, |samples| {
+            let target = bytemuck::cast_slice_mut(samples);
+            source.read_exact(target).expect("valid PCM bounds");
+            for sample in samples {
+                if !sample.is_finite() {
+                    *sample = 0.0;
+                }
             }
         });
     }
@@ -297,7 +291,7 @@ impl CaptureWriter {
         let Some(format) = self.format.filter(|_| frames > 0) else {
             return;
         };
-        self.push_frames(format, frames, false, |samples, _| samples.fill(0.0));
+        self.push_frames(format, frames, false, |samples| samples.fill(0.0));
     }
 
     fn push_frames(
@@ -305,7 +299,7 @@ impl CaptureWriter {
         format: AudioFormat,
         frames: u64,
         pcm: bool,
-        mut write: impl FnMut(&mut [f32], usize),
+        mut write: impl FnMut(&mut [f32]),
     ) {
         if !self.accepting() {
             self.timing(frames, format);
@@ -325,7 +319,7 @@ impl CaptureWriter {
             if let Some(samples) = &mut packet.samples {
                 let from = packet.frames as usize * format.channels;
                 let to = (packet.frames + count) as usize * format.channels;
-                write(&mut samples[from..to], offset as usize * format.channels);
+                write(&mut samples[from..to]);
             }
             offset += count;
             packet.frames += count;
@@ -749,6 +743,7 @@ fn channel_with_capacity(capacity: usize) -> (CaptureWriter, AudioReader) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::mem::size_of;
 
     fn mono(capacity: usize, rate: u32) -> (CaptureWriter, AudioReader, AudioFormat) {
         let (mut writer, reader) = channel_with_capacity(capacity);
@@ -810,6 +805,18 @@ mod tests {
             _ => unreachable!(),
         });
         assert_eq!(spans, [(4, false), (2, true), (6, false)]);
+    }
+
+    #[test]
+    fn pcm_copy_handles_wrapping_and_sanitizes_non_finite_samples() {
+        let (mut writer, mut reader, _) = mono(4, 1_000);
+        let mut bytes = bytemuck::cast_slice(&[1.0_f32, f32::NAN, 2.0]).to_vec();
+        bytes.rotate_right(3);
+        let chunk = PcmChunk::new(bytes.len(), 3, bytes.len() as u32, size_of::<f32>()).unwrap();
+        writer.push_pcm(&bytes, &chunk, 3);
+        assert!(writer.flush_pending());
+        let samples = reader.consumer.pop().unwrap().samples.unwrap();
+        assert_eq!(&samples[..3], &[1.0, 0.0, 2.0]);
     }
 
     #[test]
