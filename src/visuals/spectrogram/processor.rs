@@ -178,7 +178,6 @@ pub struct SpectrogramProcessor {
     hilbert_buf: Vec<Complex32>,
     spectrum: Vec<Complex32>,
     scratch: Vec<Complex32>,
-    classic_bins: Vec<u16>,
     reassign: ReassignmentBuffers,
     bin_norm: Vec<f32>,
     reassigned_power_scale: f32,
@@ -206,7 +205,6 @@ impl SpectrogramProcessor {
             hilbert_buf: Vec::new(),
             spectrum: Vec::new(),
             scratch: Vec::new(),
-            classic_bins: Vec::new(),
             reassign: ReassignmentBuffers::default(),
             bin_norm: Vec::new(),
             reassigned_power_scale: 1.0,
@@ -264,7 +262,6 @@ impl SpectrogramProcessor {
             self.classic_fft.get_scratch_len()
         };
         resize_trim(&mut self.scratch, scratch_len, Complex32::ZERO);
-        resize_trim(&mut self.classic_bins, classic_bin_count, 0);
         self.bin_norm = compute_fft_bin_normalization(&self.window, self.fft_size);
         self.reassigned_power_scale = if use_reassignment {
             let inv_hilbert_len = (hilbert_len as f32).recip();
@@ -320,8 +317,7 @@ impl SpectrogramProcessor {
                 let col = if reassignment_enabled {
                     SpectrogramColumn::Reassigned(Vec::new())
                 } else {
-                    self.classic_bins[..bin_count].fill(pack_classic_db(DB_FLOOR));
-                    SpectrogramColumn::Classic(self.classic_bins[..bin_count].to_vec())
+                    SpectrogramColumn::Classic(vec![pack_classic_db(DB_FLOOR); bin_count])
                 };
                 output.push(col);
                 self.advance_audio(hop_size);
@@ -372,12 +368,7 @@ impl SpectrogramProcessor {
                 {
                     break;
                 }
-                Self::compute_classic_bins(
-                    &self.spectrum,
-                    &self.bin_norm,
-                    &mut self.classic_bins,
-                );
-                SpectrogramColumn::Classic(self.classic_bins[..bin_count].to_vec())
+                SpectrogramColumn::Classic(self.classic_bins())
             };
 
             output.push(col);
@@ -437,11 +428,14 @@ impl SpectrogramProcessor {
         }
     }
 
-    fn compute_classic_bins(spectrum: &[Complex32], bin_norm: &[f32], bins: &mut [u16]) {
-        for (i, c) in spectrum.iter().enumerate() {
-            let power = (c.re * c.re + c.im * c.im) * bin_norm[i];
-            bins[i] = pack_classic_db(power_to_db(power, DB_FLOOR));
-        }
+    fn classic_bins(&self) -> Vec<u16> {
+        self.spectrum
+            .iter()
+            .zip(&self.bin_norm)
+            .map(|(c, &norm)| {
+                pack_classic_db(power_to_db((c.re * c.re + c.im * c.im) * norm, DB_FLOOR))
+            })
+            .collect()
     }
 
     fn reassigned_points(
