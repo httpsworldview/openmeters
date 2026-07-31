@@ -118,13 +118,14 @@ impl BandTracker {
     }
 }
 
-fn derived_frame(stereo: [f32; 2]) -> [f32; DERIVED_CHANNELS] {
-    WAVEFORM_CHANNELS.map(|channel| channel.project(stereo))
+fn derived_frame([left, right]: [f32; 2]) -> [f32; DERIVED_CHANNELS] {
+    [left, right, (left + right) * 0.5, (left - right) * 0.5]
 }
 
 pub struct WaveformProcessor {
     config: WaveformConfig,
     source_channels: usize,
+    prepared: bool,
     band_analysis: Option<([BandFilter; 2], [BandTracker; DERIVED_CHANNELS])>,
     column_phase: f64,
     current: [Option<(f32, f32, Option<f32>)>; DERIVED_CHANNELS],
@@ -139,7 +140,8 @@ impl WaveformProcessor {
         Self {
             config,
             source_channels: 2,
-            band_analysis: Self::band_analysis(config),
+            prepared: false,
+            band_analysis: None,
             column_phase: 0.0,
             current: [None; DERIVED_CHANNELS],
             last_sample: [None; DERIVED_CHANNELS],
@@ -156,12 +158,21 @@ impl WaveformProcessor {
         self.rebuild();
     }
 
+    pub(in crate::visuals) fn prepare(&mut self) {
+        if !self.prepared {
+            self.band_analysis = Self::band_analysis(self.config);
+            self.prepared = true;
+        }
+    }
+
     fn rebuild(&mut self) {
         self.column_phase = 0.0;
         self.last_sample = [None; DERIVED_CHANNELS];
         self.pending_columns.clear();
         self.current = [None; DERIVED_CHANNELS];
-        self.reset_trackers();
+        if self.prepared {
+            self.reset_trackers();
+        }
         self.reset_pending = true;
     }
 
@@ -235,17 +246,28 @@ impl WaveformProcessor {
             .clamp(0.0, 1.0);
         for stereo in block.stereo_frames() {
             let derived = derived_frame(stereo);
-            let finite = derived.map(f32::is_finite);
+            let finite = [
+                derived[0].is_finite(),
+                derived[1].is_finite(),
+                derived[2].is_finite(),
+                derived[3].is_finite(),
+            ];
             if let Some((filters, trackers)) = &mut self.band_analysis {
-                let filtered: [[f32; NUM_BANDS]; 2] = std::array::from_fn(|channel| {
-                    filters[channel].process(if finite[channel] { derived[channel] } else { 0.0 })
-                });
-                let bands = [
-                    filtered[0],
-                    filtered[1],
-                    std::array::from_fn(|band| (filtered[0][band] + filtered[1][band]) * 0.5),
-                    std::array::from_fn(|band| (filtered[0][band] - filtered[1][band]) * 0.5),
+                let filtered = [
+                    filters[0].process(if finite[0] { derived[0] } else { 0.0 }),
+                    filters[1].process(if finite[1] { derived[1] } else { 0.0 }),
                 ];
+                let mid = [
+                    (filtered[0][0] + filtered[1][0]) * 0.5,
+                    (filtered[0][1] + filtered[1][1]) * 0.5,
+                    (filtered[0][2] + filtered[1][2]) * 0.5,
+                ];
+                let side = [
+                    (filtered[0][0] - filtered[1][0]) * 0.5,
+                    (filtered[0][1] - filtered[1][1]) * 0.5,
+                    (filtered[0][2] - filtered[1][2]) * 0.5,
+                ];
+                let bands = [filtered[0], filtered[1], mid, side];
                 for (channel, tracker) in trackers.iter_mut().enumerate() {
                     tracker.process(if finite[channel] { bands[channel] } else { [0.0; NUM_BANDS] });
                 }
@@ -310,6 +332,7 @@ impl WaveformProcessor {
             self.rebuild();
         }
 
+        self.prepare();
         self.ingest_samples(block);
         if let Some((filters, _)) = &mut self.band_analysis {
             filters.iter_mut().for_each(BandFilter::flush_denormals);
@@ -338,7 +361,7 @@ impl WaveformProcessor {
         }
         if rebuild {
             self.rebuild();
-        } else if reset_analysis {
+        } else if reset_analysis && self.prepared {
             self.reset_trackers();
         }
     }
@@ -387,6 +410,23 @@ mod tests {
     }
 
     #[test]
+    fn derived_frame_preserves_channel_projection_bits() {
+        for stereo in [
+            [0.0, -0.0],
+            [0.25, -0.5],
+            [f32::INFINITY, f32::NEG_INFINITY],
+            [f32::from_bits(0x7fc0_1234), 1.0],
+        ] {
+            assert_eq!(
+                derived_frame(stereo).map(f32::to_bits),
+                WAVEFORM_CHANNELS
+                    .map(|channel| channel.project(stereo))
+                    .map(f32::to_bits),
+            );
+        }
+    }
+
+    #[test]
     fn derived_band_filters_preserve_all_channel_history() {
         let mut shared: [BandFilter; 2] =
             std::array::from_fn(|_| BandFilter::parallel(RATE, BAND_SPLITS_HZ));
@@ -417,6 +457,8 @@ mod tests {
     #[test]
     fn channel_projection_feeds_extrema() {
         let mut processor = WaveformProcessor::new(config(RATE / 2.0, 8));
+        assert!(!processor.prepared);
+        assert!(processor.band_analysis.is_none());
         let update = process(&mut processor, &[1.0, 0.0, 0.0, 1.0], 2);
         assert_eq!((column(&update, 2, 0).min, column(&update, 2, 0).max), (0.5, 0.5));
         assert_eq!((column(&update, 3, 0).min, column(&update, 3, 0).max), (-0.5, 0.5));

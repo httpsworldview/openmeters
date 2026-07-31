@@ -22,6 +22,29 @@ use std::{cell::RefCell, rc::Rc};
 
 type Shared<T> = Rc<RefCell<T>>;
 
+trait PrepareProcessor {
+    fn prepare(&mut self) {}
+}
+
+impl PrepareProcessor for loudness::LoudnessProcessor {}
+impl PrepareProcessor for oscilloscope::OscilloscopeProcessor {}
+impl PrepareProcessor for stereometer::StereometerProcessor {}
+impl PrepareProcessor for spectrogram::SpectrogramProcessor {
+    fn prepare(&mut self) {
+        spectrogram::SpectrogramProcessor::prepare(self);
+    }
+}
+impl PrepareProcessor for spectrum::SpectrumProcessor {
+    fn prepare(&mut self) {
+        spectrum::SpectrumProcessor::prepare(self);
+    }
+}
+impl PrepareProcessor for waveform::WaveformProcessor {
+    fn prepare(&mut self) {
+        waveform::WaveformProcessor::prepare(self);
+    }
+}
+
 // too many stops -> keep first N
 // too few stops -> copy provided, repeat last
 fn resolve_palette<const N: usize>(
@@ -125,6 +148,10 @@ macro_rules! visuals {
             fn reset_audio(&mut self) {
                 self.processor.reset_audio();
                 self.state.borrow_mut().reset_audio();
+            }
+
+            fn prepare(&mut self) {
+                PrepareProcessor::prepare(&mut self.processor);
             }
 
             fn content(&self) -> VisualContent {
@@ -248,6 +275,7 @@ struct Visual<P, S> {
 pub trait VisualModule {
     fn ingest(&mut self, block: &AudioBlock<'_>);
     fn reset_audio(&mut self);
+    fn prepare(&mut self);
     fn content(&self) -> VisualContent;
     fn apply(&mut self, settings: &ModuleSettings);
     fn export(&self) -> ModuleSettings;
@@ -273,6 +301,16 @@ impl Entry {
             self.enabled = enabled;
         }
         self.module.apply(settings);
+        if self.enabled {
+            self.module.prepare();
+        }
+    }
+
+    fn set_enabled(&mut self, enabled: bool) {
+        self.enabled = enabled;
+        if enabled {
+            self.module.prepare();
+        }
     }
 }
 
@@ -360,7 +398,7 @@ impl VisualManager {
     }
     pub fn set_enabled(&mut self, kind: VisualKind, enabled: bool) {
         if let Some(index) = self.position(kind) {
-            self.entries[index].enabled = enabled;
+            self.entries[index].set_enabled(enabled);
         }
     }
     pub fn has_enabled(&self) -> bool {

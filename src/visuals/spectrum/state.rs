@@ -25,13 +25,14 @@ const GRID_LABEL_GAP: f32 = 6.0;
 
 #[derive(Debug, Clone)]
 struct PeakLabel {
+    content: [String; 2],
     text: [Paragraph; 2],
     label_pos: [f32; 2],
     marker_pos: [f32; 2],
     opacity: f32,
 }
 
-type PeakUpdate = ([Paragraph; 2], [f32; 2]);
+type PeakUpdate = ([String; 2], [f32; 2]);
 
 type GridTick = (f32, bool, Option<Paragraph>);
 // Keep the Vec allocation when publishing freshly built points; Vec -> Arc<[T]> copies them.
@@ -234,22 +235,24 @@ impl SpectrumState {
             Some(ni) => [ni.fmt_note_cents(), format!("{freq}   {m:.1} {unit}")],
             None => [freq, format!("{m:.1} {unit}")],
         };
-        let text = [(&text[0], 12.0), (&text[1], 10.0)]
-            .map(|(text, size)| Paragraph::with_text(raw_text(text, size, Size::INFINITE).as_ref()));
         Some((text, [x, y]))
     }
 
     fn fade_peak(&mut self, incoming: Option<PeakUpdate>) {
         match (incoming, &mut self.peak) {
             (Some(new), Some(p)) => {
-                p.text = new.0;
+                if p.content != new.0 {
+                    p.text = peak_text(&new.0);
+                    p.content = new.0;
+                }
                 p.label_pos = std::array::from_fn(|i| lerp(p.label_pos[i], new.1[i], 0.20));
                 p.marker_pos = new.1;
                 p.opacity = (0.65 * p.opacity + 0.35).min(1.0);
             }
             (Some(new), None) => {
                 self.peak = Some(PeakLabel {
-                    text: new.0,
+                    text: peak_text(&new.0),
+                    content: new.0,
                     label_pos: new.1,
                     marker_pos: new.1,
                     opacity: 1.0,
@@ -443,6 +446,11 @@ mod tests {
         assert_eq!(points.len(), 2);
         assert!(points.iter().flatten().all(|value| value.is_finite()));
     }
+}
+
+fn peak_text(content: &[String; 2]) -> [Paragraph; 2] {
+    [(content[0].as_str(), 12.0), (content[1].as_str(), 10.0)]
+        .map(|(text, size)| Paragraph::with_text(raw_text(text, size, Size::INFINITE).as_ref()))
 }
 
 fn trace_db(trace: &SpectrumTraceSnapshot, mode: SpectrumWeightingMode) -> &[f32] {

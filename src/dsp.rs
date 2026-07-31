@@ -238,14 +238,28 @@ impl<'a> AudioBlock<'a> {
         &self,
     ) -> impl ExactSizeIterator<Item = [f32; 2]> + DoubleEndedIterator + '_ {
         let matrix = self.stereo_matrix();
-        self.samples.chunks_exact(self.channels).map(move |frame| {
-            frame
-                .iter()
-                .zip(matrix)
-                .fold([0.0; 2], |[left, right], (&sample, weights)| {
-                    [left + sample * weights[0], right + sample * weights[1]]
-                })
-        })
+        self.samples
+            .chunks_exact(self.channels)
+            .map(move |frame| match matrix {
+                [weights] => {
+                    let sample = frame[0];
+                    [0.0 + sample * weights[0], 0.0 + sample * weights[1]]
+                }
+                [first, second] => {
+                    let sample = frame[0];
+                    let [left, right] = [0.0 + sample * first[0], 0.0 + sample * first[1]];
+                    let sample = frame[1];
+                    [left + sample * second[0], right + sample * second[1]]
+                }
+                _ => {
+                    frame
+                        .iter()
+                        .zip(matrix)
+                        .fold([0.0; 2], |[left, right], (&sample, weights)| {
+                            [left + sample * weights[0], right + sample * weights[1]]
+                        })
+                }
+            })
     }
 
     pub fn is_empty(&self) -> bool {
@@ -615,6 +629,41 @@ mod tests {
             AudioBlock::with_positions(&[], 8, 48_000.0, unsupported).stereo_matrix(),
             &[[1.0, 0.0], [0.0, 1.0]]
         );
+    }
+
+    #[test]
+    fn common_stereo_paths_preserve_general_fold_bits() {
+        for (samples, channels) in [
+            (
+                &[0.0, -0.0, f32::from_bits(0x7fc0_1234), f32::INFINITY][..],
+                1,
+            ),
+            (
+                &[
+                    0.0,
+                    -0.0,
+                    0.25,
+                    -0.5,
+                    f32::from_bits(0x7fc0_1234),
+                    f32::INFINITY,
+                ][..],
+                2,
+            ),
+        ] {
+            let block = AudioBlock::new(samples, channels, 48_000.0);
+            let matrix = block.stereo_matrix();
+            let expected = samples.chunks_exact(channels).map(|frame| {
+                frame
+                    .iter()
+                    .zip(matrix)
+                    .fold([0.0; 2], |[left, right], (&sample, weights)| {
+                        [left + sample * weights[0], right + sample * weights[1]]
+                    })
+            });
+            for (actual, expected) in block.stereo_frames().zip(expected) {
+                assert_eq!(actual.map(f32::to_bits), expected.map(f32::to_bits));
+            }
+        }
     }
 
     #[test]

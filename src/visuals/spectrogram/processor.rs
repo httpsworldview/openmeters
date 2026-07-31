@@ -80,6 +80,15 @@ impl SpectrogramConfig {
     }
 }
 
+enum Transforms {
+    Reassigned {
+        analysis: Arc<dyn Fft<f32>>,
+        hilbert_forward: Arc<dyn Fft<f32>>,
+        hilbert_inverse: Arc<dyn Fft<f32>>,
+    },
+    Classic(Arc<dyn RealToComplex<f32>>),
+}
+
 #[derive(Default)]
 struct ReassignmentBuffers {
     derivative_window: Vec<f32>,
@@ -168,10 +177,7 @@ pub struct SpectrogramUpdate {
 
 pub struct SpectrogramProcessor {
     config: SpectrogramConfig,
-    fft: Arc<dyn Fft<f32>>,
-    classic_fft: Arc<dyn RealToComplex<f32>>,
-    hilbert_fft: Arc<dyn Fft<f32>>,
-    hilbert_ifft: Arc<dyn Fft<f32>>,
+    transforms: Option<Transforms>,
     fft_size: usize,
     window: Arc<[f32]>,
     real: Vec<f32>,
@@ -190,15 +196,9 @@ pub struct SpectrogramProcessor {
 impl SpectrogramProcessor {
     pub fn new(mut cfg: SpectrogramConfig) -> Self {
         cfg.normalize();
-        let mut planner = FftPlanner::new();
-        let placeholder_fft = planner.plan_fft_forward(1024);
-        let classic_fft = RealFftPlanner::new().plan_fft_forward(1024);
-        let mut processor = Self {
+        Self {
             config: cfg,
-            fft: placeholder_fft.clone(),
-            classic_fft,
-            hilbert_fft: placeholder_fft.clone(),
-            hilbert_ifft: placeholder_fft,
+            transforms: None,
             fft_size: 0,
             window: Arc::from([]),
             real: Vec::new(),
@@ -212,9 +212,7 @@ impl SpectrogramProcessor {
             pending_skip_samples: 0,
             audio_last_nonzero: None,
             reset: true,
-        };
-        processor.rebuild_fft();
-        processor
+        }
     }
 
     pub fn config(&self) -> SpectrogramConfig {
@@ -228,6 +226,12 @@ impl SpectrogramProcessor {
         self.reset = true;
     }
 
+    pub(in crate::visuals) fn prepare(&mut self) {
+        if self.transforms.is_none() {
+            self.rebuild_fft();
+        }
+    }
+
     fn hilbert_len_for(window_size: usize) -> usize {
         (window_size * 2).next_power_of_two().max(2)
     }
@@ -239,12 +243,14 @@ impl SpectrogramProcessor {
         let use_reassignment = self.config.use_reassignment;
         let active_len = if use_reassignment { hilbert_len } else { self.fft_size };
         let mut planner = FftPlanner::new();
-        self.fft = planner.plan_fft_forward(self.fft_size);
-        self.classic_fft = RealFftPlanner::new().plan_fft_forward(self.fft_size);
-        (self.hilbert_fft, self.hilbert_ifft) = if use_reassignment {
-            (planner.plan_fft_forward(hilbert_len), planner.plan_fft_inverse(hilbert_len))
+        let transforms = if use_reassignment {
+            Transforms::Reassigned {
+                analysis: planner.plan_fft_forward(self.fft_size),
+                hilbert_forward: planner.plan_fft_forward(hilbert_len),
+                hilbert_inverse: planner.plan_fft_inverse(hilbert_len),
+            }
         } else {
-            (self.fft.clone(), self.fft.clone())
+            Transforms::Classic(RealFftPlanner::new().plan_fft_forward(self.fft_size))
         };
         self.window = window_coefficients(self.config.window, window_size);
         let bin_count = self.fft_size / 2 + 1;
@@ -253,15 +259,19 @@ impl SpectrogramProcessor {
         resize_trim(&mut self.real, active_len, 0.0);
         resize_trim(&mut self.hilbert_buf, reassigned_len, Complex32::ZERO);
         resize_trim(&mut self.spectrum, classic_bin_count, Complex32::ZERO);
-        let scratch_len = if use_reassignment {
-            self.fft
+        let scratch_len = match &transforms {
+            Transforms::Reassigned {
+                analysis,
+                hilbert_forward,
+                hilbert_inverse,
+            } => analysis
                 .get_inplace_scratch_len()
-                .max(self.hilbert_fft.get_inplace_scratch_len())
-                .max(self.hilbert_ifft.get_inplace_scratch_len())
-        } else {
-            self.classic_fft.get_scratch_len()
+                .max(hilbert_forward.get_inplace_scratch_len())
+                .max(hilbert_inverse.get_inplace_scratch_len()),
+            Transforms::Classic(fft) => fft.get_scratch_len(),
         };
         resize_trim(&mut self.scratch, scratch_len, Complex32::ZERO);
+        self.transforms = Some(transforms);
         self.bin_norm = compute_fft_bin_normalization(&self.window, self.fft_size);
         self.reassigned_power_scale = if use_reassignment {
             let inv_hilbert_len = (hilbert_len as f32).recip();
@@ -325,18 +335,26 @@ impl SpectrogramProcessor {
             }
 
             let col = if reassignment_enabled {
+                let Some(Transforms::Reassigned {
+                    analysis,
+                    hilbert_forward,
+                    hilbert_inverse,
+                }) = &self.transforms
+                else {
+                    unreachable!("reassignment transforms")
+                };
                 copy_from_deque(&mut self.real[..read_len], &self.audio_buffer);
                 // Use an analytic signal so low-frequency bins are not polluted
                 // by the negative-frequency mirror of the windowed real signal.
                 hilbert_transform(
                     &self.real[..read_len],
                     &mut self.hilbert_buf,
-                    &*self.hilbert_fft,
-                    &*self.hilbert_ifft,
+                    &**hilbert_forward,
+                    &**hilbert_inverse,
                     &mut self.scratch,
                 );
                 let analytic = &self.hilbert_buf[center_offset..center_offset + window_size];
-                let fft = &*self.fft;
+                let fft = &**analysis;
                 let r = &mut self.reassign;
                 let (base, auxiliary) = r.spectra.split_at_mut(self.fft_size);
                 let (derivative, time_weighted) = auxiliary.split_at_mut(self.fft_size);
@@ -357,8 +375,10 @@ impl SpectrogramProcessor {
                     &self.window,
                 );
                 self.real[window_size..].fill(0.0);
-                if self
-                    .classic_fft
+                let Some(Transforms::Classic(fft)) = &self.transforms else {
+                    unreachable!("classic transform")
+                };
+                if fft
                     .process_with_scratch(
                         &mut self.real,
                         &mut self.spectrum,
@@ -501,6 +521,7 @@ impl SpectrogramProcessor {
             self.audio_last_nonzero = None;
             self.reset = true;
         }
+        self.prepare();
         self.push_audio(block);
         let cols = self.process_ready_windows();
         let bin_count = self.fft_size / 2 + 1;
@@ -523,6 +544,7 @@ impl SpectrogramProcessor {
     pub fn update_config(&mut self, mut cfg: SpectrogramConfig) {
         cfg.normalize();
         let prev = self.config;
+        let prepared = self.transforms.is_some();
         self.config = cfg;
 
         let rate_changed = prev.sample_rate != cfg.sample_rate;
@@ -532,7 +554,7 @@ impl SpectrogramProcessor {
             || prev.use_reassignment != cfg.use_reassignment
             || rate_changed;
 
-        if rebuild {
+        if rebuild && prepared {
             self.rebuild_fft();
             if rate_changed {
                 self.audio_buffer.clear();
@@ -789,13 +811,16 @@ mod tests {
 
     #[test]
     fn classic_retention_budget_uses_packed_column_width() {
-        let processor = SpectrogramProcessor::new(SpectrogramConfig {
+        let mut processor = SpectrogramProcessor::new(SpectrogramConfig {
             fft_size: 16_384,
             zero_padding_factor: 32,
             history_length: MAX_SPECTROGRAM_HISTORY_COLUMNS,
             use_reassignment: false,
             ..Default::default()
         });
+        assert!(processor.transforms.is_none());
+        assert!(processor.real.is_empty());
+        processor.prepare();
         let bins = processor.fft_size / 2 + 1;
         let packed_stride = bins.div_ceil(2) * std::mem::size_of::<u32>();
 
@@ -808,6 +833,7 @@ mod tests {
     #[test]
     fn fft_rebuild_keeps_newest_pending_audio() {
         let mut p = SpectrogramProcessor::new(cfg(64, 16, false));
+        p.prepare();
         let samples: Vec<_> = (0..200).map(|i| i as f32).collect();
         p.push_audio(&AudioBlock::new(&samples, 1, DEFAULT_SAMPLE_RATE));
         let mut next = p.config();

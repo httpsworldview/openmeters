@@ -89,7 +89,7 @@ pub struct SpectrumProcessor {
     config: SpectrumConfig,
     snapshot: SpectrumSnapshot,
     planner: RealFftPlanner<f32>,
-    fft: Arc<dyn RealToComplex<f32>>,
+    fft: Option<Arc<dyn RealToComplex<f32>>>,
     window: Arc<[f32]>,
     real_buffer: Vec<f32>,
     spectrum_buffer: Vec<Complex32>,
@@ -104,14 +104,11 @@ pub struct SpectrumProcessor {
 impl SpectrumProcessor {
     pub fn new(mut config: SpectrumConfig) -> Self {
         config.normalize();
-        let fft_size = config.fft_size;
-        let mut planner = RealFftPlanner::<f32>::new();
-        let fft = planner.plan_fft_forward(fft_size);
-        let mut processor = Self {
+        Self {
             config,
             snapshot: SpectrumSnapshot::default(),
-            planner,
-            fft,
+            planner: RealFftPlanner::new(),
+            fft: None,
             window: Arc::from([]),
             real_buffer: Vec::new(),
             spectrum_buffer: Vec::new(),
@@ -121,9 +118,7 @@ impl SpectrumProcessor {
             pending_skip_frames: 0,
             levels: Default::default(),
             a_weighting_db: Vec::new(),
-        };
-        processor.rebuild_fft();
-        processor
+        }
     }
 
     pub fn config(&self) -> SpectrumConfig {
@@ -131,19 +126,28 @@ impl SpectrumProcessor {
     }
 
     pub fn reset_audio(&mut self) {
-        self.reset_level_buffers();
+        if self.fft.is_some() {
+            self.reset_level_buffers();
+        }
         self.pcm_buffers.iter_mut().for_each(VecDeque::clear);
         self.pending_skip_frames = 0;
+    }
+
+    pub(in crate::visuals) fn prepare(&mut self) {
+        if self.fft.is_none() {
+            self.rebuild_fft();
+        }
     }
 
     fn rebuild_fft(&mut self) {
         self.config.normalize();
         let fft_size = self.config.fft_size;
-        self.fft = self.planner.plan_fft_forward(fft_size);
+        let fft = self.planner.plan_fft_forward(fft_size);
         self.window = window_coefficients(self.config.window, fft_size);
         self.real_buffer.resize(fft_size, 0.0);
-        self.spectrum_buffer = self.fft.make_output_vec();
-        self.scratch_buffer = self.fft.make_scratch_vec();
+        self.spectrum_buffer = fft.make_output_vec();
+        self.scratch_buffer = fft.make_scratch_vec();
+        self.fft = Some(fft);
         self.bin_normalization = compute_fft_bin_normalization(&self.window, fft_size);
         self.reset_buffers();
     }
@@ -169,7 +173,15 @@ impl SpectrumProcessor {
             for db in trace { reset_to_floor(db, bins, floor); }
         }
         let state_floor = smoothing_state_floor(&self.a_weighting_db, floor);
-        for buffers in &mut self.levels { buffers.reset(bins, state_floor); }
+        let active = self.active_traces();
+        let smoothing = !matches!(self.config.averaging, AveragingMode::None);
+        for (index, buffers) in self.levels.iter_mut().enumerate() {
+            if active[index] {
+                buffers.reset(bins, state_floor, smoothing);
+            } else {
+                *buffers = SpectrumLevelBuffers::default();
+            }
+        }
     }
 
     fn sources(&self) -> [Channel; TRACE_COUNT] {
@@ -226,6 +238,8 @@ impl SpectrumProcessor {
         );
         if self
             .fft
+            .as_ref()
+            .expect("spectrum FFT")
             .process_with_scratch(
                 &mut self.real_buffer,
                 &mut self.spectrum_buffer,
@@ -262,9 +276,12 @@ impl SpectrumProcessor {
 
         if block.sample_rate != self.config.sample_rate {
             self.config.sample_rate = block.sample_rate;
-            self.reset_buffers();
+            if self.fft.is_some() {
+                self.reset_buffers();
+            }
         }
 
+        self.prepare();
         if self.real_buffer.len() != self.config.fft_size {
             self.rebuild_fft();
         }
@@ -318,6 +335,9 @@ impl SpectrumProcessor {
         let old = self.config;
         config.normalize();
         self.config = config;
+        if self.fft.is_none() {
+            return;
+        }
         let averaging_mode_changed =
             std::mem::discriminant(&old.averaging) != std::mem::discriminant(&config.averaging);
         if old.fft_size != config.fft_size || old.window != config.window {
@@ -338,8 +358,7 @@ impl SpectrumProcessor {
 
 #[derive(Default)]
 struct SpectrumLevelBuffers {
-    averaged_power: Vec<f32>,
-    peak_hold_power: Vec<f32>,
+    smoothed_power: Vec<f32>,
     scratch_power: Vec<f32>,
     state_floor: f32,
 }
@@ -351,10 +370,13 @@ fn smoothing_state_floor(weighting_db: &[f32], floor: f32) -> f32 {
 }
 
 impl SpectrumLevelBuffers {
-    fn reset(&mut self, bins: usize, state_floor: f32) {
+    fn reset(&mut self, bins: usize, state_floor: f32, smoothing: bool) {
         self.state_floor = state_floor;
-        reset_to_floor(&mut self.averaged_power, bins, 0.0);
-        reset_to_floor(&mut self.peak_hold_power, bins, 0.0);
+        if smoothing {
+            reset_to_floor(&mut self.smoothed_power, bins, 0.0);
+        } else {
+            self.smoothed_power = Vec::new();
+        }
         reset_to_floor(&mut self.scratch_power, bins, 0.0);
     }
 
@@ -377,7 +399,7 @@ impl SpectrumLevelBuffers {
             AveragingMode::None => &self.scratch_power,
             AveragingMode::Exponential { factor } => {
                 let alpha = factor.clamp(0.0, 0.9999);
-                for (avg, &power) in self.averaged_power.iter_mut().zip(&self.scratch_power) {
+                for (avg, &power) in self.smoothed_power.iter_mut().zip(&self.scratch_power) {
                     *avg = if *avg <= 0.0 {
                         power
                     } else {
@@ -387,17 +409,17 @@ impl SpectrumLevelBuffers {
                         *avg = 0.0;
                     }
                 }
-                &self.averaged_power
+                &self.smoothed_power
             }
             AveragingMode::PeakHold { decay_per_second } => {
                 let decay = db_to_power(-decay_per_second.max(0.0) * dt_seconds);
-                for (hold, &power) in self.peak_hold_power.iter_mut().zip(&self.scratch_power) {
+                for (hold, &power) in self.smoothed_power.iter_mut().zip(&self.scratch_power) {
                     *hold = (*hold * decay).max(power);
                     if *hold < self.state_floor {
                         *hold = 0.0;
                     }
                 }
-                &self.peak_hold_power
+                &self.smoothed_power
             }
         };
         let [weighted_out, raw_out] = outputs;
@@ -473,6 +495,7 @@ mod tests {
     #[test]
     fn floor_change_reseeds_state_buffers_without_clearing_pending_audio() {
         let mut p = SpectrumProcessor::new(SpectrumConfig::default());
+        p.prepare();
         p.pcm_buffers[0].extend([0.25, -0.25]);
         let mut cfg = p.config();
         cfg.floor_db = -96.0;
@@ -484,12 +507,10 @@ mod tests {
             assert!(output.iter().all(|&v| v == cfg.floor_db));
         }
         let bins = cfg.fft_size / 2 + 1;
-        for buffers in &p.levels {
-            assert_eq!(buffers.scratch_power.len(), bins);
-            assert!(buffers.scratch_power.iter().all(|&v| v == 0.0));
-            assert!(buffers.averaged_power.iter().all(|&v| v == 0.0));
-            assert!(buffers.peak_hold_power.iter().all(|&v| v == 0.0));
-        }
+        assert_eq!(p.levels[0].scratch_power.len(), bins);
+        assert!(p.levels[0].scratch_power.iter().all(|&v| v == 0.0));
+        assert!(p.levels[0].smoothed_power.is_empty());
+        assert!(p.levels[1].scratch_power.is_empty());
     }
 
     #[test]
@@ -530,6 +551,9 @@ mod tests {
             hop_size: 128,
             ..Default::default()
         });
+        assert!(p.fft.is_none());
+        assert!(p.real_buffer.is_empty());
+        p.prepare();
         let mut cfg = p.config();
         cfg.fft_size = 256;
         cfg.hop_size = 256;
@@ -537,9 +561,8 @@ mod tests {
 
         let cfg = p.config();
         let bins = cfg.fft_size / 2 + 1;
-        for buffers in &p.levels {
-            assert_eq!(buffers.scratch_power.len(), bins);
-        }
+        assert_eq!(p.levels[0].scratch_power.len(), bins);
+        assert!(p.levels[1].scratch_power.is_empty());
 
         let samples = vec![0.0; cfg.fft_size];
         let lengths = p
@@ -579,14 +602,20 @@ mod tests {
 
     #[test]
     fn changing_averaging_mode_clears_stale_state() {
-        let mut processor = SpectrumProcessor::new(SpectrumConfig::default());
-        processor.levels[0].averaged_power.fill(1.0);
+        let mut processor = SpectrumProcessor::new(SpectrumConfig {
+            averaging: AveragingMode::PeakHold {
+                decay_per_second: 12.0,
+            },
+            ..SpectrumConfig::default()
+        });
+        processor.prepare();
+        processor.levels[0].smoothed_power.fill(1.0);
         let mut config = processor.config();
         config.averaging = AveragingMode::Exponential { factor: 0.5 };
 
         processor.update_config(config);
 
-        assert!(processor.levels[0].averaged_power.iter().all(|&power| power == 0.0));
+        assert!(processor.levels[0].smoothed_power.iter().all(|&power| power == 0.0));
     }
 
     #[test]
@@ -622,8 +651,8 @@ mod tests {
     #[test]
     fn averaged_power_is_zeroed_below_the_visible_floor() {
         let mut buffers = SpectrumLevelBuffers::default();
-        buffers.reset(1, smoothing_state_floor(&[0.0], -100.0));
-        buffers.averaged_power[0] = db_to_power(-101.0);
+        buffers.reset(1, smoothing_state_floor(&[0.0], -100.0), true);
+        buffers.smoothed_power[0] = db_to_power(-101.0);
         let mut outputs = [Vec::new(), Vec::new()];
         buffers.update_outputs(
             AveragingMode::Exponential { factor: 0.95 },
@@ -632,7 +661,7 @@ mod tests {
             1.0,
             -100.0,
         );
-        assert_eq!(buffers.averaged_power[0], 0.0);
+        assert_eq!(buffers.smoothed_power[0], 0.0);
     }
 
     #[test]
@@ -644,7 +673,7 @@ mod tests {
             },
         ] {
             let mut buffers = SpectrumLevelBuffers::default();
-            buffers.reset(1, smoothing_state_floor(&[1.2], -100.0));
+            buffers.reset(1, smoothing_state_floor(&[1.2], -100.0), true);
             buffers.scratch_power[0] = db_to_power(-100.5);
             let mut outputs = [Vec::new(), Vec::new()];
 
