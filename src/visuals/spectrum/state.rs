@@ -39,8 +39,17 @@ type SharedPoints = Arc<Vec<[f32; 2]>>;
 
 static EMPTY_POINTS: LazyLock<SharedPoints> = LazyLock::new(|| Arc::new(Vec::new()));
 
-fn share_points(points: Vec<[f32; 2]>) -> SharedPoints {
-    if points.is_empty() { Arc::clone(&EMPTY_POINTS) } else { Arc::new(points) }
+fn rebuild_points(
+    points: &mut SharedPoints,
+    capacity: usize,
+    build: impl FnOnce(&mut Vec<[f32; 2]>),
+) {
+    if Arc::strong_count(points) != 1 || points.capacity() != capacity {
+        *points = Arc::new(Vec::with_capacity(capacity));
+    }
+    let points = Arc::get_mut(points).expect("unshared spectrum geometry");
+    points.clear();
+    build(points);
 }
 
 #[derive(Debug, Clone)]
@@ -117,28 +126,39 @@ impl SpectrumState {
         self.ensure_x_cache(min_f, max_f, bins);
         let style = &self.style;
 
-        let points = |idx, mode| {
-            build_single_points(
-                style,
-                min_f,
-                max_f,
-                bins,
-                trace_db(&snap.traces[idx], mode),
-                &self.x_cache,
-            )
-        };
-        let primary_points = primary
-            .map(|idx| points(idx, self.style.weighting_mode))
-            .unwrap_or_default();
-        let secondary_points = secondary
-            .map(|idx| points(idx, self.style.secondary_weighting_mode))
-            .unwrap_or_default();
+        if let Some(idx) = primary {
+            rebuild_points(&mut self.primary, self.x_cache.len(), |points| {
+                build_single_points_into(
+                    points,
+                    style,
+                    min_f,
+                    max_f,
+                    bins,
+                    trace_db(&snap.traces[idx], style.weighting_mode),
+                    &self.x_cache,
+                );
+            });
+        } else {
+            self.primary = Arc::clone(&EMPTY_POINTS);
+        }
+        if let Some(idx) = secondary {
+            rebuild_points(&mut self.secondary, self.x_cache.len(), |points| {
+                build_single_points_into(
+                    points,
+                    style,
+                    min_f,
+                    max_f,
+                    bins,
+                    trace_db(&snap.traces[idx], style.secondary_weighting_mode),
+                    &self.x_cache,
+                );
+            });
+        } else {
+            self.secondary = Arc::clone(&EMPTY_POINTS);
+        }
         let pk = primary
             .filter(|_| self.style.show_peak_label)
             .and_then(|idx| self.build_peak(bins, trace_db(&snap.traces[idx], self.style.weighting_mode), min_f, max_f));
-
-        self.primary = share_points(primary_points);
-        self.secondary = share_points(secondary_points);
         self.effective_range = Some((min_f, max_f));
         self.fade_peak(pk);
         self.invalidate_geometry();
@@ -372,7 +392,7 @@ mod tests {
     fn theme_colors_invalidate_cached_geometry_without_audio_update() {
         let mut state = SpectrumState::new();
         state.style.source = Channel::Left;
-        state.primary = share_points(vec![[0.0, 0.0], [1.0, 1.0]]);
+        state.primary = Arc::new(vec![[0.0, 0.0], [1.0, 1.0]]);
         let bounds = Rectangle {
             x: 0.0,
             y: 0.0,
@@ -432,6 +452,7 @@ fn trace_db(trace: &SpectrumTraceSnapshot, mode: SpectrumWeightingMode) -> &[f32
     }]
 }
 
+#[cfg(test)]
 fn build_single_points(
     style: &SpectrumSettings,
     min_f: f32,
@@ -440,9 +461,22 @@ fn build_single_points(
     db: &[f32],
     x_cache: &[f32],
 ) -> Vec<[f32; 2]> {
+    let mut out = Vec::with_capacity(x_cache.len());
+    build_single_points_into(&mut out, style, min_f, max_f, bins, db, x_cache);
+    out
+}
+
+fn build_single_points_into(
+    out: &mut Vec<[f32; 2]>,
+    style: &SpectrumSettings,
+    min_f: f32,
+    max_f: f32,
+    bins: &[f32],
+    db: &[f32],
+    x_cache: &[f32],
+) {
     let dr = (MAX_DB - style.floor_db).max(EPSILON);
     let y = |m: f32| ((m - style.floor_db) / dr).clamp(0.0, 1.0);
-    let mut out = Vec::with_capacity(x_cache.len());
     let mut xi = 0;
     let mut push = |m: f32| {
         let Some(&x) = x_cache.get(xi) else { return; };
@@ -463,7 +497,6 @@ fn build_single_points(
     if style.reverse_frequency {
         out.reverse();
     }
-    out
 }
 
 fn draw_grid(

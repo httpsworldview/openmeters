@@ -574,7 +574,7 @@ impl iced_wgpu::primitive::Primitive for StereometerPrimitive {
                 .filter(|instance| instance.vertex_count > 0)
             {
                 pass.set_vertex_buffer(0, instance.vertex_buffer.slice(0..instance.used_bytes()));
-                pass.draw(0..6, 0..instance.vertex_count);
+                pass.draw(0..crate::visuals::render::common::SDF_VERTICES_PER_INSTANCE, 0..instance.vertex_count);
             }
         }
         true
@@ -593,7 +593,7 @@ impl iced_wgpu::primitive::Pipeline for Pipeline {
                 device,
                 format,
                 RENDER_LABEL,
-                wgpu::PrimitiveTopology::TriangleList,
+                wgpu::PrimitiveTopology::TriangleStrip,
             ),
             scratch: GeometryScratch::default(),
         }

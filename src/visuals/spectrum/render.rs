@@ -279,7 +279,7 @@ sdf_primitive!(
     Pipeline,
     u64,
     "Spectrum",
-    TriangleList,
+    TriangleStrip,
     |self| self.params.key,
     self.params.geometry_fingerprint()
 );

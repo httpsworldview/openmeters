@@ -182,7 +182,7 @@ sdf_primitive!(
     Pipeline,
     u64,
     "Loudness",
-    TriangleList,
+    TriangleStrip,
     |self| self.params.key,
     self.params.geometry_fingerprint()
 );

@@ -20,11 +20,11 @@ fn premultiply(color: vec4<f32>) -> vec4<f32> {
 
 @vertex
 fn vs_main(input: InstanceInput, @builtin(vertex_index) vertex: u32) -> VertexOutput {
-    let corners = array<vec2<f32>, 6>(
-        vec2<f32>(0.0, 0.0), vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 1.0),
-        vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 1.0), vec2<f32>(1.0, 0.0),
+    let corners = array<vec2<f32>, 4>(
+        vec2<f32>(0.0, 1.0), vec2<f32>(0.0, 0.0),
+        vec2<f32>(1.0, 1.0), vec2<f32>(1.0, 0.0),
     );
-    let endpoints = array<f32, 6>(0.0, 0.0, 1.0, 0.0, 1.0, 1.0);
+    let endpoints = array<f32, 4>(0.0, 0.0, 1.0, 1.0);
     var position = input.p0;
     var color = input.color0;
     var sdf = vec4<f32>(0.0, 0.0, 1000.0, 0.0);
@@ -37,14 +37,14 @@ fn vs_main(input: InstanceInput, @builtin(vertex_index) vertex: u32) -> VertexOu
         }
         case 1u: {
             let endpoint = endpoints[vertex];
-            let bottom = array<f32, 6>(0.0, 1.0, 1.0, 0.0, 1.0, 0.0)[vertex];
+            let bottom = array<f32, 4>(1.0, 0.0, 1.0, 0.0)[vertex];
             let top_y = mix(max(input.p0.y, input.params.x), max(input.p1.y, input.params.x), endpoint);
             let bottom_y = mix(min(input.p0.y, input.params.x), min(input.p1.y, input.params.x), endpoint);
             position = vec2<f32>(mix(input.p0.x, input.p1.x, endpoint), mix(top_y, bottom_y, bottom));
             color = mix(input.color0, input.color1, endpoint);
         }
         case 2u: {
-            let sides = array<f32, 6>(-1.0, 1.0, 1.0, -1.0, 1.0, -1.0);
+            let sides = array<f32, 4>(1.0, -1.0, 1.0, -1.0);
             let endpoint = endpoints[vertex];
             let side = sides[vertex];
             position = mix(input.p0, input.p1, endpoint) + input.params.xy * side;
@@ -52,9 +52,9 @@ fn vs_main(input: InstanceInput, @builtin(vertex_index) vertex: u32) -> VertexOu
             sdf = vec4<f32>(side * (input.params.z + 1.0), 0.0, input.params.z, 0.0);
         }
         case 4u: {
-            let dot_corners = array<vec2<f32>, 6>(
-                vec2<f32>(-1.0, -1.0), vec2<f32>(-1.0, 1.0), vec2<f32>(1.0, -1.0),
-                vec2<f32>(1.0, -1.0), vec2<f32>(-1.0, 1.0), vec2<f32>(1.0, 1.0),
+            let dot_corners = array<vec2<f32>, 4>(
+                vec2<f32>(-1.0, -1.0), vec2<f32>(-1.0, 1.0),
+                vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
             );
             let corner = dot_corners[vertex];
             var point = input.p0;
@@ -75,9 +75,9 @@ fn vs_main(input: InstanceInput, @builtin(vertex_index) vertex: u32) -> VertexOu
             sdf = vec4<f32>(corner * (input.params.x + 1.0), input.params.x, input.params.y);
         }
         default: {
-            let dot_corners = array<vec2<f32>, 6>(
-                vec2<f32>(-1.0, -1.0), vec2<f32>(-1.0, 1.0), vec2<f32>(1.0, -1.0),
-                vec2<f32>(1.0, -1.0), vec2<f32>(-1.0, 1.0), vec2<f32>(1.0, 1.0),
+            let dot_corners = array<vec2<f32>, 4>(
+                vec2<f32>(-1.0, -1.0), vec2<f32>(-1.0, 1.0),
+                vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
             );
             let corner = dot_corners[vertex];
             position = input.p0 + input.p1 * corner;

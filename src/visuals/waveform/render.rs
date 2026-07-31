@@ -227,6 +227,6 @@ sdf_primitive!(
     Pipeline,
     u64,
     "Waveform",
-    TriangleList,
+    TriangleStrip,
     |self| self.params.key
 );

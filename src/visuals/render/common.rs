@@ -7,6 +7,8 @@ use iced::{Border, Color, Rectangle, Renderer, Size};
 use std::collections::HashMap;
 use std::mem::size_of;
 
+pub(in crate::visuals) const SDF_VERTICES_PER_INSTANCE: u32 = 4;
+
 #[derive(Clone, Copy)]
 pub struct ClipTransform {
     origin: [f32; 2],
@@ -711,7 +713,7 @@ macro_rules! sdf_primitive {
                 if let Some(inst) = pipeline.inner.instance(key).filter(|inst| inst.vertex_count > 0) {
                     pass.set_pipeline(&pipeline.inner.pipeline);
                     pass.set_vertex_buffer(0, inst.vertex_buffer.slice(0..inst.used_bytes()));
-                    pass.draw(0..6, 0..inst.vertex_count);
+                    pass.draw(0..$crate::visuals::render::common::SDF_VERTICES_PER_INSTANCE, 0..inst.vertex_count);
                 }
                 true
             }

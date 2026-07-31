@@ -107,7 +107,7 @@ sdf_primitive!(
     Pipeline,
     u64,
     "Oscilloscope",
-    TriangleList,
+    TriangleStrip,
     |self| self.params.key,
     self.params.geometry_fingerprint()
 );

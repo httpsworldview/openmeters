@@ -239,7 +239,9 @@ fn correlation_stats(y: &[f32]) -> [f32; 2] {
 fn normalized_correlation(x: &[f32], y: &[f32], [sum_y, sum_yy]: [f32; 2]) -> f32 {
     debug_assert_eq!(x.len(), y.len());
     let mut sums = [[0.0; 4]; 3];
-    for (x, y) in x.chunks_exact(4).zip(y.chunks_exact(4)) {
+    let (x_chunks, x_remainder) = x.as_chunks::<4>();
+    let (y_chunks, y_remainder) = y.as_chunks::<4>();
+    for (x, y) in x_chunks.iter().zip(y_chunks) {
         for lane in 0..4 {
             sums[0][lane] += x[lane];
             sums[1][lane] += x[lane] * x[lane];
@@ -247,8 +249,7 @@ fn normalized_correlation(x: &[f32], y: &[f32], [sum_y, sum_yy]: [f32; 2]) -> f3
         }
     }
     let [mut sum_x, mut sum_xx, mut sum_xy] = sums.map(|sum| sum.into_iter().sum::<f32>());
-    let remainder = x.len() / 4 * 4;
-    for (&x, &y) in x[remainder..].iter().zip(&y[remainder..]) {
+    for (&x, &y) in x_remainder.iter().zip(y_remainder) {
         sum_x += x;
         sum_xx += x * x;
         sum_xy += x * y;
