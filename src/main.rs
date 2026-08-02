@@ -15,16 +15,24 @@ mod visuals;
 
 use infra::pipewire::AudioBackend;
 use persistence::settings::SettingsHandle;
-use std::cell::RefCell;
-use std::process::ExitCode;
-use std::rc::Rc;
-use ui::UiConfig;
-use util::telemetry;
-
+use std::{cell::RefCell, process::ExitCode, rc::Rc};
 use tracing::{error, info};
+use tracing_subscriber::{EnvFilter, fmt};
+use ui::UiConfig;
 
 fn main() -> ExitCode {
-    telemetry::init();
+    let env_filter = match EnvFilter::try_from_default_env() {
+        Ok(filter) => filter,
+        Err(_) => EnvFilter::new("openmeters=info"),
+    };
+    if let Err(err) = fmt()
+        .with_env_filter(env_filter)
+        .with_target(false)
+        .compact()
+        .try_init()
+    {
+        eprintln!("[telemetry] failed to initialise tracing subscriber: {err}");
+    }
     info!("OpenMeters starting up");
 
     let settings_handle = SettingsHandle::load_or_default();

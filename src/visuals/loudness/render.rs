@@ -61,9 +61,7 @@ impl LoudnessParams {
 
         Some((meter_x, bar_width, stride))
     }
-}
 
-impl LoudnessParams {
     fn build_vertices(&self, scratch: &mut GeometryScratch) {
         let clip = ClipTransform::from_bounds(self.bounds);
         let Some((meter_x, bar_width, stride)) = self.meter_bounds() else {
@@ -162,7 +160,6 @@ impl LoudnessParams {
                 clip,
             ));
         }
-
     }
 }
 

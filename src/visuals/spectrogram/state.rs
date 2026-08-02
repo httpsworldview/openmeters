@@ -323,11 +323,10 @@ impl SpectrogramState {
             return None;
         }
         let age = match self.rotation_index() {
-            0 => bounds.x + bounds.width - cursor.x,
             1 => bounds.y + bounds.height - cursor.y,
             2 => cursor.x - bounds.x,
             3 => cursor.y - bounds.y,
-            _ => return None,
+            _ => bounds.x + bounds.width - cursor.x,
         };
         if age < 0.0 || age >= self.history.col_count as f32 { return None; }
         let secs = age * (self.hop_size as f32 / self.sample_rate);

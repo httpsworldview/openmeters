@@ -219,8 +219,9 @@ impl CaptureWriter {
     ) -> AudioFormat {
         self.flush_pending();
         let format = self.publish_format(channels, rate, positions);
-        self.configure_pool(format);
-        self.format = Some(format);
+        if self.format.replace(format) != Some(format) {
+            self.configure_pool(format);
+        }
         self.disconnected = false;
         format
     }

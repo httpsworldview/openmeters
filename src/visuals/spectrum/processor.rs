@@ -213,7 +213,6 @@ impl SpectrumProcessor {
     }
 
     fn process_trace_window(&mut self, trace: usize, dt_seconds: f32, floor: f32) -> bool {
-        let bins = self.config.fft_size / 2 + 1;
         copy_dc_removed_windowed_from_deque(
             &mut self.real_buffer,
             &self.pcm_buffers[trace],
@@ -239,7 +238,6 @@ impl SpectrumProcessor {
             .spectrum_buffer
             .iter()
             .zip(&self.bin_normalization)
-            .take(bins)
             .enumerate()
         {
             level.scratch_power[idx] = complex.norm_sqr() * *norm;
@@ -421,8 +419,6 @@ fn a_weight(freq_hz: f32) -> f32 {
     let f2 = f * f;
     let numerator = C4 * f2 * f2;
     let denom = (f2 + C1) * ((f2 + C2) * (f2 + C3)).sqrt() * (f2 + C4);
-
-    if denom <= 0.0 || numerator <= 0.0 { return f32::NEG_INFINITY; }
 
     let ra = numerator / denom;
     (20.0 * ra.log10() + 2.0) as f32

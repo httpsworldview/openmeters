@@ -54,9 +54,7 @@ impl SpectrumParams {
             pack_f32_pair(self.secondary_line_color[2], self.secondary_line_color[3]),
         ]
     }
-}
 
-impl SpectrumParams {
     fn build_vertices(&self, scratch: &mut GeometryScratch) {
         let bounds = self.bounds;
         let clip = ClipTransform::from_bounds(bounds);

@@ -704,6 +704,23 @@ pub(in crate::visuals) use sdf_primitive;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wgpu::naga::front::wgsl::parse_str;
+
+    #[test]
+    fn shaders_are_valid() {
+        for source in [
+            include_str!("shaders/sdf.wgsl"),
+            include_str!("shaders/spectrogram.wgsl"),
+        ] {
+            let module = parse_str(source).expect("shader should parse");
+            wgpu::naga::valid::Validator::new(
+                wgpu::naga::valid::ValidationFlags::all(),
+                wgpu::naga::valid::Capabilities::all(),
+            )
+            .validate(&module)
+            .expect("shader should validate");
+        }
+    }
 
     #[test]
     fn decimate_line_advances_when_bucket_edge_rounds_below_point() {

@@ -257,7 +257,7 @@ impl<'a> AudioBlock<'a> {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.frame_count() == 0
+        self.samples.len() < self.channels.max(1)
     }
 }
 

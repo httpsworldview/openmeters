@@ -167,7 +167,7 @@ Debian/RPM release number.
 src/domain.rs              shared capture policy and visual identifiers
 src/dsp.rs                 AudioBlock and small DSP types
 src/meter.rs               capture timeline, silence handling, and DSP batching
-src/util/                  low-level audio math, color, musical, and telemetry helpers
+src/util/                  low-level audio math, color, and musical helpers
 src/infra/pipewire/        owned PipeWire graph, tap policy, stream, and audio transport
 src/persistence/           settings schema, lossy loading, store, themes, visual config
 src/visuals.rs             visual module declarations, option enums, widget macros
