@@ -190,7 +190,7 @@ impl SpectrogramHistory {
     }
 }
 
-pub(in crate::visuals) struct SpectrogramState {
+pub(crate) struct SpectrogramState {
     pub(in crate::visuals) palette: [Color; SPECTROGRAM_PALETTE_SIZE],
     pub(in crate::visuals) stop_positions: [f32; SPECTROGRAM_PALETTE_SIZE],
     pub(in crate::visuals) stop_spreads: [f32; SPECTROGRAM_PALETTE_SIZE],

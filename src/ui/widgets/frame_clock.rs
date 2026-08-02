@@ -3,9 +3,8 @@
 
 use crate::meter::MeterEngine;
 use crate::persistence::settings::VisualFrameRate;
-use iced::advanced::widget::Tree;
-use iced::advanced::{Clipboard, Layout, Shell, Widget, layout, mouse};
-use iced::{Element, Event, Length, Rectangle, Size, Theme, window};
+use iced::advanced::Widget;
+use iced::{Element, Event, Length, Size, Theme, window};
 use std::cell::RefCell;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
@@ -44,10 +43,6 @@ impl FrameHeartbeat {
 
     fn generation(&self) -> u64 {
         self.0.load(Ordering::Relaxed)
-    }
-
-    fn is_current(&self, generation: u64) -> bool {
-        self.generation() == generation
     }
 }
 
@@ -127,7 +122,7 @@ impl FrameCoordinator {
     }
 
     pub(in crate::ui) fn watchdog(&mut self, generation: u64, now: Instant) {
-        if self.heartbeat.is_current(generation) {
+        if self.heartbeat.generation() == generation {
             self.meter.advance(now);
             self.next_frame = self.rate.interval().map(|interval| now + interval);
         }
@@ -174,53 +169,22 @@ struct FrameClock {
 }
 
 impl<Message> Widget<Message, Theme, iced::Renderer> for FrameClock {
-    fn size(&self) -> Size<Length> {
-        Size::new(Length::Fill, Length::Fill)
-    }
+    crate::macros::widget_method!(layout Size::new(Length::Fill, Length::Fill), |limits| limits.max());
 
-    fn layout(
-        &mut self,
-        _: &mut Tree,
-        _: &iced::Renderer,
-        limits: &layout::Limits,
-    ) -> layout::Node {
-        layout::Node::new(limits.max())
-    }
-
-    fn update(
-        &mut self,
-        _: &mut Tree,
-        event: &Event,
-        _: Layout<'_>,
-        _: mouse::Cursor,
-        _: &iced::Renderer,
-        _: &mut dyn Clipboard,
-        shell: &mut Shell<'_, Message>,
-        _: &Rectangle,
-    ) {
+    crate::macros::widget_method!(update Message; this; _, event, _, _, _, _, shell, _ => {
         if let Event::Window(window::Event::RedrawRequested(now)) = event {
-            match self
+            match this
                 .coordinator
                 .borrow_mut()
-                .frame(self.window, self.is_main, *now)
+                .frame(this.window, this.is_main, *now)
             {
                 Some(deadline) => shell.request_redraw_at(deadline),
                 None => shell.request_redraw(),
             }
         }
-    }
+    });
 
-    fn draw(
-        &self,
-        _: &Tree,
-        _: &mut iced::Renderer,
-        _: &Theme,
-        _: &iced::advanced::renderer::Style,
-        _: Layout<'_>,
-        _: mouse::Cursor,
-        _: &Rectangle,
-    ) {
-    }
+    crate::macros::widget_method!(draw _this; _, _, _, _, _, _, _ => {});
 }
 
 #[cfg(test)]
@@ -245,23 +209,15 @@ mod tests {
         let main = window::Id::unique();
         let popout = window::Id::unique();
         let start = Instant::now();
-        assert!(!display_frame_due(
-            Some((main, start)),
-            popout,
-            false,
-            start + WATCHDOG_INTERVAL / 2
-        ));
-        assert!(display_frame_due(
-            Some((popout, start)),
-            main,
-            true,
-            start + Duration::from_millis(1)
-        ));
-        assert!(display_frame_due(
-            Some((main, start)),
-            popout,
-            false,
-            start + WATCHDOG_INTERVAL
-        ));
+        for (owner, window, is_main, elapsed, expected) in [
+            (main, popout, false, WATCHDOG_INTERVAL / 2, false),
+            (popout, main, true, Duration::from_millis(1), true),
+            (main, popout, false, WATCHDOG_INTERVAL, true),
+        ] {
+            assert_eq!(
+                display_frame_due(Some((owner, start)), window, is_main, start + elapsed),
+                expected
+            );
+        }
     }
 }

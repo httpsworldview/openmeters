@@ -57,3 +57,61 @@ macro_rules! default_struct {
 }
 
 pub(super) use default_struct;
+
+macro_rules! widget_method {
+    (layout $size:expr, |$limits:ident| $resolved:expr) => {
+        fn size(&self) -> iced::Size<iced::Length> {
+            $size
+        }
+
+        fn layout(
+            &mut self,
+            _: &mut iced::advanced::widget::Tree,
+            _: &iced::Renderer,
+            $limits: &iced::advanced::layout::Limits,
+        ) -> iced::advanced::layout::Node {
+            iced::advanced::layout::Node::new($resolved)
+        }
+    };
+    (state $state:ty) => {
+        fn tag(&self) -> iced::advanced::widget::tree::Tag {
+            iced::advanced::widget::tree::Tag::of::<$state>()
+        }
+        fn state(&self) -> iced::advanced::widget::tree::State {
+            iced::advanced::widget::tree::State::new(<$state>::default())
+        }
+    };
+    (update $message:ty; $this:ident; $tree:pat, $event:pat, $layout:pat, $cursor:pat, $renderer:pat, $clipboard:pat, $shell:pat, $viewport:pat => $body:block) => {
+        fn update(
+            &mut self,
+            $tree: &mut iced::advanced::widget::Tree,
+            $event: &iced::Event,
+            $layout: iced::advanced::Layout<'_>,
+            $cursor: iced::advanced::mouse::Cursor,
+            $renderer: &iced::Renderer,
+            $clipboard: &mut dyn iced::advanced::Clipboard,
+            $shell: &mut iced::advanced::Shell<'_, $message>,
+            $viewport: &iced::Rectangle,
+        ) {
+            let $this = self;
+            $body
+        }
+    };
+    (draw $this:ident; $tree:pat, $renderer:pat, $theme:pat, $style:pat, $layout:pat, $cursor:pat, $viewport:pat => $body:block) => {
+        fn draw(
+            &self,
+            $tree: &iced::advanced::widget::Tree,
+            $renderer: &mut iced::Renderer,
+            $theme: &iced::Theme,
+            $style: &iced::advanced::renderer::Style,
+            $layout: iced::advanced::Layout<'_>,
+            $cursor: iced::advanced::mouse::Cursor,
+            $viewport: &iced::Rectangle,
+        ) {
+            let $this = self;
+            $body
+        }
+    };
+}
+
+pub(super) use widget_method;

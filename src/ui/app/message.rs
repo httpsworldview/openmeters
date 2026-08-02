@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::{TOAST_DISPLAY_DURATION, UiApp};
+use super::{TOAST_DISPLAY_DURATION, UiApp, windowing::AppWindow};
 use crate::ui::config::ConfigMessage;
 use crate::ui::settings::SettingsMessage;
 use crate::ui::visuals::VisualsMessage;
@@ -111,7 +111,8 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
                 app.frames.borrow_mut().set_rate(rate);
             }
             if topology_changed {
-                app.sync_meter_activity();
+                let active = app.visuals_active();
+                app.frames.borrow_mut().set_active(active);
             }
             if theme_changed {
                 app.refresh_settings_panel();
@@ -125,7 +126,9 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
             };
             Task::batch([decoration_task, bar_task, restore_task, topology_task])
         }
-        Message::Visuals(VisualsMessage::SettingsRequested(kind)) => app.open_settings_window(kind),
+        Message::Visuals(VisualsMessage::SettingsRequested(kind)) => {
+            app.open_settings_window(kind, false)
+        }
         Message::Visuals(visuals_msg) => app.visuals_page.update(visuals_msg).map(Message::Visuals),
         Message::ToggleConfig => app.toggle_config_window(),
         Message::TogglePause => {
@@ -186,28 +189,22 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
 }
 
 pub(super) fn view(app: &UiApp, window_id: window::Id) -> Element<'_, Message> {
-    if window_id == app.main_window_id {
-        return app.main_window_view();
+    match app.window(window_id) {
+        AppWindow::Main => app.main_window_view(),
+        AppWindow::Config => page(app.config_page.view().map(Message::Config)).into(),
+        AppWindow::Settings(panel) => {
+            let content = panel
+                .view()
+                .map(move |message| Message::Settings(window_id, message));
+            page(
+                app.settings_scroll
+                    .vertical(content, Message::SettingsScrolled),
+            )
+            .into()
+        }
+        AppWindow::Popout(popout) => {
+            app.with_frame_clock(window_id, popout.view().map(Message::Visuals))
+        }
+        AppWindow::Unknown => fill(text("")).into(),
     }
-    if app.config_window == Some(window_id) {
-        return page(app.config_page.view().map(Message::Config)).into();
-    }
-    if let Some((_, panel)) = app
-        .settings_window
-        .as_ref()
-        .filter(|(id, _)| *id == window_id)
-    {
-        let mapped = panel
-            .view()
-            .map(move |msg| Message::Settings(window_id, msg));
-        return page(
-            app.settings_scroll
-                .vertical(mapped, Message::SettingsScrolled),
-        )
-        .into();
-    }
-    let Some(popout) = app.popout_windows.get(&window_id) else {
-        return fill(text("")).into();
-    };
-    app.with_frame_clock(window_id, popout.view().map(Message::Visuals))
 }

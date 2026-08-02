@@ -24,7 +24,6 @@ pub(super) const APP_ID: &str = "openmeters-ui";
 const WINDOW_MIN_SIZE: Size = Size::new(200.0, 150.0);
 const TOOL_WINDOW_SIZE: Size = Size::new(480.0, 600.0);
 
-#[derive(Debug, Default)]
 struct LayerShellProbe;
 
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for LayerShellProbe {
@@ -141,7 +140,6 @@ fn popout_window_settings(size: Size, popped_out: bool) -> PopoutWindowSettings 
     }
 }
 
-#[derive(Debug, Clone, Copy)]
 pub(super) struct BarResizeState {
     pub start_y: f32,
     pub start_height: u32,
@@ -152,40 +150,70 @@ pub(super) struct PopoutWindow {
     pub kind: VisualKind,
     pub original_index: usize,
     pub size: Size,
-    pub cached: VisualContent,
+    pub content: VisualContent,
 }
 
 impl PopoutWindow {
     pub fn view(&self) -> Element<'_, VisualsMessage> {
         let msg = VisualsMessage::SettingsRequested(self.kind);
-        mouse_area(fill(self.cached.render()))
+        mouse_area(fill(self.content.render()))
             .on_right_press(msg)
             .into()
     }
 }
 
+pub(super) enum AppWindow<'a> {
+    Main,
+    Config,
+    Settings(&'a ActiveSettings),
+    Popout(&'a PopoutWindow),
+    Unknown,
+}
+
 impl UiApp {
+    pub(super) fn window(&self, id: window::Id) -> AppWindow<'_> {
+        if id == self.main_window_id {
+            AppWindow::Main
+        } else if self.config_window == Some(id) {
+            AppWindow::Config
+        } else if let Some((_, panel)) = self.settings_window.as_ref().filter(|(wid, _)| *wid == id)
+        {
+            AppWindow::Settings(panel)
+        } else {
+            self.popout_windows
+                .get(&id)
+                .map_or(AppWindow::Unknown, AppWindow::Popout)
+        }
+    }
+
     pub(super) fn refresh_settings_panel(&mut self) {
         let Some((_, panel)) = self.settings_window.as_mut() else {
             return;
         };
-        *panel = ActiveSettings::new(panel.kind, &self.visual_manager);
+        *panel = ActiveSettings::new(panel.kind(), &self.visual_manager);
     }
 
-    pub(super) fn open_settings_window(&mut self, kind: VisualKind) -> Task<Message> {
+    pub(super) fn open_settings_window(
+        &mut self,
+        kind: VisualKind,
+        force_new: bool,
+    ) -> Task<Message> {
         let new_panel = ActiveSettings::new(kind, &self.visual_manager);
         let previous = self.settings_window.take();
-        if previous
+        let same_kind = previous
             .as_ref()
-            .is_some_and(|(_, panel)| panel.kind == kind)
-        {
+            .is_some_and(|(_, panel)| panel.kind() == kind);
+        if same_kind && !force_new {
             self.settings_window = previous.map(|(id, _)| (id, new_panel));
             return Task::none();
         }
         let (new_id, open_task) = open_tool_base_window(self.use_layershell);
-        self.settings_scroll = ScrollGlow::default();
+        if !same_kind {
+            self.settings_scroll = ScrollGlow::default();
+        }
         self.settings_window = Some((new_id, new_panel));
         match previous {
+            Some((old_id, _)) if force_new => Task::batch([open_task, window::close(old_id)]),
             Some((old_id, _)) => Task::batch([window::close(old_id), open_task]),
             None => open_task,
         }
@@ -229,7 +257,7 @@ impl UiApp {
             kind,
             original_index: index,
             size: window_size,
-            cached: slot.content.clone(),
+            content: slot.content.clone(),
         };
         self.popout_windows.insert(new_id, popout);
         Some((popout_window_settings(window_size, true), open_task))
@@ -291,12 +319,8 @@ impl UiApp {
         if id == self.main_window_id {
             return exit();
         }
-        if self.config_window == Some(id) {
-            self.config_window = None;
-        }
-        if self.settings_window.as_ref().is_some_and(|(w, _)| *w == id) {
-            self.settings_window = None;
-        }
+        let _ = self.config_window.take_if(|window| *window == id);
+        let _ = self.settings_window.take_if(|(window, _)| *window == id);
         if let Some(popout) = self.popout_windows.remove(&id) {
             self.dock_popout(popout);
         }
@@ -310,20 +334,15 @@ impl UiApp {
             .take_if(|(_, panel)| {
                 !snapshot
                     .iter()
-                    .any(|slot| slot.kind == panel.kind && slot.enabled)
+                    .any(|slot| slot.kind == panel.kind() && slot.enabled)
             })
             .map(|(id, _)| window::close::<Message>(id));
         let stale_windows: Vec<_> = self
             .popout_windows
             .extract_if(|_, popout| {
-                let Some(slot) = snapshot
+                !snapshot
                     .iter()
-                    .find(|slot| slot.kind == popout.kind && slot.enabled)
-                else {
-                    return true;
-                };
-                popout.cached = slot.content.clone();
-                false
+                    .any(|slot| slot.kind == popout.kind && slot.enabled)
             })
             .map(|(id, popout)| (id, popout.kind, popout.size))
             .collect();
@@ -350,39 +369,20 @@ impl UiApp {
     }
 
     pub(super) fn title(&self, window_id: window::Id) -> String {
-        if window_id == self.main_window_id {
-            return "OpenMeters".into();
+        match self.window(window_id) {
+            AppWindow::Config => "Configuration - OpenMeters".into(),
+            AppWindow::Settings(panel) => format!("{} settings - OpenMeters", panel.kind().label()),
+            AppWindow::Popout(popout) => format!("{} - OpenMeters", popout.kind.label()),
+            AppWindow::Main | AppWindow::Unknown => "OpenMeters".into(),
         }
-
-        if self.config_window == Some(window_id) {
-            return "Configuration - OpenMeters".into();
-        }
-
-        let (kind, suffix) = if let Some((_, panel)) = self
-            .settings_window
-            .as_ref()
-            .filter(|(id, _)| *id == window_id)
-        {
-            (panel.kind, " settings")
-        } else if let Some(popout) = self.popout_windows.get(&window_id) {
-            (popout.kind, "")
-        } else {
-            return "OpenMeters".into();
-        };
-
-        format!("{}{} - OpenMeters", kind.label(), suffix)
     }
 
     pub(super) fn theme(&self, window_id: window::Id) -> iced::Theme {
         let [fallback, visual, tool] = &self.config_page.window_themes;
-        if self.config_window == Some(window_id)
-            || matches!(&self.settings_window, Some((id, _)) if *id == window_id)
-        {
-            tool
-        } else if window_id == self.main_window_id || self.popout_windows.contains_key(&window_id) {
-            visual
-        } else {
-            fallback
+        match self.window(window_id) {
+            AppWindow::Config | AppWindow::Settings(_) => tool,
+            AppWindow::Main | AppWindow::Popout(_) => visual,
+            AppWindow::Unknown => fallback,
         }
         .clone()
     }
@@ -527,69 +527,44 @@ impl UiApp {
         &mut self,
         config_msg: &ConfigMessage,
     ) -> Task<Message> {
-        if !self.use_layershell
-            || !matches!(
-                config_msg,
-                ConfigMessage::BarModeToggled(_)
-                    | ConfigMessage::BarAlignmentChanged(_)
-                    | ConfigMessage::BarHeightChanged(_)
-                    | ConfigMessage::BarMonitorChanged(_)
-            )
-        {
+        if !self.use_layershell {
             return Task::none();
         }
-        let (bar, decorations) = {
-            let guard = self.settings_handle.borrow();
-            let settings = &guard.data;
+        let (mut bar, decorations) = {
+            let settings = &self.settings_handle.borrow().data;
             (settings.bar.clone(), settings.decorations)
         };
-        match config_msg {
-            ConfigMessage::BarModeToggled(true) if self.main_window_is_layer => {
-                self.apply_bar_layout(bar.alignment, bar.height)
+        let (relayout, mode_change) = match config_msg {
+            ConfigMessage::BarModeToggled(enabled) => {
+                bar.enabled = *enabled;
+                (true, true)
             }
-            ConfigMessage::BarModeToggled(enabled) if *enabled == self.main_window_is_layer => {
-                Task::none()
+            ConfigMessage::BarAlignmentChanged(alignment) => {
+                bar.alignment = *alignment;
+                (true, false)
             }
-            ConfigMessage::BarModeToggled(enabled) => self.recreate_main_window(
-                BarSettings {
-                    enabled: *enabled,
-                    ..bar
-                },
-                decorations,
-            ),
-            ConfigMessage::BarAlignmentChanged(alignment) if self.main_window_is_layer => {
-                self.apply_bar_layout(*alignment, bar.height)
+            ConfigMessage::BarHeightChanged(height) => {
+                bar.height = *height;
+                (true, false)
             }
-            ConfigMessage::BarHeightChanged(height) if self.main_window_is_layer => {
-                self.apply_bar_layout(bar.alignment, *height)
-            }
-            ConfigMessage::BarMonitorChanged(monitor) if self.main_window_is_layer => {
-                if bar.monitor.as_deref() == Some(monitor.as_str()) {
-                    Task::none()
-                } else {
-                    self.recreate_main_window(
-                        BarSettings {
-                            monitor: Some(monitor.clone()),
-                            ..bar
-                        },
-                        decorations,
-                    )
+            ConfigMessage::BarMonitorChanged(monitor) => {
+                if bar.monitor.as_deref() == Some(monitor) {
+                    return Task::none();
                 }
+                bar.monitor = Some(monitor.clone());
+                (false, false)
             }
-            _ => Task::none(),
-        }
-    }
-
-    pub(super) fn recreate_settings_window(&mut self) -> Task<Message> {
-        let Some((old_id, panel)) = self.settings_window.take() else {
-            return Task::none();
+            _ => return Task::none(),
         };
-        let (new_id, open_task) = open_tool_base_window(self.use_layershell);
-        self.settings_window = Some((
-            new_id,
-            ActiveSettings::new(panel.kind, &self.visual_manager),
-        ));
-        Task::batch([open_task, window::close(old_id)])
+        if (mode_change && bar.enabled != self.main_window_is_layer)
+            || (self.main_window_is_layer && !relayout)
+        {
+            self.recreate_main_window(bar, decorations)
+        } else if self.main_window_is_layer && relayout {
+            self.apply_bar_layout(bar.alignment, bar.height)
+        } else {
+            Task::none()
+        }
     }
 
     pub(super) fn recreate_popout_windows(&mut self, use_decorations: bool) -> Task<Message> {
@@ -611,7 +586,9 @@ impl UiApp {
             open_base_window(self.use_layershell, self.main_window_size, use_decorations);
         self.main_window_id = new_main_id;
         self.main_window_is_layer = false;
-        let settings_task = self.recreate_settings_window();
+        let settings_kind = self.settings_window.as_ref().map(|(_, panel)| panel.kind());
+        let settings_task =
+            settings_kind.map_or_else(Task::none, |kind| self.open_settings_window(kind, true));
         Task::batch([
             open_main,
             window::close(old_main_id),

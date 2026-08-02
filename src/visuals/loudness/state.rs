@@ -60,7 +60,7 @@ impl PeakHold {
 }
 
 #[derive(Debug, Clone)]
-pub(in crate::visuals) struct LoudnessState {
+pub(crate) struct LoudnessState {
     snapshot: LoudnessSnapshot,
     pub(in crate::visuals) settings: LoudnessSettings,
     pub(in crate::visuals) palette: [Color; PALETTE_SIZE],

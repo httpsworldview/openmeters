@@ -54,7 +54,7 @@ fn rebuild_points(
 }
 
 #[derive(Debug, Clone)]
-pub(in crate::visuals) struct SpectrumState {
+pub(crate) struct SpectrumState {
     pub(in crate::visuals) style: SpectrumSettings,
     pub(in crate::visuals) palette: [Color; PALETTE_SIZE],
     primary: SharedPoints,

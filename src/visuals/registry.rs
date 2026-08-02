@@ -22,50 +22,16 @@ use std::{cell::RefCell, rc::Rc};
 
 type Shared<T> = Rc<RefCell<T>>;
 
-trait PrepareProcessor {
-    fn prepare(&mut self) {}
-}
-
-impl PrepareProcessor for loudness::LoudnessProcessor {}
-impl PrepareProcessor for oscilloscope::OscilloscopeProcessor {}
-impl PrepareProcessor for stereometer::StereometerProcessor {}
-impl PrepareProcessor for spectrogram::SpectrogramProcessor {
-    fn prepare(&mut self) {
-        spectrogram::SpectrogramProcessor::prepare(self);
-    }
-}
-impl PrepareProcessor for spectrum::SpectrumProcessor {
-    fn prepare(&mut self) {
-        spectrum::SpectrumProcessor::prepare(self);
-    }
-}
-impl PrepareProcessor for waveform::WaveformProcessor {
-    fn prepare(&mut self) {
-        waveform::WaveformProcessor::prepare(self);
-    }
-}
-
 // too many stops -> keep first N
 // too few stops -> copy provided, repeat last
 fn resolve_palette<const N: usize>(
     custom: Option<&PaletteSettings>,
     default: &[Color; N],
 ) -> [Color; N] {
-    let Some(custom) = custom else {
+    let Some((last, stops)) = custom.and_then(|palette| palette.stops.split_last()) else {
         return *default;
     };
-    let Some(last) = custom.stops.last() else {
-        return *default;
-    };
-
-    let mut colors = *default;
-    for (color, stop) in colors
-        .iter_mut()
-        .zip(custom.stops.iter().chain(std::iter::repeat(last)))
-    {
-        *color = (*stop).into();
-    }
-    colors
+    std::array::from_fn(|index| (*stops.get(index).unwrap_or(last)).into())
 }
 
 macro_rules! visuals {
@@ -104,35 +70,36 @@ macro_rules! visuals {
     ($($variant:ident($default_width_basis:expr, $min_w:expr) =>
        $module:ident :: $processor:ident, $config:ident, $state:ident.$state_settings:ident;
        $settings_ty:ty;
+       $(prepare($prepare:ident);)?
        $(pre_ingest($pip:ident, $pis:ident) $pre_ingest_body:expr;)?
        apply($ap:ident, $as:ident, $aset:ident) $apply_body:expr;
        export($ep:ident, $es:ident) $sync:ident;
     )*) => {
         #[derive(Clone)]
-        pub(crate) struct VisualContent(VisualContentInner);
-
-        #[derive(Clone)]
-        enum VisualContentInner {
+        pub(crate) enum VisualContent {
             $($variant(Shared<$module::$state>)),*
         }
 
         impl VisualContent {
             pub(crate) fn render<M: 'static>(&self) -> Element<'_, M> {
-                match &self.0 {
-                    $(VisualContentInner::$variant(s) => $module::widget(s)),*
+                match self {
+                    $(Self::$variant(s) => $module::widget(s)),*
                 }
             }
         }
 
-        const DESCRIPTORS: &[Descriptor] = &[$(Descriptor {
-            kind: VisualKind::$variant,
-            default_width_basis: $default_width_basis,
-            min_width: $min_w,
-            build: || Box::new(Visual {
-                processor: $module::$processor::new($module::$config::default()),
-                state: Rc::new(RefCell::new($module::$state::new())),
-            }),
-        }),*];
+        fn entries() -> Vec<Entry> {
+            vec![$(Entry {
+                kind: VisualKind::$variant,
+                width_basis: $default_width_basis,
+                min_width: $min_w,
+                enabled: false,
+                module: Box::new(Visual {
+                    processor: $module::$processor::new($module::$config::default()),
+                    state: Rc::new(RefCell::new($module::$state::new())),
+                }),
+            }),*]
+        }
 
         $(impl VisualModule for Visual<$module::$processor, Shared<$module::$state>> {
             fn ingest(&mut self, block: &AudioBlock<'_>) {
@@ -150,12 +117,12 @@ macro_rules! visuals {
                 self.state.borrow_mut().reset_audio();
             }
 
-            fn prepare(&mut self) {
-                PrepareProcessor::prepare(&mut self.processor);
-            }
+            $(fn prepare(&mut self) {
+                self.processor.$prepare();
+            })?
 
             fn content(&self) -> VisualContent {
-                VisualContent(VisualContentInner::$variant(self.state.clone()))
+                VisualContent::$variant(self.state.clone())
             }
 
             fn apply(&mut self, module_cfg: &ModuleSettings) {
@@ -208,6 +175,7 @@ visuals! {
     Waveform(220.0, 220.0) =>
         waveform::WaveformProcessor, WaveformConfig, WaveformState.settings;
         settings_cfg::WaveformSettings;
+        prepare(prepare);
         pre_ingest(p, s) {
             let max_columns = s.borrow().view_columns().min(waveform::processor::MAX_COLUMN_CAPACITY);
             let mut cfg = p.config();
@@ -229,6 +197,7 @@ visuals! {
     Spectrogram(320.0, 300.0) =>
         spectrogram::SpectrogramProcessor, SpectrogramConfig, SpectrogramState.settings;
         settings_cfg::SpectrogramSettings;
+        prepare(prepare);
         pre_ingest(p, s) {
             let vw = { s.borrow().view_width };
             if vw > 0 {
@@ -247,6 +216,7 @@ visuals! {
     Spectrum(400.0, 400.0) =>
         spectrum::SpectrumProcessor, SpectrumConfig, SpectrumState.style;
         settings_cfg::SpectrumSettings;
+        prepare(prepare);
         apply(p, s, set) { visuals!(@apply_config p, set); let cfg = p.config();
             s.borrow_mut().update_view_settings(&set, cfg.floor_db);
         };
@@ -275,7 +245,7 @@ struct Visual<P, S> {
 pub trait VisualModule {
     fn ingest(&mut self, block: &AudioBlock<'_>);
     fn reset_audio(&mut self);
-    fn prepare(&mut self);
+    fn prepare(&mut self) {}
     fn content(&self) -> VisualContent;
     fn apply(&mut self, settings: &ModuleSettings);
     fn export(&self) -> ModuleSettings;
@@ -283,27 +253,18 @@ pub trait VisualModule {
     fn apply_palette(&mut self, palette: Option<&PaletteSettings>);
 }
 
-struct Descriptor {
-    kind: VisualKind,
-    default_width_basis: f32,
-    min_width: f32,
-    build: fn() -> Box<dyn VisualModule>,
-}
-
 struct Entry {
-    descriptor: &'static Descriptor,
+    kind: VisualKind,
+    width_basis: f32,
+    min_width: f32,
     enabled: bool,
     module: Box<dyn VisualModule>,
 }
 impl Entry {
     fn apply_settings(&mut self, settings: &ModuleSettings) {
-        if let Some(enabled) = settings.enabled {
-            self.enabled = enabled;
-        }
+        let enabled = settings.enabled.unwrap_or(self.enabled);
         self.module.apply(settings);
-        if self.enabled {
-            self.module.prepare();
-        }
+        self.set_enabled(enabled);
     }
 
     fn set_enabled(&mut self, enabled: bool) {
@@ -318,7 +279,7 @@ impl Entry {
 pub(crate) struct VisualSlotSnapshot {
     pub kind: VisualKind,
     pub enabled: bool,
-    pub default_width_basis: f32,
+    pub width_basis: f32,
     pub min_width: f32,
     pub content: VisualContent,
 }
@@ -330,28 +291,20 @@ pub(crate) struct VisualManager {
 impl Default for VisualManager {
     fn default() -> Self {
         Self {
-            entries: DESCRIPTORS
-                .iter()
-                .map(|descriptor| Entry {
-                    descriptor,
-                    enabled: false,
-                    module: (descriptor.build)(),
-                })
-                .collect(),
+            entries: entries(),
             format_generation: None,
         }
     }
 }
 impl VisualManager {
-    fn position(&self, kind: VisualKind) -> Option<usize> {
+    fn position(&self, kind: VisualKind) -> usize {
         self.entries
             .iter()
-            .position(|entry| entry.descriptor.kind == kind)
+            .position(|entry| entry.kind == kind)
+            .expect("visual kind missing from registry")
     }
     pub fn move_to(&mut self, kind: VisualKind, target: usize) {
-        let Some(current) = self.position(kind) else {
-            return;
-        };
+        let current = self.position(kind);
         let target = target.min(self.entries.len().saturating_sub(1));
         if current != target {
             let entry = self.entries.remove(current);
@@ -362,24 +315,19 @@ impl VisualManager {
         self.entries
             .iter()
             .map(|entry| VisualSlotSnapshot {
-                kind: entry.descriptor.kind,
+                kind: entry.kind,
                 enabled: entry.enabled,
-                default_width_basis: entry.descriptor.default_width_basis,
-                min_width: entry.descriptor.min_width,
+                width_basis: entry.width_basis,
+                min_width: entry.min_width,
                 content: entry.module.content(),
             })
             .collect()
     }
     pub fn order(&self) -> Vec<VisualKind> {
-        self.entries
-            .iter()
-            .map(|entry| entry.descriptor.kind)
-            .collect()
+        self.entries.iter().map(|entry| entry.kind).collect()
     }
     pub fn module_settings(&self, kind: VisualKind) -> ModuleSettings {
-        let entry = &self.entries[self
-            .position(kind)
-            .expect("visual kind missing from registry")];
+        let entry = &self.entries[self.position(kind)];
         let mut settings = entry.module.export();
         settings.enabled.get_or_insert(entry.enabled);
         settings
@@ -389,19 +337,20 @@ impl VisualManager {
             entry
                 .module
                 .export_palette()
-                .map(|palette| (entry.descriptor.kind, palette))
+                .map(|palette| (entry.kind, palette))
         })
     }
     pub fn apply_module_settings(&mut self, kind: VisualKind, settings: &ModuleSettings) {
-        let index = self
-            .position(kind)
-            .expect("visual kind missing from registry");
+        let index = self.position(kind);
         self.entries[index].apply_settings(settings);
     }
     pub fn set_enabled(&mut self, kind: VisualKind, enabled: bool) {
-        if let Some(index) = self.position(kind) {
-            self.entries[index].set_enabled(enabled);
-        }
+        let index = self.position(kind);
+        self.entries[index].set_enabled(enabled);
+    }
+    pub fn set_width_basis(&mut self, kind: VisualKind, width_basis: f32) {
+        let index = self.position(kind);
+        self.entries[index].width_basis = width_basis;
     }
     pub fn has_enabled(&self) -> bool {
         self.entries.iter().any(|entry| entry.enabled)
@@ -415,10 +364,18 @@ impl VisualManager {
     pub fn apply_visual_settings(&mut self, settings: &VisualSettings) {
         let default_settings = ModuleSettings::default();
         for entry in &mut self.entries {
+            if let Some(width) = settings
+                .width_basis
+                .get(&entry.kind)
+                .copied()
+                .and_then(crate::util::finite_positive)
+            {
+                entry.width_basis = width;
+            }
             entry.apply_settings(
                 settings
                     .modules
-                    .get(&entry.descriptor.kind)
+                    .get(&entry.kind)
                     .unwrap_or(&default_settings),
             );
         }
@@ -431,9 +388,7 @@ impl VisualManager {
     }
     pub fn apply_theme(&mut self, theme: &ThemeFile) {
         for entry in &mut self.entries {
-            entry
-                .module
-                .apply_palette(theme.palettes.get(&entry.descriptor.kind));
+            entry.module.apply_palette(theme.palettes.get(&entry.kind));
         }
     }
     pub fn ingest_samples(&mut self, samples: &[f32], format: AudioFormat) {
@@ -442,13 +397,11 @@ impl VisualManager {
         }
         if self
             .format_generation
-            .replace(format.generation)
             .is_some_and(|generation| generation != format.generation)
         {
-            for entry in &mut self.entries {
-                entry.module.reset_audio();
-            }
+            self.reset_audio();
         }
+        self.format_generation = Some(format.generation);
         let block = AudioBlock::with_positions(
             samples,
             format.channels,
@@ -477,6 +430,7 @@ mod tests {
         assert_eq!(resolve_palette(None, &defaults), defaults);
         for (len, expected) in [
             (0, defaults),
+            (1, [stops[0]; 4]),
             (2, [stops[0], stops[1], stops[1], stops[1]]),
             (5, [stops[0], stops[1], stops[2], stops[3]]),
         ] {

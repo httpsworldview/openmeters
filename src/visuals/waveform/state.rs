@@ -19,7 +19,7 @@ const INITIAL_VIEW_COLUMNS: usize = 512;
 const SCROLL_CLOCK_TIMEOUT: Duration = Duration::from_millis(100);
 
 #[derive(Debug)]
-pub(in crate::visuals) struct WaveformState {
+pub(crate) struct WaveformState {
     data: Arc<Mutex<VecDeque<WaveFrame>>>,
     preview: WaveformPreview,
     scroll: Cell<(Instant, f32)>,

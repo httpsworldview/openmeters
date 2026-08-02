@@ -5,70 +5,15 @@
 // Adapted from iced_widget v0.13.4 pane_grid.
 // See docs/licenses/iced_widget_pane_grid.md for the MIT notice.
 
-use iced::advanced::renderer::{self, Quad};
-use iced::advanced::widget::{
-    self,
-    tree::{self, Tree},
-};
-use iced::advanced::{Clipboard, Layout, Renderer as _, Shell, Widget, layout, mouse};
+use iced::advanced::renderer::Quad;
+use iced::advanced::widget::{self, tree::Tree};
+use iced::advanced::{Layout, Renderer as _, Shell, Widget, layout, mouse};
 use iced::{Background, Element, Event, Length, Point, Rectangle, Size};
 
+use crate::domain::visuals::VisualKind;
 use crate::util::color::with_alpha;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Pane(usize);
-
-#[derive(Debug, Clone)]
-pub struct State<T> {
-    panes: Vec<(Pane, T)>,
-}
-
-impl<T> State<T> {
-    pub fn from_iter(items: impl IntoIterator<Item = T>) -> Self {
-        Self {
-            panes: items
-                .into_iter()
-                .enumerate()
-                .map(|(id, item)| (Pane(id), item))
-                .collect(),
-        }
-    }
-
-    pub fn get(&self, pane: Pane) -> Option<&T> {
-        self.panes.iter().find(|(p, _)| *p == pane).map(|(_, v)| v)
-    }
-
-    pub fn get_mut(&mut self, pane: Pane) -> Option<&mut T> {
-        self.panes
-            .iter_mut()
-            .find(|(p, _)| *p == pane)
-            .map(|(_, v)| v)
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = (&Pane, &T)> {
-        self.panes.iter().map(|(pane, state)| (pane, state))
-    }
-
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = (Pane, &mut T)> {
-        self.panes.iter_mut().map(|(pane, state)| (*pane, state))
-    }
-
-    pub fn move_to(&mut self, a: Pane, b: Pane) -> bool {
-        let (Some(from), Some(to)) = (self.position(a), self.position(b)) else {
-            return false;
-        };
-        if from == to {
-            return false;
-        }
-        let pane = self.panes.remove(from);
-        self.panes.insert(to, pane);
-        true
-    }
-
-    fn position(&self, pane: Pane) -> Option<usize> {
-        self.panes.iter().position(|(id, _)| *id == pane)
-    }
-}
+pub type Pane = VisualKind;
 
 const DIVIDER_HIT_WIDTH: f32 = 8.0;
 const EPS: f32 = 0.001;
@@ -83,9 +28,8 @@ struct ResizeState {
 
 #[derive(Default)]
 struct Interaction {
-    dragging: Option<(Pane, Point)>,
+    dragging: Option<(Pane, Point, f32)>,
     resizing: Option<ResizeState>,
-    last_x: Option<f32>,
     cursor_over: Option<Pane>,
 }
 
@@ -121,33 +65,23 @@ pub struct PaneGrid<'a, Message> {
     entries: Vec<(Pane, Content<'a, Message>)>,
     on_drag: Option<fn(DragEvent) -> Message>,
     on_resize: fn(ResizeWidths) -> Message,
-    on_context: fn(Pane) -> Message,
     on_hover: fn(Option<Pane>) -> Message,
 }
 
 impl<'a, Message: 'a> PaneGrid<'a, Message> {
     pub fn new<T>(
-        state: &'a State<T>,
-        view: impl Fn(Pane, &'a T) -> Content<'a, Message>,
+        state: &'a [T],
+        view: impl Fn(&'a T) -> (Pane, Content<'a, Message>),
+        on_drag: Option<fn(DragEvent) -> Message>,
         on_resize: fn(ResizeWidths) -> Message,
-        on_context: fn(Pane) -> Message,
         on_hover: fn(Option<Pane>) -> Message,
     ) -> Self {
         Self {
-            entries: state
-                .iter()
-                .map(|(pane, value)| (*pane, view(*pane, value)))
-                .collect(),
-            on_drag: None,
+            entries: state.iter().map(view).collect(),
+            on_drag,
             on_resize,
-            on_context,
             on_hover,
         }
-    }
-
-    pub fn on_drag(mut self, callback: fn(DragEvent) -> Message) -> Self {
-        self.on_drag = Some(callback);
-        self
     }
 
     fn pane_at(&self, layout: Layout<'_>, cursor: Point) -> Option<Pane> {
@@ -177,24 +111,10 @@ impl<'a, Message: 'a> PaneGrid<'a, Message> {
             .iter()
             .map(|(_, content)| (content.min_width, content.basis_width))
     }
-
-    fn pair_widths(&self, widths: &[f32]) -> Vec<(Pane, f32)> {
-        self.entries
-            .iter()
-            .map(|(pane, _)| *pane)
-            .zip(widths.iter().copied())
-            .collect()
-    }
 }
 
 impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer> for PaneGrid<'_, Message> {
-    fn tag(&self) -> tree::Tag {
-        tree::Tag::of::<Interaction>()
-    }
-
-    fn state(&self) -> tree::State {
-        tree::State::new(Interaction::default())
-    }
+    crate::macros::widget_method!(state Interaction);
 
     fn children(&self) -> Vec<Tree> {
         self.entries
@@ -283,24 +203,16 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer> for PaneGrid
         }
     }
 
-    fn update(
-        &mut self,
-        tree: &mut Tree,
-        event: &Event,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        renderer: &iced::Renderer,
-        clipboard: &mut dyn Clipboard,
-        shell: &mut Shell<'_, Message>,
-        viewport: &Rectangle,
-    ) {
-        if self.update_resize(tree, event, shell)
-            || self.update_interaction(tree, event, layout, cursor, shell)
+    crate::macros::widget_method!(update Message; this; tree, event, layout, cursor, renderer, clipboard, shell, viewport => {
+        let interaction = tree.state.downcast_mut::<Interaction>();
+        if let Event::Mouse(event) = event
+            && (this.update_resize(interaction, event, shell)
+                || this.update_interaction(interaction, event, layout, cursor, shell))
         {
             return;
         }
 
-        for (((_, content), child), child_layout) in self
+        for (((_, content), child), child_layout) in this
             .entries
             .iter_mut()
             .zip(tree.children.iter_mut())
@@ -321,9 +233,10 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer> for PaneGrid
             return;
         }
         if let Event::Mouse(mouse::Event::CursorMoved { position }) = event {
-            self.publish_hover(tree, self.pane_at(layout, *position), shell);
+            let pane = this.pane_at(layout, *position);
+            this.hover(tree.state.downcast_mut::<Interaction>(), pane, shell);
         }
-    }
+    });
 
     fn mouse_interaction(
         &self,
@@ -368,19 +281,10 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer> for PaneGrid
             .unwrap_or_default()
     }
 
-    fn draw(
-        &self,
-        tree: &Tree,
-        renderer: &mut iced::Renderer,
-        theme: &iced::Theme,
-        defaults: &renderer::Style,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        viewport: &Rectangle,
-    ) {
+    crate::macros::widget_method!(draw this; tree, renderer, theme, defaults, layout, cursor, viewport => {
         let interaction = tree.state.downcast_ref::<Interaction>();
         let accent = || theme.extended_palette().primary.base.color;
-        for (((pane, content), child), child_layout) in self
+        for (((pane, content), child), child_layout) in this
             .entries
             .iter()
             .zip(&tree.children)
@@ -397,7 +301,7 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer> for PaneGrid
                     viewport,
                 );
             });
-            if interaction.dragging.is_some_and(|(p, _)| p == *pane) {
+            if interaction.dragging.is_some_and(|(p, _, _)| p == *pane) {
                 renderer.fill_quad(
                     Quad {
                         bounds: child_layout.bounds(),
@@ -429,37 +333,30 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer> for PaneGrid
                 Background::Color(with_alpha(accent(), 0.75)),
             );
         }
-    }
+    });
 }
 
 impl<'a, Message: 'a> PaneGrid<'a, Message> {
-    fn publish_hover(&self, tree: &mut Tree, pane: Option<Pane>, shell: &mut Shell<'_, Message>) {
-        let interaction = tree.state.downcast_mut::<Interaction>();
-        if interaction.cursor_over != pane {
-            interaction.cursor_over = pane;
+    fn hover(&self, state: &mut Interaction, pane: Option<Pane>, shell: &mut Shell<'_, Message>) {
+        if state.cursor_over != pane {
+            state.cursor_over = pane;
             shell.publish((self.on_hover)(pane));
         }
     }
 
     fn update_interaction(
         &self,
-        tree: &mut Tree,
-        event: &Event,
+        interaction: &mut Interaction,
+        event: &mouse::Event,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
         shell: &mut Shell<'_, Message>,
     ) -> bool {
         use mouse::Button;
 
-        let Event::Mouse(mouse_event) = event else {
-            return false;
-        };
-
-        if matches!(mouse_event, mouse::Event::CursorLeft) {
-            let interaction = tree.state.downcast_mut::<Interaction>();
+        if matches!(event, mouse::Event::CursorLeft) {
             let dragging = interaction.dragging.take();
-            interaction.last_x = None;
-            self.publish_hover(tree, None, shell);
+            self.hover(interaction, None, shell);
             if dragging.is_some() {
                 self.publish_drop(shell);
                 shell.capture_event();
@@ -467,14 +364,9 @@ impl<'a, Message: 'a> PaneGrid<'a, Message> {
             return dragging.is_some();
         }
 
-        if let Some((pane, origin)) = tree.state.downcast_ref::<Interaction>().dragging {
-            match mouse_event {
+        if let Some((pane, origin, last_x)) = interaction.dragging {
+            match event {
                 mouse::Event::CursorMoved { position } => {
-                    let last_x = tree
-                        .state
-                        .downcast_ref::<Interaction>()
-                        .last_x
-                        .unwrap_or(position.x);
                     if position.distance(origin) > 5.0
                         && let Some(idx) = self.entries.iter().position(|(p, _)| *p == pane)
                     {
@@ -499,12 +391,10 @@ impl<'a, Message: 'a> PaneGrid<'a, Message> {
                             }
                         }
                     }
-                    tree.state.downcast_mut::<Interaction>().last_x = Some(position.x);
+                    interaction.dragging = Some((pane, origin, position.x));
                 }
                 mouse::Event::ButtonReleased(Button::Left) => {
-                    let interaction = tree.state.downcast_mut::<Interaction>();
                     interaction.dragging = None;
-                    interaction.last_x = None;
                     self.publish_drop(shell);
                 }
                 _ => {}
@@ -513,47 +403,33 @@ impl<'a, Message: 'a> PaneGrid<'a, Message> {
             return true;
         }
 
-        match mouse_event {
-            mouse::Event::ButtonPressed(Button::Left) => {
-                let Some(position) = cursor.position() else {
-                    return false;
-                };
-                if let Some(divider) = self.divider_at(layout, position) {
-                    let start: Vec<_> = layout
-                        .children()
-                        .map(|c| c.bounds().width.max(0.0))
-                        .collect();
-                    tree.state.downcast_mut::<Interaction>().resizing = Some(ResizeState {
-                        divider,
-                        origin_x: position.x,
-                        min: fit_mins(self.width_specs(), start.iter().sum()),
-                        current: start.clone(),
-                        start,
-                    });
-                    shell.capture_event();
-                    shell.request_redraw();
-                    return true;
-                }
-                if self.on_drag.is_some()
-                    && let Some(pane) = self.pane_at(layout, position)
-                {
-                    let interaction = tree.state.downcast_mut::<Interaction>();
-                    interaction.dragging = Some((pane, position));
-                    interaction.last_x = Some(position.x);
-                    shell.capture_event();
-                    return true;
-                }
+        if let mouse::Event::ButtonPressed(Button::Left) = event {
+            let Some(position) = cursor.position() else {
+                return false;
+            };
+            if let Some(divider) = self.divider_at(layout, position) {
+                let start: Vec<_> = layout
+                    .children()
+                    .map(|c| c.bounds().width.max(0.0))
+                    .collect();
+                interaction.resizing = Some(ResizeState {
+                    divider,
+                    origin_x: position.x,
+                    min: fit_mins(self.width_specs(), start.iter().sum()),
+                    current: start.clone(),
+                    start,
+                });
+                shell.capture_event();
+                shell.request_redraw();
+                return true;
             }
-            mouse::Event::ButtonPressed(Button::Right) => {
-                if let Some(position) = cursor.position()
-                    && let Some(pane) = self.pane_at(layout, position)
-                {
-                    shell.publish((self.on_context)(pane));
-                    shell.capture_event();
-                    return true;
-                }
+            if self.on_drag.is_some()
+                && let Some(pane) = self.pane_at(layout, position)
+            {
+                interaction.dragging = Some((pane, position, position.x));
+                shell.capture_event();
+                return true;
             }
-            _ => {}
         }
         false
     }
@@ -566,20 +442,17 @@ impl<'a, Message: 'a> PaneGrid<'a, Message> {
 
     fn update_resize(
         &self,
-        tree: &mut Tree,
-        event: &Event,
+        interaction: &mut Interaction,
+        event: &mouse::Event,
         shell: &mut Shell<'_, Message>,
     ) -> bool {
         use mouse::Button;
 
-        let Event::Mouse(mouse_event) = event else {
-            return false;
-        };
-        let Some(mut resizing) = tree.state.downcast_mut::<Interaction>().resizing.take() else {
+        let Some(mut resizing) = interaction.resizing.take() else {
             return false;
         };
 
-        match mouse_event {
+        match event {
             mouse::Event::CursorMoved { position } => {
                 let next = resize_widths(
                     &resizing.start,
@@ -592,11 +465,17 @@ impl<'a, Message: 'a> PaneGrid<'a, Message> {
                     shell.invalidate_layout();
                     shell.request_redraw();
                 }
-                tree.state.downcast_mut::<Interaction>().resizing = Some(resizing);
+                interaction.resizing = Some(resizing);
             }
             mouse::Event::ButtonReleased(Button::Left) => {
                 if !widths_equal(&resizing.current, &resizing.start) {
-                    shell.publish((self.on_resize)(self.pair_widths(&resizing.current)));
+                    let widths = self
+                        .entries
+                        .iter()
+                        .map(|(pane, _)| *pane)
+                        .zip(resizing.current.iter().copied())
+                        .collect();
+                    shell.publish((self.on_resize)(widths));
                     shell.invalidate_layout();
                 }
                 shell.request_redraw();
@@ -605,10 +484,10 @@ impl<'a, Message: 'a> PaneGrid<'a, Message> {
                 if !widths_equal(&resizing.current, &resizing.start) {
                     shell.invalidate_layout();
                 }
-                self.publish_hover(tree, None, shell);
+                self.hover(interaction, None, shell);
                 shell.request_redraw();
             }
-            _ => tree.state.downcast_mut::<Interaction>().resizing = Some(resizing),
+            _ => interaction.resizing = Some(resizing),
         }
         shell.capture_event();
         true
@@ -689,39 +568,29 @@ fn resize_widths(start: &[f32], min: &[f32], divider: usize, delta: f32) -> Vec<
     }
     let mut widths = start.to_vec();
     if delta > 0.0 {
-        let amount = delta.min(shrink_capacity(&widths, min, divider + 1..start.len()));
-        apply_nearest(&mut widths, min, (0..=divider).rev(), amount, true);
-        apply_nearest(&mut widths, min, divider + 1..start.len(), amount, false);
+        transfer_width(&mut widths, min, divider, divider + 1..start.len(), delta);
     } else {
-        let amount = (-delta).min(shrink_capacity(&widths, min, (0..=divider).rev()));
-        apply_nearest(&mut widths, min, divider + 1..start.len(), amount, true);
-        apply_nearest(&mut widths, min, (0..=divider).rev(), amount, false);
+        transfer_width(&mut widths, min, divider + 1, (0..=divider).rev(), -delta);
     }
     fit_sum(widths, start.iter().sum())
 }
 
-fn shrink_capacity(widths: &[f32], min: &[f32], order: impl Iterator<Item = usize>) -> f32 {
-    order.map(|i| (widths[i] - min[i]).max(0.0)).sum()
-}
-
-fn apply_nearest(
+fn transfer_width(
     widths: &mut [f32],
     min: &[f32],
-    order: impl Iterator<Item = usize>,
-    mut amount: f32,
-    grow: bool,
+    grow: usize,
+    shrink: impl Iterator<Item = usize> + Clone,
+    requested: f32,
 ) {
-    for i in order {
+    let mut amount = requested.min(shrink.clone().map(|i| (widths[i] - min[i]).max(0.0)).sum());
+    widths[grow] += amount;
+    for i in shrink {
+        let taken = (widths[i] - min[i]).max(0.0).min(amount);
+        widths[i] -= taken;
+        amount -= taken;
         if amount <= EPS {
             break;
         }
-        let cap = if grow {
-            amount
-        } else {
-            (widths[i] - min[i]).max(0.0).min(amount)
-        };
-        widths[i] += if grow { cap } else { -cap };
-        amount -= cap;
     }
 }
 

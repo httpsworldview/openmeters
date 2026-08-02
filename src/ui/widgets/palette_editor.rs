@@ -9,9 +9,8 @@ use crate::util::color::{
     EPSILON, STOP_SPREAD_MAX, STOP_SPREAD_MIN, colors_equal, lerp_color, sanitize_stop_positions,
     sanitize_stop_spreads, with_alpha,
 };
-use iced::advanced::renderer::{self, Quad};
-use iced::advanced::widget::{Tree, tree};
-use iced::advanced::{Layout, Renderer as _, Widget, layout, mouse};
+use iced::advanced::renderer::Quad;
+use iced::advanced::{Renderer as _, Widget, mouse};
 use iced::alignment::{Horizontal, Vertical};
 use iced::widget::{Button, Column, Row, Space, container, slider};
 use iced::{Background, Color, Element, Length, Point, Rectangle, Size};
@@ -23,8 +22,7 @@ const MIN_STOP_GAP: f32 = 0.01;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PaletteEvent {
-    Open(usize),
-    Close,
+    Select(Option<usize>),
     Adjust { index: usize, color: Color },
     AdjustPosition { index: usize, position: f32 },
     AdjustSpread { index: usize, spread: f32 },
@@ -32,7 +30,6 @@ pub enum PaletteEvent {
     HorizontalScroll(ScrollGlow),
 }
 
-#[derive(Debug, Clone)]
 pub struct PaletteEditor {
     palette: Palette,
     positions: Vec<f32>,
@@ -64,11 +61,9 @@ impl PaletteEditor {
 
     pub fn set_visible_indices(&mut self, indices: Option<&'static [usize]>) {
         self.visible_indices = indices;
-        if let Some((active, visible)) = self.active.zip(self.visible_indices)
-            && !visible.contains(&active)
-        {
-            self.active = None;
-        }
+        let _ = self
+            .active
+            .take_if(|active| indices.is_some_and(|visible| !visible.contains(active)));
     }
 
     pub fn set_label_overrides(&mut self, overrides: &'static [(usize, &'static str)]) {
@@ -113,14 +108,10 @@ impl PaletteEditor {
 
     pub fn update(&mut self, event: PaletteEvent) -> bool {
         match event {
-            PaletteEvent::Open(i) => {
-                if i < self.palette.len() {
-                    self.active = (self.active != Some(i)).then_some(i);
+            PaletteEvent::Select(index) => {
+                if index.is_none_or(|index| index < self.palette.len()) {
+                    self.active = index;
                 }
-                false
-            }
-            PaletteEvent::Close => {
-                self.active = None;
                 false
             }
             PaletteEvent::Adjust { index, color } => {
@@ -206,9 +197,7 @@ impl PaletteEditor {
         }
         let mut col = Column::new().spacing(12);
         if self.show_ramp && colors.len() >= 2 {
-            let positions = self.positions();
-            let spreads = self.spreads();
-            col = col.push(gradient_bar(colors, positions, spreads, self.active));
+            col = col.push(Element::new(self));
         }
         col = col.push(self.scroll.horizontal(row, PaletteEvent::HorizontalScroll));
         if let Some(i) = self.active
@@ -236,13 +225,17 @@ impl PaletteEditor {
                     container(Space::new().width(Length::Fill).height(Length::Fill))
                         .width(Length::Fixed(w))
                         .height(Length::Fixed(h))
-                        .style(move |theme| swatch_style(theme, c, active)),
+                        .style(move |theme| {
+                            container::Style::default()
+                                .background(Background::Color(c))
+                                .border(ui_theme::border(theme, active))
+                        }),
                 )
                 .push(clipped_text(to_hex(c), 11.0)),
         )
         .padding([6, 8])
         .style(|theme, status| ui_theme::button_style(theme, false, status))
-        .on_press(PaletteEvent::Open(i))
+        .on_press(PaletteEvent::Select((!active).then_some(i)))
         .into()
     }
 
@@ -252,7 +245,7 @@ impl PaletteEditor {
             .align_y(Vertical::Center)
             .push(clipped_text(self.label_for(i), 12.0))
             .push(Space::new().width(Length::Fill).height(Length::Shrink))
-            .push(action_button("Done", Some(PaletteEvent::Close)));
+            .push(action_button("Done", Some(PaletteEvent::Select(None))));
 
         let col = [("R", c.r, 0u8), ("G", c.g, 1), ("B", c.b, 2), ("A", c.a, 3)]
             .into_iter()
@@ -265,12 +258,6 @@ impl PaletteEditor {
             .style(ui_theme::weak_container)
             .into()
     }
-}
-
-fn swatch_style(theme: &iced::Theme, color: Color, active: bool) -> container::Style {
-    container::Style::default()
-        .background(Background::Color(color))
-        .border(ui_theme::border(theme, active))
 }
 
 fn to_hex(c: Color) -> String {
@@ -326,70 +313,21 @@ fn find_segment(positions: &[f32], spreads: &[f32], t: f32) -> (usize, usize, f3
     (lo, hi, f)
 }
 
-#[derive(Debug, Default)]
-struct GradientBarState {
-    dragging: Option<usize>,
-}
+impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for &PaletteEditor {
+    crate::macros::widget_method!(state Option<usize>);
 
-struct GradientBar<'a> {
-    colors: &'a [Color],
-    positions: &'a [f32],
-    spreads: &'a [f32],
-    active: Option<usize>,
-}
+    crate::macros::widget_method!(layout
+        Size::new(Length::Fill, Length::Fixed(TOTAL_HEIGHT)),
+        |limits| limits.resolve(Length::Fill, Length::Fixed(TOTAL_HEIGHT), Size::ZERO)
+    );
 
-fn gradient_bar<'a>(
-    colors: &'a [Color],
-    positions: &'a [f32],
-    spreads: &'a [f32],
-    active: Option<usize>,
-) -> Element<'a, PaletteEvent> {
-    Element::new(GradientBar {
-        colors,
-        positions,
-        spreads,
-        active,
-    })
-}
-
-impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for GradientBar<'_> {
-    fn tag(&self) -> tree::Tag {
-        tree::Tag::of::<GradientBarState>()
-    }
-
-    fn state(&self) -> tree::State {
-        tree::State::new(GradientBarState::default())
-    }
-
-    fn size(&self) -> Size<Length> {
-        Size::new(Length::Fill, Length::Fixed(TOTAL_HEIGHT))
-    }
-
-    fn layout(
-        &mut self,
-        _tree: &mut Tree,
-        _renderer: &iced::Renderer,
-        limits: &layout::Limits,
-    ) -> layout::Node {
-        layout::Node::new(limits.resolve(Length::Fill, Length::Fixed(TOTAL_HEIGHT), Size::ZERO))
-    }
-
-    fn update(
-        &mut self,
-        tree: &mut Tree,
-        event: &iced::Event,
-        layout: Layout<'_>,
-        cursor: mouse::Cursor,
-        _renderer: &iced::Renderer,
-        _clipboard: &mut dyn iced::advanced::Clipboard,
-        shell: &mut iced::advanced::Shell<'_, PaletteEvent>,
-        _viewport: &Rectangle,
-    ) {
-        let n = self.positions.len();
+    crate::macros::widget_method!(update PaletteEvent; this; tree, event, layout, cursor, _, _, shell, _ => {
+        let editor = *this;
+        let n = editor.positions.len();
         if n < 2 {
             return;
         }
-        let st = tree.state.downcast_mut::<GradientBarState>();
+        let dragging = tree.state.downcast_mut::<Option<usize>>();
         let bounds = layout.bounds();
         let iced::Event::Mouse(mouse_event) = event else {
             return;
@@ -398,14 +336,14 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for GradientBar<'_> {
             mouse::Event::ButtonPressed(mouse::Button::Left) => {
                 if n >= 3
                     && let Some(pos) = cursor.position().filter(|p| bounds.contains(*p))
-                    && let Some(i) = nearest_handle(1..n - 1, self.positions, &bounds, pos.x)
+                    && let Some(i) = nearest_handle(1..n - 1, &editor.positions, &bounds, pos.x)
                 {
-                    st.dragging = Some(i);
+                    *dragging = Some(i);
                     shell.capture_event();
                 }
             }
             mouse::Event::CursorMoved { position } => {
-                if let Some(i) = st.dragging {
+                if let Some(i) = *dragging {
                     let t = ((position.x - bounds.x) / bounds.width).clamp(0.0, 1.0);
                     shell.publish(PaletteEvent::AdjustPosition {
                         index: i,
@@ -414,15 +352,15 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for GradientBar<'_> {
                     shell.capture_event();
                 }
             }
-            mouse::Event::ButtonReleased(mouse::Button::Left) if st.dragging.take().is_some() => {
+            mouse::Event::ButtonReleased(mouse::Button::Left) if dragging.take().is_some() => {
                 shell.capture_event();
             }
             mouse::Event::WheelScrolled { delta } => {
                 if let Some(pos) = cursor.position().filter(|p| bounds.contains(*p))
-                    && let Some(i) = nearest_handle(0..n, self.positions, &bounds, pos.x)
+                    && let Some(i) = nearest_handle(0..n, &editor.positions, &bounds, pos.x)
                 {
                     let dy = scroll_delta_lines(*delta);
-                    let current = self.spreads.get(i).copied().unwrap_or(1.0);
+                    let current = editor.spreads.get(i).copied().unwrap_or(1.0);
                     let new_spread = (current + dy * 0.2).clamp(STOP_SPREAD_MIN, STOP_SPREAD_MAX);
                     if (current - new_spread).abs() >= EPSILON {
                         shell.publish(PaletteEvent::AdjustSpread {
@@ -435,20 +373,13 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for GradientBar<'_> {
             }
             _ => {}
         }
-    }
+    });
 
-    fn draw(
-        &self,
-        _tree: &Tree,
-        renderer: &mut iced::Renderer,
-        theme: &iced::Theme,
-        _style: &renderer::Style,
-        layout: Layout<'_>,
-        _cursor: mouse::Cursor,
-        _viewport: &Rectangle,
-    ) {
+    crate::macros::widget_method!(draw this; _, renderer, theme, _, layout, _, _ => {
+        let editor = *this;
+        let colors = editor.palette.colors();
         let bounds = layout.bounds();
-        if self.colors.len() < 2 || self.positions.len() != self.colors.len() {
+        if colors.len() < 2 || editor.positions.len() != colors.len() {
             return;
         }
         let bar_w = bounds.width;
@@ -467,8 +398,8 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for GradientBar<'_> {
         let step_w = bar_w / steps as f32;
         for i in 0..steps {
             let t = i as f32 / (steps - 1).max(1) as f32;
-            let (lo, hi, f) = find_segment(self.positions, self.spreads, t);
-            let c = lerp_color(self.colors[lo], self.colors[hi], f);
+            let (lo, hi, f) = find_segment(&editor.positions, &editor.spreads, t);
+            let c = lerp_color(colors[lo], colors[hi], f);
             let x = bounds.x + i as f32 * step_w;
             paint(
                 Rectangle::new(
@@ -493,10 +424,10 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for GradientBar<'_> {
         );
 
         let handle_y = bounds.y + GRADIENT_BAR_HEIGHT + 1.0;
-        for (i, &pos) in self.positions.iter().enumerate() {
+        for (i, &pos) in editor.positions.iter().enumerate() {
             let x = bounds.x + pos.clamp(0.0, 1.0) * bar_w;
-            let c = self.colors.get(i).copied().unwrap_or(Color::WHITE);
-            let active = self.active == Some(i);
+            let c = colors.get(i).copied().unwrap_or(Color::WHITE);
+            let active = editor.active == Some(i);
             let line_alpha = if active { 1.0 } else { 0.5 };
             paint(
                 Rectangle::new(
@@ -526,7 +457,7 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for GradientBar<'_> {
                 Background::Color(fill),
             );
         }
-    }
+    });
 }
 
 fn channel_slider<'a>(

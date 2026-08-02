@@ -26,7 +26,7 @@ fn tracks_band_correlation(s: &StereometerSettings) -> bool {
 }
 
 #[derive(Debug, Clone)]
-pub(in crate::visuals) struct StereometerState {
+pub(crate) struct StereometerState {
     points: Arc<[(f32, f32)]>,
     band_points: [Arc<[(f32, f32)]>; BAND_COUNT],
     corr_trail: VecDeque<f32>,

@@ -216,7 +216,10 @@ impl UiApp {
             let heartbeat = self.frames.borrow().heartbeat_handle();
             subs.push(Subscription::run_with(heartbeat, frame_watchdog).map(Message::Watchdog));
         }
-        if self.maintenance_active() {
+        if self.config_window.is_some()
+            || self.toast_until.is_some()
+            || self.exit_warning_until.is_some()
+        {
             subs.push(Subscription::run_with(MAINTENANCE_INTERVAL, clock).map(|_| Message::Tick));
         }
         Subscription::batch(subs)
@@ -224,12 +227,6 @@ impl UiApp {
 
     fn visuals_active(&self) -> bool {
         self.visual_manager.borrow().has_enabled()
-    }
-
-    fn maintenance_active(&self) -> bool {
-        self.config_window.is_some()
-            || self.toast_until.is_some()
-            || self.exit_warning_until.is_some()
     }
 
     fn tick(&mut self) {
@@ -242,10 +239,6 @@ impl UiApp {
             self.exit_warning_until.take_if(|deadline| now >= *deadline);
             self.next_maintenance = now + MAINTENANCE_INTERVAL;
         }
-    }
-
-    fn sync_meter_activity(&self) {
-        self.frames.borrow_mut().set_active(self.visuals_active());
     }
 
     fn set_rendering_paused(&mut self, paused: bool) {
@@ -309,11 +302,6 @@ impl UiApp {
                     .update(|settings| settings.data.bar.height = s.pending_height);
                 self.apply_bar_layout(alignment, s.pending_height)
             })
-    }
-
-    fn pending_bar_resize(&self) -> Option<(u32, u32)> {
-        self.bar_resize_state
-            .map(|s| (s.start_height, s.pending_height))
     }
 
     fn main_window_view(&self) -> Element<'_, Message> {
@@ -396,7 +384,8 @@ impl UiApp {
             BarAlignment::Bottom => Vertical::Top,
         });
 
-        if let Some((current, pending)) = self.pending_bar_resize() {
+        if let Some(state) = &self.bar_resize_state {
+            let (current, pending) = (state.start_height, state.pending_height);
             let overlay: Element<'_, Message> =
                 container(text(format!("{current}px -> {pending}px")).size(14))
                     .width(Length::Fill)

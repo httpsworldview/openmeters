@@ -12,7 +12,7 @@ use std::sync::Arc;
 const MAX_PERSISTENCE: f32 = 0.98;
 
 #[derive(Debug, Clone)]
-pub(in crate::visuals) struct OscilloscopeState {
+pub(crate) struct OscilloscopeState {
     snapshot: OscilloscopeSnapshot,
     pub(in crate::visuals) palette: [Color; TRACE_COUNT],
     pub(in crate::visuals) settings: OscilloscopeSettings,

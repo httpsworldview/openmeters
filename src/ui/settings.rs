@@ -32,39 +32,42 @@ macro_rules! settings_modules {
         #[derive(Debug, Clone)]
         pub(in crate::ui) enum SettingsMessage { $($variant($module::Message),)+ }
 
-        enum SettingsPane { $($variant($module::Pane),)+ }
+        pub(in crate::ui) enum ActiveSettings { $($variant($module::Pane),)+ }
 
-        impl SettingsPane {
-            fn new(kind: VisualKind, manager: &VisualManagerHandle) -> Self {
+        impl ActiveSettings {
+            pub(in crate::ui) fn new(kind: VisualKind, manager: &VisualManagerHandle) -> Self {
                 match kind {
                     $(VisualKind::$variant => Self::$variant($module::create(manager, kind)),)+
                 }
             }
 
-            fn view(&self) -> Element<'_, SettingsMessage> {
+            pub(in crate::ui) fn kind(&self) -> VisualKind {
+                match self { $(Self::$variant(_) => VisualKind::$variant,)+ }
+            }
+
+            pub(in crate::ui) fn view(&self) -> Element<'_, SettingsMessage> {
                 match self {
                     $(Self::$variant(pane) => pane.view().map(SettingsMessage::$variant),)+
                 }
             }
 
-            fn handle(
+            pub(in crate::ui) fn handle(
                 &mut self,
                 message: SettingsMessage,
                 manager: &VisualManagerHandle,
                 settings: &SettingsHandle,
             ) {
-                match self {
-                    $(Self::$variant(pane) => {
-                        let SettingsMessage::$variant(message) = message else {
+                match (self, message) {
+                    $((Self::$variant(pane), SettingsMessage::$variant(message)) => {
+                        if !pane.handle(message) {
                             return;
-                        };
-                        if pane.handle(message) {
-                            persist_with_palette(
-                                manager, settings, VisualKind::$variant,
-                                &pane.settings, &pane.palette,
-                            );
                         }
+                        persist_with_palette(
+                            manager, settings, VisualKind::$variant,
+                            &pane.settings, &pane.palette,
+                        );
                     })+
+                    _ => {}
                 }
             }
         }
@@ -80,7 +83,7 @@ macro_rules! settings_pane {
         $(, init_palette($editor:ident $(, $palette_source:ident)?) $init_body:block)?
         $(,)?
     ) => {
-        pub(super) struct Pane {
+        pub(in crate::ui) struct Pane {
             pub(super) settings: $settings_ty,
             pub(super) palette: crate::ui::widgets::palette_editor::PaletteEditor,
             $($($field: $ty,)*)?
@@ -207,33 +210,6 @@ settings_modules! {
     spectrum => Spectrum,
     stereometer => Stereometer,
     waveform => Waveform,
-}
-
-pub(in crate::ui) struct ActiveSettings {
-    pub(in crate::ui) kind: VisualKind,
-    pane: SettingsPane,
-}
-
-impl ActiveSettings {
-    pub(in crate::ui) fn new(kind: VisualKind, visual_manager: &VisualManagerHandle) -> Self {
-        Self {
-            kind,
-            pane: SettingsPane::new(kind, visual_manager),
-        }
-    }
-
-    pub(in crate::ui) fn view(&self) -> Element<'_, SettingsMessage> {
-        self.pane.view()
-    }
-
-    pub(in crate::ui) fn handle(
-        &mut self,
-        message: SettingsMessage,
-        visual_manager: &VisualManagerHandle,
-        settings_handle: &SettingsHandle,
-    ) {
-        self.pane.handle(message, visual_manager, settings_handle);
-    }
 }
 
 pub(super) fn load_settings_and_palette<T: SettingsConfig>(
