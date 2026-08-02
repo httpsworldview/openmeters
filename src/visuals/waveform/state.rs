@@ -5,7 +5,7 @@ use super::processor::{
     MAX_COLUMN_CAPACITY, NUM_BANDS, WAVEFORM_CHANNELS, WaveFrame, WaveformPreview,
     WaveformUpdate,
 };
-use super::render::{COLUMN_WIDTH_PIXELS, WaveformParams, WaveformPrimitive};
+use super::render::{COLUMN_WIDTH_PIXELS, WaveformParams};
 use crate::persistence::settings::WaveformSettings;
 use crate::util::{color::color_to_rgba, unpoison};
 use crate::visuals::palettes;
@@ -18,7 +18,6 @@ use std::time::{Duration, Instant};
 const INITIAL_VIEW_COLUMNS: usize = 512;
 const SCROLL_CLOCK_TIMEOUT: Duration = Duration::from_millis(100);
 
-#[derive(Debug)]
 pub(crate) struct WaveformState {
     data: Arc<Mutex<VecDeque<WaveFrame>>>,
     preview: WaveformPreview,
@@ -73,7 +72,10 @@ impl WaveformState {
         let mut data = unpoison(self.data.lock());
         Self::configure_ring(&mut data, max_columns, update.reset);
         for &columns in update.columns {
-            Self::push_column(&mut data, columns, max_columns);
+            if data.len() == max_columns {
+                data.pop_front();
+            }
+            data.push_back(columns);
         }
     }
 
@@ -85,9 +87,7 @@ impl WaveformState {
         self.settings = settings.clone();
     }
 
-    pub fn set_palette(&mut self, palette: &[Color; NUM_BANDS]) {
-        self.palette = *palette;
-    }
+    crate::visuals::palette_setter!(NUM_BANDS);
 
     pub fn visual_params(&self, bounds: iced::Rectangle) -> Option<WaveformParams> {
         let now = Instant::now();
@@ -151,13 +151,6 @@ impl WaveformState {
         }
     }
 
-    fn push_column(data: &mut VecDeque<WaveFrame>, columns: WaveFrame, max_columns: usize) {
-        if data.len() == max_columns {
-            data.pop_front();
-        }
-        data.push_back(columns);
-    }
-
     fn selected_lanes(&self) -> ([usize; 2], usize) {
         let mut lanes = [0; 2];
         let mut len = 0;
@@ -172,4 +165,4 @@ impl WaveformState {
     }
 }
 
-crate::visuals::visualization_widget!(Waveform, WaveformState, WaveformPrimitive);
+crate::visuals::visualization_widget!(Waveform, WaveformState);

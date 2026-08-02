@@ -2,12 +2,10 @@
 // Copyright (C) 2026 Maika Namuo
 
 use iced::Rectangle;
-use iced::advanced::graphics::Viewport;
 
 use crate::visuals::render::common::sdf_primitive;
 use crate::visuals::render::common::{
-    ClipTransform, GeometryFingerprint, GeometryScratch, bounds_fingerprint, line_instance,
-    quad_instance,
+    ClipTransform, GeometryScratch, bounds_fingerprint, line_instance, quad_instance,
 };
 
 pub(super) const DB_RANGE: (f32, f32) = (-60.0, 4.0);
@@ -34,8 +32,7 @@ pub struct MeterFill {
 
 #[derive(Debug)]
 pub struct LoudnessParams {
-    pub key: u64,
-    pub geometry_revision: u64,
+    pub geometry: crate::visuals::GeometryKey,
     pub bounds: Rectangle,
     pub bg_color: [f32; 4],
     pub bars: [[MeterFill; 2]; 2],
@@ -44,17 +41,11 @@ pub struct LoudnessParams {
 
 pub(super) fn db_to_ratio(db: f32) -> f32 {
     let (min_db, max_db) = DB_RANGE;
-    let range = max_db - min_db;
-    if range <= f32::EPSILON { return 0.0; }
-    let raw = ((db - min_db) / range).clamp(0.0, 1.0);
+    let raw = ((db - min_db) / (max_db - min_db)).clamp(0.0, 1.0);
     raw.powf(0.9)
 }
 
 impl LoudnessParams {
-    fn geometry_fingerprint(&self) -> GeometryFingerprint {
-        bounds_fingerprint(self.geometry_revision, self.bounds)
-    }
-
     pub fn meter_bounds(&self) -> Option<(f32, f32, f32)> {
         let bar_count = self.bars.len();
         let meter_width = (self.bounds.width - LEFT_PADDING - RIGHT_PADDING).max(0.0);
@@ -72,29 +63,27 @@ impl LoudnessParams {
     }
 }
 
-impl LoudnessPrimitive {
-    fn build_vertices(&self, _viewport: &Viewport, scratch: &mut GeometryScratch) {
-        let clip = ClipTransform::from_bounds(self.params.bounds);
-        let Some((meter_x, bar_width, stride)) = self.params.meter_bounds() else {
+impl LoudnessParams {
+    fn build_vertices(&self, scratch: &mut GeometryScratch) {
+        let clip = ClipTransform::from_bounds(self.bounds);
+        let Some((meter_x, bar_width, stride)) = self.meter_bounds() else {
             return;
         };
 
-        let bounds = self.params.bounds;
+        let bounds = self.bounds;
         let y0 = bounds.y;
         let y1 = bounds.y + bounds.height;
         let height = y1 - y0;
         let y_of = |db| (y1 - height * db_to_ratio(db)).clamp(y0, y1);
-        let bar_count = self.params.bars.len();
+        let bar_count = self.bars.len();
         let vertices = &mut scratch.instances;
         vertices.reserve(bar_count * 2 + FILL_COUNTS.iter().sum::<usize>() * 5 + GUIDE_LEVELS.len());
 
-        for (i, (bar, &sub_bar_count)) in self.params.bars.iter().zip(&FILL_COUNTS).enumerate() {
-            let sub_bar_count = sub_bar_count.min(bar.len());
-            if sub_bar_count == 0 { continue; }
+        for (i, (bar, &sub_bar_count)) in self.bars.iter().zip(&FILL_COUNTS).enumerate() {
             let x0 = meter_x + i as f32 * stride;
             let x1 = x0 + bar_width;
 
-            vertices.push(quad_instance(x0, y0, x1, y1, clip, self.params.bg_color));
+            vertices.push(quad_instance(x0, y0, x1, y1, clip, self.bg_color));
             let inner_gap = if sub_bar_count <= 1 || bar_width <= 2.0 {
                 0.0
             } else {
@@ -153,8 +142,8 @@ impl LoudnessPrimitive {
             vertices.push(line_instance(
                 (guide_anchor - GUIDE_LENGTH, cy),
                 (guide_anchor, cy),
-                self.params.guide_color,
-                self.params.guide_color,
+                self.guide_color,
+                self.guide_color,
                 GUIDE_THICKNESS,
                 clip,
             ));
@@ -167,8 +156,8 @@ impl LoudnessPrimitive {
             vertices.push(line_instance(
                 (x0, cy),
                 (x1, cy),
-                self.params.guide_color,
-                self.params.guide_color,
+                self.guide_color,
+                self.guide_color,
                 THRESHOLD_THICKNESS,
                 clip,
             ));
@@ -178,11 +167,8 @@ impl LoudnessPrimitive {
 }
 
 sdf_primitive!(
-    LoudnessPrimitive(LoudnessParams),
-    Pipeline,
-    u64,
+    LoudnessParams,
     "Loudness",
-    TriangleStrip,
-    |self| self.params.key,
-    self.params.geometry_fingerprint()
+    |self| self.geometry.0,
+    bounds_fingerprint(self.geometry.1, self.bounds)
 );

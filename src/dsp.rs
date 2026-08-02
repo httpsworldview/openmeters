@@ -383,25 +383,35 @@ pub struct Biquad {
     z: [f32; 2],
 }
 
-impl Biquad {
-    pub fn new(kind: FilterKind, sample_rate: f32, frequency: f32) -> Self {
+pub trait CrossoverFilter: Sized {
+    type Sample: Copy;
+    fn new(kind: FilterKind, sample_rate: f32, frequency: f32) -> Self;
+    fn process(&mut self, sample: Self::Sample) -> Self::Sample;
+    fn visit_biquads(&mut self, visit: &mut impl FnMut(&mut Biquad));
+    fn flush_denormals(&mut self) {
+        self.visit_biquads(&mut |filter| filter.z.iter_mut().for_each(flush_denormal_f32));
+    }
+    fn clear(&mut self) {
+        self.visit_biquads(&mut |filter| filter.z = [0.0; 2]);
+    }
+}
+
+impl CrossoverFilter for Biquad {
+    type Sample = f32;
+
+    fn new(kind: FilterKind, sample_rate: f32, frequency: f32) -> Self {
         let ratio = (frequency / sample_rate).clamp(1.0e-6, 0.49);
         let (sin, cos) = (core::f32::consts::TAU * ratio).sin_cos();
         let alpha = sin * core::f32::consts::FRAC_1_SQRT_2;
-        let gain = match kind {
-            FilterKind::LowPass => 1.0 - cos,
-            FilterKind::HighPass => 1.0 + cos,
+        let (gain, sign) = match kind {
+            FilterKind::LowPass => (1.0 - cos, 1.0),
+            FilterKind::HighPass => (1.0 + cos, -1.0),
         };
         let inv_a0 = 1.0 / (1.0 + alpha);
         Self {
             b: [
                 gain * 0.5 * inv_a0,
-                gain * inv_a0
-                    * if matches!(kind, FilterKind::HighPass) {
-                        -1.0
-                    } else {
-                        1.0
-                    },
+                gain * inv_a0 * sign,
                 gain * 0.5 * inv_a0,
             ],
             a: [-2.0 * cos * inv_a0, (1.0 - alpha) * inv_a0],
@@ -409,7 +419,7 @@ impl Biquad {
         }
     }
 
-    pub fn process(&mut self, sample: f32) -> f32 {
+    fn process(&mut self, sample: f32) -> f32 {
         let output = self.b[0] * sample + self.z[0];
         self.z[0] = self.b[1] * sample - self.a[0] * output + self.z[1];
         self.z[1] = self.b[2] * sample - self.a[1] * output;
@@ -421,118 +431,75 @@ impl Biquad {
         }
     }
 
-    pub fn flush_denormals(&mut self) {
-        self.z.iter_mut().for_each(flush_denormal_f32);
-    }
-
-    pub fn clear(&mut self) {
-        self.z = [0.0; 2];
+    fn visit_biquads(&mut self, visit: &mut impl FnMut(&mut Biquad)) {
+        visit(self);
     }
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct LinkwitzRiley([Biquad; 2]);
+pub struct Cascade<F, const N: usize>([F; N]);
 
-impl LinkwitzRiley {
-    pub fn new(kind: FilterKind, sample_rate: f32, frequency: f32) -> Self {
-        Self([Biquad::new(kind, sample_rate, frequency); 2])
+impl<F: CrossoverFilter + Copy, const N: usize> CrossoverFilter for Cascade<F, N> {
+    type Sample = F::Sample;
+    fn new(kind: FilterKind, sample_rate: f32, frequency: f32) -> Self {
+        Self([F::new(kind, sample_rate, frequency); N])
     }
-
-    pub fn process(&mut self, sample: f32) -> f32 {
+    fn process(&mut self, sample: Self::Sample) -> Self::Sample {
         self.0
             .iter_mut()
-            .fold(sample, |value, filter| filter.process(value))
+            .fold(sample, |sample, filter| filter.process(sample))
     }
-
-    pub fn flush_denormals(&mut self) {
-        self.0.iter_mut().for_each(Biquad::flush_denormals);
-    }
-
-    pub fn clear(&mut self) {
-        self.0.iter_mut().for_each(Biquad::clear);
+    fn visit_biquads(&mut self, visit: &mut impl FnMut(&mut Biquad)) {
+        self.0
+            .iter_mut()
+            .for_each(|filter| filter.visit_biquads(visit));
     }
 }
 
-pub trait CrossoverFilter: Sized {
-    type Sample: Copy;
-    fn new(kind: FilterKind, sample_rate: f32, frequency: f32) -> Self;
-    fn process(&mut self, sample: Self::Sample) -> Self::Sample;
-    fn flush_denormals(&mut self);
-    fn clear(&mut self);
-}
-
-impl CrossoverFilter for Biquad {
-    type Sample = f32;
+impl<F: CrossoverFilter + Copy, const N: usize> CrossoverFilter for [F; N] {
+    type Sample = [F::Sample; N];
     fn new(kind: FilterKind, sample_rate: f32, frequency: f32) -> Self {
-        Self::new(kind, sample_rate, frequency)
+        [F::new(kind, sample_rate, frequency); N]
     }
-    fn process(&mut self, sample: f32) -> f32 {
-        self.process(sample)
+    fn process(&mut self, sample: Self::Sample) -> Self::Sample {
+        std::array::from_fn(|index| self[index].process(sample[index]))
     }
-    fn flush_denormals(&mut self) {
-        self.flush_denormals();
-    }
-    fn clear(&mut self) {
-        self.clear();
+    fn visit_biquads(&mut self, visit: &mut impl FnMut(&mut Biquad)) {
+        self.iter_mut()
+            .for_each(|filter| filter.visit_biquads(visit));
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct ThreeBand<F: CrossoverFilter> {
-    low: F,
-    above_low: F,
-    mid: F,
-    high: F,
-    cascade_high: bool,
+pub struct ThreeBand<F: CrossoverFilter, const CASCADE_HIGH: bool> {
+    filters: [F; 4],
 }
 
-impl<F: CrossoverFilter> ThreeBand<F> {
-    fn new(sample_rate: f32, [low, high]: [f32; 2], cascade_high: bool) -> Self {
+impl<F: CrossoverFilter, const CASCADE_HIGH: bool> ThreeBand<F, CASCADE_HIGH> {
+    pub fn new(sample_rate: f32, [low, high]: [f32; 2]) -> Self {
         Self {
-            low: F::new(FilterKind::LowPass, sample_rate, low),
-            above_low: F::new(FilterKind::HighPass, sample_rate, low),
-            mid: F::new(FilterKind::LowPass, sample_rate, high),
-            high: F::new(FilterKind::HighPass, sample_rate, high),
-            cascade_high,
+            filters: [
+                F::new(FilterKind::LowPass, sample_rate, low),
+                F::new(FilterKind::HighPass, sample_rate, low),
+                F::new(FilterKind::LowPass, sample_rate, high),
+                F::new(FilterKind::HighPass, sample_rate, high),
+            ],
         }
-    }
-
-    pub fn parallel(sample_rate: f32, splits: [f32; 2]) -> Self {
-        Self::new(sample_rate, splits, false)
-    }
-
-    pub fn cascaded(sample_rate: f32, splits: [f32; 2]) -> Self {
-        Self::new(sample_rate, splits, true)
     }
 
     pub fn process(&mut self, sample: F::Sample) -> [F::Sample; 3] {
-        let low = self.low.process(sample);
-        let above_low = self.above_low.process(sample);
-        let high_input = if self.cascade_high { above_low } else { sample };
-        [
-            low,
-            self.mid.process(above_low),
-            self.high.process(high_input),
-        ]
-    }
-
-    fn for_each_filter(&mut self, mut action: impl FnMut(&mut F)) {
-        for filter in [
-            &mut self.low,
-            &mut self.above_low,
-            &mut self.mid,
-            &mut self.high,
-        ] {
-            action(filter);
-        }
+        let [low, above_low, mid, high] = &mut self.filters;
+        let low = low.process(sample);
+        let above_low = above_low.process(sample);
+        let high_input = if CASCADE_HIGH { above_low } else { sample };
+        [low, mid.process(above_low), high.process(high_input)]
     }
 
     pub fn flush_denormals(&mut self) {
-        self.for_each_filter(F::flush_denormals);
+        self.filters.iter_mut().for_each(F::flush_denormals);
     }
 
     pub fn clear(&mut self) {
-        self.for_each_filter(F::clear);
+        self.filters.iter_mut().for_each(F::clear);
     }
 }
 

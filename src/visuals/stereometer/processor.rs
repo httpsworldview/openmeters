@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::dsp::{
-    AudioBlock, CrossoverFilter, FilterKind, LinkwitzRiley, ThreeBand,
-};
+use crate::dsp::{AudioBlock, Biquad, Cascade, ThreeBand};
 use crate::util::audio::{BAND_SPLITS_HZ, DEFAULT_SAMPLE_RATE, flush_denormal_f64};
 use std::{collections::VecDeque, sync::Arc};
 
@@ -22,157 +20,67 @@ crate::macros::default_struct! {
     }
 }
 
-impl StereometerConfig {
-    fn needs_band_analysis(&self) -> bool {
-        self.analyze_bands || self.emit_band_points
-    }
-}
-
-#[derive(Debug, Clone, Default)]
 pub struct StereometerSnapshot {
-    pub xy_points: Arc<[(f32, f32)]>,
-    pub correlation: f32,
-    pub band_correlation: [f32; BAND_COUNT],
-    pub band_points: [Arc<[(f32, f32)]>; BAND_COUNT],
-}
-
-#[derive(Debug, Default)]
-struct SnapshotBuffer {
-    xy_points: Vec<(f32, f32)>,
-    band_points: [Vec<(f32, f32)>; BAND_COUNT],
+    pub points: [Arc<[(f32, f32)]>; BAND_COUNT + 1],
+    pub correlations: [f32; BAND_COUNT + 1],
 }
 
 fn snapshot_points(points: &[(f32, f32)]) -> Arc<[(f32, f32)]> {
     if points.is_empty() { Arc::default() } else { Arc::from(points) }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct StereoFilter {
-    left: LinkwitzRiley,
-    right: LinkwitzRiley,
-}
+type BandSplitter = ThreeBand<[Cascade<Biquad, 2>; 2], true>;
 
-impl CrossoverFilter for StereoFilter {
-    type Sample = (f32, f32);
-
-    fn new(kind: FilterKind, sample_rate: f32, frequency: f32) -> Self {
-        let filter = LinkwitzRiley::new(kind, sample_rate, frequency);
-        Self { left: filter, right: filter }
-    }
-
-    fn process(&mut self, (left, right): Self::Sample) -> Self::Sample {
-        (self.left.process(left), self.right.process(right))
-    }
-
-    fn flush_denormals(&mut self) {
-        self.left.flush_denormals();
-        self.right.flush_denormals();
-    }
-
-    fn clear(&mut self) {
-        self.left.clear();
-        self.right.clear();
-    }
-}
-
-type BandSplitter = ThreeBand<StereoFilter>;
-
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 struct Correlator {
-    cross: f64,
-    left_power: f64,
-    right_power: f64,
-    alpha: f64,
+    moments: [f64; 3],
 }
 
 impl Correlator {
-    fn new(alpha: f64) -> Self {
-        Self {
-            cross: 0.0,
-            left_power: 0.0,
-            right_power: 0.0,
-            alpha,
-        }
-    }
-
-    fn update(&mut self, left: f32, right: f32) {
+    fn update(&mut self, left: f32, right: f32, alpha: f64) {
         let (left, right) = (left as f64, right as f64);
-        self.cross += self.alpha * (left * right - self.cross);
-        self.left_power += self.alpha * (left * left - self.left_power);
-        self.right_power += self.alpha * (right * right - self.right_power);
+        let [cross, left_power, right_power] = &mut self.moments;
+        *cross += alpha * (left * right - *cross);
+        *left_power += alpha * (left * left - *left_power);
+        *right_power += alpha * (right * right - *right_power);
     }
 
     fn value(&self) -> f32 {
-        let denom = (self.left_power * self.right_power).sqrt();
+        let [cross, left_power, right_power] = self.moments;
+        let denom = (left_power * right_power).sqrt();
         if denom <= 1e-12 {
             return 0.0;
         }
-        let value = self.cross / denom;
-        if value.is_finite() {
-            value.clamp(-1.0, 1.0) as f32
-        } else {
-            0.0
-        }
+        let value = cross / denom;
+        if value.is_finite() { value.clamp(-1.0, 1.0) as f32 } else { 0.0 }
     }
 
     fn flush_denormals(&mut self) {
-        [&mut self.cross, &mut self.left_power, &mut self.right_power]
-            .into_iter()
-            .for_each(flush_denormal_f64);
+        self.moments.iter_mut().for_each(flush_denormal_f64);
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct Correlators {
-    full: Correlator,
-    bands: [Correlator; BAND_COUNT],
-}
-
-impl Correlators {
-    fn new(config: StereometerConfig) -> Self {
-        let alpha = ema_alpha(config.sample_rate, config.correlation_window);
-        Self {
-            full: Correlator::new(alpha),
-            bands: [Correlator::new(alpha); BAND_COUNT],
-        }
-    }
-
-    fn set_alpha(&mut self, alpha: f64) {
-        self.full.alpha = alpha;
-        for band in &mut self.bands {
-            band.alpha = alpha;
-        }
-    }
-
-    fn reset_bands(&mut self, alpha: f64) {
-        self.bands = [Correlator::new(alpha); BAND_COUNT];
-    }
-
-    fn band_correlation(&self) -> [f32; BAND_COUNT] {
-        self.bands.each_ref().map(Correlator::value)
-    }
-}
-
-#[derive(Debug)]
+pub(super) const FULL_BAND: usize = 0;
 pub struct StereometerProcessor {
     config: StereometerConfig,
-    snapshot: SnapshotBuffer,
-    history: VecDeque<(f32, f32)>,
-    band_history: [VecDeque<(f32, f32)>; BAND_COUNT],
+    snapshot: [Vec<(f32, f32)>; BAND_COUNT + 1],
+    histories: [VecDeque<(f32, f32)>; BAND_COUNT + 1],
     history_channels: usize,
     band_splitter: BandSplitter,
-    correlators: Correlators,
+    correlators: [Correlator; BAND_COUNT + 1],
+    correlation_alpha: f64,
 }
 
 impl StereometerProcessor {
-    pub fn new(config: StereometerConfig) -> Self {
+    pub fn new(mut config: StereometerConfig) -> Self {
+        config.analyze_bands |= config.emit_band_points;
         Self {
-            snapshot: SnapshotBuffer::default(),
-            history: VecDeque::new(),
-            band_history: Default::default(),
+            snapshot: Default::default(),
+            histories: Default::default(),
             history_channels: 0,
-            band_splitter: BandSplitter::cascaded(config.sample_rate, BAND_SPLITS_HZ),
-            correlators: Correlators::new(config),
+            band_splitter: BandSplitter::new(config.sample_rate, BAND_SPLITS_HZ),
+            correlators: Default::default(),
+            correlation_alpha: ema_alpha(config.sample_rate, config.correlation_window),
             config,
         }
     }
@@ -182,11 +90,10 @@ impl StereometerProcessor {
     }
 
     pub fn reset_audio(&mut self) {
-        self.history.clear();
-        self.band_history.iter_mut().for_each(VecDeque::clear);
+        self.histories.iter_mut().for_each(VecDeque::clear);
         self.band_splitter.clear();
-        self.correlators = Correlators::new(self.config);
-        self.snapshot = SnapshotBuffer::default();
+        self.correlators = Default::default();
+        self.snapshot = Default::default();
     }
 
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<StereometerSnapshot> {
@@ -199,35 +106,34 @@ impl StereometerProcessor {
             self.update_config(config);
         }
         if self.history_channels != channel_count {
-            self.history.clear();
+            self.histories[FULL_BAND].clear();
             self.history_channels = channel_count;
         }
 
-        let analyze_bands = self.config.needs_band_analysis();
+        let analyze_bands = self.config.analyze_bands;
+        let alpha = self.correlation_alpha;
         for [left, right] in block.stereo_frames() {
-            self.history.push_back((left, right));
-            self.correlators.full.update(left, right);
+            self.histories[FULL_BAND].push_back((left, right));
+            self.correlators[FULL_BAND].update(left, right, alpha);
 
             if analyze_bands {
-                let bands = self.band_splitter.process((left, right));
-                for ((correlator, history), (left, right)) in self
-                    .correlators
-                    .bands
+                let bands = self.band_splitter.process([left, right]);
+                for ((correlator, history), [left, right]) in self
+                    .correlators[1..]
                     .iter_mut()
-                    .zip(&mut self.band_history)
+                    .zip(&mut self.histories[1..])
                     .zip(bands)
                 {
-                    correlator.update(left, right);
+                    correlator.update(left, right, alpha);
                     if self.config.emit_band_points {
                         history.push_back((left, right));
                     }
                 }
             }
         }
-        self.correlators.full.flush_denormals();
+        self.correlators[FULL_BAND].flush_denormals();
         if analyze_bands {
-            self.correlators
-                .bands
+            self.correlators[1..]
                 .iter_mut()
                 .for_each(Correlator::flush_denormals);
             self.band_splitter.flush_denormals();
@@ -236,89 +142,67 @@ impl StereometerProcessor {
         let frames = (self.config.sample_rate * self.config.segment_duration)
             .round()
             .max(1.0) as usize;
-        let capacity = frames;
-        self.history
-            .drain(..self.history.len().saturating_sub(capacity));
-
-        let band_capacity = frames;
-        if self.config.emit_band_points {
-            for bh in &mut self.band_history {
-                let drop = bh.len().saturating_sub(band_capacity);
-                bh.drain(..drop);
-            }
+        let history_count = if self.config.emit_band_points { BAND_COUNT + 1 } else { 1 };
+        for history in &mut self.histories[..history_count] {
+            history.drain(..history.len().saturating_sub(frames));
         }
 
-        if self.history.len() < capacity { return None; }
+        if self.histories[FULL_BAND].len() < frames { return None; }
 
         let target = self.config.target_sample_count.clamp(1, frames);
+        for (band, (history, buf)) in self.histories[..history_count]
+            .iter_mut()
+            .zip(&mut self.snapshot[..history_count])
+            .enumerate()
         {
-            let data = self.history.make_contiguous();
-            self.snapshot.xy_points.clear();
-            self.snapshot.xy_points.reserve(target);
-            for i in 0..target {
-                self.snapshot.xy_points.push(data[i * frames / target]);
+            buf.clear();
+            if history.len() < frames { continue; }
+            let data = history.make_contiguous();
+            buf.reserve(target);
+            if band == FULL_BAND {
+                buf.extend((0..target).map(|i| data[i * frames / target]));
+            } else {
+                buf.extend((0..target).map(|i| {
+                    let point = data[i * frames / target];
+                    (point.0 * BAND_DISPLAY_GAIN, point.1 * BAND_DISPLAY_GAIN)
+                }));
             }
         }
-
-        if self.config.emit_band_points {
-            for (bh, buf) in self
-                .band_history
-                .iter_mut()
-                .zip(&mut self.snapshot.band_points)
-            {
-                buf.clear();
-                if bh.len() < band_capacity {
-                    continue;
-                }
-                let data = bh.make_contiguous();
-                buf.reserve(target);
-                for i in 0..target {
-                    let (left, right) = data[i * frames / target];
-                    buf.push((left * BAND_DISPLAY_GAIN, right * BAND_DISPLAY_GAIN));
-                }
-            }
-        }
-
-        let band_correlation = if analyze_bands {
-            self.correlators.band_correlation()
-        } else {
-            [0.0; BAND_COUNT]
-        };
 
         Some(StereometerSnapshot {
-            xy_points: snapshot_points(&self.snapshot.xy_points),
-            correlation: self.correlators.full.value(),
-            band_correlation,
-            band_points: self.snapshot.band_points.each_ref().map(|points| snapshot_points(points)),
+            points: std::array::from_fn(|band| snapshot_points(&self.snapshot[band])),
+            correlations: std::array::from_fn(|band| {
+                if band == FULL_BAND || analyze_bands {
+                    self.correlators[band].value()
+                } else {
+                    0.0
+                }
+            }),
         })
     }
-
-    fn reset(&mut self) {
-        *self = Self::new(self.config);
-    }
-    pub fn update_config(&mut self, config: StereometerConfig) {
+    pub fn update_config(&mut self, mut config: StereometerConfig) {
+        config.analyze_bands |= config.emit_band_points;
         let sample_rate_changed = self.config.sample_rate != config.sample_rate;
         let window_changed =
             (self.config.correlation_window - config.correlation_window).abs() > f32::EPSILON;
-        let band_analysis_changed = self.config.needs_band_analysis() != config.needs_band_analysis();
+        let band_analysis_changed = self.config.analyze_bands != config.analyze_bands;
         self.config = config;
 
         if sample_rate_changed {
-            self.reset();
+            *self = Self::new(self.config);
         } else {
-            let alpha = ema_alpha(config.sample_rate, config.correlation_window);
             if window_changed {
-                self.correlators.set_alpha(alpha);
+                self.correlation_alpha = ema_alpha(config.sample_rate, config.correlation_window);
             }
             if band_analysis_changed {
-                self.band_splitter = BandSplitter::cascaded(config.sample_rate, BAND_SPLITS_HZ);
-                self.correlators.reset_bands(alpha);
+                self.band_splitter = BandSplitter::new(config.sample_rate, BAND_SPLITS_HZ);
+                self.correlators[1..].fill(Correlator::default());
             }
         }
 
         if !config.emit_band_points {
-            self.band_history = Default::default();
-            self.snapshot.band_points = Default::default();
+            self.histories[1..].fill_with(VecDeque::new);
+            self.snapshot[1..].fill_with(Vec::new);
         }
     }
 }
@@ -332,9 +216,9 @@ mod tests {
     use super::*;
 
     fn correlation(pairs: &[(f32, f32)]) -> f32 {
-        let mut meter = Correlator::new(0.5);
+        let mut meter = Correlator::default();
         for &(left, right) in pairs {
-            meter.update(left, right);
+            meter.update(left, right, 0.5);
         }
         meter.value()
     }
@@ -356,7 +240,7 @@ mod tests {
             .process_block(&AudioBlock::new(&samples, 2, 4.0))
             .unwrap();
 
-        assert_eq!(&*snapshot.xy_points, &[(1.0, 2.0), (5.0, 6.0)]);
+        assert_eq!(&*snapshot.points[FULL_BAND], &[(1.0, 2.0), (5.0, 6.0)]);
     }
 
     #[test]

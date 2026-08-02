@@ -20,37 +20,16 @@ macro_rules! visualization_widget {
         }
 
         impl<M> iced::advanced::widget::Widget<M, iced::Theme, iced::Renderer> for $widget<'_> {
-            fn size(&self) -> iced::Size<iced::Length> {
-                iced::Size::new(iced::Length::Fill, iced::Length::Fill)
-            }
+            crate::macros::widget_method!(layout
+                iced::Size::new(iced::Length::Fill, iced::Length::Fill),
+                |limits| limits.resolve(iced::Length::Fill, iced::Length::Fill, iced::Size::ZERO)
+            );
 
-            fn layout(
-                &mut self,
-                _: &mut iced::advanced::widget::Tree,
-                _: &iced::Renderer,
-                limits: &iced::advanced::layout::Limits,
-            ) -> iced::advanced::layout::Node {
-                iced::advanced::layout::Node::new(limits.resolve(
-                    iced::Length::Fill,
-                    iced::Length::Fill,
-                    iced::Size::ZERO,
-                ))
-            }
-
-            fn draw(
-                &self,
-                _: &iced::advanced::widget::Tree,
-                renderer: &mut iced::Renderer,
-                theme: &iced::Theme,
-                _: &iced::advanced::renderer::Style,
-                layout: iced::advanced::Layout<'_>,
-                _: iced::advanced::mouse::Cursor,
-                _: &iced::Rectangle,
-            ) {
+            crate::macros::widget_method!(draw widget; _, renderer, theme, _, layout, _, _ => {
                 use iced_wgpu::primitive::Renderer as _;
-                let ($this, $renderer, $theme, $bounds) = (self, renderer, theme, layout.bounds());
+                let ($this, $renderer, $theme, $bounds) = (widget, renderer, theme, layout.bounds());
                 $draw
-            }
+            });
         }
 
         pub(in crate::visuals) fn widget<'a, M: 'a>(
@@ -59,11 +38,11 @@ macro_rules! visualization_widget {
             iced::Element::new($widget { state })
         }
     };
-    ($widget:ident, $state:ty, $primitive:ty) => {
+    ($widget:ident, $state:ty) => {
         $crate::visuals::visualization_widget!($widget, $state, |this, renderer, theme, bounds| {
             let state = this.state.borrow();
             match state.visual_params(bounds) {
-                Some(params) => renderer.draw_primitive(bounds, <$primitive>::new(params)),
+                Some(params) => renderer.draw_primitive(bounds, params),
                 None => $crate::visuals::render::common::fill_rect(
                     renderer,
                     bounds,
@@ -75,6 +54,17 @@ macro_rules! visualization_widget {
 }
 
 pub(in crate::visuals) use visualization_widget;
+
+macro_rules! palette_setter {
+    ($size:expr $(=> $revision:ident $(.$field:tt)?)*) => {
+        pub fn set_palette(&mut self, palette: &[iced::Color; $size]) {
+            self.palette = *palette;
+            $(self.$revision$(.$field)? = self.$revision$(.$field)?.wrapping_add(1);)*
+        }
+    };
+}
+
+pub(in crate::visuals) use palette_setter;
 
 visual_modules! {
     loudness { LoudnessProcessor, LoudnessConfig, LoudnessState },
@@ -119,6 +109,15 @@ pub mod render {
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static NEXT_VIS_KEY: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct GeometryKey(pub u64, pub u64);
+
+impl GeometryKey {
+    fn new() -> Self {
+        Self(next_key(), 0)
+    }
+}
 
 pub(in crate::visuals) fn next_key() -> u64 {
     NEXT_VIS_KEY.fetch_add(1, Ordering::Relaxed)

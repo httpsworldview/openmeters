@@ -3,7 +3,7 @@
 
 use super::processor::{LoudnessSnapshot, MAX_CHANNELS};
 use super::render::{
-    DB_RANGE, GUIDE_LEVELS, LEFT_PADDING, LoudnessParams, LoudnessPrimitive, MeterFill, db_to_ratio,
+    DB_RANGE, GUIDE_LEVELS, LEFT_PADDING, LoudnessParams, MeterFill, db_to_ratio,
 };
 use crate::dsp::ChannelPosition;
 use crate::persistence::settings::LoudnessSettings;
@@ -59,7 +59,6 @@ impl PeakHold {
     }
 }
 
-#[derive(Debug, Clone)]
 pub(crate) struct LoudnessState {
     snapshot: LoudnessSnapshot,
     pub(in crate::visuals) settings: LoudnessSettings,
@@ -67,8 +66,7 @@ pub(crate) struct LoudnessState {
     peaks: [PeakHold; VISIBLE_METER_COUNT],
     guide_labels: [Paragraph; GUIDE_LABELS.len()],
     value_label: (String, Paragraph),
-    key: u64,
-    geometry_revision: u64,
+    geometry: crate::visuals::GeometryKey,
 }
 
 impl LoudnessState {
@@ -88,8 +86,7 @@ impl LoudnessState {
                 Paragraph::with_text(text)
             }),
             value_label: (String::new(), Paragraph::default()),
-            key: crate::visuals::next_key(),
-            geometry_revision: 0,
+            geometry: crate::visuals::GeometryKey::new(),
         };
         state.refresh_value_label();
         state
@@ -101,15 +98,14 @@ impl LoudnessState {
         self.snapshot = snapshot;
         self.peaks = [PeakHold::new(DB_RANGE.0, Instant::now()); VISIBLE_METER_COUNT];
         self.refresh_value_label();
-        self.geometry_revision = self.geometry_revision.wrapping_add(1);
+        self.geometry.1 = self.geometry.1.wrapping_add(1);
     }
 
-    pub fn apply_snapshot(&mut self, mut snapshot: LoudnessSnapshot) {
-        snapshot.channel_count = snapshot.channel_count.clamp(1, MAX_CHANNELS);
+    pub fn apply_snapshot(&mut self, snapshot: LoudnessSnapshot) {
         self.snapshot = snapshot;
         self.update_peak_holds(Instant::now());
         self.refresh_value_label();
-        self.geometry_revision = self.geometry_revision.wrapping_add(1);
+        self.geometry.1 = self.geometry.1.wrapping_add(1);
     }
 
     pub fn set_modes(&mut self, left: MeterMode, right: MeterMode) {
@@ -120,13 +116,10 @@ impl LoudnessState {
         self.settings.left_mode = left;
         self.settings.right_mode = right;
         self.refresh_value_label();
-        self.geometry_revision = self.geometry_revision.wrapping_add(1);
+        self.geometry.1 = self.geometry.1.wrapping_add(1);
     }
 
-    pub fn set_palette(&mut self, palette: &[Color; PALETTE_SIZE]) {
-        self.palette = *palette;
-        self.geometry_revision = self.geometry_revision.wrapping_add(1);
-    }
+    crate::visuals::palette_setter!(PALETTE_SIZE => geometry.1);
 
     fn get_value(&self, mode: MeterMode, channel: usize) -> f32 {
         let per_channel =
@@ -143,8 +136,7 @@ impl LoudnessState {
     fn visual_params(&self, bounds: Rectangle) -> LoudnessParams {
         let values = self.visible_values();
         LoudnessParams {
-            key: self.key,
-            geometry_revision: self.geometry_revision,
+            geometry: self.geometry,
             bounds,
             bg_color: color_to_rgba(self.palette[PAL_BACKGROUND]),
             bars: [
@@ -309,7 +301,7 @@ crate::visuals::visualization_widget!(Loudness, LoudnessState, |this, renderer, 
     let params = state.visual_params(bounds);
     let meter_bounds = params.meter_bounds();
 
-    renderer.draw_primitive(bounds, LoudnessPrimitive::new(params));
+    renderer.draw_primitive(bounds, params);
 
     let palette = theme.extended_palette();
     let label_color = state.palette[PAL_GUIDE];

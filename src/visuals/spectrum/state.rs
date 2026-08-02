@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::processor::{SpectrumSnapshot, SpectrumTraceSnapshot};
-use super::render::{SpectrumParams, SpectrumPeakParams, SpectrumPrimitive};
+use super::render::{SpectrumParams, SpectrumPeakParams};
 use crate::persistence::settings::SpectrumSettings;
 use crate::visuals::options::{SpectrumDisplayMode, SpectrumWeightingMode};
 use crate::util::audio::musical::NoteInfo;
@@ -23,7 +23,6 @@ const MAX_DB: f32 = 0.0;
 const GRID_LABEL_SIZE: f32 = 10.0;
 const GRID_LABEL_GAP: f32 = 6.0;
 
-#[derive(Debug, Clone)]
 struct PeakLabel {
     content: [String; 2],
     text: [Paragraph; 2],
@@ -53,14 +52,11 @@ fn rebuild_points(
     build(points);
 }
 
-#[derive(Debug, Clone)]
 pub(crate) struct SpectrumState {
     pub(in crate::visuals) style: SpectrumSettings,
     pub(in crate::visuals) palette: [Color; PALETTE_SIZE],
-    primary: SharedPoints,
-    secondary: SharedPoints,
-    key: u64,
-    geometry_revision: u64,
+    points: [SharedPoints; 2],
+    geometry: crate::visuals::GeometryKey,
     peak: Option<PeakLabel>,
     effective_range: Option<(f32, f32)>,
     x_cache_key: (usize, u32, FrequencyScale),
@@ -73,10 +69,8 @@ impl SpectrumState {
         Self {
             style: SpectrumSettings::default(),
             palette: palettes::spectrum::COLORS,
-            primary: Arc::clone(&EMPTY_POINTS),
-            secondary: Arc::clone(&EMPTY_POINTS),
-            key: crate::visuals::next_key(),
-            geometry_revision: 0,
+            points: std::array::from_fn(|_| Arc::clone(&EMPTY_POINTS)),
+            geometry: crate::visuals::GeometryKey::new(),
             peak: None,
             effective_range: None,
             x_cache_key: (0, 0, FrequencyScale::default()),
@@ -88,19 +82,17 @@ impl SpectrumState {
     pub fn update_view_settings(&mut self, settings: &SpectrumSettings, floor_db: f32) {
         self.style = settings.clone();
         self.style.floor_db = floor_db;
-        if !settings.show_peak_label {
-            self.peak = None;
-        }
+        let _ = self.peak.take_if(|_| !settings.show_peak_label);
         self.invalidate_geometry();
     }
 
-    pub fn set_palette(&mut self, palette: &[Color; PALETTE_SIZE]) {
-        self.palette = *palette;
-        self.invalidate_geometry();
-    }
+    crate::visuals::palette_setter!(PALETTE_SIZE => geometry.1);
 
     pub fn reset_audio(&mut self) {
-        self.clear_visuals();
+        self.points.fill_with(|| Arc::clone(&EMPTY_POINTS));
+        self.effective_range = None;
+        self.peak = None;
+        self.invalidate_geometry();
     }
 
     pub fn apply_snapshot(&mut self, snap: &SpectrumSnapshot) {
@@ -111,51 +103,33 @@ impl SpectrumState {
             (primary, secondary) if primary == secondary => Some(0),
             _ => Some(1),
         };
-        if bins == 0
-            || (primary.is_none() && secondary.is_none())
-            || [primary, secondary]
-                .into_iter()
-                .flatten()
-                .any(|idx| snap.traces[idx].iter().any(|buf| buf.len() != bins))
-        {
-            self.clear_visuals();
-            return;
-        }
         let min_f = MIN_FREQUENCY;
         let max_f = snap.frequency_bins[bins - 1].max(min_f * 1.02);
         let bins = snap.frequency_bins.as_slice();
         self.ensure_x_cache(min_f, max_f, bins);
         let style = &self.style;
 
-        if let Some(idx) = primary {
-            rebuild_points(&mut self.primary, self.x_cache.len(), |points| {
+        for ((points, trace), weighting) in self
+            .points
+            .iter_mut()
+            .zip([primary, secondary])
+            .zip([style.weighting_mode, style.secondary_weighting_mode])
+        {
+            let Some(trace) = trace else {
+                *points = Arc::clone(&EMPTY_POINTS);
+                continue;
+            };
+            rebuild_points(points, self.x_cache.len(), |points| {
                 build_single_points_into(
                     points,
                     style,
                     min_f,
                     max_f,
                     bins,
-                    trace_db(&snap.traces[idx], style.weighting_mode),
+                    trace_db(&snap.traces[trace], weighting),
                     &self.x_cache,
                 );
             });
-        } else {
-            self.primary = Arc::clone(&EMPTY_POINTS);
-        }
-        if let Some(idx) = secondary {
-            rebuild_points(&mut self.secondary, self.x_cache.len(), |points| {
-                build_single_points_into(
-                    points,
-                    style,
-                    min_f,
-                    max_f,
-                    bins,
-                    trace_db(&snap.traces[idx], style.secondary_weighting_mode),
-                    &self.x_cache,
-                );
-            });
-        } else {
-            self.secondary = Arc::clone(&EMPTY_POINTS);
         }
         let pk = primary
             .filter(|_| self.style.show_peak_label)
@@ -165,16 +139,8 @@ impl SpectrumState {
         self.invalidate_geometry();
     }
 
-    fn clear_visuals(&mut self) {
-        (self.primary, self.secondary) =
-            (Arc::clone(&EMPTY_POINTS), Arc::clone(&EMPTY_POINTS));
-        self.effective_range = None;
-        self.peak = None;
-        self.invalidate_geometry();
-    }
-
     fn invalidate_geometry(&mut self) {
-        self.geometry_revision = self.geometry_revision.wrapping_add(1);
+        self.geometry.1 = self.geometry.1.wrapping_add(1);
     }
 
     fn ensure_x_cache(&mut self, min_f: f32, max_f: f32, bins: &[f32]) {
@@ -270,7 +236,9 @@ impl SpectrumState {
 
     fn peak(&self) -> Option<&PeakLabel> {
         self.peak.as_ref().filter(|_| {
-            self.style.show_peak_label && self.style.source != Channel::None && self.primary.len() >= 2
+            self.style.show_peak_label
+                && self.style.source != Channel::None
+                && self.points[0].len() >= 2
         })
     }
 
@@ -280,8 +248,9 @@ impl SpectrumState {
         theme: &iced::Theme,
         peak_layout: Option<PeakLayout>,
     ) -> Option<SpectrumParams> {
-        let has_primary = self.style.source != Channel::None && self.primary.len() >= 2;
-        let has_secondary = self.style.secondary_source != Channel::None && self.secondary.len() >= 2;
+        let has_primary = self.style.source != Channel::None && self.points[0].len() >= 2;
+        let has_secondary =
+            self.style.secondary_source != Channel::None && self.points[1].len() >= 2;
         if !has_primary && !has_secondary { return None; }
         let pal = theme.extended_palette();
 
@@ -291,8 +260,8 @@ impl SpectrumState {
         let peak = self.peak();
         let accent = self.palette[5];
         let (mut primary, mut secondary) = (
-            visible(has_primary, &self.primary),
-            visible(has_secondary, &self.secondary),
+            visible(has_primary, &self.points[0]),
+            visible(has_secondary, &self.points[1]),
         );
         if self.style.display_mode == SpectrumDisplayMode::Bar && primary.is_empty() {
             std::mem::swap(&mut primary, &mut secondary);
@@ -302,8 +271,7 @@ impl SpectrumState {
             bounds,
             normalized_points: primary,
             secondary_points: secondary,
-            key: self.key,
-            geometry_revision: self.geometry_revision,
+            geometry: self.geometry,
             line_color: color_to_rgba(with_alpha(pal.background.base.text, 0.92)),
             secondary_line_color: color_to_rgba(with_alpha(pal.secondary.weak.text, 0.32)),
             highlight_threshold: self.style.highlight_threshold,
@@ -332,7 +300,7 @@ crate::visuals::visualization_widget!(Spectrum, SpectrumState, |this, r, th, b| 
     if let Some(range) = state.effective_range.filter(|_| state.style.show_grid) {
         r.with_layer(b, |r| draw_grid(r, th, b, range, &state));
     }
-    r.draw_primitive(b, SpectrumPrimitive::new(params));
+    r.draw_primitive(b, params);
     if let Some((pk, layout)) = peak.zip(peak_layout) {
         let accent = state.palette[5];
         r.with_layer(b, |r| draw_peak(r, th, pk, layout, accent));
@@ -395,7 +363,7 @@ mod tests {
     fn theme_colors_invalidate_cached_geometry_without_audio_update() {
         let mut state = SpectrumState::new();
         state.style.source = Channel::Left;
-        state.primary = Arc::new(vec![[0.0, 0.0], [1.0, 1.0]]);
+        state.points[0] = Arc::new(vec![[0.0, 0.0], [1.0, 1.0]]);
         let bounds = Rectangle {
             x: 0.0,
             y: 0.0,
@@ -410,7 +378,7 @@ mod tests {
             .visual_params(bounds, &iced::Theme::Light, None)
             .unwrap();
 
-        assert_eq!(dark.geometry_revision, light.geometry_revision);
+        assert_eq!(dark.geometry.1, light.geometry.1);
         assert_ne!(dark.line_color, light.line_color);
         assert_ne!(dark.geometry_fingerprint(), light.geometry_fingerprint());
     }
@@ -427,14 +395,16 @@ mod tests {
             traces: [SpectrumTraceSnapshot::default(), trace],
         });
 
-        assert!(state.primary.is_empty());
-        assert!(state.secondary.len() >= 2);
+        assert!(state.points[0].is_empty());
+        assert!(state.points[1].len() >= 2);
         assert!(state.peak().is_none());
     }
 
     #[test]
     fn point_build_emits_only_finite_coordinates() {
-        let points = build_single_points(
+        let mut points = Vec::new();
+        build_single_points_into(
+            &mut points,
             &SpectrumSettings::default(),
             20.0,
             40.0,
@@ -458,20 +428,6 @@ fn trace_db(trace: &SpectrumTraceSnapshot, mode: SpectrumWeightingMode) -> &[f32
         SpectrumWeightingMode::AWeighted => 0,
         SpectrumWeightingMode::Raw => 1,
     }]
-}
-
-#[cfg(test)]
-fn build_single_points(
-    style: &SpectrumSettings,
-    min_f: f32,
-    max_f: f32,
-    bins: &[f32],
-    db: &[f32],
-    x_cache: &[f32],
-) -> Vec<[f32; 2]> {
-    let mut out = Vec::with_capacity(x_cache.len());
-    build_single_points_into(&mut out, style, min_f, max_f, bins, db, x_cache);
-    out
 }
 
 fn build_single_points_into(

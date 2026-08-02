@@ -55,8 +55,7 @@ crate::macros::default_struct! {
         pub min: f32 = 0.0,
         pub max: f32 = 0.0,
         pub color_bands: [f32; NUM_BANDS] = [0.0; NUM_BANDS],
-        pub rms_fast_db: [f32; NUM_BANDS] = [DB_FLOOR; NUM_BANDS],
-        pub rms_slow_db: [f32; NUM_BANDS] = [DB_FLOOR; NUM_BANDS],
+        pub rms_db: [[f32; NUM_BANDS]; 2] = [[DB_FLOOR; NUM_BANDS]; 2],
     }
 }
 
@@ -68,7 +67,6 @@ pub struct WaveformPreview {
     pub columns: Option<WaveFrame>,
 }
 
-#[derive(Debug)]
 pub struct WaveformUpdate<'a> {
     pub reset: bool,
     pub columns: &'a [WaveFrame],
@@ -83,7 +81,7 @@ fn window_len(samples_at_reference_rate: usize, sample_rate: f32) -> usize {
 
 type BandWindow = WindowedMeans<NUM_BANDS, 1, f32>;
 type BandHistory = WindowedMeans<NUM_BANDS, 2, f32>;
-type BandFilter = ThreeBand<Biquad>;
+type BandFilter = ThreeBand<Biquad, false>;
 
 fn band_means(means: [f64; NUM_BANDS]) -> [f32; NUM_BANDS] {
     means.map(|mean| mean.max(0.0) as f32)
@@ -118,14 +116,13 @@ impl BandTracker {
     }
 }
 
-fn derived_frame([left, right]: [f32; 2]) -> [f32; DERIVED_CHANNELS] {
-    [left, right, (left + right) * 0.5, (left - right) * 0.5]
+fn derived_frame(stereo: [f32; 2]) -> [f32; DERIVED_CHANNELS] {
+    WAVEFORM_CHANNELS.map(|channel| channel.project(stereo))
 }
 
 pub struct WaveformProcessor {
     config: WaveformConfig,
     source_channels: usize,
-    prepared: bool,
     band_analysis: Option<([BandFilter; 2], [BandTracker; DERIVED_CHANNELS])>,
     column_phase: f64,
     current: [Option<(f32, f32, Option<f32>)>; DERIVED_CHANNELS],
@@ -140,7 +137,6 @@ impl WaveformProcessor {
         Self {
             config,
             source_channels: 2,
-            prepared: false,
             band_analysis: None,
             column_phase: 0.0,
             current: [None; DERIVED_CHANNELS],
@@ -159,9 +155,8 @@ impl WaveformProcessor {
     }
 
     pub(in crate::visuals) fn prepare(&mut self) {
-        if !self.prepared {
+        if self.config.analyze_bands && self.band_analysis.is_none() {
             self.band_analysis = Self::band_analysis(self.config);
-            self.prepared = true;
         }
     }
 
@@ -170,7 +165,7 @@ impl WaveformProcessor {
         self.last_sample = [None; DERIVED_CHANNELS];
         self.pending_columns.clear();
         self.current = [None; DERIVED_CHANNELS];
-        if self.prepared {
+        if self.band_analysis.is_some() {
             self.reset_trackers();
         }
         self.reset_pending = true;
@@ -181,7 +176,7 @@ impl WaveformProcessor {
     ) -> Option<([BandFilter; 2], [BandTracker; DERIVED_CHANNELS])> {
         config.analyze_bands.then(|| {
             (
-                std::array::from_fn(|_| BandFilter::parallel(config.sample_rate, BAND_SPLITS_HZ)),
+                std::array::from_fn(|_| BandFilter::new(config.sample_rate, BAND_SPLITS_HZ)),
                 std::array::from_fn(|_| BandTracker::new(config.sample_rate, config.track_history)),
             )
         })
@@ -218,10 +213,9 @@ impl WaveformProcessor {
             let tracker = &trackers[channel];
             column.color_bands = band_means(tracker.color.mean(0));
             if let Some(history) = &tracker.history {
-                column.rms_fast_db =
-                    band_means(history.mean(0)).map(|power| power_to_db(power, DB_FLOOR));
-                column.rms_slow_db =
-                    band_means(history.mean(1)).map(|power| power_to_db(power, DB_FLOOR));
+                column.rms_db = std::array::from_fn(|window| {
+                    band_means(history.mean(window)).map(|power| power_to_db(power, DB_FLOOR))
+                });
             }
         }
         column
@@ -246,28 +240,19 @@ impl WaveformProcessor {
             .clamp(0.0, 1.0);
         for stereo in block.stereo_frames() {
             let derived = derived_frame(stereo);
-            let finite = [
-                derived[0].is_finite(),
-                derived[1].is_finite(),
-                derived[2].is_finite(),
-                derived[3].is_finite(),
-            ];
+            let finite = derived.map(f32::is_finite);
             if let Some((filters, trackers)) = &mut self.band_analysis {
                 let filtered = [
                     filters[0].process(if finite[0] { derived[0] } else { 0.0 }),
                     filters[1].process(if finite[1] { derived[1] } else { 0.0 }),
                 ];
-                let mid = [
-                    (filtered[0][0] + filtered[1][0]) * 0.5,
-                    (filtered[0][1] + filtered[1][1]) * 0.5,
-                    (filtered[0][2] + filtered[1][2]) * 0.5,
+                let [left, right] = filtered;
+                let bands = [
+                    left,
+                    right,
+                    std::array::from_fn(|band| (left[band] + right[band]) * 0.5),
+                    std::array::from_fn(|band| (left[band] - right[band]) * 0.5),
                 ];
-                let side = [
-                    (filtered[0][0] - filtered[1][0]) * 0.5,
-                    (filtered[0][1] - filtered[1][1]) * 0.5,
-                    (filtered[0][2] - filtered[1][2]) * 0.5,
-                ];
-                let bands = [filtered[0], filtered[1], mid, side];
                 for (channel, tracker) in trackers.iter_mut().enumerate() {
                     tracker.process(if finite[channel] { bands[channel] } else { [0.0; NUM_BANDS] });
                 }
@@ -325,10 +310,10 @@ impl WaveformProcessor {
 
         self.pending_columns.clear();
 
-        let (channels, sample_rate) = (block.channels.max(1), block.sample_rate);
+        let (channels, sample_rate) = (block.channels, block.sample_rate);
         if channels != self.source_channels || self.config.sample_rate != sample_rate {
             self.source_channels = channels;
-            self.config.sample_rate = sanitize_sample_rate(sample_rate);
+            self.config.sample_rate = sample_rate;
             self.rebuild();
         }
 
@@ -339,9 +324,8 @@ impl WaveformProcessor {
         }
 
         self.cap_pending_columns();
-        let reset = self.reset_pending;
+        let reset = std::mem::take(&mut self.reset_pending);
         let preview = self.preview();
-        self.reset_pending = false;
         Some(WaveformUpdate {
             reset,
             columns: &self.pending_columns,
@@ -361,7 +345,7 @@ impl WaveformProcessor {
         }
         if rebuild {
             self.rebuild();
-        } else if reset_analysis && self.prepared {
+        } else if reset_analysis && self.band_analysis.is_some() {
             self.reset_trackers();
         }
     }
@@ -370,13 +354,10 @@ impl WaveformProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::audio::sine_wave;
     use std::f32::consts::PI;
 
     const RATE: f32 = 48_000.0;
-
-    fn block(samples: &[f32], channels: usize, sample_rate: f32) -> AudioBlock<'_> {
-        AudioBlock::new(samples, channels, sample_rate)
-    }
 
     fn config(scroll_speed: f32, max_columns: usize) -> WaveformConfig {
         WaveformConfig {
@@ -393,7 +374,7 @@ mod tests {
         channels: usize,
     ) -> WaveformUpdate<'a> {
         processor
-            .process_block(&block(samples, channels, RATE))
+            .process_block(&AudioBlock::new(samples, channels, RATE))
             .expect("expected update")
     }
 
@@ -429,9 +410,9 @@ mod tests {
     #[test]
     fn derived_band_filters_preserve_all_channel_history() {
         let mut shared: [BandFilter; 2] =
-            std::array::from_fn(|_| BandFilter::parallel(RATE, BAND_SPLITS_HZ));
+            std::array::from_fn(|_| BandFilter::new(RATE, BAND_SPLITS_HZ));
         let mut separate: [BandFilter; DERIVED_CHANNELS] =
-            std::array::from_fn(|_| BandFilter::parallel(RATE, BAND_SPLITS_HZ));
+            std::array::from_fn(|_| BandFilter::new(RATE, BAND_SPLITS_HZ));
         let mut max_error = 0.0_f32;
         for n in 0..RATE as usize {
             let derived = derived_frame([
@@ -457,7 +438,6 @@ mod tests {
     #[test]
     fn channel_projection_feeds_extrema() {
         let mut processor = WaveformProcessor::new(config(RATE / 2.0, 8));
-        assert!(!processor.prepared);
         assert!(processor.band_analysis.is_none());
         let update = process(&mut processor, &[1.0, 0.0, 0.0, 1.0], 2);
         assert_eq!((column(&update, 2, 0).min, column(&update, 2, 0).max), (0.5, 0.5));
@@ -524,17 +504,14 @@ mod tests {
         let latest = latest(&process(&mut processor, &[0.0], 1), 0);
 
         assert_eq!(latest.color_bands, [0.0; NUM_BANDS]);
-        assert_eq!(latest.rms_fast_db, [DB_FLOOR; NUM_BANDS]);
-        assert_eq!(latest.rms_slow_db, [DB_FLOOR; NUM_BANDS]);
+        assert_eq!(latest.rms_db, [[DB_FLOOR; NUM_BANDS]; 2]);
     }
 
     #[test]
     fn bands_follow_sine_frequency() {
         fn latest_bands_for(freq: f32) -> [f32; NUM_BANDS] {
             let mut processor = WaveformProcessor::new(config(200.0, 512));
-            let samples: Vec<f32> = (0..RATE as usize)
-                .map(|n| (2.0 * PI * freq * n as f32 / RATE).sin() * 0.8)
-                .collect();
+            let samples = sine_wave(freq, RATE, RATE as usize, 0.8);
             let update = process(&mut processor, &samples, 1);
             std::array::from_fn(|b| band(&update, 0, b))
         }
@@ -557,7 +534,7 @@ mod tests {
         samples.extend(vec![1.0; BAND_COLOR_WINDOW_AT_44K1]);
         let latest = latest(&process(&mut processor, &samples, 1), 0);
 
-        assert!(latest.rms_fast_db[0] > latest.rms_slow_db[0]);
+        assert!(latest.rms_db[0][0] > latest.rms_db[1][0]);
     }
 
     #[test]
@@ -565,16 +542,13 @@ mod tests {
         let mut cfg = config(300.0, 1024);
         cfg.track_history = true;
         let mut processor = WaveformProcessor::new(cfg);
-        let signal: Vec<_> = (0..RATE as usize)
-            .map(|n| (2.0 * PI * 80.0 * n as f32 / RATE).sin())
-            .collect();
+        let signal = sine_wave(80.0, RATE, RATE as usize, 1.0);
         let silence = vec![0.0; RATE as usize];
 
         let _ = process(&mut processor, &signal, 1);
         let latest = latest(&process(&mut processor, &silence, 1), 0);
 
-        assert_eq!(latest.rms_fast_db, [DB_FLOOR; NUM_BANDS]);
-        assert_eq!(latest.rms_slow_db, [DB_FLOOR; NUM_BANDS]);
+        assert_eq!(latest.rms_db, [[DB_FLOOR; NUM_BANDS]; 2]);
     }
 
     #[test]
@@ -586,7 +560,7 @@ mod tests {
             ..Default::default()
         });
         let samples = vec![0.0; 10_000];
-        let update = processor.process_block(&block(&samples, 1, 1_000.0)).unwrap();
+        let update = processor.process_block(&AudioBlock::new(&samples, 1, 1_000.0)).unwrap();
 
         assert!((update.columns.len() as isize - 3330).abs() <= 1);
         assert!(

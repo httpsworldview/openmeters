@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::processor::{OscilloscopeSnapshot, TRACE_COUNT};
-use super::render::{OscilloscopeParams, OscilloscopePrimitive};
+use super::render::OscilloscopeParams;
 use crate::persistence::settings::OscilloscopeSettings;
 use crate::util::color::color_to_rgba;
 use crate::visuals::palettes;
@@ -11,13 +11,11 @@ use std::sync::Arc;
 
 const MAX_PERSISTENCE: f32 = 0.98;
 
-#[derive(Debug, Clone)]
 pub(crate) struct OscilloscopeState {
     snapshot: OscilloscopeSnapshot,
     pub(in crate::visuals) palette: [Color; TRACE_COUNT],
     pub(in crate::visuals) settings: OscilloscopeSettings,
-    key: u64,
-    geometry_revision: u64,
+    geometry: crate::visuals::GeometryKey,
 }
 
 impl OscilloscopeState {
@@ -26,14 +24,13 @@ impl OscilloscopeState {
             snapshot: OscilloscopeSnapshot::default(),
             palette: palettes::oscilloscope::COLORS,
             settings: OscilloscopeSettings::default(),
-            key: crate::visuals::next_key(),
-            geometry_revision: 0,
+            geometry: crate::visuals::GeometryKey::new(),
         }
     }
 
     pub fn reset_audio(&mut self) {
         self.snapshot = OscilloscopeSnapshot::default();
-        self.geometry_revision = self.geometry_revision.wrapping_add(1);
+        self.geometry.1 = self.geometry.1.wrapping_add(1);
     }
 
     pub fn update_view_settings(&mut self, settings: &OscilloscopeSettings, reset_snapshot: bool) {
@@ -46,16 +43,13 @@ impl OscilloscopeState {
         if reset_snapshot {
             self.snapshot = OscilloscopeSnapshot::default();
         }
-        self.geometry_revision = self.geometry_revision.wrapping_add(1);
+        self.geometry.1 = self.geometry.1.wrapping_add(1);
     }
 
-    pub fn set_palette(&mut self, palette: &[Color; TRACE_COUNT]) {
-        self.palette = *palette;
-        self.geometry_revision = self.geometry_revision.wrapping_add(1);
-    }
+    crate::visuals::palette_setter!(TRACE_COUNT => geometry.1);
 
     pub fn apply_snapshot(&mut self, snapshot: OscilloscopeSnapshot) {
-        self.geometry_revision = self.geometry_revision.wrapping_add(1);
+        self.geometry.1 = self.geometry.1.wrapping_add(1);
         if !snapshot.samples.is_empty()
             && !self.snapshot.samples.is_empty()
             && snapshot.epoch == self.snapshot.epoch
@@ -85,13 +79,8 @@ impl OscilloscopeState {
         let channels = self.snapshot.channels;
         if channels == 0 { return None; }
         let samples_per_channel = self.snapshot.samples_per_channel;
-        let required = channels.saturating_mul(samples_per_channel);
-
-        if samples_per_channel < 2 || self.snapshot.samples.len() < required { return None; }
-
         Some(OscilloscopeParams {
-            key: self.key,
-            geometry_revision: self.geometry_revision,
+            geometry: self.geometry,
             bounds,
             channels,
             samples_per_channel,
@@ -103,4 +92,4 @@ impl OscilloscopeState {
     }
 }
 
-crate::visuals::visualization_widget!(Oscilloscope, OscilloscopeState, OscilloscopePrimitive);
+crate::visuals::visualization_widget!(Oscilloscope, OscilloscopeState);

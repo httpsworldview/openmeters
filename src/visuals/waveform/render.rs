@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Maika Namuo
 
 use iced::Rectangle;
-use iced::advanced::graphics::Viewport;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
@@ -108,19 +107,18 @@ fn sample_y_span(center_y: f32, amplitude_scale: f32, min: f32, max: f32) -> Opt
     Some((y0.min(y1), y0.max(y1)))
 }
 
-impl WaveformPrimitive {
-    fn build_vertices(&self, _viewport: &Viewport, scratch: &mut GeometryScratch) {
-        let params = &self.params;
+impl WaveformParams {
+    fn build_vertices(&self, scratch: &mut GeometryScratch) {
+        let params = self;
         let data = crate::util::unpoison(params.data.lock());
-        let channels = params.channels.max(1);
+        let channels = params.channels;
         let columns = ((params.bounds.width / COLUMN_WIDTH_PIXELS).ceil() as usize)
             .clamp(1, MAX_COLUMN_CAPACITY)
             .min(data.len());
         let start = data.len().saturating_sub(columns);
-        let preview_active =
-            params.channels > 0 && params.preview.progress > 0.0 && params.preview.columns.is_some();
+        let preview_columns = params.preview.columns.filter(|_| params.preview.progress > 0.0);
 
-        if columns == 0 && !preview_active {
+        if columns == 0 && preview_columns.is_none() {
             return;
         }
 
@@ -135,10 +133,10 @@ impl WaveformPrimitive {
             CHANNEL_GAP,
             AMPLITUDE_SCALE,
         );
-        let history: Option<fn(WaveColumn) -> [f32; NUM_BANDS]> = match params.history_mode {
+        let history = match params.history_mode {
             WaveformHistoryMode::Off => None,
-            WaveformHistoryMode::RmsFast => Some(|column| column.rms_fast_db),
-            WaveformHistoryMode::RmsSlow => Some(|column| column.rms_slow_db),
+            WaveformHistoryMode::RmsFast => Some(0),
+            WaveformHistoryMode::RmsSlow => Some(1),
         };
         let history_active = history.is_some() && columns >= 2;
         let floor = sanitize_negative_db(params.band_db_floor, DEFAULT_BAND_DB_FLOOR);
@@ -152,7 +150,6 @@ impl WaveformPrimitive {
         let static_color =
             (params.color_mode == WaveformColorMode::Static).then_some(params.palette[0]);
 
-        let preview_columns = preview_active.then_some(params.preview.columns).flatten();
         let scroll_offset = if preview_columns.is_some() {
             params.preview.progress * col_width
         } else {
@@ -183,10 +180,8 @@ impl WaveformPrimitive {
 
             if let Some(preview_columns) = preview_columns {
                 let start_x = right_edge - scroll_offset;
-                let end_x = right_edge;
-
                 let ps = preview_columns[params.lanes[ch]];
-                push_column(vertices, center_y, start_x, end_x, ps);
+                push_column(vertices, center_y, start_x, right_edge, ps);
             }
 
             if let Some(history) = history.filter(|_| history_active) {
@@ -200,7 +195,7 @@ impl WaveformPrimitive {
                     pts.reserve(columns + 1);
                     pts.extend(data.range(start..start + columns).enumerate().map(|(i, frame)| {
                         let column = frame[params.lanes[ch]];
-                        let db = history(column)[band].max(floor);
+                        let db = column.rms_db[history][band].max(floor);
                         let level = ((db - floor) / -floor).clamp(0.0, 1.0);
                         (column_x(i), baseline - level * band_height)
                     }));
@@ -222,11 +217,4 @@ impl WaveformPrimitive {
     }
 }
 
-sdf_primitive!(
-    WaveformPrimitive(WaveformParams),
-    Pipeline,
-    u64,
-    "Waveform",
-    TriangleStrip,
-    |self| self.params.key
-);
+sdf_primitive!(WaveformParams, "Waveform", |self| self.key);

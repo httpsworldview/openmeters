@@ -73,7 +73,17 @@ pub(in crate::visuals) fn text<C>(content: C, px: f32, bounds: Size) -> IcedText
     }
 }
 
-fn fill_rect_quad(r: &mut Renderer, bounds: Rectangle, color: Color, border: Border, snap: bool) {
+pub(in crate::visuals) fn fill_rect(r: &mut Renderer, bounds: Rectangle, color: Color) {
+    fill_bordered_rect(r, bounds, color, Border::default(), true);
+}
+
+pub(in crate::visuals) fn fill_bordered_rect(
+    r: &mut Renderer,
+    bounds: Rectangle,
+    color: Color,
+    border: Border,
+    snap: bool,
+) {
     use iced::advanced::{Renderer as _, renderer::Quad};
     r.fill_quad(
         Quad {
@@ -84,20 +94,6 @@ fn fill_rect_quad(r: &mut Renderer, bounds: Rectangle, color: Color, border: Bor
         },
         color,
     );
-}
-
-pub(in crate::visuals) fn fill_rect(r: &mut Renderer, bounds: Rectangle, color: Color) {
-    fill_rect_quad(r, bounds, color, Border::default(), true);
-}
-
-pub(in crate::visuals) fn fill_bordered_rect(
-    r: &mut Renderer,
-    bounds: Rectangle,
-    color: Color,
-    border: Border,
-    snap: bool,
-) {
-    fill_rect_quad(r, bounds, color, border, snap);
 }
 
 #[repr(C)]
@@ -115,17 +111,6 @@ impl SdfInstance {
     const LINE: f32 = 2.0;
     const DOT: f32 = 3.0;
     const RADIAL_DOT: f32 = 4.0;
-
-    pub fn layout() -> wgpu::VertexBufferLayout<'static> {
-        const ATTRS: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
-            0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4
-        ];
-        wgpu::VertexBufferLayout {
-            array_stride: size_of::<Self>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &ATTRS,
-        }
-    }
 }
 
 pub fn quad_instance(
@@ -397,56 +382,21 @@ pub fn decimate_finite_ordered_line_in_place(pts: &mut Vec<(f32, f32)>, max_poin
     pts.truncate(out);
 }
 
-pub struct InstanceBuffer {
-    pub vertex_buffer: wgpu::Buffer,
-    pub capacity: wgpu::BufferAddress,
-    pub vertex_count: u32,
+pub(in crate::visuals) fn create_buffer(
+    device: &wgpu::Device,
+    label: &'static str,
+    size: wgpu::BufferAddress,
+    usage: wgpu::BufferUsages,
+) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size,
+        usage,
+        mapped_at_creation: false,
+    })
 }
 
-impl InstanceBuffer {
-    fn capacity_for(size: wgpu::BufferAddress) -> wgpu::BufferAddress {
-        size.max(1).next_power_of_two()
-    }
-
-    pub fn new(device: &wgpu::Device, label: &'static str, size: wgpu::BufferAddress) -> Self {
-        let size = Self::capacity_for(size);
-        Self {
-            vertex_buffer: device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(label),
-                size,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }),
-            capacity: size,
-            vertex_count: 0,
-        }
-    }
-
-    pub fn ensure_capacity(
-        &mut self,
-        device: &wgpu::Device,
-        label: &'static str,
-        size: wgpu::BufferAddress,
-    ) {
-        let target = Self::capacity_for(size);
-        if target > self.capacity || (size > 0 && self.capacity > target.saturating_mul(4)) {
-            *self = Self::new(device, label, target);
-        }
-    }
-
-    pub fn write(&mut self, queue: &wgpu::Queue, instances: &[SdfInstance]) {
-        self.vertex_count = instances.len() as u32;
-        if !instances.is_empty() {
-            queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(instances));
-        }
-    }
-
-    pub fn used_bytes(&self) -> wgpu::BufferAddress {
-        self.vertex_count as wgpu::BufferAddress * size_of::<SdfInstance>() as wgpu::BufferAddress
-    }
-}
-
-#[derive(Debug, Clone, Default)]
+#[derive(Default)]
 pub struct CacheTracker {
     frame: u64,
     counter: u64,
@@ -495,9 +445,7 @@ pub(in crate::visuals) fn begin_load_pass<'a>(
                 store: wgpu::StoreOp::Store,
             },
         })],
-        depth_stencil_attachment: None,
-        timestamp_writes: None,
-        occlusion_query_set: None,
+        ..Default::default()
     });
     pass.set_scissor_rect(clip.x, clip.y, clip.width.max(1), clip.height.max(1));
     pass
@@ -556,38 +504,17 @@ pub(in crate::visuals) fn create_render_pipeline(
     })
 }
 
-fn create_sdf_pipeline(
-    device: &wgpu::Device,
-    format: wgpu::TextureFormat,
-    label: &'static str,
-    topology: wgpu::PrimitiveTopology,
-) -> wgpu::RenderPipeline {
-    let shader = create_shader_module(device, label, include_str!("shaders/sdf.wgsl"));
-    create_render_pipeline(
-        device,
-        format,
-        RenderPipelineSpec {
-            label,
-            shader: &shader,
-            vertex_entry: "vs_main",
-            fragment_entry: "fs_main",
-            buffers: &[SdfInstance::layout()],
-            bind_group_layouts: &[],
-            topology,
-            blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-            write_mask: wgpu::ColorWrites::ALL,
-        },
-    )
-}
-
 pub type GeometryFingerprint = [u64; 6];
 
+pub fn pack_f32_pair(first: f32, second: f32) -> u64 {
+    u64::from(first.to_bits()) << 32 | u64::from(second.to_bits())
+}
+
 pub fn bounds_fingerprint(revision: u64, bounds: Rectangle) -> GeometryFingerprint {
-    let pack = |a: f32, b: f32| u64::from(a.to_bits()) << 32 | u64::from(b.to_bits());
     [
         revision,
-        pack(bounds.x, bounds.y),
-        pack(bounds.width, bounds.height),
+        pack_f32_pair(bounds.x, bounds.y),
+        pack_f32_pair(bounds.width, bounds.height),
         0,
         0,
         0,
@@ -595,32 +522,21 @@ pub fn bounds_fingerprint(revision: u64, bounds: Rectangle) -> GeometryFingerpri
 }
 
 struct CachedInstance {
-    buffer: InstanceBuffer,
+    buffer: wgpu::Buffer,
+    vertex_count: u32,
     fingerprint: Option<GeometryFingerprint>,
     last_used: u64,
 }
 
-pub struct SdfPipeline<K> {
-    pub pipeline: wgpu::RenderPipeline,
-    instances: HashMap<K, CachedInstance>,
+pub struct SdfPipeline {
+    pub(in crate::visuals) pipeline: wgpu::RenderPipeline,
+    instances: HashMap<u64, CachedInstance>,
     cache: CacheTracker,
+    pub(in crate::visuals) scratch: GeometryScratch,
 }
 
-impl<K: std::hash::Hash + Eq + Copy> SdfPipeline<K> {
-    pub fn new(
-        device: &wgpu::Device,
-        format: wgpu::TextureFormat,
-        label: &'static str,
-        topology: wgpu::PrimitiveTopology,
-    ) -> Self {
-        Self {
-            pipeline: create_sdf_pipeline(device, format, label, topology),
-            instances: HashMap::new(),
-            cache: CacheTracker::default(),
-        }
-    }
-
-    pub fn prepare_required(&mut self, key: K, fingerprint: Option<GeometryFingerprint>) -> bool {
+impl SdfPipeline {
+    pub fn prepare_required(&mut self, key: u64, fingerprint: Option<GeometryFingerprint>) -> bool {
         let (frame, threshold) = self.cache.advance();
         let current = fingerprint.is_some_and(|fingerprint| {
             self.instances.get_mut(&key).is_some_and(|entry| {
@@ -638,44 +554,102 @@ impl<K: std::hash::Hash + Eq + Copy> SdfPipeline<K> {
         !current
     }
 
-    pub fn prepare_instance(
+    pub fn prepare_scratch(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         label: &'static str,
-        key: K,
+        key: u64,
         fingerprint: Option<GeometryFingerprint>,
-        instances: &[SdfInstance],
     ) {
+        let instances = &self.scratch.instances;
         let required = size_of::<SdfInstance>() as wgpu::BufferAddress
             * instances.len() as wgpu::BufferAddress;
+        let target = required.max(1).next_power_of_two();
+        let usage = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
+        let allocate = || create_buffer(device, label, target, usage);
         let frame = self.cache.frame;
         let entry = self.instances.entry(key).or_insert_with(|| CachedInstance {
-            buffer: InstanceBuffer::new(device, label, required),
+            buffer: allocate(),
+            vertex_count: 0,
             fingerprint,
             last_used: frame,
         });
         entry.fingerprint = fingerprint;
         entry.last_used = frame;
-        entry.buffer.ensure_capacity(device, label, required);
-        entry.buffer.write(queue, instances);
+        let capacity = entry.buffer.size();
+        if target > capacity || (required > 0 && capacity > target.saturating_mul(4)) {
+            entry.buffer = allocate();
+        }
+        entry.vertex_count = instances.len() as u32;
+        if !instances.is_empty() {
+            queue.write_buffer(&entry.buffer, 0, bytemuck::cast_slice(instances));
+        }
     }
 
-    pub fn instance(&self, key: K) -> Option<&InstanceBuffer> {
-        self.instances.get(&key).map(|e| &e.buffer)
+    pub(in crate::visuals) fn instance(&self, key: u64) -> Option<(&wgpu::Buffer, u32)> {
+        self.instances
+            .get(&key)
+            .map(|entry| (&entry.buffer, entry.vertex_count))
+    }
+}
+
+impl iced_wgpu::primitive::Pipeline for SdfPipeline {
+    fn new(device: &wgpu::Device, _: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
+        const LABEL: &str = "Visual SDF pipeline";
+        const ATTRS: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
+            0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4
+        ];
+        let shader = create_shader_module(device, LABEL, include_str!("shaders/sdf.wgsl"));
+        let pipeline = create_render_pipeline(
+            device,
+            format,
+            RenderPipelineSpec {
+                label: LABEL,
+                shader: &shader,
+                vertex_entry: "vs_main",
+                fragment_entry: "fs_main",
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: size_of::<SdfInstance>() as wgpu::BufferAddress,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &ATTRS,
+                }],
+                bind_group_layouts: &[],
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            },
+        );
+        Self {
+            pipeline,
+            instances: HashMap::new(),
+            cache: CacheTracker::default(),
+            scratch: GeometryScratch::default(),
+        }
     }
 }
 
 macro_rules! sdf_primitive {
-    ($primitive:ident($params:ty), $($rest:tt)+) => {
-        #[derive(Debug)]
-        pub struct $primitive { params: $params }
-        impl $primitive { pub fn new(params: $params) -> Self { Self { params } } }
-        $crate::visuals::render::common::sdf_primitive!(@impl $primitive, $($rest)+);
+    ($params:ty, $($rest:tt)+) => {
+        $crate::visuals::render::common::sdf_primitive!(@impl $params, $($rest)+);
     };
-    (@impl $primitive:ident, $pipeline:ident, $key_ty:ty, $label:expr, $topology:ident, |$self:ident| $key_expr:expr $(, $fingerprint_expr:expr)?) => {
+    (@impl $primitive:ty, $label:expr, |$self:ident| $key:expr $(, $fingerprint:expr)?) => {
+        $crate::visuals::render::common::sdf_primitive!(@impl
+            $primitive, $label,
+            layers |$self, scratch| {
+                ($key, $crate::visuals::render::common::sdf_primitive!(@fingerprint $self $(, $fingerprint)?)) => {
+                    $self.build_vertices(scratch);
+                }
+            }
+        );
+    };
+    (@impl $primitive:ty, $label:expr,
+        layers |$self:ident, $scratch:ident| {
+            $(($key:expr, $fingerprint:expr) => $build:block),+ $(,)?
+        }
+    ) => {
         impl iced_wgpu::primitive::Primitive for $primitive {
-            type Pipeline = $pipeline;
+            type Pipeline = $crate::visuals::render::common::SdfPipeline;
 
             fn prepare(
                 &$self,
@@ -683,25 +657,18 @@ macro_rules! sdf_primitive {
                 device: &wgpu::Device,
                 queue: &wgpu::Queue,
                 _bounds: &iced::Rectangle,
-                viewport: &iced::advanced::graphics::Viewport,
+                _viewport: &iced::advanced::graphics::Viewport,
             ) {
-                let key: $key_ty = $key_expr;
-                let fingerprint = $crate::visuals::render::common::sdf_primitive!(
-                    @fingerprint $self $(, $fingerprint_expr)?
-                );
-                if !pipeline.inner.prepare_required(key, fingerprint) {
-                    return;
-                }
-                pipeline.scratch.clear();
-                $self.build_vertices(viewport, &mut pipeline.scratch);
-                pipeline.inner.prepare_instance(
-                    device,
-                    queue,
-                    $label,
-                    key,
-                    fingerprint,
-                    &pipeline.scratch.instances,
-                );
+                $({
+                    let key: u64 = $key;
+                    let fingerprint: Option<$crate::visuals::render::common::GeometryFingerprint> = $fingerprint;
+                    if pipeline.prepare_required(key, fingerprint) {
+                        pipeline.scratch.clear();
+                        let $scratch = &mut pipeline.scratch;
+                        $build
+                        pipeline.prepare_scratch(device, queue, $label, key, fingerprint);
+                    }
+                })+
             }
 
             fn draw(
@@ -709,37 +676,29 @@ macro_rules! sdf_primitive {
                 pipeline: &Self::Pipeline,
                 pass: &mut wgpu::RenderPass<'_>,
             ) -> bool {
-                let key: $key_ty = $key_expr;
-                if let Some(inst) = pipeline.inner.instance(key).filter(|inst| inst.vertex_count > 0) {
-                    pass.set_pipeline(&pipeline.inner.pipeline);
-                    pass.set_vertex_buffer(0, inst.vertex_buffer.slice(0..inst.used_bytes()));
-                    pass.draw(0..$crate::visuals::render::common::SDF_VERTICES_PER_INSTANCE, 0..inst.vertex_count);
+                let mut pipeline_bound = false;
+                for key in [$($key),+] {
+                    if let Some((buffer, count)) = pipeline
+                        .instance(key)
+                        .filter(|(_, count)| *count > 0)
+                    {
+                        if !pipeline_bound {
+                            pass.set_pipeline(&pipeline.pipeline);
+                            pipeline_bound = true;
+                        }
+                        pass.set_vertex_buffer(0, buffer.slice(..));
+                        pass.draw(
+                            0..$crate::visuals::render::common::SDF_VERTICES_PER_INSTANCE,
+                            0..count,
+                        );
+                    }
                 }
                 true
             }
         }
-
-        pub struct $pipeline {
-            inner: $crate::visuals::render::common::SdfPipeline<$key_ty>,
-            scratch: $crate::visuals::render::common::GeometryScratch,
-        }
-
-        impl iced_wgpu::primitive::Pipeline for $pipeline {
-            fn new(device: &wgpu::Device, _queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
-                Self {
-                    inner: $crate::visuals::render::common::SdfPipeline::new(
-                        device,
-                        format,
-                        $label,
-                        wgpu::PrimitiveTopology::$topology,
-                    ),
-                    scratch: Default::default(),
-                }
-            }
-        }
     };
     (@fingerprint $self:ident) => { None };
-    (@fingerprint $self:ident, $fingerprint_expr:expr) => { Some($fingerprint_expr) };
+    (@fingerprint $self:ident, $fingerprint:expr) => { Some($fingerprint) };
 }
 
 pub(in crate::visuals) use sdf_primitive;

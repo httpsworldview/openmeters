@@ -15,7 +15,6 @@ const HEAT_RAMP: [Color; 5] = [
     Color::from_rgb8(0xFF, 0xFF, 0xFF),
 ];
 
-#[derive(Debug, Clone)]
 pub struct Palette {
     colors: Vec<Color>,
     pub defaults: &'static [Color],

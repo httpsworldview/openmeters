@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Maika Namuo
 
 use iced::Rectangle;
-use iced::advanced::graphics::Viewport;
 use std::sync::Arc;
 
 use crate::visuals::options::SpectrumDisplayMode;
@@ -13,16 +12,12 @@ use crate::util::lerp;
 use crate::visuals::render::common::{
     ClipTransform, GeometryFingerprint, GeometryScratch, SdfInstance, baseline_segment_instance,
     decimate_finite_ordered_line_in_place, dot_instance, extend_aa_line_list,
-    gradient_quad_instance, line_instance, quad_instance,
+    gradient_quad_instance, line_instance, pack_f32_pair, quad_instance,
 };
 
 const MIN_BAR_COUNT: usize = 4;
 const LINE_THICKNESS: f32 = 1.0;
 const SECONDARY_LINE_THICKNESS: f32 = 0.75;
-
-fn pack_f32_pair(first: f32, second: f32) -> u64 {
-    u64::from(first.to_bits()) << 32 | u64::from(second.to_bits())
-}
 
 #[derive(Debug, Clone, Copy)]
 pub struct SpectrumPeakParams {
@@ -37,8 +32,7 @@ pub struct SpectrumParams {
     pub bounds: Rectangle,
     pub normalized_points: Arc<Vec<[f32; 2]>>,
     pub secondary_points: Arc<Vec<[f32; 2]>>,
-    pub key: u64,
-    pub geometry_revision: u64,
+    pub geometry: crate::visuals::GeometryKey,
     pub line_color: [f32; 4],
     pub secondary_line_color: [f32; 4],
     pub highlight_threshold: f32,
@@ -51,36 +45,34 @@ pub struct SpectrumParams {
 
 impl SpectrumParams {
     pub(super) fn geometry_fingerprint(&self) -> GeometryFingerprint {
-        let line = self.line_color;
-        let secondary = self.secondary_line_color;
         [
-            self.geometry_revision,
+            self.geometry.1,
             pack_f32_pair(self.bounds.width, self.bounds.height),
-            pack_f32_pair(line[0], line[1]),
-            pack_f32_pair(line[2], line[3]),
-            pack_f32_pair(secondary[0], secondary[1]),
-            pack_f32_pair(secondary[2], secondary[3]),
+            pack_f32_pair(self.line_color[0], self.line_color[1]),
+            pack_f32_pair(self.line_color[2], self.line_color[3]),
+            pack_f32_pair(self.secondary_line_color[0], self.secondary_line_color[1]),
+            pack_f32_pair(self.secondary_line_color[2], self.secondary_line_color[3]),
         ]
     }
 }
 
-impl SpectrumPrimitive {
-    fn build_vertices(&self, _viewport: &Viewport, scratch: &mut GeometryScratch) {
-        let bounds = self.params.bounds;
+impl SpectrumParams {
+    fn build_vertices(&self, scratch: &mut GeometryScratch) {
+        let bounds = self.bounds;
         let clip = ClipTransform::from_bounds(bounds);
 
-        let has_primary = self.params.normalized_points.len() >= 2;
-        if !has_primary && self.params.secondary_points.len() < 2 {
+        let has_primary = self.normalized_points.len() >= 2;
+        if !has_primary && self.secondary_points.len() < 2 {
             return;
         }
 
-        if has_primary && self.params.display_mode == SpectrumDisplayMode::Bar {
+        if has_primary && self.display_mode == SpectrumDisplayMode::Bar {
             self.build_bar_vertices(&mut scratch.instances, clip, bounds);
         } else {
             self.build_line_vertices(scratch, clip, bounds);
         }
         let vertices = &mut scratch.instances;
-        if let Some(peak) = self.params.peak {
+        if let Some(peak) = self.peak {
             if let Some(anchor) = peak.leader_anchor {
                 vertices.push(line_instance(
                     normalized_to_cartesian(bounds, anchor),
@@ -99,11 +91,11 @@ impl SpectrumPrimitive {
     fn build_line_vertices(&self, scratch: &mut GeometryScratch, clip: ClipTransform, bounds: Rectangle) {
         let pixel_budget = bounds.width.ceil().max(1.0) as usize * 2;
         let GeometryScratch { instances: vertices, points, points2, .. } = scratch;
-        let normalized = self.params.normalized_points.as_ref();
+        let normalized = self.normalized_points.as_ref();
         let has_primary = normalized.len() >= 2;
-        let has_secondary = self.params.secondary_points.len() >= 2;
+        let has_secondary = self.secondary_points.len() >= 2;
         let primary_segments = normalized.len().min(pixel_budget).saturating_sub(1);
-        let secondary_segments = self.params.secondary_points.len().min(pixel_budget).saturating_sub(1);
+        let secondary_segments = self.secondary_points.len().min(pixel_budget).saturating_sub(1);
         vertices.reserve(primary_segments * 2 + secondary_segments);
         let baseline = bounds.y + bounds.height;
 
@@ -116,15 +108,14 @@ impl SpectrumPrimitive {
                 baseline,
                 bounds.height,
                 points,
-                &self.params.spectrum_palette,
-                self.params.highlight_threshold,
+                &self.spectrum_palette,
+                self.highlight_threshold,
             );
         }
 
         if has_secondary {
             points2.extend(
-                self.params
-                    .secondary_points
+                self.secondary_points
                     .iter()
                     .map(|&p| normalized_to_cartesian(bounds, p)),
             );
@@ -133,7 +124,7 @@ impl SpectrumPrimitive {
                 vertices,
                 points2,
                 SECONDARY_LINE_THICKNESS,
-                self.params.secondary_line_color,
+                self.secondary_line_color,
                 clip,
             );
         }
@@ -143,14 +134,14 @@ impl SpectrumPrimitive {
                 vertices,
                 points,
                 LINE_THICKNESS,
-                self.params.line_color,
+                self.line_color,
                 clip,
             );
         }
     }
 
     fn build_bar_vertices(&self, verts: &mut Vec<SdfInstance>, clip: ClipTransform, bounds: Rectangle) {
-        let p = &self.params;
+        let p = self;
         let bar_count = p.bar_count.max(MIN_BAR_COUNT);
         let gap = p.bar_gap.clamp(0.0, 0.8);
         let unit = bounds.width / bar_count as f32;
@@ -275,11 +266,8 @@ mod tests {
 }
 
 sdf_primitive!(
-    SpectrumPrimitive(SpectrumParams),
-    Pipeline,
-    u64,
+    SpectrumParams,
     "Spectrum",
-    TriangleStrip,
-    |self| self.params.key,
-    self.params.geometry_fingerprint()
+    |self| self.geometry.0,
+    self.geometry_fingerprint()
 );
