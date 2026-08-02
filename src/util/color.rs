@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::lerp;
+use super::{finite_or, lerp};
 use iced::Color;
 
 pub const EPSILON: f32 = 1e-4;
@@ -72,11 +72,7 @@ pub fn sanitize_stop_positions(raw: Option<&[f32]>, defaults: &[f32]) -> Vec<f32
     out[end] = 1.0;
 
     for i in 1..end {
-        let value = if out[i].is_finite() {
-            out[i]
-        } else {
-            defaults[i]
-        };
+        let value = finite_or(out[i], defaults[i]);
         let min = (out[i - 1] + EPSILON).min(1.0);
         let max = (1.0 - EPSILON * (end - i) as f32).max(min);
         out[i] = value.clamp(min, max);
@@ -91,11 +87,7 @@ pub fn sanitize_stop_spreads(raw: Option<&[f32]>, count: usize) -> Vec<f32> {
         return out;
     };
     for (dst, &value) in out.iter_mut().zip(raw.iter()) {
-        *dst = if value.is_finite() {
-            value.clamp(STOP_SPREAD_MIN, STOP_SPREAD_MAX)
-        } else {
-            1.0
-        };
+        *dst = finite_or(value, 1.0).clamp(STOP_SPREAD_MIN, STOP_SPREAD_MAX);
     }
     out
 }

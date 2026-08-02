@@ -34,27 +34,14 @@ impl ChannelPosition {
     ];
 
     pub(crate) fn fallback(channels: usize) -> [Self; MAX_AUDIO_CHANNELS] {
+        let channels = channels.min(MAX_AUDIO_CHANNELS);
         let mut positions = [Self::Unknown; MAX_AUDIO_CHANNELS];
+        positions[..channels].copy_from_slice(&Self::SURROUND[..channels]);
         match channels {
             1 => positions[0] = Self::Mono,
-            4 => positions[..4].copy_from_slice(&[
-                Self::FrontLeft,
-                Self::FrontRight,
-                Self::RearLeft,
-                Self::RearRight,
-            ]),
-            5 => positions[..5].copy_from_slice(&[
-                Self::FrontLeft,
-                Self::FrontRight,
-                Self::FrontCenter,
-                Self::RearLeft,
-                Self::RearRight,
-            ]),
-            _ => positions
-                .iter_mut()
-                .zip(Self::SURROUND)
-                .take(channels)
-                .for_each(|(position, fallback)| *position = fallback),
+            4 => positions[2..4].copy_from_slice(&[Self::RearLeft, Self::RearRight]),
+            5 => positions[3..5].copy_from_slice(&[Self::RearLeft, Self::RearRight]),
+            _ => {}
         }
         positions
     }
@@ -118,7 +105,6 @@ impl AudioFormat {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
 pub struct AudioBlock<'a> {
     pub samples: &'a [f32],
     pub channels: usize,
@@ -290,10 +276,6 @@ impl CompensatedPair {
         self.sums[index] = next;
     }
 
-    fn add_both(&mut self, value: f64) {
-        (0..2).for_each(|index| self.add(index, value));
-    }
-
     fn refresh(&mut self) {
         (self.sums, self.corrections) = ([self.sums[1], 0.0], [self.corrections[1], 0.0]);
     }
@@ -348,7 +330,8 @@ where
             let old =
                 (self.count >= capacity).then(|| self.buffer[(self.head + len - capacity) % len]);
             for value in 0..VALUES {
-                self.sums[window][value].add_both(mapped[value]);
+                self.sums[window][value].add(0, mapped[value]);
+                self.sums[window][value].add(1, mapped[value]);
                 if let Some(old) = old {
                     self.sums[window][value].add(0, -old[value].into());
                 }

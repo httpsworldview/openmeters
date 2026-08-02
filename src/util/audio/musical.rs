@@ -43,10 +43,7 @@ impl MusicalNote {
     }
 
     pub fn is_black(self) -> bool {
-        matches!(
-            self.midi_number.rem_euclid(SEMITONES_PER_OCTAVE),
-            1 | 3 | 6 | 8 | 10
-        )
+        self.name().len() == 2
     }
 }
 
@@ -57,7 +54,6 @@ impl std::fmt::Display for MusicalNote {
 }
 
 // Nearest note and cents deviation for a frequency.
-#[derive(Debug, Clone, Copy)]
 pub struct NoteInfo {
     pub note: MusicalNote,
     pub cents: i32,

@@ -3,7 +3,7 @@
 
 use crate::util::lerp;
 
-crate::macros::choice_enum!(all pub enum FrequencyScale {
+crate::macros::choice_enum!(all #[repr(u32)] pub enum FrequencyScale {
     Linear => "Linear",
     #[default] Logarithmic => "Logarithmic",
     #[serde(alias = "mel")] Erb => "Erb",
@@ -26,7 +26,7 @@ impl FrequencyScale {
         match self {
             Self::Linear => hz,
             Self::Logarithmic => (hz / LOG_KNEE_HZ).asinh(),
-            Self::Erb => hz_to_erb_rate(hz),
+            Self::Erb => 21.4 * (1.0 + hz / 228.8).log10(),
         }
     }
 
@@ -34,15 +34,7 @@ impl FrequencyScale {
         match self {
             Self::Linear => x,
             Self::Logarithmic => LOG_KNEE_HZ * x.sinh(),
-            Self::Erb => erb_rate_to_hz(x),
+            Self::Erb => 228.8 * (10.0f32.powf(x / 21.4) - 1.0),
         }
     }
-}
-
-fn hz_to_erb_rate(hz: f32) -> f32 {
-    21.4 * (1.0 + hz / 228.8).log10()
-}
-
-fn erb_rate_to_hz(erb: f32) -> f32 {
-    228.8 * (10.0f32.powf(erb / 21.4) - 1.0)
 }

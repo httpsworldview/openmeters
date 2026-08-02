@@ -3,6 +3,10 @@
 pub mod audio;
 pub mod color;
 
+pub fn finite_or(value: f32, default: f32) -> f32 {
+    if value.is_finite() { value } else { default }
+}
+
 pub fn finite_positive(value: f32) -> Option<f32> {
     (value.is_finite() && value > 0.0).then_some(value)
 }
