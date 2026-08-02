@@ -17,7 +17,9 @@ const WIN_MOMENTARY: usize = 1;
 const WIN_RMS_FAST: usize = 2;
 const WIN_RMS_SLOW: usize = 3;
 
-fn k_weighting_coefficients(fs: f64) -> ([f64; 5], [f64; 5]) {
+type KWeighting = ([f64; 5], [f64; 5]);
+
+fn k_weighting_coefficients(fs: f64) -> KWeighting {
     let (f0, g, q) = (
         1_681.974_450_955_533,
         3.999_843_853_973_347,
@@ -74,10 +76,6 @@ const TRUE_PEAK_TAPS: usize = 48;
 const TRUE_PEAK_4X_DELAY: usize = TRUE_PEAK_TAPS / 4;
 const TRUE_PEAK_2X_DELAY: usize = TRUE_PEAK_TAPS / 2;
 
-type TruePeakFir4x = [[f32; 3]; TRUE_PEAK_4X_DELAY];
-type TruePeakFir2x = [f32; TRUE_PEAK_2X_DELAY];
-type TruePeakFirs = (TruePeakFir4x, TruePeakFir2x);
-
 fn true_peak_coefficient(j: usize, factor: usize) -> f32 {
     let offset = j as f64 - TRUE_PEAK_TAPS as f64 * 0.5;
     let window = 0.5 * (1.0 - (2.0 * PI * j as f64 / TRUE_PEAK_TAPS as f64).cos());
@@ -85,29 +83,23 @@ fn true_peak_coefficient(j: usize, factor: usize) -> f32 {
     (window * x.sin() / x) as f32
 }
 
-fn compute_true_peak_firs() -> TruePeakFirs {
-    let mut fir_4x = [[0.0; 3]; TRUE_PEAK_4X_DELAY];
-    let mut fir_2x = [0.0; TRUE_PEAK_2X_DELAY];
-    for j in 0..TRUE_PEAK_TAPS {
-        let phase = j % 4;
-        if phase != 0 {
-            fir_4x[j / 4][phase - 1] = true_peak_coefficient(j, 4);
-        }
-        if j % 2 != 0 {
-            fir_2x[j / 2] = true_peak_coefficient(j, 2);
-        }
-    }
-    (fir_4x, fir_2x)
-}
+type TruePeakFir4x = [[f32; 3]; TRUE_PEAK_4X_DELAY];
+type TruePeakFir2x = [f32; TRUE_PEAK_2X_DELAY];
+type TruePeakFirs = (TruePeakFir4x, TruePeakFir2x);
 
-static TRUE_PEAK_FIRS: LazyLock<TruePeakFirs> = LazyLock::new(compute_true_peak_firs);
+static TRUE_PEAK_FIRS: LazyLock<TruePeakFirs> = LazyLock::new(|| {
+    (
+        std::array::from_fn(|tap| {
+            std::array::from_fn(|phase| true_peak_coefficient(tap * 4 + phase + 1, 4))
+        }),
+        std::array::from_fn(|tap| true_peak_coefficient(tap * 2 + 1, 2)),
+    )
+});
 
-#[derive(Debug)]
 struct TruePeakMeter {
     delay: [f32; TRUE_PEAK_2X_DELAY * 2],
     write: usize,
     delay_len: usize,
-    firs: &'static TruePeakFirs,
     peak: f32,
 }
 
@@ -124,7 +116,6 @@ impl TruePeakMeter {
             delay: [0.0; TRUE_PEAK_2X_DELAY * 2],
             write: delay_len,
             delay_len,
-            firs: &TRUE_PEAK_FIRS,
             peak: 0.0,
         }
     }
@@ -143,7 +134,7 @@ impl TruePeakMeter {
         if self.delay_len == TRUE_PEAK_4X_DELAY {
             let mut output = [0.0; 3];
             for i in 0..self.delay_len {
-                let (sample, coefficients) = (self.delay[pos + i], self.firs.0[i]);
+                let (sample, coefficients) = (self.delay[pos + i], TRUE_PEAK_FIRS.0[i]);
                 for phase in 0..3 {
                     output[phase] += sample * coefficients[phase];
                 }
@@ -152,48 +143,27 @@ impl TruePeakMeter {
         } else {
             let mut output = 0.0;
             for i in 0..self.delay_len {
-                output += self.delay[pos + i] * self.firs.1[i];
+                output += self.delay[pos + i] * TRUE_PEAK_FIRS.1[i];
             }
             self.peak = self.peak.max(output.abs());
         }
     }
-
-    fn take_peak(&mut self) -> f32 {
-        std::mem::take(&mut self.peak)
-    }
 }
 
-#[derive(Debug)]
-struct KWeightingFilter {
-    b: [f64; 5],
-    a: [f64; 5],
-    z: [f64; 4],
+fn k_weighted(sample: f32, state: &mut [f64; 4], coefficients: &KWeighting) -> f32 {
+    let (b, a) = coefficients;
+    let x = f64::from(sample);
+    let y = b[0] * x + state[0];
+    state[0] = b[1] * x + state[1] - a[1] * y;
+    state[1] = b[2] * x + state[2] - a[2] * y;
+    state[2] = b[3] * x + state[3] - a[3] * y;
+    state[3] = b[4] * x - a[4] * y;
+    y as f32
 }
 
-impl KWeightingFilter {
-    fn new(sample_rate: f64) -> Self {
-        let (b, a) = k_weighting_coefficients(sample_rate);
-        Self { b, a, z: [0.0; 4] }
-    }
+type ActiveChannel = (WindowedMeans<1, 4>, [f64; 4], TruePeakMeter);
 
-    fn process(&mut self, sample: f32) -> f32 {
-        let x = f64::from(sample);
-        let y = self.b[0] * x + self.z[0];
-        self.z[0] = self.b[1] * x + self.z[1] - self.a[1] * y;
-        self.z[1] = self.b[2] * x + self.z[2] - self.a[2] * y;
-        self.z[2] = self.b[3] * x + self.z[3] - self.a[3] * y;
-        self.z[3] = self.b[4] * x - self.a[4] * y;
-        y as f32
-    }
-
-    fn flush_denormals(&mut self) {
-        self.z.iter_mut().for_each(flush_denormal_f64);
-    }
-}
-
-type ActiveChannel = (WindowedMeans<1, 4>, KWeightingFilter, TruePeakMeter);
-
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct ChannelState {
     active: Option<ActiveChannel>,
     silent_frames: usize,
@@ -245,15 +215,17 @@ crate::macros::default_struct! {
     }
 }
 
-#[derive(Debug)]
 pub struct LoudnessProcessor {
     config: LoudnessConfig,
     channels: Vec<ChannelState>,
+    weighting: KWeighting,
 }
 
 impl LoudnessProcessor {
     pub fn new(config: LoudnessConfig) -> Self {
+        let sample_rate = f64::from(sanitize_sample_rate(config.sample_rate));
         Self {
+            weighting: k_weighting_coefficients(sample_rate),
             channels: Vec::new(),
             config,
         }
@@ -270,16 +242,14 @@ impl LoudnessProcessor {
 
         if rate_changed {
             self.config.sample_rate = sample_rate;
+            self.weighting = k_weighting_coefficients(f64::from(sample_rate));
         }
 
         if rate_changed || self.channels.len() != channels {
-            self.rebuild_state(channels);
+            self.channels = (0..channels).map(|_| ChannelState::default()).collect();
         }
     }
 
-    fn rebuild_state(&mut self, channels: usize) {
-        self.channels = (0..channels).map(|_| ChannelState::default()).collect();
-    }
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<LoudnessSnapshot> {
         if block.is_empty() { return None; }
 
@@ -288,6 +258,7 @@ impl LoudnessProcessor {
         let capacities =
             DEFAULT_WINDOWS.map(|window| window_length(self.config.sample_rate, window));
         let sample_rate = f64::from(self.config.sample_rate);
+        let weighting = &self.weighting;
         for frame in block.samples.chunks_exact(block.channels) {
             for (channel, &sample) in self.channels.iter_mut().zip(frame) {
                 if channel.active.is_none() {
@@ -297,22 +268,23 @@ impl LoudnessProcessor {
                     }
                     channel.active = Some((
                         WindowedMeans::with_leading_zeros(capacities, channel.silent_frames),
-                        KWeightingFilter::new(sample_rate),
+                        [0.0; 4],
                         TruePeakMeter::new(sample_rate),
                     ));
                 }
                 let (windows, filter, true_peak) = channel.active.as_mut().unwrap();
-                let filtered = f64::from(filter.process(sample));
+                let filtered = f64::from(k_weighted(sample, filter, weighting));
                 windows.push([filtered * filtered]);
                 true_peak.process(sample);
             }
         }
         for channel in &mut self.channels {
-            if let Some((_, filter, _)) = &mut channel.active { filter.flush_denormals(); }
+            if let Some((_, state, _)) = &mut channel.active {
+                state.iter_mut().for_each(flush_denormal_f64);
+            }
         }
 
         let floor = self.config.floor_db;
-        let num_channels = self.channels.len();
         let mut snapshot = LoudnessSnapshot::with_floor(floor);
         let mut weighted_short_term = 0.0;
         let mut weighted_momentary = 0.0;
@@ -326,18 +298,17 @@ impl LoudnessProcessor {
                 power_to_db(windows.mean(WIN_RMS_FAST)[0] as f32, floor);
             snapshot.rms_slow_db[channel_index] =
                 power_to_db(windows.mean(WIN_RMS_SLOW)[0] as f32, floor);
-            let peak = true_peak.take_peak();
+            let peak = std::mem::take(&mut true_peak.peak);
             snapshot.true_peak_db[channel_index] = power_to_db(peak * peak, floor);
         }
 
         snapshot.short_term_loudness = mean_square_to_lufs(weighted_short_term, floor);
         snapshot.momentary_loudness = mean_square_to_lufs(weighted_momentary, floor);
-        snapshot.channel_count = num_channels;
+        snapshot.channel_count = self.channels.len();
         snapshot.positions = block.positions;
 
         Some(snapshot)
     }
-
 }
 
 #[cfg(test)]
@@ -346,13 +317,7 @@ mod tests {
     use ebur128::{EbuR128, Mode};
 
     fn sine_wave(rate: f32, secs: f32, freq: f32, amp: f32) -> Vec<f32> {
-        (0..(rate * secs) as usize)
-            .map(|n| (2.0 * std::f32::consts::PI * freq * n as f32 / rate).sin() * amp)
-            .collect()
-    }
-
-    fn unwrap_snapshot(update: Option<LoudnessSnapshot>) -> LoudnessSnapshot {
-        update.expect("expected snapshot")
+        crate::util::audio::sine_wave(freq, rate, (rate * secs) as usize, amp)
     }
 
     #[test]
@@ -373,13 +338,12 @@ mod tests {
     #[test]
     fn silence_respects_configured_floor() {
         let samples = [0.0; 2048];
-        let snapshot = unwrap_snapshot(
-            LoudnessProcessor::new(LoudnessConfig {
-                floor_db: -140.0,
-                ..Default::default()
-            })
-            .process_block(&AudioBlock::new(&samples, 2, DEFAULT_SAMPLE_RATE)),
-        );
+        let snapshot = LoudnessProcessor::new(LoudnessConfig {
+            floor_db: -140.0,
+            ..Default::default()
+        })
+        .process_block(&AudioBlock::new(&samples, 2, DEFAULT_SAMPLE_RATE))
+        .expect("expected snapshot");
 
         assert_eq!(snapshot.short_term_loudness, -140.0);
         assert_eq!(snapshot.rms_fast_db[..2], [-140.0; 2]);
@@ -390,10 +354,10 @@ mod tests {
         let measure = |amp| {
             let samples = sine_wave(DEFAULT_SAMPLE_RATE, 3.0, 1000.0, amp);
             let block = AudioBlock::new(&samples, 1, DEFAULT_SAMPLE_RATE);
-            unwrap_snapshot(
-                LoudnessProcessor::new(LoudnessConfig::default()).process_block(&block),
-            )
-            .rms_fast_db[0]
+            LoudnessProcessor::new(LoudnessConfig::default())
+                .process_block(&block)
+                .expect("expected snapshot")
+                .rms_fast_db[0]
         };
         let delta = measure(0.5) - measure(0.25);
         assert!((5.8..6.3).contains(&delta), "RMS delta was {delta:.4} dB");
@@ -414,7 +378,9 @@ mod tests {
                     ..Default::default()
                 };
                 let ours = f64::from(
-                    unwrap_snapshot(LoudnessProcessor::new(cfg).process_block(&block))
+                    LoudnessProcessor::new(cfg)
+                        .process_block(&block)
+                        .expect("expected snapshot")
                         .short_term_loudness,
                 );
 
@@ -443,7 +409,7 @@ mod tests {
         for channel in &mut eager.channels {
             channel.active = Some((
                 WindowedMeans::new(capacities),
-                KWeightingFilter::new(48_000.0),
+                [0.0; 4],
                 TruePeakMeter::new(48_000.0),
             ));
         }
@@ -468,13 +434,12 @@ mod tests {
             assert_eq!(meter.delay_len, delay_len);
 
             let samples = sine_wave(sample_rate, 0.01, 17_000.0, 0.9);
-            let ours = unwrap_snapshot(
-                LoudnessProcessor::new(LoudnessConfig {
-                    sample_rate,
-                    ..Default::default()
-                })
-                .process_block(&AudioBlock::new(&samples, 1, sample_rate)),
-            )
+            let ours = LoudnessProcessor::new(LoudnessConfig {
+                sample_rate,
+                ..Default::default()
+            })
+            .process_block(&AudioBlock::new(&samples, 1, sample_rate))
+            .expect("expected snapshot")
             .true_peak_db[0] as f64;
 
             let mut reference =

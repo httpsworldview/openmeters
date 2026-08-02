@@ -23,16 +23,10 @@ pub const DEFAULT_SPECTRUM_DB_FLOOR: f32 = -100.0;
 
 const DEFAULT_SPECTRUM_HOP_DIVISOR: usize = 16;
 const DEFAULT_SPECTRUM_FFT_SIZE: usize = 16_384;
-const DEFAULT_SPECTRUM_EXP_FACTOR: f32 = 0.5;
-const DEFAULT_SPECTRUM_PEAK_DECAY: f32 = 12.0;
+pub const DEFAULT_SPECTRUM_EXP_FACTOR: f32 = 0.5;
+pub const DEFAULT_SPECTRUM_PEAK_DECAY: f32 = 12.0;
 const TRACE_COUNT: usize = 2;
 const WEIGHTING_COUNT: usize = 2;
-
-fn frequency_bins(sample_rate: f32, fft_size: usize) -> Vec<f32> {
-    let bins = fft_size / 2 + 1;
-    let bin_hz = sample_rate / fft_size as f32;
-    (0..bins).map(|i| i as f32 * bin_hz).collect()
-}
 
 pub type SpectrumTraceSnapshot = [Vec<f32>; WEIGHTING_COUNT];
 
@@ -73,16 +67,6 @@ pub enum AveragingMode {
     None,
     Exponential { factor: f32 },
     PeakHold { decay_per_second: f32 },
-}
-
-impl AveragingMode {
-    pub const fn default_exponential_factor() -> f32 {
-        DEFAULT_SPECTRUM_EXP_FACTOR
-    }
-
-    pub const fn default_peak_decay() -> f32 {
-        DEFAULT_SPECTRUM_PEAK_DECAY
-    }
 }
 
 pub struct SpectrumProcessor {
@@ -140,7 +124,6 @@ impl SpectrumProcessor {
     }
 
     fn rebuild_fft(&mut self) {
-        self.config.normalize();
         let fft_size = self.config.fft_size;
         let fft = self.planner.plan_fft_forward(fft_size);
         self.window = window_coefficients(self.config.window, fft_size);
@@ -153,14 +136,14 @@ impl SpectrumProcessor {
     }
 
     fn reset_buffers(&mut self) {
-        self.snapshot.frequency_bins =
-            frequency_bins(self.config.sample_rate, self.config.fft_size);
-        self.a_weighting_db = self
-            .snapshot
-            .frequency_bins
-            .iter()
-            .map(|&f| a_weight(f))
-            .collect();
+        let bins = self.config.fft_size / 2 + 1;
+        let bin_hz = self.config.sample_rate / self.config.fft_size as f32;
+        (self.snapshot.frequency_bins, self.a_weighting_db) = (0..bins)
+            .map(|bin| {
+                let frequency = bin as f32 * bin_hz;
+                (frequency, a_weight(frequency))
+            })
+            .unzip();
         self.reset_level_buffers();
         self.pcm_buffers.iter_mut().for_each(VecDeque::clear);
         self.pending_skip_frames = 0;
@@ -195,10 +178,10 @@ impl SpectrumProcessor {
 
     fn process_ready_windows(&mut self) -> bool {
         let fft_size = self.config.fft_size;
-        let hop = self.config.hop_size.max(1);
+        let hop = self.config.hop_size;
         let bins = fft_size / 2 + 1;
         let floor = self.config.floor_db;
-        let dt_seconds = hop as f32 / self.config.sample_rate.max(f32::EPSILON);
+        let dt_seconds = hop as f32 / self.config.sample_rate;
         let active = self.active_traces();
         let mut produced = false;
 
@@ -282,16 +265,9 @@ impl SpectrumProcessor {
         }
 
         self.prepare();
-        if self.real_buffer.len() != self.config.fft_size {
-            self.rebuild_fft();
-        }
         self.push_sources(block);
 
-        if self.process_ready_windows() {
-            Some(&self.snapshot)
-        } else {
-            None
-        }
+        self.process_ready_windows().then_some(&self.snapshot)
     }
 
     fn push_sources(&mut self, block: &AudioBlock<'_>) {
@@ -315,18 +291,10 @@ impl SpectrumProcessor {
                     secondary.push_back(secondary_source.project(stereo));
                 }
             }
-            [true, false] => primary.extend(
-                block
-                    .stereo_frames()
-                    .skip(skip)
-                    .map(|stereo| primary_source.project(stereo)),
-            ),
-            [false, true] => secondary.extend(
-                block
-                    .stereo_frames()
-                    .skip(skip)
-                    .map(|stereo| secondary_source.project(stereo)),
-            ),
+            [true, false] => primary.extend(block.projected_frames(primary_source).skip(skip)),
+            [false, true] => {
+                secondary.extend(block.projected_frames(secondary_source).skip(skip));
+            }
             [false, false] => {}
         }
     }
@@ -463,7 +431,7 @@ fn a_weight(freq_hz: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dsp::AudioBlock;
+    use crate::util::audio::sine_wave;
 
     #[test]
     fn normalization_bounds_runtime_values_without_enforcing_gui_ranges() {
@@ -584,9 +552,7 @@ mod tests {
             floor_db: -100.0,
             ..Default::default()
         });
-        let mut samples: Vec<_> = (0..8)
-            .map(|n| (std::f32::consts::TAU * n as f32 / 8.0).sin())
-            .collect();
+        let mut samples = sine_wave(1.0, 8.0, 8, 1.0);
         samples.extend([0.0; 8]);
 
         let snap = p

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::util::audio::{flush_denormal_f32, sanitize_sample_rate};
+use crate::util::audio::{Channel, flush_denormal_f32, sanitize_sample_rate};
 
 pub const MAX_AUDIO_CHANNELS: usize = 8;
 
@@ -248,6 +248,14 @@ impl<'a> AudioBlock<'a> {
             })
     }
 
+    pub fn projected_frames(
+        &self,
+        channel: Channel,
+    ) -> impl ExactSizeIterator<Item = f32> + DoubleEndedIterator + '_ {
+        self.stereo_frames()
+            .map(move |stereo| channel.project(stereo))
+    }
+
     pub fn is_empty(&self) -> bool {
         self.frame_count() == 0
     }
@@ -287,7 +295,6 @@ impl CompensatedPair {
 
 /// Running means for several values over one or more independently sized windows.
 /// All windows share the ring sized for the longest duration.
-#[derive(Debug)]
 pub struct WindowedMeans<const VALUES: usize, const WINDOWS: usize, T = f64> {
     buffer: Box<[[T; VALUES]]>,
     capacities: [usize; WINDOWS],

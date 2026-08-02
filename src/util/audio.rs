@@ -27,3 +27,10 @@ pub(crate) use self::{
 };
 
 pub const BAND_SPLITS_HZ: [f32; 2] = [200.0, 2000.0];
+
+#[cfg(test)]
+pub fn sine_wave(frequency: f32, sample_rate: f32, count: usize, amplitude: f32) -> Vec<f32> {
+    (0..count)
+        .map(|i| (core::f32::consts::TAU * frequency * i as f32 / sample_rate).sin() * amplitude)
+        .collect()
+}

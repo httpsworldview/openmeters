@@ -10,7 +10,8 @@ use crate::ui::widgets::{SliderRange, pick, split, toggle};
 use crate::util::audio::{Channel, FrequencyScale};
 use crate::visuals::options::{SpectrumDisplayMode, SpectrumWeightingMode as WeightingMode};
 use crate::visuals::spectrum::processor::{
-    AveragingMode, MAX_SPECTRUM_DB_FLOOR, MAX_SPECTRUM_EXP_FACTOR, MAX_SPECTRUM_PEAK_DECAY,
+    AveragingMode, DEFAULT_SPECTRUM_EXP_FACTOR, DEFAULT_SPECTRUM_PEAK_DECAY,
+    MAX_SPECTRUM_DB_FLOOR, MAX_SPECTRUM_EXP_FACTOR, MAX_SPECTRUM_PEAK_DECAY,
     MIN_SPECTRUM_DB_FLOOR, MIN_SPECTRUM_EXP_FACTOR, MIN_SPECTRUM_PEAK_DECAY,
 };
 
@@ -167,8 +168,8 @@ impl Pane {
 }
 
 fn split_averaging(avg: AveragingMode) -> AveragingControls {
-    let default_factor = AveragingMode::default_exponential_factor();
-    let default_peak_decay = AveragingMode::default_peak_decay();
+    let default_factor = DEFAULT_SPECTRUM_EXP_FACTOR;
+    let default_peak_decay = DEFAULT_SPECTRUM_PEAK_DECAY;
     let (mode, factor, peak_decay) = match avg {
         AveragingMode::None => (AvgMode::None, default_factor, default_peak_decay),
         AveragingMode::Exponential { factor } => {
