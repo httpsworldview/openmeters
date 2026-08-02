@@ -70,7 +70,7 @@ pub struct UiSettings {
     pub capture_mode: CaptureMode,
     pub last_device_name: Option<String>,
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
-    pub disabled_streams: BTreeSet<String>,
+    pub disabled_streams: BTreeSet<StreamIdentity>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub theme: Option<String>,
 }
@@ -80,11 +80,7 @@ impl UiSettings {
         CaptureConfig {
             mode: self.capture_mode,
             device: DeviceSelection::from_token(self.last_device_name.as_deref()),
-            disabled_streams: self
-                .disabled_streams
-                .iter()
-                .map(|identity| StreamIdentity::new(identity.as_str()))
-                .collect(),
+            disabled_streams: self.disabled_streams.iter().cloned().collect(),
         }
     }
 
@@ -176,11 +172,15 @@ mod tests {
                 popped_out: false,
             },
         );
+        settings
+            .disabled_streams
+            .insert(StreamIdentity::new("app.id"));
 
         let value = serde_json::to_value(&settings).unwrap();
         let popouts = &value["visuals"]["popouts"];
         assert!(popouts["spectrum"].get("popped_out").is_none());
         assert_eq!(popouts["waveform"]["popped_out"], false);
+        assert_eq!(value["disabled_streams"], serde_json::json!(["app.id"]));
     }
 
     #[test]

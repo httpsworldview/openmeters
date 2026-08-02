@@ -151,12 +151,11 @@ impl ConfigPage {
     pub fn update(&mut self, message: ConfigMessage) {
         match message {
             ConfigMessage::ToggleChanged { identity, enabled } => {
-                let key = identity.as_str().to_owned();
                 self.settings.update(|settings| {
                     if enabled {
-                        settings.data.disabled_streams.remove(&key);
+                        settings.data.disabled_streams.remove(&identity);
                     } else {
-                        settings.data.disabled_streams.insert(key);
+                        settings.data.disabled_streams.insert(identity);
                     }
                 });
                 self.dispatch_capture_config();
@@ -286,7 +285,7 @@ impl ConfigPage {
                 text(message).size(theme::BODY_TEXT_SIZE).into()
             } else {
                 render_toggle_grid(&self.applications, |application| {
-                    let enabled = !disabled.contains(application.identity.as_str());
+                    let enabled = !disabled.contains(&application.identity);
                     (
                         application.label.as_ref(),
                         if application.active { "" } else { " (paused)" },

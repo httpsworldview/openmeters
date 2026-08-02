@@ -6,8 +6,9 @@ pub mod routing {
     use std::{collections::HashSet, sync::Arc};
 
     /// Stable key for one application's capture policy.
-    #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-    pub struct StreamIdentity(Arc<str>);
+    #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+    #[serde(transparent)]
+    pub struct StreamIdentity(pub(crate) Arc<str>);
 
     impl StreamIdentity {
         pub fn new(value: impl Into<Arc<str>>) -> Self {
