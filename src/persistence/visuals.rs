@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::{
-    lossy,
-    palette::{HasPalette, PaletteSettings},
-};
+use super::{lossy, palette::PaletteSettings};
 use crate::domain::visuals::VisualKind;
 use crate::util::audio::{Channel, FrequencyScale, WindowKind};
 use crate::visuals::options::{
@@ -24,17 +21,13 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use tracing::warn;
 
-fn is_true(value: &bool) -> bool {
-    *value
-}
-
 crate::macros::default_struct! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
     #[serde(default)]
     pub struct PopoutWindowSettings {
         pub width: u32 = 0,
         pub height: u32 = 0,
-        #[serde(skip_serializing_if = "is_true")]
+        #[serde(skip_serializing_if = "std::clone::Clone::clone")]
         pub popped_out: bool = true,
     }
 }
@@ -99,12 +92,10 @@ fn visual_order(value: Value) -> Vec<VisualKind> {
 
 fn width_basis(value: Value, scope: &str) -> Option<f32> {
     let basis: f32 = lossy::value(value, scope)?;
-    if let Some(basis) = crate::util::finite_positive(basis) {
-        Some(basis)
-    } else {
+    crate::util::finite_positive(basis).or_else(|| {
         warn!("[settings] invalid {scope}: must be finite and greater than zero");
         None
-    }
+    })
 }
 
 fn popout_window(value: Value, scope: &str) -> Option<PopoutWindowSettings> {
@@ -117,13 +108,15 @@ fn popout_window(value: Value, scope: &str) -> Option<PopoutWindowSettings> {
 
 pub(crate) trait SettingsConfig: Default {
     fn from_value_lossy(value: Value, scope: &str) -> Self;
+    fn palette(&self) -> Option<&PaletteSettings>;
+    fn set_palette(&mut self, palette: Option<PaletteSettings>);
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ModuleSettings {
     pub enabled: Option<bool>,
-    config: Option<Value>,
+    config: Value,
 }
 
 impl ModuleSettings {
@@ -131,7 +124,7 @@ impl ModuleSettings {
         let mut map = lossy::object(value, scope)?;
         let mut out = Self::default();
         lossy::field(&mut map, "enabled", &mut out.enabled, scope);
-        out.config = map.remove("config");
+        out.config = map.remove("config").unwrap_or_default();
         lossy::unknown(scope, &map);
         Some(out)
     }
@@ -139,20 +132,21 @@ impl ModuleSettings {
     pub(crate) fn with_config<T: Serialize>(config: &T) -> Self {
         Self {
             enabled: None,
-            config: serde_json::to_value(config).ok(),
+            config: serde_json::to_value(config).unwrap_or_default(),
         }
     }
     pub(crate) fn set_config<T: Serialize>(&mut self, config: &T) {
-        self.config = serde_json::to_value(config).ok();
+        self.config = serde_json::to_value(config).unwrap_or_default();
     }
-    pub(crate) fn parse_config<T: SettingsConfig>(&self) -> Option<T> {
-        self.config
-            .clone()
-            .filter(|value| !value.is_null())
-            .map(|value| T::from_value_lossy(value, "config"))
+    pub(crate) fn parse_config<T: SettingsConfig>(&self) -> T {
+        if self.config.is_null() {
+            T::default()
+        } else {
+            T::from_value_lossy(self.config.clone(), "config")
+        }
     }
     pub(super) fn strip_palette(&mut self) {
-        if let Some(Value::Object(map)) = &mut self.config {
+        if let Value::Object(map) = &mut self.config {
             map.remove("palette");
         }
     }
@@ -160,27 +154,22 @@ impl ModuleSettings {
 
 macro_rules! visual_settings {
     (@impls $name:ident { $($field:ident),* $(,)? }) => {
-        impl HasPalette for $name {
-            fn palette(&self) -> Option<&PaletteSettings> { self.palette.as_ref() }
-            fn set_palette(&mut self, palette: Option<PaletteSettings>) { self.palette = palette; }
-        }
         impl SettingsConfig for $name {
             fn from_value_lossy(value: Value, scope: &str) -> Self {
                 lossy::settings(value, scope, Self::default(), |map, out| {
                     lossy::fields!(map, out, scope; $($field),*);
                 })
             }
+            fn palette(&self) -> Option<&PaletteSettings> { self.palette.as_ref() }
+            fn set_palette(&mut self, palette: Option<PaletteSettings>) { self.palette = palette; }
         }
     };
     ($name:ident from $config_ty:ty { $($field:ident : $ty:ty),* $(,)? } $(extra { $($extra:ident : $extra_ty:ty = $default:expr),* $(,)? })?) => {
         #[derive(Debug, Clone, Serialize, Deserialize)]
         #[serde(default)]
         pub struct $name { $(pub $field: $ty,)* $($(pub $extra: $extra_ty,)*)? pub palette: Option<PaletteSettings> }
-        impl Default for $name { fn default() -> Self { Self::from_config(&<$config_ty>::default()) } }
+        impl Default for $name { fn default() -> Self { let cfg = <$config_ty>::default(); Self { $($field: cfg.$field,)* $($($extra: $default,)*)? palette: None } } }
         impl $name {
-            pub fn from_config(cfg: &$config_ty) -> Self {
-                Self { $($field: cfg.$field,)* $($($extra: $default,)*)? palette: None }
-            }
             pub fn apply_to(&self, cfg: &mut $config_ty) { $(cfg.$field = self.$field;)* }
             pub fn sync_from_config(&mut self, cfg: &$config_ty) { $(self.$field = cfg.$field;)* }
         }

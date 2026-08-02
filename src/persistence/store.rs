@@ -84,10 +84,9 @@ impl SettingsManager {
 }
 
 type PersistRequest = (PathBuf, UiSettings);
-type SaverThread = (mpsc::Sender<PersistRequest>, JoinHandle<()>);
 const PERSIST_DEBOUNCE: Duration = Duration::from_millis(500);
 
-static SAVER: Mutex<Option<SaverThread>> = Mutex::new(None);
+static SAVER: Mutex<Option<(mpsc::Sender<PersistRequest>, JoinHandle<()>)>> = Mutex::new(None);
 
 fn schedule_persist(mut path: PathBuf, mut settings: UiSettings) {
     for module in settings.visuals.modules.values_mut() {
@@ -108,33 +107,18 @@ fn schedule_persist(mut path: PathBuf, mut settings: UiSettings) {
     }
 
     let (tx, rx) = mpsc::channel::<PersistRequest>();
+    tx.send((path, settings)).expect("new saver receiver");
     match std::thread::Builder::new()
         .name("openmeters-settings-saver".into())
         .spawn(move || settings_saver_loop(rx))
     {
-        Ok(join) => {
-            if tx.send((path, settings)).is_ok() {
-                *saver = Some((tx, join));
-            } else {
-                let _ = join.join();
-            }
-        }
+        Ok(join) => *saver = Some((tx, join)),
         Err(err) => tracing::error!("[settings] failed to spawn saver thread: {err}"),
     }
 }
 
-fn flush_persist() {
-    let Some((tx, join)) = crate::util::unpoison(SAVER.lock()).take() else {
-        return;
-    };
-    drop(tx);
-    if join.join().is_err() {
-        tracing::warn!("[settings] saver thread panicked during flush");
-    }
-}
-
 fn settings_saver_loop(rx: mpsc::Receiver<PersistRequest>) {
-    let mut last_written: Option<String> = None;
+    let mut last_written = String::new();
     while let Ok((mut dest, mut data)) = rx.recv() {
         while let Ok(next) = rx.recv_timeout(PERSIST_DEBOUNCE) {
             (dest, data) = next;
@@ -144,11 +128,11 @@ fn settings_saver_loop(rx: mpsc::Receiver<PersistRequest>) {
             tracing::warn!("[settings] serialization failed");
             continue;
         };
-        if last_written.as_deref() == Some(&json) {
+        if last_written == json {
             continue;
         }
         match super::write_json_atomic(&dest, &json) {
-            Ok(()) => last_written = Some(json),
+            Ok(()) => last_written = json,
             Err(err) => tracing::warn!("[settings] failed to write settings: {err}"),
         }
     }
@@ -171,8 +155,14 @@ impl SettingsHandle {
         result
     }
 
-    pub fn flush(&self) {
-        flush_persist();
+    pub fn flush() {
+        let Some((tx, join)) = crate::util::unpoison(SAVER.lock()).take() else {
+            return;
+        };
+        drop(tx);
+        if join.join().is_err() {
+            tracing::warn!("[settings] saver thread panicked during flush");
+        }
     }
 }
 
@@ -209,7 +199,7 @@ mod tests {
 
     #[test]
     fn flush_writes_pending_settings_without_waiting_for_debounce() {
-        flush_persist();
+        SettingsHandle::flush();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
         let handle = SettingsHandle(Rc::new(RefCell::new(SettingsManager {
@@ -219,7 +209,7 @@ mod tests {
         })));
 
         handle.update(|settings| settings.data.decorations = true);
-        handle.flush();
+        SettingsHandle::flush();
 
         let saved: UiSettings = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
         assert!(saved.decorations);

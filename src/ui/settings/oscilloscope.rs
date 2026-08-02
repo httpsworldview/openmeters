@@ -70,7 +70,10 @@ settings_messages!(pane, settings, value {
 
 settings_view! {
     pane as settings {
-        let preset = TriggerPreset::from_mode(settings.trigger_mode);
+        let preset = match settings.trigger_mode {
+            TriggerMode::ZeroCrossing => TriggerPreset::ZeroCrossing,
+            TriggerMode::Stable { .. } => TriggerPreset::Stable,
+        };
         let duration_label = match preset {
             TriggerPreset::Stable => "Segment duration (fallback)",
             TriggerPreset::ZeroCrossing => "Segment duration",
@@ -109,12 +112,3 @@ crate::macros::choice_enum!(no_default all pub(in crate::ui) enum TriggerPreset 
     ZeroCrossing => "Zero-crossing",
     Stable => "Stable",
 });
-
-impl TriggerPreset {
-    fn from_mode(mode: TriggerMode) -> Self {
-        match mode {
-            TriggerMode::ZeroCrossing => Self::ZeroCrossing,
-            TriggerMode::Stable { .. } => Self::Stable,
-        }
-    }
-}

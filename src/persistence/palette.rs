@@ -3,31 +3,23 @@
 
 use crate::util::color::{EPSILON, palettes_equal, sanitize_stop_spreads};
 use iced::Color;
-use serde::de::{self, Deserializer};
-use serde::ser::Serializer;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
 pub struct ColorSetting(Color);
 
-impl Serialize for ColorSetting {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&self.0.to_string())
+impl TryFrom<String> for ColorSetting {
+    type Error = <Color as std::str::FromStr>::Err;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        value.parse().map(Self)
     }
 }
 
-impl<'de> Deserialize<'de> for ColorSetting {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        String::deserialize(deserializer)?
-            .parse()
-            .map(Self)
-            .map_err(de::Error::custom)
+impl From<ColorSetting> for String {
+    fn from(ColorSetting(color): ColorSetting) -> Self {
+        color.to_string()
     }
 }
 
@@ -89,9 +81,4 @@ impl PaletteSettings {
 
 fn color_stops_if_differ(colors: &[Color], defaults: &[Color]) -> Option<Vec<ColorSetting>> {
     (!palettes_equal(colors, defaults)).then(|| colors.iter().copied().map(Into::into).collect())
-}
-
-pub trait HasPalette {
-    fn palette(&self) -> Option<&PaletteSettings>;
-    fn set_palette(&mut self, palette: Option<PaletteSettings>);
 }

@@ -265,7 +265,7 @@ mod tests {
         let module = settings.visuals.modules.get(&VisualKind::Spectrum).unwrap();
         assert_eq!(module.enabled, Some(true));
 
-        let spectrum = module.parse_config::<SpectrumSettings>().unwrap();
+        let spectrum = module.parse_config::<SpectrumSettings>();
         assert_eq!(
             (spectrum.fft_size, spectrum.floor_db, spectrum.show_grid),
             (2048, SpectrumSettings::default().floor_db, false)

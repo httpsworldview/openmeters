@@ -5,7 +5,7 @@ use crate::domain::routing::{CaptureMode, StreamIdentity};
 use crate::infra::pipewire::{CaptureControl, CaptureView};
 use crate::persistence::settings::{
     BAR_MAX_HEIGHT, BAR_MIN_HEIGHT, BUILTIN_THEME, BarAlignment, SettingsHandle, ThemeChoice,
-    ThemeFile, ThemeOrigin, VisualFrameRate, canonical_theme_name,
+    ThemeFile, VisualFrameRate, canonical_theme_name,
 };
 use crate::ui::theme;
 use crate::ui::widgets::palette_editor::{PaletteEditor, PaletteEvent};
@@ -339,7 +339,7 @@ impl ConfigPage {
     fn render_appearance_card(&self) -> container::Container<'_, ConfigMessage> {
         let active = self.settings.borrow().active_theme().to_owned();
         let selected = self.theme_choices.iter().find(|c| c.name == active);
-        let is_builtin = selected.is_some_and(|c| c.origin == ThemeOrigin::BuiltIn);
+        let is_builtin = selected.is_some_and(|c| c.name == BUILTIN_THEME);
 
         let picker = pick_list(self.theme_choices.as_slice(), selected, |choice| {
             ConfigMessage::ThemeChanged(choice.name)
@@ -409,7 +409,12 @@ impl ConfigPage {
             return None;
         }
 
-        let theme_file = self.export_theme(&name);
+        let theme_file = ThemeFile {
+            name: Some(name.clone()),
+            author: None,
+            background: self.settings.borrow().data.background_color,
+            palettes: self.visual_manager.borrow().theme_palettes().collect(),
+        };
         let saved = self
             .settings
             .borrow()
@@ -432,16 +437,6 @@ impl ConfigPage {
 
     fn refresh_theme_choices(&mut self) {
         self.theme_choices = self.settings.borrow().theme_store().list();
-    }
-
-    fn export_theme(&self, name: &str) -> ThemeFile {
-        let bg = self.settings.borrow().data.background_color;
-        ThemeFile {
-            name: Some(name.to_owned()),
-            author: None,
-            background: bg,
-            palettes: self.visual_manager.borrow().theme_palettes().collect(),
-        }
     }
 
     pub(in crate::ui) fn sync_bar_outputs(&mut self, snapshot: OutputSnapshot) {

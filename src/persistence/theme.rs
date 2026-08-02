@@ -18,23 +18,17 @@ pub(crate) fn canonical_theme_name(name: &str) -> String {
     name.replace(['/', '\\', '\0'], "")
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum ThemeOrigin {
-    BuiltIn,
-    User,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThemeChoice {
     pub name: String,
-    pub origin: ThemeOrigin,
 }
 
 impl std::fmt::Display for ThemeChoice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.origin {
-            ThemeOrigin::BuiltIn => write!(f, "{} (built-in)", self.name),
-            ThemeOrigin::User => f.write_str(&self.name),
+        if self.name == BUILTIN_THEME {
+            write!(f, "{} (built-in)", self.name)
+        } else {
+            f.write_str(&self.name)
         }
     }
 }
@@ -66,7 +60,6 @@ impl ThemeStore {
     pub fn list(&self) -> Vec<ThemeChoice> {
         let mut choices = vec![ThemeChoice {
             name: BUILTIN_THEME.to_owned(),
-            origin: ThemeOrigin::BuiltIn,
         }];
         if let Ok(entries) = fs::read_dir(&self.dir) {
             choices.extend(entries.flatten().filter_map(|entry| {
@@ -75,12 +68,13 @@ impl ThemeStore {
                 (path.extension().is_some_and(|e| e == "json") && stem != BUILTIN_THEME).then(
                     || ThemeChoice {
                         name: stem.to_owned(),
-                        origin: ThemeOrigin::User,
                     },
                 )
             }));
         }
-        choices.sort_by_cached_key(|choice| (choice.origin, choice.name.to_lowercase()));
+        choices.sort_by_cached_key(|choice| {
+            (choice.name != BUILTIN_THEME, choice.name.to_lowercase())
+        });
         choices
     }
 
@@ -179,7 +173,7 @@ mod tests {
         assert_eq!(
             names
                 .iter()
-                .map(|choice| (choice.name.as_str(), choice.origin == ThemeOrigin::BuiltIn))
+                .map(|choice| (choice.name.as_str(), choice.name == BUILTIN_THEME))
                 .collect::<Vec<_>>(),
             vec![("default", true), ("alpha", false), ("zebra", false)]
         );
@@ -194,12 +188,7 @@ mod tests {
 
         assert_eq!(name, " customthemename ");
         store.save(raw, &ThemeFile::default())?;
-        assert!(
-            store
-                .list()
-                .iter()
-                .any(|choice| choice.name == name && choice.origin == ThemeOrigin::User)
-        );
+        assert!(store.list().iter().any(|choice| choice.name == name));
         Ok(())
     }
 

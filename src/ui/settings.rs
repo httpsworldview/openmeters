@@ -133,7 +133,7 @@ macro_rules! settings_messages {
 }
 
 use crate::persistence::settings::{
-    BUILTIN_THEME, HasPalette, ModuleSettings, PaletteSettings, SettingsConfig, SettingsHandle,
+    BUILTIN_THEME, ModuleSettings, PaletteSettings, SettingsConfig, SettingsHandle,
 };
 use crate::ui::theme::Palette;
 use crate::ui::widgets::{SliderRange, palette_editor::PaletteEditor};
@@ -236,15 +236,11 @@ impl ActiveSettings {
     }
 }
 
-pub(super) fn load_settings_and_palette<T: SettingsConfig + HasPalette>(
+pub(super) fn load_settings_and_palette<T: SettingsConfig>(
     visual_manager: &VisualManagerHandle,
     kind: VisualKind,
 ) -> (T, PaletteEditor) {
-    let settings: T = visual_manager
-        .borrow()
-        .module_settings(kind)
-        .and_then(|stored| stored.parse_config::<T>())
-        .unwrap_or_default();
+    let settings: T = visual_manager.borrow().module_settings(kind).parse_config();
     let mut editor = PaletteEditor::new(Palette::for_kind(kind));
     if let Some(stored) = settings.palette() {
         let stops: Vec<Color> = stored.stops.iter().copied().map(Into::into).collect();
@@ -255,7 +251,7 @@ pub(super) fn load_settings_and_palette<T: SettingsConfig + HasPalette>(
     (settings, editor)
 }
 
-pub(super) fn persist_with_palette<T: Clone + serde::Serialize + HasPalette>(
+pub(super) fn persist_with_palette<T: Clone + serde::Serialize + SettingsConfig>(
     visual_manager: &VisualManagerHandle,
     settings_handle: &SettingsHandle,
     kind: VisualKind,

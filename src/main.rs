@@ -39,7 +39,7 @@ fn main() -> ExitCode {
     let ui_config = UiConfig {
         capture: backend.control(),
         audio: Rc::new(RefCell::new(Some(backend.take_audio()))),
-        settings_handle: settings_handle.clone(),
+        settings_handle,
     };
     let exit_code = match ui::run(ui_config) {
         Ok(()) => ExitCode::SUCCESS,
@@ -48,7 +48,7 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     };
-    settings_handle.flush();
+    SettingsHandle::flush();
     backend.shutdown();
     exit_code
 }

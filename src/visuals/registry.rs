@@ -159,7 +159,7 @@ macro_rules! visuals {
             }
 
             fn apply(&mut self, module_cfg: &ModuleSettings) {
-                let $aset: $settings_ty = module_cfg.parse_config().unwrap_or_default();
+                let $aset: $settings_ty = module_cfg.parse_config();
                 let ($ap, $as) = (&mut self.processor, &self.state);
                 $apply_body
                 self.apply_palette($aset.palette.as_ref());
@@ -376,11 +376,13 @@ impl VisualManager {
             .map(|entry| entry.descriptor.kind)
             .collect()
     }
-    pub fn module_settings(&self, kind: VisualKind) -> Option<ModuleSettings> {
-        let entry = &self.entries[self.position(kind)?];
+    pub fn module_settings(&self, kind: VisualKind) -> ModuleSettings {
+        let entry = &self.entries[self
+            .position(kind)
+            .expect("visual kind missing from registry")];
         let mut settings = entry.module.export();
         settings.enabled.get_or_insert(entry.enabled);
-        Some(settings)
+        settings
     }
     pub fn theme_palettes(&self) -> impl Iterator<Item = (VisualKind, PaletteSettings)> + '_ {
         self.entries.iter().filter_map(|entry| {
