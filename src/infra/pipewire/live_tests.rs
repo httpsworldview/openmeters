@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::*;
-use crate::domain::routing::{CaptureConfig, CaptureMode, DeviceSelection};
+use crate::domain::routing::{CaptureConfig, CaptureMode};
 use crate::dsp::ChannelPosition;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -15,6 +15,7 @@ struct Process(Child);
 
 impl Process {
     fn spawn(mut command: Command, description: &str) -> Self {
+        command.stdout(Stdio::null()).stderr(Stdio::null());
         Self(
             command
                 .spawn()
@@ -31,31 +32,25 @@ impl Process {
         playback_props: &str,
     ) -> Self {
         let mut command = server.client_command("pw-loopback");
-        command
-            .args([
-                "--name",
-                name,
-                "--group",
-                name,
-                "--channels",
-                &channels.to_string(),
-                "--channel-map",
-                channel_map,
-                "--capture-props",
-                capture_props,
-                "--playback-props",
-                playback_props,
-            ])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+        command.args([
+            "--name",
+            name,
+            "--group",
+            name,
+            "--channels",
+            &channels.to_string(),
+            "--channel-map",
+            channel_map,
+            "--capture-props",
+            capture_props,
+            "--playback-props",
+            playback_props,
+        ]);
         Self::spawn(command, "pw-loopback")
     }
 
     fn daemon(mut command: Command, description: &str) -> Self {
-        command
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+        command.stdin(Stdio::null());
         Self::spawn(command, description)
     }
 
@@ -101,6 +96,14 @@ impl Drop for LingeringNode {
     }
 }
 
+fn json_str<'a>(value: &'a Value, path: &str) -> Option<&'a str> {
+    value.pointer(path)?.as_str()
+}
+
+fn json_u64(value: &Value, path: &str) -> Option<u64> {
+    value.pointer(path)?.as_u64()
+}
+
 struct GraphDump(Vec<Value>);
 
 impl GraphDump {
@@ -111,29 +114,19 @@ impl GraphDump {
     }
 
     fn node(&self, name: &str) -> Option<&Value> {
-        self.objects("PipeWire:Interface:Node").find(|object| {
-            object
-                .pointer("/info/props/node.name")
-                .and_then(Value::as_str)
-                == Some(name)
-        })
+        self.objects("PipeWire:Interface:Node")
+            .find(|object| json_str(object, "/info/props/node.name") == Some(name))
     }
 
     fn node_id(&self, name: &str) -> Option<u32> {
-        self.node(name)?.get("id")?.as_u64()?.try_into().ok()
+        json_u64(self.node(name)?, "/id")?.try_into().ok()
     }
 
     fn link_count(&self, output_node: u32, input_node: u32) -> usize {
         self.objects("PipeWire:Interface:Link")
             .filter(|object| {
-                object
-                    .pointer("/info/output-node-id")
-                    .and_then(Value::as_u64)
-                    == Some(u64::from(output_node))
-                    && object
-                        .pointer("/info/input-node-id")
-                        .and_then(Value::as_u64)
-                        == Some(u64::from(input_node))
+                json_u64(object, "/info/output-node-id") == Some(u64::from(output_node))
+                    && json_u64(object, "/info/input-node-id") == Some(u64::from(input_node))
             })
             .count()
     }
@@ -142,25 +135,18 @@ impl GraphDump {
         let mut ports: Vec<_> = self
             .objects("PipeWire:Interface:Port")
             .filter(|object| {
-                object
-                    .pointer("/info/props/node.id")
-                    .and_then(Value::as_u64)
-                    == Some(u64::from(node))
-                    && object
-                        .pointer("/info/props/port.direction")
-                        .and_then(Value::as_str)
-                        == Some(direction)
+                json_u64(object, "/info/props/node.id") == Some(u64::from(node))
+                    && json_str(object, "/info/props/port.direction") == Some(direction)
             })
-            .filter_map(|object| object.get("id")?.as_u64()?.try_into().ok())
+            .filter_map(|object| json_u64(object, "/id")?.try_into().ok())
             .collect();
         ports.sort_unstable();
         ports
     }
 
     fn inactive(&self, name: &str) -> bool {
-        self.node(name).is_none_or(|node| {
-            node.pointer("/info/state").and_then(Value::as_str) != Some("running")
-        })
+        self.node(name)
+            .is_none_or(|node| json_str(node, "/info/state") != Some("running"))
     }
 }
 
@@ -273,10 +259,26 @@ impl IsolatedPipeWire {
         GraphDump(serde_json::from_slice(&output.stdout).expect("invalid pw-dump JSON"))
     }
 
+    fn wait_dump<T>(&self, description: &str, mut check: impl FnMut(&GraphDump) -> Option<T>) -> T {
+        wait_for(description, || check(&self.dump()))
+    }
+
+    fn wait_audio<T>(
+        &self,
+        description: &str,
+        audio: &mut AudioReader,
+        mut check: impl FnMut(&GraphDump) -> Option<T>,
+    ) -> T {
+        wait_for(description, || {
+            audio.discard(Instant::now());
+            check(&self.dump())
+        })
+    }
+
     fn wait_for_node(&self, name: &str) {
-        wait_for(&format!("node {name}"), || {
-            self.dump().node(name).map(|_| ())
-        });
+        self.wait_dump(&format!("node {name}"), |graph| {
+            graph.node(name).map(|_| ())
+        })
     }
 
     fn create_node(&self, name: &str, props: &str) -> LingeringNode {
@@ -285,7 +287,7 @@ impl IsolatedPipeWire {
                 .args(["create-node", "adapter", props]),
             "create test node",
         );
-        let id = wait_for(&format!("test node {name}"), || self.dump().node_id(name));
+        let id = self.wait_dump(&format!("test node {name}"), |graph| graph.node_id(name));
         LingeringNode {
             id,
             cleanup: self.client_command("pw-cli"),
@@ -317,8 +319,7 @@ impl IsolatedPipeWire {
     }
 
     fn link_nodes(&self, output_node: u32, input_node: u32, channels: usize, passive: bool) {
-        let (outputs, inputs) = wait_for("test fixture ports", || {
-            let graph = self.dump();
+        let (outputs, inputs) = self.wait_dump("test fixture ports", |graph| {
             let outputs = graph.ports(output_node, "out");
             let inputs = graph.ports(input_node, "in");
             (outputs.len() >= channels && inputs.len() >= channels).then_some((outputs, inputs))
@@ -377,8 +378,8 @@ impl ApplicationFixture {
         );
         server.wait_for_node(&target);
         let source = application_source(server, name, Some(&target), channels, channel_map);
-        let capture = wait_for("application capture node", || {
-            server.dump().node_id(&format!("{name}.capture"))
+        let capture = server.wait_dump("application capture node", |graph| {
+            graph.node_id(&format!("{name}.capture"))
         });
         let signal_channels = channels.min(2);
         let signal_map = if signal_channels == 1 {
@@ -463,8 +464,8 @@ fn wide_device(server: &IsolatedPipeWire, name: &str) -> (Process, Process, Ling
     server.wait_for_node(&input);
     let source_name = format!("{name}.signal");
     let source = application_source(server, &source_name, Some(&input), 10, channel_map);
-    let capture = wait_for("device signal capture node", || {
-        server.dump().node_id(&format!("{source_name}.capture"))
+    let capture = server.wait_dump("device signal capture node", |graph| {
+        graph.node_id(&format!("{source_name}.capture"))
     });
     let signal = server.test_source(&format!("{name}.tone"), "Audio/Source", 2, "[ FL, FR ]");
     server.link_nodes(signal.id, capture, 2, false);
@@ -535,16 +536,13 @@ fn live_backend_recovers_after_server_restart() {
     let control = backend.control();
     let mut audio = backend.take_audio();
     let tap_name = format!("openmeters.tap.{}", std::process::id());
-    let initial_tap = wait_for("initial backend session", || {
-        server.dump().node_id(&tap_name)
-    });
+    let initial_tap = server.wait_dump("initial backend session", |graph| graph.node_id(&tap_name));
 
     let fixture_name = format!("openmeters-live-recovery-{}", std::process::id());
     let playback_name = format!("{fixture_name}.playback");
     let target_name = format!("{fixture_name}.sink");
     let fixture = ApplicationFixture::active(&server, &fixture_name);
-    wait_for("initial recovery capture links", || {
-        let graph = server.dump();
+    server.wait_dump("initial recovery capture links", |graph| {
         let source = graph.node_id(&playback_name)?;
         let target = graph.node_id(&target_name)?;
         (graph.link_count(source, target) == 2 && graph.link_count(source, initial_tap) == 2)
@@ -562,13 +560,12 @@ fn live_backend_recovers_after_server_restart() {
     drop(fixture);
 
     server.restart();
-    let recovered_tap = wait_for("recovered backend session", || {
-        server.dump().node_id(&tap_name)
+    let recovered_tap = server.wait_dump("recovered backend session", |graph| {
+        graph.node_id(&tap_name)
     });
 
     let recovered = ApplicationFixture::active(&server, &fixture_name);
-    let (source, target) = wait_for("recovered capture links", || {
-        let graph = server.dump();
+    let (source, target) = server.wait_dump("recovered capture links", |graph| {
         let source = graph.node_id(&playback_name)?;
         let target = graph.node_id(&target_name)?;
         (graph.link_count(source, target) == 2 && graph.link_count(source, recovered_tap) == 2)
@@ -582,8 +579,7 @@ fn live_backend_recovers_after_server_restart() {
     );
 
     backend.shutdown();
-    wait_for("owned link cleanup after shutdown", || {
-        let graph = server.dump();
+    server.wait_dump("owned link cleanup after shutdown", |graph| {
         (graph.node(&tap_name).is_none() && graph.link_count(source, target) == 2).then_some(())
     });
     drop(recovered);
@@ -599,10 +595,7 @@ fn live_capture_preserves_graph_invariants() {
     let control = backend.control();
     let mut audio = backend.take_audio();
     let tap_name = format!("openmeters.tap.{}", std::process::id());
-    let tap_id = wait_for("capture tap", || {
-        audio.discard(Instant::now());
-        server.dump().node_id(&tap_name)
-    });
+    let tap_id = server.wait_audio("capture tap", &mut audio, |graph| graph.node_id(&tap_name));
     let graph = server.dump();
     assert!(
         graph
@@ -619,15 +612,14 @@ fn live_capture_preserves_graph_invariants() {
     let playback_name = format!("{active_name}.playback");
     let target_name = format!("{active_name}.sink");
     let mut active = ApplicationFixture::active(&server, &active_name);
-    let (source_id, target_id, identity) = wait_for("active application fan-out", || {
-        audio.discard(Instant::now());
-        let graph = server.dump();
-        let source = graph.node_id(&playback_name)?;
-        let target = graph.node_id(&target_name)?;
-        let identity = control.view().applications.first()?.identity.clone();
-        (graph.link_count(source, target) == 2 && graph.link_count(source, tap_id) == 2)
-            .then_some((source, target, identity))
-    });
+    let (source_id, target_id, identity) =
+        server.wait_audio("active application fan-out", &mut audio, |graph| {
+            let source = graph.node_id(&playback_name)?;
+            let target = graph.node_id(&target_name)?;
+            let identity = control.view().applications.first()?.identity.clone();
+            (graph.link_count(source, target) == 2 && graph.link_count(source, tap_id) == 2)
+                .then_some((source, target, identity))
+        });
     let graph = server.dump();
     let tap = graph.node(&tap_name).expect("tap node");
     assert!(property_is(tap, "node.passive", "in"));
@@ -648,16 +640,13 @@ fn live_capture_preserves_graph_invariants() {
         6,
         "[ FL, FR, FC, LFE, RL, RR ]",
     );
-    wait_for("surround application mix", || {
-        audio.discard(Instant::now());
-        let graph = server.dump();
+    server.wait_audio("surround application mix", &mut audio, |graph| {
         let tap = graph.node(&tap_name)?;
         let source = graph.node_id(&surround_playback)?;
-        (tap.get("id")?.as_u64() == Some(tap_id as u64)
+        (json_u64(tap, "/id") == Some(u64::from(tap_id))
             && graph.link_count(source, tap_id) == 6
             && graph.link_count(source_id, tap_id) == 2
-            && tap.pointer("/info/params/Format/0/channels")?.as_u64()
-                == Some(MAX_CAPTURE_CHANNELS as u64))
+            && json_u64(tap, "/info/params/Format/0/channels") == Some(MAX_CAPTURE_CHANNELS as u64))
         .then_some(())
     });
     wait_for_mapped_signal(
@@ -666,15 +655,12 @@ fn live_capture_preserves_graph_invariants() {
         ChannelPosition::SURROUND,
     );
     drop(surround);
-    wait_for("stable application mix", || {
-        audio.discard(Instant::now());
-        let graph = server.dump();
+    server.wait_audio("stable application mix", &mut audio, |graph| {
         let tap = graph.node(&tap_name)?;
-        (tap.get("id")?.as_u64() == Some(tap_id as u64)
+        (json_u64(tap, "/id") == Some(u64::from(tap_id))
             && graph.node(&surround_playback).is_none()
             && graph.link_count(source_id, tap_id) == 2
-            && tap.pointer("/info/params/Format/0/channels")?.as_u64()
-                == Some(MAX_CAPTURE_CHANNELS as u64))
+            && json_u64(tap, "/info/params/Format/0/channels") == Some(MAX_CAPTURE_CHANNELS as u64))
         .then_some(())
     });
 
@@ -684,20 +670,16 @@ fn live_capture_preserves_graph_invariants() {
         disabled_streams: disabled,
         ..Default::default()
     }));
-    wait_for("application disable", || {
-        audio.discard(Instant::now());
-        (server.dump().link_count(source_id, tap_id) == 0).then_some(())
+    server.wait_audio("application disable", &mut audio, |graph| {
+        (graph.link_count(source_id, tap_id) == 0).then_some(())
     });
     assert!(control.configure(CaptureConfig::default()));
-    wait_for("application re-enable", || {
-        audio.discard(Instant::now());
-        (server.dump().link_count(source_id, tap_id) == 2).then_some(())
+    server.wait_audio("application re-enable", &mut audio, |graph| {
+        (graph.link_count(source_id, tap_id) == 2).then_some(())
     });
 
     active.route.take();
-    wait_for("route removal", || {
-        audio.discard(Instant::now());
-        let graph = server.dump();
+    server.wait_audio("route removal", &mut audio, |graph| {
         (graph.link_count(source_id, tap_id) == 0 && graph.inactive(&playback_name)).then_some(())
     });
     drop(active);
@@ -705,8 +687,8 @@ fn live_capture_preserves_graph_invariants() {
     let idle_name = format!("openmeters-live-idle-{}", std::process::id());
     let idle_playback = format!("{idle_name}.playback");
     let idle = application_source(&server, &idle_name, None, 2, "[ FL, FR ]");
-    let idle_id = wait_for("unrouted application", || {
-        server.dump().node_id(&idle_playback)
+    let idle_id = server.wait_dump("unrouted application", |graph| {
+        graph.node_id(&idle_playback)
     });
     std::thread::sleep(Duration::from_millis(250));
     let graph = server.dump();
@@ -721,13 +703,11 @@ fn live_capture_preserves_graph_invariants() {
     let target_id = paused_sink.id;
     let paused_playback = format!("{paused_name}.playback");
     let paused_source = application_source(&server, &paused_name, None, 2, "[ FL, FR ]");
-    let paused_source_id = wait_for("paused application", || {
-        server.dump().node_id(&paused_playback)
+    let paused_source_id = server.wait_dump("paused application", |graph| {
+        graph.node_id(&paused_playback)
     });
     server.link_nodes(paused_source_id, target_id, 2, true);
-    wait_for("passive tap of paused route", || {
-        audio.discard(Instant::now());
-        let graph = server.dump();
+    server.wait_audio("passive tap of paused route", &mut audio, |graph| {
         (graph.link_count(paused_source_id, target_id) == 2
             && graph.link_count(paused_source_id, tap_id) == 2
             && graph.inactive(&paused_playback)
@@ -749,45 +729,35 @@ fn live_capture_preserves_graph_invariants() {
     let device_name = format!("openmeters-live-device-{}", std::process::id());
     let device_node = format!("{device_name}.playback");
     let device = wide_device(&server, &device_name);
-    let (token, target) = wait_for("wide device discovery", || {
+    let (token, target) = server.wait_dump("wide device discovery", |graph| {
         let view = control.view();
         let token = view
             .devices
             .iter()
             .find(|token| token.as_ref() == device_node)?
             .to_string();
-        let target = server
-            .dump()
-            .node(&device_node)?
-            .pointer("/info/props/object.serial")?
-            .as_u64()?
-            .to_string();
+        let target = json_u64(graph.node(&device_node)?, "/info/props/object.serial")?.to_string();
         Some((token, target))
     });
     assert!(control.configure(CaptureConfig {
         mode: CaptureMode::Device,
-        device: DeviceSelection::Device(token),
+        device: Some(token.into()),
         ..Default::default()
     }));
-    wait_for("wide device target", || {
-        audio.discard(Instant::now());
-        let graph = server.dump();
+    server.wait_audio("wide device target", &mut audio, |graph| {
         let tap = graph.node(&tap_name)?;
         (property_is(tap, "target.object", &target)
-            && tap.pointer("/info/params/Format/0/channels")?.as_u64()
-                == Some(MAX_CAPTURE_CHANNELS as u64))
+            && json_u64(tap, "/info/params/Format/0/channels") == Some(MAX_CAPTURE_CHANNELS as u64))
         .then_some(())
     });
     wait_for_mapped_signal("captured device PCM", &mut audio, WIDE_POSITIONS);
 
     assert!(control.configure(CaptureConfig {
         mode: CaptureMode::Device,
-        device: DeviceSelection::Device("openmeters-definitely-missing".into()),
+        device: Some("openmeters-definitely-missing".into()),
         ..Default::default()
     }));
-    wait_for("missing device idle fallback", || {
-        audio.discard(Instant::now());
-        let graph = server.dump();
+    server.wait_audio("missing device idle fallback", &mut audio, |graph| {
         let tap = graph.node(&tap_name)?;
         (tap.pointer("/info/props/target.object").is_none()
             && property_is(tap, "node.autoconnect", "false")
@@ -797,7 +767,7 @@ fn live_capture_preserves_graph_invariants() {
     drop(device);
 
     backend.shutdown();
-    wait_for("tap cleanup", || {
-        server.dump().node(&tap_name).is_none().then_some(())
+    server.wait_dump("tap cleanup", |graph| {
+        graph.node(&tap_name).is_none().then_some(())
     });
 }

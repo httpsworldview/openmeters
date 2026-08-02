@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::domain::routing::{CaptureMode, DeviceSelection, StreamIdentity};
-use crate::infra::pipewire::{ApplicationView, CaptureControl, CaptureView};
+use crate::domain::routing::{CaptureMode, StreamIdentity};
+use crate::infra::pipewire::{CaptureControl, CaptureView};
 use crate::persistence::settings::{
     BAR_MAX_HEIGHT, BAR_MIN_HEIGHT, BUILTIN_THEME, BarAlignment, SettingsHandle, ThemeChoice,
     ThemeFile, ThemeOrigin, VisualFrameRate, canonical_theme_name,
@@ -24,27 +24,19 @@ const GRID_COLUMNS: usize = 2;
 const MAX_DEVICE_NAME_LEN: usize = 48;
 const REGISTRY_UNAVAILABLE_MESSAGE: &str = "PipeWire unavailable; reconnecting...";
 
-fn truncate_label(label: &str, max_chars: usize) -> (&str, bool) {
-    if label.chars().count() <= max_chars {
-        return (label, false);
-    }
-    let end = label
-        .char_indices()
-        .nth(max_chars.saturating_sub(3))
-        .map_or(label.len(), |(i, _)| i);
-    (&label[..end], true)
-}
-
 #[derive(Clone, PartialEq, Eq)]
 struct DeviceOption {
-    label: String,
-    selection: DeviceSelection,
+    label: Arc<str>,
+    selection: Option<Arc<str>>,
 }
 
 impl std::fmt::Display for DeviceOption {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let (trimmed, truncated) = truncate_label(&self.label, MAX_DEVICE_NAME_LEN);
-        write!(f, "{trimmed}{}", if truncated { "..." } else { "" })
+        if self.label.chars().nth(MAX_DEVICE_NAME_LEN).is_some() {
+            write!(f, "{:.1$}...", self.label, MAX_DEVICE_NAME_LEN - 3)
+        } else {
+            f.write_str(&self.label)
+        }
     }
 }
 
@@ -60,7 +52,7 @@ pub enum ConfigMessage {
         enabled: bool,
     },
     CaptureModeChanged(CaptureMode),
-    CaptureDeviceChanged(DeviceSelection),
+    CaptureDeviceChanged(Option<Arc<str>>),
     BgPalette(PaletteEvent),
     VisualFrameRateChanged(VisualFrameRate),
     DecorationsToggled(bool),
@@ -76,12 +68,11 @@ pub enum ConfigMessage {
 
 pub struct ConfigPage {
     capture: CaptureControl,
-    view_revision: Option<u64>,
+    capture_view: Option<Arc<CaptureView>>,
     visual_manager: VisualManagerHandle,
     settings: SettingsHandle,
     bar_supported: bool,
     bar_monitors: Vec<String>,
-    applications: Arc<[ApplicationView]>,
     registry_alive: bool,
     applications_expanded: bool,
     device_choices: Vec<DeviceOption>,
@@ -116,12 +107,11 @@ impl ConfigPage {
 
         Self {
             capture,
-            view_revision: None,
+            capture_view: None,
             visual_manager,
             settings,
             bar_supported,
             bar_monitors: Vec::new(),
-            applications: Arc::default(),
             registry_alive: true,
             applications_expanded: false,
             device_choices: Vec::new(),
@@ -136,15 +126,18 @@ impl ConfigPage {
     pub(in crate::ui) fn refresh_registry(&mut self) {
         self.registry_alive = self.capture.is_alive();
         if !self.registry_alive {
-            self.view_revision = None;
-            self.applications = Arc::default();
+            self.capture_view = None;
             self.device_choices.clear();
             return;
         }
         let view = self.capture.view();
-        if self.view_revision != Some(view.revision) {
-            self.view_revision = Some(view.revision);
+        if self
+            .capture_view
+            .as_ref()
+            .is_none_or(|current| !Arc::ptr_eq(current, &view))
+        {
             self.apply_capture_view(&view);
+            self.capture_view = Some(view);
         }
     }
 
@@ -175,8 +168,7 @@ impl ConfigPage {
                     self.dispatch_capture_config();
                 }
             }
-            ConfigMessage::CaptureDeviceChanged(selection) => {
-                let token = selection.token().map(str::to_owned);
+            ConfigMessage::CaptureDeviceChanged(token) => {
                 if self.settings.borrow().data.last_device_name != token {
                     self.settings.update(|s| s.data.last_device_name = token);
                     self.dispatch_capture_config();
@@ -250,10 +242,14 @@ impl ConfigPage {
     }
 
     fn render_applications_section(&self) -> Column<'_, ConfigMessage> {
+        let applications = self
+            .capture_view
+            .as_ref()
+            .map_or(&[][..], |view| view.applications.as_ref());
         let status_suffix: String = match (
-            self.applications.len(),
+            applications.len(),
             self.registry_alive,
-            self.view_revision.is_some(),
+            self.capture_view.is_some(),
         ) {
             (0, false, _) => " - unavailable".into(),
             (0, true, false) => " - waiting...".into(),
@@ -274,17 +270,17 @@ impl ConfigPage {
         if self.applications_expanded {
             let settings = self.settings.borrow();
             let disabled = &settings.data.disabled_streams;
-            let content: Element<'_, _> = if self.applications.is_empty() {
+            let content: Element<'_, _> = if applications.is_empty() {
                 let message = if !self.registry_alive {
                     REGISTRY_UNAVAILABLE_MESSAGE
-                } else if self.view_revision.is_some() {
+                } else if self.capture_view.is_some() {
                     "No audio applications detected. Launch something to see it here."
                 } else {
                     "Waiting for PipeWire registry..."
                 };
                 text(message).size(theme::BODY_TEXT_SIZE).into()
             } else {
-                render_toggle_grid(&self.applications, |application| {
+                render_toggle_grid(applications, |application| {
                     let enabled = !disabled.contains(&application.identity);
                     (
                         application.label.as_ref(),
@@ -313,12 +309,15 @@ impl ConfigPage {
         }
 
         let settings = self.settings.borrow();
-        let selected_device =
-            DeviceSelection::from_token(settings.data.last_device_name.as_deref());
+        let selected_token = settings
+            .data
+            .last_device_name
+            .as_deref()
+            .filter(|token| !token.is_empty());
         let selected = self
             .device_choices
             .iter()
-            .find(|opt| opt.selection == selected_device);
+            .find(|opt| opt.selection.as_deref() == selected_token);
         let mut picker = pick_list(self.device_choices.as_slice(), selected, |opt| {
             ConfigMessage::CaptureDeviceChanged(opt.selection)
         })
@@ -514,31 +513,30 @@ impl ConfigPage {
             let changed =
                 self.settings.borrow().data.last_device_name.as_deref() != Some(selected.as_ref());
             if changed {
-                let selected = selected.to_string();
+                let selected = Arc::clone(selected);
                 self.settings
                     .update(|settings| settings.data.last_device_name = Some(selected));
             }
         }
         let mut choices = vec![DeviceOption {
-            label: format!("Default sink - {}", view.default_sink),
-            selection: DeviceSelection::Default,
+            label: Arc::from(format!("Default sink - {}", view.default_sink)),
+            selection: None,
         }];
         choices.extend(view.devices.iter().map(|token| DeviceOption {
-            label: token.to_string(),
-            selection: DeviceSelection::Device(token.to_string()),
+            label: Arc::clone(token),
+            selection: Some(Arc::clone(token)),
         }));
-        if let Some(token) = self.settings.borrow().data.last_device_name.as_deref()
+        if let Some(token) = self.settings.borrow().data.last_device_name.as_ref()
             && !choices
                 .iter()
-                .any(|choice| choice.selection.token() == Some(token))
+                .any(|choice| choice.selection.as_ref() == Some(token))
         {
             choices.push(DeviceOption {
-                label: format!("{token} (unavailable)"),
-                selection: DeviceSelection::Device(token.to_owned()),
+                label: Arc::from(format!("{token} (unavailable)")),
+                selection: Some(Arc::clone(token)),
             });
         }
         self.device_choices = choices;
-        self.applications = Arc::clone(&view.applications);
     }
 
     fn dispatch_capture_config(&self) {

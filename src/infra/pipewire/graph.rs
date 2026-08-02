@@ -6,7 +6,7 @@ use crate::domain::routing::StreamIdentity;
 use crate::dsp::ChannelPosition;
 use pipewire as pw;
 use pw::registry::GlobalObject;
-use pw::spa::utils::dict::DictRef;
+use pw::spa::utils::{Direction, dict::DictRef};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -80,46 +80,15 @@ channel_positions! {
     "MONO" => Mono => pw::spa::sys::SPA_AUDIO_CHANNEL_MONO,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct CaptureLayout {
-    pub channels: Vec<Channel>,
+pub(super) fn stereo_layout() -> Vec<Channel> {
+    vec![Channel::FrontLeft, Channel::FrontRight]
 }
 
-impl CaptureLayout {
-    pub(super) fn stereo() -> Self {
-        Self {
-            channels: vec![Channel::FrontLeft, Channel::FrontRight],
-        }
-    }
-
-    pub(super) fn surround() -> Self {
-        Self {
-            channels: Channel::SURROUND.into(),
-        }
-    }
-
-    pub(super) fn spa_positions(&self) -> [u32; pw::spa::sys::SPA_AUDIO_MAX_CHANNELS as usize] {
-        let mut positions = [0; pw::spa::sys::SPA_AUDIO_MAX_CHANNELS as usize];
-        for (position, channel) in positions.iter_mut().zip(&self.channels) {
-            *position = channel.spa_id();
-        }
-        positions
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(super) enum Direction {
-    Input,
-    Output,
-    #[default]
-    Unknown,
-}
-
-fn direction(value: Option<&str>) -> Direction {
+fn direction(value: Option<&str>) -> Option<Direction> {
     match value {
-        Some(value) if value.eq_ignore_ascii_case("in") => Direction::Input,
-        Some(value) if value.eq_ignore_ascii_case("out") => Direction::Output,
-        _ => Direction::Unknown,
+        Some(value) if value.eq_ignore_ascii_case("in") => Some(Direction::Input),
+        Some(value) if value.eq_ignore_ascii_case("out") => Some(Direction::Output),
+        _ => None,
     }
 }
 
@@ -129,7 +98,7 @@ pub(super) struct Port {
     pub local_id: u32,
     pub node_id: u32,
     pub channel: Option<Channel>,
-    pub direction: Direction,
+    pub direction: Option<Direction>,
     pub monitor: bool,
 }
 
@@ -163,20 +132,17 @@ pub(super) enum NodeKind {
     Other,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(test, derive(Default))]
 pub(super) struct Node {
     pub id: u32,
     pub serial: Option<u64>,
     pub name: Option<Arc<str>>,
     pub description: Option<Arc<str>>,
-    pub media_class: Option<Arc<str>>,
     pub kind: NodeKind,
-    pub virtual_node: bool,
+    pub device: bool,
     pub client_id: Option<u32>,
     pub identity: Option<StreamIdentity>,
     pub application_name: Option<Arc<str>>,
-    pub ports: Vec<Port>,
 }
 
 impl Node {
@@ -204,18 +170,26 @@ impl Node {
         let description = arc_property(description)
             .or_else(|| arc_property(media_name))
             .or_else(|| name.clone());
+        let application_name = arc_property(application_name);
+        let device = !bool_property(virtual_node)
+            && application_name.is_none()
+            && kind != NodeKind::Playback
+            && (matches!(kind, NodeKind::Sink | NodeKind::Source)
+                || contains_ascii(media_class.unwrap_or_default(), "audio")
+                || [name.as_deref(), description.as_deref()]
+                    .into_iter()
+                    .flatten()
+                    .any(|name| contains_ascii(name, "monitor")));
         Self {
             id: global.id,
             serial: clean_property(serial).and_then(|value| value.parse().ok()),
             name,
             description,
-            media_class: arc_property(media_class),
             kind,
-            virtual_node: bool_property(virtual_node),
+            device,
             client_id: clean_property(client_id).and_then(|value| value.parse().ok()),
             identity,
-            application_name: arc_property(application_name),
-            ports: Vec::new(),
+            application_name,
         }
     }
 
@@ -231,50 +205,6 @@ impl Node {
         self.serial
             .map(|serial| serial.to_string())
             .or_else(|| self.name.as_deref().map(str::to_owned))
-    }
-
-    pub(super) fn is_device(&self) -> bool {
-        !self.virtual_node
-            && self.application_name.is_none()
-            && self.kind != NodeKind::Playback
-            && (matches!(self.kind, NodeKind::Sink | NodeKind::Source)
-                || self
-                    .media_class
-                    .as_deref()
-                    .is_some_and(|class| contains_ascii(class, "audio"))
-                || self
-                    .name
-                    .as_deref()
-                    .is_some_and(|name| contains_ascii(name, "monitor"))
-                || self
-                    .description
-                    .as_deref()
-                    .is_some_and(|name| contains_ascii(name, "monitor")))
-    }
-
-    pub(super) fn output_ports(&self) -> Vec<&Port> {
-        self.ports_in(Direction::Output, self.kind == NodeKind::Sink)
-    }
-
-    pub(super) fn input_ports(&self) -> Vec<&Port> {
-        self.ports_in(Direction::Input, false)
-    }
-
-    fn ports_in(&self, direction: Direction, prefer_monitor: bool) -> Vec<&Port> {
-        for monitor in [Some(prefer_monitor), None] {
-            let mut ports: Vec<_> = self
-                .ports
-                .iter()
-                .filter(|port| {
-                    port.direction == direction && monitor.is_none_or(|value| port.monitor == value)
-                })
-                .collect();
-            if !ports.is_empty() {
-                ports.sort_by_key(|port| (port.local_id, port.global_id));
-                return ports;
-            }
-        }
-        Vec::new()
     }
 }
 
@@ -329,20 +259,17 @@ fn stream_identity(
     ]
     .into_iter()
     .find_map(|(property, value)| clean_property(value).map(|value| (property, value)))?;
-    Some(StreamIdentity::new(format!(
+    Some(StreamIdentity(Arc::from(format!(
         "{media_class}:{property}:{value}"
-    )))
+    ))))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct GraphLink {
-    pub id: u32,
     pub output_node: u32,
     pub input_node: u32,
     pub active: bool,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Target {
     metadata_id: u32,
     subject: u32,
@@ -350,10 +277,10 @@ struct Target {
     name: Option<Arc<str>>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub(super) struct Graph {
     nodes: HashMap<u32, Node>,
-    pending_ports: HashMap<u32, Vec<Port>>,
+    ports: HashMap<u32, Vec<Port>>,
     port_nodes: HashMap<u32, u32>,
     links: HashMap<u32, GraphLink>,
     clients: HashSet<u32>,
@@ -370,13 +297,30 @@ impl Graph {
         self.nodes.values()
     }
 
-    pub(super) fn upsert_node(&mut self, mut node: Node) {
-        if let Some(previous) = self.nodes.remove(&node.id) {
-            node.ports = previous.ports;
+    pub(super) fn output_ports(&self, node: &Node) -> Vec<&Port> {
+        self.ports_in(node.id, Direction::Output, node.kind == NodeKind::Sink)
+    }
+
+    pub(super) fn input_ports(&self, node: &Node) -> Vec<&Port> {
+        self.ports_in(node.id, Direction::Input, false)
+    }
+
+    fn ports_in(&self, node: u32, direction: Direction, prefer_monitor: bool) -> Vec<&Port> {
+        let mut ports: Vec<_> = self
+            .ports
+            .get(&node)
+            .into_iter()
+            .flatten()
+            .filter(|port| port.direction == Some(direction))
+            .collect();
+        if ports.iter().any(|port| port.monitor == prefer_monitor) {
+            ports.retain(|port| port.monitor == prefer_monitor);
         }
-        if let Some(mut pending) = self.pending_ports.remove(&node.id) {
-            node.ports.append(&mut pending);
-        }
+        ports.sort_by_key(|port| (port.local_id, port.global_id));
+        ports
+    }
+
+    pub(super) fn upsert_node(&mut self, node: Node) {
         self.remember_application(&node);
         self.nodes.insert(node.id, node);
         self.reconcile_targets();
@@ -388,11 +332,7 @@ impl Graph {
 
     pub(super) fn upsert_port(&mut self, port: Port) {
         self.port_nodes.insert(port.global_id, port.node_id);
-        let ports = self
-            .nodes
-            .get_mut(&port.node_id)
-            .map(|node| &mut node.ports)
-            .unwrap_or_else(|| self.pending_ports.entry(port.node_id).or_default());
+        let ports = self.ports.entry(port.node_id).or_default();
         match ports
             .iter()
             .position(|candidate| candidate.global_id == port.global_id)
@@ -402,28 +342,33 @@ impl Graph {
         }
     }
 
-    pub(super) fn upsert_link(&mut self, link: GraphLink) {
-        self.links.insert(link.id, link);
+    pub(super) fn upsert_link(&mut self, id: u32, link: GraphLink) {
+        self.links.insert(id, link);
     }
 
     pub(super) fn remove_global(&mut self, id: u32) {
+        let _ = self.default_sink.take_if(|target| target.metadata_id == id);
         if let Some(node_id) = self.port_nodes.remove(&id) {
-            if let Some(node) = self.nodes.get_mut(&node_id) {
-                node.ports.retain(|port| port.global_id != id);
-            }
-            if self.pending_ports.get_mut(&node_id).is_some_and(|ports| {
+            if self.ports.get_mut(&node_id).is_some_and(|ports| {
                 ports.retain(|port| port.global_id != id);
                 ports.is_empty()
             }) {
-                self.pending_ports.remove(&node_id);
+                self.ports.remove(&node_id);
             }
             return;
         }
         if let Some(node) = self.nodes.remove(&id) {
+            self.ports.remove(&id);
             self.port_nodes.retain(|_, node_id| *node_id != id);
             self.links
                 .retain(|_, link| link.output_node != id && link.input_node != id);
-            self.clear_target_node(id, node.token());
+            if let Some(target) = &mut self.default_sink
+                && target.node_id == Some(id)
+            {
+                target.node_id = None;
+                target.name.get_or_insert_with(|| node.token());
+            }
+            self.reconcile_targets();
             return;
         }
         if self.clients.remove(&id) {
@@ -431,16 +376,6 @@ impl Graph {
             return;
         }
         self.links.remove(&id);
-    }
-
-    pub(super) fn remove_metadata(&mut self, id: u32) {
-        if self
-            .default_sink
-            .as_ref()
-            .is_some_and(|target| target.metadata_id == id)
-        {
-            self.default_sink = None;
-        }
     }
 
     pub(super) fn metadata(
@@ -452,33 +387,27 @@ impl Graph {
         value: Option<&str>,
     ) {
         let Some(key) = key else {
-            if self.default_sink.as_ref().is_some_and(|target| {
-                target.metadata_id == metadata_id && target.subject == subject
-            }) {
-                self.default_sink = None;
-            }
+            let _ = self
+                .default_sink
+                .take_if(|target| target.metadata_id == metadata_id && target.subject == subject);
             return;
         };
         if key != "default.audio.sink" {
             return;
         }
         let slot = &mut self.default_sink;
-        match value {
-            Some(value) => {
-                *slot = Some(Target {
-                    metadata_id,
-                    subject,
-                    node_id: (subject != 0).then_some(subject),
-                    name: metadata_name(type_hint, value).map(Arc::from),
-                });
-            }
-            None if slot.as_ref().is_some_and(|target| {
-                target.metadata_id == metadata_id && target.subject == subject
-            }) =>
-            {
-                *slot = None;
-            }
-            None => return,
+        if let Some(value) = value {
+            *slot = Some(Target {
+                metadata_id,
+                subject,
+                node_id: (subject != 0).then_some(subject),
+                name: metadata_name(type_hint, value).map(Arc::from),
+            });
+        } else if slot
+            .take_if(|target| target.metadata_id == metadata_id && target.subject == subject)
+            .is_none()
+        {
+            return;
         }
         self.reconcile_targets();
     }
@@ -486,11 +415,13 @@ impl Graph {
     pub(super) fn default_sink(&self) -> Option<&Node> {
         self.default_sink
             .as_ref()
-            .and_then(|target| self.resolve_target(target))
+            .and_then(|target| target.node_id)
+            .and_then(|id| self.nodes.get(&id))
     }
 
     pub(super) fn find_device(&self, token: &str) -> Option<&Node> {
-        let candidates = || self.nodes.values().filter(|node| node.is_device());
+        let candidates = || self.nodes.values().filter(|node| node.device);
+        let token_id = node_token_id(token);
         candidates()
             .find(|node| {
                 node.name
@@ -502,52 +433,45 @@ impl Graph {
                     node.description
                         .as_deref()
                         .is_some_and(|name| name.eq_ignore_ascii_case(token))
-                        || node_token_id(token) == Some(node.id)
+                        || token_id == Some(node.id)
                 })
             })
     }
 
-    pub(super) fn has_external_route(&self, node_id: u32, tap_id: Option<u32>) -> bool {
+    pub(super) fn external_routes(
+        &self,
+        node_id: u32,
+        tap_id: Option<u32>,
+    ) -> impl Iterator<Item = &GraphLink> {
         self.links
             .values()
-            .any(|link| link.output_node == node_id && Some(link.input_node) != tap_id)
-    }
-
-    fn has_active_external_route(&self, node_id: u32, tap_id: Option<u32>) -> bool {
-        self.links.values().any(|link| {
-            link.active && link.output_node == node_id && Some(link.input_node) != tap_id
-        })
+            .filter(move |link| link.output_node == node_id && Some(link.input_node) != tap_id)
     }
 
     pub(super) fn view(&self, tap_id: Option<u32>, selected_device: Option<&str>) -> CaptureView {
         let mut applications: HashMap<StreamIdentity, ApplicationView> = HashMap::new();
-        for client in &self.clients {
-            if let Some(remembered) = self.remembered_apps.get(client) {
-                for (identity, label) in remembered {
-                    merge_application(
-                        &mut applications,
-                        identity.clone(),
-                        Arc::clone(label),
-                        false,
-                    );
-                }
-            }
-        }
-        for node in self
+        let remembered = self
+            .clients
+            .iter()
+            .filter_map(|client| self.remembered_apps.get(client))
+            .flat_map(HashMap::iter)
+            .map(|(identity, label)| (identity.clone(), Arc::clone(label), false));
+        let live = self
             .nodes
             .values()
             .filter(|node| node.kind == NodeKind::Playback)
-        {
-            let Some(identity) = node.identity.clone() else {
-                continue;
-            };
-            let label = application_label(node, &identity);
-            merge_application(
-                &mut applications,
-                identity,
-                label,
-                self.has_active_external_route(node.id, tap_id),
-            );
+            .filter_map(|node| {
+                let identity = node.identity.clone()?;
+                let label = application_label(node, &identity);
+                Some((
+                    identity,
+                    label,
+                    self.external_routes(node.id, tap_id)
+                        .any(|link| link.active),
+                ))
+            });
+        for (identity, label, active) in remembered.chain(live) {
+            merge_application(&mut applications, identity, label, active);
         }
         let mut applications: Vec<_> = applications.into_values().collect();
         applications.sort_by_cached_key(|application| {
@@ -560,23 +484,18 @@ impl Graph {
         let mut devices: Vec<_> = self
             .nodes
             .values()
-            .filter(|node| node.is_device())
+            .filter(|node| node.device)
             .map(Node::token)
             .collect();
         devices.sort_by_cached_key(|token| token.to_ascii_lowercase());
         devices.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
 
-        let default_sink = self.default_sink().map_or_else(
-            || {
-                self.default_sink
-                    .as_ref()
-                    .and_then(|target| target.name.clone())
-                    .unwrap_or_else(|| Arc::from("(none)"))
-            },
-            Node::token,
-        );
+        let default_sink = self
+            .default_sink()
+            .map(Node::token)
+            .or_else(|| self.default_sink.as_ref()?.name.clone())
+            .unwrap_or_else(|| Arc::from("(none)"));
         CaptureView {
-            revision: 0,
             applications: applications.into(),
             devices: devices.into(),
             default_sink,
@@ -606,29 +525,11 @@ impl Graph {
             .or_insert(label);
     }
 
-    fn resolve_target(&self, target: &Target) -> Option<&Node> {
-        target
-            .node_id
-            .and_then(|id| self.nodes.get(&id))
-            .or_else(|| {
-                target.name.as_deref().and_then(|name| {
-                    self.nodes
-                        .values()
-                        .find(|node| node.name.as_deref() == Some(name))
-                })
-            })
-    }
-
     fn reconcile_targets(&mut self) {
         let Some(target) = &mut self.default_sink else {
             return;
         };
-        if target
-            .node_id
-            .is_some_and(|id| !self.nodes.contains_key(&id))
-        {
-            target.node_id = None;
-        }
+        let _ = target.node_id.take_if(|id| !self.nodes.contains_key(id));
         if target.node_id.is_none() {
             target.node_id = target.name.as_deref().and_then(|name| {
                 self.nodes
@@ -636,16 +537,6 @@ impl Graph {
                     .find(|(_, node)| node.name.as_deref() == Some(name))
                     .map(|(&id, _)| id)
             });
-        }
-    }
-
-    fn clear_target_node(&mut self, id: u32, fallback: Arc<str>) {
-        let Some(target) = &mut self.default_sink else {
-            return;
-        };
-        if target.node_id == Some(id) {
-            target.node_id = None;
-            target.name.get_or_insert(fallback);
         }
     }
 }
@@ -687,7 +578,7 @@ fn application_label(node: &Node, identity: &StreamIdentity) -> Arc<str> {
         .as_ref()
         .or(node.description.as_ref())
         .cloned()
-        .unwrap_or_else(|| Arc::from(identity.as_str()))
+        .unwrap_or_else(|| Arc::clone(&identity.0))
 }
 
 fn node_token_id(token: &str) -> Option<u32> {
@@ -721,11 +612,10 @@ mod tests {
             id,
             name: Some("player.node".into()),
             description: Some("Player".into()),
-            media_class: Some("Stream/Output/Audio".into()),
             kind: NodeKind::Playback,
             client_id: Some(client),
-            identity: Some(StreamIdentity::new(
-                "Output/Audio:application.id:org.example.Player",
+            identity: Some(StreamIdentity(
+                "Output/Audio:application.id:org.example.Player".into(),
             )),
             application_name: Some("Player".into()),
             ..Default::default()
@@ -748,10 +638,8 @@ mod tests {
             fields[..skip].fill(None);
             let [id, app, media, node] = fields;
             assert_eq!(
-                stream_identity(Some("Stream/Output/Audio"), id, app, media, node)
-                    .unwrap()
-                    .as_str(),
-                expected
+                stream_identity(Some("Stream/Output/Audio"), id, app, media, node).unwrap(),
+                StreamIdentity(expected.into())
             );
         }
         assert_eq!(
@@ -762,9 +650,8 @@ mod tests {
                 None,
                 None
             )
-            .unwrap()
-            .as_str(),
-            "Output/Audio:application.name:app"
+            .unwrap(),
+            StreamIdentity("Output/Audio:application.name:app".into())
         );
     }
 
@@ -775,12 +662,15 @@ mod tests {
             global_id: 100,
             local_id: 0,
             node_id: 10,
-            direction: Direction::Output,
+            direction: Some(Direction::Output),
             ..Default::default()
         });
         graph.add_client(5);
         graph.upsert_node(playback(10, 5));
-        assert_eq!(graph.node(10).unwrap().ports[0].global_id, 100);
+        assert_eq!(
+            graph.output_ports(graph.node(10).unwrap())[0].global_id,
+            100
+        );
         graph.remove_global(10);
         assert_eq!(graph.view(None, None).applications.len(), 1);
         graph.remove_global(5);
@@ -796,5 +686,16 @@ mod tests {
         );
         graph.metadata(1, 0, Some("default.audio.sink"), None, None);
         assert_eq!(graph.view(None, None).default_sink.as_ref(), "sink.current");
+
+        for id in [20, 21] {
+            graph.upsert_node(Node {
+                id,
+                name: Some("sink.current".into()),
+                ..Default::default()
+            });
+        }
+        assert_eq!(graph.default_sink().map(|node| node.id), Some(20));
+        graph.remove_global(20);
+        assert_eq!(graph.default_sink().map(|node| node.id), Some(21));
     }
 }

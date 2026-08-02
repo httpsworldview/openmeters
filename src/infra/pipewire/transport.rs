@@ -36,7 +36,6 @@ fn idle_watchdog_ns(rate: u64) -> u64 {
     )
 }
 
-#[derive(Debug)]
 pub enum CapturedSpan<'a> {
     Pcm {
         samples: &'a [f32],
@@ -48,6 +47,9 @@ pub enum CapturedSpan<'a> {
     },
     Reset,
 }
+
+trait SpanConsumer: for<'a> FnMut(CapturedSpan<'a>) {}
+impl<T: for<'a> FnMut(CapturedSpan<'a>)> SpanConsumer for T {}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -101,11 +103,11 @@ impl Shared {
 }
 
 fn frames_ns(frames: u64, rate: u64) -> u64 {
-    (u128::from(frames) * 1_000_000_000 / u128::from(rate.max(1))).min(u128::from(u64::MAX)) as u64
+    scale(frames, 1_000_000_000, rate)
 }
 
 fn ns_frames(ns: u64, rate: u64) -> u64 {
-    (u128::from(ns) * u128::from(rate) / 1_000_000_000).min(u128::from(u64::MAX)) as u64
+    scale(ns, rate, 1_000_000_000)
 }
 
 fn ns_frames_ceil(ns: u64, rate: u64) -> u64 {
@@ -119,73 +121,48 @@ fn nanos(duration: Duration) -> u64 {
 }
 
 fn scale(value: u64, numerator: u64, denominator: u64) -> u64 {
-    (u128::from(value) * u128::from(numerator) / u128::from(denominator.max(1))) as u64
+    (u128::from(value) * u128::from(numerator) / u128::from(denominator.max(1)))
+        .min(u128::from(u64::MAX)) as u64
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct PcmChunk {
-    first: Range<usize>,
-    second: Range<usize>,
-}
-
-impl PcmChunk {
-    pub(super) fn new(max: usize, offset: u32, size: u32, frame_bytes: usize) -> Option<Self> {
-        if max == 0 || frame_bytes == 0 {
-            return None;
-        }
-        let len = (size as usize).min(max) / frame_bytes * frame_bytes;
-        if len == 0 {
-            return None;
-        }
-        let start = offset as usize % max;
-        let first = len.min(max - start);
-        Some(Self {
-            first: start..start + first,
-            second: 0..len - first,
-        })
+pub(super) fn pcm_chunk(
+    max: usize,
+    offset: u32,
+    size: u32,
+    frame_bytes: usize,
+) -> Option<[Range<usize>; 2]> {
+    if max == 0 || frame_bytes == 0 {
+        return None;
     }
-
-    pub(super) fn len(&self) -> usize {
-        self.first.len() + self.second.len()
+    let len = (size as usize).min(max) / frame_bytes * frame_bytes;
+    if len == 0 {
+        return None;
     }
+    let start = offset as usize % max;
+    let first = len.min(max - start);
+    Some([start..start + first, 0..len - first])
 }
 
-#[derive(Debug)]
 struct Packet {
     samples: Option<Box<[f32]>>,
     frames: u64,
     format: AudioFormat,
     epoch: u64,
-    start: u64,
-    end: u64,
-}
-
-impl Packet {
-    fn new(format: AudioFormat, epoch: u64, start: u64, samples: Option<Box<[f32]>>) -> Self {
-        Self {
-            samples,
-            frames: 0,
-            format,
-            epoch,
-            start,
-            end: start,
-        }
-    }
+    timeline: Range<u64>,
 }
 
 pub(super) struct CaptureWriter {
     producer: Producer<Packet>,
     recycled: Consumer<Box<[f32]>>,
     shared: Arc<Shared>,
-    format: Option<AudioFormat>,
+    pub(super) format: Option<AudioFormat>,
     pending: Option<Packet>,
     pool: Vec<Box<[f32]>>,
     retired: Vec<Box<[f32]>>,
     pool_samples: usize,
     pool_limit: usize,
     activity_epoch: u64,
-    previous_end: u64,
-    previous_callback: u64,
+    previous_timing: Range<u64>,
     disconnected: bool,
     overflowed: bool,
 }
@@ -234,10 +211,6 @@ impl CaptureWriter {
         self.set_status(StreamStatus::Failed);
     }
 
-    pub(super) fn channels(&self) -> Option<usize> {
-        self.format.map(|format| format.channels)
-    }
-
     pub(super) fn set_format(
         &mut self,
         channels: usize,
@@ -259,12 +232,11 @@ impl CaptureWriter {
         positions: [ChannelPosition; MAX_CAPTURE_CHANNELS],
     ) -> AudioFormat {
         let current = self.shared.format();
-        let candidate = AudioFormat::new(channels, rate, current.generation, positions);
-        if current.generation != 0 && candidate == current {
+        let mut format = AudioFormat::new(channels, rate, current.generation, positions);
+        if current.generation != 0 && format == current {
             return current;
         }
-        let generation = current.generation.saturating_add(1);
-        let format = AudioFormat::new(channels, rate, generation, positions);
+        format.generation = current.generation.saturating_add(1);
         *unpoison(self.shared.format.write()) = format;
         format
     }
@@ -273,9 +245,9 @@ impl CaptureWriter {
         self.shared.reconnects.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub(super) fn push_pcm(&mut self, bytes: &[u8], chunk: &PcmChunk, frames: u64) {
+    pub(super) fn push_pcm(&mut self, bytes: &[u8], chunk: &[Range<usize>; 2], frames: u64) {
         let Some(format) = self.format else { return };
-        let mut source = Read::chain(&bytes[chunk.first.clone()], &bytes[chunk.second.clone()]);
+        let mut source = Read::chain(&bytes[chunk[0].clone()], &bytes[chunk[1].clone()]);
         self.push_frames(format, frames, true, |samples| {
             let target = bytemuck::cast_slice_mut(samples);
             source.read_exact(target).expect("valid PCM bounds");
@@ -323,7 +295,7 @@ impl CaptureWriter {
             }
             offset += count;
             packet.frames += count;
-            packet.end = start + scale(end - start, offset, frames);
+            packet.timeline.end = start + scale(end - start, offset, frames);
             if packet.frames == packet_frames && !self.flush_pending() {
                 self.overflow();
                 return;
@@ -344,12 +316,10 @@ impl CaptureWriter {
 
     fn accepting(&mut self) -> bool {
         let epoch = self.shared.activity_epoch.load(Ordering::Acquire);
-        if self.activity_epoch != epoch {
-            self.discard_pending();
-            self.activity_epoch = epoch;
-        }
+        let changed = self.activity_epoch != epoch;
+        self.activity_epoch = epoch;
         let accepting = self.shared.accepting.load(Ordering::Acquire);
-        if !accepting {
+        if changed || !accepting {
             self.discard_pending();
         }
         accepting
@@ -359,7 +329,7 @@ impl CaptureWriter {
         if self
             .pending
             .as_ref()
-            .is_some_and(|packet| packet.format != format || packet.end != start)
+            .is_some_and(|packet| packet.format != format || packet.timeline.end != start)
             && !self.flush_pending()
         {
             return false;
@@ -373,7 +343,13 @@ impl CaptureWriter {
             } else {
                 None
             };
-            self.pending = Some(Packet::new(format, self.activity_epoch, start, samples));
+            self.pending = Some(Packet {
+                samples,
+                frames: 0,
+                format,
+                epoch: self.activity_epoch,
+                timeline: start..start,
+            });
         } else if pcm
             && self
                 .pending
@@ -456,17 +432,16 @@ impl CaptureWriter {
         let now = self.shared.now_ns();
         let duration = frames_ns(frames, format.rate()).max(1);
         let watchdog = idle_watchdog_ns(format.rate());
-        let continuous = self.previous_end != 0
-            && now.saturating_sub(self.previous_callback) <= watchdog
-            && self.previous_end.abs_diff(now) <= watchdog;
+        let continuous = self.previous_timing.end != 0
+            && now.saturating_sub(self.previous_timing.start) <= watchdog
+            && self.previous_timing.end.abs_diff(now) <= watchdog;
         let start = if continuous {
-            self.previous_end
+            self.previous_timing.end
         } else {
             now.saturating_sub(duration)
         };
-        self.previous_end = start.saturating_add(duration);
-        self.previous_callback = now;
-        (start, self.previous_end)
+        self.previous_timing = now..start.saturating_add(duration);
+        (start, self.previous_timing.end)
     }
 
     fn overflow(&mut self) {
@@ -508,7 +483,7 @@ impl AudioReader {
         let now_ns = nanos(now.saturating_duration_since(self.shared.epoch));
         if self.consumer.peek().is_ok_and(|packet| {
             packet.epoch == self.shared.activity_epoch.load(Ordering::Acquire)
-                && now_ns.saturating_sub(packet.end) > nanos(MAX_BACKLOG)
+                && now_ns.saturating_sub(packet.timeline.end) > nanos(MAX_BACKLOG)
         }) {
             self.shared.fault();
         }
@@ -582,10 +557,7 @@ impl AudioReader {
         self.shared.reconnects.load(Ordering::Relaxed)
     }
 
-    fn synchronize_fault<F>(&mut self, consume: &mut F) -> bool
-    where
-        F: for<'a> FnMut(CapturedSpan<'a>),
-    {
+    fn synchronize_fault(&mut self, consume: &mut impl SpanConsumer) -> bool {
         let fault = self.shared.fault_epoch.load(Ordering::Acquire);
         if fault == self.fault_epoch {
             return false;
@@ -597,10 +569,7 @@ impl AudioReader {
         true
     }
 
-    fn accept<F>(&mut self, packet: Packet, consume: &mut F)
-    where
-        F: for<'a> FnMut(CapturedSpan<'a>),
-    {
+    fn accept(&mut self, packet: Packet, consume: &mut impl SpanConsumer) {
         if packet.epoch != self.shared.activity_epoch.load(Ordering::Acquire) {
             if let Some(samples) = packet.samples {
                 let _ = self.recycler.push(samples);
@@ -611,21 +580,25 @@ impl AudioReader {
             samples,
             frames,
             format,
-            start,
-            end,
+            timeline,
             ..
         } = packet;
         self.switch(format, consume);
         if std::mem::take(&mut self.align_next_packet) {
-            self.cursor = start;
+            self.cursor = timeline.start;
         }
-        let gap = (start > self.cursor).then(|| ns_frames(start - self.cursor, format.rate()));
-        let skip = if self.cursor > start {
-            ns_frames_ceil(self.cursor.min(end) - start, format.rate()).min(frames)
+        let gap = (timeline.start > self.cursor)
+            .then(|| ns_frames(timeline.start - self.cursor, format.rate()));
+        let skip = if self.cursor > timeline.start {
+            ns_frames_ceil(
+                self.cursor.min(timeline.end) - timeline.start,
+                format.rate(),
+            )
+            .min(frames)
         } else {
             0
         };
-        self.cursor = self.cursor.max(end);
+        self.cursor = self.cursor.max(timeline.end);
 
         if let Some(gap) = gap.filter(|frames| *frames > 0) {
             self.flush(consume);
@@ -650,20 +623,14 @@ impl AudioReader {
         }
     }
 
-    fn switch<F>(&mut self, format: AudioFormat, consume: &mut F)
-    where
-        F: for<'a> FnMut(CapturedSpan<'a>),
-    {
+    fn switch(&mut self, format: AudioFormat, consume: &mut impl SpanConsumer) {
         if self.format != format {
             self.flush(consume);
             self.format = format;
         }
     }
 
-    fn flush<F>(&mut self, consume: &mut F)
-    where
-        F: for<'a> FnMut(CapturedSpan<'a>),
-    {
+    fn flush(&mut self, consume: &mut impl SpanConsumer) {
         if self.scratch.is_empty() {
             return;
         }
@@ -675,19 +642,15 @@ impl AudioReader {
     }
 
     fn reset_timeline(&mut self, cursor: u64) {
-        self.clear_queue();
-        self.scratch.clear();
-        self.cursor = cursor;
-        self.align_next_packet = true;
-        self.fault_epoch = self.shared.fault_epoch.load(Ordering::Acquire);
-    }
-
-    fn clear_queue(&mut self) {
         while let Ok(packet) = self.consumer.pop() {
             if let Some(samples) = packet.samples {
                 let _ = self.recycler.push(samples);
             }
         }
+        self.scratch.clear();
+        self.cursor = cursor;
+        self.align_next_packet = true;
+        self.fault_epoch = self.shared.fault_epoch.load(Ordering::Acquire);
     }
 }
 
@@ -722,8 +685,7 @@ fn channel_with_capacity(capacity: usize) -> (CaptureWriter, AudioReader) {
             pool_samples: 0,
             pool_limit: 0,
             activity_epoch: 0,
-            previous_end: 0,
-            previous_callback: 0,
+            previous_timing: 0..0,
             disconnected: false,
             overflowed: false,
         },
@@ -759,8 +721,7 @@ mod tests {
             frames,
             format,
             epoch: 0,
-            start,
-            end: start + frames_ns(frames, format.rate()),
+            timeline: start..start + frames_ns(frames, format.rate()),
         }
     }
 
@@ -780,7 +741,7 @@ mod tests {
             }
         });
         assert_eq!(seeded, 480);
-        assert_eq!(writer.channels(), None);
+        assert_eq!(writer.format.map(|format| format.channels), None);
         assert_eq!(writer.set_format(2, 48_000, positions), hint);
         assert_ne!(
             writer.set_format(2, 96_000, positions).generation,
@@ -812,7 +773,7 @@ mod tests {
         let (mut writer, mut reader, _) = mono(4, 1_000);
         let mut bytes = bytemuck::cast_slice(&[1.0_f32, f32::NAN, 2.0]).to_vec();
         bytes.rotate_right(3);
-        let chunk = PcmChunk::new(bytes.len(), 3, bytes.len() as u32, size_of::<f32>()).unwrap();
+        let chunk = pcm_chunk(bytes.len(), 3, bytes.len() as u32, size_of::<f32>()).unwrap();
         writer.push_pcm(&bytes, &chunk, 3);
         assert!(writer.flush_pending());
         let samples = reader.consumer.pop().unwrap().samples.unwrap();
@@ -824,7 +785,7 @@ mod tests {
         let (mut writer, mut reader, _) = mono(1, 48_000);
         writer.pool.clear();
         let bytes = bytemuck::cast_slice(&[0.25_f32]);
-        let chunk = PcmChunk::new(bytes.len(), 0, bytes.len() as u32, size_of::<f32>()).unwrap();
+        let chunk = pcm_chunk(bytes.len(), 0, bytes.len() as u32, size_of::<f32>()).unwrap();
         writer.push_pcm(bytes, &chunk, 1);
         let mut reset = false;
         reader.drain(writer.shared.epoch, |span| {

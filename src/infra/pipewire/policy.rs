@@ -2,12 +2,12 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::MAX_CAPTURE_CHANNELS;
-use super::graph::{CaptureLayout, Channel, Graph, Node, NodeKind, Port};
+use super::graph::{Channel, Graph, Node, NodeKind, Port, stereo_layout};
 use super::stream::StreamConfig;
-use crate::domain::routing::{CaptureConfig, CaptureMode, DeviceSelection};
+use crate::domain::routing::{CaptureConfig, CaptureMode};
 use std::collections::HashSet;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) struct LinkSpec {
     pub output_node: u32,
     pub output_port: u32,
@@ -15,7 +15,6 @@ pub(super) struct LinkSpec {
     pub input_port: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Plan {
     pub stream: StreamConfig,
     pub sources: Vec<u32>,
@@ -23,12 +22,12 @@ pub(super) struct Plan {
 }
 
 pub(super) fn plan(graph: &Graph, config: &CaptureConfig, tap_id: Option<u32>) -> Plan {
-    match config.mode {
+    let (layout, target, passive, sources, truncated) = match config.mode {
         CaptureMode::Applications => {
             let mut sources: Vec<_> = graph
                 .nodes()
                 .filter(|node| node.kind == NodeKind::Playback)
-                .filter(|node| graph.has_external_route(node.id, tap_id))
+                .filter(|node| graph.external_routes(node.id, tap_id).next().is_some())
                 .filter(|node| {
                     node.identity
                         .as_ref()
@@ -36,71 +35,60 @@ pub(super) fn plan(graph: &Graph, config: &CaptureConfig, tap_id: Option<u32>) -
                 })
                 .collect();
             sources.sort_by_key(|node| node.id);
-            application_plan(sources)
+            let truncated = sources
+                .iter()
+                .map(|source| {
+                    graph
+                        .output_ports(source)
+                        .len()
+                        .saturating_sub(MAX_CAPTURE_CHANNELS)
+                })
+                .sum();
+            (
+                Channel::SURROUND.into(),
+                None,
+                true,
+                sources.into_iter().map(|node| node.id).collect(),
+                truncated,
+            )
         }
         CaptureMode::Device => {
-            let device = match &config.device {
-                DeviceSelection::Default => graph.default_sink(),
-                DeviceSelection::Device(token) => graph.find_device(token),
-            };
-            device.map_or_else(idle_plan, device_plan)
+            let device = config
+                .device
+                .as_deref()
+                .map_or_else(|| graph.default_sink(), |token| graph.find_device(token));
+            if let Some(device) = device {
+                let ports = graph.output_ports(device);
+                let (layout, truncated) = if ports.is_empty() {
+                    (stereo_layout(), 0)
+                } else {
+                    let (positions, truncated) = port_layout(&ports);
+                    (
+                        positions[..ports.len().min(MAX_CAPTURE_CHANNELS)].to_vec(),
+                        truncated,
+                    )
+                };
+                let target = matches!(device.kind, NodeKind::Sink | NodeKind::Source)
+                    .then(|| device.target_object())
+                    .flatten();
+                let (passive, sources) = if target.is_some() {
+                    (device.kind == NodeKind::Sink, Vec::new())
+                } else {
+                    (ports.iter().all(|port| port.monitor), vec![device.id])
+                };
+                (layout, target, passive, sources, truncated)
+            } else {
+                (stereo_layout(), None, true, Vec::new(), 0)
+            }
         }
-    }
-}
-
-fn idle_plan() -> Plan {
-    Plan {
-        stream: StreamConfig::idle(),
-        sources: Vec::new(),
-        truncated: 0,
-    }
-}
-
-fn application_plan(sources: Vec<&Node>) -> Plan {
-    let truncated = sources
-        .iter()
-        .map(|source| {
-            source
-                .output_ports()
-                .len()
-                .saturating_sub(MAX_CAPTURE_CHANNELS)
-        })
-        .sum();
-    Plan {
-        stream: StreamConfig {
-            layout: CaptureLayout::surround(),
-            target: None,
-            passive: true,
-        },
-        sources: sources.into_iter().map(|node| node.id).collect(),
-        truncated,
-    }
-}
-
-fn device_plan(device: &Node) -> Plan {
-    let (layout, truncated) = capture_layout(device);
-    if matches!(device.kind, NodeKind::Sink | NodeKind::Source)
-        && let Some(object) = device.target_object()
-    {
-        return Plan {
-            stream: StreamConfig {
-                layout,
-                target: Some(object),
-                passive: device.kind == NodeKind::Sink,
-            },
-            sources: Vec::new(),
-            truncated,
-        };
-    }
-
-    let passive = device.output_ports().iter().all(|port| port.monitor);
+    };
     Plan {
         stream: StreamConfig {
             layout,
-            target: None,
+            target,
             passive,
         },
-        sources: vec![device.id],
+        sources,
         truncated,
     }
 }
@@ -108,8 +96,8 @@ fn device_plan(device: &Node) -> Plan {
 fn port_layout(ports: &[&Port]) -> ([Channel; MAX_CAPTURE_CHANNELS], usize) {
     let channels = ports.len().min(MAX_CAPTURE_CHANNELS);
     let mut positions = [Channel::Unknown; MAX_CAPTURE_CHANNELS];
-    for (position, port) in positions.iter_mut().zip(ports).take(channels) {
-        *position = port.channel.unwrap_or(Channel::Unknown);
+    for (position, port) in positions.iter_mut().zip(ports) {
+        *position = port.channel.unwrap_or_default();
     }
     (
         Channel::normalize(channels, positions),
@@ -117,31 +105,15 @@ fn port_layout(ports: &[&Port]) -> ([Channel; MAX_CAPTURE_CHANNELS], usize) {
     )
 }
 
-fn capture_layout(source: &Node) -> (CaptureLayout, usize) {
-    let ports = source.output_ports();
-    if ports.is_empty() {
-        return (CaptureLayout::stereo(), 0);
-    }
-    let (positions, truncated) = port_layout(&ports);
-    let layout = CaptureLayout {
-        channels: positions
-            .into_iter()
-            .take(ports.len().min(MAX_CAPTURE_CHANNELS))
-            .collect(),
-    };
-    (layout, truncated)
-}
-
 pub(super) fn desired_links(graph: &Graph, plan: &Plan, tap: &Node) -> Vec<LinkSpec> {
     if plan.sources.is_empty() {
         return Vec::new();
     }
-    let tap_ports = tap.input_ports();
+    let tap_ports = graph.input_ports(tap);
     let mut claimed = HashSet::new();
     let targets: Vec<_> = plan
         .stream
         .layout
-        .channels
         .iter()
         .enumerate()
         .map(|(ordinal, channel)| {
@@ -170,7 +142,6 @@ pub(super) fn desired_links(graph: &Graph, plan: &Plan, tap: &Node) -> Vec<LinkS
     let target_for = |channel: Channel| {
         plan.stream
             .layout
-            .channels
             .iter()
             .position(|candidate| *candidate == channel)
             .and_then(|index| targets[index])
@@ -178,7 +149,7 @@ pub(super) fn desired_links(graph: &Graph, plan: &Plan, tap: &Node) -> Vec<LinkS
 
     let mut links = HashSet::new();
     for source in plan.sources.iter().filter_map(|id| graph.node(*id)) {
-        let ports = source.output_ports();
+        let ports = graph.output_ports(source);
         let (positions, _) = port_layout(&ports);
         let aux_channels = positions
             .iter()
@@ -214,7 +185,7 @@ pub(super) fn desired_links(graph: &Graph, plan: &Plan, tap: &Node) -> Vec<LinkS
         }
     }
     let mut links: Vec<_> = links.into_iter().collect();
-    links.sort_by_key(|link| (link.output_node, link.output_port, link.input_port));
+    links.sort_unstable();
     links
 }
 

@@ -24,6 +24,8 @@ use tracing::{error, info};
 
 pub use transport::{AudioReader, CapturedSpan};
 
+type DynError = Box<dyn std::error::Error + Send + Sync>;
+
 #[cfg(test)]
 pub(crate) fn test_audio_reader() -> AudioReader {
     transport::channel().1
@@ -41,7 +43,6 @@ pub struct ApplicationView {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CaptureView {
-    pub revision: u64,
     pub applications: Arc<[ApplicationView]>,
     pub devices: Arc<[Arc<str>]>,
     pub default_sink: Arc<str>,
@@ -60,18 +61,11 @@ struct PublicState {
 }
 
 impl PublicState {
-    fn set_alive(&self, alive: bool) {
-        self.alive.store(alive, Ordering::Release);
-    }
-
-    fn publish(&self, mut view: CaptureView) {
+    fn publish(&self, view: CaptureView) {
         let mut current = unpoison(self.view.write());
-        view.revision = current.revision;
-        if **current == view {
-            return;
+        if **current != view {
+            *current = Arc::new(view);
         }
-        view.revision = current.revision.wrapping_add(1).max(1);
-        *current = Arc::new(view);
     }
 
     fn view(&self) -> Arc<CaptureView> {
@@ -191,20 +185,18 @@ mod tests {
     }
 
     #[test]
-    fn view_revision_changes_only_with_visible_content() {
+    fn view_publication_changes_only_with_visible_content() {
         let state = PublicState::default();
+        let initial = state.view();
         state.publish(CaptureView::default());
-        assert_eq!(state.view().revision, 0);
+        assert!(Arc::ptr_eq(&initial, &state.view()));
         state.publish(CaptureView {
             default_sink: "sink".into(),
             ..Default::default()
         });
-        assert_eq!(state.view().revision, 1);
-        state.publish(CaptureView {
-            revision: 99,
-            default_sink: "sink".into(),
-            ..Default::default()
-        });
-        assert_eq!(state.view().revision, 1);
+        let changed = state.view();
+        assert!(!Arc::ptr_eq(&initial, &changed));
+        state.publish((*changed).clone());
+        assert!(Arc::ptr_eq(&changed, &state.view()));
     }
 }

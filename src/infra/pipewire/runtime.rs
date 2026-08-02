@@ -5,8 +5,8 @@ use super::graph::{Graph, GraphLink, Node, Port};
 use super::policy::{self, LinkSpec};
 use super::stream::TapStream;
 use super::transport::{CaptureWriter, StreamStatus};
-use super::{Command, PublicState};
-use crate::domain::routing::{CaptureConfig, DeviceSelection};
+use super::{Command, DynError, PublicState};
+use crate::domain::routing::CaptureConfig;
 use pipewire as pw;
 use pw::metadata::{Metadata, MetadataListener};
 use pw::properties::properties;
@@ -14,8 +14,7 @@ use pw::registry::{GlobalObject, RegistryRc};
 use pw::spa::utils::dict::DictRef;
 use pw::types::ObjectType;
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet, hash_map::Entry};
-use std::error::Error;
+use std::collections::{HashMap, hash_map::Entry};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -32,16 +31,6 @@ const SESSION_RETRY_MAX: Duration = Duration::from_secs(8);
 const RESOURCE_RETRY_MIN: Duration = Duration::from_secs(1);
 const RESOURCE_RETRY_MAX: Duration = Duration::from_secs(30);
 const MAX_LOOP_ERRORS: u32 = 10;
-
-type DynError = Box<dyn Error + Send + Sync>;
-
-fn canonicalize_device(config: &mut CaptureConfig, selected: Option<&str>) {
-    if let Some(selected) = selected
-        && config.device.token() != Some(selected)
-    {
-        config.device = DeviceSelection::Device(selected.to_owned());
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Retry {
@@ -72,14 +61,14 @@ fn wait_for_retry(
     }
 }
 
-fn next_retry_delay(delay: Duration, maximum: Duration) -> Duration {
-    delay.saturating_mul(2).min(maximum)
+fn take_retry_delay(delay: &mut Duration, maximum: Duration) -> Duration {
+    let current = *delay;
+    *delay = delay.saturating_mul(2).min(maximum);
+    current
 }
 
 fn retry_deadline(now: Instant, delay: &mut Duration) -> Instant {
-    let deadline = now + *delay;
-    *delay = next_retry_delay(*delay, RESOURCE_RETRY_MAX);
-    deadline
+    now + take_retry_delay(delay, RESOURCE_RETRY_MAX)
 }
 
 fn defer_retry(at: &Cell<Option<Instant>>, delay: &Cell<Duration>, now: Instant) -> bool {
@@ -127,10 +116,9 @@ pub(super) fn run(
             outage = true;
         }
         writer.borrow_mut().disconnect();
-        public.set_alive(false);
+        public.alive.store(false, Ordering::Release);
 
-        let wait = retry_delay;
-        retry_delay = next_retry_delay(retry_delay, SESSION_RETRY_MAX);
+        let wait = take_retry_delay(&mut retry_delay, SESSION_RETRY_MAX);
         match wait_for_retry(&commands, &mut config, wait) {
             Retry::Configured => retry_delay = SESSION_RETRY_MIN,
             Retry::Timeout => {}
@@ -138,7 +126,7 @@ pub(super) fn run(
         }
     }
     writer.borrow_mut().set_status(StreamStatus::Stopped);
-    public.set_alive(false);
+    public.alive.store(false, Ordering::Release);
     info!("[pipewire] backend loop exited");
 }
 
@@ -252,7 +240,7 @@ fn run_session(
         if !synced.get() {
             continue;
         }
-        public.set_alive(true);
+        public.alive.store(true, Ordering::Release);
 
         let now = Instant::now();
         match tap.status() {
@@ -300,8 +288,12 @@ fn run_session(
                 .and_then(|id| graph.node(id))
                 .map_or_else(Vec::new, |tap| policy::desired_links(&graph, &plan, tap));
             owned_links.apply(desired, now);
-            let view = graph.view(tap.node_id(), config.device.token());
-            canonicalize_device(config, view.selected_device.as_deref());
+            let view = graph.view(tap.node_id(), config.device.as_deref());
+            if let Some(selected) = &view.selected_device
+                && config.device.as_deref() != Some(selected)
+            {
+                config.device = Some(Arc::clone(selected));
+            }
             public.publish(view);
         }
     }
@@ -310,7 +302,7 @@ fn run_session(
 struct OwnedLinks {
     core: pw::core::CoreRc,
     links: HashMap<LinkSpec, OwnedLink>,
-    desired: HashSet<LinkSpec>,
+    desired: Vec<LinkSpec>,
     dirty: Rc<Cell<bool>>,
     retry_at: Rc<Cell<Option<Instant>>>,
     retry_delay: Rc<Cell<Duration>>,
@@ -334,7 +326,7 @@ impl OwnedLinks {
         Self {
             core,
             links: HashMap::new(),
-            desired: HashSet::new(),
+            desired: Vec::new(),
             dirty,
             retry_at: Rc::default(),
             retry_delay: Rc::new(Cell::new(RESOURCE_RETRY_MIN)),
@@ -353,14 +345,13 @@ impl OwnedLinks {
     }
 
     fn apply(&mut self, desired: Vec<LinkSpec>, now: Instant) {
-        let desired_set: HashSet<_> = desired.iter().copied().collect();
-        if self.desired != desired_set {
-            self.desired = desired_set;
+        if self.desired != desired {
+            self.desired = desired;
             self.retry_at.set(None);
             self.retry_delay.set(RESOURCE_RETRY_MIN);
         }
         self.links.retain(|spec, link| {
-            self.desired.contains(spec) && link.state.get() != OwnedLinkState::Failed
+            self.desired.binary_search(spec).is_ok() && link.state.get() != OwnedLinkState::Failed
         });
         if self.links.len() == self.desired.len()
             && self
@@ -374,7 +365,7 @@ impl OwnedLinks {
             return;
         }
         self.retry_at.set(None);
-        for spec in desired {
+        for spec in self.desired.iter().copied() {
             let Entry::Vacant(entry) = self.links.entry(spec) else {
                 continue;
             };
@@ -442,8 +433,8 @@ struct RegistryContext {
     registry: RegistryRc,
     graph: Rc<RefCell<Graph>>,
     dirty: Rc<Cell<bool>>,
-    links: Rc<RefCell<HashMap<u32, LinkBinding>>>,
-    metadata: Rc<RefCell<HashMap<u32, MetadataBinding>>>,
+    links: Rc<RefCell<HashMap<u32, (pw::link::Link, pw::link::LinkListener)>>>,
+    metadata: Rc<RefCell<HashMap<u32, (Metadata, MetadataListener)>>>,
 }
 
 impl RegistryContext {
@@ -470,9 +461,7 @@ impl RegistryContext {
     fn remove(&self, id: u32) {
         self.changed(|graph| graph.remove_global(id));
         self.links.borrow_mut().remove(&id);
-        if self.metadata.borrow_mut().remove(&id).is_some() {
-            self.changed(|graph| graph.remove_metadata(id));
-        }
+        self.metadata.borrow_mut().remove(&id);
     }
 
     fn add_link(&self, global: &GlobalObject<&DictRef>) {
@@ -489,12 +478,14 @@ impl RegistryContext {
         let listener = proxy
             .add_listener_local()
             .info(move |info| {
-                graph.borrow_mut().upsert_link(GraphLink {
+                graph.borrow_mut().upsert_link(
                     id,
-                    output_node: info.output_node_id(),
-                    input_node: info.input_node_id(),
-                    active: matches!(info.state(), pw::link::LinkState::Active),
-                });
+                    GraphLink {
+                        output_node: info.output_node_id(),
+                        input_node: info.input_node_id(),
+                        active: matches!(info.state(), pw::link::LinkState::Active),
+                    },
+                );
                 dirty.set(true);
             })
             .register();
@@ -530,6 +521,3 @@ impl RegistryContext {
         self.metadata.borrow_mut().insert(id, (proxy, listener));
     }
 }
-
-type LinkBinding = (pw::link::Link, pw::link::LinkListener);
-type MetadataBinding = (Metadata, MetadataListener);

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 use super::{lossy, palette::ColorSetting, visuals::VisualSettings};
-use crate::domain::routing::{CaptureConfig, CaptureMode, DeviceSelection, StreamIdentity};
+use crate::domain::routing::{CaptureConfig, CaptureMode, StreamIdentity};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeSet, time::Duration};
+use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
 const MAIN_WINDOW_DEFAULT_WIDTH: u32 = 420;
 const MAIN_WINDOW_DEFAULT_HEIGHT: u32 = 520;
@@ -68,7 +68,7 @@ pub struct UiSettings {
     pub main_window: MainWindowSettings,
     pub bar: BarSettings,
     pub capture_mode: CaptureMode,
-    pub last_device_name: Option<String>,
+    pub last_device_name: Option<Arc<str>>,
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     pub disabled_streams: BTreeSet<StreamIdentity>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -79,7 +79,10 @@ impl UiSettings {
     pub(crate) fn capture_config(&self) -> CaptureConfig {
         CaptureConfig {
             mode: self.capture_mode,
-            device: DeviceSelection::from_token(self.last_device_name.as_deref()),
+            device: self
+                .last_device_name
+                .clone()
+                .filter(|token| !token.is_empty()),
             disabled_streams: self.disabled_streams.iter().cloned().collect(),
         }
     }
@@ -154,7 +157,7 @@ mod tests {
     }
 
     #[test]
-    fn popout_json_omits_default_active_state() {
+    fn persisted_json_formats_are_stable() {
         let mut settings = UiSettings::default();
         settings.visuals.popouts.insert(
             VisualKind::Spectrum,
@@ -174,13 +177,21 @@ mod tests {
         );
         settings
             .disabled_streams
-            .insert(StreamIdentity::new("app.id"));
+            .insert(StreamIdentity("app.id".into()));
+        settings.last_device_name = Some("device.name".into());
 
         let value = serde_json::to_value(&settings).unwrap();
         let popouts = &value["visuals"]["popouts"];
         assert!(popouts["spectrum"].get("popped_out").is_none());
         assert_eq!(popouts["waveform"]["popped_out"], false);
         assert_eq!(value["disabled_streams"], serde_json::json!(["app.id"]));
+        assert_eq!(value["last_device_name"], "device.name");
+        assert_eq!(
+            settings.capture_config().device.as_deref(),
+            Some("device.name")
+        );
+        settings.last_device_name = Some(Arc::from(""));
+        assert!(settings.capture_config().device.is_none());
     }
 
     #[test]
