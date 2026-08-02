@@ -140,7 +140,10 @@ impl SpectrumParams {
 
     fn build_bar_vertices(&self, verts: &mut Vec<SdfInstance>, clip: ClipTransform, bounds: Rectangle) {
         let p = self;
-        let bar_count = p.bar_count.max(MIN_BAR_COUNT);
+        let pixel_budget = (bounds.width.ceil().max(1.0) as usize).saturating_mul(2);
+        let bar_count = p
+            .bar_count
+            .clamp(MIN_BAR_COUNT, pixel_budget.max(MIN_BAR_COUNT));
         let gap = p.bar_gap.clamp(0.0, 0.8);
         let unit = bounds.width / bar_count as f32;
         let (bar_w, offset) = (unit * (1.0 - gap), unit * gap * 0.5);
