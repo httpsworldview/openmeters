@@ -28,7 +28,7 @@ struct Uniforms {
     col_count: u32,
     rotation: u32,
 
-    bounds: vec4<f32>,              // (x, y, w, h) logical pixels
+    bounds: vec4<f32>,              // (x, y, w, h) physical pixels
     clip_scale: vec2<f32>,          // (2/viewport_w, 2/viewport_h)
     uv_y_range: vec2<f32>,          // zoom/pan window into [0,1] freq axis
     scale_factor: f32,
@@ -38,17 +38,13 @@ struct Uniforms {
 
     newest_col: u32,
     inv_uv_range: f32,
-    col_stride_u16: u32,
     // FFT bin spacing (sample_rate / fft_size); only used by classic sampling.
     bin_hz: f32,
-    accum_width: f32,
-    accum_height: f32,
     reassigned_power_scale: f32,
 
     // (pos1, pos2, pos3, spread0), (spread1, spread2, spread3, spread4).
     // Stops 0 and 4 are constant 0.0 / 1.0
     stops: array<vec4<f32>, 2>,
-    // Palette colors come from a uniform array (legacy texture path removed).
     palette: array<vec4<f32>, 5>,
 }
 
@@ -56,10 +52,6 @@ struct AccumOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) @interpolate(flat) power: f32,
     @location(1) @interpolate(flat) freq_hz: f32,
-}
-
-struct ClassicOutput {
-    @builtin(position) position: vec4<f32>,
 }
 
 struct ResolveOutput {
@@ -71,66 +63,38 @@ struct ResolveOutput {
 @group(0) @binding(1) var accum_tex: texture_2d<f32>;
 @group(0) @binding(2) var<storage, read> mags: array<u32>;
 
-// (Glasberg & Moore 1990)
-fn erb(f: f32) -> f32 {
-    return 21.4 * log(1.0 + f / 228.8) * LOG10_E;
-}
-
 fn freq_to_norm(hz: f32) -> f32 {
     var scaled: f32;
     switch u.freq_scale {
         case 1u: { scaled = asinh(hz / LOG_KNEE_HZ); }
-        case 2u: { scaled = erb(hz); }
+        // Glasberg & Moore (1990)
+        case 2u: { scaled = 21.4 * log(1.0 + hz / 228.8) * LOG10_E; }
         default: { scaled = hz; }
     }
     return (scaled - u.freq_axis.x) * u.freq_axis.y;
 }
 
-fn spread_t(linear_t: f32, sl: f32, sr: f32) -> f32 {
-    if (abs(sl - 1.0) < 1e-4 && abs(sr - 1.0) < 1e-4) {
-        return linear_t;
-    }
-    return clamp(pow(linear_t, sl / sr), 0.0, 1.0);
-}
-
 fn palette_color(t: f32) -> vec4<f32> {
     let tc = clamp(t, 0.0, 1.0);
-    var lo = u.palette[3];
-    var hi = u.palette[4];
-    var p_lo = u.stops[0].z;
-    var p_hi = 1.0;
-    var sl = u.stops[1].z;
-    var sr = u.stops[1].w;
-    if (tc <= u.stops[0].x) {
-        lo = u.palette[0];
-        hi = u.palette[1];
-        p_lo = 0.0;
-        p_hi = u.stops[0].x;
-        sl = u.stops[0].w;
-        sr = u.stops[1].x;
-    } else if (tc <= u.stops[0].y) {
-        lo = u.palette[1];
-        hi = u.palette[2];
-        p_lo = u.stops[0].x;
-        p_hi = u.stops[0].y;
-        sl = u.stops[1].x;
-        sr = u.stops[1].y;
-    } else if (tc <= u.stops[0].z) {
-        lo = u.palette[2];
-        hi = u.palette[3];
-        p_lo = u.stops[0].y;
-        p_hi = u.stops[0].z;
-        sl = u.stops[1].y;
-        sr = u.stops[1].z;
+    let segment = select(0u, 1u, tc > u.stops[0].x)
+        + select(0u, 1u, tc > u.stops[0].y)
+        + select(0u, 1u, tc > u.stops[0].z);
+    let i = select(3u, segment, tc <= 1.0);
+    let lo_positions = vec4<f32>(0.0, u.stops[0].xyz);
+    let hi_positions = vec4<f32>(u.stops[0].xyz, 1.0);
+    let left_spreads = vec4<f32>(u.stops[0].w, u.stops[1].xyz);
+    let linear_t = clamp(
+        (tc - lo_positions[i]) / max(hi_positions[i] - lo_positions[i], 1e-6),
+        0.0,
+        1.0,
+    );
+    let sl = left_spreads[i];
+    let sr = u.stops[1][i];
+    var blend = linear_t;
+    if !(abs(sl - 1.0) < 1e-4 && abs(sr - 1.0) < 1e-4) {
+        blend = clamp(pow(linear_t, sl / sr), 0.0, 1.0);
     }
-    let linear_t = clamp((tc - p_lo) / max(p_hi - p_lo, 1e-6), 0.0, 1.0);
-    return mix(lo, hi, spread_t(linear_t, sl, sr));
-}
-
-// 0 = newest. Single formula handles both partial and full rings via newest_col.
-fn compute_age(slot: u32) -> u32 {
-    let hl = max(u.history_length, 1u);
-    return (u.newest_col + hl - slot) % hl;
+    return mix(u.palette[i], u.palette[i + 1u], blend);
 }
 
 fn extents() -> vec2<f32> {
@@ -141,9 +105,8 @@ fn extents() -> vec2<f32> {
     );
 }
 
-// `col_stride_u16` rounds ppc up to even so u16 pairs never straddle u32 words.
 fn unpack_mag(slot: u32, bin_in_col: u32) -> f32 {
-    let idx = slot * u.col_stride_u16 + bin_in_col;
+    let idx = slot * ((u.points_per_col + 1u) & ~1u) + bin_in_col;
     let pair = unpack2x16unorm(mags[idx / 2u]);
     return select(pair.y, pair.x, (idx & 1u) == 0u) * DB_STORE_RANGE + DB_STORE_LO;
 }
@@ -151,47 +114,51 @@ fn unpack_mag(slot: u32, bin_in_col: u32) -> f32 {
 const CULL_POS: vec4<f32> = vec4<f32>(0.0, 0.0, 2.0, 1.0);
 const CLASSIC_SENTINEL_DB: f32 = -10000.0;
 
-fn place_accum(pos: vec2<f32>) -> vec4<f32> {
-    let size = vec2<f32>(max(u.accum_width, 1.0), max(u.accum_height, 1.0));
-    return vec4<f32>(pos.x / size.x * 2.0 - 1.0, 1.0 - pos.y / size.y * 2.0, 0.0, 1.0);
+fn quad_corner(vertex: u32) -> vec2<f32> {
+    return vec2<f32>(f32(vertex / 2u) - 0.5, 0.5 - f32(vertex % 2u));
+}
+
+fn quad_clip(local: vec2<f32>) -> vec4<f32> {
+    let px = u.bounds.xy + local;
+    return vec4<f32>(px.x * u.clip_scale.x - 1.0, 1.0 - px.y * u.clip_scale.y, 0.0, 1.0);
 }
 
 @vertex
 fn vs_accum_splat(
-    @location(0) corner: vec2<f32>,
     @location(1) time_offset: f32,
     @location(2) freq_hz: f32,
     @location(3) power: f32,
+    @builtin(vertex_index) vertex: u32,
     @builtin(instance_index) inst: u32,
 ) -> AccumOutput {
+    let corner = quad_corner(vertex);
     let zoomed = (freq_to_norm(freq_hz) - u.uv_y_range.x) * u.inv_uv_range;
     if !(power > 0.0) || zoomed < -0.01 || zoomed > 1.01 {
         return AccumOutput(CULL_POS, power, freq_hz);
     }
     let ext = extents();
-    let age = compute_age(inst / max(u.points_per_col, 1u));
+    let hl = u.history_length;
+    let age = (u.newest_col + hl - inst / u.points_per_col) % hl;
     let pos = vec2<f32>(ext.x - (f32(age) - time_offset) * u.scale_factor, (1.0 - zoomed) * ext.y)
         + corner * u.scale_factor;
-    return AccumOutput(place_accum(pos), power, freq_hz);
+    let size = ceil(max(ext, vec2<f32>(1.0)));
+    let clip = vec4<f32>(pos.x / size.x * 2.0 - 1.0, 1.0 - pos.y / size.y * 2.0, 0.0, 1.0);
+    return AccumOutput(clip, power, freq_hz);
 }
 
 @vertex
-fn vs_classic(@location(0) corner: vec2<f32>) -> ClassicOutput {
-    let px = u.bounds.xy + (corner + vec2<f32>(0.5)) * u.bounds.zw;
-    let clip = vec4<f32>(px.x * u.clip_scale.x - 1.0, 1.0 - px.y * u.clip_scale.y, 0.0, 1.0);
-    return ClassicOutput(clip);
+fn vs_classic(@builtin(vertex_index) vertex: u32) -> @builtin(position) vec4<f32> {
+    return quad_clip((quad_corner(vertex) + vec2<f32>(0.5)) * u.bounds.zw);
 }
 
 @vertex
-fn vs_resolve(@location(0) corner: vec2<f32>) -> ResolveOutput {
-    let local = (corner + vec2<f32>(0.5)) * u.bounds.zw;
-    let px = u.bounds.xy + local;
-    let clip = vec4<f32>(px.x * u.clip_scale.x - 1.0, 1.0 - px.y * u.clip_scale.y, 0.0, 1.0);
-    return ResolveOutput(clip, unrotate(local, extents()));
+fn vs_resolve(@builtin(vertex_index) vertex: u32) -> ResolveOutput {
+    let local = (quad_corner(vertex) + vec2<f32>(0.5)) * u.bounds.zw;
+    return ResolveOutput(quad_clip(local), unrotate(local, extents()));
 }
 
 fn norm_to_freq(norm: f32) -> f32 {
-    let scaled = u.freq_axis.x + norm / max(u.freq_axis.y, 1e-12);
+    let scaled = u.freq_axis.x + norm / u.freq_axis.y;
     switch u.freq_scale {
         case 1u: { return LOG_KNEE_HZ * sinh(scaled); }
         case 2u: { return 228.8 * (pow(10.0, scaled / 21.4) - 1.0); }
@@ -210,66 +177,28 @@ fn unrotate(local: vec2<f32>, ext: vec2<f32>) -> vec2<f32> {
 
 fn classic_sample(frag_xy: vec2<f32>) -> vec2<f32> {
     let local = frag_xy - u.bounds.xy;
-    if local.x < 0.0 || local.y < 0.0 || local.x > u.bounds.z || local.y > u.bounds.w {
-        return vec2<f32>(CLASSIC_SENTINEL_DB, 0.0);
-    }
-
     let ext = extents();
     let pos = unrotate(local, ext);
-    if pos.x < 0.0 || pos.y < 0.0 || pos.x > ext.x || pos.y > ext.y {
-        return vec2<f32>(CLASSIC_SENTINEL_DB, 0.0);
-    }
-
-    let age_f = floor((ext.x - pos.x) / max(u.scale_factor, 1e-6));
+    let age_f = floor((ext.x - pos.x) / u.scale_factor);
     if age_f < 0.0 || age_f >= f32(u.col_count) {
         return vec2<f32>(CLASSIC_SENTINEL_DB, 0.0);
     }
-    let hl = max(u.history_length, 1u);
+    let hl = u.history_length;
     let slot = (u.newest_col + hl - u32(age_f)) % hl;
 
-    let zoomed = 1.0 - pos.y / max(ext.y, 1.0);
-    if zoomed < 0.0 || zoomed > 1.0 {
-        return vec2<f32>(CLASSIC_SENTINEL_DB, 0.0);
-    }
+    let zoomed = 1.0 - pos.y / ext.y;
     let freq_norm = u.uv_y_range.x + zoomed / u.inv_uv_range;
     let freq_hz = norm_to_freq(freq_norm);
-    let max_bin = max(u.points_per_col, 1u) - 1u;
-    let bin_f = freq_hz / max(u.bin_hz, 1e-12);
-    if bin_f < 0.0 || bin_f > f32(max_bin) {
+    let max_bin = u.points_per_col - 1u;
+    let bin_f = freq_hz / u.bin_hz;
+    if bin_f > f32(max_bin) {
         return vec2<f32>(CLASSIC_SENTINEL_DB, 0.0);
     }
 
-    let bin0 = min(u32(floor(bin_f)), max_bin);
+    let bin0 = u32(floor(bin_f));
     let bin1 = min(bin0 + 1u, max_bin);
     let mag = mix(unpack_mag(slot, bin0), unpack_mag(slot, bin1), fract(bin_f));
     return vec2<f32>(mag, freq_hz);
-}
-
-fn apply_tilt(mut_mag: f32, freq_hz: f32) -> f32 {
-    var mag = mut_mag;
-    // dB/octave tilt relative to 1 kHz. Do not lift sentinels/floor bins.
-    if u.tilt_db != 0.0 {
-        if !(mag > DB_ANALYSIS_FLOOR + DB_FLOOR_EPS) {
-            return CLASSIC_SENTINEL_DB;
-        }
-        if freq_hz > 0.0 {
-            mag += u.tilt_db * log2(freq_hz / 1000.0);
-        }
-    }
-    return mag;
-}
-
-fn apply_tilt_power(input_power: f32, freq_hz: f32) -> f32 {
-    if u.tilt_db == 0.0 {
-        return input_power;
-    }
-    if !(input_power > ANALYSIS_POWER_EPS) {
-        return 0.0;
-    }
-    if freq_hz > 0.0 {
-        return input_power * exp2(u.tilt_db * log2(freq_hz / 1000.0) * DB_TO_LOG2);
-    }
-    return input_power;
 }
 
 fn shade_db(mag: f32) -> vec4<f32> {
@@ -283,48 +212,40 @@ fn shade_db(mag: f32) -> vec4<f32> {
     return vec4<f32>(color.rgb * color.a, color.a);
 }
 
-fn shade(mut_mag: f32, freq_hz: f32) -> vec4<f32> {
-    let mag = apply_tilt(mut_mag, freq_hz);
-    if mag < -9000.0 {
-        return vec4<f32>(0.0);
-    }
-    return shade_db(mag);
-}
-
-fn power_to_db(power: f32) -> f32 {
-    return max(log(max(power, 1e-20)) * LN_TO_DB, DB_ANALYSIS_FLOOR);
-}
-
 @fragment
 fn fs_accum(in: AccumOutput) -> @location(0) vec2<f32> {
-    let power = apply_tilt_power(in.power, in.freq_hz);
-    return vec2<f32>(power, power * LOW_POWER_SCALE);
-}
-
-fn accumulated_power(pos: vec2<f32>) -> f32 {
-    if pos.x < 0.0 || pos.y < 0.0 || pos.x >= u.accum_width || pos.y >= u.accum_height {
-        return 0.0;
+    var power = in.power;
+    if u.tilt_db != 0.0 && !(power > ANALYSIS_POWER_EPS) {
+        return vec2<f32>(0.0);
     }
-
-    let scaled = textureLoad(accum_tex, vec2<i32>(pos), 0).rg;
-    let scaled_low_power = scaled.g > 0.0 && scaled.g < F16_MAX;
-    return select(scaled.r, scaled.g * INV_LOW_POWER_SCALE, scaled_low_power);
+    if u.tilt_db != 0.0 && in.freq_hz > 0.0 {
+        power *= exp2(u.tilt_db * log2(in.freq_hz / 1000.0) * DB_TO_LOG2);
+    }
+    return vec2<f32>(power, power * LOW_POWER_SCALE);
 }
 
 @fragment
 fn fs_resolve(in: ResolveOutput) -> @location(0) vec4<f32> {
-    let power = accumulated_power(in.accum_pos) * u.reassigned_power_scale;
+    let scaled = textureLoad(accum_tex, vec2<i32>(in.accum_pos), 0).rg;
+    let scaled_low_power = scaled.g > 0.0 && scaled.g < F16_MAX;
+    let power = select(scaled.r, scaled.g * INV_LOW_POWER_SCALE, scaled_low_power)
+        * u.reassigned_power_scale;
     if power <= 0.0 {
         return vec4<f32>(0.0);
     }
-    return shade_db(power_to_db(power));
+    return shade_db(max(log(max(power, 1e-20)) * LN_TO_DB, DB_ANALYSIS_FLOOR));
 }
 
 @fragment
-fn fs_classic(in: ClassicOutput) -> @location(0) vec4<f32> {
-    let sample = classic_sample(in.position.xy);
-    if sample.x < -9000.0 {
+fn fs_classic(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    let sample = classic_sample(position.xy);
+    var mag = sample.x;
+    // dB/octave tilt relative to 1 kHz. Do not lift sentinels/floor bins.
+    if mag < -9000.0 || (u.tilt_db != 0.0 && !(mag > DB_ANALYSIS_FLOOR + DB_FLOOR_EPS)) {
         return vec4<f32>(0.0);
     }
-    return shade(sample.x, sample.y);
+    if u.tilt_db != 0.0 && sample.y > 0.0 {
+        mag += u.tilt_db * log2(sample.y / 1000.0);
+    }
+    return shade_db(mag);
 }

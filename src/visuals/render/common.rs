@@ -458,7 +458,6 @@ pub(in crate::visuals) struct RenderPipelineSpec<'a> {
     pub(in crate::visuals) fragment_entry: &'static str,
     pub(in crate::visuals) buffers: &'a [wgpu::VertexBufferLayout<'a>],
     pub(in crate::visuals) bind_group_layouts: &'a [&'a wgpu::BindGroupLayout],
-    pub(in crate::visuals) topology: wgpu::PrimitiveTopology,
     pub(in crate::visuals) blend: Option<wgpu::BlendState>,
     pub(in crate::visuals) write_mask: wgpu::ColorWrites,
 }
@@ -494,7 +493,7 @@ pub(in crate::visuals) fn create_render_pipeline(
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         }),
         primitive: wgpu::PrimitiveState {
-            topology: spec.topology,
+            topology: wgpu::PrimitiveTopology::TriangleStrip,
             ..Default::default()
         },
         depth_stencil: None,
@@ -615,7 +614,6 @@ impl iced_wgpu::primitive::Pipeline for SdfPipeline {
                     attributes: &ATTRS,
                 }],
                 bind_group_layouts: &[],
-                topology: wgpu::PrimitiveTopology::TriangleStrip,
                 blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                 write_mask: wgpu::ColorWrites::ALL,
             },

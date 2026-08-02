@@ -2,13 +2,9 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::processor::{
-    ColumnKind, MAX_SPECTROGRAM_HISTORY_COLUMNS, SPECTROGRAM_HISTORY_BYTE_BUDGET,
-    SpectrogramColumn, SpectrogramConfig, SpectrogramUpdate, col_byte_stride,
+    ColumnKind, SpectrogramColumn, SpectrogramConfig, SpectrogramUpdate, history_columns,
 };
-use super::render::{
-    PendingUpload, RingCopyPlan, SPECTROGRAM_PALETTE_SIZE, SpectrogramParams,
-    SpectrogramPrimitive,
-};
+use super::render::{RingCopyPlan, SPECTROGRAM_PALETTE_SIZE, SpectrogramParams};
 use crate::persistence::settings::SpectrogramSettings;
 use crate::ui::{scroll_delta_lines, theme};
 use crate::util::{
@@ -19,10 +15,10 @@ use crate::util::{
 use crate::visuals::options::PianoRollOverlay;
 use crate::visuals::palettes;
 use crate::visuals::render::common::{fill_bordered_rect, fill_rect, text as raw_text};
-use iced::advanced::{graphics::text::Paragraph, renderer};
+use iced::advanced::graphics::text::Paragraph;
 use iced::advanced::text::{Paragraph as _, Renderer as _};
-use iced::advanced::widget::{Tree, tree};
-use iced::advanced::{Layout, Renderer as _, Widget, layout, mouse};
+use iced::advanced::widget::Tree;
+use iced::advanced::{Layout, Renderer as _, Widget, mouse};
 use iced::{Color, Element, Length, Point, Rectangle, Size, keyboard};
 use iced_wgpu::primitive::Renderer as _;
 use std::cell::RefCell;
@@ -57,38 +53,30 @@ fn display_axis(sample_rate: f32) -> (f32, f32) {
 crate::macros::default_struct! {
     struct SpectrogramHistory {
         col_kind: ColumnKind = ColumnKind::Reassigned,
-        points_per_column: usize = 0,
         reassigned_points_per_slot: u32 = 1,
         ring_capacity: u32 = 0,
-        gpu_capacity: u32 = 0,
         write_slot: u32 = 0,
         col_count: u32 = 0,
         slot_counts: Arc<[u32]> = Arc::from([]),
-        pending: VecDeque<PendingUpload> = VecDeque::new(),
+        pending: VecDeque<SpectrogramColumn> = VecDeque::new(),
         pending_copy: Option<RingCopyPlan> = None,
     }
 }
 
 impl SpectrogramHistory {
     fn apply_update(&mut self, snap: SpectrogramUpdate) {
-        let ppc = snap.points_per_column;
+        let ppc = snap.fft_size / 2 + 1;
         if ppc == 0 { return; }
         let new_kind = snap
             .new_columns
             .first()
             .map_or(self.col_kind, SpectrogramColumn::kind);
-        let max_bytes = SPECTROGRAM_HISTORY_BYTE_BUDGET as u64
-            * (1 + u64::from(new_kind == ColumnKind::Reassigned));
-        let max_cols = (max_bytes / col_byte_stride(new_kind, ppc as u32)) as u32;
-        let capacity = (snap.history_length as u32)
-            .clamp(1, MAX_SPECTROGRAM_HISTORY_COLUMNS as u32)
-            .min(max_cols);
+        let capacity = history_columns(new_kind, ppc as u32, snap.history_length) as u32;
         if capacity == 0 { return; }
 
-        if snap.reset || self.points_per_column != ppc || new_kind != self.col_kind {
+        if snap.reset {
             *self = Self {
                 col_kind: new_kind,
-                points_per_column: ppc,
                 ring_capacity: capacity,
                 slot_counts: if new_kind == ColumnKind::Reassigned {
                     vec![0; capacity as usize].into()
@@ -119,19 +107,15 @@ impl SpectrogramHistory {
             }
         }
 
-        for col in snap.new_columns {
+        for column in snap.new_columns {
             let slot = self.write_slot;
-            let upload = match col {
-                SpectrogramColumn::Reassigned(points) => {
-                    if let Some(count) = Arc::make_mut(&mut self.slot_counts).get_mut(slot as usize) {
-                        *count = points.len() as u32;
-                    }
-                    PendingUpload::Reassigned { slot, points }
-                }
-                SpectrogramColumn::Classic(mags) => PendingUpload::Classic { slot, mags },
-            };
+            if let SpectrogramColumn::Reassigned(points) = &column
+                && let Some(count) = Arc::make_mut(&mut self.slot_counts).get_mut(slot as usize)
+            {
+                *count = points.len() as u32;
+            }
             if self.pending.len() as u32 >= self.ring_capacity { self.pending.pop_front(); }
-            self.pending.push_back(upload);
+            self.pending.push_back(column);
             self.write_slot = (self.write_slot + 1) % self.ring_capacity;
             if self.col_count < self.ring_capacity { self.col_count += 1; }
         }
@@ -139,9 +123,8 @@ impl SpectrogramHistory {
     }
 
     fn ensure_pending_copy(&mut self) {
-        if self.pending_copy.is_none() && self.gpu_capacity > 0 && self.col_count > 0 {
-            let n = self.col_count.min(self.ring_capacity).min(self.gpu_capacity);
-            self.pending_copy = Some((self.gpu_capacity, (0..n).map(|s| [s, s]).collect()));
+        if self.pending_copy.is_none() && self.col_count as usize > self.pending.len() {
+            self.pending_copy = Some((0..self.col_count.min(self.ring_capacity)).collect());
         }
     }
 
@@ -156,7 +139,7 @@ impl SpectrogramHistory {
             .take(self.ring_capacity as usize)
             .copied()
             .fold(1, u32::max);
-        let current = self.reassigned_points_per_slot.max(1);
+        let current = self.reassigned_points_per_slot;
         if needed > current || current > needed.saturating_mul(4).max(1) {
             self.ensure_pending_copy();
             self.reassigned_points_per_slot = needed;
@@ -166,7 +149,9 @@ impl SpectrogramHistory {
     fn remap_retained(&mut self, start: u32, keep: u32) {
         let old_cap = self.ring_capacity.max(1);
         let remap = |slot: &mut u32| {
-            *slot = (*slot + old_cap - start) % old_cap;
+            if *slot < old_cap {
+                *slot = (*slot + old_cap - start) % old_cap;
+            }
             *slot < keep
         };
         if self.col_kind == ColumnKind::Reassigned {
@@ -179,13 +164,12 @@ impl SpectrogramHistory {
             }
             self.slot_counts = counts.into();
         }
-        self.pending.retain_mut(|upload| {
-            let (PendingUpload::Reassigned { slot, .. } | PendingUpload::Classic { slot, .. }) =
-                upload;
-            remap(slot)
-        });
-        if let Some((_, copies)) = &mut self.pending_copy {
-            copies.retain_mut(|[_, dst]| remap(dst));
+        let discard = self.pending.len().saturating_sub(keep as usize);
+        self.pending.drain(..discard);
+        if let Some(copies) = &mut self.pending_copy {
+            for dst in copies {
+                if !remap(dst) { *dst = u32::MAX; }
+            }
         }
     }
 }
@@ -219,7 +203,7 @@ impl SpectrogramState {
                 ..SpectrogramSettings::default()
             },
             sample_rate: cfg.sample_rate,
-            fft_size: cfg.fft_size * cfg.zero_padding_factor.max(1),
+            fft_size: cfg.fft_size * cfg.zero_padding_factor,
             hop_size: cfg.hop_size,
             reassigned_power_scale: 1.0,
             zoom: 1.0,
@@ -229,19 +213,11 @@ impl SpectrogramState {
         }
     }
 
-    pub fn set_palette(&mut self, palette: &[Color; SPECTROGRAM_PALETTE_SIZE]) {
-        self.palette = *palette;
-    }
+    crate::visuals::palette_setter!(SPECTROGRAM_PALETTE_SIZE);
 
-    pub fn set_stop_positions(&mut self, positions: &[f32]) {
-        if let Ok(arr) = <[f32; SPECTROGRAM_PALETTE_SIZE]>::try_from(positions) {
-            self.stop_positions = arr;
-        }
-    }
-
-    pub fn set_stop_spreads(&mut self, spreads: &[f32]) {
-        if let Ok(arr) = <[f32; SPECTROGRAM_PALETTE_SIZE]>::try_from(spreads) {
-            self.stop_spreads = arr;
+    pub fn set_stops(&mut self, positions: &[f32], spreads: &[f32]) {
+        if let (Ok(positions), Ok(spreads)) = (positions.try_into(), spreads.try_into()) {
+            (self.stop_positions, self.stop_spreads) = (positions, spreads);
         }
     }
 
@@ -258,7 +234,6 @@ impl SpectrogramState {
     }
 
     pub fn apply_snapshot(&mut self, snap: SpectrogramUpdate) {
-        if snap.new_columns.is_empty() && !snap.reset { return; }
         self.sample_rate = snap.sample_rate;
         self.fft_size = snap.fft_size;
         self.hop_size = snap.hop_size;
@@ -274,20 +249,19 @@ impl SpectrogramState {
         let history = &mut self.history;
         if history.col_count == 0 && history.pending.is_empty() { return None; }
         let copy_plan = history.pending_copy.take();
-        history.gpu_capacity = history.ring_capacity;
         let slot_counts = Arc::clone(&history.slot_counts);
         let to_rgba = |c: Color| {
             rgba_with_alpha(color_to_rgba(c), c.a * SPECTROGRAM_OPACITY)
         };
-        let bin_hz = self.sample_rate / (self.fft_size.max(1) as f32);
+        let bin_hz = self.sample_rate / self.fft_size as f32;
         let (freq_min, freq_max) = display_axis(self.sample_rate);
 
         Some(SpectrogramParams {
             key: self.key,
             bounds,
             ring_capacity: history.ring_capacity,
-            points_per_column: history.points_per_column as u32,
-            reassigned_points_per_slot: history.reassigned_points_per_slot.max(1),
+            points_per_column: (self.fft_size / 2 + 1) as u32,
+            reassigned_points_per_slot: history.reassigned_points_per_slot,
             col_count: history.col_count,
             write_slot: history.write_slot,
             pending_uploads: std::mem::take(&mut history.pending),
@@ -317,7 +291,6 @@ impl SpectrogramState {
     ) -> Option<f32> {
         let freq_norm = self.freq_axis_norm(cursor, bounds)?;
         let tex_uv = uv_range[0] + freq_norm * (uv_range[1] - uv_range[0]);
-        if self.fft_size == 0 || self.sample_rate <= 0.0 { return None; }
         let (min_f, nyq) = display_axis(self.sample_rate);
         crate::util::finite_positive(self.settings.frequency_scale.freq_at(min_f, nyq, tex_uv))
     }
@@ -346,11 +319,7 @@ impl SpectrogramState {
 
     // 1 column = 1 logical pixel on the time axis, matching the shader.
     fn time_ago_at_cursor(&self, cursor: Point, bounds: Rectangle) -> Option<f32> {
-        if !bounds.contains(cursor)
-            || self.history.col_count == 0
-            || self.hop_size == 0
-            || self.sample_rate <= 0.0
-        {
+        if !bounds.contains(cursor) || self.history.col_count == 0 {
             return None;
         }
         let age = match self.rotation_index() {
@@ -372,7 +341,6 @@ const ZOOM_STEP: f32 = 1.15;
 
 #[derive(Default)]
 struct InteractionState {
-    cursor: Option<Point>,
     modifiers: keyboard::Modifiers,
     drag: Option<(f32, f32)>,
     left_held: bool,
@@ -513,9 +481,6 @@ impl Spectrogram<'_> {
         uv_range: [f32; 2],
     ) {
         let state = self.state.borrow();
-        if state.fft_size == 0 || state.sample_rate <= 0.0 {
-            return;
-        }
         let (min_f, nyq) = display_axis(state.sample_rate);
         let (scale, rot) = (state.settings.frequency_scale, state.rotation_index());
         drop(state);
@@ -644,46 +609,22 @@ impl Spectrogram<'_> {
 }
 
 impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'_> {
-    fn tag(&self) -> tree::Tag {
-        tree::Tag::of::<InteractionState>()
-    }
-    fn state(&self) -> tree::State {
-        tree::State::new(InteractionState::default())
-    }
-    fn size(&self) -> Size<Length> {
-        Size::new(Length::Fill, Length::Fill)
-    }
+    crate::macros::widget_method!(state InteractionState);
+    crate::macros::widget_method!(layout
+        Size::new(Length::Fill, Length::Fill),
+        |limits| limits.resolve(Length::Fill, Length::Fill, Size::ZERO)
+    );
 
-    fn layout(
-        &mut self,
-        _: &mut Tree,
-        _: &iced::Renderer,
-        limits: &layout::Limits,
-    ) -> layout::Node {
-        layout::Node::new(limits.resolve(Length::Fill, Length::Fill, Size::ZERO))
-    }
-
-    fn update(
-        &mut self,
-        tree: &mut Tree,
-        event: &iced::Event,
-        layout: Layout<'_>,
-        _: mouse::Cursor,
-        _: &iced::Renderer,
-        _: &mut dyn iced::advanced::Clipboard,
-        shell: &mut iced::advanced::Shell<'_, Message>,
-        _: &Rectangle,
-    ) {
+    crate::macros::widget_method!(update Message; this; tree, event, layout, cursor, _, _, shell, _ => {
         let st = tree.state.downcast_mut::<InteractionState>();
         let b = layout.bounds();
         match event {
             iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
-                st.cursor = b.contains(*position).then_some(*position);
                 if st.left_held || st.drag.is_some() {
                     shell.request_redraw();
                 }
                 if let Some((origin, start_pan)) = st.drag {
-                    let mut state = self.state.borrow_mut();
+                    let mut state = this.state.borrow_mut();
                     let h = 0.5 / state.zoom;
                     let horiz = state.freq_axis_is_horizontal();
                     let extent = if horiz { b.width } else { b.height };
@@ -697,12 +638,11 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'_> {
                         .clamp(h, 1.0 - h);
                 }
             }
-            iced::Event::Mouse(mouse::Event::CursorLeft) => st.cursor = None,
             iced::Event::Keyboard(keyboard::Event::ModifiersChanged(m)) => st.modifiers = *m,
             iced::Event::Mouse(mouse::Event::WheelScrolled { delta }) if st.modifiers.control() => {
-                if let Some(pos) = st.cursor.filter(|p| b.contains(*p)) {
-                    let freq_norm = self.state.borrow().freq_axis_norm(pos, b).unwrap_or(0.5);
-                    self.state
+                if let Some(pos) = cursor.position().filter(|p| b.contains(*p)) {
+                    let freq_norm = this.state.borrow().freq_axis_norm(pos, b).unwrap_or(0.5);
+                    this.state
                         .borrow_mut()
                         .zoom_at(freq_norm, ZOOM_STEP.powf(scroll_delta_lines(*delta)));
                     shell.request_redraw();
@@ -710,9 +650,9 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'_> {
                 }
             }
             iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Middle)) => {
-                let state = self.state.borrow();
-                if let Some(pos) = st
-                    .cursor
+                let state = this.state.borrow();
+                if let Some(pos) = cursor
+                    .position()
                     .filter(|p| b.contains(*p) && state.zoom > MIN_ZOOM)
                 {
                     let origin = if state.freq_axis_is_horizontal() {
@@ -728,7 +668,7 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'_> {
                 st.drag = None;
             }
             iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
-                if st.cursor.is_some_and(|p| b.contains(p)) => {
+                if cursor.position().is_some_and(|p| b.contains(p)) => {
                     st.left_held = true;
                     shell.request_redraw();
                 }
@@ -739,22 +679,13 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'_> {
                 }
             _ => {}
         }
-    }
+    });
 
-    fn draw(
-        &self,
-        tree: &Tree,
-        renderer: &mut iced::Renderer,
-        theme: &iced::Theme,
-        _: &renderer::Style,
-        layout: Layout<'_>,
-        _: mouse::Cursor,
-        _: &Rectangle,
-    ) {
+    crate::macros::widget_method!(draw this; tree, renderer, theme, _, layout, cursor, _ => {
         let bounds = layout.bounds();
-        let (uv_y_range, piano_roll, bg, params);
+        let (uv_y_range, piano_roll, params);
         {
-            let mut state = self.state.borrow_mut();
+            let mut state = this.state.borrow_mut();
             let (bw, bh) = (
                 bounds.width.round().max(1.0) as u32,
                 bounds.height.round().max(1.0) as u32,
@@ -766,29 +697,26 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'_> {
             };
             uv_y_range = state.uv_y_range();
             piano_roll = state.settings.piano_roll_overlay;
-            bg = Color::TRANSPARENT;
             params = state.visual_params(bounds, uv_y_range);
         }
         let interaction = tree.state.downcast_ref::<InteractionState>();
-        fill_rect(renderer, bounds, bg);
         if let Some(p) = params {
-            renderer.draw_primitive(bounds, SpectrogramPrimitive::new(p));
+            renderer.draw_primitive(bounds, p);
         }
         if piano_roll != PianoRollOverlay::Off {
             renderer.with_layer(bounds, |r| {
-                self.draw_piano_roll(r, theme, bounds, piano_roll, uv_y_range);
+                this.draw_piano_roll(r, theme, bounds, piano_roll, uv_y_range);
             });
         }
         if interaction.left_held
-            && let Some(c) = interaction.cursor
-            && bounds.contains(c)
+            && let Some(c) = cursor.position().filter(|p| bounds.contains(*p))
         {
             renderer.with_layer(bounds, |r| {
                 Self::draw_crosshair(r, theme, bounds, c);
-                self.draw_tooltip(r, theme, bounds, c, uv_y_range);
+                this.draw_tooltip(r, theme, bounds, c, uv_y_range);
             });
         }
-    }
+    });
 
     fn mouse_interaction(
         &self,
@@ -819,47 +747,43 @@ pub(in crate::visuals) fn widget<'a, Message: 'a>(
 mod tests {
     use super::*;
 
-    fn classic_update(history_length: usize, reset: bool, values: &[f32]) -> SpectrogramUpdate {
+    fn update<T: Copy>(
+        history_length: usize,
+        reset: bool,
+        values: &[T],
+        column: impl Fn(T) -> SpectrogramColumn,
+    ) -> SpectrogramUpdate {
+        let new_columns: Vec<_> = values.iter().copied().map(column).collect();
+        let (points_per_column, reassigned_power_scale) = match new_columns.first().map(SpectrogramColumn::kind) {
+            Some(ColumnKind::Reassigned) => (8, 0.25),
+            _ => (2, 1.0),
+        };
         SpectrogramUpdate {
-            fft_size: 2,
+            fft_size: (points_per_column - 1) * 2,
             hop_size: 1,
             sample_rate: 48_000.0,
             history_length,
             reset,
-            points_per_column: 2,
-            reassigned_power_scale: 1.0,
-            new_columns: values
-                .iter()
-                .map(|&v| {
-                    SpectrogramColumn::Classic(vec![super::super::processor::pack_classic_db(v); 2])
-                })
-                .collect(),
+            reassigned_power_scale,
+            new_columns,
         }
     }
 
+    fn classic_update(history_length: usize, reset: bool, values: &[f32]) -> SpectrogramUpdate {
+        update(history_length, reset, values, |value| {
+            SpectrogramColumn::Classic(vec![super::super::processor::pack_classic_db(value); 2])
+        })
+    }
+
     fn reassigned_update(history_length: usize, reset: bool, counts: &[usize]) -> SpectrogramUpdate {
-        SpectrogramUpdate {
-            fft_size: 8,
-            hop_size: 1,
-            sample_rate: 48_000.0,
-            history_length,
-            reset,
-            points_per_column: 8,
-            reassigned_power_scale: 0.25,
-            new_columns: counts
-                .iter()
-                .map(|&n| {
-                    SpectrogramColumn::Reassigned(vec![
-                        super::super::processor::SpectrogramPoint {
-                            time_offset: 0.0,
-                            freq_hz: 100.0,
-                            power: 0.01,
-                        };
-                        n
-                    ])
-                })
-                .collect(),
-        }
+        let point = super::super::processor::SpectrogramPoint {
+            time_offset: 0.0,
+            freq_hz: 100.0,
+            power: 0.01,
+        };
+        update(history_length, reset, counts, |count| {
+            SpectrogramColumn::Reassigned(vec![point; count])
+        })
     }
 
     fn visual_params(state: &mut SpectrogramState) -> SpectrogramParams {
@@ -872,14 +796,9 @@ mod tests {
     }
 
     fn upload_slots(params: &SpectrogramParams) -> Vec<u32> {
-        params
-            .pending_uploads
-            .iter()
-            .map(|upload| match upload {
-                PendingUpload::Reassigned { slot, .. } | PendingUpload::Classic { slot, .. } => {
-                    *slot
-                }
-            })
+        let count = params.pending_uploads.len() as u32;
+        (0..count)
+            .map(|offset| (params.write_slot + params.ring_capacity - count + offset) % params.ring_capacity)
             .collect()
     }
 
@@ -901,17 +820,14 @@ mod tests {
         assert_eq!((params.ring_capacity, params.col_count, params.write_slot), (6, 5, 5));
         assert!(params.slot_counts.is_empty());
         assert_eq!(upload_slots(&params), vec![4]);
-        assert_eq!(
-            params.copy_plan,
-            Some((4, vec![[0, 2], [1, 3], [2, 0], [3, 1]]))
-        );
+        assert_eq!(params.copy_plan, Some(vec![2, 3, 0, 1]));
 
         let mut state = seeded_ring();
         state.apply_snapshot(classic_update(2, false, &[4.0]));
         let params = visual_params(&mut state);
         assert_eq!((params.ring_capacity, params.col_count, params.write_slot), (2, 2, 1));
         assert_eq!(upload_slots(&params), vec![0]);
-        assert_eq!(params.copy_plan, Some((4, vec![[2, 0], [3, 1]])));
+        assert_eq!(params.copy_plan, Some(vec![u32::MAX, u32::MAX, 0, 1]));
     }
 
     #[test]
@@ -929,8 +845,8 @@ mod tests {
                 .pending_uploads
                 .iter()
                 .map(|upload| match upload {
-                    PendingUpload::Reassigned { points, .. } => points.len(),
-                    PendingUpload::Classic { .. } => panic!("expected reassigned upload"),
+                    SpectrogramColumn::Reassigned(points) => points.len(),
+                    SpectrogramColumn::Classic(_) => panic!("expected reassigned upload"),
                 })
                 .collect::<Vec<_>>(),
             vec![0, 2, 1]

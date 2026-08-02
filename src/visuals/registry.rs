@@ -57,14 +57,16 @@ macro_rules! visuals {
         $proc.update_config(config)
     }};
     (@apply_palette spectrogram, $state:ident, $palette:ident) => {{
-        $state.set_stop_positions(&sanitize_stop_positions(
-            $palette.and_then(|palette| palette.stop_positions.as_deref()),
-            &palettes::spectrogram::DEFAULT_POSITIONS,
-        ));
-        $state.set_stop_spreads(&sanitize_stop_spreads(
-            $palette.and_then(|palette| palette.stop_spreads.as_deref()),
-            palettes::spectrogram::SIZE,
-        ));
+        $state.set_stops(
+            &sanitize_stop_positions(
+                $palette.and_then(|palette| palette.stop_positions.as_deref()),
+                &palettes::spectrogram::DEFAULT_POSITIONS,
+            ),
+            &sanitize_stop_spreads(
+                $palette.and_then(|palette| palette.stop_spreads.as_deref()),
+                palettes::spectrogram::SIZE,
+            ),
+        );
     }};
     (@apply_palette $module:ident, $state:ident, $palette:ident) => {};
     ($($variant:ident($default_width_basis:expr, $min_w:expr) =>

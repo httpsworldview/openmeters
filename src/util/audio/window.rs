@@ -62,7 +62,12 @@ pub(crate) fn window_coefficients(kind: WindowKind, len: usize) -> Arc<[f32]> {
         .clone()
 }
 
-pub fn copy_from_deque(dst: &mut [f32], src: &VecDeque<f32>) {
+/// Copies, DC-centers, and windows the front of `src` in one final pass.
+pub fn copy_dc_removed_windowed_from_deque(dst: &mut [f32], src: &VecDeque<f32>, window: &[f32]) {
+    assert_eq!(dst.len(), window.len());
+    if dst.is_empty() {
+        return;
+    }
     assert!(
         dst.len() <= src.len(),
         "destination longer than source deque"
@@ -71,19 +76,12 @@ pub fn copy_from_deque(dst: &mut [f32], src: &VecDeque<f32>) {
     let (head, tail) = src.as_slices();
     let split = head.len().min(len);
     dst[..split].copy_from_slice(&head[..split]);
-    if split < len {
-        dst[split..].copy_from_slice(&tail[..len - split]);
-    }
-}
-
-/// Copies, DC-centers, and windows the front of `src` in one final pass.
-pub fn copy_dc_removed_windowed_from_deque(dst: &mut [f32], src: &VecDeque<f32>, window: &[f32]) {
-    assert_eq!(dst.len(), window.len());
-    if dst.is_empty() {
-        return;
-    }
-    copy_from_deque(dst, src);
-    let mean = dst.iter().sum::<f32>() / dst.len() as f32;
+    dst[split..].copy_from_slice(&tail[..len - split]);
+    let mean = head[..split]
+        .iter()
+        .chain(&tail[..len - split])
+        .sum::<f32>()
+        / len as f32;
     for (sample, &weight) in dst.iter_mut().zip(window) {
         *sample = (*sample - mean) * weight;
     }
