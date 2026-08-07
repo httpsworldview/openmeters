@@ -18,6 +18,7 @@ frequency, waveform, and stereo image in one comprehensive suite.
   - [Build from source](#building-from-source)
 - [Usage and key bindings](#usage-and-key-bindings)
 - [Configuration and theming](#configuration)
+- [Frequently Asked Questions](#frequently-asked-questions)
 - [Contributing](#contributing)
 - [Credits](#credits)
 - [Notes](#notes)
@@ -249,6 +250,33 @@ OpenMeters was running. The built-in theme is read-only in the UI and
 cannot be overwritten. Feel free to share custom themes by sharing the
 corresponding JSON files.
 
+## Frequently Asked Questions
+
+Q: **Can I build upon OpenMeters or use it in a commercial
+application?**
+
+A: Yes, as long as you abide by the terms of the GPL. My primary focus
+is keeping OpenMeters free and open source, not profiting from it.
+
+Q: **Will you support Windows or macOS?**
+
+A: _Maybe_, but _probably not_. I'm a Linux user and have been for
+most of my life. I am not currently confident in my ability to
+maintain reliable support for either platform. That said, I aim to
+keep things modular and platform-agnostic where possible. The DSP code
+at the core of this project will run anywhere; the GUI, persistence,
+and audio backend code will not.
+
+Q: **Why is OpenMeters' FFT size about twice the value shown in
+MiniMeters or Wave Candy?**
+
+A: OpenMeters labels FFT/window size by the number of input samples
+used. MiniMeters and Wave Candy instead label the visible
+positive-frequency bins, which represent roughly half the FFT for
+real-valued audio. To match settings, use approximately twice their
+displayed band count (for example, 2048 in MiniMeters corresponds to
+4096 in OpenMeters).
+
 ## Contributing
 
 Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to
@@ -314,21 +342,6 @@ out.
 - **RustFFT** (<https://github.com/ejmahler/RustFFT>)
 - **RealFFT** (<https://github.com/HEnquist/realfft>)
 - **wgpu** (<https://github.com/gfx-rs/wgpu>)
-
-## Notes
-
-### FFT size convention
-
-**OpenMeters labels FFT/window size as the actual number of input
-samples used by the transform**.
-
-Some other applications, including MiniMeters and Wave Candy, label
-the visible positive-frequency bins instead. This is because for
-real-valued audio, only the 0 Hz..Nyquist half of the FFT is unique.
-
-If you are matching settings from MiniMeters or Wave Candy, use
-approximately double their displayed band count as the FFT size within
-OpenMeters' GUIs (e.g. MiniMeters' 2048 = OpenMeters' 4096).
 
 ## License
 
