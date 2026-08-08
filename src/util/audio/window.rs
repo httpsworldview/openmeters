@@ -6,7 +6,7 @@ use std::{
     sync::{Arc, LazyLock, RwLock},
 };
 
-crate::macros::choice_enum!(no_default all
+crate::macros::choice_enum!(no_default
     #[derive(Hash)]
     pub enum WindowKind {
         Rectangular => "Rectangular",

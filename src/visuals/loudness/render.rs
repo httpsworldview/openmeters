@@ -166,6 +166,6 @@ impl LoudnessParams {
 sdf_primitive!(
     LoudnessParams,
     "Loudness",
-    |self| self.geometry.0,
-    bounds_fingerprint(self.geometry.1, self.bounds)
+    |self| self.geometry.id,
+    bounds_fingerprint(self.geometry.revision, self.bounds)
 );

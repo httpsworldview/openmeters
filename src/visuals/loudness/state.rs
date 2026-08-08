@@ -98,14 +98,14 @@ impl LoudnessState {
         self.snapshot = snapshot;
         self.peaks = [PeakHold::new(DB_RANGE.0, Instant::now()); VISIBLE_METER_COUNT];
         self.refresh_value_label();
-        self.geometry.1 = self.geometry.1.wrapping_add(1);
+        self.geometry.invalidate();
     }
 
     pub fn apply_snapshot(&mut self, snapshot: LoudnessSnapshot) {
         self.snapshot = snapshot;
         self.update_peak_holds(Instant::now());
         self.refresh_value_label();
-        self.geometry.1 = self.geometry.1.wrapping_add(1);
+        self.geometry.invalidate();
     }
 
     pub fn set_modes(&mut self, left: MeterMode, right: MeterMode) {
@@ -116,10 +116,10 @@ impl LoudnessState {
         self.settings.left_mode = left;
         self.settings.right_mode = right;
         self.refresh_value_label();
-        self.geometry.1 = self.geometry.1.wrapping_add(1);
+        self.geometry.invalidate();
     }
 
-    crate::visuals::palette_setter!(PALETTE_SIZE => geometry.1);
+    crate::visuals::palette_setter!(PALETTE_SIZE => geometry);
 
     fn get_value(&self, mode: MeterMode, channel: usize) -> f32 {
         let per_channel =

@@ -46,7 +46,7 @@ pub struct SpectrumParams {
 impl SpectrumParams {
     pub(super) fn geometry_fingerprint(&self) -> GeometryFingerprint {
         [
-            self.geometry.1,
+            self.geometry.revision,
             pack_f32_pair(self.bounds.width, self.bounds.height),
             pack_f32_pair(self.line_color[0], self.line_color[1]),
             pack_f32_pair(self.line_color[2], self.line_color[3]),
@@ -269,6 +269,6 @@ mod tests {
 sdf_primitive!(
     SpectrumParams,
     "Spectrum",
-    |self| self.geometry.0,
+    |self| self.geometry.id,
     self.geometry_fingerprint()
 );

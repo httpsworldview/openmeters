@@ -108,7 +108,7 @@ settings_view! {
     );
 }
 
-crate::macros::choice_enum!(no_default all pub(in crate::ui) enum TriggerPreset {
+crate::macros::choice_enum!(no_default pub(in crate::ui) enum TriggerPreset {
     ZeroCrossing => "Zero-crossing",
     Stable => "Stable",
 });

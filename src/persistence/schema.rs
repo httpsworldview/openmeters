@@ -16,8 +16,8 @@ pub fn clamp_bar_height(height: u32) -> u32 {
     height.clamp(BAR_MIN_HEIGHT, BAR_MAX_HEIGHT)
 }
 
-crate::macros::choice_enum!(all pub enum BarAlignment { #[default] Top => "Top", Bottom => "Bottom" });
-crate::macros::choice_enum!(all pub enum VisualFrameRate {
+crate::macros::choice_enum!(pub enum BarAlignment { #[default] Top => "Top", Bottom => "Bottom" });
+crate::macros::choice_enum!(pub enum VisualFrameRate {
     Fps30 => "30 FPS",
     #[default] Fps60 => "60 FPS",
     Fps120 => "120 FPS",

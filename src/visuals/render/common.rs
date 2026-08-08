@@ -399,7 +399,6 @@ pub(in crate::visuals) fn create_buffer(
 #[derive(Default)]
 pub struct CacheTracker {
     frame: u64,
-    counter: u64,
 }
 
 impl CacheTracker {
@@ -408,9 +407,8 @@ impl CacheTracker {
 
     pub fn advance(&mut self) -> (u64, Option<u64>) {
         self.frame = self.frame.wrapping_add(1).max(1);
-        self.counter = self.counter.wrapping_add(1);
         let threshold = self
-            .counter
+            .frame
             .is_multiple_of(Self::INTERVAL)
             .then_some(self.frame.saturating_sub(Self::RETAIN));
         (self.frame, threshold)

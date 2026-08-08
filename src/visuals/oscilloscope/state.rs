@@ -30,7 +30,7 @@ impl OscilloscopeState {
 
     pub fn reset_audio(&mut self) {
         self.snapshot = OscilloscopeSnapshot::default();
-        self.geometry.1 = self.geometry.1.wrapping_add(1);
+        self.geometry.invalidate();
     }
 
     pub fn update_view_settings(&mut self, settings: &OscilloscopeSettings, reset_snapshot: bool) {
@@ -43,13 +43,13 @@ impl OscilloscopeState {
         if reset_snapshot {
             self.snapshot = OscilloscopeSnapshot::default();
         }
-        self.geometry.1 = self.geometry.1.wrapping_add(1);
+        self.geometry.invalidate();
     }
 
-    crate::visuals::palette_setter!(TRACE_COUNT => geometry.1);
+    crate::visuals::palette_setter!(TRACE_COUNT => geometry);
 
     pub fn apply_snapshot(&mut self, snapshot: OscilloscopeSnapshot) {
-        self.geometry.1 = self.geometry.1.wrapping_add(1);
+        self.geometry.invalidate();
         if !snapshot.samples.is_empty()
             && !self.snapshot.samples.is_empty()
             && snapshot.epoch == self.snapshot.epoch

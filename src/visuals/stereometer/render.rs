@@ -467,7 +467,7 @@ sdf_primitive!(
     StereometerParams,
     RENDER_LABEL,
     layers |self, scratch| {
-        (self.grid.0, Some(bounds_fingerprint(self.grid.1, self.bounds))) => {
+        (self.grid.id, Some(bounds_fingerprint(self.grid.revision, self.bounds))) => {
             let p = self;
             self.add_grid_vertices(
                 &mut scratch.instances,
@@ -475,7 +475,7 @@ sdf_primitive!(
                 ClipTransform::from_bounds(p.bounds),
             );
         },
-        (self.geometry.0, Some(bounds_fingerprint(self.geometry.1, self.bounds))) => {
+        (self.geometry.id, Some(bounds_fingerprint(self.geometry.revision, self.bounds))) => {
             let p = self;
             let clip = ClipTransform::from_bounds(p.bounds);
             let (vector, correlation) = Self::meter_layout(p);

@@ -3,7 +3,7 @@
 
 use crate::util::lerp;
 
-crate::macros::choice_enum!(all #[repr(u32)] pub enum FrequencyScale {
+crate::macros::choice_enum!(#[repr(u32)] pub enum FrequencyScale {
     Linear => "Linear",
     #[default] Logarithmic => "Logarithmic",
     #[serde(alias = "mel")] Erb => "Erb",

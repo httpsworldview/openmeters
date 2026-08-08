@@ -2,33 +2,23 @@
 // Copyright (C) 2026 Maika Namuo
 
 macro_rules! choice_enum {
-    (@parse [$($default:ident)?] [$($all:ident)?] no_default $($rest:tt)+) => {
-        $crate::macros::choice_enum!(@parse [] [$($all)?] $($rest)+);
-    };
-    (@parse [$($default:ident)?] [$($all:ident)?] all $($rest:tt)+) => {
-        $crate::macros::choice_enum!(@parse [$($default)?] [all] $($rest)+);
-    };
-    (@parse [$($default:ident)?] [$($all:ident)?] $(#[$attr:meta])* $vis:vis enum $name:ident { $($(#[$var_attr:meta])* $variant:ident => $label:expr),+ $(,)? }) => {
+    (@impl [$($default:ident)?] $(#[$attr:meta])* $vis:vis enum $name:ident { $($(#[$var_attr:meta])* $variant:ident => $label:expr),+ $(,)? }) => {
         #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq $(, $default)?)]
         #[serde(rename_all = "snake_case")]
         $(#[$attr])*
         $vis enum $name { $($(#[$var_attr])* $variant,)+ }
 
         impl $name {
+            pub const ALL: &'static [Self] = &[$(Self::$variant,)+];
             pub const fn label(self) -> &'static str { match self { $(Self::$variant => $label),+ } }
         }
 
         impl std::fmt::Display for $name {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(self.label()) }
         }
-
-        $crate::macros::choice_enum!(@all [$($all)?] $name { $($variant,)+ });
     };
-    (@all [] $($rest:tt)*) => {};
-    (@all [all] $name:ident { $($variant:ident,)+ }) => {
-        impl $name { pub const ALL: &'static [Self] = &[$(Self::$variant,)+]; }
-    };
-    ($($rest:tt)+) => { $crate::macros::choice_enum!(@parse [Default] [] $($rest)+); };
+    (no_default $($rest:tt)+) => { $crate::macros::choice_enum!(@impl [] $($rest)+); };
+    ($($rest:tt)+) => { $crate::macros::choice_enum!(@impl [Default] $($rest)+); };
 }
 
 pub(super) use choice_enum;

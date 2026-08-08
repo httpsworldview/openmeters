@@ -23,13 +23,13 @@ const GAP_R: SliderRange = SliderRange::new(0.0, 0.8, 0.05);
 const HIGH_R: SliderRange = SliderRange::new(0.0, 0.9, 0.01);
 const FLOOR_R: SliderRange = SliderRange::new(MIN_SPECTRUM_DB_FLOOR, MAX_SPECTRUM_DB_FLOOR, 1.0);
 
-crate::macros::choice_enum!(no_default all pub(in crate::ui) enum AvgMode {
+crate::macros::choice_enum!(no_default pub(in crate::ui) enum AvgMode {
     None => "None",
     Exponential => "Exponential",
     PeakHold => "Peak hold",
 });
 
-crate::macros::choice_enum!(no_default all pub(in crate::ui) enum FrequencyDirection {
+crate::macros::choice_enum!(no_default pub(in crate::ui) enum FrequencyDirection {
     LowToHigh => "Low -> High",
     HighToLow => "High -> Low",
 });

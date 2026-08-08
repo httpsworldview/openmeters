@@ -86,7 +86,7 @@ impl SpectrumState {
         self.invalidate_geometry();
     }
 
-    crate::visuals::palette_setter!(PALETTE_SIZE => geometry.1);
+    crate::visuals::palette_setter!(PALETTE_SIZE => geometry);
 
     pub fn reset_audio(&mut self) {
         self.points.fill_with(|| Arc::clone(&EMPTY_POINTS));
@@ -140,7 +140,7 @@ impl SpectrumState {
     }
 
     fn invalidate_geometry(&mut self) {
-        self.geometry.1 = self.geometry.1.wrapping_add(1);
+        self.geometry.invalidate();
     }
 
     fn ensure_x_cache(&mut self, min_f: f32, max_f: f32, bins: &[f32]) {
@@ -378,7 +378,7 @@ mod tests {
             .visual_params(bounds, &iced::Theme::Light, None)
             .unwrap();
 
-        assert_eq!(dark.geometry.1, light.geometry.1);
+        assert_eq!(dark.geometry.revision, light.geometry.revision);
         assert_ne!(dark.line_color, light.line_color);
         assert_ne!(dark.geometry_fingerprint(), light.geometry_fingerprint());
     }

@@ -89,6 +89,6 @@ impl OscilloscopeParams {
 sdf_primitive!(
     OscilloscopeParams,
     "Oscilloscope",
-    |self| self.geometry.0,
-    bounds_fingerprint(self.geometry.1, self.bounds)
+    |self| self.geometry.id,
+    bounds_fingerprint(self.geometry.revision, self.bounds)
 );

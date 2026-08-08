@@ -59,20 +59,20 @@ impl StereometerState {
             rotation: s.rotation.clamp(-4, 4),
             ..s.clone()
         };
-        self.geometry.1 = self.geometry.1.wrapping_add(1);
-        self.grid.1 = self.grid.1.wrapping_add(1);
+        self.geometry.invalidate();
+        self.grid.invalidate();
     }
 
-    crate::visuals::palette_setter!(PALETTE_SIZE => geometry.1 => grid.1);
+    crate::visuals::palette_setter!(PALETTE_SIZE => geometry => grid);
 
     pub fn reset_audio(&mut self) {
         self.points = Default::default();
         self.trails = Default::default();
-        self.geometry.1 = self.geometry.1.wrapping_add(1);
+        self.geometry.invalidate();
     }
 
     pub fn apply_snapshot(&mut self, snap: StereometerSnapshot) {
-        self.geometry.1 = self.geometry.1.wrapping_add(1);
+        self.geometry.invalidate();
         self.points = snap.points;
         self.trails[FULL_BAND].push_front(snap.correlations[FULL_BAND]);
         if tracks_band_correlation(&self.settings) {

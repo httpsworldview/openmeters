@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-crate::macros::choice_enum!(no_default all pub enum Channel {
+crate::macros::choice_enum!(no_default pub enum Channel {
     Left => "Left",
     Right => "Right",
     Mid => "Mid",

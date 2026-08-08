@@ -56,10 +56,10 @@ macro_rules! visualization_widget {
 pub(in crate::visuals) use visualization_widget;
 
 macro_rules! palette_setter {
-    ($size:expr $(=> $revision:ident $(.$field:tt)?)*) => {
+    ($size:expr $(=> $geometry:ident)*) => {
         pub fn set_palette(&mut self, palette: &[iced::Color; $size]) {
             self.palette = *palette;
-            $(self.$revision$(.$field)? = self.$revision$(.$field)?.wrapping_add(1);)*
+            $(self.$geometry.invalidate();)*
         }
     };
 }
@@ -76,17 +76,17 @@ visual_modules! {
 }
 
 pub mod options {
-    crate::macros::choice_enum!(all pub enum StereometerMode {
+    crate::macros::choice_enum!(pub enum StereometerMode {
         Lissajous => "Lissajous",
         #[default] DotCloud => "Dot Cloud",
         DotCloudBands => "Dot Cloud (Bands)",
     });
-    crate::macros::choice_enum!(all pub enum StereometerScale { Linear => "Linear", #[default] #[serde(alias = "exponential")] Scaled => "Scaled" });
-    crate::macros::choice_enum!(all pub enum CorrelationMeterMode { Off => "Off", SingleBand => "Single Band", #[default] MultiBand => "Multi Band" });
-    crate::macros::choice_enum!(all pub enum CorrelationMeterSide { Left => "Left", #[default] Right => "Right" });
-    crate::macros::choice_enum!(all pub enum PianoRollOverlay { #[default] Off => "Off", Right => "Right", Left => "Left" });
+    crate::macros::choice_enum!(pub enum StereometerScale { Linear => "Linear", #[default] #[serde(alias = "exponential")] Scaled => "Scaled" });
+    crate::macros::choice_enum!(pub enum CorrelationMeterMode { Off => "Off", SingleBand => "Single Band", #[default] MultiBand => "Multi Band" });
+    crate::macros::choice_enum!(pub enum CorrelationMeterSide { Left => "Left", #[default] Right => "Right" });
+    crate::macros::choice_enum!(pub enum PianoRollOverlay { #[default] Off => "Off", Right => "Right", Left => "Left" });
 
-    crate::macros::choice_enum!(no_default all pub enum MeterMode {
+    crate::macros::choice_enum!(no_default pub enum MeterMode {
         LufsShortTerm => "LUFS Short-term",
         LufsMomentary => "LUFS Momentary",
         RmsFast => "RMS Fast",
@@ -94,10 +94,10 @@ pub mod options {
         TruePeak => "True Peak",
     });
 
-    crate::macros::choice_enum!(all pub enum SpectrumDisplayMode { #[default] Line => "Line", Bar => "Bar" });
-    crate::macros::choice_enum!(all pub enum SpectrumWeightingMode { #[default] AWeighted => "A-Weighted", Raw => "Raw" });
-    crate::macros::choice_enum!(all pub enum WaveformColorMode { #[default] Frequency => "Frequency Bands", Loudness => "Loudness", Static => "Static" });
-    crate::macros::choice_enum!(all pub enum WaveformHistoryMode { #[default] Off => "Off", RmsFast => "RMS Fast", RmsSlow => "RMS Slow" });
+    crate::macros::choice_enum!(pub enum SpectrumDisplayMode { #[default] Line => "Line", Bar => "Bar" });
+    crate::macros::choice_enum!(pub enum SpectrumWeightingMode { #[default] AWeighted => "A-Weighted", Raw => "Raw" });
+    crate::macros::choice_enum!(pub enum WaveformColorMode { #[default] Frequency => "Frequency Bands", Loudness => "Loudness", Static => "Static" });
+    crate::macros::choice_enum!(pub enum WaveformHistoryMode { #[default] Off => "Off", RmsFast => "RMS Fast", RmsSlow => "RMS Slow" });
 }
 
 pub mod palettes;
@@ -111,11 +111,21 @@ use std::sync::atomic::{AtomicU64, Ordering};
 static NEXT_VIS_KEY: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct GeometryKey(pub u64, pub u64);
+pub(crate) struct GeometryKey {
+    id: u64,
+    revision: u64,
+}
 
 impl GeometryKey {
     fn new() -> Self {
-        Self(next_key(), 0)
+        Self {
+            id: next_key(),
+            revision: 0,
+        }
+    }
+
+    fn invalidate(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
     }
 }
 
