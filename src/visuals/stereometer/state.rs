@@ -81,8 +81,7 @@ impl StereometerState {
                     let factor = a * (i + 1) as f32 / len as f32;
                     [r * factor, g * factor, b * factor, 0.0]
                 })
-                .collect::<Vec<_>>()
-                .into();
+                .collect();
         }
     }
 

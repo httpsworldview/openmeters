@@ -448,7 +448,7 @@ fn build_single_points_into(
     let interior = bins.partition_point(|&f| f <= min_f)..bins.partition_point(|&f| f < max_f);
     push(x_cache[0], value_at(bins, db, min_f));
     for (&x, &m) in x_cache[1..x_cache.len() - 1].iter().zip(&db[interior]) { push(x, m); }
-    push(*x_cache.last().unwrap_or(&0.0), value_at(bins, db, max_f));
+    push(x_cache[x_cache.len() - 1], value_at(bins, db, max_f));
     if style.reverse_frequency {
         out.reverse();
     }

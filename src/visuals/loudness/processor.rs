@@ -101,7 +101,6 @@ struct TruePeakMeter {
     peak: f32,
 }
 impl TruePeakMeter {
-    fn peak_max(peak: f32, value: f32) -> f32 { if value > peak { value } else { peak } }
     fn new(sample_rate: f64) -> Self {
         let delay_len = if sample_rate < 96_000.0 {
             TRUE_PEAK_4X_DELAY
@@ -119,7 +118,7 @@ impl TruePeakMeter {
     }
 
     fn process(&mut self, sample: f32, firs: &TruePeakFirs) {
-        self.peak = Self::peak_max(self.peak, sample.abs());
+        self.peak = self.peak.max(sample.abs());
         if self.delay_len == 0 {
             return;
         }
@@ -137,13 +136,13 @@ impl TruePeakMeter {
                     output[phase] += sample * coefficients[phase];
                 }
             }
-            self.peak = output.into_iter().map(f32::abs).fold(self.peak, Self::peak_max);
+            self.peak = output.into_iter().map(f32::abs).fold(self.peak, f32::max);
         } else {
             let mut output = 0.0;
             for i in 0..self.delay_len {
                 output += self.delay[pos + i] * firs.1[i];
             }
-            self.peak = Self::peak_max(self.peak, output.abs());
+            self.peak = self.peak.max(output.abs());
         }
     }
 }
@@ -431,7 +430,6 @@ mod tests {
     }
     #[test]
     fn true_peak_matches_ebur128_at_standard_rates() {
-        assert_eq!(TruePeakMeter::peak_max(1.0, f32::NAN), 1.0);
         for (sample_rate, delay_len) in [
             (48_000.0_f32, TRUE_PEAK_4X_DELAY),
             (96_000.0, TRUE_PEAK_2X_DELAY),
