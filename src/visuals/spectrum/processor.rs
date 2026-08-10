@@ -234,13 +234,13 @@ impl SpectrumProcessor {
 
         let level = &mut self.levels[trace];
         let snapshot = &mut self.snapshot.traces[trace];
-        for (idx, (complex, norm)) in self
-            .spectrum_buffer
-            .iter()
+        for ((power, complex), norm) in level
+            .scratch_power
+            .iter_mut()
+            .zip(&self.spectrum_buffer)
             .zip(&self.bin_normalization)
-            .enumerate()
         {
-            level.scratch_power[idx] = complex.norm_sqr() * *norm;
+            *power = complex.norm_sqr() * *norm;
         }
         level.update_outputs(
             self.config.averaging,
@@ -389,15 +389,15 @@ impl SpectrumLevelBuffers {
             }
         };
         let [weighted_out, raw_out] = outputs;
-        for i in 0..bins {
-            if powers[i] < self.state_floor {
-                raw_out[i] = floor;
-                weighted_out[i] = floor;
+        let bins = powers.iter().zip(weighting_db).zip(raw_out).zip(weighted_out);
+        for (((&power, &weight), raw), weighted) in bins {
+            if power < self.state_floor {
+                (*raw, *weighted) = (floor, floor);
                 continue;
             }
-            let db = powers[i].ln() * LN_TO_DB;
-            raw_out[i] = db.max(floor);
-            weighted_out[i] = (db + weighting_db[i]).max(floor);
+            let db = power.ln() * LN_TO_DB;
+            *raw = db.max(floor);
+            *weighted = (db + weight).max(floor);
         }
     }
 }

@@ -81,6 +81,7 @@ pub struct StereometerParams {
     pub grid: crate::visuals::GeometryKey,
     pub bounds: Rectangle,
     pub points: [Arc<[(f32, f32)]>; BAND_COUNT + 1],
+    pub band_colors: [Arc<[[f32; 4]]>; BAND_COUNT],
     pub palette: [[f32; 4]; PALETTE_SIZE],
     pub mode: StereometerMode,
     pub scale: StereometerScale,
@@ -345,12 +346,9 @@ impl StereometerParams {
                 }
             }
             StereometerMode::DotCloudBands => {
-                for (pts, color) in p.points[1..].iter().zip(&p.palette[5..8]) {
-                    let count = pts.len() as f32;
-                    let [cr, cg, cb, ca] = *color;
-                    out.extend(pts.iter().enumerate().map(|(i, &(l, r))| {
-                        let factor = ca * (i + 1) as f32 / count;
-                        dot(l, r, [cr * factor, cg * factor, cb * factor, 0.0], true)
+                for (pts, colors) in p.points[1..].iter().zip(&p.band_colors) {
+                    out.extend(pts.iter().zip(colors.iter()).map(|(&(l, r), &color)| {
+                        dot(l, r, color, true)
                     }));
                 }
             }

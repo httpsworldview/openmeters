@@ -62,7 +62,6 @@ pub(crate) fn window_coefficients(kind: WindowKind, len: usize) -> Arc<[f32]> {
         .clone()
 }
 
-/// Copies, DC-centers, and windows the front of `src` in one final pass.
 pub fn copy_dc_removed_windowed_from_deque(dst: &mut [f32], src: &VecDeque<f32>, window: &[f32]) {
     assert_eq!(dst.len(), window.len());
     if dst.is_empty() {
@@ -77,11 +76,7 @@ pub fn copy_dc_removed_windowed_from_deque(dst: &mut [f32], src: &VecDeque<f32>,
     let split = head.len().min(len);
     dst[..split].copy_from_slice(&head[..split]);
     dst[split..].copy_from_slice(&tail[..len - split]);
-    let mean = head[..split]
-        .iter()
-        .chain(&tail[..len - split])
-        .sum::<f32>()
-        / len as f32;
+    let mean = dst.iter().sum::<f32>() / len as f32;
     for (sample, &weight) in dst.iter_mut().zip(window) {
         *sample = (*sample - mean) * weight;
     }

@@ -70,8 +70,7 @@ const fn window_length(sample_rate: f32, window_secs: f32) -> usize {
     if len < 1.0 { 1 } else { len as usize }
 }
 
-// Libebur128's 49-tap Hann-windowed interpolator has zero-valued endpoints,
-// leaving 48 effective taps. Integer phases are covered by the sample peak.
+// The 49-tap interpolator has 48 nonzero taps; samples cover integer phases.
 const TRUE_PEAK_TAPS: usize = 48;
 const TRUE_PEAK_4X_DELAY: usize = TRUE_PEAK_TAPS / 4;
 const TRUE_PEAK_2X_DELAY: usize = TRUE_PEAK_TAPS / 2;
@@ -95,15 +94,14 @@ static TRUE_PEAK_FIRS: LazyLock<TruePeakFirs> = LazyLock::new(|| {
         std::array::from_fn(|tap| true_peak_coefficient(tap * 2 + 1, 2)),
     )
 });
-
 struct TruePeakMeter {
     delay: [f32; TRUE_PEAK_2X_DELAY * 2],
     write: usize,
     delay_len: usize,
     peak: f32,
 }
-
 impl TruePeakMeter {
+    fn peak_max(peak: f32, value: f32) -> f32 { if value > peak { value } else { peak } }
     fn new(sample_rate: f64) -> Self {
         let delay_len = if sample_rate < 96_000.0 {
             TRUE_PEAK_4X_DELAY
@@ -120,8 +118,8 @@ impl TruePeakMeter {
         }
     }
 
-    fn process(&mut self, sample: f32) {
-        self.peak = self.peak.max(sample.abs());
+    fn process(&mut self, sample: f32, firs: &TruePeakFirs) {
+        self.peak = Self::peak_max(self.peak, sample.abs());
         if self.delay_len == 0 {
             return;
         }
@@ -134,18 +132,18 @@ impl TruePeakMeter {
         if self.delay_len == TRUE_PEAK_4X_DELAY {
             let mut output = [0.0; 3];
             for i in 0..self.delay_len {
-                let (sample, coefficients) = (self.delay[pos + i], TRUE_PEAK_FIRS.0[i]);
+                let (sample, coefficients) = (self.delay[pos + i], firs.0[i]);
                 for phase in 0..3 {
                     output[phase] += sample * coefficients[phase];
                 }
             }
-            self.peak = output.into_iter().map(f32::abs).fold(self.peak, f32::max);
+            self.peak = output.into_iter().map(f32::abs).fold(self.peak, Self::peak_max);
         } else {
             let mut output = 0.0;
             for i in 0..self.delay_len {
-                output += self.delay[pos + i] * TRUE_PEAK_FIRS.1[i];
+                output += self.delay[pos + i] * firs.1[i];
             }
-            self.peak = self.peak.max(output.abs());
+            self.peak = Self::peak_max(self.peak, output.abs());
         }
     }
 }
@@ -160,7 +158,6 @@ fn k_weighted(sample: f32, state: &mut [f64; 4], coefficients: &KWeighting) -> f
     state[3] = b[4] * x - a[4] * y;
     y as f32
 }
-
 type ActiveChannel = (WindowedMeans<1, 4>, [f64; 4], TruePeakMeter);
 
 #[derive(Default)]
@@ -255,17 +252,21 @@ impl LoudnessProcessor {
 
         self.ensure_state(block.channels, block.sample_rate);
 
-        let capacities =
-            DEFAULT_WINDOWS.map(|window| window_length(self.config.sample_rate, window));
         let sample_rate = f64::from(self.config.sample_rate);
         let weighting = &self.weighting;
+        let firs = &*TRUE_PEAK_FIRS;
+        let active_channels = block.stereo_channels.max(
+            self.channels.iter().rposition(|channel| channel.active.is_some()).map_or(0, |i| i + 1),
+        );
         for frame in block.samples.chunks_exact(block.channels) {
-            for (channel, &sample) in self.channels.iter_mut().zip(frame) {
+            for (channel, &sample) in self.channels[..active_channels].iter_mut().zip(frame) {
                 if channel.active.is_none() {
                     if sample.to_bits() == 0 {
                         channel.silent_frames += 1;
                         continue;
                     }
+                    let capacities =
+                        DEFAULT_WINDOWS.map(|window| window_length(self.config.sample_rate, window));
                     channel.active = Some((
                         WindowedMeans::with_leading_zeros(capacities, channel.silent_frames),
                         [0.0; 4],
@@ -274,9 +275,12 @@ impl LoudnessProcessor {
                 }
                 let (windows, filter, true_peak) = channel.active.as_mut().unwrap();
                 let filtered = f64::from(k_weighted(sample, filter, weighting));
-                windows.push([filtered * filtered]);
-                true_peak.process(sample);
+                windows.push::<true>([filtered * filtered]);
+                true_peak.process(sample, firs);
             }
+        }
+        for channel in &mut self.channels[active_channels..] {
+            channel.silent_frames += block.frame_count();
         }
         for channel in &mut self.channels {
             if let Some((_, state, _)) = &mut channel.active {
@@ -323,13 +327,13 @@ mod tests {
     #[test]
     fn rolling_mean_square_tracks_average() {
         let mut window = WindowedMeans::<1, 4>::new([4, 2, 1, 4]);
-        window.push([1.0]);
-        window.push([9.0]);
+        window.push::<true>([1.0]);
+        window.push::<true>([9.0]);
         assert!((window.mean(0)[0] - 5.0).abs() < f64::EPSILON);
 
-        window.push([16.0]);
-        window.push([25.0]);
-        window.push([36.0]);
+        window.push::<true>([16.0]);
+        window.push::<true>([25.0]);
+        window.push::<true>([36.0]);
         assert!((window.mean(0)[0] - 21.5).abs() < f64::EPSILON);
         assert!((window.mean(1)[0] - 30.5).abs() < f64::EPSILON);
         assert!((window.mean(2)[0] - 36.0).abs() < f64::EPSILON);
@@ -399,12 +403,12 @@ mod tests {
 
     #[test]
     fn leading_silence_matches_eager_channel_state() {
-        let mut samples = vec![0.0; 48_001 * 2];
-        samples.extend(sine_wave(48_000.0, 0.1, 1_000.0, 0.5).into_iter().flat_map(|x| [x; 2]));
-        let block = AudioBlock::new(&samples, 2, 48_000.0);
+        let silence = vec![0.0; 48_001 * 4];
+        let tone = sine_wave(48_000.0, 0.1, 1_000.0, 0.5);
+        let signal: Vec<_> = tone.into_iter().flat_map(|x| [0.0, 0.0, 0.0, x]).collect();
         let mut lazy = LoudnessProcessor::new(LoudnessConfig::default());
         let mut eager = LoudnessProcessor::new(LoudnessConfig::default());
-        eager.ensure_state(2, 48_000.0);
+        eager.ensure_state(4, 48_000.0);
         let capacities = DEFAULT_WINDOWS.map(|window| window_length(48_000.0, window));
         for channel in &mut eager.channels {
             channel.active = Some((
@@ -413,7 +417,10 @@ mod tests {
                 TruePeakMeter::new(48_000.0),
             ));
         }
-        assert_eq!(lazy.process_block(&block), eager.process_block(&block));
+        for samples in [&silence, &signal] {
+            let block = AudioBlock::new(samples, 4, 48_000.0);
+            assert_eq!(lazy.process_block(&block), eager.process_block(&block));
+        }
     }
 
     #[test]
@@ -422,9 +429,9 @@ mod tests {
         assert_eq!(channel_weight(ChannelPosition::LowFrequency), 0.0);
         assert_eq!(channel_weight(ChannelPosition::SideLeft), 1.41);
     }
-
     #[test]
     fn true_peak_matches_ebur128_at_standard_rates() {
+        assert_eq!(TruePeakMeter::peak_max(1.0, f32::NAN), 1.0);
         for (sample_rate, delay_len) in [
             (48_000.0_f32, TRUE_PEAK_4X_DELAY),
             (96_000.0, TRUE_PEAK_2X_DELAY),

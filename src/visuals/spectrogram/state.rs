@@ -9,7 +9,7 @@ use crate::persistence::settings::SpectrogramSettings;
 use crate::ui::{scroll_delta_lines, theme};
 use crate::util::{
     audio::musical::{MusicalNote, NoteInfo},
-    audio::{DB_FLOOR, fmt_duration, fmt_freq, sanitize_negative_db},
+    audio::{DB_FLOOR, FrequencyScale, fmt_duration, fmt_freq, sanitize_negative_db},
     color::{color_to_rgba, lerp_color, rgba_with_alpha, with_alpha},
 };
 use crate::visuals::options::PianoRollOverlay;
@@ -23,7 +23,7 @@ use iced::{Color, Element, Length, Point, Rectangle, Size, keyboard};
 use iced_wgpu::primitive::Renderer as _;
 use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 const SPECTROGRAM_DB_CEILING: f32 = 0.0;
 const SPECTROGRAM_OPACITY: f32 = 0.95;
@@ -37,7 +37,22 @@ const PIANO_ROLL_WIDTH: f32 = 18.0;
 const PIANO_BLACK_KEY_RATIO: f32 = 0.6;
 const PIANO_LABEL_SIZE: f32 = 9.0;
 const PIANO_MIDI_LO: i32 = 21; // A0
-const PIANO_MIDI_HI: i32 = 119; // C8
+const PIANO_MIDI_HI: i32 = 119; // B8
+const PIANO_KEY_COUNT: usize = (PIANO_MIDI_HI - PIANO_MIDI_LO + 1) as usize;
+
+static PIANO_KEY_SCALES: LazyLock<[[[f32; 2]; PIANO_KEY_COUNT]; 3]> = LazyLock::new(|| {
+    [FrequencyScale::Linear, FrequencyScale::Logarithmic, FrequencyScale::Erb].map(|scale| {
+        let semi = (0.5_f32 / 12.0).exp2();
+        let (inv_s, whole, inv_w) = (1.0 / semi, semi * semi, 1.0 / (semi * semi));
+        std::array::from_fn(|i| {
+            let note = MusicalNote::from_midi(PIANO_MIDI_LO + i as i32);
+            let (ml, mh) = if note.is_black() { (inv_s, semi) } else { match note.midi_number % 12 {
+                0 | 5 => (inv_s, whole), 4 | 11 => (inv_w, semi), _ => (inv_w, whole),
+            }};
+            [scale.scale(note.to_frequency() * mh), scale.scale(note.to_frequency() * ml)]
+        })
+    })
+});
 
 // Display floor for the frequency axis. Reassignment can localize energy far
 // below the FFT bin spacing, so this is intentionally decoupled from fft_size.
@@ -187,6 +202,7 @@ pub(crate) struct SpectrogramState {
     zoom: f32,
     pan: f32,
     pub(in crate::visuals) view_width: u32,
+    piano_labels: [Paragraph; 8],
     history: SpectrogramHistory,
 }
 
@@ -209,6 +225,13 @@ impl SpectrogramState {
             zoom: 1.0,
             pan: 0.5,
             view_width: 0,
+            piano_labels: std::array::from_fn(|octave| {
+                let text = format!("C{}", octave + 1);
+                let mut label =
+                    Paragraph::with_text(raw_text(text.as_str(), PIANO_LABEL_SIZE, Size::INFINITE));
+                label.resize(label.min_bounds());
+                label
+            }),
             history: SpectrogramHistory::default(),
         }
     }
@@ -295,7 +318,7 @@ impl SpectrogramState {
         crate::util::finite_positive(self.settings.frequency_scale.freq_at(min_f, nyq, tex_uv))
     }
 
-    // Normalized rotation (0..3) matching the shader's rotate_uv convention
+    // Normalized rotation (0..3) matching the shader's rotate_uv convention.
     fn rotation_index(&self) -> u32 {
         (self.settings.rotation as i32).rem_euclid(4) as u32
     }
@@ -368,8 +391,6 @@ struct Spectrogram<'a> {
     state: &'a RefCell<SpectrogramState>,
 }
 
-// Places the tooltip adjacent to the cursor on the side opposite the freq
-// axis, flipping when it would clip the widget bounds.
 fn place_tooltip(bounds: Rectangle, cursor: Point, sz: Size, horizontal: bool) -> Rectangle {
     let max_x = (bounds.x + bounds.width - sz.width).max(bounds.x);
     let max_y = (bounds.y + bounds.height - sz.height).max(bounds.y);
@@ -482,7 +503,6 @@ impl Spectrogram<'_> {
         let state = self.state.borrow();
         let (min_f, nyq) = display_axis(state.sample_rate);
         let (scale, rot) = (state.settings.frequency_scale, state.rotation_index());
-        drop(state);
         let horizontal = matches!(rot, 1 | 3);
 
         let (freq_top, freq_bot) = (
@@ -505,9 +525,10 @@ impl Spectrogram<'_> {
             (bounds.y, bounds.height, bounds.x, bounds.width)
         };
 
-        // Must mirror frequency_at_cursor so keys align with the tooltip.
-        let freq_to_px = |f: f32| -> f32 {
-            let uv = scale.pos_of(min_f, nyq, f);
+        let (scaled_min, scaled_max) = (scale.scale(min_f), scale.scale(nyq));
+        let scaled_span = (scaled_max - scaled_min).max(1e-6);
+        let scaled_to_px = |f: f32| -> f32 {
+            let uv = (f - scaled_min) / scaled_span;
             let t = ((uv - uv_range[0]) / (uv_range[1] - uv_range[0])).clamp(0.0, 1.0);
             freq_org + freq_ext * if matches!(rot, 1 | 2) { t } else { 1.0 - t }
         };
@@ -525,9 +546,6 @@ impl Spectrogram<'_> {
         let black_key_width = PIANO_ROLL_WIDTH * PIANO_BLACK_KEY_RATIO;
         let right = matches!(overlay, PianoRollOverlay::Right);
 
-        let semi = (0.5_f32 / 12.0).exp2();
-        let (inv_s, whole, inv_w) = (1.0 / semi, semi * semi, 1.0 / (semi * semi));
-
         let orient_rect = |pos: f32, len: f32, cross: f32, cw: f32| -> Rectangle {
             if horizontal {
                 Rectangle::new(Point::new(pos, cross), Size::new(len, cw))
@@ -543,19 +561,10 @@ impl Spectrogram<'_> {
             }
         };
 
-        // Key boundaries sit at the midpoint of the intervening black key,
-        // or at the semitone midpoint where no black key exists (E-F, B-C).
-        let key_extent = |midi: i32, freq: f32, is_blk: bool| -> (f32, f32) {
-            let (ml, mh) = if is_blk {
-                (inv_s, semi)
-            } else {
-                match midi % 12 {
-                    0 | 5 => (inv_s, whole),
-                    4 | 11 => (inv_w, semi),
-                    _ => (inv_w, whole),
-                }
-            };
-            let (a, b) = (freq_to_px(freq * mh), freq_to_px(freq * ml));
+        let key_scales = &PIANO_KEY_SCALES[scale as usize];
+        let key_extent = |midi: i32| -> (f32, f32) {
+            let [lo, hi] = key_scales[(midi - PIANO_MIDI_LO) as usize];
+            let (a, b) = (scaled_to_px(lo), scaled_to_px(hi));
             if a < b { (a, b) } else { (b, a) }
         };
 
@@ -566,7 +575,7 @@ impl Spectrogram<'_> {
                 if is_blk != (pass == 1) {
                     continue;
                 }
-                let (lo, hi) = key_extent(midi, note.to_frequency(), is_blk);
+                let (lo, hi) = key_extent(midi);
                 if hi < freq_org || lo > freq_org + freq_ext {
                     continue;
                 }
@@ -583,24 +592,14 @@ impl Spectrogram<'_> {
                 };
                 fill_bordered_rect(renderer, orient_rect(lo, key_len, anchor, w), fill, brd, false);
                 if note.midi_number % 12 == 0 && key_len >= PIANO_LABEL_SIZE {
-                    let s = format!("C{}", note.octave());
-                    let tsz = Paragraph::with_text(raw_text(
-                        s.as_str(),
-                        PIANO_LABEL_SIZE,
-                        Size::INFINITE,
-                    ))
-                    .min_bounds();
+                    let label = &state.piano_labels[(note.octave() - 1) as usize];
+                    let tsz = label.min_bounds();
                     let fp = lo + (key_len - if horizontal { tsz.width } else { tsz.height }) * 0.5;
                     let tp = strip
                         + (PIANO_ROLL_WIDTH - if horizontal { tsz.height } else { tsz.width })
                             * 0.5;
                     let pt = orient_point(fp, tp);
-                    renderer.fill_text(
-                        raw_text(s, PIANO_LABEL_SIZE, tsz),
-                        pt,
-                        black,
-                        Rectangle::new(pt, tsz),
-                    );
+                    renderer.fill_paragraph(label, pt, black, Rectangle::new(pt, tsz));
                 }
             }
         }

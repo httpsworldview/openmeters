@@ -1,26 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-// Spectrogram DSP - Time-frequency analysis with reassignment
-//
-// # References
-// 1. F. Auger and P. Flandrin, "Improving the readability of time-frequency and
-//    time-scale representations by the reassignment method", IEEE Trans. SP,
-//    vol. 43, no. 5, pp. 1068-1089, May 1995.
-// 2. K. Kodera, R. Gendrin & C. de Villedary, "Analysis of time-varying signals
-//    with small BT values", IEEE Trans. ASSP, vol. 26, no. 1, pp. 64-76, Feb 1978.
-// 3. F. Auger et al., "Time-Frequency Reassignment and Synchrosqueezing: An
-//    Overview", IEEE Signal Processing Magazine, vol. 30, pp. 32-41, Nov 2013.
-// 4. T.J. Gardner and M.O. Magnasco, "Sparse time-frequency representations",
-//    PNAS, vol. 103, no. 16, pp. 6094-6099, Apr 2006.
-// 5. K.R. Fitz and S.A. Fulop, "A Unified Theory of Time-Frequency Reassignment",
-//    arXiv:0903.3080 [cs.SD], Mar 2009.
-// 6. S.A. Fulop and K. Fitz, "Algorithms for computing the time-corrected
-//    instantaneous frequency (reassigned) spectrogram, with applications",
-//    JASA, vol. 119, pp. 360-371, Jan 2006.
-// 7. D.J. Nelson, "Cross-spectral methods for processing speech",
-//    JASA, vol. 110, no. 5, pp. 2575-2592, Nov 2001.
-
 use crate::dsp::AudioBlock;
 use crate::util::audio::{
     Channel, DB_FLOOR, DEFAULT_SAMPLE_RATE, WindowKind, compute_fft_bin_normalization,

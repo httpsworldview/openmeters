@@ -302,7 +302,6 @@ impl GeometryScratch {
     }
 }
 
-/// Decimates points known to be finite and ordered by x.
 pub fn decimate_finite_ordered_line_in_place(pts: &mut Vec<(f32, f32)>, max_points: usize) {
     debug_assert!(
         pts.iter()
@@ -353,13 +352,15 @@ pub fn decimate_finite_ordered_line_in_place(pts: &mut Vec<(f32, f32)>, max_poin
             f32::INFINITY
         };
         let (mut mn, mut mx) = (start, start);
+        let (mut min_y, mut max_y) = (pts[start].1, pts[start].1);
         read = start + 1;
         while read < pts.len() && pts[read].0 <= end_x {
-            if pts[read].1 < pts[mn].1 {
-                mn = read;
+            let y = pts[read].1;
+            if y < min_y {
+                (mn, min_y) = (read, y);
             }
-            if pts[read].1 > pts[mx].1 {
-                mx = read;
+            if y > max_y {
+                (mx, max_y) = (read, y);
             }
             read += 1;
         }

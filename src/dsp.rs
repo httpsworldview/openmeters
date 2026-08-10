@@ -111,7 +111,7 @@ pub struct AudioBlock<'a> {
     pub sample_rate: f32,
     pub positions: [ChannelPosition; MAX_AUDIO_CHANNELS],
     stereo: [[f32; 2]; MAX_AUDIO_CHANNELS],
-    stereo_channels: usize,
+    pub(crate) stereo_channels: usize,
 }
 
 fn stereo_indices(channels: usize, positions: [ChannelPosition; MAX_AUDIO_CHANNELS]) -> [usize; 2] {
@@ -266,7 +266,6 @@ struct CompensatedPair {
     sums: [f64; 2],
     corrections: [f64; 2],
 }
-
 impl CompensatedPair {
     const ZERO: Self = Self {
         sums: [0.0; 2],
@@ -275,11 +274,12 @@ impl CompensatedPair {
 
     // Kahan-Babuska-Neumaier compensated addition.
     fn add(&mut self, index: usize, value: f64) {
-        let next = self.sums[index] + value;
-        self.corrections[index] += if self.sums[index].abs() >= value.abs() {
-            (self.sums[index] - next) + value
+        let sum = self.sums[index];
+        let next = sum + value;
+        self.corrections[index] += if sum.abs() >= value.abs() {
+            (sum - next) + value
         } else {
-            (value - next) + self.sums[index]
+            (value - next) + sum
         };
         self.sums[index] = next;
     }
@@ -303,7 +303,6 @@ pub struct WindowedMeans<const VALUES: usize, const WINDOWS: usize, T = f64> {
     head: usize,
     count: usize,
 }
-
 impl<const VALUES: usize, const WINDOWS: usize, T> WindowedMeans<VALUES, WINDOWS, T>
 where
     T: Copy + From<f32> + Into<f64>,
@@ -321,10 +320,10 @@ where
         }
     }
 
-    pub fn push(&mut self, mut values: [T; VALUES]) {
+    pub fn push<const CHECK_FINITE: bool>(&mut self, mut values: [T; VALUES]) {
         let mapped: [f64; VALUES] = std::array::from_fn(|index| {
             let value = values[index].into();
-            if value.is_finite() {
+            if !CHECK_FINITE || value.is_finite() {
                 value
             } else {
                 values[index] = T::from(0.0);
@@ -334,13 +333,16 @@ where
         let len = self.buffer.len();
         for window in 0..WINDOWS {
             let capacity = self.capacities[window];
-            let old =
-                (self.count >= capacity).then(|| self.buffer[(self.head + len - capacity) % len]);
+            let old = (self.count >= capacity).then(|| {
+                let index = self.head + len - capacity;
+                self.buffer[if index < len { index } else { index - len }]
+            });
             for value in 0..VALUES {
-                self.sums[window][value].add(0, mapped[value]);
-                self.sums[window][value].add(1, mapped[value]);
+                let sums = &mut self.sums[window][value];
+                sums.add(0, mapped[value]);
+                sums.add(1, mapped[value]);
                 if let Some(old) = old {
-                    self.sums[window][value].add(0, -old[value].into());
+                    sums.add(0, -old[value].into());
                 }
             }
             self.refresh_counts[window] += 1;
@@ -352,7 +354,10 @@ where
             }
         }
         self.buffer[self.head] = values;
-        self.head = (self.head + 1) % len;
+        self.head += 1;
+        if self.head == len {
+            self.head = 0;
+        }
         self.count = (self.count + 1).min(len);
     }
 
@@ -420,9 +425,10 @@ impl CrossoverFilter for Biquad {
     }
 
     fn process(&mut self, sample: f32) -> f32 {
-        let output = self.b[0] * sample + self.z[0];
-        self.z[0] = self.b[1] * sample - self.a[0] * output + self.z[1];
-        self.z[1] = self.b[2] * sample - self.a[1] * output;
+        let [z0, z1] = self.z;
+        let output = self.b[0] * sample + z0;
+        let next = self.b[1] * sample - self.a[0] * output + z1;
+        self.z = [next, self.b[2] * sample - self.a[1] * output];
         if output.is_finite() {
             output
         } else {
@@ -627,10 +633,10 @@ mod tests {
     fn running_means_sanitize_non_finite_values_without_poisoning_state() {
         let mut means = WindowedMeans::<1, 1>::new([1]);
         for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            means.push([value]);
+            means.push::<true>([value]);
             assert_eq!(means.mean(0), [0.0]);
         }
-        means.push([1.0]);
+        means.push::<true>([1.0]);
         assert_eq!(means.mean(0), [1.0]);
     }
 
@@ -638,19 +644,19 @@ mod tests {
     fn running_means_preserve_small_values_after_a_large_value_expires() {
         let mut means = WindowedMeans::<1, 1>::new([4]);
         for value in [1.0, 1.0e100, 1.0, -1.0e100] {
-            means.push([value]);
+            means.push::<true>([value]);
         }
         assert_eq!(means.mean(0), [0.5]);
 
         let mut means = WindowedMeans::<1, 1>::new([2]);
         for value in [2.0_f64.powi(53), 1.0, 1.0] {
-            means.push([value]);
+            means.push::<true>([value]);
         }
         assert_eq!(means.mean(0), [1.0]);
 
         let mut means = WindowedMeans::<1, 1>::new([2]);
         for value in [1.0e100, 2.0, 1.0e-100, 1.0e-100] {
-            means.push([value]);
+            means.push::<true>([value]);
         }
         assert_eq!(means.mean(0), [1.0e-100]);
     }

@@ -6,8 +6,7 @@ use crate::util::audio::{Channel, DEFAULT_SAMPLE_RATE};
 use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex;
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
-use std::sync::Arc;
+use std::{collections::VecDeque, sync::Arc};
 
 pub(in crate::visuals::oscilloscope) const TRACE_COUNT: usize = 2;
 
@@ -94,11 +93,19 @@ impl PeriodEstimator {
         self.last_peak = 0.0;
         if samples.len() < 3 { return None; }
 
-        let mean = samples.iter().sum::<f32>() / samples.len() as f32;
-        self.last_peak = samples
-            .iter()
-            .map(|sample| (sample - mean).abs())
-            .fold(0.0, f32::max);
+        let (sum, min, max) = samples.iter().fold(
+            (0.0, f32::INFINITY, f32::NEG_INFINITY),
+            |(sum, min, max), &sample| (sum + sample, min.min(sample), max.max(sample)),
+        );
+        let mean = sum / samples.len() as f32;
+        self.last_peak = if mean.is_finite() {
+            (min - mean).abs().max((max - mean).abs())
+        } else {
+            samples
+                .iter()
+                .map(|sample| (sample - mean).abs())
+                .fold(0.0, f32::max)
+        };
         if self.last_peak < PeriodEstimator::MIN_SIGNAL_PEAK { return None; }
 
         let min_period = (rate / PeriodEstimator::MAX_HZ).round().max(2.0) as usize;
@@ -137,17 +144,18 @@ impl PeriodEstimator {
         }
         let Self { periodicity, energy_prefix, fft, .. } = self;
         let fft = fft.as_mut()?;
-
         energy_prefix.resize(samples.len() + 1, 0.0);
         energy_prefix[0] = 0.0;
-        for (i, (dst, &sample)) in fft.input[..samples.len()]
+        let mut energy = 0.0_f32;
+        for ((dst, &sample), prefix) in fft.input[..samples.len()]
             .iter_mut()
             .zip(samples)
-            .enumerate()
+            .zip(&mut energy_prefix[1..])
         {
             let centered = sample - mean;
             *dst = centered;
-            energy_prefix[i + 1] = centered * centered + energy_prefix[i];
+            energy += centered * centered;
+            *prefix = energy;
         }
         fft.input[samples.len()..].fill(0.0);
 
@@ -167,12 +175,13 @@ impl PeriodEstimator {
         periodicity.resize(max_lag + 1, 0.0);
         let total_energy = energy_prefix[samples.len()];
         if total_energy <= f32::EPSILON { return None; }
-        for tau in 0..=max_lag {
-            let left_energy = energy_prefix[samples.len() - tau];
-            let right_energy = total_energy - energy_prefix[tau];
-            let denom = left_energy + right_energy;
-            periodicity[tau] = if denom > f32::EPSILON {
-                2.0 * fft.input[tau] * norm / denom
+        let energies = energy_prefix.iter().zip(energy_prefix.iter().rev());
+        for ((value, &autocorrelation), (&right, &left)) in
+            periodicity.iter_mut().zip(&fft.input).zip(energies)
+        {
+            let denom = left + (total_energy - right);
+            *value = if denom > f32::EPSILON {
+                2.0 * autocorrelation * norm / denom
             } else {
                 0.0
             };
@@ -186,14 +195,6 @@ fn trigger_kernel_len(period: f32, rate: f32) -> usize {
         .max(period * StableTrigger::MIN_CYCLES)
         .round()
         .max(2.0) as usize
-}
-
-fn normalize_peak(data: &mut [f32]) {
-    let peak = data.iter().map(|sample| sample.abs()).fold(0.0, f32::max);
-    let scale = 1.0 / peak.max(StableTrigger::NORMALIZE_FLOOR);
-    for sample in data {
-        *sample *= scale;
-    }
 }
 
 fn gaussian(len: usize, index: usize, std: f32) -> f32 {
@@ -219,7 +220,8 @@ fn normalized_correlation(x: &[f32], y: &[f32], [sum_y, sum_yy]: [f32; 2]) -> f3
             sums[2][lane] += x[lane] * y[lane];
         }
     }
-    let [mut sum_x, mut sum_xx, mut sum_xy] = sums.map(|sum| sum.into_iter().sum::<f32>());
+    let [mut sum_x, mut sum_xx, mut sum_xy] =
+        sums.map(|[a, b, c, d]| 0.0 + a + b + c + d);
     for (&x, &y) in x_remainder.iter().zip(y_remainder) {
         sum_x += x;
         sum_xx += x * x;
@@ -498,7 +500,9 @@ impl StableTrigger {
     }
 
     fn update_reference(&mut self, period: f32) {
-        normalize_peak(&mut self.reference);
+        let peak = self.reference.iter().map(|sample| sample.abs()).fold(0.0, f32::max);
+        let scale = 1.0 / peak.max(StableTrigger::NORMALIZE_FLOOR);
+        for sample in &mut self.reference { *sample *= scale; }
         for (reference, &candidate) in self.reference.iter_mut().zip(&self.candidate) {
             *reference += StableTrigger::BUFFER_RESPONSIVENESS * (candidate - *reference);
         }
@@ -508,17 +512,23 @@ impl StableTrigger {
 
     fn write_candidate(&mut self, segment: &[f32], period: f32) -> f32 {
         let mean = segment.iter().sum::<f32>() / segment.len().max(1) as f32;
-        self.candidate.clear();
-        self.candidate.extend(segment.iter().map(|sample| sample - mean));
-        normalize_peak(&mut self.candidate);
-
+        self.candidate.resize(segment.len(), 0.0);
+        let mut peak = 0.0_f32;
+        for (dst, &sample) in self.candidate.iter_mut().zip(segment) {
+            let sample = sample - mean;
+            peak = peak.max(sample.abs());
+            *dst = sample;
+        }
+        let scale = 1.0 / peak.max(StableTrigger::NORMALIZE_FLOOR);
         let std = (period * StableTrigger::BUFFER_FALLOFF_PERIODS).max(1.0);
         let len = self.candidate.len();
         for i in 0..len.div_ceil(2) {
             let mirror = len - 1 - i;
             let weight = gaussian(len, i, std);
+            self.candidate[i] *= scale;
             self.candidate[i] *= weight;
             if mirror != i {
+                self.candidate[mirror] *= scale;
                 self.candidate[mirror] *= weight;
             }
         }

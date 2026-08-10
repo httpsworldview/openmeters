@@ -29,7 +29,7 @@ fn snapshot_points(points: &[(f32, f32)]) -> Arc<[(f32, f32)]> {
     if points.is_empty() { Arc::default() } else { Arc::from(points) }
 }
 
-type BandSplitter = ThreeBand<[Cascade<Biquad, 2>; 2], true>;
+type BandSplitter = ThreeBand<Cascade<[Biquad; 2], 2>, true>;
 
 #[derive(Debug, Clone, Copy, Default)]
 struct Correlator {
@@ -159,6 +159,14 @@ impl StereometerProcessor {
             if history.len() < frames { continue; }
             let data = history.make_contiguous();
             buf.reserve(target);
+            if target == frames {
+                if band == FULL_BAND {
+                    buf.extend_from_slice(data);
+                } else {
+                    buf.extend(data.iter().map(|&(l, r)| (l * BAND_DISPLAY_GAIN, r * BAND_DISPLAY_GAIN)));
+                }
+                continue;
+            }
             if band == FULL_BAND {
                 buf.extend((0..target).map(|i| data[i * frames / target]));
             } else {
@@ -228,7 +236,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_downsampling_preserves_stereo_pairs() {
+    fn snapshot_downsampling_and_mode_transition_preserve_stereo_pairs() {
         let mut processor = StereometerProcessor::new(StereometerConfig {
             sample_rate: 4.0,
             segment_duration: 1.0,
@@ -241,6 +249,14 @@ mod tests {
             .unwrap();
 
         assert_eq!(&*snapshot.points[FULL_BAND], &[(1.0, 2.0), (5.0, 6.0)]);
+        processor.update_config(StereometerConfig { emit_band_points: true, ..processor.config() });
+        let snapshot = processor
+            .process_block(&AudioBlock::new(&samples, 2, 4.0))
+            .unwrap();
+        assert_eq!(&*snapshot.points[FULL_BAND], &[(1.0, 2.0), (5.0, 6.0)]);
+        processor.update_config(StereometerConfig { emit_band_points: false, ..processor.config() });
+        let snapshot = processor.process_block(&AudioBlock::new(&[9.0, 10.0], 2, 4.0)).unwrap();
+        assert_eq!(&*snapshot.points[FULL_BAND], &[(3.0, 4.0), (7.0, 8.0)]);
     }
 
     #[test]

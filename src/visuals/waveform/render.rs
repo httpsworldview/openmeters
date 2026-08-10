@@ -64,11 +64,8 @@ impl WaveformParams {
     fn band_mix_color(&self, bands: [f32; NUM_BANDS]) -> [f32; 4] {
         let mut out = [0.0; 4];
         let mut total = 0.0;
-        for (weight, color) in bands
-            .map(|v| crate::util::finite_positive(v).unwrap_or(0.0))
-            .into_iter()
-            .zip(self.palette.iter())
-        {
+        for (&band, color) in bands.iter().zip(&self.palette) {
+            let weight = crate::util::finite_positive(band).unwrap_or(0.0);
             total += weight;
             for i in 0..4 {
                 out[i] += color[i] * weight;

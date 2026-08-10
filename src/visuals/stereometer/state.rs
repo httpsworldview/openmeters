@@ -26,6 +26,7 @@ fn tracks_band_correlation(s: &StereometerSettings) -> bool {
 
 pub(crate) struct StereometerState {
     points: [Arc<[(f32, f32)]>; BAND_COUNT + 1],
+    band_colors: [Arc<[[f32; 4]]>; BAND_COUNT],
     trails: [FixedTrail; BAND_COUNT + 1],
     pub(in crate::visuals) palette: [Color; PALETTE_SIZE],
     pub(in crate::visuals) settings: StereometerSettings,
@@ -38,6 +39,7 @@ impl StereometerState {
     pub fn new() -> Self {
         Self {
             points: Default::default(),
+            band_colors: Default::default(),
             trails: Default::default(),
             palette: palettes::stereometer::COLORS,
             settings: StereometerSettings::default(),
@@ -63,7 +65,26 @@ impl StereometerState {
         self.grid.invalidate();
     }
 
-    crate::visuals::palette_setter!(PALETTE_SIZE => geometry => grid);
+    pub fn set_palette(&mut self, palette: &[Color; PALETTE_SIZE]) {
+        self.palette = *palette; self.band_colors = Default::default();
+        self.sync_band_colors();
+        self.geometry.invalidate(); self.grid.invalidate();
+    }
+
+    fn sync_band_colors(&mut self) {
+        for (band, colors) in self.band_colors.iter_mut().enumerate() {
+            let len = self.points[band + 1].len();
+            if colors.len() == len { continue; }
+            let [r, g, b, a] = color_to_rgba(self.palette[5 + band]);
+            *colors = (0..len)
+                .map(|i| {
+                    let factor = a * (i + 1) as f32 / len as f32;
+                    [r * factor, g * factor, b * factor, 0.0]
+                })
+                .collect::<Vec<_>>()
+                .into();
+        }
+    }
 
     pub fn reset_audio(&mut self) {
         self.points = Default::default();
@@ -74,6 +95,7 @@ impl StereometerState {
     pub fn apply_snapshot(&mut self, snap: StereometerSnapshot) {
         self.geometry.invalidate();
         self.points = snap.points;
+        self.sync_band_colors();
         self.trails[FULL_BAND].push_front(snap.correlations[FULL_BAND]);
         if tracks_band_correlation(&self.settings) {
             for (trail, value) in self.trails[1..].iter_mut().zip(&snap.correlations[1..]) {
@@ -85,13 +107,14 @@ impl StereometerState {
     }
 
     pub fn visual_params(&self, bounds: iced::Rectangle) -> Option<StereometerParams> {
-        if self.points[FULL_BAND].is_empty() { return None; }
         let s = &self.settings;
+        if self.points[FULL_BAND].is_empty() { return None; }
         Some(StereometerParams {
             geometry: self.geometry,
             grid: self.grid,
             bounds,
             points: self.points.clone(),
+            band_colors: self.band_colors.clone(),
             palette: self.palette.map(color_to_rgba),
             mode: s.mode,
             scale: s.scale,

@@ -30,15 +30,10 @@ struct PeakLabel {
     marker_pos: [f32; 2],
     opacity: f32,
 }
-
 type PeakUpdate = ([String; 2], [f32; 2]);
-
 type GridTick = (f32, bool, Option<Paragraph>);
-// Keep the Vec allocation when publishing freshly built points; Vec -> Arc<[T]> copies them.
 type SharedPoints = Arc<Vec<[f32; 2]>>;
-
 static EMPTY_POINTS: LazyLock<SharedPoints> = LazyLock::new(|| Arc::new(Vec::new()));
-
 fn rebuild_points(
     points: &mut SharedPoints,
     capacity: usize,
@@ -207,9 +202,11 @@ impl SpectrumState {
     fn fade_peak(&mut self, incoming: Option<PeakUpdate>) {
         match (incoming, &mut self.peak) {
             (Some(new), Some(p)) => {
-                if p.content != new.0 {
-                    p.text = peak_text(&new.0);
-                    p.content = new.0;
+                for (index, content) in new.0.into_iter().enumerate() {
+                    if p.content[index] != content {
+                        p.text[index] = peak_text(&content, index);
+                        p.content[index] = content;
+                    }
                 }
                 p.label_pos = std::array::from_fn(|i| lerp(p.label_pos[i], new.1[i], 0.20));
                 p.marker_pos = new.1;
@@ -217,7 +214,7 @@ impl SpectrumState {
             }
             (Some(new), None) => {
                 self.peak = Some(PeakLabel {
-                    text: peak_text(&new.0),
+                    text: std::array::from_fn(|index| peak_text(&new.0[index], index)),
                     content: new.0,
                     label_pos: new.1,
                     marker_pos: new.1,
@@ -319,8 +316,9 @@ fn value_at(bins: &[f32], mags: &[f32], f: f32) -> f32 {
 }
 
 fn peak_bin(bins: &[f32], db: &[f32], min_f: f32, max_f: f32) -> Option<usize> {
-    (1..bins.len().saturating_sub(1))
-        .filter(|&i| (min_f..=max_f).contains(&bins[i]) && db[i].is_finite())
+    (bins.partition_point(|&f| f < min_f).max(1)
+        ..bins.partition_point(|&f| f <= max_f).min(bins.len().saturating_sub(1)))
+        .filter(|&i| db[i].is_finite())
         .max_by(|&a, &b| db[a].total_cmp(&db[b]))
 }
 
@@ -418,9 +416,8 @@ mod tests {
     }
 }
 
-fn peak_text(content: &[String; 2]) -> [Paragraph; 2] {
-    [(content[0].as_str(), 12.0), (content[1].as_str(), 10.0)]
-        .map(|(text, size)| Paragraph::with_text(raw_text(text, size, Size::INFINITE).as_ref()))
+fn peak_text(content: &str, index: usize) -> Paragraph {
+    Paragraph::with_text(raw_text(content, [12.0, 10.0][index], Size::INFINITE).as_ref())
 }
 
 fn trace_db(trace: &SpectrumTraceSnapshot, mode: SpectrumWeightingMode) -> &[f32] {
@@ -441,23 +438,17 @@ fn build_single_points_into(
 ) {
     let dr = (MAX_DB - style.floor_db).max(EPSILON);
     let y = |m: f32| ((m - style.floor_db) / dr).clamp(0.0, 1.0);
-    let mut xi = 0;
-    let mut push = |m: f32| {
-        let Some(&x) = x_cache.get(xi) else { return; };
-        xi += 1;
+    let mut push = |x, m| {
         let y = y(m);
         if y.is_finite() {
             out.push([if style.reverse_frequency { 1.0 - x } else { x }, y]);
         }
     };
 
-    push(value_at(bins, db, min_f));
-    for (&f, &m) in bins.iter().zip(db) {
-        if f > min_f && f < max_f {
-            push(m);
-        }
-    }
-    push(value_at(bins, db, max_f));
+    let interior = bins.partition_point(|&f| f <= min_f)..bins.partition_point(|&f| f < max_f);
+    push(x_cache[0], value_at(bins, db, min_f));
+    for (&x, &m) in x_cache[1..x_cache.len() - 1].iter().zip(&db[interior]) { push(x, m); }
+    push(*x_cache.last().unwrap_or(&0.0), value_at(bins, db, max_f));
     if style.reverse_frequency {
         out.reverse();
     }
@@ -475,6 +466,9 @@ fn draw_grid(
     }
     let style = &state.style;
     let reverse = style.reverse_frequency;
+    let scale = style.frequency_scale;
+    let (scaled_min, scaled_max) = (scale.scale(min_f), scale.scale(max_f));
+    let scaled_span = (scaled_max - scaled_min).max(EPSILON);
     let pal = th.extended_palette();
     let txt = pal.background.base.text;
     let (major_lc, major_tc) = (with_alpha(txt, 0.25), with_alpha(txt, 0.75));
@@ -482,10 +476,7 @@ fn draw_grid(
 
     let tick_x = |f: f32| -> Option<f32> {
         if !(min_f..=max_f).contains(&f) { return None; }
-        let pos = style
-            .frequency_scale
-            .pos_of(min_f, max_f, f)
-            .clamp(0.0, 1.0);
+        let pos = ((scale.scale(f) - scaled_min) / scaled_span).clamp(0.0, 1.0);
         pos.is_finite()
             .then_some(b.x + b.width * if reverse { 1.0 - pos } else { pos })
     };
