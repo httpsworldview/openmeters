@@ -15,7 +15,7 @@ use std::time::Instant;
 const SILENCE_CHUNK_FRAMES: usize = 4_096;
 const DSP_BATCH_FRAMES_AT_48K: usize = 256;
 const MAX_DSP_INGEST_FRAMES_AT_48K: usize = 1_024;
-const MAX_SILENCE_SECONDS: u64 = 2;
+const MAX_SILENCE_SECONDS: u64 = 10;
 
 fn scaled_samples(frames_at_48k: usize, format: AudioFormat) -> usize {
     ((frames_at_48k as f64 * f64::from(format.sample_rate) / f64::from(DEFAULT_SAMPLE_RATE))
@@ -26,6 +26,7 @@ fn scaled_samples(frames_at_48k: usize, format: AudioFormat) -> usize {
 
 struct DspBatcher {
     samples: Vec<f32>,
+    accum_silence: u64,
     format: Option<AudioFormat>,
 }
 
@@ -33,8 +34,39 @@ impl DspBatcher {
     fn new() -> Self {
         Self {
             samples: Vec::with_capacity(DSP_BATCH_FRAMES_AT_48K * MAX_CAPTURE_CHANNELS),
+            accum_silence: 0,
             format: None,
         }
+    }
+
+    fn push_silence(
+        &mut self,
+        manager: &mut VisualManager,
+        silence: &[f32],
+        frames: u64,
+        format: AudioFormat,
+    ) {
+        self.accum_silence = self.accum_silence.saturating_add(frames);
+
+        let limit = (MAX_SILENCE_SECONDS as f64 * f64::from(format.sample_rate))
+            .round()
+            .max(1.0) as u64;
+        if self.accum_silence > limit {
+            self.reset(manager);
+            return;
+        }
+
+        let accum_silence = self.accum_silence;
+
+        let capacity = silence.len() / format.channels.max(1);
+        let mut remaining = frames;
+        while remaining > 0 {
+            let chunk = remaining.min(capacity as u64) as usize;
+            self.push(manager, &silence[..chunk * format.channels], format);
+            remaining -= chunk as u64;
+        }
+
+        self.accum_silence = accum_silence;
     }
 
     fn push(
@@ -43,6 +75,7 @@ impl DspBatcher {
         mut samples: &[f32],
         format: AudioFormat,
     ) -> usize {
+        self.accum_silence = 0;
         if self.format.is_some_and(|current| current != format) {
             self.samples.clear();
         }
@@ -117,7 +150,7 @@ impl MeterEngine {
                 batcher.push(&mut manager, samples, format);
             }
             CapturedSpan::Silence { frames, format } => {
-                ingest_silence(&mut manager, silence, batcher, frames, format);
+                batcher.push_silence(&mut manager, silence, frames, format);
             }
             CapturedSpan::Reset => batcher.reset(&mut manager),
         });
@@ -139,29 +172,6 @@ impl MeterEngine {
             self.audio.discard(now);
         }
         self.batcher.clear();
-    }
-}
-
-fn ingest_silence(
-    manager: &mut VisualManager,
-    scratch: &[f32],
-    batcher: &mut DspBatcher,
-    frames: u64,
-    format: AudioFormat,
-) {
-    let limit = (MAX_SILENCE_SECONDS as f64 * f64::from(format.sample_rate))
-        .round()
-        .max(1.0) as u64;
-    if frames > limit {
-        batcher.reset(manager);
-        return;
-    }
-    let capacity = scratch.len() / format.channels.max(1);
-    let mut remaining = frames;
-    while remaining > 0 {
-        let chunk = remaining.min(capacity as u64) as usize;
-        batcher.push(manager, &scratch[..chunk * format.channels], format);
-        remaining -= chunk as u64;
     }
 }
 
@@ -264,13 +274,35 @@ mod tests {
             0
         );
         let scratch = [0.0; SILENCE_CHUNK_FRAMES * MAX_CAPTURE_CHANNELS];
-        ingest_silence(
+        batcher.push_silence(
             &mut manager,
             &scratch,
-            &mut batcher,
             MAX_SILENCE_SECONDS * 192_000 + 1,
             format,
         );
+        assert!(batcher.samples.is_empty());
+        assert_eq!(batcher.format, None);
+    }
+
+    #[test]
+    fn many_silences_reset_without_replaying_samples() {
+        let mut manager = VisualManager::default();
+        let mut batcher = DspBatcher::new();
+        let format = format(MAX_CAPTURE_CHANNELS, 192_000.0, 1);
+        assert_eq!(
+            batcher.push(&mut manager, &[0.25; 128 * MAX_CAPTURE_CHANNELS], format),
+            0
+        );
+        let scratch = [0.0; SILENCE_CHUNK_FRAMES * MAX_CAPTURE_CHANNELS];
+        for _ in 0..10 {
+            batcher.push_silence(
+                &mut manager,
+                &scratch,
+                MAX_SILENCE_SECONDS * 192_000 / 10,
+                format,
+            );
+        }
+        batcher.push_silence(&mut manager, &scratch, 1, format);
         assert!(batcher.samples.is_empty());
         assert_eq!(batcher.format, None);
     }
