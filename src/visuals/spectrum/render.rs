@@ -250,18 +250,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn range_max_matches_reference_with_duplicate_positions() {
+    fn range_max_handles_interpolation_and_duplicate_positions() {
         let points = [[0.0, 0.1], [0.25, 0.8], [0.25, 0.4], [0.6, 0.3], [1.0, 0.9]];
-        let reference = |lo: f32, hi: f32| {
-            let start = points.partition_point(|p| p[0] < lo);
-            let end = points.partition_point(|p| p[0] <= hi);
-            points[start..end]
-                .iter()
-                .map(|p| p[1])
-                .fold(sample_lerp(&points, lo).max(sample_lerp(&points, hi)), f32::max)
-        };
-        for (lo, hi) in [(0.1, 0.2), (0.25, 0.25), (0.2, 0.6), (0.6, 0.9)] {
-            assert_eq!(sample_max(&points, lo, hi), reference(lo, hi));
+
+        for (lo, hi, expected) in [
+            (0.1, 0.2, 0.66),
+            (0.25, 0.25, 0.8),
+            (0.2, 0.6, 0.8),
+            (0.6, 0.9, 0.75),
+        ] {
+            let actual = sample_max(&points, lo, hi);
+            assert!((actual - expected).abs() < 1.0e-6, "{lo}..{hi}: {actual}");
         }
     }
 }

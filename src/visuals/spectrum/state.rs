@@ -382,20 +382,26 @@ mod tests {
     }
 
     #[test]
-    fn secondary_trace_can_render_without_primary_source() {
+    fn secondary_trace_renders_without_primary_source() {
         let trace = [vec![-20.0; 3], vec![-20.0; 3]];
         let mut state = SpectrumState::new();
         state.style.source = Channel::None;
         state.style.secondary_source = Channel::Left;
-
         state.apply_snapshot(&SpectrumSnapshot {
             frequency_bins: vec![0.0, 20.0, 40.0],
             traces: [SpectrumTraceSnapshot::default(), trace],
         });
+        let bounds = Rectangle::new(Point::ORIGIN, Size::new(100.0, 50.0));
 
-        assert!(state.points[0].is_empty());
-        assert!(state.points[1].len() >= 2);
-        assert!(state.peak().is_none());
+        let line = state.visual_params(bounds, &iced::Theme::Dark, None).unwrap();
+        assert!(line.normalized_points.is_empty());
+        assert!(line.secondary_points.len() >= 2);
+        assert!(line.peak.is_none());
+
+        state.style.display_mode = SpectrumDisplayMode::Bar;
+        let bars = state.visual_params(bounds, &iced::Theme::Dark, None).unwrap();
+        assert!(bars.normalized_points.len() >= 2);
+        assert!(bars.secondary_points.is_empty());
     }
 
     #[test]

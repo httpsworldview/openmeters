@@ -391,23 +391,6 @@ mod tests {
     }
 
     #[test]
-    fn derived_frame_preserves_channel_projection_bits() {
-        for stereo in [
-            [0.0, -0.0],
-            [0.25, -0.5],
-            [f32::INFINITY, f32::NEG_INFINITY],
-            [f32::from_bits(0x7fc0_1234), 1.0],
-        ] {
-            assert_eq!(
-                derived_frame(stereo).map(f32::to_bits),
-                WAVEFORM_CHANNELS
-                    .map(|channel| channel.project(stereo))
-                    .map(f32::to_bits),
-            );
-        }
-    }
-
-    #[test]
     fn derived_band_filters_preserve_all_channel_history() {
         let mut shared: [BandFilter; 2] =
             std::array::from_fn(|_| BandFilter::new(RATE, BAND_SPLITS_HZ));

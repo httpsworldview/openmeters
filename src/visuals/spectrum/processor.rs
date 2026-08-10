@@ -439,6 +439,7 @@ mod tests {
             ..Default::default()
         };
         invalid.normalize();
+        assert_eq!(invalid.sample_rate, DEFAULT_SAMPLE_RATE);
         assert_eq!(invalid.fft_size, 1);
         assert_eq!(invalid.hop_size, 1);
         assert_eq!(invalid.floor_db, DEFAULT_SPECTRUM_DB_FLOOR);
@@ -478,61 +479,71 @@ mod tests {
     }
 
     #[test]
-    fn configured_sources_are_projected_before_fft() {
-        let mut p = SpectrumProcessor::new(SpectrumConfig {
-            fft_size: 8,
-            source: Channel::Left,
-            secondary_source: Channel::Side,
-            ..Default::default()
-        });
-        let samples = [1.0, 0.0, 0.0, 1.0];
-        p.process_block(&AudioBlock::new(&samples, 2, p.config.sample_rate));
+    fn configured_sources_drive_their_fft_traces() {
+        let sample_rate = 8.0;
+        let samples: Vec<_> = sine_wave(1.0, sample_rate, 8, 1.0)
+            .into_iter()
+            .zip(sine_wave(2.0, sample_rate, 8, 1.0))
+            .flat_map(|(left, side)| [left, left - 2.0 * side])
+            .collect();
 
-        assert_eq!(p.pcm_buffers[0].iter().copied().collect::<Vec<_>>(), [1.0, 0.0]);
-        assert_eq!(p.pcm_buffers[1].iter().copied().collect::<Vec<_>>(), [0.5, -0.5]);
+        for (source, expected_bins) in [
+            (Channel::Left, [Some(1), Some(2)]),
+            (Channel::None, [None, Some(2)]),
+        ] {
+            let config = SpectrumConfig {
+                sample_rate,
+                fft_size: 8,
+                hop_size: 8,
+                window: WindowKind::Rectangular,
+                source,
+                secondary_source: Channel::Side,
+                ..Default::default()
+            };
+            let mut processor = SpectrumProcessor::new(config);
+            let snapshot = processor
+                .process_block(&AudioBlock::new(&samples, 2, sample_rate))
+                .expect("expected spectrum");
+
+            for (trace, expected_bin) in snapshot.traces.iter().zip(expected_bins) {
+                let raw = &trace[1];
+                match expected_bin {
+                    Some(expected) => {
+                        let (bin, level) = raw
+                            .iter()
+                            .enumerate()
+                            .max_by(|a, b| a.1.total_cmp(b.1))
+                            .unwrap();
+                        assert_eq!(bin, expected);
+                        assert!(level.abs() < 0.01, "peak was {level} dBFS");
+                    }
+                    None => assert!(raw.iter().all(|&level| level == config.floor_db)),
+                }
+            }
+        }
     }
 
     #[test]
-    fn secondary_source_can_drive_processing_without_primary() {
-        let mut p = SpectrumProcessor::new(SpectrumConfig {
-            fft_size: 8,
-            hop_size: 8,
-            source: Channel::None,
-            secondary_source: Channel::Left,
-            ..Default::default()
-        });
-        let samples = vec![0.0; 8];
-
-        let snap = p.process_block(&AudioBlock::new(&samples, 1, p.config.sample_rate));
-
-        assert!(snap.is_some());
-    }
-
-    #[test]
-    fn fft_size_update_resizes_scratch_before_processing() {
-        let mut p = SpectrumProcessor::new(SpectrumConfig {
+    fn fft_size_update_takes_effect_before_processing() {
+        let mut processor = SpectrumProcessor::new(SpectrumConfig {
             fft_size: 128,
             hop_size: 128,
             ..Default::default()
         });
-        assert!(p.fft.is_none());
-        assert!(p.real_buffer.is_empty());
-        p.prepare();
-        let mut cfg = p.config();
-        cfg.fft_size = 256;
-        cfg.hop_size = 256;
-        p.update_config(cfg);
+        processor.prepare();
+        let mut config = processor.config();
+        config.fft_size = 256;
+        config.hop_size = 256;
+        processor.update_config(config);
 
-        let cfg = p.config();
-        let bins = cfg.fft_size / 2 + 1;
-        assert_eq!(p.levels[0].scratch_power.len(), bins);
-        assert!(p.levels[1].scratch_power.is_empty());
+        let bins = config.fft_size / 2 + 1;
+        let samples = vec![0.0; config.fft_size];
+        let snapshot = processor
+            .process_block(&AudioBlock::new(&samples, 1, config.sample_rate))
+            .expect("expected resized spectrum");
 
-        let samples = vec![0.0; cfg.fft_size];
-        let lengths = p
-            .process_block(&AudioBlock::new(&samples, 1, cfg.sample_rate))
-            .map(|s| (s.traces[0][0].len(), s.traces[0][1].len()));
-        assert_eq!(lengths, Some((bins, bins)));
+        assert_eq!(snapshot.frequency_bins.len(), bins);
+        assert!(snapshot.traces[0].iter().all(|trace| trace.len() == bins));
     }
 
     #[test]

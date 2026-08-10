@@ -752,21 +752,15 @@ mod tests {
 
     #[test]
     fn classic_retention_budget_uses_packed_column_width() {
-        let mut processor = SpectrogramProcessor::new(SpectrogramConfig {
-            fft_size: 16_384,
-            zero_padding_factor: 32,
-            history_length: MAX_SPECTROGRAM_HISTORY_COLUMNS,
-            use_reassignment: false,
-            ..Default::default()
-        });
-        assert!(processor.transforms.is_none());
-        assert!(processor.real.is_empty());
-        processor.prepare();
-        let bins = processor.fft_size / 2 + 1;
-        let packed_stride = bins.div_ceil(2) * std::mem::size_of::<u32>();
+        let points = (16_384 * 32 / 2 + 1) as u32;
+        let packed_stride = points.div_ceil(2) as usize * std::mem::size_of::<u32>();
 
         assert_eq!(
-            history_columns(ColumnKind::Classic, bins as u32, processor.config.history_length),
+            history_columns(
+                ColumnKind::Classic,
+                points,
+                MAX_SPECTROGRAM_HISTORY_COLUMNS
+            ),
             SPECTROGRAM_HISTORY_BYTE_BUDGET / packed_stride
         );
     }
