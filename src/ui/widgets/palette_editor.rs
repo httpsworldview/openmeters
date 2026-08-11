@@ -35,7 +35,7 @@ pub struct PaletteEditor {
     positions: Vec<f32>,
     spreads: Vec<f32>,
     active: Option<usize>,
-    visible_indices: Option<&'static [usize]>,
+    only_first_visible: bool,
     label_overrides: &'static [(usize, &'static str)],
     show_ramp: bool,
     scroll: ScrollGlow,
@@ -48,7 +48,7 @@ impl PaletteEditor {
             spreads: vec![1.0; palette.len()],
             palette,
             active: None,
-            visible_indices: None,
+            only_first_visible: false,
             label_overrides: &[],
             show_ramp: false,
             scroll: ScrollGlow::default(),
@@ -59,11 +59,9 @@ impl PaletteEditor {
         self.show_ramp = show;
     }
 
-    pub fn set_visible_indices(&mut self, indices: Option<&'static [usize]>) {
-        self.visible_indices = indices;
-        let _ = self
-            .active
-            .take_if(|active| indices.is_some_and(|visible| !visible.contains(active)));
+    pub fn set_only_first_visible(&mut self, only: bool) {
+        self.only_first_visible = only;
+        let _ = self.active.take_if(|active| only && *active != 0);
     }
 
     pub fn set_label_overrides(&mut self, overrides: &'static [(usize, &'static str)]) {
@@ -184,16 +182,13 @@ impl PaletteEditor {
     pub fn view(&self) -> Element<'_, PaletteEvent> {
         let colors = self.palette.colors();
         let mut row = Row::new().spacing(12);
-        if let Some(indices) = self.visible_indices {
-            for &i in indices {
-                if let Some(&color) = colors.get(i) {
-                    row = row.push(self.color_picker(i, color));
-                }
-            }
+        let visible = if self.only_first_visible {
+            1
         } else {
-            for (i, &color) in colors.iter().enumerate() {
-                row = row.push(self.color_picker(i, color));
-            }
+            colors.len()
+        };
+        for (i, &color) in colors.iter().take(visible).enumerate() {
+            row = row.push(self.color_picker(i, color));
         }
         let mut col = Column::new().spacing(12);
         if self.show_ramp && colors.len() >= 2 {
