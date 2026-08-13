@@ -22,6 +22,7 @@ pub(super) enum Message {
     Visuals(VisualsMessage),
     Tick,
     Watchdog(u64),
+    AudioWake,
     BarOutputResolved(window::Id, Option<OutputSnapshot>),
     ToggleConfig,
     TogglePause,
@@ -83,6 +84,9 @@ pub(super) fn keyboard_shortcut(
 }
 
 pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
+    if !app.rendering_paused && !matches!(&msg, Message::Tick | Message::Watchdog(_)) {
+        app.frames.borrow_mut().wake();
+    }
     match msg {
         Message::Config(config_msg) => {
             let decoration_task = match &config_msg {

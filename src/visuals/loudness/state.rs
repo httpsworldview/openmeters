@@ -108,6 +108,15 @@ impl LoudnessState {
         self.geometry.invalidate();
     }
 
+    pub(in crate::visuals) fn is_quiescent(&self) -> bool {
+        let settled = LoudnessSnapshot {
+            channel_count: self.snapshot.channel_count,
+            positions: self.snapshot.positions,
+            ..LoudnessSnapshot::with_floor(self.snapshot.short_term_loudness)
+        };
+        self.snapshot == settled && self.peaks.iter().all(|peak| peak.db <= DB_RANGE.0)
+    }
+
     pub fn set_modes(&mut self, left: MeterMode, right: MeterMode) {
         if self.settings.left_mode != left || self.settings.right_mode != right {
             self.peaks

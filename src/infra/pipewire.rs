@@ -23,6 +23,7 @@ use std::thread;
 use tracing::{error, info};
 
 pub use transport::{AudioReader, CapturedSpan};
+pub(crate) use transport::{AudioWake, audio_wake};
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 

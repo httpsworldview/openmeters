@@ -105,6 +105,20 @@ impl StereometerState {
         }
     }
 
+    pub(in crate::visuals) fn is_quiescent(&self) -> bool {
+        let bands = 1 + BAND_COUNT * usize::from(self.settings.mode == StereometerMode::DotCloudBands);
+        let trails = match self.settings.correlation_meter {
+            CorrelationMeterMode::Off => 0,
+            CorrelationMeterMode::SingleBand => 1,
+            CorrelationMeterMode::MultiBand => BAND_COUNT + 1,
+        };
+        self.points[..bands].iter().all(|points| {
+            !points.is_empty() && points.iter().all(|&(left, right)| left == 0.0 && right == 0.0)
+        }) && self.trails[..trails]
+            .iter()
+            .all(|trail| !trail.is_empty() && trail.iter().all(|value| *value == 0.0))
+    }
+
     pub fn visual_params(&self, bounds: iced::Rectangle) -> Option<StereometerParams> {
         let s = &self.settings;
         if self.points[FULL_BAND].is_empty() { return None; }

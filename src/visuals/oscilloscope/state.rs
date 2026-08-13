@@ -4,7 +4,7 @@
 use super::processor::{OscilloscopeSnapshot, TRACE_COUNT};
 use super::render::OscilloscopeParams;
 use crate::persistence::settings::OscilloscopeSettings;
-use crate::util::color::color_to_rgba;
+use crate::util::{audio::Channel, color::color_to_rgba};
 use crate::visuals::palettes;
 use iced::Color;
 use std::sync::Arc;
@@ -67,12 +67,25 @@ impl OscilloscopeState {
                         .zip(snapshot.samples.iter())
                 {
                     *current = *current * persistence + incoming * fresh;
+                    crate::util::audio::flush_denormal_f32(current);
                 }
                 return;
             }
         }
 
         self.snapshot = snapshot;
+    }
+
+    pub(in crate::visuals) fn ignores_audio(&self) -> bool {
+        [self.settings.channel_1, self.settings.channel_2] == [Channel::None; 2]
+    }
+
+    pub(in crate::visuals) fn is_quiescent(&self) -> bool {
+        let channels = usize::from(self.settings.channel_1 != Channel::None)
+            + usize::from(self.settings.channel_2 != Channel::None);
+        self.ignores_audio()
+            || (self.snapshot.channels == channels
+                && self.snapshot.samples.iter().all(|&sample| sample == 0.0))
     }
 
     pub fn visual_params(&self, bounds: iced::Rectangle) -> Option<OscilloscopeParams> {

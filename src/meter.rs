@@ -7,7 +7,7 @@
 //! sample-rate-scaled batches so compositor cadence does not become DSP cadence.
 
 use crate::dsp::AudioFormat;
-use crate::infra::pipewire::{AudioReader, CapturedSpan, MAX_CAPTURE_CHANNELS};
+use crate::infra::pipewire::{AudioReader, AudioWake, CapturedSpan, MAX_CAPTURE_CHANNELS};
 use crate::util::audio::DEFAULT_SAMPLE_RATE;
 use crate::visuals::registry::{VisualManager, VisualManagerHandle};
 use std::time::Instant;
@@ -100,9 +100,9 @@ impl MeterEngine {
         }
     }
 
-    pub fn advance(&mut self, now: Instant) {
+    pub fn advance(&mut self, now: Instant, allow_quiescence: bool) -> bool {
         if !self.active || self.paused {
-            return;
+            return false;
         }
         let Self {
             audio,
@@ -121,6 +121,23 @@ impl MeterEngine {
             }
             CapturedSpan::Reset => batcher.reset(&mut manager),
         });
+        let quiescent = allow_quiescence
+            && manager.is_quiescent()
+            && batcher.samples.iter().all(|&sample| sample == 0.0);
+        drop(manager);
+        quiescent && audio.sleep_until_signal()
+    }
+
+    pub fn wake(&mut self) -> bool {
+        let active = self.active && !self.paused;
+        if active && self.audio.set_active(true) {
+            self.batcher.clear();
+        }
+        active
+    }
+
+    pub fn wake_handle(&self) -> AudioWake {
+        self.audio.wake_handle()
     }
 
     pub fn set_active(&mut self, active: bool) {

@@ -239,6 +239,20 @@ impl SpectrumState {
         })
     }
 
+    pub(in crate::visuals) fn ignores_audio(&self) -> bool {
+        [self.style.source, self.style.secondary_source] == [Channel::None; 2]
+    }
+
+    pub(in crate::visuals) fn is_quiescent(&self) -> bool {
+        let quiet = [self.style.source, self.style.secondary_source]
+            .into_iter()
+            .zip(&self.points)
+            .filter(|(source, _)| *source != Channel::None)
+            .all(|(_, points)| points.iter().all(|point| point[1] == 0.0));
+        self.ignores_audio()
+            || (self.effective_range.is_some() && self.peak.is_none() && quiet)
+    }
+
     fn visual_params(
         &self,
         bounds: Rectangle,

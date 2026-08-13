@@ -73,6 +73,8 @@ macro_rules! visuals {
        $module:ident :: $processor:ident, $config:ident, $state:ident.$state_settings:ident;
        $settings_ty:ty;
        $(prepare($prepare:ident);)?
+       $(ignores_audio($ignores:ident);)?
+       $(buffered_signal($buffered_signal:ident);)?
        $(pre_ingest($pip:ident, $pis:ident) $pre_ingest_body:expr;)?
        apply($ap:ident, $as:ident, $aset:ident) $apply_body:expr;
        export($ep:ident, $es:ident) $sync:ident;
@@ -99,29 +101,41 @@ macro_rules! visuals {
                 module: Box::new(Visual {
                     processor: $module::$processor::new($module::$config::default()),
                     state: Rc::new(RefCell::new($module::$state::new())),
+                    pending_audio: false,
                 }),
             }),*]
         }
 
         $(impl VisualModule for Visual<$module::$processor, Shared<$module::$state>> {
-            fn ingest(&mut self, block: &AudioBlock<'_>) {
+            fn ingest(&mut self, block: &AudioBlock<'_>, signal: bool) {
                 $({
                     let ($pip, $pis) = (&mut self.processor, &self.state);
                     $pre_ingest_body
                 })?
+                self.pending_audio |= signal;
                 if let Some(snap) = self.processor.process_block(block) {
                     self.state.borrow_mut().apply_snapshot(snap);
+                    if !signal $(&& !self.processor.$buffered_signal())? {
+                        self.pending_audio = false;
+                    }
                 }
             }
 
             fn reset_audio(&mut self) {
                 self.processor.reset_audio();
                 self.state.borrow_mut().reset_audio();
+                self.pending_audio = true;
             }
 
-            $(fn prepare(&mut self) {
-                self.processor.$prepare();
-            })?
+            fn is_quiescent(&self) -> bool {
+                let state = self.state.borrow();
+                (!self.pending_audio $(|| state.$ignores())?) && state.is_quiescent()
+            }
+
+            fn prepare(&mut self) {
+                self.pending_audio = true;
+                $(self.processor.$prepare();)?
+            }
 
             fn content(&self) -> VisualContent {
                 VisualContent::$variant(self.state.clone())
@@ -131,6 +145,7 @@ macro_rules! visuals {
                 let $aset: $settings_ty = module_cfg.parse_config();
                 let ($ap, $as) = (&mut self.processor, &self.state);
                 $apply_body
+                self.pending_audio = true;
                 self.apply_palette($aset.palette.as_ref());
             }
 
@@ -169,6 +184,7 @@ visuals! {
     Oscilloscope(150.0, 100.0) =>
         oscilloscope::OscilloscopeProcessor, OscilloscopeConfig, OscilloscopeState.settings;
         settings_cfg::OscilloscopeSettings;
+        ignores_audio(ignores_audio);
         apply(p, s, set) { visuals!(@apply_config p, set); let reset = [set.channel_1, set.channel_2] == [Channel::None; 2];
             s.borrow_mut().update_view_settings(&set, reset);
         };
@@ -200,6 +216,7 @@ visuals! {
         spectrogram::SpectrogramProcessor, SpectrogramConfig, SpectrogramState.settings;
         settings_cfg::SpectrogramSettings;
         prepare(prepare);
+        buffered_signal(has_buffered_signal);
         pre_ingest(p, s) {
             let vw = { s.borrow().view_width };
             if vw > 0 {
@@ -219,6 +236,8 @@ visuals! {
         spectrum::SpectrumProcessor, SpectrumConfig, SpectrumState.style;
         settings_cfg::SpectrumSettings;
         prepare(prepare);
+        ignores_audio(ignores_audio);
+        buffered_signal(has_buffered_signal);
         apply(p, s, set) { visuals!(@apply_config p, set); let cfg = p.config();
             s.borrow_mut().update_view_settings(&set, cfg.floor_db);
         };
@@ -242,12 +261,14 @@ visuals! {
 struct Visual<P, S> {
     processor: P,
     state: S,
+    pending_audio: bool,
 }
 
 pub trait VisualModule {
-    fn ingest(&mut self, block: &AudioBlock<'_>);
+    fn ingest(&mut self, block: &AudioBlock<'_>, signal: bool);
     fn reset_audio(&mut self);
-    fn prepare(&mut self) {}
+    fn is_quiescent(&self) -> bool;
+    fn prepare(&mut self);
     fn content(&self) -> VisualContent;
     fn apply(&mut self, settings: &ModuleSettings);
     fn export(&self) -> ModuleSettings;
@@ -357,6 +378,11 @@ impl VisualManager {
     pub fn has_enabled(&self) -> bool {
         self.entries.iter().any(|entry| entry.enabled)
     }
+    pub fn is_quiescent(&self) -> bool {
+        self.entries
+            .iter()
+            .all(|entry| !entry.enabled || entry.module.is_quiescent())
+    }
     pub fn reset_audio(&mut self) {
         self.format_generation = None;
         for entry in &mut self.entries {
@@ -404,6 +430,7 @@ impl VisualManager {
             self.reset_audio();
         }
         self.format_generation = Some(format.generation);
+        let signal = samples.iter().any(|&sample| sample != 0.0);
         let block = AudioBlock::with_positions(
             samples,
             format.channels,
@@ -412,7 +439,7 @@ impl VisualManager {
         );
         for entry in &mut self.entries {
             if entry.enabled {
-                entry.module.ingest(&block);
+                entry.module.ingest(&block, signal);
             }
         }
     }
@@ -423,6 +450,18 @@ pub(crate) type VisualManagerHandle = Shared<VisualManager>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dsp::ChannelPosition;
+
+    #[test]
+    fn buffered_signal_prevents_false_quiescence() {
+        let mut manager = VisualManager::default();
+        manager.set_enabled(VisualKind::Spectrum, true);
+        let format = AudioFormat::new(1, 48_000, 1, ChannelPosition::fallback(1));
+        manager.ingest_samples(&[0.0; 16_384], format);
+        assert!(manager.is_quiescent());
+        manager.ingest_samples(&[0.25], format);
+        assert!(!manager.is_quiescent());
+    }
 
     #[test]
     fn palettes_fit_the_visual_stop_count() {

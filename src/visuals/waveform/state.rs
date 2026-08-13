@@ -2,8 +2,7 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::processor::{
-    MAX_COLUMN_CAPACITY, NUM_BANDS, WAVEFORM_CHANNELS, WaveFrame, WaveformPreview,
-    WaveformUpdate,
+    MAX_COLUMN_CAPACITY, NUM_BANDS, WAVEFORM_CHANNELS, WaveFrame, WaveformPreview, WaveformUpdate,
 };
 use super::render::{COLUMN_WIDTH_PIXELS, WaveformParams};
 use crate::persistence::settings::WaveformSettings;
@@ -24,6 +23,7 @@ pub(crate) struct WaveformState {
     scroll: Cell<(Instant, f32)>,
     snapshot_at: Cell<Instant>,
     view_columns: Cell<usize>,
+    quiescent_columns: usize,
     pub(in crate::visuals) palette: [Color; NUM_BANDS],
     pub(in crate::visuals) settings: WaveformSettings,
     key: u64,
@@ -38,6 +38,7 @@ impl WaveformState {
             scroll: Cell::new((now, 0.0)),
             snapshot_at: Cell::new(now),
             view_columns: Cell::new(INITIAL_VIEW_COLUMNS),
+            quiescent_columns: 0,
             palette: palettes::waveform::COLORS,
             settings: WaveformSettings::default(),
             key: crate::visuals::next_key(),
@@ -50,6 +51,7 @@ impl WaveformState {
         let now = Instant::now();
         self.scroll.set((now, 0.0));
         self.snapshot_at.set(now);
+        self.quiescent_columns = 0;
     }
 
     pub fn apply_snapshot(&mut self, update: WaveformUpdate<'_>) {
@@ -71,12 +73,27 @@ impl WaveformState {
         let max_columns = self.view_columns.get().clamp(1, MAX_COLUMN_CAPACITY);
         let mut data = unpoison(self.data.lock());
         Self::configure_ring(&mut data, max_columns, update.reset);
+        if update.reset {
+            self.quiescent_columns = 0;
+        }
         for &columns in update.columns {
+            self.quiescent_columns = if columns == WaveFrame::default() {
+                self.quiescent_columns.saturating_add(1)
+            } else {
+                0
+            };
             if data.len() == max_columns {
                 data.pop_front();
             }
             data.push_back(columns);
         }
+    }
+
+    pub(in crate::visuals) fn is_quiescent(&self) -> bool {
+        let needed = self.view_columns.get().clamp(1, MAX_COLUMN_CAPACITY);
+        self.quiescent_columns >= needed
+            && unpoison(self.data.lock()).len() >= needed
+            && self.preview.columns.unwrap_or_default() == WaveFrame::default()
     }
 
     pub(in crate::visuals) fn view_columns(&self) -> usize {

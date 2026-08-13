@@ -5,6 +5,7 @@ use super::{MAX_CAPTURE_CHANNELS, MAX_CAPTURE_SAMPLE_RATE};
 use crate::dsp::{AudioFormat, ChannelPosition};
 use crate::util::{audio::DEFAULT_SAMPLE_RATE, unpoison};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
+use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
@@ -61,18 +62,43 @@ pub(super) enum StreamStatus {
     Stopped,
 }
 
+#[derive(Clone)]
+pub(crate) struct AudioWake(async_channel::Receiver<()>, usize);
+
+impl Hash for AudioWake {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.1.hash(state);
+    }
+}
+
+pub(crate) fn audio_wake(wake: &AudioWake) -> async_channel::Receiver<()> {
+    wake.0.clone()
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum IngestState {
+    Disabled,
+    Dormant,
+    Active,
+}
+
 struct Shared {
     epoch: Instant,
     status: AtomicU8,
     format: RwLock<AudioFormat>,
     fault_epoch: AtomicU64,
     activity_epoch: AtomicU64,
-    accepting: AtomicBool,
+    ingest: AtomicU8,
+    pending_signal: AtomicBool,
+    wake_sender: async_channel::Sender<()>,
+    wake_receiver: async_channel::Receiver<()>,
     reconnects: AtomicU64,
 }
 
 impl Shared {
     fn new() -> Self {
+        let (wake_sender, wake_receiver) = async_channel::bounded(1);
         Self {
             epoch: Instant::now(),
             status: AtomicU8::new(StreamStatus::Starting as u8),
@@ -84,7 +110,10 @@ impl Shared {
             )),
             fault_epoch: AtomicU64::new(0),
             activity_epoch: AtomicU64::new(0),
-            accepting: AtomicBool::new(true),
+            ingest: AtomicU8::new(IngestState::Active as u8),
+            pending_signal: AtomicBool::new(false),
+            wake_sender,
+            wake_receiver,
             reconnects: AtomicU64::new(0),
         }
     }
@@ -98,7 +127,30 @@ impl Shared {
     }
 
     fn fault(&self) {
-        self.fault_epoch.fetch_add(1, Ordering::AcqRel);
+        self.fault_epoch.fetch_add(1, Ordering::SeqCst);
+        if self.wake_ingestion() {
+            self.notify();
+        }
+    }
+
+    fn notify(&self) {
+        let _ = self.wake_sender.try_send(());
+    }
+
+    fn ingest(&self) -> IngestState {
+        match self.ingest.load(Ordering::Acquire) {
+            value if value == IngestState::Disabled as u8 => IngestState::Disabled,
+            value if value == IngestState::Dormant as u8 => IngestState::Dormant,
+            _ => IngestState::Active,
+        }
+    }
+
+    fn wake_ingestion(&self) -> bool {
+        self.ingest
+            .fetch_update(Ordering::SeqCst, Ordering::Relaxed, |state| {
+                (state == IngestState::Dormant as u8).then_some(IngestState::Active as u8)
+            })
+            .is_ok()
     }
 }
 
@@ -141,6 +193,16 @@ pub(super) fn pcm_chunk(
     let start = offset as usize % max;
     let first = len.min(max - start);
     Some([start..start + first, 0..len - first])
+}
+
+fn pcm_has_signal(bytes: &[u8], chunk: &[Range<usize>; 2]) -> bool {
+    let mut source = Read::chain(&bytes[chunk[0].clone()], &bytes[chunk[1].clone()]);
+    let mut raw = [0; 4];
+    std::iter::from_fn(|| {
+        source.read_exact(&mut raw).ok()?;
+        Some(f32::from_ne_bytes(raw))
+    })
+    .any(|sample| sample != 0.0 && sample.is_finite())
 }
 
 struct Packet {
@@ -239,6 +301,9 @@ impl CaptureWriter {
         }
         format.generation = current.generation.saturating_add(1);
         *unpoison(self.shared.format.write()) = format;
+        if self.shared.wake_ingestion() {
+            self.shared.notify();
+        }
         format
     }
 
@@ -248,16 +313,49 @@ impl CaptureWriter {
 
     pub(super) fn push_pcm(&mut self, bytes: &[u8], chunk: &[Range<usize>; 2], frames: u64) {
         let Some(format) = self.format else { return };
-        let mut source = Read::chain(&bytes[chunk[0].clone()], &bytes[chunk[1].clone()]);
-        self.push_frames(format, frames, true, |samples| {
-            let target = bytemuck::cast_slice_mut(samples);
-            source.read_exact(target).expect("valid PCM bounds");
-            for sample in samples {
-                if !sample.is_finite() {
-                    *sample = 0.0;
-                }
+        let mut wake = false;
+        loop {
+            let dormant = self.shared.ingest() == IngestState::Dormant;
+            let mut signal = dormant && pcm_has_signal(bytes, chunk);
+            if dormant && !signal {
+                self.push_frames(format, frames, true, |samples| samples.fill(0.0));
+                return;
             }
-        });
+            wake |= signal && self.shared.wake_ingestion();
+
+            let previous_timing = self.previous_timing.clone();
+            let mut source = Read::chain(&bytes[chunk[0].clone()], &bytes[chunk[1].clone()]);
+            let accepted = self.push_frames(format, frames, true, |samples| {
+                source
+                    .read_exact(bytemuck::cast_slice_mut(samples))
+                    .expect("valid PCM bounds");
+                for sample in samples {
+                    if sample.is_finite() {
+                        signal |= *sample != 0.0;
+                    } else {
+                        *sample = 0.0;
+                    }
+                }
+            });
+            if accepted {
+                if signal && self.pending.is_some() {
+                    self.shared.pending_signal.store(true, Ordering::SeqCst);
+                }
+                wake |= signal && self.shared.wake_ingestion();
+                if wake {
+                    self.flush_pending();
+                    self.shared.notify();
+                }
+                return;
+            }
+
+            signal |= pcm_has_signal(bytes, chunk);
+            wake |= signal && self.shared.wake_ingestion();
+            if self.shared.ingest() != IngestState::Active {
+                return;
+            }
+            self.previous_timing = previous_timing;
+        }
     }
 
     pub(super) fn push_silence(&mut self, frames: u64) {
@@ -273,10 +371,10 @@ impl CaptureWriter {
         frames: u64,
         pcm: bool,
         mut write: impl FnMut(&mut [f32]),
-    ) {
+    ) -> bool {
         if !self.accepting() {
             self.timing(frames, format);
-            return;
+            return false;
         }
         let (start, end) = self.timing(frames, format);
         let packet_frames = packet_frame_limit(format.rate()) as u64;
@@ -285,7 +383,7 @@ impl CaptureWriter {
             let block_start = start + scale(end - start, offset, frames);
             if !self.start_packet(pcm, format, block_start) {
                 self.overflow();
-                return;
+                return true;
             }
             let packet = self.pending.as_mut().expect("pending packet");
             let count = (frames - offset).min(packet_frames - packet.frames);
@@ -299,9 +397,10 @@ impl CaptureWriter {
             packet.timeline.end = start + scale(end - start, offset, frames);
             if packet.frames == packet_frames && !self.flush_pending() {
                 self.overflow();
-                return;
+                return true;
             }
         }
+        true
     }
 
     pub(super) fn push_fault(&mut self, frames: u64) {
@@ -309,8 +408,9 @@ impl CaptureWriter {
             return;
         };
         self.timing(frames, format);
+        let active = self.shared.ingest() != IngestState::Disabled;
         self.discard_pending();
-        if self.accepting() {
+        if active {
             self.shared.fault();
         }
     }
@@ -319,11 +419,25 @@ impl CaptureWriter {
         let epoch = self.shared.activity_epoch.load(Ordering::Acquire);
         let changed = self.activity_epoch != epoch;
         self.activity_epoch = epoch;
-        let accepting = self.shared.accepting.load(Ordering::Acquire);
-        if changed || !accepting {
+        if changed {
             self.discard_pending();
         }
-        accepting
+        match self.shared.ingest() {
+            IngestState::Active => true,
+            IngestState::Dormant
+                if !changed
+                    && self.shared.pending_signal.load(Ordering::SeqCst)
+                    && self.shared.wake_ingestion() =>
+            {
+                self.flush_pending();
+                self.shared.notify();
+                true
+            }
+            _ => {
+                self.discard_pending();
+                false
+            }
+        }
     }
 
     fn start_packet(&mut self, pcm: bool, format: AudioFormat, start: u64) -> bool {
@@ -412,6 +526,7 @@ impl CaptureWriter {
 
     fn discard_pending(&mut self) {
         let samples = self.pending.take().and_then(|packet| packet.samples);
+        self.shared.pending_signal.store(false, Ordering::SeqCst);
         self.reclaim_samples(samples);
     }
 
@@ -419,7 +534,9 @@ impl CaptureWriter {
         let Some(packet) = self.pending.take().filter(|packet| packet.frames > 0) else {
             return true;
         };
-        if let Err(PushError::Full(packet)) = self.producer.push(packet) {
+        let result = self.producer.push(packet);
+        self.shared.pending_signal.store(false, Ordering::SeqCst);
+        if let Err(PushError::Full(packet)) = result {
             self.reclaim_samples(packet.samples);
             self.overflow();
             false
@@ -470,6 +587,7 @@ pub struct AudioReader {
     cursor: u64,
     align_next_packet: bool,
     fault_epoch: u64,
+    dormant: bool,
 }
 
 impl AudioReader {
@@ -477,11 +595,18 @@ impl AudioReader {
     where
         F: for<'a> FnMut(CapturedSpan<'a>),
     {
-        if !self.shared.accepting.load(Ordering::Acquire) {
-            self.discard(now);
+        if self.shared.ingest() != IngestState::Active {
             return;
         }
         let now_ns = nanos(now.saturating_duration_since(self.shared.epoch));
+        if std::mem::take(&mut self.dormant)
+            && self.fault_epoch == self.shared.fault_epoch.load(Ordering::Acquire)
+            && self.format == self.shared.format()
+        {
+            self.scratch.clear();
+            self.cursor = now_ns;
+            self.align_next_packet = true;
+        }
         if self.consumer.peek().is_ok_and(|packet| {
             packet.epoch == self.shared.activity_epoch.load(Ordering::Acquire)
                 && now_ns.saturating_sub(packet.timeline.end) > nanos(MAX_BACKLOG)
@@ -530,22 +655,48 @@ impl AudioReader {
 
     #[cfg(test)]
     pub(crate) fn is_active(&self) -> bool {
-        self.shared.accepting.load(Ordering::Acquire)
+        self.shared.ingest() == IngestState::Active
     }
 
     pub fn set_active(&mut self, active: bool) -> bool {
-        if self.shared.accepting.load(Ordering::Acquire) == active {
+        let next = if active {
+            IngestState::Active
+        } else {
+            IngestState::Disabled
+        };
+        if self.shared.ingest.swap(next as u8, Ordering::AcqRel) == next as u8 {
             return false;
-        }
-        if !active {
-            self.shared.accepting.store(false, Ordering::Release);
         }
         self.shared.activity_epoch.fetch_add(1, Ordering::AcqRel);
         self.reset_timeline(self.shared.now_ns());
-        if active {
-            self.shared.accepting.store(true, Ordering::Release);
-        }
         true
+    }
+
+    pub fn sleep_until_signal(&mut self) -> bool {
+        if let Err(state) =
+            self.shared
+                .ingest
+                .fetch_update(Ordering::SeqCst, Ordering::Relaxed, |state| {
+                    (state == IngestState::Active as u8).then_some(IngestState::Dormant as u8)
+                })
+        {
+            return state == IngestState::Dormant as u8;
+        }
+        self.dormant = true;
+        if self.shared.pending_signal.load(Ordering::SeqCst)
+            || self.consumer.peek().is_ok()
+            || self.fault_epoch != self.shared.fault_epoch.load(Ordering::SeqCst)
+            || self.format != self.shared.format()
+        {
+            let _ = self.shared.wake_ingestion();
+        }
+        self.dormant = self.shared.ingest() == IngestState::Dormant;
+        self.dormant
+    }
+
+    pub(crate) fn wake_handle(&self) -> AudioWake {
+        let identity = Arc::as_ptr(&self.shared) as usize;
+        AudioWake(self.shared.wake_receiver.clone(), identity)
     }
 
     pub fn discard(&mut self, now: Instant) {
@@ -652,6 +803,7 @@ impl AudioReader {
         self.cursor = cursor;
         self.align_next_packet = true;
         self.fault_epoch = self.shared.fault_epoch.load(Ordering::Acquire);
+        self.dormant = false;
     }
 }
 
@@ -699,6 +851,7 @@ fn channel_with_capacity(capacity: usize) -> (CaptureWriter, AudioReader) {
             cursor: 0,
             align_next_packet: true,
             fault_epoch: 0,
+            dormant: false,
         },
     )
 }
@@ -709,8 +862,9 @@ mod tests {
     use std::mem::size_of;
 
     fn mono(capacity: usize, rate: u32) -> (CaptureWriter, AudioReader, AudioFormat) {
-        let (mut writer, reader) = channel_with_capacity(capacity);
+        let (mut writer, mut reader) = channel_with_capacity(capacity);
         let format = writer.set_format(1, rate, ChannelPosition::fallback(1));
+        reader.format = format;
         (writer, reader, format)
     }
 
@@ -803,6 +957,43 @@ mod tests {
         );
         assert!(reset);
         assert_eq!(reader.consumer.slots(), 0);
+    }
+
+    #[test]
+    fn dormant_capture_wakes_on_the_first_signal() {
+        let (mut writer, mut reader, _) = mono(4, 48_000);
+        let wake = reader.wake_handle();
+        assert!(reader.sleep_until_signal());
+
+        writer.push_silence(BLOCK_FRAMES as u64);
+        let zero = 0.0_f32.to_ne_bytes();
+        let chunk = pcm_chunk(zero.len(), 0, zero.len() as u32, zero.len()).unwrap();
+        writer.push_pcm(&zero, &chunk, 1);
+        assert!(!reader.is_active());
+        assert!(audio_wake(&wake).try_recv().is_err());
+
+        let mut signal = 0.25_f32.to_ne_bytes();
+        signal.rotate_right(1);
+        let chunk = pcm_chunk(signal.len(), 1, signal.len() as u32, signal.len()).unwrap();
+        writer.push_pcm(&signal, &chunk, 1);
+        assert!(reader.is_active());
+        assert_eq!(audio_wake(&wake).try_recv(), Ok(()));
+        let mut captured = false;
+        reader.drain(Instant::now(), |span| {
+            if let CapturedSpan::Pcm { samples, .. } = span {
+                captured |= samples == [0.25];
+            }
+        });
+        assert!(captured);
+
+        let (mut writer, mut reader, _) = mono(4, 48_000);
+        writer.push_pcm(&signal, &chunk, 1);
+        assert!(!reader.sleep_until_signal());
+
+        let (mut writer, mut reader, _) = mono(4, 48_000);
+        assert!(reader.sleep_until_signal());
+        writer.push_fault(1);
+        assert!(reader.is_active());
     }
 
     #[test]

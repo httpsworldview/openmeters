@@ -119,6 +119,13 @@ impl SpectrogramColumn {
             Self::Classic(_) => ColumnKind::Classic,
         }
     }
+
+    pub(super) fn is_quiescent(&self) -> bool {
+        match self {
+            Self::Reassigned(points) => points.is_empty(),
+            Self::Classic(levels) => levels.iter().all(|level| *level == pack_classic_db(DB_FLOOR)),
+        }
+    }
 }
 
 pub(super) fn col_byte_stride(kind: ColumnKind, points: u32) -> u64 {
@@ -200,6 +207,10 @@ impl SpectrogramProcessor {
         if self.transforms.is_none() {
             self.rebuild_fft();
         }
+    }
+
+    pub(in crate::visuals) fn has_buffered_signal(&self) -> bool {
+        self.audio_last_nonzero.is_some()
     }
 
     fn hilbert_len_for(window_size: usize) -> usize {

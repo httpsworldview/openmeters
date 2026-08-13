@@ -75,6 +75,7 @@ crate::macros::default_struct! {
         slot_counts: Arc<[u32]> = Arc::from([]),
         pending: VecDeque<SpectrogramColumn> = VecDeque::new(),
         pending_copy: Option<RingCopyPlan> = None,
+        quiescent_columns: u32 = 0,
     }
 }
 
@@ -123,6 +124,11 @@ impl SpectrogramHistory {
         }
 
         for column in snap.new_columns {
+            self.quiescent_columns = if column.is_quiescent() {
+                self.quiescent_columns.saturating_add(1)
+            } else {
+                0
+            };
             let slot = self.write_slot;
             if let SpectrogramColumn::Reassigned(points) = &column
                 && let Some(count) = Arc::make_mut(&mut self.slot_counts).get_mut(slot as usize)
@@ -262,6 +268,16 @@ impl SpectrogramState {
         self.hop_size = snap.hop_size;
         self.reassigned_power_scale = snap.reassigned_power_scale;
         self.history.apply_update(snap);
+    }
+
+    pub(in crate::visuals) fn is_quiescent(&self) -> bool {
+        let points = (self.fft_size / 2 + 1) as u32;
+        let capacity =
+            history_columns(self.history.col_kind, points, self.view_width as usize) as u32;
+        self.view_width > 0
+            && self.history.ring_capacity == capacity
+            && self.history.col_count == capacity
+            && self.history.quiescent_columns >= capacity
     }
 
     pub fn visual_params(
@@ -636,6 +652,12 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'_> {
                         .clamp(h, 1.0 - h);
                 }
             }
+            iced::Event::Mouse(mouse::Event::CursorLeft) => {
+                let active = std::mem::take(&mut st.left_held) | st.drag.take().is_some();
+                if active {
+                    shell.request_redraw();
+                }
+            }
             iced::Event::Keyboard(keyboard::Event::ModifiersChanged(m)) => st.modifiers = *m,
             iced::Event::Mouse(mouse::Event::WheelScrolled { delta }) if st.modifiers.control() => {
                 if let Some(pos) = cursor.position().filter(|p| b.contains(*p)) {
@@ -666,7 +688,7 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'_> {
                 st.drag = None;
             }
             iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
-                if cursor.position().is_some_and(|p| b.contains(p)) => {
+                if cursor.position().is_some_and(|position| b.contains(position)) => {
                     st.left_held = true;
                     shell.request_redraw();
                 }
@@ -707,7 +729,7 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'_> {
             });
         }
         if interaction.left_held
-            && let Some(c) = cursor.position().filter(|p| bounds.contains(*p))
+            && let Some(c) = cursor.position().filter(|point| bounds.contains(*point))
         {
             renderer.with_layer(bounds, |r| {
                 Self::draw_crosshair(r, theme, bounds, c);
@@ -805,6 +827,20 @@ mod tests {
         state.apply_snapshot(classic_update(4, true, &[0.0, 1.0, 2.0, 3.0]));
         assert_eq!(upload_slots(&visual_params(&mut state)), vec![0, 1, 2, 3]);
         state
+    }
+
+    #[test]
+    fn quiet_history_settles_only_after_filling_the_visible_time_axis() {
+        let mut state = SpectrogramState::new();
+        state.view_width = 4;
+        state.apply_snapshot(classic_update(4, true, &[DB_FLOOR; 3]));
+        assert!(!state.is_quiescent());
+
+        state.apply_snapshot(classic_update(4, false, &[DB_FLOOR]));
+        assert!(state.is_quiescent());
+
+        state.apply_snapshot(classic_update(4, false, &[0.0]));
+        assert!(!state.is_quiescent());
     }
 
     #[test]

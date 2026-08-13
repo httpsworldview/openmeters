@@ -123,6 +123,13 @@ impl SpectrumProcessor {
         }
     }
 
+    pub(in crate::visuals) fn has_buffered_signal(&self) -> bool {
+        self.pcm_buffers
+            .iter()
+            .flatten()
+            .any(|&sample| sample != 0.0)
+    }
+
     fn rebuild_fft(&mut self) {
         let fft_size = self.config.fft_size;
         let fft = self.planner.plan_fft_forward(fft_size);

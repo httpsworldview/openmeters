@@ -4,7 +4,7 @@
 mod message;
 mod windowing;
 
-use crate::infra::pipewire::{AudioReader, CaptureControl};
+use crate::infra::pipewire::{AudioReader, CaptureControl, audio_wake};
 use crate::meter::MeterEngine;
 use crate::persistence::settings::{BarAlignment, BarSettings, SettingsHandle, clamp_bar_height};
 use crate::ui::config::ConfigPage;
@@ -213,8 +213,15 @@ impl UiApp {
             subs.push(event::listen_with(message::bar_drag_events));
         }
         if self.visuals_active() && !self.rendering_paused {
-            let heartbeat = self.frames.borrow().heartbeat_handle();
-            subs.push(Subscription::run_with(heartbeat, frame_watchdog).map(Message::Watchdog));
+            let frames = self.frames.borrow();
+            subs.push(
+                Subscription::run_with(frames.wake_handle(), audio_wake)
+                    .map(|_| Message::AudioWake),
+            );
+            subs.push(
+                Subscription::run_with(frames.heartbeat_handle(), frame_watchdog)
+                    .map(Message::Watchdog),
+            );
         }
         if self.config_window.is_some()
             || self.toast_until.is_some()
@@ -322,7 +329,7 @@ impl UiApp {
                 frame_clock(
                     Rc::clone(&self.frames),
                     window,
-                    window == self.main_window_id
+                    window == self.main_window_id,
                 )
             ]
             .into()

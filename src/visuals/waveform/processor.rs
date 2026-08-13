@@ -50,7 +50,7 @@ impl WaveformConfig {
 }
 
 crate::macros::default_struct! {
-    #[derive(Debug, Clone, Copy)]
+    #[derive(Debug, Clone, Copy, PartialEq)]
     pub struct WaveColumn {
         pub min: f32 = 0.0,
         pub max: f32 = 0.0,

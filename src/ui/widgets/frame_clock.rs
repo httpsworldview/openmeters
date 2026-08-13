@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
+use crate::infra::pipewire::AudioWake;
 use crate::meter::MeterEngine;
 use crate::persistence::settings::VisualFrameRate;
 use iced::advanced::Widget;
+use iced::window::RedrawRequest;
 use iced::{Element, Event, Length, Size, Theme, window};
 use std::cell::RefCell;
 use std::hash::{Hash, Hasher};
@@ -38,7 +40,12 @@ pub(in crate::ui) struct FrameHeartbeat(Arc<AtomicU64>);
 
 impl FrameHeartbeat {
     fn mark(&self) {
-        self.0.fetch_add(1, Ordering::Relaxed);
+        self.0.fetch_add(2, Ordering::Relaxed);
+    }
+
+    fn set_suspended(&self, suspended: bool) {
+        let toggle = (self.generation() ^ u64::from(suspended)) & 1;
+        self.0.fetch_xor(toggle, Ordering::Relaxed);
     }
 
     fn generation(&self) -> u64 {
@@ -65,7 +72,7 @@ pub(in crate::ui) fn frame_watchdog(heartbeat: &FrameHeartbeat) -> async_channel
                     break;
                 }
                 let current = heartbeat.generation();
-                if current == generation {
+                if current == generation && current & 1 == 0 {
                     match sender.try_send(current) {
                         Ok(()) | Err(async_channel::TrySendError::Full(_)) => {}
                         Err(async_channel::TrySendError::Closed(_)) => break,
@@ -86,6 +93,7 @@ pub(in crate::ui) struct FrameCoordinator {
     owner: Option<(window::Id, Instant)>,
     next_frame: Option<Instant>,
     heartbeat: FrameHeartbeat,
+    can_quiesce: bool,
 }
 
 impl FrameCoordinator {
@@ -96,34 +104,60 @@ impl FrameCoordinator {
             owner: None,
             next_frame: None,
             heartbeat: FrameHeartbeat::default(),
+            can_quiesce: false,
         }
     }
 
-    fn frame(&mut self, window: window::Id, is_main: bool, now: Instant) -> Option<Instant> {
+    fn advance(&mut self, now: Instant) -> bool {
+        let suspended = self.meter.advance(now, self.can_quiesce);
+        self.can_quiesce = true;
+        self.heartbeat.set_suspended(suspended);
+        suspended
+    }
+
+    fn frame(&mut self, window: window::Id, is_main: bool, now: Instant) -> RedrawRequest {
         self.heartbeat.mark();
+        if self.heartbeat.generation() & 1 != 0 {
+            return RedrawRequest::Wait;
+        }
         let Some(interval) = self.rate.interval() else {
             if display_frame_due(self.owner, window, is_main, now) {
                 self.owner = Some((window, now));
-                self.meter.advance(now);
+                if self.advance(now) {
+                    return RedrawRequest::Wait;
+                }
             }
-            return None;
+            return RedrawRequest::NextFrame;
         };
 
         let deadline = self.next_frame.unwrap_or(now);
         if now >= deadline {
-            self.meter.advance(now);
+            if self.advance(now) {
+                return RedrawRequest::Wait;
+            }
             self.next_frame = Some(next_deadline(deadline, now, interval));
         }
-        self.next_frame
+        RedrawRequest::At(self.next_frame.expect("fixed frame deadline"))
     }
 
     pub(in crate::ui) fn heartbeat_handle(&self) -> FrameHeartbeat {
         self.heartbeat.clone()
     }
 
+    pub(in crate::ui) fn wake_handle(&self) -> AudioWake {
+        self.meter.wake_handle()
+    }
+
+    pub(in crate::ui) fn wake(&mut self) {
+        if self.heartbeat.generation() & 1 != 0 && self.meter.wake() {
+            self.heartbeat.set_suspended(false);
+            self.can_quiesce = false;
+            self.reset_clock();
+        }
+    }
+
     pub(in crate::ui) fn watchdog(&mut self, generation: u64, now: Instant) {
-        if self.heartbeat.generation() == generation {
-            self.meter.advance(now);
+        if self.heartbeat.generation() == generation && !self.advance(now) {
             self.next_frame = self.rate.interval().map(|interval| now + interval);
         }
     }
@@ -141,11 +175,15 @@ impl FrameCoordinator {
 
     pub(in crate::ui) fn set_active(&mut self, active: bool) {
         self.meter.set_active(active);
+        self.heartbeat.set_suspended(!active);
+        self.can_quiesce = false;
         self.reset_clock();
     }
 
     pub(in crate::ui) fn set_paused(&mut self, paused: bool, now: Instant) {
         self.meter.set_paused(paused, now);
+        self.heartbeat.set_suspended(paused);
+        self.can_quiesce = false;
         self.reset_clock();
     }
 }
@@ -173,14 +211,11 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for FrameClock {
 
     crate::macros::widget_method!(update Message; this; _, event, _, _, _, _, shell, _ => {
         if let Event::Window(window::Event::RedrawRequested(now)) = event {
-            match this
+            let redraw = this
                 .coordinator
                 .borrow_mut()
-                .frame(this.window, this.is_main, *now)
-            {
-                Some(deadline) => shell.request_redraw_at(deadline),
-                None => shell.request_redraw(),
-            }
+                .frame(this.window, this.is_main, *now);
+            shell.request_redraw_at(redraw);
         }
     });
 
