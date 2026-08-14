@@ -21,8 +21,6 @@ const BAND_COLOR_WINDOW_AT_44K1: usize = 2048;
 const BAND_SLOW_WINDOW_AT_44K1: usize = 16_384;
 const BAND_COLOR_GAINS: [f32; NUM_BANDS] = [1.0, 0.7, 2.0];
 pub(super) const WAVEFORM_SILENCE_AMPLITUDE: f32 = 1.584_893_1e-5;
-const MAX_TRACKER_SAMPLE_RATE: f32 = 1_000_000.0;
-
 pub(super) const NUM_BANDS: usize = BAND_SPLITS_HZ.len() + 1;
 pub const MIN_BAND_DB_FLOOR: f32 = -96.0;
 pub const MAX_BAND_DB_FLOOR: f32 = -12.0;
@@ -74,7 +72,6 @@ pub struct WaveformUpdate<'a> {
 }
 
 fn window_len(samples_at_reference_rate: usize, sample_rate: f32) -> usize {
-    let sample_rate = sample_rate.min(MAX_TRACKER_SAMPLE_RATE);
     ((samples_at_reference_rate as f32 * sample_rate / REFERENCE_SAMPLE_RATE).round() as usize)
         .max(1)
 }
@@ -304,10 +301,6 @@ impl WaveformProcessor {
     }
 
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<WaveformUpdate<'_>> {
-        if block.is_empty() {
-            return None;
-        }
-
         self.pending_columns.clear();
 
         let (channels, sample_rate) = (block.channels, block.sample_rate);

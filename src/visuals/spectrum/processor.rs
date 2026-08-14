@@ -197,8 +197,8 @@ impl SpectrumProcessor {
 
         while (0..TRACE_COUNT).all(|trace| !active[trace] || self.pcm_buffers[trace].len() >= fft_size) {
             for (trace, &active) in active.iter().enumerate() {
-                if active && !self.process_trace_window(trace, dt_seconds, floor) {
-                    return produced;
+                if active {
+                    self.process_trace_window(trace, dt_seconds, floor);
                 }
             }
             let mut drained = hop;
@@ -219,14 +219,13 @@ impl SpectrumProcessor {
         produced
     }
 
-    fn process_trace_window(&mut self, trace: usize, dt_seconds: f32, floor: f32) -> bool {
+    fn process_trace_window(&mut self, trace: usize, dt_seconds: f32, floor: f32) {
         copy_dc_removed_windowed_from_deque(
             &mut self.real_buffer,
             &self.pcm_buffers[trace],
             &self.window,
         );
-        if self
-            .fft
+        self.fft
             .as_ref()
             .expect("spectrum FFT")
             .process_with_scratch(
@@ -234,10 +233,7 @@ impl SpectrumProcessor {
                 &mut self.spectrum_buffer,
                 &mut self.scratch_buffer,
             )
-            .is_err()
-        {
-            return false;
-        }
+            .expect("internally sized spectrum FFT buffers");
 
         let level = &mut self.levels[trace];
         let snapshot = &mut self.snapshot.traces[trace];
@@ -256,12 +252,9 @@ impl SpectrumProcessor {
             dt_seconds,
             floor,
         );
-        true
     }
 
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<&SpectrumSnapshot> {
-        if block.is_empty() { return None; }
-
         if block.sample_rate != self.config.sample_rate {
             self.config.sample_rate = block.sample_rate;
             if self.fft.is_some() {
@@ -361,13 +354,8 @@ impl SpectrumLevelBuffers {
         dt_seconds: f32,
         floor: f32,
     ) {
-        let bins = self.scratch_power.len();
-        debug_assert_eq!(weighting_db.len(), bins);
-        for output in outputs.iter_mut() {
-            if output.len() != bins {
-                output.resize(bins, floor);
-            }
-        }
+        debug_assert!(outputs.iter().all(|output| output.len() == self.scratch_power.len()));
+        debug_assert_eq!(weighting_db.len(), self.scratch_power.len());
         let powers = match mode {
             AveragingMode::None => &self.scratch_power,
             AveragingMode::Exponential { factor } => {
@@ -633,7 +621,7 @@ mod tests {
         let mut buffers = SpectrumLevelBuffers::default();
         buffers.reset(1, smoothing_state_floor(&[0.0], -100.0), true);
         buffers.smoothed_power[0] = db_to_power(-101.0);
-        let mut outputs = [Vec::new(), Vec::new()];
+        let mut outputs = [vec![-100.0], vec![-100.0]];
         buffers.update_outputs(
             AveragingMode::Exponential { factor: 0.95 },
             &mut outputs,
@@ -655,7 +643,7 @@ mod tests {
             let mut buffers = SpectrumLevelBuffers::default();
             buffers.reset(1, smoothing_state_floor(&[1.2], -100.0), true);
             buffers.scratch_power[0] = db_to_power(-100.5);
-            let mut outputs = [Vec::new(), Vec::new()];
+            let mut outputs = [vec![-100.0], vec![-100.0]];
 
             buffers.update_outputs(mode, &mut outputs, &[1.2], 1.0, -100.0);
 

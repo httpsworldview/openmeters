@@ -21,7 +21,7 @@ fn scaled_samples(frames_at_48k: usize, format: AudioFormat) -> usize {
     ((frames_at_48k as f64 * f64::from(format.sample_rate) / f64::from(DEFAULT_SAMPLE_RATE))
         .round()
         .max(1.0) as usize)
-        * format.channels.max(1)
+        * format.channels
 }
 
 struct DspBatcher {
@@ -173,7 +173,7 @@ fn ingest_silence(
         batcher.reset(manager);
         return;
     }
-    let capacity = scratch.len() / format.channels.max(1);
+    let capacity = scratch.len() / format.channels;
     let mut remaining = frames;
     while remaining > 0 {
         let chunk = remaining.min(capacity as u64) as usize;

@@ -98,20 +98,13 @@ impl PeriodEstimator {
             |(sum, min, max), &sample| (sum + sample, min.min(sample), max.max(sample)),
         );
         let mean = sum / samples.len() as f32;
-        self.last_peak = if mean.is_finite() {
-            (min - mean).abs().max((max - mean).abs())
-        } else {
-            samples
-                .iter()
-                .map(|sample| (sample - mean).abs())
-                .fold(0.0, f32::max)
-        };
+        self.last_peak = (min - mean).abs().max((max - mean).abs());
         if self.last_peak < PeriodEstimator::MIN_SIGNAL_PEAK { return None; }
 
         let min_period = (rate / PeriodEstimator::MAX_HZ).round().max(2.0) as usize;
         let max_period = ((rate / PeriodEstimator::MIN_HZ).round() as usize).min(samples.len() / 2);
         if max_period <= min_period + 1 { return None; }
-        self.compute_periodicity(samples, mean, max_period)?;
+        self.compute_periodicity(samples, mean, max_period);
 
         let nsdf = &self.periodicity[..=max_period];
         let zero_crossing = (1..=max_period).find(|&tau| nsdf[tau] <= 0.0)?;
@@ -137,13 +130,13 @@ impl PeriodEstimator {
         })
     }
 
-    fn compute_periodicity(&mut self, samples: &[f32], mean: f32, max_lag: usize) -> Option<()> {
+    fn compute_periodicity(&mut self, samples: &[f32], mean: f32, max_lag: usize) {
         let fft_size = (samples.len() + max_lag).next_power_of_two();
         if self.fft.as_ref().is_none_or(|fft| fft.input.len() != fft_size) {
             self.fft = Some(PeriodFft::new(fft_size));
         }
         let Self { periodicity, energy_prefix, fft, .. } = self;
-        let fft = fft.as_mut()?;
+        let fft = fft.as_mut().expect("period FFT initialized");
         energy_prefix.resize(samples.len() + 1, 0.0);
         energy_prefix[0] = 0.0;
         let mut energy = 0.0_f32;
@@ -161,7 +154,7 @@ impl PeriodEstimator {
 
         fft.forward
             .process_with_scratch(&mut fft.input, &mut fft.spectrum, &mut fft.scratch)
-            .ok()?;
+            .expect("internally sized period FFT buffers");
 
         for bin in &mut fft.spectrum {
             *bin = Complex::new(bin.norm_sqr(), 0.0);
@@ -169,12 +162,11 @@ impl PeriodEstimator {
 
         fft.inverse
             .process_with_scratch(&mut fft.spectrum, &mut fft.input, &mut fft.scratch)
-            .ok()?;
+            .expect("internally sized period inverse FFT buffers");
 
         let norm = 1.0 / fft_size as f32;
         periodicity.resize(max_lag + 1, 0.0);
         let total_energy = energy_prefix[samples.len()];
-        if total_energy <= f32::EPSILON { return None; }
         let energies = energy_prefix.iter().zip(energy_prefix.iter().rev());
         for ((value, &autocorrelation), (&right, &left)) in
             periodicity.iter_mut().zip(&fft.input).zip(energies)
@@ -186,7 +178,6 @@ impl PeriodEstimator {
                 0.0
             };
         }
-        Some(())
     }
 }
 
@@ -198,7 +189,6 @@ fn trigger_kernel_len(period: f32, rate: f32) -> usize {
 }
 
 fn gaussian(len: usize, index: usize, std: f32) -> f32 {
-    if len <= 1 || std <= f32::EPSILON { return 0.0; }
     let center = (len - 1) as f32 * 0.5;
     let x = index as f32 - center;
     (-0.5 * (x / std).powi(2)).exp()
@@ -227,8 +217,6 @@ fn normalized_correlation(x: &[f32], y: &[f32], [sum_y, sum_yy]: [f32; 2]) -> f3
         sum_xx += x * x;
         sum_xy += x * y;
     }
-    if x.is_empty() { return 0.0; }
-
     let n = x.len() as f32;
     let dot = sum_xy - sum_x * sum_y / n;
     let energy_x = (sum_xx - sum_x * sum_x / n).max(0.0);
@@ -238,7 +226,7 @@ fn normalized_correlation(x: &[f32], y: &[f32], [sum_y, sum_yy]: [f32; 2]) -> f3
 }
 
 fn sample_linear_zero(data: &[f32], pos: f32) -> f32 {
-    if data.is_empty() || pos < 0.0 || pos > (data.len() - 1) as f32 { return 0.0; }
+    if pos < 0.0 || pos > (data.len() - 1) as f32 { return 0.0; }
     let idx = pos as usize;
     let frac = pos - idx as f32;
     if frac > f32::EPSILON && idx + 1 < data.len() {
@@ -250,10 +238,6 @@ fn sample_linear_zero(data: &[f32], pos: f32) -> f32 {
 
 fn retune_reference(reference: &[f32], old_period: f32, new_period: f32, len: usize) -> Vec<f32> {
     let ratio = new_period / old_period;
-    if !ratio.is_finite() || ratio <= f32::EPSILON {
-        return vec![0.0; len];
-    }
-
     let old_center = reference.len().saturating_sub(1) as f32 * 0.5;
     let new_center = len.saturating_sub(1) as f32 * 0.5;
     (0..len)
@@ -322,7 +306,7 @@ impl StableTrigger {
             None
         };
 
-        if probe_len > 0 && self.estimator.last_peak < PeriodEstimator::MIN_SIGNAL_PEAK {
+        if self.estimator.last_peak < PeriodEstimator::MIN_SIGNAL_PEAK {
             self.unlock();
         }
 
@@ -415,7 +399,7 @@ impl StableTrigger {
     fn prepare(&mut self, data: &[f32], len: usize, period: f32) {
         self.retune_reference(len, period);
 
-        let mean = data.iter().sum::<f32>() / data.len().max(1) as f32;
+        let mean = data.iter().sum::<f32>() / data.len() as f32;
         self.mean += StableTrigger::MEAN_RESPONSIVENESS * (mean - self.mean);
         self.work.clear();
         self.work.extend(data.iter().map(|sample| sample - self.mean));
@@ -511,7 +495,7 @@ impl StableTrigger {
     }
 
     fn write_candidate(&mut self, segment: &[f32], period: f32) -> f32 {
-        let mean = segment.iter().sum::<f32>() / segment.len().max(1) as f32;
+        let mean = segment.iter().sum::<f32>() / segment.len() as f32;
         self.candidate.resize(segment.len(), 0.0);
         let mut peak = 0.0_f32;
         for (dst, &sample) in self.candidate.iter_mut().zip(segment) {
@@ -619,8 +603,6 @@ impl OscilloscopeProcessor {
     }
 
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<OscilloscopeSnapshot> {
-        if block.is_empty() { return None; }
-
         if self.config.sample_rate != block.sample_rate {
             self.update_config(OscilloscopeConfig {
                 sample_rate: block.sample_rate,
@@ -663,7 +645,6 @@ impl OscilloscopeProcessor {
             .position(|&channel| channel == trigger_source)
             .filter(|&slot| active_traces[slot]);
         let separate_source = matching_trace.is_none() && trigger_source != Channel::None;
-        if trigger_source == Channel::None { self.source.buffer.clear(); }
         let incoming = block.frame_count();
         for (trace, &active) in self.traces.iter_mut().zip(&active_traces) {
             if active { trace.buffer.reserve(incoming); }
@@ -796,8 +777,6 @@ fn zero_crossing_capture(samples: &[f32], frames: usize, search_range: usize) ->
 }
 
 fn downsample_trace(output: &mut Vec<f32>, data: &[f32], capture: Capture, target: usize) -> bool {
-    if target < 2 { return false; }
-
     let start = capture.start.min(data.len());
     let data = &data[start..];
     if data.len() < 2 { return false; }

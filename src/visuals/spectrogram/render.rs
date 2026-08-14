@@ -69,21 +69,17 @@ impl Primitive for SpectrogramParams {
         let inst = pipeline.instances.entry(params.key).or_default();
         inst.last_used = frame;
         let bgls = pipeline.bgls.each_ref();
-        if params.ring_capacity == 0 || params.points_per_column == 0 {
-            inst.resources = None;
-        } else {
-            let res = match &mut inst.resources {
-                Some(res) if res.ring.layout.kind == params.col_kind => res,
-                slot => slot.insert(Resources::new(device, bgls, params)),
-            };
-            res.resize_ring(device, queue, bgls, params);
-            res.resize_accum(device, bgls[1], params, scale_factor);
-            res.upload_pending(queue, params);
-            let uniforms = Uniforms::from_params(params, viewport, scale_factor);
-            if uniforms != res.uniform_cache {
-                queue.write_buffer(&res.uniform_buf, 0, bytemuck::bytes_of(&uniforms));
-                res.uniform_cache = uniforms;
-            }
+        let res = match &mut inst.resources {
+            Some(res) if res.ring.layout.kind == params.col_kind => res,
+            slot => slot.insert(Resources::new(device, bgls, params)),
+        };
+        res.resize_ring(device, queue, bgls, params);
+        res.resize_accum(device, bgls[1], params, scale_factor);
+        res.upload_pending(queue, params);
+        let uniforms = Uniforms::from_params(params, viewport, scale_factor);
+        if uniforms != res.uniform_cache {
+            queue.write_buffer(&res.uniform_buf, 0, bytemuck::bytes_of(&uniforms));
+            res.uniform_cache = uniforms;
         }
         if let Some(threshold) = prune {
             pipeline.instances.retain(|_, instance| instance.last_used >= threshold);
@@ -105,9 +101,8 @@ impl Primitive for SpectrogramParams {
         };
         let visible_slots = self.col_count.min(r.ring.layout.slots as u32);
         let slot_count = |slot: u32| self.slot_counts.get(slot as usize).copied().unwrap_or(0);
-        if visible_slots == 0
-            || (r.ring.layout.kind == ColumnKind::Reassigned
-                && !(0..visible_slots).any(|slot| slot_count(slot) > 0))
+        if r.ring.layout.kind == ColumnKind::Reassigned
+            && !(0..visible_slots).any(|slot| slot_count(slot) > 0)
         {
             return;
         }
@@ -467,43 +462,36 @@ impl Resources {
         p: &SpectrogramParams,
     ) {
         let layout = ring_layout(p);
-        let copy_plan = p.copy_plan.as_ref().filter(|copies| {
-            p.col_count > 0 && copies.iter().any(|&dst| dst < p.ring_capacity)
-        });
+        let copy_plan = p
+            .copy_plan
+            .as_ref()
+            .filter(|copies| copies.iter().any(|&dst| dst < p.ring_capacity));
         if can_reuse_ring(self.ring.layout, layout, copy_plan.is_some()) {
             return;
         }
 
         let old_layout = self.ring.layout;
         let new_ring = create_ring(device, bgls, &self.uniform_buf, p);
-        if let Some(copies) = copy_plan
-            && old_layout.slots > 0
-        {
+        if let Some(copies) = copy_plan {
             let mut encoder =
-                    device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
-                for (src, &dst) in copies.iter().enumerate() {
-                    if (src as u64) < old_layout.slots && dst < p.ring_capacity {
-                        let bytes = match layout.kind {
-                            ColumnKind::Reassigned => p
-                                .slot_counts
-                                .get(dst as usize)
-                                .copied()
-                                .unwrap_or(0) as u64
-                                * std::mem::size_of::<SpectrogramPoint>() as u64,
-                            ColumnKind::Classic => layout.stride,
-                        }
-                        .min(old_layout.stride)
-                        .min(layout.stride);
-                        if bytes > 0 {
-                            encoder.copy_buffer_to_buffer(
-                                &self.ring.buf,
-                                src as u64 * old_layout.stride,
-                                &new_ring.buf,
-                                u64::from(dst) * layout.stride,
-                                bytes,
-                            );
-                        }
-                    }
+                device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+            for (src, &dst) in copies.iter().enumerate().filter(|(_, dst)| **dst < p.ring_capacity) {
+                let bytes = match layout.kind {
+                    ColumnKind::Reassigned => u64::from(p.slot_counts[dst as usize])
+                        * std::mem::size_of::<SpectrogramPoint>() as u64,
+                    ColumnKind::Classic => layout.stride,
+                }
+                .min(old_layout.stride)
+                .min(layout.stride);
+                if bytes > 0 {
+                    encoder.copy_buffer_to_buffer(
+                        &self.ring.buf,
+                        src as u64 * old_layout.stride,
+                        &new_ring.buf,
+                        u64::from(dst) * layout.stride,
+                        bytes,
+                    );
+                }
             }
             queue.submit(std::iter::once(encoder.finish()));
         }

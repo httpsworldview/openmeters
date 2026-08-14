@@ -82,7 +82,6 @@ crate::macros::default_struct! {
 impl SpectrogramHistory {
     fn apply_update(&mut self, snap: SpectrogramUpdate) {
         let ppc = snap.fft_size / 2 + 1;
-        if ppc == 0 { return; }
         let new_kind = snap
             .new_columns
             .first()
@@ -114,9 +113,7 @@ impl SpectrogramHistory {
                 self.write_slot = 0;
             }
             self.ring_capacity = capacity;
-            if self.col_kind == ColumnKind::Reassigned
-                && self.slot_counts.len() != capacity as usize
-            {
+            if self.col_kind == ColumnKind::Reassigned {
                 let mut counts = self.slot_counts.to_vec();
                 counts.resize(capacity as usize, 0);
                 self.slot_counts = counts.into();
@@ -161,14 +158,14 @@ impl SpectrogramHistory {
             .copied()
             .fold(1, u32::max);
         let current = self.reassigned_points_per_slot;
-        if needed > current || current > needed.saturating_mul(4).max(1) {
+        if needed > current || current > needed.saturating_mul(4) {
             self.ensure_pending_copy();
             self.reassigned_points_per_slot = needed;
         }
     }
 
     fn remap_retained(&mut self, start: u32, keep: u32) {
-        let old_cap = self.ring_capacity.max(1);
+        let old_cap = self.ring_capacity;
         let remap = |slot: &mut u32| {
             if *slot < old_cap {
                 *slot = (*slot + old_cap - start) % old_cap;
@@ -220,10 +217,7 @@ impl SpectrogramState {
             stop_positions: palettes::spectrogram::DEFAULT_POSITIONS,
             stop_spreads: [1.0; SPECTROGRAM_PALETTE_SIZE],
             key: crate::visuals::next_key(),
-            settings: SpectrogramSettings {
-                floor_db: DB_FLOOR,
-                ..SpectrogramSettings::default()
-            },
+            settings: SpectrogramSettings::default(),
             sample_rate: cfg.sample_rate,
             fft_size: cfg.fft_size * cfg.zero_padding_factor,
             hop_size: cfg.hop_size,
@@ -286,7 +280,7 @@ impl SpectrogramState {
         uv_y_range: [f32; 2],
     ) -> Option<SpectrogramParams> {
         let history = &mut self.history;
-        if history.col_count == 0 && history.pending.is_empty() { return None; }
+        if history.col_count == 0 { return None; }
         let copy_plan = history.pending_copy.take();
         let slot_counts = Arc::clone(&history.slot_counts);
         let to_rgba = |c: Color| {
@@ -367,7 +361,7 @@ impl SpectrogramState {
             3 => cursor.y - bounds.y,
             _ => bounds.x + bounds.width - cursor.x,
         };
-        if age < 0.0 || age >= self.history.col_count as f32 { return None; }
+        if age >= self.history.col_count as f32 { return None; }
         let secs = age * (self.hop_size as f32 / self.sample_rate);
         secs.is_finite().then_some(secs)
     }
@@ -386,7 +380,7 @@ struct InteractionState {
 
 impl SpectrogramState {
     fn uv_y_range(&self) -> [f32; 2] {
-        let h = 0.5 / self.zoom.max(MIN_ZOOM);
+        let h = 0.5 / self.zoom;
         let min = (self.pan - h).clamp(0.0, 1.0 - 2.0 * h);
         [min, (min + 2.0 * h).min(1.0)]
     }
@@ -549,10 +543,10 @@ impl Spectrogram<'_> {
             freq_org + freq_ext * if matches!(rot, 1 | 2) { t } else { 1.0 - t }
         };
 
-        let strip = match overlay {
-            PianoRollOverlay::Left => time_org,
-            PianoRollOverlay::Right => time_org + time_ext - PIANO_ROLL_WIDTH,
-            PianoRollOverlay::Off => return,
+        let strip = if overlay == PianoRollOverlay::Left {
+            time_org
+        } else {
+            time_org + time_ext - PIANO_ROLL_WIDTH
         };
         let wborder = iced::Border {
             color: with_alpha(black, 0.4),

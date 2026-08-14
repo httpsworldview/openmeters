@@ -101,7 +101,7 @@ impl AudioFormat {
     }
 
     pub(crate) fn rate(self) -> u64 {
-        self.sample_rate.round().max(1.0) as u64
+        self.sample_rate.round() as u64
     }
 }
 
@@ -136,7 +136,6 @@ fn stereo_matrix(
     channels: usize,
     positions: [ChannelPosition; MAX_AUDIO_CHANNELS],
 ) -> [[f32; 2]; MAX_AUDIO_CHANNELS] {
-    let channels = channels.clamp(1, MAX_AUDIO_CHANNELS);
     let surround = std::f32::consts::FRAC_1_SQRT_2;
     let mut matrix = [[0.0; 2]; MAX_AUDIO_CHANNELS];
     for (weights, position) in matrix.iter_mut().zip(positions).take(channels) {
@@ -178,7 +177,6 @@ fn stereo_matrix(
 impl<'a> AudioBlock<'a> {
     #[cfg(test)]
     pub fn new(samples: &'a [f32], channels: usize, sample_rate: f32) -> Self {
-        let channels = channels.clamp(1, MAX_AUDIO_CHANNELS);
         Self::with_positions(
             samples,
             channels,
@@ -217,7 +215,7 @@ impl<'a> AudioBlock<'a> {
     }
 
     pub fn frame_count(&self) -> usize {
-        self.samples.len() / self.channels.max(1)
+        self.samples.len() / self.channels
     }
 
     pub fn stereo_frames(
@@ -254,10 +252,6 @@ impl<'a> AudioBlock<'a> {
     ) -> impl ExactSizeIterator<Item = f32> + DoubleEndedIterator + '_ {
         self.stereo_frames()
             .map(move |stereo| channel.project(stereo))
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.samples.len() < self.channels.max(1)
     }
 }
 

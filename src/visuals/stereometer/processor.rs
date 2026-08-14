@@ -98,7 +98,6 @@ impl StereometerProcessor {
 
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<StereometerSnapshot> {
         let channel_count = block.channels;
-        if block.is_empty() { return None; }
         let sample_rate = block.sample_rate;
         if self.config.sample_rate != sample_rate {
             let mut config = self.config;

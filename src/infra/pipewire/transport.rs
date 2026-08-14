@@ -173,8 +173,8 @@ fn nanos(duration: Duration) -> u64 {
 }
 
 fn scale(value: u64, numerator: u64, denominator: u64) -> u64 {
-    (u128::from(value) * u128::from(numerator) / u128::from(denominator.max(1)))
-        .min(u128::from(u64::MAX)) as u64
+    (u128::from(value) * u128::from(numerator) / u128::from(denominator)).min(u128::from(u64::MAX))
+        as u64
 }
 
 pub(super) fn pcm_chunk(

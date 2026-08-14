@@ -563,7 +563,7 @@ fn widths_equal(a: &[f32], b: &[f32]) -> bool {
 }
 
 fn resize_widths(start: &[f32], min: &[f32], divider: usize, delta: f32) -> Vec<f32> {
-    if start.len() != min.len() || divider + 1 >= start.len() || delta.abs() <= EPS {
+    if delta.abs() <= EPS {
         return start.to_vec();
     }
     let mut widths = start.to_vec();

@@ -347,16 +347,12 @@ impl SpectrogramProcessor {
                 let Some(Transforms::Classic(fft)) = &self.transforms else {
                     unreachable!("classic transform")
                 };
-                if fft
-                    .process_with_scratch(
-                        &mut self.real,
-                        &mut self.complex,
-                        &mut self.scratch,
-                    )
-                    .is_err()
-                {
-                    break;
-                }
+                fft.process_with_scratch(
+                    &mut self.real,
+                    &mut self.complex,
+                    &mut self.scratch,
+                )
+                .expect("internally sized spectrogram FFT buffers");
                 SpectrogramColumn::Classic(
                     self.complex
                         .iter()
@@ -479,7 +475,6 @@ impl SpectrogramProcessor {
     }
 
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<SpectrogramUpdate> {
-        if block.is_empty() { return None; }
         let sample_rate = block.sample_rate;
         if self.config.sample_rate != sample_rate {
             self.config.sample_rate = sample_rate;

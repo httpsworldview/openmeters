@@ -115,10 +115,6 @@ impl WaveformParams {
         let start = data.len().saturating_sub(columns);
         let preview_columns = params.preview.columns.filter(|_| params.preview.progress > 0.0);
 
-        if columns == 0 && preview_columns.is_none() {
-            return;
-        }
-
         let clip = ClipTransform::from_bounds(params.bounds);
         let col_width = COLUMN_WIDTH_PIXELS;
         let right_edge = params.bounds.x + params.bounds.width;
@@ -196,9 +192,8 @@ impl WaveformParams {
                         let level = ((db - floor) / -floor).clamp(0.0, 1.0);
                         (column_x(i), baseline - level * band_height)
                     }));
-                    if let Some(&last) = pts.last() {
-                        pts.push((right_edge, last.1));
-                    }
+                    let last_y = pts.last().expect("nonempty waveform history").1;
+                    pts.push((right_edge, last_y));
                     extend_filled_line(
                         vertices,
                         pts,

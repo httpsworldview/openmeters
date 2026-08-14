@@ -420,7 +420,7 @@ impl VisualManager {
         }
     }
     pub fn ingest_samples(&mut self, samples: &[f32], format: AudioFormat) {
-        if samples.is_empty() {
+        if samples.len() < format.channels {
             return;
         }
         if self

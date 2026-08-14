@@ -207,7 +207,6 @@ crate::macros::default_struct! {
     #[derive(Debug, Clone, Copy)]
     pub struct LoudnessConfig {
         pub sample_rate: f32 = DEFAULT_SAMPLE_RATE,
-        pub floor_db: f32 = DEFAULT_FLOOR_DB,
     }
 }
 
@@ -231,9 +230,7 @@ impl LoudnessProcessor {
         self.channels.iter_mut().for_each(|channel| *channel = ChannelState::default());
     }
 
-    fn ensure_state(&mut self, requested_channels: usize, sample_rate: f32) {
-        let channels = requested_channels.clamp(1, MAX_CHANNELS);
-        let sample_rate = sanitize_sample_rate(sample_rate);
+    fn ensure_state(&mut self, channels: usize, sample_rate: f32) {
         let rate_changed = self.config.sample_rate != sample_rate;
 
         if rate_changed {
@@ -247,8 +244,6 @@ impl LoudnessProcessor {
     }
 
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<LoudnessSnapshot> {
-        if block.is_empty() { return None; }
-
         self.ensure_state(block.channels, block.sample_rate);
 
         let sample_rate = f64::from(self.config.sample_rate);
@@ -287,7 +282,7 @@ impl LoudnessProcessor {
             }
         }
 
-        let floor = self.config.floor_db;
+        let floor = DEFAULT_FLOOR_DB;
         let mut snapshot = LoudnessSnapshot::with_floor(floor);
         let mut weighted_short_term = 0.0;
         let mut weighted_momentary = 0.0;
@@ -339,20 +334,6 @@ mod tests {
     }
 
     #[test]
-    fn silence_respects_configured_floor() {
-        let samples = [0.0; 2048];
-        let snapshot = LoudnessProcessor::new(LoudnessConfig {
-            floor_db: -140.0,
-            ..Default::default()
-        })
-        .process_block(&AudioBlock::new(&samples, 2, DEFAULT_SAMPLE_RATE))
-        .expect("expected snapshot");
-
-        assert_eq!(snapshot.short_term_loudness, -140.0);
-        assert_eq!(snapshot.rms_fast_db[..2], [-140.0; 2]);
-    }
-
-    #[test]
     fn rms_tracks_amplitude() {
         let measure = |amp| {
             let samples = sine_wave(DEFAULT_SAMPLE_RATE, 3.0, 1000.0, amp);
@@ -376,10 +357,7 @@ mod tests {
                     .flat_map(|&s| std::iter::repeat_n(s, channels))
                     .collect();
                 let block = AudioBlock::new(&interleaved, channels, sample_rate);
-                let cfg = LoudnessConfig {
-                    sample_rate,
-                    ..Default::default()
-                };
+                let cfg = LoudnessConfig { sample_rate };
                 let ours = f64::from(
                     LoudnessProcessor::new(cfg)
                         .process_block(&block)
@@ -439,10 +417,7 @@ mod tests {
             assert_eq!(meter.delay_len, delay_len);
 
             let samples = sine_wave(sample_rate, 0.01, 17_000.0, 0.9);
-            let ours = LoudnessProcessor::new(LoudnessConfig {
-                sample_rate,
-                ..Default::default()
-            })
+            let ours = LoudnessProcessor::new(LoudnessConfig { sample_rate })
             .process_block(&AudioBlock::new(&samples, 1, sample_rate))
             .expect("expected snapshot")
             .true_peak_db[0] as f64;

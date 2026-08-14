@@ -46,31 +46,13 @@ type WindowCache = RwLock<HashMap<(WindowKind, usize), Arc<[f32]>>>;
 
 pub(crate) fn window_coefficients(kind: WindowKind, len: usize) -> Arc<[f32]> {
     static CACHE: LazyLock<WindowCache> = LazyLock::new(Default::default);
-    if len == 0 {
-        return Arc::from([]);
-    }
-    let key = (kind, len);
-    let cache = crate::util::unpoison(CACHE.read());
-    if let Some(window) = cache.get(&key).cloned() {
-        return window;
-    }
-    drop(cache);
-
     crate::util::unpoison(CACHE.write())
-        .entry(key)
+        .entry((kind, len))
         .or_insert_with(|| Arc::from(kind.coefficients(len)))
         .clone()
 }
 
 pub fn copy_dc_removed_windowed_from_deque(dst: &mut [f32], src: &VecDeque<f32>, window: &[f32]) {
-    assert_eq!(dst.len(), window.len());
-    if dst.is_empty() {
-        return;
-    }
-    assert!(
-        dst.len() <= src.len(),
-        "destination longer than source deque"
-    );
     let len = dst.len();
     let (head, tail) = src.as_slices();
     let split = head.len().min(len);
@@ -84,20 +66,11 @@ pub fn copy_dc_removed_windowed_from_deque(dst: &mut [f32], src: &VecDeque<f32>,
 
 pub fn compute_fft_bin_normalization(window: &[f32], fft_size: usize) -> Vec<f32> {
     let bins = fft_size / 2 + 1;
-    let window_sum: f32 = window.iter().sum();
-    let inv_sum = if window_sum.abs() > f32::EPSILON {
-        1.0 / window_sum
-    } else if fft_size > 0 {
-        1.0 / fft_size as f32
-    } else {
-        0.0
-    };
-
+    let inv_sum = window.iter().sum::<f32>().recip();
     let dc_scale = inv_sum * inv_sum;
-    let ac_scale = 4.0 * dc_scale;
-    let mut norms = vec![ac_scale; bins];
+    let mut norms = vec![4.0 * dc_scale; bins];
     norms[0] = dc_scale;
-    if fft_size.is_multiple_of(2) && bins > 1 {
+    if fft_size.is_multiple_of(2) {
         norms[bins - 1] = dc_scale;
     }
     norms
