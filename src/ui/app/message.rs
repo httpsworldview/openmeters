@@ -10,8 +10,9 @@ use iced::event::{self, Event};
 use iced::keyboard::{self, Key};
 use iced::widget::text;
 use iced::{Element, Size, Task, exit, mouse, window};
-use iced_layershell::actions::{IcedXdgWindowSettings, OutputSnapshot};
+use iced_layershell::actions::IcedXdgWindowSettings;
 use iced_layershell::reexport::NewLayerShellSettings;
+use iced_layershell::shell::ShellEvent;
 use iced_layershell::to_layer_message;
 use std::time::Instant;
 
@@ -23,7 +24,7 @@ pub(super) enum Message {
     Tick,
     Watchdog(u64),
     AudioWake,
-    BarOutputResolved(window::Id, Option<OutputSnapshot>),
+    Shell(Box<ShellEvent>),
     ToggleConfig,
     TogglePause,
     PopOutOrDock(window::Id),
@@ -155,10 +156,22 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
             app.frames.borrow_mut().watchdog(generation, Instant::now());
             Task::none()
         }
-        Message::BarOutputResolved(id, Some(snapshot))
-            if app.main_window_is_layer && id == app.main_window_id =>
-        {
-            app.config_page.sync_bar_outputs(snapshot);
+        Message::Shell(event) => {
+            match *event {
+                ShellEvent::OutputAdded(output) | ShellEvent::OutputUpdated(output) => {
+                    app.config_page.sync_bar_output(output.id, output.name);
+                }
+                ShellEvent::OutputRemoved(output) => {
+                    app.config_page.sync_bar_output(output.id, None)
+                }
+                ShellEvent::WindowOutputChanged { window, output }
+                    if app.main_window_is_layer && window == app.main_window_id =>
+                {
+                    app.config_page
+                        .sync_current_bar_output(output.and_then(|output| output.name))
+                }
+                _ => {}
+            }
             Task::none()
         }
         Message::WindowClosed(window_id) => app.on_window_closed(window_id),
@@ -176,9 +189,6 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
             Task::none()
         }
         Message::WindowResized(id, size) => app.handle_window_resize(id, size),
-        Message::SizeChange { id, size } => {
-            app.handle_window_resize(id, Size::new(size.0 as f32, size.1 as f32))
-        }
         _ => Task::none(),
     }
 }

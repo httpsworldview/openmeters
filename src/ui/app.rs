@@ -18,7 +18,7 @@ use crate::ui::widgets::{
 };
 use crate::visuals::registry::{VisualManager, VisualManagerHandle};
 use iced::alignment::{Horizontal, Vertical};
-use iced::event::{self, Event};
+use iced::event;
 use iced::widget::{Space, container, mouse_area, row, stack, text};
 use iced::{
     Element, Length, Settings as IcedSettings, Size, Subscription, Task, daemon as iced_daemon,
@@ -64,11 +64,7 @@ pub(crate) struct UiConfig {
 
 pub(crate) fn run(config: UiConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if layershell_available() {
-        let layer_settings = LayerShellSettings {
-            start_mode: StartMode::Background,
-            size: None,
-            ..Default::default()
-        };
+        let (shell_broadcast, shell_events) = iced_layershell::shell::channel();
         iced_layershell::daemon(
             move || UiApp::new(config.clone(), true),
             || APP_ID.to_string(),
@@ -77,10 +73,21 @@ pub(crate) fn run(config: UiConfig) -> Result<(), Box<dyn std::error::Error + Se
         )
         .settings(LayerSettings {
             id: Some(APP_ID.into()),
-            layer_settings,
+            layer_settings: LayerShellSettings {
+                start_mode: StartMode::Background,
+                ..Default::default()
+            },
+            shell_broadcast,
             ..Default::default()
         })
-        .subscription(UiApp::subscription)
+        .subscription(move |app| {
+            Subscription::batch([
+                app.subscription(),
+                shell_events
+                    .listen()
+                    .map(|event| Message::Shell(Box::new(event))),
+            ])
+        })
         .title(|app, window_id| Some(app.title(window_id)))
         .theme(|app: &UiApp, window_id| Some(app.theme(window_id)))
         .run()?;
@@ -203,12 +210,6 @@ impl UiApp {
             event::listen_with(keyboard_shortcut),
             window::close_events().map(Message::WindowClosed),
             window::resize_events().map(|(id, size)| Message::WindowResized(id, size)),
-            event::listen_with(|evt, _, wid| match evt {
-                Event::Window(window::Event::Opened { size, .. }) => {
-                    Some(Message::WindowResized(wid, size))
-                }
-                _ => None,
-            }),
         ];
         if self.bar_resize_state.is_some() {
             subs.push(event::listen_with(message::bar_drag_events));

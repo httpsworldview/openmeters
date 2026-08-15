@@ -12,9 +12,8 @@ use crate::ui::widgets::{fill, scroll_glow::ScrollGlow};
 use crate::visuals::registry::{VisualContent, VisualKind, VisualSlotSnapshot};
 use iced::widget::mouse_area;
 use iced::{Element, Size, Task, exit, window};
-use iced_layershell::actions::OutputSnapshotCallback;
 use iced_layershell::reexport::{
-    Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings, OutputOption,
+    Anchor, KeyboardInteractivity, Layer, LayerSize, NewLayerShellSettings, OutputOption, PixelSize,
 };
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
 use wayland_client::protocol::wl_registry;
@@ -80,8 +79,9 @@ fn open_base_window(
     decorations: bool,
 ) -> (window::Id, Task<Message>) {
     if layershell {
+        let (width, height) = persisted_window_size(size);
         let settings = iced_layershell::actions::IcedXdgWindowSettings {
-            size: Some((size.width.round() as u32, size.height.round() as u32)),
+            size: Some(PixelSize::px(width, height)),
             client_side_decorations: !decorations,
         };
         message::base_window_open(settings)
@@ -112,7 +112,7 @@ pub(super) fn open_main_window(
     if use_layershell && bar_settings.enabled {
         let height = clamp_bar_height(bar_settings.height);
         let (id, task) = message::layershell_open(NewLayerShellSettings {
-            size: Some((0, height)),
+            size: LayerSize::fill_width(height),
             layer: Layer::Top,
             anchor: bar_anchor(bar_settings.alignment),
             exclusive_zone: Some(height as i32),
@@ -418,10 +418,10 @@ impl UiApp {
         let height = clamp_bar_height(height);
         self.main_window_size.height = height as f32;
         Task::batch([
-            Task::done(Message::AnchorSizeChange {
+            Task::done(Message::LayoutChange {
                 id: self.main_window_id,
                 anchor: bar_anchor(alignment),
-                size: (0, height),
+                size: LayerSize::fill_width(height),
             }),
             Task::done(Message::ExclusiveZoneChange {
                 id: self.main_window_id,
@@ -457,13 +457,10 @@ impl UiApp {
             if current_height != height {
                 self.settings_handle.update(|s| s.data.bar.height = height);
             }
-            return Task::batch([
-                Task::done(Message::ExclusiveZoneChange {
-                    id: self.main_window_id,
-                    zone_size: height as i32,
-                }),
-                self.request_main_output_snapshot(),
-            ]);
+            return Task::done(Message::ExclusiveZoneChange {
+                id: self.main_window_id,
+                zone_size: height as i32,
+            });
         }
 
         let (width, height) = persisted_window_size(new_size);
@@ -495,22 +492,6 @@ impl UiApp {
         self.main_window_size = main_size;
         self.main_window_is_layer = main_is_layer;
         Task::batch([open_main, window::close(old_main_id)])
-    }
-
-    pub(super) fn request_main_output_snapshot(&self) -> Task<Message> {
-        let id = self.main_window_id;
-        let (sender, receiver) = async_channel::bounded(1);
-        Task::batch([
-            Task::done(Message::OutputSnapshotRequest {
-                id,
-                callback: OutputSnapshotCallback::new(move |snapshot| {
-                    let _ = sender.try_send(snapshot);
-                }),
-            }),
-            Task::perform(async move { receiver.recv().await.ok() }, move |snapshot| {
-                Message::BarOutputResolved(id, snapshot)
-            }),
-        ])
     }
 
     pub(super) fn handle_bar_config_message(

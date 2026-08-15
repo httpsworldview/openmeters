@@ -41,12 +41,9 @@ wayland-client = "0.31.15"
   features = [ "env-filter", "fmt" ]
 
   [dependencies.iced_layershell]
-  version = "0.18.1"
+  git = "https://github.com/waycrate/exwlshelleventloop"
+  rev = "26a318d714a6324ba014110b8fb5086fdf667169"
   default-features = false
-
-[patch.crates-io.iced_layershell]
-git = "https://github.com/httpsworldview/exwlshelleventloop"
-rev = "49c4b9bd21b6d800b1dfb73fbf58d52822e272bc"
 
 [dev-dependencies]
 ebur128 = "0.1.10"

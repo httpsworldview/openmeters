@@ -17,7 +17,7 @@ use crate::visuals::registry::{VisualKind, VisualManagerHandle, VisualSlotSnapsh
 use iced::alignment::Vertical;
 use iced::widget::{Column, column, container, pick_list, row, text, text_input};
 use iced::{Element, Length};
-use iced_layershell::actions::OutputSnapshot;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 const GRID_COLUMNS: usize = 2;
@@ -72,6 +72,7 @@ pub struct ConfigPage {
     visual_manager: VisualManagerHandle,
     settings: SettingsHandle,
     bar_supported: bool,
+    bar_outputs: BTreeMap<u32, String>,
     bar_monitors: Vec<String>,
     registry_alive: bool,
     applications_expanded: bool,
@@ -111,6 +112,7 @@ impl ConfigPage {
             visual_manager,
             settings,
             bar_supported,
+            bar_outputs: BTreeMap::new(),
             bar_monitors: Vec::new(),
             registry_alive: true,
             applications_expanded: false,
@@ -439,9 +441,17 @@ impl ConfigPage {
         self.theme_choices = self.settings.borrow().theme_store().list();
     }
 
-    pub(in crate::ui) fn sync_bar_outputs(&mut self, snapshot: OutputSnapshot) {
-        self.bar_monitors = snapshot.outputs;
-        if let Some(monitor) = snapshot.current
+    pub(in crate::ui) fn sync_bar_output(&mut self, id: u32, name: Option<String>) {
+        match name.filter(|name| !name.is_empty()) {
+            Some(name) => _ = self.bar_outputs.insert(id, name),
+            None => _ = self.bar_outputs.remove(&id),
+        }
+        self.bar_monitors.clear();
+        self.bar_monitors.extend(self.bar_outputs.values().cloned());
+    }
+
+    pub(in crate::ui) fn sync_current_bar_output(&mut self, monitor: Option<String>) {
+        if let Some(monitor) = monitor.filter(|name| !name.is_empty())
             && self.settings.borrow().data.bar.monitor.as_ref() != Some(&monitor)
         {
             self.settings.update(|s| s.data.bar.monitor = Some(monitor));
