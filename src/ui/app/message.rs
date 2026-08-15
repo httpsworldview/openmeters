@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::{TOAST_DISPLAY_DURATION, UiApp, windowing::AppWindow};
-use crate::ui::config::ConfigMessage;
+use crate::ui::config::{ConfigEffect, ConfigMessage};
 use crate::ui::settings::SettingsMessage;
 use crate::ui::visuals::VisualsMessage;
 use crate::ui::widgets::{fill, page, scroll_glow::ScrollGlow};
@@ -103,25 +103,8 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
         app.frames.borrow_mut().wake();
     }
     match msg {
-        Message::Config(config_msg) => {
-            let decoration_task = match &config_msg {
-                ConfigMessage::DecorationsToggled(enabled) if app.main_window_is_layer => {
-                    app.recreate_popout_windows(*enabled)
-                }
-                ConfigMessage::DecorationsToggled(enabled) => app.recreate_windows(*enabled),
-                _ => Task::none(),
-            };
-            let toggled = match &config_msg {
-                ConfigMessage::VisualToggled { kind, enabled } => Some((*kind, *enabled)),
-                _ => None,
-            };
-            let bar_task = app.handle_bar_config_message(&config_msg);
-            let theme_changed = matches!(&config_msg, ConfigMessage::ThemeChanged(_));
-            if let ConfigMessage::VisualFrameRateChanged(rate) = &config_msg {
-                app.frames.borrow_mut().set_rate(*rate);
-            }
-            app.config_page.update(config_msg);
-            let topology_task = toggled.map_or_else(Task::none, |(kind, enabled)| {
+        Message::Config(config_msg) => match app.config_page.update(config_msg) {
+            Some(ConfigEffect::VisualToggled { kind, enabled }) => {
                 let active = app.visuals_active();
                 app.frames.borrow_mut().set_active(active);
                 let restore = if enabled {
@@ -130,12 +113,24 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
                     Task::none()
                 };
                 Task::batch([restore, app.sync_all_windows()])
-            });
-            if theme_changed && let Some((_, panel)) = app.settings_window.as_mut() {
-                *panel = super::ActiveSettings::new(panel.kind(), &app.visual_manager);
             }
-            Task::batch([decoration_task, bar_task, topology_task])
-        }
+            Some(ConfigEffect::FrameRateChanged(rate)) => {
+                app.frames.borrow_mut().set_rate(rate);
+                Task::none()
+            }
+            Some(ConfigEffect::DecorationsChanged(enabled)) if app.main_window_is_layer => {
+                app.recreate_popout_windows(enabled)
+            }
+            Some(ConfigEffect::DecorationsChanged(enabled)) => app.recreate_windows(enabled),
+            Some(ConfigEffect::BarChanged(change)) => app.handle_bar_config_change(change),
+            Some(ConfigEffect::ThemeChanged) => {
+                if let Some((_, panel)) = app.settings_window.as_mut() {
+                    *panel = super::ActiveSettings::new(panel.kind(), &app.visual_manager);
+                }
+                Task::none()
+            }
+            None => Task::none(),
+        },
         Message::Visuals(VisualsMessage::SettingsRequested(kind)) => {
             app.open_settings_window(kind, false)
         }

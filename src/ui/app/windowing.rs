@@ -6,7 +6,7 @@ use super::{ActiveSettings, UiApp};
 use crate::persistence::settings::{
     BarAlignment, BarSettings, MainWindowSettings, PopoutWindowSettings, clamp_bar_height,
 };
-use crate::ui::config::ConfigMessage;
+use crate::ui::config::BarChange;
 use crate::ui::visuals::VisualsMessage;
 use crate::ui::widgets::{fill, scroll_glow::ScrollGlow};
 use crate::visuals::registry::{VisualContent, VisualKind, VisualSlotSnapshot};
@@ -494,47 +494,25 @@ impl UiApp {
         Task::batch([open_main, window::close(old_main_id)])
     }
 
-    pub(super) fn handle_bar_config_message(
-        &mut self,
-        config_msg: &ConfigMessage,
-    ) -> Task<Message> {
+    pub(super) fn handle_bar_config_change(&mut self, change: BarChange) -> Task<Message> {
         if !self.use_layershell {
             return Task::none();
         }
-        let (mut bar, decorations) = {
+        let (bar, decorations) = {
             let settings = &self.settings_handle.borrow().data;
             (settings.bar.clone(), settings.decorations)
         };
-        let (relayout, mode_change) = match config_msg {
-            ConfigMessage::BarModeToggled(enabled) => {
-                bar.enabled = *enabled;
-                (true, true)
+        match change {
+            BarChange::Mode if bar.enabled != self.main_window_is_layer => {
+                self.recreate_main_window(bar, decorations)
             }
-            ConfigMessage::BarAlignmentChanged(alignment) => {
-                bar.alignment = *alignment;
-                (true, false)
+            BarChange::Monitor if self.main_window_is_layer => {
+                self.recreate_main_window(bar, decorations)
             }
-            ConfigMessage::BarHeightChanged(height) => {
-                bar.height = *height;
-                (true, false)
+            BarChange::Mode | BarChange::Layout if self.main_window_is_layer => {
+                self.apply_bar_layout(bar.alignment, bar.height)
             }
-            ConfigMessage::BarMonitorChanged(monitor) => {
-                if bar.monitor.as_deref() == Some(monitor) {
-                    return Task::none();
-                }
-                bar.monitor = Some(monitor.clone());
-                (false, false)
-            }
-            _ => return Task::none(),
-        };
-        if (mode_change && bar.enabled != self.main_window_is_layer)
-            || (self.main_window_is_layer && !relayout)
-        {
-            self.recreate_main_window(bar, decorations)
-        } else if self.main_window_is_layer && relayout {
-            self.apply_bar_layout(bar.alignment, bar.height)
-        } else {
-            Task::none()
+            BarChange::Mode | BarChange::Layout | BarChange::Monitor => Task::none(),
         }
     }
 

@@ -112,7 +112,6 @@ struct UiApp {
     config_window: Option<window::Id>,
     bar_resize_state: Option<BarResizeState>,
     rendering_paused: bool,
-    next_maintenance: Instant,
     toast_until: Option<Instant>,
     main_window_id: window::Id,
     main_window_size: Size,
@@ -184,7 +183,6 @@ impl UiApp {
             config_window: None,
             bar_resize_state: None,
             rendering_paused: false,
-            next_maintenance: Instant::now(),
             toast_until: None,
             main_window_id: main_id,
             main_window_size: main_size,
@@ -238,14 +236,11 @@ impl UiApp {
 
     fn tick(&mut self) {
         let now = Instant::now();
-        if now >= self.next_maintenance {
-            if self.config_window.is_some() {
-                self.config_page.refresh_registry();
-            }
-            self.toast_until.take_if(|deadline| now >= *deadline);
-            self.exit_warning_until.take_if(|deadline| now >= *deadline);
-            self.next_maintenance = now + MAINTENANCE_INTERVAL;
+        if self.config_window.is_some() {
+            self.config_page.refresh_registry();
         }
+        self.toast_until.take_if(|deadline| now >= *deadline);
+        self.exit_warning_until.take_if(|deadline| now >= *deadline);
     }
 
     fn set_rendering_paused(&mut self, paused: bool) {

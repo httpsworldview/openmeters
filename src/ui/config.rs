@@ -66,6 +66,20 @@ pub enum ConfigMessage {
     Scrolled(ScrollGlow),
 }
 
+pub(in crate::ui) enum BarChange {
+    Mode,
+    Layout,
+    Monitor,
+}
+
+pub(in crate::ui) enum ConfigEffect {
+    VisualToggled { kind: VisualKind, enabled: bool },
+    FrameRateChanged(VisualFrameRate),
+    DecorationsChanged(bool),
+    BarChanged(BarChange),
+    ThemeChanged,
+}
+
 pub struct ConfigPage {
     capture: CaptureControl,
     capture_view: Option<Arc<CaptureView>>,
@@ -143,7 +157,8 @@ impl ConfigPage {
         }
     }
 
-    pub fn update(&mut self, message: ConfigMessage) {
+    pub(in crate::ui) fn update(&mut self, message: ConfigMessage) -> Option<ConfigEffect> {
+        let mut effect = None;
         match message {
             ConfigMessage::ToggleChanged { identity, enabled } => {
                 self.settings.update(|settings| {
@@ -163,6 +178,7 @@ impl ConfigPage {
                 self.settings.update(|s| {
                     s.data.visuals.modules.entry(kind).or_default().enabled = Some(enabled);
                 });
+                effect = Some(ConfigEffect::VisualToggled { kind, enabled });
             }
             ConfigMessage::CaptureModeChanged(mode) => {
                 if self.settings.borrow().data.capture_mode != mode {
@@ -189,19 +205,36 @@ impl ConfigPage {
             }
             ConfigMessage::VisualFrameRateChanged(rate) => {
                 self.settings.update(|s| s.data.visual_frame_rate = rate);
+                effect = Some(ConfigEffect::FrameRateChanged(rate));
             }
-            ConfigMessage::DecorationsToggled(v) => {
-                self.settings.update(|s| s.data.decorations = v);
+            ConfigMessage::DecorationsToggled(value) => {
+                self.settings.update(|s| s.data.decorations = value);
+                effect = Some(ConfigEffect::DecorationsChanged(value));
             }
-            ConfigMessage::BarModeToggled(v) => self.settings.update(|s| s.data.bar.enabled = v),
-            ConfigMessage::BarAlignmentChanged(v) => {
-                self.settings.update(|s| s.data.bar.alignment = v);
+            ConfigMessage::BarModeToggled(value) => {
+                self.settings.update(|s| s.data.bar.enabled = value);
+                effect = Some(ConfigEffect::BarChanged(BarChange::Mode));
             }
-            ConfigMessage::BarHeightChanged(v) => self.settings.update(|s| s.data.bar.height = v),
-            ConfigMessage::BarMonitorChanged(v) => {
-                self.settings.update(|s| s.data.bar.monitor = Some(v));
+            ConfigMessage::BarAlignmentChanged(value) => {
+                self.settings.update(|s| s.data.bar.alignment = value);
+                effect = Some(ConfigEffect::BarChanged(BarChange::Layout));
             }
-            ConfigMessage::ThemeChanged(name) => self.apply_theme(&name),
+            ConfigMessage::BarHeightChanged(value) => {
+                self.settings.update(|s| s.data.bar.height = value);
+                effect = Some(ConfigEffect::BarChanged(BarChange::Layout));
+            }
+            ConfigMessage::BarMonitorChanged(value) => {
+                let changed =
+                    self.settings.borrow().data.bar.monitor.as_deref() != Some(value.as_str());
+                self.settings.update(|s| s.data.bar.monitor = Some(value));
+                if changed {
+                    effect = Some(ConfigEffect::BarChanged(BarChange::Monitor));
+                }
+            }
+            ConfigMessage::ThemeChanged(name) => {
+                self.apply_theme(&name);
+                effect = Some(ConfigEffect::ThemeChanged);
+            }
             ConfigMessage::SaveTheme(name) => {
                 let active = self.settings.borrow().active_theme().to_owned();
                 if let Some(saved_name) = self.save_current_as_theme(&name)
@@ -214,6 +247,7 @@ impl ConfigPage {
             ConfigMessage::ThemeNameInput(val) => self.save_theme_name = val,
             ConfigMessage::Scrolled(g) => self.scroll = g,
         }
+        effect
     }
 
     pub fn view(&self) -> Element<'_, ConfigMessage> {
