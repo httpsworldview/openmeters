@@ -92,7 +92,7 @@ impl<'a, Message: 'a> PaneGrid<'a, Message> {
     }
 
     fn divider_at(&self, layout: Layout<'_>, cursor: Point) -> Option<usize> {
-        if self.entries.len() < 2 || !layout.bounds().contains(cursor) {
+        if !layout.bounds().contains(cursor) {
             return None;
         }
         let half = DIVIDER_HIT_WIDTH / 2.0;
@@ -143,10 +143,6 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer> for PaneGrid
     ) -> layout::Node {
         let count = self.entries.len();
         let size = limits.resolve(Length::Fill, Length::Fill, Size::ZERO);
-        if count == 0 {
-            return layout::Node::new(size);
-        }
-
         let available_width = size.width.max(0.0);
         let resizing = tree.state.downcast_ref::<Interaction>().resizing.as_ref();
         let widths = resizing
@@ -534,7 +530,7 @@ fn fit_mins(specs: impl IntoIterator<Item = (f32, f32)>, available: f32) -> Vec<
         .map(|(min, _)| finite_nonnegative(min))
         .collect();
     let sum = min.iter().sum::<f32>();
-    if sum > available && sum > EPS {
+    if sum > available {
         for w in &mut min {
             *w *= available / sum;
         }
@@ -559,7 +555,7 @@ fn fit_sum(mut widths: Vec<f32>, available: f32) -> Vec<f32> {
 }
 
 fn widths_equal(a: &[f32], b: &[f32]) -> bool {
-    a.len() == b.len() && std::iter::zip(a, b).all(|(a, b)| (a - b).abs() <= EPS)
+    std::iter::zip(a, b).all(|(a, b)| (a - b).abs() <= EPS)
 }
 
 fn resize_widths(start: &[f32], min: &[f32], divider: usize, delta: f32) -> Vec<f32> {

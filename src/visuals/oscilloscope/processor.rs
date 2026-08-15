@@ -616,9 +616,12 @@ impl OscilloscopeProcessor {
         }
         self.history_channels = Some(channel_count);
 
+        let trace_channels = [self.config.channel_1, self.config.channel_2];
+        if trace_channels == [Channel::None; TRACE_COUNT] { return None; }
+
         let base_frames = (self.config.sample_rate * self.config.segment_duration)
             .round()
-            .max(1.0) as usize;
+            .max(2.0) as usize;
         let max_period = (self.config.sample_rate / PeriodEstimator::MIN_HZ).ceil() as usize;
         let probe_frames = ((self.config.sample_rate * PeriodEstimator::PROBE_SECONDS).round() as usize)
             .max(max_period * 2);
@@ -628,16 +631,17 @@ impl OscilloscopeProcessor {
                 stable_history_frames(max_period, num_cycles, self.config.sample_rate)
             }
         };
-        let trace_channels = [self.config.channel_1, self.config.channel_2];
         let trigger_source = self.config.trigger_source;
         let history_frames = probe_frames.max(base_frames).max(trigger_frames);
         let mode = self.config.trigger_mode;
         let sample_rate = self.config.sample_rate;
-        let capture = |trace: &[f32], trigger: &mut StableTrigger| match mode {
-            TriggerMode::ZeroCrossing => zero_crossing_capture(trace, base_frames, max_period),
-            TriggerMode::Stable { num_cycles } => (trace.len() >= base_frames).then(|| {
-                trigger.capture(trace, sample_rate, probe_frames, base_frames, num_cycles)
-            }),
+        let capture = |trace: &[f32], trigger: &mut StableTrigger| {
+            (trace.len() >= base_frames).then(|| match mode {
+                TriggerMode::ZeroCrossing => zero_crossing_capture(trace, base_frames, max_period),
+                TriggerMode::Stable { num_cycles } => {
+                    trigger.capture(trace, sample_rate, probe_frames, base_frames, num_cycles)
+                }
+            })
         };
         let active_traces = trace_channels.map(|channel| channel != Channel::None);
         let matching_trace = trace_channels
@@ -651,14 +655,12 @@ impl OscilloscopeProcessor {
         }
         if separate_source { self.source.buffer.reserve(incoming); }
 
-        if active_traces != [false; TRACE_COUNT] || separate_source {
-            for stereo in block.stereo_frames() {
-                for (trace, &channel) in self.traces.iter_mut().zip(&trace_channels) {
-                    if channel != Channel::None { trace.buffer.push_back(channel.project(stereo)); }
-                }
-                if separate_source {
-                    self.source.buffer.push_back(trigger_source.project(stereo));
-                }
+        for stereo in block.stereo_frames() {
+            for (trace, &channel) in self.traces.iter_mut().zip(&trace_channels) {
+                if channel != Channel::None { trace.buffer.push_back(channel.project(stereo)); }
+            }
+            if separate_source {
+                self.source.buffer.push_back(trigger_source.project(stereo));
             }
         }
         for (trace, &active) in self.traces.iter_mut().zip(&active_traces) {
@@ -720,24 +722,23 @@ impl OscilloscopeProcessor {
             .iter()
             .filter_map(|capture| capture.map(|capture| capture.span.round().max(1.0) as usize + 1))
             .max()
-            .unwrap_or(2)
+            .unwrap()
             .clamp(2, TARGET);
 
         self.snapshot.samples.clear();
         self.snapshot.channels = 0;
         for (slot, capture) in captures.iter().copied().enumerate() {
             let Some(capture) = capture else { continue };
-            if downsample_trace(
+            downsample_trace(
                 &mut self.snapshot.samples,
                 self.traces[slot].buffer.make_contiguous(),
                 capture,
                 target,
-            ) {
-                self.snapshot.slots[self.snapshot.channels] = slot;
-                self.snapshot.channels += 1;
-            }
+            );
+            self.snapshot.slots[self.snapshot.channels] = slot;
+            self.snapshot.channels += 1;
         }
-        self.snapshot.samples_per_channel = if self.snapshot.channels == 0 { 0 } else { target };
+        self.snapshot.samples_per_channel = target;
     }
 
     pub fn update_config(&mut self, config: OscilloscopeConfig) {
@@ -757,11 +758,8 @@ fn stable_history_frames(max_period: usize, cycles: usize, sample_rate: f32) -> 
     max_kernel / 2 + max_tail + max_search + 2
 }
 
-fn zero_crossing_capture(samples: &[f32], frames: usize, search_range: usize) -> Option<Capture> {
-    let frames = frames.min(samples.len());
-    if frames == 0 { return None; }
-
-    let end = samples.len().saturating_sub(1);
+fn zero_crossing_capture(samples: &[f32], frames: usize, search_range: usize) -> Capture {
+    let end = samples.len() - 1;
     let right_lo = end.saturating_sub(search_range);
     let right = find_rising_zero_crossing(samples, (right_lo..=end).rev()).unwrap_or(end);
 
@@ -769,26 +767,19 @@ fn zero_crossing_capture(samples: &[f32], frames: usize, search_range: usize) ->
     let left_hi = (left_lo + search_range).min(right.saturating_sub(2));
     let left = find_rising_zero_crossing(samples, left_lo..=left_hi).unwrap_or(left_lo);
 
-    Some(Capture {
+    Capture {
         span: right.saturating_sub(left).max(1) as f32,
         start: left,
         frac_offset: 0.0,
-    })
+    }
 }
 
-fn downsample_trace(output: &mut Vec<f32>, data: &[f32], capture: Capture, target: usize) -> bool {
-    let start = capture.start.min(data.len());
-    let data = &data[start..];
-    if data.len() < 2 { return false; }
-
+fn downsample_trace(output: &mut Vec<f32>, data: &[f32], capture: Capture, target: usize) {
+    let data = &data[capture.start..];
     let last = (data.len() - 1) as f32;
     let start_offset = capture.frac_offset.clamp(0.0, last);
-    let span = capture.span.min(last - start_offset);
-    if crate::util::finite_positive(span).is_none() { return false; }
-
-    let step = span / (target - 1) as f32;
+    let step = capture.span.min(last - start_offset) / (target - 1) as f32;
     output.extend((0..target).map(|i| sample_linear_zero(data, start_offset + i as f32 * step)));
-    true
 }
 
 #[cfg(test)]

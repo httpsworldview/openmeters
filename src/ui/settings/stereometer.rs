@@ -17,14 +17,11 @@ const DOT_RANGE: SliderRange = SliderRange::new(0.5, 8.0, 0.1);
 settings_pane!(StereometerSettings);
 
 settings_messages!(pane, settings, value {
-    SegmentDuration(f32) => set_f32(&mut settings.segment_duration, value, DURATION_RANGE);
-    SampleCount(f32) => set_usize(&mut settings.target_sample_count, value, SAMPLE_COUNT_RANGE);
-    CorrelationWindow(f32) => set_f32(&mut settings.correlation_window, value, CORRELATION_RANGE);
-    DotRadius(f32) => set_f32(&mut settings.dot_radius, value, DOT_RANGE);
-    Rotation(f32) => set(
-        &mut settings.rotation,
-        (value.round() as i8).clamp(ROTATION_RANGE.min as i8, ROTATION_RANGE.max as i8)
-    );
+    SegmentDuration(f32) => set_f32(&mut settings.segment_duration, value);
+    SampleCount(f32) => set_usize(&mut settings.target_sample_count, value);
+    CorrelationWindow(f32) => set_f32(&mut settings.correlation_window, value);
+    DotRadius(f32) => set_f32(&mut settings.dot_radius, value);
+    Rotation(f32) => set(&mut settings.rotation, value.round() as i8);
     Flip(bool) => set(&mut settings.flip, value);
     Unipolar(bool) => set(&mut settings.unipolar, value);
     Mode(StereometerMode) => set(&mut settings.mode, value);

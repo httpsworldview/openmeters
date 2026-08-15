@@ -70,7 +70,7 @@ impl WaveformState {
         if !update.reset && update.columns.is_empty() {
             return;
         }
-        let max_columns = self.view_columns.get().clamp(1, MAX_COLUMN_CAPACITY);
+        let max_columns = self.view_columns.get();
         let mut data = unpoison(self.data.lock());
         Self::configure_ring(&mut data, max_columns, update.reset);
         if update.reset {
@@ -90,7 +90,7 @@ impl WaveformState {
     }
 
     pub(in crate::visuals) fn is_quiescent(&self) -> bool {
-        let needed = self.view_columns.get().clamp(1, MAX_COLUMN_CAPACITY);
+        let needed = self.view_columns.get();
         self.quiescent_columns >= needed
             && unpoison(self.data.lock()).len() >= needed
             && self.preview.columns.unwrap_or_default() == WaveFrame::default()
@@ -137,11 +137,9 @@ impl WaveformState {
             return None;
         }
 
-        let lanes = &lanes[..selected_channels];
-
         Some(WaveformParams {
             bounds,
-            lanes: [lanes[0], lanes.get(1).copied().unwrap_or(0)],
+            lanes,
             channels: selected_channels,
             data: Arc::clone(&self.data),
             preview: WaveformPreview {

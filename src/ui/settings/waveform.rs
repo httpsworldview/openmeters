@@ -28,8 +28,8 @@ fn configure_palette_for_mode(palette: &mut PaletteEditor, mode: WaveformColorMo
 }
 
 settings_messages!(pane, settings, value {
-    ScrollSpeed(f32) => set_f32(&mut settings.scroll_speed, value, SPEED_RANGE);
-    BandDbFloor(f32) => set_f32(&mut settings.band_db_floor, value, FLOOR_RANGE);
+    ScrollSpeed(f32) => set_f32(&mut settings.scroll_speed, value);
+    BandDbFloor(f32) => set_f32(&mut settings.band_db_floor, value);
     Channel1(Channel) => set(&mut settings.channel_1, value);
     Channel2(Channel) => set(&mut settings.channel_2, value);
     ColorMode(WaveformColorMode) => {

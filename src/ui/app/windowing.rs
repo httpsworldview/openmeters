@@ -186,13 +186,6 @@ impl UiApp {
         }
     }
 
-    pub(super) fn refresh_settings_panel(&mut self) {
-        let Some((_, panel)) = self.settings_window.as_mut() else {
-            return;
-        };
-        *panel = ActiveSettings::new(panel.kind(), &self.visual_manager);
-    }
-
     pub(super) fn open_settings_window(
         &mut self,
         kind: VisualKind,
@@ -505,9 +498,6 @@ impl UiApp {
     }
 
     pub(super) fn request_main_output_snapshot(&self) -> Task<Message> {
-        if !self.main_window_is_layer {
-            return Task::none();
-        }
         let id = self.main_window_id;
         let (sender, receiver) = async_channel::bounded(1);
         Task::batch([

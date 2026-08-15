@@ -72,8 +72,8 @@ impl PaletteEditor {
         self.label_overrides
             .iter()
             .find_map(|&(i, label)| (i == index).then_some(label))
-            .or_else(|| self.palette.labels().get(index).copied())
-            .map_or_else(|| format!("Color {}", index + 1), str::to_owned)
+            .unwrap_or(self.palette.labels()[index])
+            .to_owned()
     }
 
     pub fn positions(&self) -> &[f32] {
@@ -107,14 +107,12 @@ impl PaletteEditor {
     pub fn update(&mut self, event: PaletteEvent) -> bool {
         match event {
             PaletteEvent::Select(index) => {
-                if index.is_none_or(|index| index < self.palette.len()) {
-                    self.active = index;
-                }
+                self.active = index;
                 false
             }
             PaletteEvent::Adjust { index, color } => {
                 let colors = self.palette.colors();
-                if index >= colors.len() || colors_equal(colors[index], color) {
+                if colors_equal(colors[index], color) {
                     return false;
                 }
                 let mut colors = colors.to_vec();
@@ -123,10 +121,6 @@ impl PaletteEditor {
                 true
             }
             PaletteEvent::AdjustPosition { index, position } => {
-                let n = self.palette.len();
-                if n < 3 || index == 0 || index >= n - 1 {
-                    return false;
-                }
                 let lo = (self.positions[index - 1] + MIN_STOP_GAP).max(MIN_STOP_GAP);
                 let hi = (self.positions[index + 1] - MIN_STOP_GAP).min(1.0 - MIN_STOP_GAP);
                 if lo > hi {
@@ -140,14 +134,10 @@ impl PaletteEditor {
                 true
             }
             PaletteEvent::AdjustSpread { index, spread } => {
-                if index >= self.palette.len() {
+                if (self.spreads[index] - spread).abs() < EPSILON {
                     return false;
                 }
-                let next = spread.clamp(STOP_SPREAD_MIN, STOP_SPREAD_MAX);
-                if (self.spreads[index] - next).abs() < EPSILON {
-                    return false;
-                }
-                self.spreads[index] = next;
+                self.spreads[index] = spread;
                 true
             }
             PaletteEvent::HorizontalScroll(g) => {
@@ -175,7 +165,6 @@ impl PaletteEditor {
     pub fn is_default(&self) -> bool {
         self.palette.is_default()
             && self.positions == self.palette.default_positions
-            && self.spreads.len() == self.palette.len()
             && self.spreads.iter().all(|&spread| spread == 1.0)
     }
 
@@ -191,14 +180,12 @@ impl PaletteEditor {
             row = row.push(self.color_picker(i, color));
         }
         let mut col = Column::new().spacing(12);
-        if self.show_ramp && colors.len() >= 2 {
+        if self.show_ramp {
             col = col.push(Element::new(self));
         }
         col = col.push(self.scroll.horizontal(row, PaletteEvent::HorizontalScroll));
-        if let Some(i) = self.active
-            && let Some(&c) = colors.get(i)
-        {
-            col = col.push(self.color_controls(i, c));
+        if let Some(i) = self.active {
+            col = col.push(self.color_controls(i, colors[i]));
         }
         col.push(action_button(
             "Reset to defaults",
@@ -287,10 +274,6 @@ fn nearest_handle(
 
 fn find_segment(positions: &[f32], spreads: &[f32], t: f32) -> (usize, usize, f32) {
     let count = positions.len();
-    if count < 2 {
-        return (0, 0, 0.0);
-    }
-
     let t = t.clamp(0.0, 1.0);
     let hi = positions
         .partition_point(|&pos| pos < t)
@@ -298,8 +281,8 @@ fn find_segment(positions: &[f32], spreads: &[f32], t: f32) -> (usize, usize, f3
     let lo = hi - 1;
     let linear =
         ((t - positions[lo]) / (positions[hi] - positions[lo]).max(f32::EPSILON)).clamp(0.0, 1.0);
-    let sl = spreads.get(lo).copied().unwrap_or(1.0);
-    let sr = spreads.get(hi).copied().unwrap_or(1.0);
+    let sl = spreads[lo];
+    let sr = spreads[hi];
     let f = if (sl - 1.0).abs() < EPSILON && (sr - 1.0).abs() < EPSILON {
         linear
     } else {
@@ -319,9 +302,6 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for &PaletteEditor {
     crate::macros::widget_method!(update PaletteEvent; this; tree, event, layout, cursor, _, _, shell, _ => {
         let editor = *this;
         let n = editor.positions.len();
-        if n < 2 {
-            return;
-        }
         let dragging = tree.state.downcast_mut::<Option<usize>>();
         let bounds = layout.bounds();
         let iced::Event::Mouse(mouse_event) = event else {
@@ -329,8 +309,7 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for &PaletteEditor {
         };
         match mouse_event {
             mouse::Event::ButtonPressed(mouse::Button::Left) => {
-                if n >= 3
-                    && let Some(pos) = cursor.position().filter(|p| bounds.contains(*p))
+                if let Some(pos) = cursor.position().filter(|p| bounds.contains(*p))
                     && let Some(i) = nearest_handle(1..n - 1, &editor.positions, &bounds, pos.x)
                 {
                     *dragging = Some(i);
@@ -355,7 +334,7 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for &PaletteEditor {
                     && let Some(i) = nearest_handle(0..n, &editor.positions, &bounds, pos.x)
                 {
                     let dy = scroll_delta_lines(*delta);
-                    let current = editor.spreads.get(i).copied().unwrap_or(1.0);
+                    let current = editor.spreads[i];
                     let new_spread = (current + dy * 0.2).clamp(STOP_SPREAD_MIN, STOP_SPREAD_MAX);
                     if (current - new_spread).abs() >= EPSILON {
                         shell.publish(PaletteEvent::AdjustSpread {
@@ -374,9 +353,6 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for &PaletteEditor {
         let editor = *this;
         let colors = editor.palette.colors();
         let bounds = layout.bounds();
-        if colors.len() < 2 || editor.positions.len() != colors.len() {
-            return;
-        }
         let bar_w = bounds.width;
         let mut paint = |bounds: Rectangle, border, bg| {
             renderer.fill_quad(
@@ -421,7 +397,7 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for &PaletteEditor {
         let handle_y = bounds.y + GRADIENT_BAR_HEIGHT + 1.0;
         for (i, &pos) in editor.positions.iter().enumerate() {
             let x = bounds.x + pos.clamp(0.0, 1.0) * bar_w;
-            let c = colors.get(i).copied().unwrap_or(Color::WHITE);
+            let c = colors[i];
             let active = editor.active == Some(i);
             let line_alpha = if active { 1.0 } else { 0.5 };
             paint(

@@ -35,6 +35,9 @@ fn resolve_palette<const N: usize>(
 }
 
 macro_rules! visuals {
+    (@process loudness, $processor:expr, $block:expr) => { Some($processor.process_block($block)) };
+    (@process waveform, $processor:expr, $block:expr) => { Some($processor.process_block($block)) };
+    (@process $module:ident, $processor:expr, $block:expr) => { $processor.process_block($block) };
     (@sync_export none, $out:ident, $processor:ident) => {};
     (@sync_export config, $out:ident, $processor:ident) => {
         $out.sync_from_config(&$processor.config());
@@ -57,16 +60,14 @@ macro_rules! visuals {
         $proc.update_config(config)
     }};
     (@apply_palette spectrogram, $state:ident, $palette:ident) => {{
-        $state.set_stops(
-            &sanitize_stop_positions(
-                $palette.and_then(|palette| palette.stop_positions.as_deref()),
-                &palettes::spectrogram::DEFAULT_POSITIONS,
-            ),
-            &sanitize_stop_spreads(
-                $palette.and_then(|palette| palette.stop_spreads.as_deref()),
-                palettes::spectrogram::SIZE,
-            ),
-        );
+        $state.stop_positions.copy_from_slice(&sanitize_stop_positions(
+            $palette.and_then(|palette| palette.stop_positions.as_deref()),
+            &palettes::spectrogram::DEFAULT_POSITIONS,
+        ));
+        $state.stop_spreads.copy_from_slice(&sanitize_stop_spreads(
+            $palette.and_then(|palette| palette.stop_spreads.as_deref()),
+            palettes::spectrogram::SIZE,
+        ));
     }};
     (@apply_palette $module:ident, $state:ident, $palette:ident) => {};
     ($($variant:ident($default_width_basis:expr, $min_w:expr) =>
@@ -113,7 +114,7 @@ macro_rules! visuals {
                     $pre_ingest_body
                 })?
                 self.pending_audio |= signal;
-                if let Some(snap) = self.processor.process_block(block) {
+                if let Some(snap) = visuals!(@process $module, self.processor, block) {
                     self.state.borrow_mut().apply_snapshot(snap);
                     if !signal $(&& !self.processor.$buffered_signal())? {
                         self.pending_audio = false;
@@ -195,7 +196,7 @@ visuals! {
         settings_cfg::WaveformSettings;
         prepare(prepare);
         pre_ingest(p, s) {
-            let max_columns = s.borrow().view_columns().min(waveform::processor::MAX_COLUMN_CAPACITY);
+            let max_columns = s.borrow().view_columns();
             let mut cfg = p.config();
             if cfg.max_columns != max_columns {
                 cfg.max_columns = max_columns;
@@ -287,12 +288,14 @@ impl Entry {
     fn apply_settings(&mut self, settings: &ModuleSettings) {
         let enabled = settings.enabled.unwrap_or(self.enabled);
         self.module.apply(settings);
-        self.set_enabled(enabled);
+        self.enabled = enabled;
+        if enabled {
+            self.module.prepare();
+        }
     }
 
     fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
-        if enabled {
+        if !std::mem::replace(&mut self.enabled, enabled) && enabled {
             self.module.prepare();
         }
     }
@@ -328,7 +331,6 @@ impl VisualManager {
     }
     pub fn move_to(&mut self, kind: VisualKind, target: usize) {
         let current = self.position(kind);
-        let target = target.min(self.entries.len().saturating_sub(1));
         if current != target {
             let entry = self.entries.remove(current);
             self.entries.insert(target, entry);
@@ -420,9 +422,6 @@ impl VisualManager {
         }
     }
     pub fn ingest_samples(&mut self, samples: &[f32], format: AudioFormat) {
-        if samples.len() < format.channels {
-            return;
-        }
         if self
             .format_generation
             .is_some_and(|generation| generation != format.generation)

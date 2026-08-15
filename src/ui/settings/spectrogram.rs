@@ -25,9 +25,9 @@ settings_messages!(pane, settings, value {
     Window(WindowKind) => set(&mut settings.window, value);
     Scale(FrequencyScale) => set(&mut settings.frequency_scale, value);
     UseReassignment(bool) => set(&mut settings.use_reassignment, value);
-    FloorDb(f32) => set_f32(&mut settings.floor_db, value, FLOOR_RANGE);
-    TiltDb(f32) => set_f32(&mut settings.tilt_db, value, TILT_RANGE);
-    Rotation(f32) => set(&mut settings.rotation, ROTATION_RANGE.snap(value).round() as i8);
+    FloorDb(f32) => set_f32(&mut settings.floor_db, value);
+    TiltDb(f32) => set_f32(&mut settings.tilt_db, value);
+    Rotation(f32) => set(&mut settings.rotation, value.round() as i8);
     ZeroPadding(usize) => set(&mut settings.zero_padding_factor, value);
     PianoRoll(PianoRollOverlay) => set(&mut settings.piano_roll_overlay, value);
 });

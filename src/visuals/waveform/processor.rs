@@ -12,7 +12,6 @@ pub const MAX_COLUMN_CAPACITY: usize = 8_192;
 
 const DEFAULT_SCROLL_SPEED: f32 = 300.0;
 pub const DEFAULT_BAND_DB_FLOOR: f32 = -60.0;
-const MIN_RUNTIME_SCROLL_SPEED: f32 = 1.0;
 pub(super) const WAVEFORM_CHANNELS: [Channel; 4] =
     [Channel::Left, Channel::Right, Channel::Mid, Channel::Side];
 pub(super) const DERIVED_CHANNELS: usize = WAVEFORM_CHANNELS.len();
@@ -40,7 +39,7 @@ impl WaveformConfig {
     fn normalized(mut self) -> Self {
         self.sample_rate = sanitize_sample_rate(self.sample_rate);
         self.scroll_speed = crate::util::finite_positive(self.scroll_speed)
-            .map_or(DEFAULT_SCROLL_SPEED, |speed| speed.max(MIN_RUNTIME_SCROLL_SPEED));
+            .map_or(DEFAULT_SCROLL_SPEED, |speed| speed.max(1.0));
         self.max_columns = self.max_columns.clamp(1, MAX_COLUMN_CAPACITY);
         self.track_history &= self.analyze_bands;
         self
@@ -233,8 +232,8 @@ impl WaveformProcessor {
     }
 
     fn ingest_samples(&mut self, block: &AudioBlock<'_>) {
-        let step = (f64::from(self.config.scroll_speed) / f64::from(self.config.sample_rate))
-            .clamp(0.0, 1.0);
+        let step =
+            (f64::from(self.config.scroll_speed) / f64::from(self.config.sample_rate)).min(1.0);
         for stereo in block.stereo_frames() {
             let derived = derived_frame(stereo);
             let finite = derived.map(f32::is_finite);
@@ -293,14 +292,14 @@ impl WaveformProcessor {
     }
 
     fn preview(&self) -> WaveformPreview {
-        let progress = self.column_phase.clamp(0.0, 1.0) as f32;
+        let progress = self.column_phase as f32;
         WaveformPreview {
             progress,
             columns: (progress > 0.0).then(|| std::array::from_fn(|ch| self.column_for(ch))),
         }
     }
 
-    pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<WaveformUpdate<'_>> {
+    pub fn process_block(&mut self, block: &AudioBlock<'_>) -> WaveformUpdate<'_> {
         self.pending_columns.clear();
 
         let (channels, sample_rate) = (block.channels, block.sample_rate);
@@ -319,11 +318,11 @@ impl WaveformProcessor {
         self.cap_pending_columns();
         let reset = std::mem::take(&mut self.reset_pending);
         let preview = self.preview();
-        Some(WaveformUpdate {
+        WaveformUpdate {
             reset,
             columns: &self.pending_columns,
             preview,
-        })
+        }
     }
 
     pub fn update_config(&mut self, config: WaveformConfig) {
@@ -366,9 +365,7 @@ mod tests {
         samples: &[f32],
         channels: usize,
     ) -> WaveformUpdate<'a> {
-        processor
-            .process_block(&AudioBlock::new(samples, channels, RATE))
-            .expect("expected update")
+        processor.process_block(&AudioBlock::new(samples, channels, RATE))
     }
 
     fn column(update: &WaveformUpdate, channel: usize, col: usize) -> WaveColumn {
@@ -536,7 +533,7 @@ mod tests {
             ..Default::default()
         });
         let samples = vec![0.0; 10_000];
-        let update = processor.process_block(&AudioBlock::new(&samples, 1, 1_000.0)).unwrap();
+        let update = processor.process_block(&AudioBlock::new(&samples, 1, 1_000.0));
 
         assert!((update.columns.len() as isize - 3330).abs() <= 1);
         assert!(

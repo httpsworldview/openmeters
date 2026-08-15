@@ -139,7 +139,7 @@ use crate::persistence::settings::{
     BUILTIN_THEME, ModuleSettings, PaletteSettings, SettingsConfig, SettingsHandle,
 };
 use crate::ui::theme::Palette;
-use crate::ui::widgets::{SliderRange, palette_editor::PaletteEditor};
+use crate::ui::widgets::palette_editor::PaletteEditor;
 use crate::visuals::registry::{VisualKind, VisualManagerHandle};
 use iced::{Color, Element};
 
@@ -155,8 +155,7 @@ fn set<T: PartialEq>(target: &mut T, value: T) -> bool {
 }
 
 // Compare bits to avoid spurious writes for identical NaN payloads.
-fn set_f32(target: &mut f32, value: f32, range: SliderRange) -> bool {
-    let value = range.snap(value);
+fn set_f32(target: &mut f32, value: f32) -> bool {
     if target.to_bits() == value.to_bits() {
         return false;
     }
@@ -164,20 +163,11 @@ fn set_f32(target: &mut f32, value: f32, range: SliderRange) -> bool {
     true
 }
 
-fn set_usize(target: &mut usize, value: f32, range: SliderRange) -> bool {
-    debug_assert!(
-        [range.min, range.max, range.step]
-            .into_iter()
-            .all(|value| value.fract().abs() <= f32::EPSILON),
-        "set_usize expects integral slider bounds"
-    );
-    set(target, range.snap(value).round() as usize)
+fn set_usize(target: &mut usize, value: f32) -> bool {
+    set(target, value.round() as usize)
 }
 
 fn get_closest_hop_divisor(fft_size: usize, hop_size: usize) -> usize {
-    if fft_size == 0 || hop_size == 0 {
-        return 8;
-    }
     let ratio = fft_size as f32 / hop_size as f32;
     HOP_DIVISORS
         .into_iter()
@@ -186,7 +176,7 @@ fn get_closest_hop_divisor(fft_size: usize, hop_size: usize) -> usize {
                 .abs()
                 .total_cmp(&(ratio - right as f32).abs())
         })
-        .unwrap_or(8)
+        .unwrap()
 }
 
 // Preserve the hop:fft ratio when fft_size changes.
@@ -195,12 +185,12 @@ fn update_fft_size(fft_size: &mut usize, hop_size: &mut usize, new_size: usize) 
     if !set(fft_size, new_size) {
         return false;
     }
-    *hop_size = (new_size / hop_divisor).max(1);
+    *hop_size = new_size / hop_divisor;
     true
 }
 
 fn update_hop_divisor(fft_size: usize, hop_size: &mut usize, divisor: usize) -> bool {
-    set(hop_size, (fft_size / divisor.max(1)).max(1))
+    set(hop_size, (fft_size / divisor).max(1))
 }
 
 settings_modules! {

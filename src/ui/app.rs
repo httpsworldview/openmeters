@@ -116,6 +116,7 @@ struct UiApp {
     use_layershell: bool,
     settings_window: Option<(window::Id, ActiveSettings)>,
     settings_scroll: ScrollGlow,
+    // at most one popout exists for each VisualKind
     popout_windows: HashMap<window::Id, PopoutWindow>,
     exit_warning_until: Option<Instant>,
 }

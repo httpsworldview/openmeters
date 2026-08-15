@@ -30,14 +30,6 @@ impl SliderRange {
     pub(super) const fn new(min: f32, max: f32, step: f32) -> Self {
         Self { min, max, step }
     }
-
-    pub(super) fn snap(self, value: f32) -> f32 {
-        debug_assert!(self.step > 0.0, "SliderRange::snap expects a positive step");
-        if self.step <= 0.0 {
-            return value.clamp(self.min, self.max);
-        }
-        (self.min + ((value - self.min) / self.step).round() * self.step).clamp(self.min, self.max)
-    }
 }
 
 pub(super) fn fill<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Container<'a, M> {

@@ -60,16 +60,14 @@ settings_messages!(pane, settings, value {
     Weighting(WeightingMode) => set(&mut settings.weighting_mode, value);
     SecondaryWeighting(WeightingMode) => set(&mut settings.secondary_weighting_mode, value);
     Averaging(AvgMode) => pane.update_avg(|average| set(&mut average.mode, value));
-    AvgFactor(f32) => pane.update_avg(|average| set_f32(&mut average.factor, value, EXP_R));
-    PeakDecay(f32) => pane.update_avg(|average| {
-        set_f32(&mut average.peak_decay, value, DECAY_R)
-    });
+    AvgFactor(f32) => pane.update_avg(|average| set_f32(&mut average.factor, value));
+    PeakDecay(f32) => pane.update_avg(|average| set_f32(&mut average.peak_decay, value));
     ShowGrid(bool) => set(&mut settings.show_grid, value);
     ShowPeakLabel(bool) => set(&mut settings.show_peak_label, value);
-    FloorDb(f32) => set_f32(&mut settings.floor_db, value, FLOOR_R);
-    BarCount(f32) => set_usize(&mut settings.bar_count, value, BARS_R);
-    BarGap(f32) => set_f32(&mut settings.bar_gap, value, GAP_R);
-    Highlight(f32) => set_f32(&mut settings.highlight_threshold, value, HIGH_R);
+    FloorDb(f32) => set_f32(&mut settings.floor_db, value);
+    BarCount(f32) => set_usize(&mut settings.bar_count, value);
+    BarGap(f32) => set_f32(&mut settings.bar_gap, value);
+    Highlight(f32) => set_f32(&mut settings.highlight_threshold, value);
 });
 
 settings_view! {

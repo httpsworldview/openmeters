@@ -148,11 +148,10 @@ impl SettingsHandle {
     pub fn borrow(&self) -> Ref<'_, SettingsManager> {
         self.0.borrow()
     }
-    pub fn update<F: FnOnce(&mut SettingsManager) -> R, R>(&self, mutate: F) -> R {
+    pub fn update(&self, mutate: impl FnOnce(&mut SettingsManager)) {
         let mut manager = self.0.borrow_mut();
-        let result = mutate(&mut manager);
+        mutate(&mut manager);
         schedule_persist(manager.path.clone(), manager.data.clone());
-        result
     }
 
     pub fn flush() {

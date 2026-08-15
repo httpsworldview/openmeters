@@ -48,8 +48,7 @@ impl PaletteSettings {
     pub fn if_differs_from(colors: &[Color], defaults: &[Color]) -> Option<Self> {
         color_stops_if_differ(colors, defaults).map(|stops| Self {
             stops,
-            stop_positions: None,
-            stop_spreads: None,
+            ..Default::default()
         })
     }
 
@@ -61,7 +60,6 @@ impl PaletteSettings {
         spreads: &[f32],
     ) -> Option<Self> {
         let count = defaults.len();
-        debug_assert_eq!(positions.len(), default_positions.len());
         let stops = color_stops_if_differ(colors, defaults);
         let positions_differ = positions
             .iter()

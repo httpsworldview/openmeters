@@ -45,8 +45,8 @@ impl fmt::Display for TriggerSourceChoice {
 }
 
 settings_messages!(pane, settings, value {
-    SegmentDuration(f32) => set_f32(&mut settings.segment_duration, value, DURATION_RANGE);
-    Persistence(f32) => set_f32(&mut settings.persistence, value, PERSISTENCE_RANGE);
+    SegmentDuration(f32) => set_f32(&mut settings.segment_duration, value);
+    Persistence(f32) => set_f32(&mut settings.persistence, value);
     Preset(TriggerPreset) => {
         let mode = match value {
             TriggerPreset::Stable => TriggerMode::Stable { num_cycles: pane.num_cycles },
@@ -56,9 +56,8 @@ settings_messages!(pane, settings, value {
     };
     NumCycles(usize) => match settings.trigger_mode {
         TriggerMode::Stable { .. } => {
-            let cycles = value.clamp(CYCLES_RANGE.min as usize, CYCLES_RANGE.max as usize);
-            pane.num_cycles = cycles;
-            set(&mut settings.trigger_mode, TriggerMode::Stable { num_cycles: cycles })
+            pane.num_cycles = value;
+            set(&mut settings.trigger_mode, TriggerMode::Stable { num_cycles: value })
         }
         TriggerMode::ZeroCrossing => false,
     };

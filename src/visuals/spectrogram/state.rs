@@ -82,12 +82,8 @@ crate::macros::default_struct! {
 impl SpectrogramHistory {
     fn apply_update(&mut self, snap: SpectrogramUpdate) {
         let ppc = snap.fft_size / 2 + 1;
-        let new_kind = snap
-            .new_columns
-            .first()
-            .map_or(self.col_kind, SpectrogramColumn::kind);
+        let new_kind = snap.new_columns[0].kind();
         let capacity = history_columns(new_kind, ppc as u32, snap.history_length) as u32;
-        if capacity == 0 { return; }
 
         if snap.reset {
             *self = Self {
@@ -127,10 +123,8 @@ impl SpectrogramHistory {
                 0
             };
             let slot = self.write_slot;
-            if let SpectrogramColumn::Reassigned(points) = &column
-                && let Some(count) = Arc::make_mut(&mut self.slot_counts).get_mut(slot as usize)
-            {
-                *count = points.len() as u32;
+            if let SpectrogramColumn::Reassigned(points) = &column {
+                Arc::make_mut(&mut self.slot_counts)[slot as usize] = points.len() as u32;
             }
             if self.pending.len() as u32 >= self.ring_capacity { self.pending.pop_front(); }
             self.pending.push_back(column);
@@ -142,7 +136,7 @@ impl SpectrogramHistory {
 
     fn ensure_pending_copy(&mut self) {
         if self.pending_copy.is_none() && self.col_count as usize > self.pending.len() {
-            self.pending_copy = Some((0..self.col_count.min(self.ring_capacity)).collect());
+            self.pending_copy = Some((0..self.col_count).collect());
         }
     }
 
@@ -237,12 +231,6 @@ impl SpectrogramState {
     }
 
     crate::visuals::palette_setter!(SPECTROGRAM_PALETTE_SIZE);
-
-    pub fn set_stops(&mut self, positions: &[f32], spreads: &[f32]) {
-        if let (Ok(positions), Ok(spreads)) = (positions.try_into(), spreads.try_into()) {
-            (self.stop_positions, self.stop_spreads) = (positions, spreads);
-        }
-    }
 
     pub fn update_view_settings(&mut self, settings: &SpectrogramSettings) {
         self.settings = settings.clone();
@@ -368,7 +356,6 @@ impl SpectrogramState {
 }
 
 const MIN_ZOOM: f32 = 1.0;
-const MAX_ZOOM: f32 = f32::MAX;
 const ZOOM_STEP: f32 = 1.15;
 
 #[derive(Default)]
@@ -391,7 +378,7 @@ impl SpectrogramState {
             (self.pan - 0.5 / self.zoom).clamp(0.0, 1.0),
         );
         let cursor_uv = old_min + y_norm * 2.0 * old_h;
-        self.zoom = (self.zoom * factor).clamp(MIN_ZOOM, MAX_ZOOM);
+        self.zoom = (self.zoom * factor).clamp(MIN_ZOOM, f32::MAX);
         let new_h = 0.5 / self.zoom;
         self.pan = (cursor_uv - new_h * (2.0 * y_norm - 1.0)).clamp(new_h, 1.0 - new_h);
     }

@@ -214,7 +214,7 @@ impl SpectrogramProcessor {
     }
 
     fn hilbert_len_for(window_size: usize) -> usize {
-        (window_size * 2).next_power_of_two().max(2)
+        (window_size * 2).next_power_of_two()
     }
 
     fn rebuild_fft(&mut self) {
@@ -272,14 +272,13 @@ impl SpectrogramProcessor {
     fn process_ready_windows(&mut self) -> Vec<SpectrogramColumn> {
         let window_size = self.config.fft_size;
         let (hop_size, sample_rate) = (self.config.hop_size, self.config.sample_rate);
-        let reassignment_enabled = self.config.use_reassignment;
         let bin_count = self.fft_size / 2 + 1;
-
-        let (read_len, center_offset) = if reassignment_enabled {
-            let hilbert_len = Self::hilbert_len_for(window_size);
-            (hilbert_len, (hilbert_len - window_size) / 2)
-        } else {
-            (window_size, 0)
+        let (kind, read_len, center_offset) = match self.transforms.as_ref().expect("spectrogram FFT prepared") {
+            Transforms::Reassigned(_) => {
+                let len = Self::hilbert_len_for(window_size);
+                (ColumnKind::Reassigned, len, (len - window_size) / 2)
+            }
+            Transforms::Classic(_) => (ColumnKind::Classic, window_size, 0),
         };
 
         let pending = self.audio_buffer.len();
@@ -288,7 +287,6 @@ impl SpectrogramProcessor {
         } else {
             0
         };
-        let kind = if self.config.use_reassignment { ColumnKind::Reassigned } else { ColumnKind::Classic };
         let retained = history_columns(kind, bin_count as u32, self.config.history_length);
         let skip = ready.saturating_sub(retained);
         let mut output = Vec::with_capacity(ready.min(retained));
@@ -296,75 +294,73 @@ impl SpectrogramProcessor {
 
         for _ in skip..ready {
             if self.audio_last_nonzero.is_none() {
-                let col = if reassignment_enabled {
-                    SpectrogramColumn::Reassigned(Vec::new())
-                } else {
-                    SpectrogramColumn::Classic(vec![pack_classic_db(DB_FLOOR); bin_count])
-                };
-                output.push(col);
+                output.push(match kind {
+                    ColumnKind::Reassigned => SpectrogramColumn::Reassigned(Vec::new()),
+                    ColumnKind::Classic => {
+                        SpectrogramColumn::Classic(vec![pack_classic_db(DB_FLOOR); bin_count])
+                    }
+                });
                 self.advance_audio(hop_size);
                 continue;
             }
 
-            let col = if reassignment_enabled {
-                let Some(Transforms::Reassigned(transforms)) = &self.transforms else {
-                    unreachable!("reassignment transforms")
-                };
-                let [analysis, hilbert_forward, hilbert_inverse] = transforms;
-                for (dst, &sample) in self.complex.iter_mut().zip(&self.audio_buffer) {
-                    *dst = Complex32::new(sample, 0.0);
+            let col = match self.transforms.as_ref().expect("spectrogram FFT prepared") {
+                Transforms::Reassigned(transforms) => {
+                    let [analysis, hilbert_forward, hilbert_inverse] = transforms;
+                    for (dst, &sample) in self.complex.iter_mut().zip(&self.audio_buffer) {
+                        *dst = Complex32::new(sample, 0.0);
+                    }
+                    // Use an analytic signal so low-frequency bins are not polluted
+                    // by the negative-frequency mirror of the windowed real signal.
+                    hilbert_transform(
+                        &mut self.complex,
+                        &**hilbert_forward,
+                        &**hilbert_inverse,
+                        &mut self.scratch,
+                    );
+                    let analytic = &self.complex[center_offset..center_offset + window_size];
+                    let fft = &**analysis;
+                    let r = &mut self.reassign;
+                    let (base, auxiliary) = r.spectra.split_at_mut(self.fft_size);
+                    let (derivative, time_weighted) = auxiliary.split_at_mut(self.fft_size);
+                    apply_complex_window(analytic, &self.window, base);
+                    apply_complex_window(analytic, &r.derivative_window, derivative);
+                    apply_complex_window(analytic, &r.time_weighted_window, time_weighted);
+                    fft.process_with_scratch(&mut r.spectra, &mut self.scratch);
+                    SpectrogramColumn::Reassigned(self.reassigned_points(
+                        sample_rate,
+                        hop_size,
+                        center_offset,
+                        bin_count,
+                    ))
                 }
-                // Use an analytic signal so low-frequency bins are not polluted
-                // by the negative-frequency mirror of the windowed real signal.
-                hilbert_transform(
-                    &mut self.complex,
-                    &**hilbert_forward,
-                    &**hilbert_inverse,
-                    &mut self.scratch,
-                );
-                let analytic = &self.complex[center_offset..center_offset + window_size];
-                let fft = &**analysis;
-                let r = &mut self.reassign;
-                let (base, auxiliary) = r.spectra.split_at_mut(self.fft_size);
-                let (derivative, time_weighted) = auxiliary.split_at_mut(self.fft_size);
-                apply_complex_window(analytic, &self.window, base);
-                apply_complex_window(analytic, &r.derivative_window, derivative);
-                apply_complex_window(analytic, &r.time_weighted_window, time_weighted);
-                fft.process_with_scratch(&mut r.spectra, &mut self.scratch);
-                SpectrogramColumn::Reassigned(self.reassigned_points(
-                    sample_rate,
-                    hop_size,
-                    center_offset,
-                    bin_count,
-                ))
-            } else {
-                copy_dc_removed_windowed_from_deque(
-                    &mut self.real[..window_size],
-                    &self.audio_buffer,
-                    &self.window,
-                );
-                self.real[window_size..].fill(0.0);
-                let Some(Transforms::Classic(fft)) = &self.transforms else {
-                    unreachable!("classic transform")
-                };
-                fft.process_with_scratch(
-                    &mut self.real,
-                    &mut self.complex,
-                    &mut self.scratch,
-                )
-                .expect("internally sized spectrogram FFT buffers");
-                SpectrogramColumn::Classic(
-                    self.complex
-                        .iter()
-                        .zip(&self.bin_norm)
-                        .map(|(complex, &normalization)| {
-                            pack_classic_db(power_to_db(
-                                (complex.re * complex.re + complex.im * complex.im) * normalization,
-                                DB_FLOOR,
-                            ))
-                        })
-                        .collect(),
-                )
+                Transforms::Classic(fft) => {
+                    copy_dc_removed_windowed_from_deque(
+                        &mut self.real[..window_size],
+                        &self.audio_buffer,
+                        &self.window,
+                    );
+                    self.real[window_size..].fill(0.0);
+                    fft.process_with_scratch(
+                        &mut self.real,
+                        &mut self.complex,
+                        &mut self.scratch,
+                    )
+                    .expect("internally sized spectrogram FFT buffers");
+                    SpectrogramColumn::Classic(
+                        self.complex
+                            .iter()
+                            .zip(&self.bin_norm)
+                            .map(|(complex, &normalization)| {
+                                pack_classic_db(power_to_db(
+                                    (complex.re * complex.re + complex.im * complex.im)
+                                        * normalization,
+                                    DB_FLOOR,
+                                ))
+                            })
+                            .collect(),
+                    )
+                }
             };
 
             output.push(col);
@@ -585,7 +581,7 @@ fn compute_derivative_spectral(planner: &mut FftPlanner<f32>, window: &[f32]) ->
 }
 
 fn compute_time_weighted(window: &[f32]) -> Vec<f32> {
-    let center = (window.len().saturating_sub(1)) as f32 * 0.5;
+    let center = (window.len() - 1) as f32 * 0.5;
     window
         .iter()
         .enumerate()

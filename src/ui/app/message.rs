@@ -96,39 +96,30 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
                 ConfigMessage::DecorationsToggled(enabled) => app.recreate_windows(*enabled),
                 _ => Task::none(),
             };
-            let restore_popout = match &config_msg {
-                ConfigMessage::VisualToggled {
-                    kind,
-                    enabled: true,
-                } => Some(*kind),
+            let toggled = match &config_msg {
+                ConfigMessage::VisualToggled { kind, enabled } => Some((*kind, *enabled)),
                 _ => None,
             };
             let bar_task = app.handle_bar_config_message(&config_msg);
             let theme_changed = matches!(&config_msg, ConfigMessage::ThemeChanged(_));
-            let topology_changed = matches!(&config_msg, ConfigMessage::VisualToggled { .. });
-            let frame_rate = match &config_msg {
-                ConfigMessage::VisualFrameRateChanged(rate) => Some(*rate),
-                _ => None,
-            };
-            app.config_page.update(config_msg);
-            if let Some(rate) = frame_rate {
-                app.frames.borrow_mut().set_rate(rate);
+            if let ConfigMessage::VisualFrameRateChanged(rate) = &config_msg {
+                app.frames.borrow_mut().set_rate(*rate);
             }
-            if topology_changed {
+            app.config_page.update(config_msg);
+            let topology_task = toggled.map_or_else(Task::none, |(kind, enabled)| {
                 let active = app.visuals_active();
                 app.frames.borrow_mut().set_active(active);
+                let restore = if enabled {
+                    app.restore_popout_window(kind)
+                } else {
+                    Task::none()
+                };
+                Task::batch([restore, app.sync_all_windows()])
+            });
+            if theme_changed && let Some((_, panel)) = app.settings_window.as_mut() {
+                *panel = super::ActiveSettings::new(panel.kind(), &app.visual_manager);
             }
-            if theme_changed {
-                app.refresh_settings_panel();
-            }
-            let restore_task =
-                restore_popout.map_or_else(Task::none, |kind| app.restore_popout_window(kind));
-            let topology_task = if topology_changed {
-                app.sync_all_windows()
-            } else {
-                Task::none()
-            };
-            Task::batch([decoration_task, bar_task, restore_task, topology_task])
+            Task::batch([decoration_task, bar_task, topology_task])
         }
         Message::Visuals(VisualsMessage::SettingsRequested(kind)) => {
             app.open_settings_window(kind, false)

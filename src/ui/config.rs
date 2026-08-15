@@ -176,12 +176,12 @@ impl ConfigPage {
             }
             ConfigMessage::BgPalette(event) => {
                 if self.bg_palette.update(event) {
-                    let color = self.bg_palette.colors().first().copied();
+                    let color = self.bg_palette.colors()[0];
                     self.settings.update(|s| {
-                        s.data.background_color = color.map(Into::into);
-                        s.update_active_theme(|theme| theme.background = color.map(Into::into));
+                        s.data.background_color = Some(color.into());
+                        s.update_active_theme(|theme| theme.background = Some(color.into()));
                     });
-                    self.window_themes = theme::window_themes(color);
+                    self.window_themes = theme::window_themes(Some(color));
                     self.refresh_theme_choices_if_needed();
                 }
             }

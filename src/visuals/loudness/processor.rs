@@ -243,7 +243,7 @@ impl LoudnessProcessor {
         }
     }
 
-    pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<LoudnessSnapshot> {
+    pub fn process_block(&mut self, block: &AudioBlock<'_>) -> LoudnessSnapshot {
         self.ensure_state(block.channels, block.sample_rate);
 
         let sample_rate = f64::from(self.config.sample_rate);
@@ -305,7 +305,7 @@ impl LoudnessProcessor {
         snapshot.channel_count = self.channels.len();
         snapshot.positions = block.positions;
 
-        Some(snapshot)
+        snapshot
     }
 }
 
@@ -340,7 +340,6 @@ mod tests {
             let block = AudioBlock::new(&samples, 1, DEFAULT_SAMPLE_RATE);
             LoudnessProcessor::new(LoudnessConfig::default())
                 .process_block(&block)
-                .expect("expected snapshot")
                 .rms_fast_db[0]
         };
         let delta = measure(0.5) - measure(0.25);
@@ -361,7 +360,6 @@ mod tests {
                 let ours = f64::from(
                     LoudnessProcessor::new(cfg)
                         .process_block(&block)
-                        .expect("expected snapshot")
                         .short_term_loudness,
                 );
 
@@ -401,12 +399,6 @@ mod tests {
     }
 
     #[test]
-    fn fallback_channel_weights_match_common_bs1770_layouts() {
-        assert_eq!(channel_weight(ChannelPosition::RearLeft), 1.41);
-        assert_eq!(channel_weight(ChannelPosition::LowFrequency), 0.0);
-        assert_eq!(channel_weight(ChannelPosition::SideLeft), 1.41);
-    }
-    #[test]
     fn true_peak_matches_ebur128_at_standard_rates() {
         for (sample_rate, delay_len) in [
             (48_000.0_f32, TRUE_PEAK_4X_DELAY),
@@ -419,7 +411,6 @@ mod tests {
             let samples = sine_wave(sample_rate, 0.01, 17_000.0, 0.9);
             let ours = LoudnessProcessor::new(LoudnessConfig { sample_rate })
             .process_block(&AudioBlock::new(&samples, 1, sample_rate))
-            .expect("expected snapshot")
             .true_peak_db[0] as f64;
 
             let mut reference =

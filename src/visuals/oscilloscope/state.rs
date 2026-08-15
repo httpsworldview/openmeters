@@ -50,12 +50,10 @@ impl OscilloscopeState {
 
     pub fn apply_snapshot(&mut self, snapshot: OscilloscopeSnapshot) {
         self.geometry.invalidate();
-        if !snapshot.samples.is_empty()
-            && !self.snapshot.samples.is_empty()
+        if !self.snapshot.samples.is_empty()
             && snapshot.epoch == self.snapshot.epoch
             && snapshot.channels == self.snapshot.channels
             && snapshot.samples_per_channel == self.snapshot.samples_per_channel
-            && snapshot.samples.len() == self.snapshot.samples.len()
             && snapshot.slots[..snapshot.channels] == self.snapshot.slots[..self.snapshot.channels]
         {
             let persistence = self.settings.persistence.clamp(0.0, MAX_PERSISTENCE);

@@ -316,7 +316,7 @@ pub fn decimate_finite_ordered_line_in_place(pts: &mut Vec<(f32, f32)>, max_poin
         return;
     }
 
-    let Some(&last) = pts.last() else { return };
+    let last = pts[pts.len() - 1];
     let (x0, width) = (pts[0].0, last.0 - pts[0].0);
     let bucketed = crate::util::finite_positive(width).is_some();
     let buckets = if bucketed {

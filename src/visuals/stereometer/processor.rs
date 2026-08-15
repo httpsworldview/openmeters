@@ -162,16 +162,18 @@ impl StereometerProcessor {
                 if band == FULL_BAND {
                     buf.extend_from_slice(data);
                 } else {
-                    buf.extend(data.iter().map(|&(l, r)| (l * BAND_DISPLAY_GAIN, r * BAND_DISPLAY_GAIN)));
+                    buf.extend(data.iter().map(|&(left, right)| {
+                        (left * BAND_DISPLAY_GAIN, right * BAND_DISPLAY_GAIN)
+                    }));
                 }
                 continue;
             }
+            let points = (0..target).map(|i| data[i * frames / target]);
             if band == FULL_BAND {
-                buf.extend((0..target).map(|i| data[i * frames / target]));
+                buf.extend(points);
             } else {
-                buf.extend((0..target).map(|i| {
-                    let point = data[i * frames / target];
-                    (point.0 * BAND_DISPLAY_GAIN, point.1 * BAND_DISPLAY_GAIN)
+                buf.extend(points.map(|(left, right)| {
+                    (left * BAND_DISPLAY_GAIN, right * BAND_DISPLAY_GAIN)
                 }));
             }
         }
@@ -197,16 +199,15 @@ impl StereometerProcessor {
 
         if sample_rate_changed {
             *self = Self::new(self.config);
-        } else {
-            if window_changed {
-                self.correlation_alpha = ema_alpha(config.sample_rate, config.correlation_window);
-            }
-            if band_analysis_changed {
-                self.band_splitter = BandSplitter::new(config.sample_rate, BAND_SPLITS_HZ);
-                self.correlators[1..].fill(Correlator::default());
-            }
+            return;
         }
-
+        if window_changed {
+            self.correlation_alpha = ema_alpha(config.sample_rate, config.correlation_window);
+        }
+        if band_analysis_changed {
+            self.band_splitter = BandSplitter::new(config.sample_rate, BAND_SPLITS_HZ);
+            self.correlators[1..].fill(Correlator::default());
+        }
         if !config.emit_band_points {
             self.histories[1..].fill_with(VecDeque::new);
             self.snapshot[1..].fill_with(Vec::new);

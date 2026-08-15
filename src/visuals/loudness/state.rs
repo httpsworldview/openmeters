@@ -131,8 +131,7 @@ impl LoudnessState {
     crate::visuals::palette_setter!(PALETTE_SIZE => geometry);
 
     fn get_value(&self, mode: MeterMode, channel: usize) -> f32 {
-        let per_channel =
-            |buf: &[f32; MAX_CHANNELS]| buf.get(channel).copied().unwrap_or(DB_RANGE.0);
+        let per_channel = |buf: &[f32; MAX_CHANNELS]| buf[channel];
         match mode {
             MeterMode::LufsShortTerm => self.snapshot.short_term_loudness,
             MeterMode::LufsMomentary => self.snapshot.momentary_loudness,

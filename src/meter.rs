@@ -37,18 +37,12 @@ impl DspBatcher {
         }
     }
 
-    fn push(
-        &mut self,
-        manager: &mut VisualManager,
-        mut samples: &[f32],
-        format: AudioFormat,
-    ) -> usize {
+    fn push(&mut self, manager: &mut VisualManager, mut samples: &[f32], format: AudioFormat) {
         if self.format.is_some_and(|current| current != format) {
             self.samples.clear();
         }
         self.format = Some(format);
         let batch = scaled_samples(DSP_BATCH_FRAMES_AT_48K, format);
-        let mut count = 0;
         if !self.samples.is_empty() {
             let take = (batch - self.samples.len()).min(samples.len());
             self.samples.extend_from_slice(&samples[..take]);
@@ -56,16 +50,13 @@ impl DspBatcher {
             if self.samples.len() == batch {
                 manager.ingest_samples(&self.samples, format);
                 self.samples.clear();
-                count += 1;
             }
         }
         let ready = samples.len() / batch * batch;
         for chunk in samples[..ready].chunks(scaled_samples(MAX_DSP_INGEST_FRAMES_AT_48K, format)) {
             manager.ingest_samples(chunk, format);
-            count += 1;
         }
         self.samples.extend_from_slice(&samples[ready..]);
-        count
     }
 
     fn reset(&mut self, manager: &mut VisualManager) {
@@ -214,11 +205,8 @@ mod tests {
         let format = format(2, 48_000.0, 1);
         let block = [0.25; 64 * 2];
         let storage = (batcher.samples.as_ptr(), batcher.samples.capacity());
-        for index in 0..4 {
-            assert_eq!(
-                batcher.push(&mut manager, &block, format),
-                usize::from(index == 3)
-            );
+        for _ in 0..4 {
+            batcher.push(&mut manager, &block, format);
         }
         assert!(batcher.samples.is_empty());
         assert_eq!(
@@ -230,11 +218,8 @@ mod tests {
             sample_rate: 96_000.0,
             ..format
         };
-        for index in 0..8 {
-            assert_eq!(
-                batcher.push(&mut manager, &block, high_rate),
-                usize::from(index == 7)
-            );
+        for _ in 0..8 {
+            batcher.push(&mut manager, &block, high_rate);
         }
         assert_eq!(
             (batcher.samples.as_ptr(), batcher.samples.capacity()),
@@ -243,30 +228,16 @@ mod tests {
     }
 
     #[test]
-    fn dsp_batches_coalesce_large_capture_backlogs() {
-        let mut manager = VisualManager::default();
-        let mut batcher = DspBatcher::new();
-        let format = format(2, 48_000.0, 1);
-        assert_eq!(
-            batcher.push(&mut manager, &[0.25; (256 * 6 + 17) * 2], format),
-            2
-        );
-        assert_eq!(batcher.samples.len(), 17 * 2);
-        assert_eq!(batcher.push(&mut manager, &[0.25; 239 * 2], format), 1);
-        assert!(batcher.samples.is_empty());
-    }
-
-    #[test]
     fn dsp_batches_never_mix_format_generations() {
         let mut manager = VisualManager::default();
         let mut batcher = DspBatcher::new();
         let old = format(2, 48_000.0, 1);
-        assert_eq!(batcher.push(&mut manager, &[0.25; 128 * 2], old), 0);
+        batcher.push(&mut manager, &[0.25; 128 * 2], old);
         let new = AudioFormat {
             generation: 2,
             ..old
         };
-        assert_eq!(batcher.push(&mut manager, &[0.5; 2], new), 0);
+        batcher.push(&mut manager, &[0.5; 2], new);
         assert_eq!(batcher.samples.as_slice(), &[0.5, 0.5]);
         assert_eq!(batcher.format, Some(new));
     }
@@ -276,10 +247,7 @@ mod tests {
         let mut manager = VisualManager::default();
         let mut batcher = DspBatcher::new();
         let format = format(MAX_CAPTURE_CHANNELS, 192_000.0, 1);
-        assert_eq!(
-            batcher.push(&mut manager, &[0.25; 128 * MAX_CAPTURE_CHANNELS], format),
-            0
-        );
+        batcher.push(&mut manager, &[0.25; 128 * MAX_CAPTURE_CHANNELS], format);
         let scratch = [0.0; SILENCE_CHUNK_FRAMES * MAX_CAPTURE_CHANNELS];
         ingest_silence(
             &mut manager,

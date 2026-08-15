@@ -78,7 +78,7 @@ impl SpectrumState {
         self.style = settings.clone();
         self.style.floor_db = floor_db;
         let _ = self.peak.take_if(|_| !settings.show_peak_label);
-        self.invalidate_geometry();
+        self.geometry.invalidate();
     }
 
     crate::visuals::palette_setter!(PALETTE_SIZE => geometry);
@@ -87,7 +87,7 @@ impl SpectrumState {
         self.points.fill_with(|| Arc::clone(&EMPTY_POINTS));
         self.effective_range = None;
         self.peak = None;
-        self.invalidate_geometry();
+        self.geometry.invalidate();
     }
 
     pub fn apply_snapshot(&mut self, snap: &SpectrumSnapshot) {
@@ -131,10 +131,6 @@ impl SpectrumState {
             .and_then(|idx| self.build_peak(bins, trace_db(&snap.traces[idx], self.style.weighting_mode), min_f, max_f));
         self.effective_range = Some((min_f, max_f));
         self.fade_peak(pk);
-        self.invalidate_geometry();
-    }
-
-    fn invalidate_geometry(&mut self) {
         self.geometry.invalidate();
     }
 
@@ -149,8 +145,8 @@ impl SpectrumState {
             .chain(bins.iter().copied().filter(|&f| f > min_f && f < max_f))
             .chain([max_f])
         {
-            let x = scale.pos_of(min_f, max_f, f).clamp(0.0, 1.0);
-            self.x_cache.push(if x.is_finite() { x } else { 0.0 });
+            self.x_cache
+                .push(scale.pos_of(min_f, max_f, f).clamp(0.0, 1.0));
         }
         self.grid_ticks.clear();
         let exponents = min_f.max(1.0).log10().floor() as i32..=max_f.log10().ceil() as i32;
@@ -180,9 +176,8 @@ impl SpectrumState {
         max_f: f32,
     ) -> Option<PeakUpdate> {
         let bin = peak_bin(bins, db, min_f, max_f)?;
-        let (f, m) = interpolated_peak(bins, db, bin)?;
+        let (f, m) = interpolated_peak(bins, db, bin);
         let t = self.style.frequency_scale.pos_of(min_f, max_f, f);
-        if !t.is_finite() || !m.is_finite() { return None; }
         let x = if self.style.reverse_frequency { 1.0 - t } else { t }.clamp(0.0, 1.0);
         let y = ((m - self.style.floor_db) / (MAX_DB - self.style.floor_db).max(EPSILON))
             .clamp(0.0, 1.0);
@@ -331,23 +326,15 @@ fn value_at(bins: &[f32], mags: &[f32], f: f32) -> f32 {
 
 fn peak_bin(bins: &[f32], db: &[f32], min_f: f32, max_f: f32) -> Option<usize> {
     (bins.partition_point(|&f| f < min_f).max(1)
-        ..bins.partition_point(|&f| f <= max_f).min(bins.len().saturating_sub(1)))
+        ..bins.partition_point(|&f| f <= max_f).min(bins.len() - 1))
         .filter(|&i| db[i].is_finite())
         .max_by(|&a, &b| db[a].total_cmp(&db[b]))
 }
 
-fn interpolated_peak(bins: &[f32], db: &[f32], bin: usize) -> Option<(f32, f32)> {
-    let next = bin.checked_add(1)?;
-    if bins.len() != db.len() || bin == 0 || next >= bins.len() { return None; }
+fn interpolated_peak(bins: &[f32], db: &[f32], bin: usize) -> (f32, f32) {
+    let next = bin + 1;
     let bin_hz = bins[1] - bins[0];
     let (center_freq, center) = (bins[bin], db[bin]);
-    if crate::util::finite_positive(bin_hz).is_none()
-        || !center_freq.is_finite()
-        || !center.is_finite()
-    {
-        return None;
-    }
-
     let (left, right) = (db[bin - 1], db[next]);
     let offset = if left.is_finite() && right.is_finite() {
         let denom = left - 2.0 * center + right;
@@ -364,7 +351,7 @@ fn interpolated_peak(bins: &[f32], db: &[f32], bin: usize) -> Option<(f32, f32)>
     } else {
         (center - 0.25 * (left - right) * offset).max(center)
     };
-    Some(((center_freq + offset * bin_hz).max(0.0), level))
+    ((center_freq + offset * bin_hz).max(0.0), level)
 }
 
 #[cfg(test)]
