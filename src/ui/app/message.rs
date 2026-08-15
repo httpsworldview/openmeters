@@ -24,7 +24,8 @@ pub(super) enum Message {
     Tick,
     Watchdog(u64),
     AudioWake,
-    Shell(Box<ShellEvent>),
+    BarOutput(u32, Option<String>),
+    BarWindowOutput(window::Id, Option<String>),
     ToggleConfig,
     TogglePause,
     PopOutOrDock(window::Id),
@@ -44,6 +45,19 @@ pub(super) fn base_window_open(settings: IcedXdgWindowSettings) -> (window::Id, 
 
 pub(super) fn layershell_open(settings: NewLayerShellSettings) -> (window::Id, Task<Message>) {
     Message::layershell_open(settings)
+}
+
+pub(super) fn shell_event(event: ShellEvent) -> Option<Message> {
+    Some(match event {
+        ShellEvent::OutputAdded(output) | ShellEvent::OutputUpdated(output) => {
+            Message::BarOutput(output.id, output.name)
+        }
+        ShellEvent::OutputRemoved(output) => Message::BarOutput(output.id, None),
+        ShellEvent::WindowOutputChanged { window, output } => {
+            Message::BarWindowOutput(window, output.and_then(|output| output.name))
+        }
+        _ => return None,
+    })
 }
 
 pub(super) fn bar_drag_events(evt: Event, _: event::Status, _: window::Id) -> Option<Message> {
@@ -156,21 +170,13 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
             app.frames.borrow_mut().watchdog(generation, Instant::now());
             Task::none()
         }
-        Message::Shell(event) => {
-            match *event {
-                ShellEvent::OutputAdded(output) | ShellEvent::OutputUpdated(output) => {
-                    app.config_page.sync_bar_output(output.id, output.name);
-                }
-                ShellEvent::OutputRemoved(output) => {
-                    app.config_page.sync_bar_output(output.id, None)
-                }
-                ShellEvent::WindowOutputChanged { window, output }
-                    if app.main_window_is_layer && window == app.main_window_id =>
-                {
-                    app.config_page
-                        .sync_current_bar_output(output.and_then(|output| output.name))
-                }
-                _ => {}
+        Message::BarOutput(id, name) => {
+            app.config_page.sync_bar_output(id, name);
+            Task::none()
+        }
+        Message::BarWindowOutput(window, name) => {
+            if app.main_window_is_layer && window == app.main_window_id {
+                app.config_page.sync_current_bar_output(name);
             }
             Task::none()
         }

@@ -25,7 +25,7 @@ use iced::{
     window,
 };
 use iced_layershell::settings::{LayerShellSettings, Settings as LayerSettings, StartMode};
-use message::{Message, keyboard_shortcut, update, view};
+use message::{Message, keyboard_shortcut, shell_event, update, view};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -83,9 +83,7 @@ pub(crate) fn run(config: UiConfig) -> Result<(), Box<dyn std::error::Error + Se
         .subscription(move |app| {
             Subscription::batch([
                 app.subscription(),
-                shell_events
-                    .listen()
-                    .map(|event| Message::Shell(Box::new(event))),
+                shell_events.listen().filter_map(shell_event),
             ])
         })
         .title(|app, window_id| Some(app.title(window_id)))
