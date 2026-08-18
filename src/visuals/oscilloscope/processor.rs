@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Maika Namuo
 
 use crate::dsp::AudioBlock;
-use crate::util::audio::{Channel, DEFAULT_SAMPLE_RATE};
+use crate::util::audio::{Channel, DEFAULT_SAMPLE_RATE, mean_f32};
 use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex;
 use serde::{Deserialize, Serialize};
@@ -94,15 +94,16 @@ impl PeriodEstimator {
         if samples.len() < 3 { return None; }
 
         let (sum, min, max) = samples.iter().fold(
-            (0.0, f32::INFINITY, f32::NEG_INFINITY),
-            |(sum, min, max), &sample| (sum + sample, min.min(sample), max.max(sample)),
+            (0.0_f64, f32::INFINITY, f32::NEG_INFINITY),
+            |(sum, min, max), &x| (sum + f64::from(x), min.min(x), max.max(x)),
         );
-        let mean = sum / samples.len() as f32;
+        let mean = (sum / samples.len() as f64) as f32;
         self.last_peak = (min - mean).abs().max((max - mean).abs());
         if self.last_peak < PeriodEstimator::MIN_SIGNAL_PEAK { return None; }
 
         let min_period = (rate / PeriodEstimator::MAX_HZ).round().max(2.0) as usize;
-        let max_period = ((rate / PeriodEstimator::MIN_HZ).round() as usize).min(samples.len() / 2);
+        let max_period = (((rate / PeriodEstimator::MIN_HZ).ceil() as usize) + 1)
+            .min(samples.len() / 2 + 1);
         if max_period <= min_period + 1 { return None; }
         self.compute_periodicity(samples, mean, max_period);
 
@@ -399,7 +400,7 @@ impl StableTrigger {
     fn prepare(&mut self, data: &[f32], len: usize, period: f32) {
         self.retune_reference(len, period);
 
-        let mean = data.iter().sum::<f32>() / data.len() as f32;
+        let mean = mean_f32(data);
         self.mean += StableTrigger::MEAN_RESPONSIVENESS * (mean - self.mean);
         self.work.clear();
         self.work.extend(data.iter().map(|sample| sample - self.mean));
@@ -495,7 +496,7 @@ impl StableTrigger {
     }
 
     fn write_candidate(&mut self, segment: &[f32], period: f32) -> f32 {
-        let mean = segment.iter().sum::<f32>() / segment.len() as f32;
+        let mean = mean_f32(segment);
         self.candidate.resize(segment.len(), 0.0);
         let mut peak = 0.0_f32;
         for (dst, &sample) in self.candidate.iter_mut().zip(segment) {
@@ -939,6 +940,7 @@ mod tests {
         let mut estimator = PeriodEstimator::default();
         let long = (RATE * 0.1) as usize;
         for (freq, frames, max_error) in [
+            (20.0, long, 0.02),
             (41.0, long, 0.02),
             (110.0, long, 0.02),
             (440.0, long, 0.02),
@@ -972,6 +974,8 @@ mod tests {
         }
 
         assert!(estimator.estimate_period(&noise_samples(long), RATE).is_none());
+        assert!(estimator.estimate_period(&vec![-0.904_308; 76_800], 768_000.0).is_none());
+        assert_eq!(estimator.last_peak, 0.0);
     }
 
     #[test]

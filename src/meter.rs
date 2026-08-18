@@ -15,7 +15,8 @@ use std::time::Instant;
 const SILENCE_CHUNK_FRAMES: usize = 4_096;
 const DSP_BATCH_FRAMES_AT_48K: usize = 256;
 const MAX_DSP_INGEST_FRAMES_AT_48K: usize = 1_024;
-const MAX_SILENCE_SECONDS: u64 = 2;
+// Cover the three-second loudness window plus recursive filter settling.
+const MAX_SILENCE_SECONDS: u64 = 4;
 
 fn scaled_samples(frames_at_48k: usize, format: AudioFormat) -> usize {
     ((frames_at_48k as f64 * f64::from(format.sample_rate) / f64::from(DEFAULT_SAMPLE_RATE))
@@ -243,17 +244,20 @@ mod tests {
     }
 
     #[test]
-    fn long_silence_resets_without_replaying_samples() {
+    fn silence_preserves_loudness_history_before_the_hard_reset() {
         let mut manager = VisualManager::default();
         let mut batcher = DspBatcher::new();
-        let format = format(MAX_CAPTURE_CHANNELS, 192_000.0, 1);
-        batcher.push(&mut manager, &[0.25; 128 * MAX_CAPTURE_CHANNELS], format);
+        let format = format(1, 48_000.0, 1);
         let scratch = [0.0; SILENCE_CHUNK_FRAMES * MAX_CAPTURE_CHANNELS];
+        batcher.push(&mut manager, &[0.25; 128], format);
+
+        ingest_silence(&mut manager, &scratch, &mut batcher, 3 * 48_000 + 1, format);
+        assert_eq!(batcher.format, Some(format));
         ingest_silence(
             &mut manager,
             &scratch,
             &mut batcher,
-            MAX_SILENCE_SECONDS * 192_000 + 1,
+            MAX_SILENCE_SECONDS * 48_000 + 1,
             format,
         );
         assert!(batcher.samples.is_empty());

@@ -105,7 +105,7 @@ impl StereometerProcessor {
             self.update_config(config);
         }
         if self.history_channels != channel_count {
-            self.histories[FULL_BAND].clear();
+            self.reset_audio();
             self.history_channels = channel_count;
         }
 
@@ -168,7 +168,10 @@ impl StereometerProcessor {
                 }
                 continue;
             }
-            let points = (0..target).map(|i| data[i * frames / target]);
+            let scale = (frames - 1) as f64 / (target - 1).max(1) as f64;
+            let points = (0..target).map(|i| {
+                data[if target == 1 { frames - 1 } else { (i as f64 * scale).round() as usize }]
+            });
             if band == FULL_BAND {
                 buf.extend(points);
             } else {
@@ -192,8 +195,7 @@ impl StereometerProcessor {
     pub fn update_config(&mut self, mut config: StereometerConfig) {
         config.analyze_bands |= config.emit_band_points;
         let sample_rate_changed = self.config.sample_rate != config.sample_rate;
-        let window_changed =
-            (self.config.correlation_window - config.correlation_window).abs() > f32::EPSILON;
+        let window_changed = self.config.correlation_window != config.correlation_window;
         let band_analysis_changed = self.config.analyze_bands != config.analyze_bands;
         self.config = config;
 
@@ -225,9 +227,7 @@ mod tests {
 
     fn correlation(pairs: &[(f32, f32)]) -> f32 {
         let mut meter = Correlator::default();
-        for &(left, right) in pairs {
-            meter.update(left, right, 0.5);
-        }
+        pairs.iter().for_each(|&(left, right)| meter.update(left, right, 0.5));
         meter.value()
     }
 
@@ -238,25 +238,33 @@ mod tests {
     #[test]
     fn snapshot_downsampling_and_mode_transition_preserve_stereo_pairs() {
         let mut processor = StereometerProcessor::new(StereometerConfig {
-            sample_rate: 4.0,
             segment_duration: 1.0,
             target_sample_count: 2,
+            correlation_window: 1.0,
             ..Default::default()
         });
-        let samples = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+        let old_alpha = processor.correlation_alpha;
+        let mut config = processor.config();
+        config.correlation_window = f32::from_bits(config.correlation_window.to_bits() - 1);
+        processor.update_config(config);
+        assert_ne!(processor.correlation_alpha, old_alpha);
+
+        let samples = [1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0];
         let snapshot = processor
             .process_block(&AudioBlock::new(&samples, 2, 4.0))
             .unwrap();
-
-        assert_eq!(&*snapshot.points[FULL_BAND], &[(1.0, 2.0), (5.0, 6.0)]);
+        assert_eq!(&*snapshot.points[FULL_BAND], &[(1.0, -1.0), (-1.0, 1.0)]);
         processor.update_config(StereometerConfig { emit_band_points: true, ..processor.config() });
         let snapshot = processor
             .process_block(&AudioBlock::new(&samples, 2, 4.0))
             .unwrap();
-        assert_eq!(&*snapshot.points[FULL_BAND], &[(1.0, 2.0), (5.0, 6.0)]);
+        assert_eq!(&*snapshot.points[FULL_BAND], &[(1.0, -1.0), (-1.0, 1.0)]);
         processor.update_config(StereometerConfig { emit_band_points: false, ..processor.config() });
-        let snapshot = processor.process_block(&AudioBlock::new(&[9.0, 10.0], 2, 4.0)).unwrap();
-        assert_eq!(&*snapshot.points[FULL_BAND], &[(3.0, 4.0), (7.0, 8.0)]);
+        let snapshot = processor.process_block(&AudioBlock::new(&[1.0, -1.0], 2, 4.0)).unwrap();
+        assert_eq!(&*snapshot.points[FULL_BAND], &[(-1.0, 1.0), (1.0, -1.0)]);
+        assert_close(snapshot.correlations[FULL_BAND], -1.0);
+        let snapshot = processor.process_block(&AudioBlock::new(&[1.0; 4], 1, 4.0)).unwrap();
+        assert_close(snapshot.correlations[FULL_BAND], 1.0);
     }
 
     #[test]
@@ -264,10 +272,7 @@ mod tests {
         assert_close(correlation(&[(1.0, 1.0), (-1.0, -1.0)]), 1.0);
         assert_close(correlation(&[(1.0, -1.0), (-1.0, 1.0)]), -1.0);
         assert_close(correlation(&[(1.0, 0.25), (-1.0, -0.25)]), 1.0);
-        assert_close(
-            correlation(&[(1.0, 0.0), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0)]),
-            0.0,
-        );
+        assert_close(correlation(&[(1., 0.), (0., 1.), (-1., 0.), (0., -1.)]), 0.);
         assert_close(correlation(&[(0.0, 0.0)]), 0.0);
     }
 }

@@ -52,13 +52,18 @@ pub(crate) fn window_coefficients(kind: WindowKind, len: usize) -> Arc<[f32]> {
         .clone()
 }
 
+// Wide accumulation keeps long DC windows removable at the f32 noise floor.
+pub(crate) fn mean_f32(samples: &[f32]) -> f32 {
+    (samples.iter().map(|&sample| f64::from(sample)).sum::<f64>() / samples.len() as f64) as f32
+}
+
 pub fn copy_dc_removed_windowed_from_deque(dst: &mut [f32], src: &VecDeque<f32>, window: &[f32]) {
     let len = dst.len();
     let (head, tail) = src.as_slices();
     let split = head.len().min(len);
     dst[..split].copy_from_slice(&head[..split]);
     dst[split..].copy_from_slice(&tail[..len - split]);
-    let mean = dst.iter().sum::<f32>() / len as f32;
+    let mean = mean_f32(dst);
     for (sample, &weight) in dst.iter_mut().zip(window) {
         *sample = (*sample - mean) * weight;
     }
@@ -66,8 +71,8 @@ pub fn copy_dc_removed_windowed_from_deque(dst: &mut [f32], src: &VecDeque<f32>,
 
 pub fn compute_fft_bin_normalization(window: &[f32], fft_size: usize) -> Vec<f32> {
     let bins = fft_size / 2 + 1;
-    let inv_sum = window.iter().sum::<f32>().recip();
-    let dc_scale = inv_sum * inv_sum;
+    let sum: f64 = window.iter().map(|&weight| f64::from(weight)).sum();
+    let dc_scale = sum.recip().powi(2) as f32;
     let mut norms = vec![4.0 * dc_scale; bins];
     norms[0] = dc_scale;
     if fft_size.is_multiple_of(2) {
@@ -81,7 +86,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fft_windows_are_periodic() {
+    fn fft_window_math_is_precise_and_periodic() {
+        let samples = VecDeque::from(vec![0.1; 16_384]);
+        let mut output = vec![0.0; samples.len()];
+        copy_dc_removed_windowed_from_deque(&mut output, &samples, &vec![1.0; samples.len()]);
+        assert!(output.iter().all(|&sample| sample == 0.0));
         let hann = WindowKind::Hann.coefficients(8);
 
         assert_eq!(hann[0], 0.0);

@@ -138,10 +138,10 @@ pub(super) fn col_byte_stride(kind: ColumnKind, points: u32) -> u64 {
 }
 
 pub(super) fn history_columns(kind: ColumnKind, points: u32, requested: usize) -> usize {
-    requested.clamp(1, MAX_SPECTROGRAM_HISTORY_COLUMNS).min(
-        SPECTROGRAM_HISTORY_BYTE_BUDGET * (1 + usize::from(kind == ColumnKind::Reassigned))
-            / col_byte_stride(kind, points).max(1) as usize,
-    )
+    let affordable = SPECTROGRAM_HISTORY_BYTE_BUDGET
+        * (1 + usize::from(kind == ColumnKind::Reassigned))
+        / col_byte_stride(kind, points).max(1) as usize;
+    requested.clamp(1, MAX_SPECTROGRAM_HISTORY_COLUMNS).min(affordable.max(1))
 }
 
 pub struct SpectrogramUpdate {
@@ -580,8 +580,12 @@ fn compute_derivative_spectral(planner: &mut FftPlanner<f32>, window: &[f32]) ->
     buf.iter().map(|c| c.re * inv_n).collect()
 }
 
+// Reassignment is centered on coherent gain, not the geometric midpoint.
 fn compute_time_weighted(window: &[f32]) -> Vec<f32> {
-    let center = (window.len() - 1) as f32 * 0.5;
+    let (weighted, sum) = window.iter().enumerate().fold((0.0, 0.0), |(m, s), (i, &w)| {
+        (m + i as f64 * f64::from(w), s + f64::from(w))
+    });
+    let center = if sum == 0.0 { (window.len() - 1) as f32 * 0.5 } else { (weighted / sum) as f32 };
     window
         .iter()
         .enumerate()
@@ -756,7 +760,6 @@ mod tests {
     fn classic_retention_budget_uses_packed_column_width() {
         let points = (16_384 * 32 / 2 + 1) as u32;
         let packed_stride = points.div_ceil(2) as usize * std::mem::size_of::<u32>();
-
         assert_eq!(
             history_columns(
                 ColumnKind::Classic,
@@ -765,6 +768,7 @@ mod tests {
             ),
             SPECTROGRAM_HISTORY_BYTE_BUDGET / packed_stride
         );
+        assert_eq!(history_columns(ColumnKind::Classic, 100_000_000, 1), 1);
     }
 
     #[test]
@@ -821,7 +825,7 @@ mod tests {
                 peak.freq_hz
             );
             assert!(
-                (peak.time_offset - expected_time).abs() < 0.05,
+                (peak.time_offset - expected_time).abs() < 5.0e-4,
                 "time offset {:.4} vs expected {expected_time:.4}",
                 peak.time_offset
             );
@@ -873,8 +877,7 @@ mod tests {
         samples[center_offset + position] = 1.0;
         let update = process_samples(config, &samples);
         let points = reassigned_points(update.new_columns.last().unwrap());
-        let expected = (position as f32 - (config.fft_size - 1) as f32 * 0.5
-            - center_offset as f32)
+        let expected = (position as f32 - config.fft_size as f32 * 0.5 - center_offset as f32)
             / config.hop_size as f32;
 
         assert!(!points.is_empty());

@@ -20,7 +20,7 @@ pub use self::{
 };
 pub(crate) use self::{
     level::{flush_denormal_f32, flush_denormal_f64},
-    window::window_coefficients,
+    window::{mean_f32, window_coefficients},
 };
 
 pub const BAND_SPLITS_HZ: [f32; 2] = [200.0, 2000.0];

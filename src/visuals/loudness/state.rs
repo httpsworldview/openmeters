@@ -48,7 +48,7 @@ impl PeakHold {
     }
 
     fn update(&mut self, value: f32, now: Instant) {
-        if value > self.db {
+        if value >= self.db {
             self.db = value;
             self.decay_from = now + PEAK_HOLD;
         } else if now > self.decay_from {
@@ -421,16 +421,14 @@ mod tests {
     }
 
     #[test]
-    fn peak_hold_waits_before_decaying() {
-        let mut state = LoudnessState::new();
+    fn peak_hold_restarts_before_decaying() {
         let start = Instant::now();
-
-        for (input, elapsed, expected) in
-            [(-1.0, 0.0, -1.0), (-20.0, 1.0, -1.0), (-60.0, 2.5, -31.0)]
-        {
-            state.snapshot.true_peak_db[0] = input;
-            state.update_peak_holds(start + Duration::from_secs_f32(elapsed));
-            assert!((state.peaks[0].db - expected).abs() < 0.01);
-        }
+        let mut peak = PeakHold::new(DB_RANGE.0, start);
+        peak.update(-1.0, start);
+        peak.update(-1.0, start + Duration::from_secs(1));
+        peak.update(-60.0, start + Duration::from_secs(3));
+        assert_eq!(peak.db, -1.0);
+        peak.update(-60.0, start + Duration::from_secs_f32(3.5));
+        assert!((peak.db + 31.0).abs() < 0.01);
     }
 }

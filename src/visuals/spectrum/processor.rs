@@ -314,9 +314,7 @@ impl SpectrumProcessor {
             || old.secondary_source != config.secondary_source
         {
             self.reset_buffers();
-        } else if averaging_mode_changed
-            || (old.floor_db - config.floor_db).abs() > f32::EPSILON
-        {
+        } else if averaging_mode_changed || old.floor_db != config.floor_db {
             self.reset_level_buffers();
         }
     }
@@ -454,11 +452,14 @@ mod tests {
 
     #[test]
     fn floor_change_reseeds_state_buffers_without_clearing_pending_audio() {
-        let mut p = SpectrumProcessor::new(SpectrumConfig::default());
+        let mut p = SpectrumProcessor::new(SpectrumConfig {
+            floor_db: -1.0,
+            ..Default::default()
+        });
         p.prepare();
         p.pcm_buffers[0].extend([0.25, -0.25]);
         let mut cfg = p.config();
-        cfg.floor_db = -96.0;
+        cfg.floor_db = f32::from_bits(cfg.floor_db.to_bits() - 1);
 
         p.update_config(cfg);
 

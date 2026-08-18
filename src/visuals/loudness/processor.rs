@@ -65,9 +65,8 @@ fn mean_square_to_lufs(mean_square: f64, floor: f32) -> f32 {
     }
 }
 
-const fn window_length(sample_rate: f32, window_secs: f32) -> usize {
-    let len = sample_rate * window_secs;
-    if len < 1.0 { 1 } else { len as usize }
+fn window_length(sample_rate: f32, window_secs: f32) -> usize {
+    (sample_rate * window_secs).round().max(1.0) as usize
 }
 
 // The 49-tap interpolator has 48 nonzero taps; samples cover integer phases.
@@ -158,12 +157,7 @@ fn k_weighted(sample: f32, state: &mut [f64; 4], coefficients: &KWeighting) -> f
     y as f32
 }
 type ActiveChannel = (WindowedMeans<1, 4>, [f64; 4], TruePeakMeter);
-
-#[derive(Default)]
-struct ChannelState {
-    active: Option<ActiveChannel>,
-    silent_frames: usize,
-}
+type ChannelState = Option<ActiveChannel>;
 
 pub(super) const MAX_CHANNELS: usize = crate::dsp::MAX_AUDIO_CHANNELS;
 
@@ -227,7 +221,7 @@ impl LoudnessProcessor {
     }
 
     pub fn reset_audio(&mut self) {
-        self.channels.iter_mut().for_each(|channel| *channel = ChannelState::default());
+        self.channels.iter_mut().for_each(|channel| *channel = None);
     }
 
     fn ensure_state(&mut self, channels: usize, sample_rate: f32) {
@@ -239,7 +233,7 @@ impl LoudnessProcessor {
         }
 
         if rate_changed || self.channels.len() != channels {
-            self.channels = (0..channels).map(|_| ChannelState::default()).collect();
+            self.channels = (0..channels).map(|_| None).collect();
         }
     }
 
@@ -250,36 +244,28 @@ impl LoudnessProcessor {
         let weighting = &self.weighting;
         let firs = &*TRUE_PEAK_FIRS;
         let active_channels = block.stereo_channels.max(
-            self.channels.iter().rposition(|channel| channel.active.is_some()).map_or(0, |i| i + 1),
+            self.channels.iter().rposition(Option::is_some).map_or(0, |i| i + 1),
         );
         for frame in block.samples.chunks_exact(block.channels) {
             for (channel, &sample) in self.channels[..active_channels].iter_mut().zip(frame) {
-                if channel.active.is_none() {
-                    if sample.to_bits() == 0 {
-                        channel.silent_frames += 1;
-                        continue;
-                    }
+                if channel.is_none() {
+                    if sample == 0.0 { continue; }
                     let capacities =
                         DEFAULT_WINDOWS.map(|window| window_length(self.config.sample_rate, window));
-                    channel.active = Some((
-                        WindowedMeans::with_leading_zeros(capacities, channel.silent_frames),
+                    *channel = Some((
+                        WindowedMeans::with_leading_zeros(capacities, capacities[WIN_SHORT_TERM]),
                         [0.0; 4],
                         TruePeakMeter::new(sample_rate),
                     ));
                 }
-                let (windows, filter, true_peak) = channel.active.as_mut().unwrap();
+                let (windows, filter, true_peak) = channel.as_mut().unwrap();
                 let filtered = f64::from(k_weighted(sample, filter, weighting));
                 windows.push::<true>([filtered * filtered]);
                 true_peak.process(sample, firs);
             }
         }
-        for channel in &mut self.channels[active_channels..] {
-            channel.silent_frames += block.frame_count();
-        }
-        for channel in &mut self.channels {
-            if let Some((_, state, _)) = &mut channel.active {
-                state.iter_mut().for_each(flush_denormal_f64);
-            }
+        for (_, state, _) in self.channels.iter_mut().flatten() {
+            state.iter_mut().for_each(flush_denormal_f64);
         }
 
         let floor = DEFAULT_FLOOR_DB;
@@ -288,7 +274,7 @@ impl LoudnessProcessor {
         let mut weighted_momentary = 0.0;
 
         for (channel_index, channel_state) in self.channels.iter_mut().enumerate() {
-            let Some((windows, _, true_peak)) = &mut channel_state.active else { continue };
+            let Some((windows, _, true_peak)) = channel_state else { continue };
             let weight = channel_weight(block.positions[channel_index]);
             weighted_short_term += windows.mean(WIN_SHORT_TERM)[0] * weight;
             weighted_momentary += windows.mean(WIN_MOMENTARY)[0] * weight;
@@ -316,6 +302,34 @@ mod tests {
 
     fn sine_wave(rate: f32, secs: f32, freq: f32, amp: f32) -> Vec<f32> {
         crate::util::audio::sine_wave(freq, rate, (rate * secs) as usize, amp)
+    }
+
+    fn assert_loudness_matches_ebur128(
+        sample_rate: f32,
+        tone_secs: f32,
+        leading_secs: f32,
+        channels: usize,
+    ) {
+        let samples: Vec<_> =
+            std::iter::repeat_n(0.0, (sample_rate * leading_secs) as usize * channels)
+                .chain(sine_wave(sample_rate, tone_secs, 1_000.0, 0.5).into_iter().flat_map(
+                    |sample| std::iter::repeat_n(sample, channels),
+                ))
+                .collect();
+        let ours = LoudnessProcessor::new(LoudnessConfig { sample_rate })
+            .process_block(&AudioBlock::new(&samples, channels, sample_rate));
+        let mut reference = EbuR128::new(channels as u32, sample_rate as u32, Mode::S).unwrap();
+        reference.add_frames_f32(&samples).unwrap();
+
+        for (actual, expected) in [
+            (f64::from(ours.momentary_loudness), reference.loudness_momentary().unwrap()),
+            (f64::from(ours.short_term_loudness), reference.loudness_shortterm().unwrap()),
+        ] {
+            assert!(
+                (actual - expected).abs() < 0.001,
+                "{sample_rate}Hz/{channels}ch after {leading_secs}+{tone_secs}s: {actual:.6} vs {expected:.6}"
+            );
+        }
     }
 
     #[test]
@@ -347,55 +361,17 @@ mod tests {
     }
 
     #[test]
-    fn processor_matches_ebur128_short_term() {
-        for sample_rate in [44100.0_f32, 48000.0, 96000.0] {
+    fn loudness_matches_ebur128_across_startup_layouts_and_rates() {
+        assert_eq!(window_length(11_025.0, 0.3), 3_308);
+        for tone_secs in [0.1, 0.4, 1.0] {
+            assert_loudness_matches_ebur128(48_000.0, tone_secs, 0.0, 1);
+        }
+        for sample_rate in [44_100.0, 48_000.0, 96_000.0] {
             for channels in [2, 4, 5, 6] {
-                let mono = sine_wave(sample_rate, 4.0, 1000.0, 0.5);
-                let interleaved: Vec<f32> = mono
-                    .iter()
-                    .flat_map(|&s| std::iter::repeat_n(s, channels))
-                    .collect();
-                let block = AudioBlock::new(&interleaved, channels, sample_rate);
-                let cfg = LoudnessConfig { sample_rate };
-                let ours = f64::from(
-                    LoudnessProcessor::new(cfg)
-                        .process_block(&block)
-                        .short_term_loudness,
-                );
-
-                let planar = vec![mono.as_slice(); channels];
-                let mut reference = EbuR128::new(channels as u32, sample_rate as u32, Mode::S).unwrap();
-                reference.add_frames_planar_f32(&planar).unwrap();
-                let expected = reference.loudness_shortterm().unwrap();
-                let diff = (ours - expected).abs();
-                assert!(
-                    diff < 0.001,
-                    "{sample_rate}Hz/{channels}ch mismatch: {ours:.6} vs {expected:.6} (diff={diff:.8})"
-                );
+                assert_loudness_matches_ebur128(sample_rate, 4.0, 0.0, channels);
             }
         }
-    }
-
-    #[test]
-    fn leading_silence_matches_eager_channel_state() {
-        let silence = vec![0.0; 48_001 * 4];
-        let tone = sine_wave(48_000.0, 0.1, 1_000.0, 0.5);
-        let signal: Vec<_> = tone.into_iter().flat_map(|x| [0.0, 0.0, 0.0, x]).collect();
-        let mut lazy = LoudnessProcessor::new(LoudnessConfig::default());
-        let mut eager = LoudnessProcessor::new(LoudnessConfig::default());
-        eager.ensure_state(4, 48_000.0);
-        let capacities = DEFAULT_WINDOWS.map(|window| window_length(48_000.0, window));
-        for channel in &mut eager.channels {
-            channel.active = Some((
-                WindowedMeans::new(capacities),
-                [0.0; 4],
-                TruePeakMeter::new(48_000.0),
-            ));
-        }
-        for samples in [&silence, &signal] {
-            let block = AudioBlock::new(samples, 4, 48_000.0);
-            assert_eq!(lazy.process_block(&block), eager.process_block(&block));
-        }
+        assert_loudness_matches_ebur128(48_000.0, 0.1, 1.0, 4);
     }
 
     #[test]
