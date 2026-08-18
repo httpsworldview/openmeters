@@ -218,7 +218,7 @@ impl StereometerProcessor {
 }
 
 fn ema_alpha(sample_rate: f32, window: f32) -> f64 {
-    1.0 - (-1.0 / (sample_rate as f64 * window as f64).max(1.0)).exp()
+    -(-1.0 / (f64::from(sample_rate) * f64::from(window)).max(1.0)).exp_m1()
 }
 
 #[cfg(test)]

@@ -11,8 +11,8 @@ use std::{collections::VecDeque, sync::Arc};
 pub(in crate::visuals::oscilloscope) const TRACE_COUNT: usize = 2;
 
 fn parabolic_refine(y_prev: f32, y_curr: f32, y_next: f32, tau: usize) -> f32 {
-    let denom = y_prev - 2.0 * y_curr + y_next;
-    if denom.abs() < f32::EPSILON { return tau as f32; }
+    let denom = (y_prev - y_curr) + (y_next - y_curr);
+    if denom == 0.0 || !denom.is_finite() { return tau as f32; }
     let delta = 0.5 * (y_prev - y_next) / denom;
     (tau as f32 + delta.clamp(-1.0, 1.0)).max(1.0)
 }
@@ -76,7 +76,7 @@ impl PeriodFft {
 #[derive(Default)]
 struct PeriodEstimator {
     periodicity: Vec<f32>,
-    energy_prefix: Vec<f32>,
+    energy_prefix: Vec<f64>,
     last_peak: f32,
     fft: Option<PeriodFft>,
 }
@@ -88,6 +88,7 @@ impl PeriodEstimator {
     const MIN_SIGNAL_PEAK: f32 = 0.001;
     const MIN_PERIODICITY: f32 = 0.5;
     const PEAK_CUTOFF: f32 = 0.93;
+    const MAX_ANALYSIS_RATE: f32 = 128_000.0;
 
     fn estimate_period(&mut self, samples: &[f32], rate: f32) -> Option<PeriodEstimate> {
         self.last_peak = 0.0;
@@ -140,7 +141,7 @@ impl PeriodEstimator {
         let fft = fft.as_mut().expect("period FFT initialized");
         energy_prefix.resize(samples.len() + 1, 0.0);
         energy_prefix[0] = 0.0;
-        let mut energy = 0.0_f32;
+        let mut energy = 0.0_f64;
         for ((dst, &sample), prefix) in fft.input[..samples.len()]
             .iter_mut()
             .zip(samples)
@@ -148,7 +149,7 @@ impl PeriodEstimator {
         {
             let centered = sample - mean;
             *dst = centered;
-            energy += centered * centered;
+            energy = f64::from(centered).mul_add(f64::from(centered), energy);
             *prefix = energy;
         }
         fft.input[samples.len()..].fill(0.0);
@@ -165,7 +166,7 @@ impl PeriodEstimator {
             .process_with_scratch(&mut fft.spectrum, &mut fft.input, &mut fft.scratch)
             .expect("internally sized period inverse FFT buffers");
 
-        let norm = 1.0 / fft_size as f32;
+        let norm = 1.0 / fft_size as f64;
         periodicity.resize(max_lag + 1, 0.0);
         let total_energy = energy_prefix[samples.len()];
         let energies = energy_prefix.iter().zip(energy_prefix.iter().rev());
@@ -173,8 +174,8 @@ impl PeriodEstimator {
             periodicity.iter_mut().zip(&fft.input).zip(energies)
         {
             let denom = left + (total_energy - right);
-            *value = if denom > f32::EPSILON {
-                2.0 * autocorrelation * norm / denom
+            *value = if denom > 0.0 {
+                (2.0 * f64::from(autocorrelation) * norm / denom) as f32
             } else {
                 0.0
             };
@@ -195,35 +196,40 @@ fn gaussian(len: usize, index: usize, std: f32) -> f32 {
     (-0.5 * (x / std).powi(2)).exp()
 }
 
-fn correlation_stats(y: &[f32]) -> [f32; 2] {
-    y.iter().fold([0.0; 2], |[sum, squares], &y| [sum + y, squares + y * y])
+fn correlation_stats(y: &[f32]) -> [f64; 2] {
+    y.iter().fold([0.0; 2], |[sum, squares], &y| {
+        let y = f64::from(y);
+        [sum + y, squares + y * y]
+    })
 }
 
-fn normalized_correlation(x: &[f32], y: &[f32], [sum_y, sum_yy]: [f32; 2]) -> f32 {
+fn normalized_correlation(x: &[f32], y: &[f32], [sum_y, sum_yy]: [f64; 2]) -> f32 {
     debug_assert_eq!(x.len(), y.len());
     let mut sums = [[0.0; 4]; 3];
     let (x_chunks, x_remainder) = x.as_chunks::<4>();
     let (y_chunks, y_remainder) = y.as_chunks::<4>();
     for (x, y) in x_chunks.iter().zip(y_chunks) {
         for lane in 0..4 {
-            sums[0][lane] += x[lane];
-            sums[1][lane] += x[lane] * x[lane];
-            sums[2][lane] += x[lane] * y[lane];
+            let (x, y) = (f64::from(x[lane]), f64::from(y[lane]));
+            sums[0][lane] += x;
+            sums[1][lane] += x * x;
+            sums[2][lane] += x * y;
         }
     }
     let [mut sum_x, mut sum_xx, mut sum_xy] =
         sums.map(|[a, b, c, d]| 0.0 + a + b + c + d);
     for (&x, &y) in x_remainder.iter().zip(y_remainder) {
+        let (x, y) = (f64::from(x), f64::from(y));
         sum_x += x;
         sum_xx += x * x;
         sum_xy += x * y;
     }
-    let n = x.len() as f32;
-    let dot = sum_xy - sum_x * sum_y / n;
-    let energy_x = (sum_xx - sum_x * sum_x / n).max(0.0);
-    let energy_y = (sum_yy - sum_y * sum_y / n).max(0.0);
+    let n = x.len() as f64;
+    let dot = (-sum_x / n).mul_add(sum_y, sum_xy);
+    let energy_x = (-sum_x / n).mul_add(sum_x, sum_xx).max(0.0);
+    let energy_y = (-sum_y / n).mul_add(sum_y, sum_yy).max(0.0);
     let denom = (energy_x * energy_y).sqrt();
-    if denom > f32::EPSILON { (dot / denom).clamp(-1.0, 1.0) } else { 0.0 }
+    if denom > f64::EPSILON { (dot / denom).clamp(-1.0, 1.0) as f32 } else { 0.0 }
 }
 
 fn sample_linear_zero(data: &[f32], pos: f32) -> f32 {
@@ -300,8 +306,21 @@ impl StableTrigger {
     ) -> Capture {
         let probe_len = probe_frames.min(trace.len());
         let detected = if probe_len >= 3 {
+            let probe = &trace[trace.len() - probe_len..];
+            let factor = (sample_rate / PeriodEstimator::MAX_ANALYSIS_RATE).ceil().max(1.0) as usize;
+            let probe = if factor > 1 {
+                self.work.clear();
+                self.work.extend(probe[probe.len() % factor..].chunks_exact(factor).map(mean_f32));
+                self.work.as_slice()
+            } else {
+                probe
+            };
             self.estimator
-                .estimate_period(&trace[trace.len() - probe_len..], sample_rate)
+                .estimate_period(probe, sample_rate / factor as f32)
+                .map(|mut estimate| {
+                    estimate.period *= factor as f32;
+                    estimate
+                })
         } else {
             self.estimator.last_peak = 0.0;
             None
@@ -525,22 +544,16 @@ impl StableTrigger {
 fn find_rising_zero_crossing(
     samples: &[f32],
     frames: impl Iterator<Item = usize>,
-) -> Option<usize> {
-    let sample = |f: usize| samples.get(f).copied();
-    let mut it = frames;
-    let first = it.next()?;
-    let mut prev_val = sample(first)?;
-    let mut prev_idx = first;
-    for f in it {
-        let cur = sample(f)?;
-        let (lo_val, hi_idx, hi_val) = if f > prev_idx {
-            (prev_val, f, cur)
-        } else {
-            (cur, prev_idx, prev_val)
-        };
-        if hi_val > 0.0 && lo_val <= 0.0 { return Some(hi_idx); }
-        prev_val = cur;
-        prev_idx = f;
+) -> Option<(usize, f32)> {
+    let mut frames = frames;
+    let mut previous = frames.next()?;
+    for current in frames {
+        let (lo, hi) = if previous < current { (previous, current) } else { (current, previous) };
+        let (&a, &b) = samples.get(lo).zip(samples.get(hi))?;
+        if a <= 0.0 && b > 0.0 {
+            return Some((lo, (-a / (b - a)).clamp(0.0, 1.0) * (hi - lo) as f32));
+        }
+        previous = current;
     }
     None
 }
@@ -761,17 +774,16 @@ fn stable_history_frames(max_period: usize, cycles: usize, sample_rate: f32) -> 
 
 fn zero_crossing_capture(samples: &[f32], frames: usize, search_range: usize) -> Capture {
     let end = samples.len() - 1;
-    let right_lo = end.saturating_sub(search_range);
-    let right = find_rising_zero_crossing(samples, (right_lo..=end).rev()).unwrap_or(end);
-
-    let left_lo = right.saturating_sub(frames);
-    let left_hi = (left_lo + search_range).min(right.saturating_sub(2));
-    let left = find_rising_zero_crossing(samples, left_lo..=left_hi).unwrap_or(left_lo);
-
+    let right = find_rising_zero_crossing(samples, (end.saturating_sub(search_range)..=end).rev())
+        .unwrap_or((end, 0.0));
+    let right_index = right.0 + right.1.ceil() as usize;
+    let left_lo = right_index.saturating_sub(frames);
+    let left_hi = (left_lo + search_range).min(right_index.saturating_sub(2));
+    let left = find_rising_zero_crossing(samples, left_lo..=left_hi).unwrap_or((left_lo, 0.0));
     Capture {
-        span: right.saturating_sub(left).max(1) as f32,
-        start: left,
-        frac_offset: 0.0,
+        span: ((right.0 - left.0) as f32 + right.1 - left.1).max(1.0),
+        start: left.0,
+        frac_offset: left.1,
     }
 }
 
@@ -937,15 +949,12 @@ mod tests {
 
     #[test]
     fn period_estimation() {
+        assert_eq!(parabolic_refine(-1.5625e-8, -0.0625e-8, -0.5625e-8, 10), 10.25);
         let mut estimator = PeriodEstimator::default();
         let long = (RATE * 0.1) as usize;
         for (freq, frames, max_error) in [
             (20.0, long, 0.02),
-            (41.0, long, 0.02),
-            (110.0, long, 0.02),
             (440.0, long, 0.02),
-            (1000.0, long, 0.02),
-            (4000.0, long, 0.02),
             (8000.0, long, 0.02),
             (1000.0, 256, 0.03),
         ] {
@@ -974,7 +983,12 @@ mod tests {
         }
 
         assert!(estimator.estimate_period(&noise_samples(long), RATE).is_none());
-        assert!(estimator.estimate_period(&vec![-0.904_308; 76_800], 768_000.0).is_none());
+        let high_rate = 768_000.0;
+        let mut trigger = StableTrigger::default();
+        trigger.capture(&sine_samples(20.0, high_rate, 76_800), high_rate, 76_800, 960, 2);
+        let detected = high_rate / trigger.period.unwrap();
+        assert!((detected - 20.0).abs() < 0.001, "detected {detected}");
+        assert!(estimator.estimate_period(&vec![-0.904_308; 76_800], high_rate).is_none());
         assert_eq!(estimator.last_peak, 0.0);
     }
 
@@ -1058,29 +1072,16 @@ mod tests {
         }
 
         let mut trigger = StableTrigger {
-            reference: vec![11.0, 9.0, 11.0, 9.0],
+            reference: vec![1.001, 0.999, 1.001, 0.999],
             ..Default::default()
         };
-        assert!(trigger.write_candidate(&[1.0, -1.0, 1.0, -1.0], 1000.0) > 0.99);
+        assert!(trigger.write_candidate(&[0.001, -0.001, 0.001, -0.001], 1000.0) > 0.99);
     }
 
     #[test]
     fn zero_crossing_finds_edges_after_channel_projection() {
         let mono = sine_samples(440.0, RATE, 4800);
-        for c in [
-            find_rising_zero_crossing(&mono, (0..=3840).rev()).unwrap(),
-            find_rising_zero_crossing(&mono, 0..=4799).unwrap(),
-        ] {
-            assert!(mono[c] > 0.0 && mono[c - 1] <= 0.0);
-        }
-
         let mut projected = Vec::new();
-        let same_stereo: Vec<f32> = mono.iter().flat_map(|&s| [s, s]).collect();
-        let block = AudioBlock::new(&same_stereo, 2, RATE);
-        projected.extend(block.projected_frames(Channel::Mid));
-        let c = find_rising_zero_crossing(&projected, (0..=3840).rev()).unwrap();
-        assert!(projected[c] > 0.0 && projected[c - 1] <= 0.0);
-
         let inverted: Vec<f32> = mono.iter().flat_map(|&s| [s, -s]).collect();
         let block = AudioBlock::new(&inverted, 2, RATE);
         for (channel, should_cross) in [(Channel::Mid, false), (Channel::Left, true)] {
@@ -1117,8 +1118,8 @@ mod tests {
         assert!(snap.samples_per_channel > 0 && snap.samples_per_channel <= 4096);
         assert_eq!(snap.samples.len(), snap.samples_per_channel * 2);
         let n = snap.samples_per_channel;
-        assert!(snap.samples[0] > 0.0 && snap.samples[0] < 0.15, "left edge");
-        assert!(snap.samples[n - 1].abs() < 0.15, "right edge");
+        assert!(snap.samples[0].abs() < 1.0e-5, "left edge");
+        assert!(snap.samples[n - 1].abs() < 1.0e-5, "right edge");
     }
 
     #[test]

@@ -146,7 +146,7 @@ impl TruePeakMeter {
     }
 }
 
-fn k_weighted(sample: f32, state: &mut [f64; 4], coefficients: &KWeighting) -> f32 {
+fn k_weighted(sample: f32, state: &mut [f64; 4], coefficients: &KWeighting) -> f64 {
     let (b, a) = coefficients;
     let x = f64::from(sample);
     let y = b[0] * x + state[0];
@@ -154,7 +154,7 @@ fn k_weighted(sample: f32, state: &mut [f64; 4], coefficients: &KWeighting) -> f
     state[1] = b[2] * x + state[2] - a[2] * y;
     state[2] = b[3] * x + state[3] - a[3] * y;
     state[3] = b[4] * x - a[4] * y;
-    y as f32
+    y
 }
 type ActiveChannel = (WindowedMeans<1, 4>, [f64; 4], TruePeakMeter);
 type ChannelState = Option<ActiveChannel>;
@@ -259,7 +259,7 @@ impl LoudnessProcessor {
                     ));
                 }
                 let (windows, filter, true_peak) = channel.as_mut().unwrap();
-                let filtered = f64::from(k_weighted(sample, filter, weighting));
+                let filtered = k_weighted(sample, filter, weighting);
                 windows.push::<true>([filtered * filtered]);
                 true_peak.process(sample, firs);
             }

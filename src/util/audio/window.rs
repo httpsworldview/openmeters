@@ -22,23 +22,25 @@ impl WindowKind {
         if len <= 1 {
             return vec![1.0; len];
         }
-        let coeffs: &[f32] = match self {
+        let coeffs: &[f64] = match self {
             Self::Rectangular => return vec![1.0; len],
             Self::Hann => &[0.5, -0.5],
             Self::Hamming => &[25.0 / 46.0, -21.0 / 46.0],
             Self::Blackman => &[0.42, -0.5, 0.08],
             Self::BlackmanHarris => &[0.35875, -0.48829, 0.14128, -0.01168],
         };
-        let step = core::f32::consts::TAU / len as f32;
-        (0..len)
-            .map(|n| {
-                let phi = n as f32 * step;
-                coeffs
-                    .iter()
-                    .enumerate()
-                    .fold(0.0, |sum, (k, &c)| sum + c * (phi * k as f32).cos())
-            })
-            .collect()
+        let mut window = vec![0.0; len];
+        for n in 0..=len / 2 {
+            let phi = core::f64::consts::TAU * n as f64 / len as f64;
+            let value = coeffs
+                .iter()
+                .enumerate()
+                .fold(0.0, |sum, (k, &c)| c.mul_add((phi * k as f64).cos(), sum))
+                as f32;
+            window[n] = value;
+            window[(len - n) % len] = value;
+        }
+        window
     }
 }
 
@@ -92,7 +94,7 @@ mod tests {
         copy_dc_removed_windowed_from_deque(&mut output, &samples, &vec![1.0; samples.len()]);
         assert!(output.iter().all(|&sample| sample == 0.0));
         let hann = WindowKind::Hann.coefficients(8);
-
+        assert_eq!(hann[1], hann[7]);
         assert_eq!(hann[0], 0.0);
         assert!((hann[4] - 1.0).abs() < 1.0e-6);
         assert!((hann[7] - 0.146_446_5).abs() < 1.0e-6);

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::util::audio::{Channel, flush_denormal_f32, sanitize_sample_rate};
+use crate::util::audio::{Channel, flush_denormal_f64, sanitize_sample_rate};
 
 pub const MAX_AUDIO_CHANNELS: usize = 8;
 
@@ -377,9 +377,9 @@ pub enum FilterKind {
 
 #[derive(Debug, Clone, Copy)]
 pub struct Biquad {
-    b: [f32; 3],
-    a: [f32; 2],
-    z: [f32; 2],
+    b: [f64; 3],
+    a: [f64; 2],
+    z: [f64; 2],
 }
 
 pub trait CrossoverFilter: Sized {
@@ -388,7 +388,7 @@ pub trait CrossoverFilter: Sized {
     fn process(&mut self, sample: Self::Sample) -> Self::Sample;
     fn visit_biquads(&mut self, visit: &mut impl FnMut(&mut Biquad));
     fn flush_denormals(&mut self) {
-        self.visit_biquads(&mut |filter| filter.z.iter_mut().for_each(flush_denormal_f32));
+        self.visit_biquads(&mut |filter| filter.z.iter_mut().for_each(flush_denormal_f64));
     }
     fn clear(&mut self) {
         self.visit_biquads(&mut |filter| filter.z = [0.0; 2]);
@@ -399,12 +399,14 @@ impl CrossoverFilter for Biquad {
     type Sample = f32;
 
     fn new(kind: FilterKind, sample_rate: f32, frequency: f32) -> Self {
-        let ratio = (frequency / sample_rate).clamp(1.0e-6, 0.49);
-        let (sin, cos) = (core::f32::consts::TAU * ratio).sin_cos();
-        let alpha = sin * core::f32::consts::FRAC_1_SQRT_2;
+        let ratio = (f64::from(frequency) / f64::from(sample_rate)).clamp(1.0e-6, 0.49);
+        let (half_sin, half_cos) = (core::f64::consts::PI * ratio).sin_cos();
+        let sin = 2.0 * half_sin * half_cos;
+        let cos = half_cos.mul_add(half_cos, -half_sin * half_sin);
+        let alpha = sin * core::f64::consts::FRAC_1_SQRT_2;
         let (gain, sign) = match kind {
-            FilterKind::LowPass => (1.0 - cos, 1.0),
-            FilterKind::HighPass => (1.0 + cos, -1.0),
+            FilterKind::LowPass => (2.0 * half_sin * half_sin, 1.0),
+            FilterKind::HighPass => (2.0 * half_cos * half_cos, -1.0),
         };
         let inv_a0 = 1.0 / (1.0 + alpha);
         Self {
@@ -419,12 +421,13 @@ impl CrossoverFilter for Biquad {
     }
 
     fn process(&mut self, sample: f32) -> f32 {
+        let sample = f64::from(sample);
         let [z0, z1] = self.z;
         let output = self.b[0] * sample + z0;
         let next = self.b[1] * sample - self.a[0] * output + z1;
         self.z = [next, self.b[2] * sample - self.a[1] * output];
-        if output.is_finite() {
-            output
+        if output.abs() <= f32::MAX as f64 {
+            output as f32
         } else {
             self.z = [0.0; 2];
             0.0
@@ -656,7 +659,13 @@ mod tests {
     }
 
     #[test]
-    fn biquad_clear_matches_fresh_filter_state() {
+    fn biquad_response_and_clear_are_precise() {
+        use rustfft::num_complex::Complex64;
+        let filter = Biquad::new(FilterKind::LowPass, 768_000.0, 200.0);
+        let z = Complex64::from_polar(1.0, -core::f64::consts::TAU * 200.0 / 768_000.0);
+        let ([b0, b1, b2], [a1, a2]) = (filter.b, filter.a);
+        let magnitude = ((b0 + b1 * z + b2 * z * z) / (1.0 + a1 * z + a2 * z * z)).norm();
+        assert!((magnitude - core::f64::consts::FRAC_1_SQRT_2).abs() < 1.0e-9);
         let mut used = Biquad::new(FilterKind::LowPass, 48_000.0, 1_000.0);
         let mut fresh = used;
         used.process(1.0);
