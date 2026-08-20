@@ -3,19 +3,13 @@
 
 pub mod musical;
 
-mod channel;
-mod format;
 mod frequency;
 mod level;
-mod rate;
 mod window;
 
 pub use self::{
-    channel::Channel,
-    format::{fmt_duration, fmt_freq},
     frequency::FrequencyScale,
     level::{DB_FLOOR, LN_TO_DB, db_to_power, power_to_db, sanitize_negative_db},
-    rate::{DEFAULT_SAMPLE_RATE, MAX_SAMPLE_RATE, sanitize_sample_rate},
     window::{WindowKind, compute_fft_bin_normalization, copy_dc_removed_windowed_from_deque},
 };
 pub(crate) use self::{
@@ -23,7 +17,52 @@ pub(crate) use self::{
     window::{mean_f32, window_coefficients},
 };
 
+pub const DEFAULT_SAMPLE_RATE: f32 = 48_000.0;
+pub const MAX_SAMPLE_RATE: f32 = 768_000.0;
 pub const BAND_SPLITS_HZ: [f32; 2] = [200.0, 2000.0];
+
+crate::macros::choice_enum!(no_default pub enum Channel {
+    Left => "Left",
+    Right => "Right",
+    Mid => "Mid",
+    Side => "Side",
+    None => "None",
+});
+
+impl Channel {
+    pub(crate) fn project(self, [left, right]: [f32; 2]) -> f32 {
+        match self {
+            Self::Left => left,
+            Self::Right => right,
+            Self::Mid => (left + right) * 0.5,
+            Self::Side => (left - right) * 0.5,
+            Self::None => 0.0,
+        }
+    }
+}
+
+pub fn sanitize_sample_rate(sample_rate: f32) -> f32 {
+    crate::util::finite_positive(sample_rate)
+        .unwrap_or(DEFAULT_SAMPLE_RATE)
+        .clamp(1.0, MAX_SAMPLE_RATE)
+}
+
+pub fn fmt_freq(frequency: f32) -> String {
+    match frequency {
+        f if f >= 10_000.0 => format!("{:.1}kHz", f / 1000.0),
+        f if f >= 1_000.0 => format!("{:.2}kHz", f / 1000.0),
+        f if f >= 100.0 => format!("{f:.1}Hz"),
+        f => format!("{f:.2}Hz"),
+    }
+}
+
+pub fn fmt_duration(seconds: f32) -> String {
+    if seconds >= 60.0 {
+        format!("{:.0}m {:.0}s", (seconds / 60.0).floor(), seconds % 60.0)
+    } else {
+        format!("{seconds:.2}s")
+    }
+}
 
 #[cfg(test)]
 pub fn sine_wave(frequency: f32, sample_rate: f32, count: usize, amplitude: f32) -> Vec<f32> {

@@ -21,10 +21,8 @@ use tracing_subscriber::{EnvFilter, fmt};
 use ui::UiConfig;
 
 fn main() -> ExitCode {
-    let env_filter = match EnvFilter::try_from_default_env() {
-        Ok(filter) => filter,
-        Err(_) => EnvFilter::new("openmeters=info"),
-    };
+    let env_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("openmeters=info"));
     if let Err(err) = fmt()
         .with_env_filter(env_filter)
         .with_target(false)
@@ -37,7 +35,7 @@ fn main() -> ExitCode {
 
     let settings_handle = SettingsHandle::load_or_default();
     let capture_config = settings_handle.borrow().data.capture_config();
-    let mut backend = match AudioBackend::start(capture_config) {
+    let (mut backend, capture, audio) = match AudioBackend::start(capture_config) {
         Ok(backend) => backend,
         Err(err) => {
             error!("[capture] failed to start PipeWire backend: {err}");
@@ -45,8 +43,8 @@ fn main() -> ExitCode {
         }
     };
     let ui_config = UiConfig {
-        capture: backend.control(),
-        audio: Rc::new(RefCell::new(Some(backend.take_audio()))),
+        capture,
+        audio: Rc::new(RefCell::new(Some(audio))),
         settings_handle,
     };
     let exit_code = match ui::run(ui_config) {

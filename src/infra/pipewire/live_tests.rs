@@ -530,11 +530,9 @@ fn wait_for_mapped_signal(
 #[ignore = "requires pipewire, pw-cli, pw-link, pw-loopback, pw-dump, and wireplumber"]
 fn live_backend_recovers_after_server_restart() {
     let mut server = IsolatedPipeWire::new();
-    let mut backend =
+    let (mut backend, control, mut audio) =
         AudioBackend::start_with_socket(CaptureConfig::default(), Some(server.remote.clone()))
             .expect("start backend");
-    let control = backend.control();
-    let mut audio = backend.take_audio();
     let tap_name = format!("openmeters.tap.{}", std::process::id());
     let initial_tap = server.wait_dump("initial backend session", |graph| graph.node_id(&tap_name));
 
@@ -589,11 +587,9 @@ fn live_backend_recovers_after_server_restart() {
 #[ignore = "requires pipewire, pw-cli, pw-link, pw-loopback, pw-dump, and wireplumber"]
 fn live_capture_preserves_graph_invariants() {
     let server = IsolatedPipeWire::new();
-    let mut backend =
+    let (mut backend, control, mut audio) =
         AudioBackend::start_with_socket(CaptureConfig::default(), Some(server.remote.clone()))
             .expect("start backend");
-    let control = backend.control();
-    let mut audio = backend.take_audio();
     let tap_name = format!("openmeters.tap.{}", std::process::id());
     let tap_id = server.wait_audio("capture tap", &mut audio, |graph| graph.node_id(&tap_name));
     let graph = server.dump();

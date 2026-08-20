@@ -63,16 +63,16 @@ pub(super) enum StreamStatus {
 }
 
 #[derive(Clone)]
-pub(crate) struct AudioWake(async_channel::Receiver<()>, usize);
+pub(crate) struct AudioWake(Arc<Shared>);
 
 impl Hash for AudioWake {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.1.hash(state);
+        Arc::as_ptr(&self.0).hash(state);
     }
 }
 
 pub(crate) fn audio_wake(wake: &AudioWake) -> async_channel::Receiver<()> {
-    wake.0.clone()
+    wake.0.wake_receiver.clone()
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -695,8 +695,7 @@ impl AudioReader {
     }
 
     pub(crate) fn wake_handle(&self) -> AudioWake {
-        let identity = Arc::as_ptr(&self.shared) as usize;
-        AudioWake(self.shared.wake_receiver.clone(), identity)
+        AudioWake(Arc::clone(&self.shared))
     }
 
     pub fn discard(&mut self, now: Instant) {

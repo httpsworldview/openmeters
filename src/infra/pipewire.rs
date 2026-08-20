@@ -95,17 +95,19 @@ impl CaptureControl {
 }
 
 pub struct AudioBackend {
-    control: CaptureControl,
-    audio: Option<AudioReader>,
+    commands: mpsc::Sender<Command>,
     thread: Option<thread::JoinHandle<()>>,
 }
 
 impl AudioBackend {
-    pub fn start(config: CaptureConfig) -> io::Result<Self> {
+    pub fn start(config: CaptureConfig) -> io::Result<(Self, CaptureControl, AudioReader)> {
         Self::start_with_socket(config, None)
     }
 
-    fn start_with_socket(config: CaptureConfig, socket: Option<PathBuf>) -> io::Result<Self> {
+    fn start_with_socket(
+        config: CaptureConfig,
+        socket: Option<PathBuf>,
+    ) -> io::Result<(Self, CaptureControl, AudioReader)> {
         let (writer, audio) = transport::channel();
         let (channels, positions) = match config.mode {
             CaptureMode::Applications => (MAX_CAPTURE_CHANNELS, ChannelPosition::SURROUND),
@@ -115,33 +117,28 @@ impl AudioBackend {
         let (commands, receiver) = mpsc::channel();
         let public = Arc::new(PublicState::default());
         let control = CaptureControl {
-            commands,
+            commands: commands.clone(),
             public: Arc::clone(&public),
         };
         let thread = thread::Builder::new()
             .name("openmeters-pipewire".into())
             .spawn(move || runtime::run(receiver, config, writer, public, socket))?;
 
-        Ok(Self {
+        Ok((
+            Self {
+                commands,
+                thread: Some(thread),
+            },
             control,
-            audio: Some(audio),
-            thread: Some(thread),
-        })
-    }
-
-    pub fn control(&self) -> CaptureControl {
-        self.control.clone()
-    }
-
-    pub fn take_audio(&mut self) -> AudioReader {
-        self.audio.take().expect("audio reader already taken")
+            audio,
+        ))
     }
 
     pub fn shutdown(&mut self) {
         let Some(thread) = self.thread.take() else {
             return;
         };
-        let _ = self.control.commands.send(Command::Shutdown);
+        let _ = self.commands.send(Command::Shutdown);
         if thread.join().is_err() {
             error!("[pipewire] backend thread panicked");
         }
@@ -163,13 +160,11 @@ mod tests {
     #[test]
     fn unavailable_socket_faults_and_stops_cleanly() {
         let runtime = tempfile::tempdir().unwrap();
-        let mut backend = AudioBackend::start_with_socket(
+        let (mut backend, control, mut audio) = AudioBackend::start_with_socket(
             CaptureConfig::default(),
             Some(runtime.path().join("missing")),
         )
         .unwrap();
-        let control = backend.control();
-        let mut audio = backend.take_audio();
         let deadline = Instant::now() + Duration::from_secs(1);
         let (mut reset, mut seeded) = (false, false);
         while !(reset && seeded) && Instant::now() < deadline {
