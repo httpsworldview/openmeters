@@ -21,7 +21,6 @@ frequency, waveform, and stereo image in one comprehensive suite.
 - [Frequently Asked Questions](#frequently-asked-questions)
 - [Contributing](#contributing)
 - [Credits](#credits)
-- [Notes](#notes)
 - [License](#license)
 
 ## Features
