@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Maika Namuo
 
 use crate::dsp::AudioBlock;
-use crate::util::audio::{Channel, DEFAULT_SAMPLE_RATE, mean_f32};
+use crate::util::audio::{Channel, DEFAULT_SAMPLE_RATE, MAX_DSP_BUFFER_LEN, mean_f32};
 use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex;
 use serde::{Deserialize, Serialize};
@@ -370,7 +370,7 @@ impl StableTrigger {
     ) -> Option<Capture> {
         let period = estimate.period.max(1.0);
         let span = period * cycles.max(1) as f32;
-        let frames = span.ceil() as usize + 1;
+        let frames = (span.ceil() as usize).checked_add(1)?;
         let len = trigger_kernel_len(period, rate);
         let before = len / 2;
         let after = len - before;
@@ -635,19 +635,23 @@ impl OscilloscopeProcessor {
 
         let base_frames = (self.config.sample_rate * self.config.segment_duration)
             .round()
-            .max(2.0) as usize;
+            .max(2.0)
+            .min(MAX_DSP_BUFFER_LEN as f32) as usize;
         let max_period = (self.config.sample_rate / PeriodEstimator::MIN_HZ).ceil() as usize;
         let probe_frames = ((self.config.sample_rate * PeriodEstimator::PROBE_SECONDS).round() as usize)
             .max(max_period * 2);
-        let trigger_frames = match self.config.trigger_mode {
+        let mut mode = self.config.trigger_mode;
+        let trigger_frames = match &mut mode {
             TriggerMode::ZeroCrossing => base_frames + max_period,
             TriggerMode::Stable { num_cycles } => {
-                stable_history_frames(max_period, num_cycles, self.config.sample_rate)
+                let (frames, bounded_cycles) =
+                    stable_history_frames(max_period, *num_cycles, self.config.sample_rate);
+                *num_cycles = bounded_cycles;
+                frames
             }
         };
         let trigger_source = self.config.trigger_source;
-        let history_frames = probe_frames.max(base_frames).max(trigger_frames);
-        let mode = self.config.trigger_mode;
+        let history_frames = probe_frames.max(base_frames).max(trigger_frames).min(MAX_DSP_BUFFER_LEN);
         let sample_rate = self.config.sample_rate;
         let capture = |trace: &[f32], trigger: &mut StableTrigger| {
             (trace.len() >= base_frames).then(|| match mode {
@@ -764,12 +768,25 @@ impl OscilloscopeProcessor {
     }
 }
 
-fn stable_history_frames(max_period: usize, cycles: usize, sample_rate: f32) -> usize {
+fn stable_history_frames(max_period: usize, cycles: usize, sample_rate: f32) -> (usize, usize) {
+    let max_period = max_period.max(1);
     let max_period_f = max_period as f32;
     let max_kernel = trigger_kernel_len(max_period_f, sample_rate);
-    let max_tail = (max_period * cycles.max(1) + 1).max(max_kernel.div_ceil(2));
     let max_search = (max_period_f * StableTrigger::SEARCH_PERIODS).ceil() as usize;
-    max_kernel / 2 + max_tail + max_search + 2
+    let fixed_frames = max_kernel / 2 + max_search + 2;
+    let max_cycles = MAX_DSP_BUFFER_LEN
+        .saturating_sub(fixed_frames)
+        .saturating_sub(1)
+        / max_period;
+    let cycles = cycles.clamp(1, max_cycles.max(1));
+    let max_tail = max_period
+        .saturating_mul(cycles)
+        .saturating_add(1)
+        .max(max_kernel.div_ceil(2));
+    (
+        fixed_frames.saturating_add(max_tail).min(MAX_DSP_BUFFER_LEN),
+        cycles,
+    )
 }
 
 fn zero_crossing_capture(samples: &[f32], frames: usize, search_range: usize) -> Capture {
@@ -928,7 +945,7 @@ mod tests {
         let base_frames = (RATE * stable_config().segment_duration).round() as usize;
         let max_period = (RATE / PeriodEstimator::MIN_HZ).ceil() as usize;
         let probe_frames = ((RATE * PeriodEstimator::PROBE_SECONDS).round() as usize).max(max_period * 2);
-        let history_frames = stable_history_frames(max_period, 2, RATE);
+        let (history_frames, _) = stable_history_frames(max_period, 2, RATE);
         let period = RATE / freq;
         let (mut first, mut jitter) = (None, 0.0_f32);
 

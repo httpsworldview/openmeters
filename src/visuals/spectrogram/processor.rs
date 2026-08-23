@@ -3,9 +3,9 @@
 
 use crate::dsp::AudioBlock;
 use crate::util::audio::{
-    Channel, DB_FLOOR, DEFAULT_SAMPLE_RATE, WindowKind, compute_fft_bin_normalization,
-    copy_dc_removed_windowed_from_deque, power_to_db, sanitize_sample_rate,
-    window_coefficients,
+    Channel, DB_FLOOR, DEFAULT_SAMPLE_RATE, MAX_DSP_BUFFER_LEN, WindowKind,
+    compute_fft_bin_normalization, copy_dc_removed_windowed_from_deque, power_to_db,
+    sanitize_sample_rate, window_coefficients,
 };
 use bytemuck::{Pod, Zeroable};
 use realfft::{RealFftPlanner, RealToComplex};
@@ -40,9 +40,7 @@ const DEFAULT_SPECTROGRAM_HOP_SIZE: usize = 64;
 pub(in crate::visuals) const MAX_SPECTROGRAM_HISTORY_COLUMNS: usize = 8192;
 pub(super) const SPECTROGRAM_HISTORY_BYTE_BUDGET: usize = 128 * 1024 * 1024;
 
-// Fixed [dB] storage domain -- must match the shader constants in spectrogram.wgsl.
-// u16 unorm over this range gives ~0.0024 dB/step, decoupled from the live
-// floor/ceiling window so history recolors cleanly on slider drags.
+// Fixed shader-mirrored dB domain; u16 gives ~0.0024 dB/step and permits live history recoloring.
 pub(super) const CLASSIC_DB_STORE_LO: f32 = -144.0;
 pub(super) const CLASSIC_DB_STORE_HI: f32 = 12.0;
 pub(super) const CLASSIC_DB_STORE_RANGE: f32 = CLASSIC_DB_STORE_HI - CLASSIC_DB_STORE_LO;
@@ -51,13 +49,12 @@ const ANALYSIS_FLOOR_POWER: f32 = 1e-14;
 impl SpectrogramConfig {
     fn normalize(&mut self) {
         self.sample_rate = sanitize_sample_rate(self.sample_rate);
-        if self.fft_size == 0 {
-            self.fft_size = DEFAULT_SPECTROGRAM_FFT_SIZE;
-        }
-        if self.hop_size == 0 {
-            self.hop_size = DEFAULT_SPECTROGRAM_HOP_SIZE.min(self.fft_size).max(1);
-        }
-        self.zero_padding_factor = self.zero_padding_factor.max(1);
+        self.fft_size = self.fft_size.min(MAX_DSP_BUFFER_LEN);
+        if self.fft_size == 0 { self.fft_size = DEFAULT_SPECTROGRAM_FFT_SIZE; }
+        if self.hop_size == 0 { self.hop_size = DEFAULT_SPECTROGRAM_HOP_SIZE.min(self.fft_size); }
+        self.zero_padding_factor = self
+            .zero_padding_factor
+            .clamp(1, MAX_DSP_BUFFER_LEN / self.fft_size);
     }
 }
 
@@ -96,10 +93,8 @@ fn reassigned_power_scale(window: &[f32], fft_size: usize) -> f32 {
     (sum * sum / (fft_size as f64 * sum_squares)) as f32
 }
 
-// Reassigned ships only visible fractional (t, f, power) splats; bins below
-// the analysis floor are omitted instead of sent as invisible sentinels.
-// Classic ships packed fixed-domain dB per bin; freq is implicit (k * bin_hz)
-// and the renderer fills between adjacent bins.
+// Reassigned ships fractional (t, f, power) splats, omitting sub-floor bins.
+// Classic ships packed dB bins with implicit frequency; rendering fills between bins.
 #[derive(Debug)]
 pub enum SpectrogramColumn {
     Reassigned(Vec<SpectrogramPoint>),
@@ -310,8 +305,7 @@ impl SpectrogramProcessor {
                     for (dst, &sample) in self.complex.iter_mut().zip(&self.audio_buffer) {
                         *dst = Complex32::new(sample, 0.0);
                     }
-                    // Use an analytic signal so low-frequency bins are not polluted
-                    // by the negative-frequency mirror of the windowed real signal.
+                    // Avoid low-bin pollution from the real signal's negative-frequency mirror.
                     hilbert_transform(
                         &mut self.complex,
                         &**hilbert_forward,

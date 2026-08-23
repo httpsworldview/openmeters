@@ -2,10 +2,11 @@
 // Copyright (C) 2026 Maika Namuo
 
 use crate::dsp::{AudioBlock, Biquad, Cascade, ThreeBand};
-use crate::util::audio::{BAND_SPLITS_HZ, DEFAULT_SAMPLE_RATE, flush_denormal_f64};
+use crate::util::audio::{BAND_SPLITS_HZ, DEFAULT_SAMPLE_RATE, MAX_DSP_BUFFER_LEN, flush_denormal_f64};
 use std::{collections::VecDeque, sync::Arc};
 
 const BAND_DISPLAY_GAIN: f32 = 0.8;
+const MAX_SNAPSHOT_POINTS: usize = 16_384;
 pub(super) const BAND_COUNT: usize = BAND_SPLITS_HZ.len() + 1;
 
 crate::macros::default_struct! {
@@ -140,7 +141,8 @@ impl StereometerProcessor {
 
         let frames = (self.config.sample_rate * self.config.segment_duration)
             .round()
-            .max(1.0) as usize;
+            .max(1.0)
+            .min(MAX_DSP_BUFFER_LEN as f32) as usize;
         let history_count = if self.config.emit_band_points { BAND_COUNT + 1 } else { 1 };
         for history in &mut self.histories[..history_count] {
             history.drain(..history.len().saturating_sub(frames));
@@ -148,7 +150,7 @@ impl StereometerProcessor {
 
         if self.histories[FULL_BAND].len() < frames { return None; }
 
-        let target = self.config.target_sample_count.clamp(1, frames);
+        let target = self.config.target_sample_count.clamp(1, frames).min(MAX_SNAPSHOT_POINTS);
         for (band, (history, buf)) in self.histories[..history_count]
             .iter_mut()
             .zip(&mut self.snapshot[..history_count])

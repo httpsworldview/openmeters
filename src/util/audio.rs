@@ -19,6 +19,7 @@ pub(crate) use self::{
 
 pub const DEFAULT_SAMPLE_RATE: f32 = 48_000.0;
 pub const MAX_SAMPLE_RATE: f32 = 768_000.0;
+pub const MAX_DSP_BUFFER_LEN: usize = 1 << 20;
 pub const BAND_SPLITS_HZ: [f32; 2] = [200.0, 2000.0];
 
 crate::macros::choice_enum!(no_default pub enum Channel {
@@ -57,11 +58,11 @@ pub fn fmt_freq(frequency: f32) -> String {
 }
 
 pub fn fmt_duration(seconds: f32) -> String {
-    if seconds >= 60.0 {
-        format!("{:.0}m {:.0}s", (seconds / 60.0).floor(), seconds % 60.0)
-    } else {
-        format!("{seconds:.2}s")
+    if seconds < 60.0 {
+        return format!("{seconds:.2}s");
     }
+    let seconds = seconds.round() as u64;
+    format!("{}m {}s", seconds / 60, seconds % 60)
 }
 
 #[cfg(test)]

@@ -3,7 +3,7 @@
 
 use crate::dsp::AudioBlock;
 use crate::util::audio::{
-    Channel, DB_FLOOR, DEFAULT_SAMPLE_RATE, LN_TO_DB, WindowKind,
+    Channel, DB_FLOOR, DEFAULT_SAMPLE_RATE, LN_TO_DB, MAX_DSP_BUFFER_LEN, WindowKind,
     compute_fft_bin_normalization, copy_dc_removed_windowed_from_deque, db_to_power,
     sanitize_negative_db, sanitize_sample_rate, window_coefficients,
 };
@@ -53,7 +53,7 @@ crate::macros::default_struct! {
 impl SpectrumConfig {
     pub fn normalize(&mut self) {
         self.sample_rate = sanitize_sample_rate(self.sample_rate);
-        self.fft_size = self.fft_size.max(1);
+        self.fft_size = self.fft_size.clamp(1, MAX_DSP_BUFFER_LEN);
         if self.hop_size == 0 {
             self.hop_size = (self.fft_size / DEFAULT_SPECTRUM_HOP_DIVISOR).max(1);
         }
@@ -426,15 +426,15 @@ mod tests {
     fn normalization_bounds_runtime_values_without_enforcing_gui_ranges() {
         let mut invalid = SpectrumConfig {
             sample_rate: f32::NAN,
-            fft_size: 0,
+            fft_size: usize::MAX,
             hop_size: 0,
             floor_db: f32::INFINITY,
             ..Default::default()
         };
         invalid.normalize();
         assert_eq!(invalid.sample_rate, DEFAULT_SAMPLE_RATE);
-        assert_eq!(invalid.fft_size, 1);
-        assert_eq!(invalid.hop_size, 1);
+        assert_eq!(invalid.fft_size, MAX_DSP_BUFFER_LEN);
+        assert_eq!(invalid.hop_size, MAX_DSP_BUFFER_LEN / DEFAULT_SPECTRUM_HOP_DIVISOR);
         assert_eq!(invalid.floor_db, DEFAULT_SPECTRUM_DB_FLOOR);
 
         for (floor_db, expected) in [
