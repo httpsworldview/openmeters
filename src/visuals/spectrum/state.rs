@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::processor::{SpectrumSnapshot, SpectrumTraceSnapshot};
-use super::render::{SpectrumParams, SpectrumPeakParams};
+use super::render::{MIN_TRACE_POINTS, SpectrumParams, SpectrumPeakParams};
 use crate::persistence::settings::SpectrumSettings;
 use crate::visuals::options::{SpectrumDisplayMode, SpectrumWeightingMode};
 use crate::util::audio::musical::NoteInfo;
@@ -14,7 +14,7 @@ use crate::visuals::render::common::{fill_bordered_rect, fill_rect, text as raw_
 use iced::advanced::Renderer as _;
 use iced::advanced::text::{Paragraph as _, Renderer as _};
 use iced::advanced::graphics::text::Paragraph;
-use iced::{Color, Point, Rectangle, Size};
+use iced::{Color, Padding, Point, Rectangle, Size};
 use std::sync::{Arc, LazyLock};
 
 const EPSILON: f32 = 1e-6;
@@ -22,6 +22,8 @@ const MIN_FREQUENCY: f32 = 20.0;
 const MAX_DB: f32 = 0.0;
 const GRID_LABEL_SIZE: f32 = 10.0;
 const GRID_LABEL_GAP: f32 = 6.0;
+const PEAK_PALETTE_INDEX: usize = PALETTE_SIZE - 1;
+const MIN_PEAK_OPACITY: f32 = 0.01;
 
 struct PeakLabel {
     content: [String; 2],
@@ -77,7 +79,7 @@ impl SpectrumState {
     pub fn update_view_settings(&mut self, settings: &SpectrumSettings, floor_db: f32) {
         self.style = settings.clone();
         self.style.floor_db = floor_db;
-        let _ = self.peak.take_if(|_| !settings.show_peak_label);
+        if !settings.show_peak_label { self.peak = None; }
         self.geometry.invalidate();
     }
 
@@ -91,23 +93,23 @@ impl SpectrumState {
     }
 
     pub fn apply_snapshot(&mut self, snap: &SpectrumSnapshot) {
-        let bins = snap.frequency_bins.len();
-        let primary = (self.style.source != Channel::None).then_some(0);
-        let secondary = match (self.style.source, self.style.secondary_source) {
+        const MIN_DISPLAY_RANGE_FACTOR: f32 = 1.02;
+        let bins = snap.frequency_bins.as_slice();
+        let primary_trace = (self.style.source != Channel::None).then_some(0);
+        let secondary_trace = match (self.style.source, self.style.secondary_source) {
             (_, Channel::None) => None,
-            (primary, secondary) if primary == secondary => Some(0),
+            (primary_source, secondary_source) if primary_source == secondary_source => Some(0),
             _ => Some(1),
         };
         let min_f = MIN_FREQUENCY;
-        let max_f = snap.frequency_bins[bins - 1].max(min_f * 1.02);
-        let bins = snap.frequency_bins.as_slice();
+        let max_f = bins[bins.len() - 1].max(min_f * MIN_DISPLAY_RANGE_FACTOR);
         self.ensure_x_cache(min_f, max_f, bins);
         let style = &self.style;
 
         for ((points, trace), weighting) in self
             .points
             .iter_mut()
-            .zip([primary, secondary])
+            .zip([primary_trace, secondary_trace])
             .zip([style.weighting_mode, style.secondary_weighting_mode])
         {
             let Some(trace) = trace else {
@@ -126,11 +128,11 @@ impl SpectrumState {
                 );
             });
         }
-        let pk = primary
-            .filter(|_| self.style.show_peak_label)
-            .and_then(|idx| self.build_peak(bins, trace_db(&snap.traces[idx], self.style.weighting_mode), min_f, max_f));
+        let peak = primary_trace
+            .filter(|_| style.show_peak_label)
+            .and_then(|trace| self.build_peak(bins, trace_db(&snap.traces[trace], style.weighting_mode), min_f, max_f));
         self.effective_range = Some((min_f, max_f));
-        self.fade_peak(pk);
+        self.fade_peak(peak);
         self.geometry.invalidate();
     }
 
@@ -175,13 +177,14 @@ impl SpectrumState {
         min_f: f32,
         max_f: f32,
     ) -> Option<PeakUpdate> {
+        const MIN_NORMALIZED_LEVEL: f32 = 0.08;
         let bin = peak_bin(bins, db, min_f, max_f)?;
         let (f, m) = interpolated_peak(bins, db, bin);
         let t = self.style.frequency_scale.pos_of(min_f, max_f, f);
         let x = if self.style.reverse_frequency { 1.0 - t } else { t }.clamp(0.0, 1.0);
         let y = ((m - self.style.floor_db) / (MAX_DB - self.style.floor_db).max(EPSILON))
             .clamp(0.0, 1.0);
-        if y < 0.08 { return None; }
+        if y < MIN_NORMALIZED_LEVEL { return None; }
         let unit = match self.style.weighting_mode {
             SpectrumWeightingMode::AWeighted => "dBFS(A)",
             SpectrumWeightingMode::Raw => "dBFS",
@@ -195,30 +198,33 @@ impl SpectrumState {
     }
 
     fn fade_peak(&mut self, incoming: Option<PeakUpdate>) {
+        const POSITION_TRACKING_RATE: f32 = 0.20;
+        const FADE_IN_RATE: f32 = 0.35;
+        const FADE_OUT_RETENTION: f32 = 0.88;
         match (incoming, &mut self.peak) {
-            (Some(new), Some(p)) => {
-                for (index, content) in new.0.into_iter().enumerate() {
-                    if p.content[index] != content {
-                        p.text[index] = peak_text(&content, index);
-                        p.content[index] = content;
+            (Some((contents, position)), Some(peak)) => {
+                for (index, content) in contents.into_iter().enumerate() {
+                    if peak.content[index] != content {
+                        peak.text[index] = peak_text(&content, index);
+                        peak.content[index] = content;
                     }
                 }
-                p.label_pos = std::array::from_fn(|i| lerp(p.label_pos[i], new.1[i], 0.20));
-                p.marker_pos = new.1;
-                p.opacity = (0.65 * p.opacity + 0.35).min(1.0);
+                peak.label_pos = std::array::from_fn(|i| lerp(peak.label_pos[i], position[i], POSITION_TRACKING_RATE));
+                peak.marker_pos = position;
+                peak.opacity = lerp(peak.opacity, 1.0, FADE_IN_RATE).min(1.0);
             }
-            (Some(new), None) => {
+            (Some((contents, position)), None) => {
                 self.peak = Some(PeakLabel {
-                    text: std::array::from_fn(|index| peak_text(&new.0[index], index)),
-                    content: new.0,
-                    label_pos: new.1,
-                    marker_pos: new.1,
+                    text: std::array::from_fn(|index| peak_text(&contents[index], index)),
+                    content: contents,
+                    label_pos: position,
+                    marker_pos: position,
                     opacity: 1.0,
                 });
             }
-            (None, Some(p)) => {
-                p.opacity *= 0.88;
-                if p.opacity < 0.01 {
+            (None, Some(peak)) => {
+                peak.opacity *= FADE_OUT_RETENTION;
+                if peak.opacity < MIN_PEAK_OPACITY {
                     self.peak = None;
                 }
             }
@@ -230,7 +236,7 @@ impl SpectrumState {
         self.peak.as_ref().filter(|_| {
             self.style.show_peak_label
                 && self.style.source != Channel::None
-                && self.points[0].len() >= 2
+                && self.points[0].len() >= MIN_TRACE_POINTS
         })
     }
 
@@ -254,42 +260,43 @@ impl SpectrumState {
         theme: &iced::Theme,
         peak_layout: Option<PeakLayout>,
     ) -> Option<SpectrumParams> {
-        let has_primary = self.style.source != Channel::None && self.points[0].len() >= 2;
-        let has_secondary =
-            self.style.secondary_source != Channel::None && self.points[1].len() >= 2;
-        if !has_primary && !has_secondary { return None; }
-        let pal = theme.extended_palette();
-
-        let visible = |show: bool, points: &SharedPoints| {
-            if show { Arc::clone(points) } else { Arc::clone(&EMPTY_POINTS) }
+        const AUXILIARY_LINE_ALPHA: f32 = 0.32;
+        let style = &self.style;
+        let visible_points = |source: Channel, points: &SharedPoints| {
+            let visible = source != Channel::None && points.len() >= MIN_TRACE_POINTS;
+            Arc::clone(if visible { points } else { &EMPTY_POINTS })
         };
-        let peak = self.peak();
-        let accent = self.palette[5];
         let (mut primary, mut secondary) = (
-            visible(has_primary, &self.points[0]),
-            visible(has_secondary, &self.points[1]),
+            visible_points(style.source, &self.points[0]),
+            visible_points(style.secondary_source, &self.points[1]),
         );
-        if self.style.display_mode == SpectrumDisplayMode::Bar && primary.is_empty() {
+        if primary.is_empty() && secondary.is_empty() { return None; }
+        if style.display_mode == SpectrumDisplayMode::Bar && primary.is_empty() {
             std::mem::swap(&mut primary, &mut secondary);
         }
+
+        let theme_palette = theme.extended_palette();
+        let primary_color = theme_palette.background.base.text;
+        let secondary_color = theme_palette.secondary.weak.text;
+        let peak_color = self.palette[PEAK_PALETTE_INDEX];
 
         Some(SpectrumParams {
             bounds,
             normalized_points: primary,
             secondary_points: secondary,
             geometry: self.geometry,
-            line_color: color_to_rgba(with_alpha(pal.background.base.text, 0.92)),
-            secondary_line_color: color_to_rgba(with_alpha(pal.secondary.weak.text, 0.32)),
-            highlight_threshold: self.style.highlight_threshold,
+            line_color: color_to_rgba(with_alpha(primary_color, 0.92)),
+            secondary_line_color: color_to_rgba(with_alpha(secondary_color, AUXILIARY_LINE_ALPHA)),
+            highlight_threshold: style.highlight_threshold,
             spectrum_palette: self.palette.map(color_to_rgba),
-            display_mode: self.style.display_mode,
-            bar_count: self.style.bar_count,
-            bar_gap: self.style.bar_gap,
-            peak: peak.map(|p| SpectrumPeakParams {
-                marker: p.marker_pos,
-                marker_color: color_to_rgba(with_alpha(accent, p.opacity * 0.95)),
-                leader_anchor: peak_layout.map(|l| point_to_normalized(bounds, l.leader_anchor)),
-                leader_color: color_to_rgba(with_alpha(accent, p.opacity * 0.32)),
+            display_mode: style.display_mode,
+            bar_count: style.bar_count,
+            bar_gap: style.bar_gap,
+            peak: self.peak().map(|peak| SpectrumPeakParams {
+                marker: peak.marker_pos,
+                marker_color: color_to_rgba(with_alpha(peak_color, peak.opacity * 0.95)),
+                leader_anchor: peak_layout.map(|layout| point_to_normalized(bounds, layout.leader_anchor)),
+                leader_color: color_to_rgba(with_alpha(peak_color, peak.opacity * AUXILIARY_LINE_ALPHA)),
             }),
         })
     }
@@ -307,9 +314,9 @@ crate::visuals::visualization_widget!(Spectrum, SpectrumState, |this, r, th, b| 
         r.with_layer(b, |r| draw_grid(r, th, b, range, &state));
     }
     r.draw_primitive(b, params);
-    if let Some((pk, layout)) = peak.zip(peak_layout) {
-        let accent = state.palette[5];
-        r.with_layer(b, |r| draw_peak(r, th, pk, layout, accent));
+    if let Some((peak, layout)) = peak.zip(peak_layout) {
+        let peak_color = state.palette[PEAK_PALETTE_INDEX];
+        r.with_layer(b, |r| draw_peak(r, th, peak, layout, peak_color));
     }
 });
 
@@ -476,10 +483,10 @@ fn draw_grid(
     let scale = style.frequency_scale;
     let (scaled_min, scaled_max) = (scale.scale(min_f), scale.scale(max_f));
     let scaled_span = (scaled_max - scaled_min).max(EPSILON);
-    let pal = th.extended_palette();
-    let txt = pal.background.base.text;
-    let (major_lc, major_tc) = (with_alpha(txt, 0.25), with_alpha(txt, 0.75));
-    let (minor_lc, minor_tc) = (with_alpha(txt, 0.10), with_alpha(txt, 0.20));
+    let theme_palette = th.extended_palette();
+    let text_color = theme_palette.background.base.text;
+    let major_colors = (with_alpha(text_color, 0.25), with_alpha(text_color, 0.75));
+    let minor_colors = (with_alpha(text_color, 0.10), with_alpha(text_color, 0.20));
 
     let tick_x = |f: f32| -> Option<f32> {
         if !(min_f..=max_f).contains(&f) { return None; }
@@ -487,36 +494,32 @@ fn draw_grid(
         pos.is_finite()
             .then_some(b.x + b.width * if reverse { 1.0 - pos } else { pos })
     };
-    let vline = |r: &mut iced::Renderer, x: f32, top: f32, h: f32, c: Color| {
-        let sx = (x - 0.5).clamp(b.x, (b.x + b.width - 1.0).max(b.x));
-        fill_rect(r, Rectangle::new(Point::new(sx, top), Size::new(1.0, h)), c);
+    let draw_vertical_line = |r: &mut iced::Renderer, x: f32, top: f32, h: f32, color: Color| {
+        let x = (x - 0.5).clamp(b.x, (b.x + b.width - 1.0).max(b.x));
+        fill_rect(r, Rectangle::new(Point::new(x, top), Size::new(1.0, h)), color);
     };
 
-    let slot = Size::new(48.0_f32, 12.0);
-    let ty = b.y + GRID_LABEL_GAP;
-    let clamp_lo = b.x + GRID_LABEL_GAP;
-    let clamp_hi = (b.x + b.width - GRID_LABEL_GAP - slot.width).max(clamp_lo);
+    let label_slot = Size::new(48.0, 12.0);
+    let label_y = b.y + GRID_LABEL_GAP;
+    let min_label_x = b.x + GRID_LABEL_GAP;
+    let max_label_x = (b.x + b.width - GRID_LABEL_GAP - label_slot.width).max(min_label_x);
     let mut last_right = f32::NEG_INFINITY;
     let mut draw_tick = |(frequency, major, text): &GridTick| {
         let Some(x) = tick_x(*frequency) else { return };
-        let (lc, tc) = if *major {
-            (major_lc, major_tc)
-        } else {
-            (minor_lc, minor_tc)
-        };
-        vline(r, x, b.y, b.height, lc);
+        let (line_color, text_color) = if *major { major_colors } else { minor_colors };
+        draw_vertical_line(r, x, b.y, b.height, line_color);
         let Some(text) = text else { return };
 
-        let tx = (x - slot.width * 0.5).clamp(clamp_lo, clamp_hi);
-        if tx < last_right {
+        let label_x = (x - label_slot.width * 0.5).clamp(min_label_x, max_label_x);
+        if label_x < last_right {
             return;
         }
-        last_right = tx + slot.width + GRID_LABEL_GAP;
+        last_right = label_x + label_slot.width + GRID_LABEL_GAP;
         r.fill_paragraph(
             text,
-            Point::new(tx + (slot.width - text.min_bounds().width) * 0.5, ty),
-            tc,
-            Rectangle::new(Point::new(tx, ty), slot),
+            Point::new(label_x + (label_slot.width - text.min_bounds().width) * 0.5, label_y),
+            text_color,
+            Rectangle::new(Point::new(label_x, label_y), label_slot),
         );
     };
     if reverse {
@@ -529,9 +532,7 @@ fn draw_grid(
 #[derive(Clone, Copy)]
 struct PeakLayout {
     rect: Rectangle,
-    title: Size,
-    detail: Size,
-    text: Point,
+    text_layouts: [(Point, Size); 2],
     leader_anchor: Point,
 }
 
@@ -539,58 +540,62 @@ fn point_to_normalized(b: Rectangle, p: Point) -> [f32; 2] {
     [(p.x - b.x) / b.width, 1.0 - (p.y - b.y) / b.height]
 }
 
-fn peak_label_layout(b: Rectangle, pk: &PeakLabel) -> Option<PeakLayout> {
-    if pk.opacity < 0.01 || b.width < 8.0 || b.height < 8.0 { return None; }
-    let title = pk.text[0].min_bounds();
-    let detail = pk.text[1].min_bounds();
-    let [px, py] = pk.label_pos;
-    let p = Point::new(b.x + b.width * px, b.y + b.height * (1.0 - py));
-    let (w, h) = (
-        title.width.max(detail.width) + 14.0,
-        title.height + detail.height + 13.0,
+fn peak_label_layout(b: Rectangle, peak: &PeakLabel) -> Option<PeakLayout> {
+    const MIN_VIEW_SIZE: f32 = 8.0;
+    const LABEL_GAP: f32 = 8.0;
+    const LINE_GAP: f32 = 2.0;
+    if peak.opacity < MIN_PEAK_OPACITY || b.width < MIN_VIEW_SIZE || b.height < MIN_VIEW_SIZE { return None; }
+    let [title, detail] = peak.text.each_ref().map(|text| text.min_bounds());
+    let [px, py] = peak.label_pos;
+    let peak_pos = Point::new(b.x + b.width * px, b.y + b.height * (1.0 - py));
+    let padding = Padding::new(7.0).top(6.0).bottom(5.0);
+    let size = Size::new(
+        title.width.max(detail.width) + padding.x(),
+        title.height + detail.height + padding.y() + LINE_GAP,
     );
-    let right = p.x + w + 8.0 <= b.x + b.width;
-    let x = if right { p.x + 8.0 } else { p.x - w - 8.0 }.clamp(b.x, (b.x + b.width - w).max(b.x));
-    let y = (p.y - h - 8.0).clamp(b.y, (b.y + b.height - h).max(b.y));
+    let fits_right = peak_pos.x + size.width + LABEL_GAP <= b.x + b.width;
+    let x = if fits_right { peak_pos.x + LABEL_GAP } else { peak_pos.x - size.width - LABEL_GAP }
+        .clamp(b.x, (b.x + b.width - size.width).max(b.x));
+    let y = (peak_pos.y - size.height - LABEL_GAP).clamp(b.y, (b.y + b.height - size.height).max(b.y));
+    let title_pos = Point::new(x + padding.left, y + padding.top);
+    let detail_pos = Point::new(title_pos.x, title_pos.y + title.height + LINE_GAP);
     Some(PeakLayout {
-        rect: Rectangle::new(Point::new(x, y), Size::new(w, h)),
-        title,
-        detail,
-        text: Point::new(x + 7.0, y + 6.0),
-        leader_anchor: Point::new(if right { x } else { x + w }, y + h),
+        rect: Rectangle::new(Point::new(x, y), size),
+        text_layouts: [(title_pos, title), (detail_pos, detail)],
+        leader_anchor: Point::new(if fits_right { x } else { x + size.width }, y + size.height),
     })
 }
 
 fn draw_peak(
     r: &mut iced::Renderer,
     th: &iced::Theme,
-    pk: &PeakLabel,
+    peak: &PeakLabel,
     layout: PeakLayout,
-    accent: Color,
+    peak_color: Color,
 ) {
-    let pal = th.extended_palette();
+    let theme_palette = th.extended_palette();
+    let [(title_pos, title_bounds), (detail_pos, detail_bounds)] = layout.text_layouts;
     fill_bordered_rect(
         r,
         layout.rect,
-        with_alpha(pal.background.strong.color, 0.90 * pk.opacity),
+        with_alpha(theme_palette.background.strong.color, 0.90 * peak.opacity),
         iced::Border {
-            color: with_alpha(accent, 0.50 * pk.opacity),
+            color: with_alpha(peak_color, 0.50 * peak.opacity),
             width: 1.0,
             radius: 2.0.into(),
         },
         true,
     );
     r.fill_paragraph(
-        &pk.text[0],
-        layout.text,
-        with_alpha(pal.background.base.text, pk.opacity),
-        Rectangle::new(layout.text, layout.title),
+        &peak.text[0],
+        title_pos,
+        with_alpha(theme_palette.background.base.text, peak.opacity),
+        Rectangle::new(title_pos, title_bounds),
     );
-    let pos = Point::new(layout.text.x, layout.text.y + layout.title.height + 2.0);
     r.fill_paragraph(
-        &pk.text[1],
-        pos,
-        with_alpha(pal.secondary.weak.text, 0.84 * pk.opacity),
-        Rectangle::new(pos, layout.detail),
+        &peak.text[1],
+        detail_pos,
+        with_alpha(theme_palette.secondary.weak.text, 0.84 * peak.opacity),
+        Rectangle::new(detail_pos, detail_bounds),
     );
 }

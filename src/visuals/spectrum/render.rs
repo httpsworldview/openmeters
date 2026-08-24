@@ -6,15 +6,15 @@ use std::sync::Arc;
 
 use crate::visuals::options::SpectrumDisplayMode;
 use crate::visuals::palettes::spectrum::SIZE as PALETTE_SIZE;
-use crate::visuals::render::common::sdf_primitive;
 use crate::util::color::{rgba_with_alpha, sample_rgba_gradient};
 use crate::util::lerp;
 use crate::visuals::render::common::{
     ClipTransform, GeometryFingerprint, GeometryScratch, SdfInstance, baseline_segment_instance,
     decimate_finite_ordered_line_in_place, dot_instance, extend_aa_line_list,
-    gradient_quad_instance, line_instance, pack_f32_pair, quad_instance,
+    gradient_quad_instance, line_instance, pack_f32_pair, quad_instance, sdf_primitive,
 };
 
+pub(super) const MIN_TRACE_POINTS: usize = 2;
 const MIN_BAR_COUNT: usize = 4;
 const LINE_THICKNESS: f32 = 1.0;
 const SECONDARY_LINE_THICKNESS: f32 = 0.75;
@@ -59,8 +59,8 @@ impl SpectrumParams {
         let bounds = self.bounds;
         let clip = ClipTransform::from_bounds(bounds);
 
-        let has_primary = self.normalized_points.len() >= 2;
-        if !has_primary && self.secondary_points.len() < 2 {
+        let has_primary = self.normalized_points.len() >= MIN_TRACE_POINTS;
+        if !has_primary && self.secondary_points.len() < MIN_TRACE_POINTS {
             return;
         }
 
@@ -90,8 +90,8 @@ impl SpectrumParams {
         let pixel_budget = bounds.width.ceil().max(1.0) as usize * 2;
         let GeometryScratch { instances: vertices, points, points2, .. } = scratch;
         let normalized = self.normalized_points.as_ref();
-        let has_primary = normalized.len() >= 2;
-        let has_secondary = self.secondary_points.len() >= 2;
+        let has_primary = normalized.len() >= MIN_TRACE_POINTS;
+        let has_secondary = self.secondary_points.len() >= MIN_TRACE_POINTS;
         let primary_segments = normalized.len().min(pixel_budget).saturating_sub(1);
         let secondary_segments = self.secondary_points.len().min(pixel_budget).saturating_sub(1);
         vertices.reserve(primary_segments * 2 + secondary_segments);
@@ -139,17 +139,17 @@ impl SpectrumParams {
     }
 
     fn build_bar_vertices(&self, verts: &mut Vec<SdfInstance>, clip: ClipTransform, bounds: Rectangle) {
-        let p = self;
         let pixel_budget = (bounds.width.ceil().max(1.0) as usize).saturating_mul(2);
-        let bar_count = p
+        let bar_count = self
             .bar_count
             .clamp(MIN_BAR_COUNT, pixel_budget.max(MIN_BAR_COUNT));
-        let gap = p.bar_gap.clamp(0.0, 0.8);
+        let gap = self.bar_gap.clamp(0.0, 0.8);
         let unit = bounds.width / bar_count as f32;
         let (bar_w, offset) = (unit * (1.0 - gap), unit * gap * 0.5);
         let baseline = bounds.y + bounds.height;
         let y_at = |amp: f32| bounds.y + bounds.height * (1.0 - amp);
-        let secondary = (p.secondary_points.len() >= 2).then_some(p.secondary_points.as_ref());
+        let secondary = (self.secondary_points.len() >= MIN_TRACE_POINTS)
+            .then_some(self.secondary_points.as_ref());
 
         verts.reserve(bar_count * if secondary.is_some() { 2 } else { 1 });
         for i in 0..bar_count {
@@ -157,12 +157,12 @@ impl SpectrumParams {
                 i as f32 / bar_count as f32,
                 (i + 1) as f32 / bar_count as f32,
             );
-            let amp = sample_max(&p.normalized_points, t0, t1);
+            let amp = sample_max(&self.normalized_points, t0, t1);
             let x0 = bounds.x + i as f32 * unit + offset;
             let x1 = x0 + bar_w;
             if amp >= 1e-4 {
                 let y = y_at(amp);
-                let color = palette_color(&p.spectrum_palette, amp, p.highlight_threshold);
+                let color = palette_color(&self.spectrum_palette, amp, self.highlight_threshold);
                 verts.push(gradient_quad_instance(
                     x0,
                     y,
@@ -183,7 +183,7 @@ impl SpectrumParams {
                     x1,
                     sec_y + h,
                     clip,
-                    p.secondary_line_color,
+                    self.secondary_line_color,
                 ));
             }
         }
