@@ -27,6 +27,7 @@ fn vs_main(input: InstanceInput, @builtin(vertex_index) vertex: u32) -> VertexOu
             let corner = vec2<f32>(endpoint, 1.0 - parity);
             position = mix(input.p0, input.p1, corner);
             color = mix(input.color0, input.color1, corner.y);
+            sdf.w = input.params.x; // Preserve raw color for replacement blending.
         }
         case 1u: {
             let top_y = mix(max(input.p0.y, input.params.x), max(input.p1.y, input.params.x), endpoint);

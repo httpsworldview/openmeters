@@ -11,7 +11,8 @@ use crate::util::lerp;
 use crate::visuals::render::common::{
     ClipTransform, GeometryFingerprint, GeometryScratch, SdfInstance, baseline_segment_instance,
     decimate_finite_ordered_line_in_place, dot_instance, extend_aa_line_list,
-    gradient_quad_instance, line_instance, pack_f32_pair, quad_instance, sdf_primitive,
+    gradient_quad_instance, line_instance, pack_f32_pair, quad_instance, replace_quad_instance,
+    sdf_primitive,
 };
 
 pub(super) const MIN_TRACE_POINTS: usize = 2;
@@ -25,6 +26,38 @@ pub struct SpectrumPeakParams {
     pub marker_color: [f32; 4],
     pub leader_anchor: Option<[f32; 2]>,
     pub leader_color: [f32; 4],
+}
+
+#[derive(Debug, Clone)]
+pub struct SpectrumCutoutParams {
+    pub bounds: Rectangle,
+    pub rectangles: Arc<Vec<Rectangle>>,
+    pub geometry: crate::visuals::GeometryKey,
+    pub revision: u64,
+    pub background: [f32; 4],
+}
+
+impl SpectrumCutoutParams {
+    fn geometry_fingerprint(&self) -> GeometryFingerprint {
+        [
+            self.revision,
+            pack_f32_pair(self.bounds.width, self.bounds.height),
+            pack_f32_pair(self.background[0], self.background[1]),
+            pack_f32_pair(self.background[2], self.background[3]),
+            0,
+            0,
+        ]
+    }
+
+    fn build_vertices(&self, scratch: &mut GeometryScratch) {
+        let clip = ClipTransform::from_bounds(self.bounds);
+        scratch.instances.extend(
+            self.rectangles
+                .iter()
+                .filter_map(|rectangle| self.bounds.intersection(rectangle))
+                .map(|rectangle| replace_quad_instance(rectangle, clip, self.background)),
+        );
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -268,6 +301,12 @@ mod tests {
 sdf_primitive!(
     SpectrumParams,
     "Spectrum",
+    |self| self.geometry.id,
+    self.geometry_fingerprint()
+);
+sdf_primitive!(
+    replace SpectrumCutoutParams,
+    "Spectrum label cutouts",
     |self| self.geometry.id,
     self.geometry_fingerprint()
 );

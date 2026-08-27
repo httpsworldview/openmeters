@@ -124,6 +124,23 @@ pub fn quad_instance(
     gradient_quad_instance(x0, y0, x1, y1, clip, color, color)
 }
 
+pub(in crate::visuals) fn replace_quad_instance(
+    bounds: Rectangle,
+    clip: ClipTransform,
+    color: [f32; 4],
+) -> SdfInstance {
+    let mut instance = quad_instance(
+        bounds.x,
+        bounds.y,
+        bounds.x + bounds.width,
+        bounds.y + bounds.height,
+        clip,
+        color,
+    );
+    instance.params[0] = 1.0;
+    instance
+}
+
 pub(in crate::visuals) fn gradient_quad_instance(
     x0: f32,
     y0: f32,
@@ -526,14 +543,14 @@ struct CachedInstance {
     last_used: u64,
 }
 
-pub struct SdfPipeline {
+pub struct SdfPipeline<const REPLACE: bool = false> {
     pub(in crate::visuals) pipeline: wgpu::RenderPipeline,
     instances: HashMap<u64, CachedInstance>,
     cache: CacheTracker,
     pub(in crate::visuals) scratch: GeometryScratch,
 }
 
-impl SdfPipeline {
+impl<const REPLACE: bool> SdfPipeline<REPLACE> {
     pub fn prepare_required(&mut self, key: u64, fingerprint: Option<GeometryFingerprint>) -> bool {
         let (frame, threshold) = self.cache.advance();
         let current = fingerprint.is_some_and(|fingerprint| {
@@ -592,7 +609,7 @@ impl SdfPipeline {
     }
 }
 
-impl iced_wgpu::primitive::Pipeline for SdfPipeline {
+impl<const REPLACE: bool> iced_wgpu::primitive::Pipeline for SdfPipeline<REPLACE> {
     fn new(device: &wgpu::Device, _: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
         const LABEL: &str = "Visual SDF pipeline";
         const ATTRS: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
@@ -613,7 +630,11 @@ impl iced_wgpu::primitive::Pipeline for SdfPipeline {
                     attributes: &ATTRS,
                 }],
                 bind_group_layouts: &[],
-                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                blend: Some(if REPLACE {
+                    wgpu::BlendState::REPLACE
+                } else {
+                    wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING
+                }),
                 write_mask: wgpu::ColorWrites::ALL,
             },
         );
@@ -627,12 +648,19 @@ impl iced_wgpu::primitive::Pipeline for SdfPipeline {
 }
 
 macro_rules! sdf_primitive {
-    ($params:ty, $($rest:tt)+) => {
-        $crate::visuals::render::common::sdf_primitive!(@impl $params, $($rest)+);
-    };
-    (@impl $primitive:ty, $label:expr, |$self:ident| $key:expr $(, $fingerprint:expr)?) => {
+    (replace $params:ty, $($rest:tt)+) => {
         $crate::visuals::render::common::sdf_primitive!(@impl
-            $primitive, $label,
+            $crate::visuals::render::common::SdfPipeline<true>, $params, $($rest)+
+        );
+    };
+    ($params:ty, $($rest:tt)+) => {
+        $crate::visuals::render::common::sdf_primitive!(@impl
+            $crate::visuals::render::common::SdfPipeline, $params, $($rest)+
+        );
+    };
+    (@impl $pipeline:ty, $primitive:ty, $label:expr, |$self:ident| $key:expr $(, $fingerprint:expr)?) => {
+        $crate::visuals::render::common::sdf_primitive!(@impl
+            $pipeline, $primitive, $label,
             layers |$self, scratch| {
                 ($key, $crate::visuals::render::common::sdf_primitive!(@fingerprint $self $(, $fingerprint)?)) => {
                     $self.build_vertices(scratch);
@@ -640,13 +668,13 @@ macro_rules! sdf_primitive {
             }
         );
     };
-    (@impl $primitive:ty, $label:expr,
+    (@impl $pipeline:ty, $primitive:ty, $label:expr,
         layers |$self:ident, $scratch:ident| {
             $(($key:expr, $fingerprint:expr) => $build:block),+ $(,)?
         }
     ) => {
         impl iced_wgpu::primitive::Primitive for $primitive {
-            type Pipeline = $crate::visuals::render::common::SdfPipeline;
+            type Pipeline = $pipeline;
 
             fn prepare(
                 &$self,

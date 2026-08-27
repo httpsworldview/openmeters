@@ -2,7 +2,9 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::processor::{SpectrumSnapshot, SpectrumTraceSnapshot};
-use super::render::{MIN_TRACE_POINTS, SpectrumParams, SpectrumPeakParams};
+use super::render::{
+    MIN_TRACE_POINTS, SpectrumCutoutParams, SpectrumParams, SpectrumPeakParams,
+};
 use crate::persistence::settings::SpectrumSettings;
 use crate::visuals::options::{SpectrumDisplayMode, SpectrumWeightingMode};
 use crate::util::audio::musical::NoteInfo;
@@ -22,6 +24,8 @@ const MIN_FREQUENCY: f32 = 20.0;
 const MAX_DB: f32 = 0.0;
 const GRID_LABEL_SIZE: f32 = 10.0;
 const GRID_LABEL_GAP: f32 = 6.0;
+const GRID_LABEL_PADDING_X: f32 = 4.0;
+const GRID_LABEL_PADDING_Y: f32 = 2.0;
 const PEAK_PALETTE_INDEX: usize = PALETTE_SIZE - 1;
 const MIN_PEAK_OPACITY: f32 = 0.01;
 
@@ -34,6 +38,18 @@ struct PeakLabel {
 }
 type PeakUpdate = ([String; 2], [f32; 2]);
 type GridTick = (f32, bool, Option<Paragraph>);
+#[derive(Clone, Copy)]
+struct GridLabelLayout {
+    tick_index: usize,
+    bounds: Rectangle,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct GridLayoutKey {
+    bounds: [u32; 4],
+    range: [u32; 2],
+    scale: FrequencyScale,
+    reverse: bool,
+}
 type SharedPoints = Arc<Vec<[f32; 2]>>;
 static EMPTY_POINTS: LazyLock<SharedPoints> = LazyLock::new(|| Arc::new(Vec::new()));
 fn rebuild_points(
@@ -59,6 +75,10 @@ pub(crate) struct SpectrumState {
     x_cache_key: (usize, u32, FrequencyScale),
     x_cache: Vec<f32>,
     grid_ticks: Vec<GridTick>,
+    grid_labels: Vec<GridLabelLayout>,
+    grid_layout_key: Option<GridLayoutKey>,
+    grid_layout_revision: u64,
+    grid_cutouts: Arc<Vec<Rectangle>>,
 }
 
 impl SpectrumState {
@@ -73,6 +93,10 @@ impl SpectrumState {
             x_cache_key: (0, 0, FrequencyScale::default()),
             x_cache: Vec::new(),
             grid_ticks: Vec::new(),
+            grid_labels: Vec::new(),
+            grid_layout_key: None,
+            grid_layout_revision: 0,
+            grid_cutouts: Arc::new(Vec::new()),
         }
     }
 
@@ -80,6 +104,7 @@ impl SpectrumState {
         self.style = settings.clone();
         self.style.floor_db = floor_db;
         if !settings.show_peak_label { self.peak = None; }
+        if !settings.show_grid { self.clear_grid_layout(); }
         self.geometry.invalidate();
     }
 
@@ -89,6 +114,7 @@ impl SpectrumState {
         self.points.fill_with(|| Arc::clone(&EMPTY_POINTS));
         self.effective_range = None;
         self.peak = None;
+        self.clear_grid_layout();
         self.geometry.invalidate();
     }
 
@@ -168,6 +194,68 @@ impl SpectrumState {
                 }),
         );
         self.x_cache_key = key;
+    }
+
+    fn clear_grid_layout(&mut self) {
+        if self.grid_layout_key.take().is_none() {
+            return;
+        }
+        self.grid_labels.clear();
+        self.grid_cutouts = Arc::new(Vec::new());
+        self.grid_layout_revision = self.grid_layout_revision.wrapping_add(1);
+    }
+
+    fn layout_grid_labels(&mut self, bounds: Rectangle, range: (f32, f32)) {
+        let key = GridLayoutKey {
+            bounds: [bounds.x, bounds.y, bounds.width, bounds.height].map(f32::to_bits),
+            range: [range.0.to_bits(), range.1.to_bits()],
+            scale: self.style.frequency_scale,
+            reverse: self.style.reverse_frequency,
+        };
+        if self.grid_layout_key == Some(key) {
+            return;
+        }
+        self.grid_layout_key = Some(key);
+        self.grid_layout_revision = self.grid_layout_revision.wrapping_add(1);
+        self.grid_labels.clear();
+        if bounds.width <= 0.0 || bounds.height <= 0.0 {
+            self.grid_cutouts = Arc::new(Vec::new());
+            return;
+        }
+
+        let axis = GridAxis::new(bounds, range, &self.style);
+        let label_y = bounds.y + GRID_LABEL_GAP;
+        let min_label_x = bounds.x + GRID_LABEL_GAP;
+        let ticks = &self.grid_ticks;
+        let labels = &mut self.grid_labels;
+        let mut last_right = f32::NEG_INFINITY;
+        let mut layout_tick = |(tick_index, tick): (usize, &GridTick)| {
+            let (frequency, _, Some(text)) = tick else { return };
+            let Some(x) = axis.tick_x(*frequency) else { return };
+            let text_bounds = text.min_bounds();
+            let label_size = Size::new(
+                text_bounds.width + GRID_LABEL_PADDING_X * 2.0,
+                text_bounds.height + GRID_LABEL_PADDING_Y * 2.0,
+            );
+            let max_label_x =
+                (bounds.x + bounds.width - GRID_LABEL_GAP - label_size.width).max(min_label_x);
+            let label_x = (x - label_size.width * 0.5).clamp(min_label_x, max_label_x);
+            if label_x < last_right {
+                return;
+            }
+            last_right = label_x + label_size.width + GRID_LABEL_GAP;
+
+            labels.push(GridLabelLayout {
+                tick_index,
+                bounds: Rectangle::new(Point::new(label_x, label_y), label_size),
+            });
+        };
+        if axis.reverse {
+            ticks.iter().enumerate().rev().for_each(&mut layout_tick);
+        } else {
+            ticks.iter().enumerate().for_each(layout_tick);
+        }
+        self.grid_cutouts = Arc::new(self.grid_labels.iter().map(|label| label.bounds).collect());
     }
 
     fn build_peak(
@@ -300,20 +388,42 @@ impl SpectrumState {
             }),
         })
     }
+
+    fn cutout_params(&self, bounds: Rectangle, theme: &iced::Theme) -> Option<SpectrumCutoutParams> {
+        (!self.grid_cutouts.is_empty()).then(|| SpectrumCutoutParams {
+            bounds,
+            rectangles: Arc::clone(&self.grid_cutouts),
+            geometry: self.geometry,
+            revision: self.grid_layout_revision,
+            // Replace instead of blending so transparent backgrounds keep their alpha.
+            background: color_to_rgba(theme.extended_palette().background.base.color),
+        })
+    }
 }
 
 crate::visuals::visualization_widget!(Spectrum, SpectrumState, |this, r, th, b| {
-    let state = this.state.borrow();
+    let mut state = this.state.borrow_mut();
+    let grid_range = state.effective_range.filter(|_| state.style.show_grid);
+    if let Some(range) = grid_range {
+        state.layout_grid_labels(b, range);
+    } else {
+        state.clear_grid_layout();
+    }
+
     let peak = state.peak();
     let peak_layout = peak.and_then(|p| peak_label_layout(b, p));
     let Some(params) = state.visual_params(b, th, peak_layout) else {
         fill_rect(r, b, th.extended_palette().background.base.color);
         return;
     };
-    if let Some(range) = state.effective_range.filter(|_| state.style.show_grid) {
-        r.with_layer(b, |r| draw_grid(r, th, b, range, &state));
-    }
     r.draw_primitive(b, params);
+    if let Some(cutouts) = state.cutout_params(b, th) {
+        r.draw_primitive(b, cutouts);
+    }
+    if let Some(range) = grid_range {
+        r.with_layer(b, |r| draw_grid_lines(r, th, b, range, &state));
+        r.with_layer(b, |r| draw_grid_labels(r, th, &state));
+    }
     if let Some((peak, layout)) = peak.zip(peak_layout) {
         let peak_color = state.palette[PEAK_PALETTE_INDEX];
         r.with_layer(b, |r| draw_peak(r, th, peak, layout, peak_color));
@@ -413,6 +523,48 @@ mod tests {
     }
 
     #[test]
+    fn reversed_grid_cutouts_remain_in_screen_order() {
+        let mut state = SpectrumState::new();
+        state.style.reverse_frequency = true;
+        state.ensure_x_cache(20.0, 24_000.0, &[0.0, 20.0, 24_000.0]);
+        state.layout_grid_labels(
+            Rectangle::new(Point::ORIGIN, Size::new(600.0, 100.0)),
+            (20.0, 24_000.0),
+        );
+
+        assert!(state.grid_labels.len() > 2);
+        assert!(state.grid_labels.windows(2).all(|labels| {
+            labels[0].bounds.x + labels[0].bounds.width <= labels[1].bounds.x
+        }));
+    }
+
+    #[test]
+    fn grid_layout_and_cutout_geometry_are_cached() {
+        let mut state = SpectrumState::new();
+        state.ensure_x_cache(20.0, 24_000.0, &[0.0, 20.0, 24_000.0]);
+        let bounds = Rectangle::new(Point::ORIGIN, Size::new(600.0, 100.0));
+        let range = (20.0, 24_000.0);
+        state.layout_grid_labels(bounds, range);
+        let revision = state.grid_layout_revision;
+        let cutouts = Arc::clone(&state.grid_cutouts);
+
+        state.layout_grid_labels(bounds, range);
+
+        assert_eq!(state.grid_layout_revision, revision);
+        assert!(Arc::ptr_eq(&state.grid_cutouts, &cutouts));
+        assert!(
+            cutouts
+                .iter()
+                .copied()
+                .eq(state.grid_labels.iter().map(|label| label.bounds))
+        );
+
+        state.layout_grid_labels(bounds.expand(1.0), range);
+        assert_ne!(state.grid_layout_revision, revision);
+        assert!(!Arc::ptr_eq(&state.grid_cutouts, &cutouts));
+    }
+
+    #[test]
     fn point_build_emits_only_finite_coordinates() {
         let mut points = Vec::new();
         build_single_points_into(
@@ -468,64 +620,105 @@ fn build_single_points_into(
     }
 }
 
-fn draw_grid(
+#[derive(Clone, Copy)]
+struct GridAxis {
+    bounds: Rectangle,
+    range: (f32, f32),
+    scale: FrequencyScale,
+    scaled_min: f32,
+    scaled_span: f32,
+    reverse: bool,
+}
+
+impl GridAxis {
+    fn new(bounds: Rectangle, range: (f32, f32), style: &SpectrumSettings) -> Self {
+        let scale = style.frequency_scale;
+        let scaled_min = scale.scale(range.0);
+        Self {
+            bounds,
+            range,
+            scale,
+            scaled_min,
+            scaled_span: (scale.scale(range.1) - scaled_min).max(EPSILON),
+            reverse: style.reverse_frequency,
+        }
+    }
+
+    fn tick_x(self, frequency: f32) -> Option<f32> {
+        if !(self.range.0..=self.range.1).contains(&frequency) {
+            return None;
+        }
+        let position = ((self.scale.scale(frequency) - self.scaled_min) / self.scaled_span)
+            .clamp(0.0, 1.0);
+        position.is_finite().then_some(
+            self.bounds.x
+                + self.bounds.width * if self.reverse { 1.0 - position } else { position },
+        )
+    }
+}
+
+fn draw_grid_lines(
     r: &mut iced::Renderer,
     th: &iced::Theme,
-    b: Rectangle,
-    (min_f, max_f): (f32, f32),
+    bounds: Rectangle,
+    range: (f32, f32),
     state: &SpectrumState,
 ) {
-    if b.width <= 0.0 || b.height <= 0.0 {
+    if bounds.width <= 0.0 || bounds.height <= 0.0 {
         return;
     }
-    let style = &state.style;
-    let reverse = style.reverse_frequency;
-    let scale = style.frequency_scale;
-    let (scaled_min, scaled_max) = (scale.scale(min_f), scale.scale(max_f));
-    let scaled_span = (scaled_max - scaled_min).max(EPSILON);
-    let theme_palette = th.extended_palette();
-    let text_color = theme_palette.background.base.text;
-    let major_colors = (with_alpha(text_color, 0.25), with_alpha(text_color, 0.75));
-    let minor_colors = (with_alpha(text_color, 0.10), with_alpha(text_color, 0.20));
+    let axis = GridAxis::new(bounds, range, &state.style);
+    let text_color = th.extended_palette().background.base.text;
+    let major_color = with_alpha(text_color, 0.25);
+    let minor_color = with_alpha(text_color, 0.10);
+    let bottom = bounds.y + bounds.height;
 
-    let tick_x = |f: f32| -> Option<f32> {
-        if !(min_f..=max_f).contains(&f) { return None; }
-        let pos = ((scale.scale(f) - scaled_min) / scaled_span).clamp(0.0, 1.0);
-        pos.is_finite()
-            .then_some(b.x + b.width * if reverse { 1.0 - pos } else { pos })
-    };
-    let draw_vertical_line = |r: &mut iced::Renderer, x: f32, top: f32, h: f32, color: Color| {
-        let x = (x - 0.5).clamp(b.x, (b.x + b.width - 1.0).max(b.x));
-        fill_rect(r, Rectangle::new(Point::new(x, top), Size::new(1.0, h)), color);
-    };
-
-    let label_slot = Size::new(48.0, 12.0);
-    let label_y = b.y + GRID_LABEL_GAP;
-    let min_label_x = b.x + GRID_LABEL_GAP;
-    let max_label_x = (b.x + b.width - GRID_LABEL_GAP - label_slot.width).max(min_label_x);
-    let mut last_right = f32::NEG_INFINITY;
-    let mut draw_tick = |(frequency, major, text): &GridTick| {
-        let Some(x) = tick_x(*frequency) else { return };
-        let (line_color, text_color) = if *major { major_colors } else { minor_colors };
-        draw_vertical_line(r, x, b.y, b.height, line_color);
-        let Some(text) = text else { return };
-
-        let label_x = (x - label_slot.width * 0.5).clamp(min_label_x, max_label_x);
-        if label_x < last_right {
-            return;
+    for (frequency, major, _) in &state.grid_ticks {
+        let Some(x) = axis.tick_x(*frequency) else { continue };
+        let x = (x - 0.5).clamp(bounds.x, (bounds.x + bounds.width - 1.0).max(bounds.x));
+        let color = if *major { major_color } else { minor_color };
+        let label_index = state
+            .grid_labels
+            .partition_point(|label| label.bounds.x + label.bounds.width <= x);
+        let blocker = state
+            .grid_labels
+            .get(label_index)
+            .filter(|label| label.bounds.x < x + 1.0);
+        let mut draw_segment = |top: f32, segment_bottom: f32| {
+            if segment_bottom > top {
+                fill_rect(
+                    r,
+                    Rectangle::new(Point::new(x, top), Size::new(1.0, segment_bottom - top)),
+                    color,
+                );
+            }
+        };
+        if let Some(label) = blocker {
+            let cutout_top = label.bounds.y.clamp(bounds.y, bottom);
+            let cutout_bottom = (label.bounds.y + label.bounds.height).clamp(cutout_top, bottom);
+            draw_segment(bounds.y, cutout_top);
+            draw_segment(cutout_bottom, bottom);
+        } else {
+            draw_segment(bounds.y, bottom);
         }
-        last_right = label_x + label_slot.width + GRID_LABEL_GAP;
+    }
+}
+
+fn draw_grid_labels(r: &mut iced::Renderer, th: &iced::Theme, state: &SpectrumState) {
+    let text_color = th.extended_palette().background.base.text;
+    let major_color = with_alpha(text_color, 0.75);
+    let minor_color = with_alpha(text_color, 0.20);
+    for layout in &state.grid_labels {
+        let (_, major, Some(text)) = &state.grid_ticks[layout.tick_index] else { continue };
         r.fill_paragraph(
             text,
-            Point::new(label_x + (label_slot.width - text.min_bounds().width) * 0.5, label_y),
-            text_color,
-            Rectangle::new(Point::new(label_x, label_y), label_slot),
+            Point::new(
+                layout.bounds.x + GRID_LABEL_PADDING_X,
+                layout.bounds.y + GRID_LABEL_PADDING_Y,
+            ),
+            if *major { major_color } else { minor_color },
+            layout.bounds,
         );
-    };
-    if reverse {
-        state.grid_ticks.iter().rev().for_each(&mut draw_tick);
-    } else {
-        state.grid_ticks.iter().for_each(draw_tick);
     }
 }
 
