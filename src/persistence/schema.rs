@@ -181,6 +181,7 @@ mod tests {
         settings.last_device_name = Some("device.name".into());
 
         let value = serde_json::to_value(&settings).unwrap();
+        assert!(value["bar"].get("monitor").is_none());
         let popouts = &value["visuals"]["popouts"];
         assert!(popouts["spectrum"].get("popped_out").is_none());
         assert_eq!(popouts["waveform"]["popped_out"], false);

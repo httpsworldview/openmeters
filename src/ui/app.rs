@@ -25,7 +25,7 @@ use iced::{
     window,
 };
 use iced_layershell::settings::{LayerShellSettings, Settings as LayerSettings, StartMode};
-use message::{Message, keyboard_shortcut, shell_event, update, view};
+use message::{Message, app_event, shell_event, update, view};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -117,6 +117,7 @@ struct UiApp {
     main_window_size: Size,
     last_base_window_size: Size,
     main_window_is_layer: bool,
+    opened_main_layer_window: Option<window::Id>,
     use_layershell: bool,
     settings_window: Option<(window::Id, ActiveSettings)>,
     settings_scroll: ScrollGlow,
@@ -188,6 +189,7 @@ impl UiApp {
             main_window_size: main_size,
             last_base_window_size: base_size,
             main_window_is_layer: main_is_layer,
+            opened_main_layer_window: None,
             use_layershell,
             settings_window: None,
             settings_scroll: ScrollGlow::default(),
@@ -202,11 +204,7 @@ impl UiApp {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        let mut subs = vec![
-            event::listen_with(keyboard_shortcut),
-            window::close_events().map(Message::WindowClosed),
-            window::resize_events().map(|(id, size)| Message::WindowResized(id, size)),
-        ];
+        let mut subs = vec![event::listen_with(app_event)];
         if self.bar_resize_state.is_some() {
             subs.push(event::listen_with(message::bar_drag_events));
         }

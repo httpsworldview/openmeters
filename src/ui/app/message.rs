@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::{TOAST_DISPLAY_DURATION, UiApp, windowing::AppWindow};
-use crate::ui::config::{ConfigEffect, ConfigMessage};
+use crate::ui::config::{BarChange, BarOutputEvent, ConfigEffect, ConfigMessage};
 use crate::ui::settings::SettingsMessage;
 use crate::ui::visuals::VisualsMessage;
 use crate::ui::widgets::{fill, page, scroll_glow::ScrollGlow};
@@ -24,8 +24,9 @@ pub(super) enum Message {
     Tick,
     Watchdog(u64),
     AudioWake,
-    BarOutput(u32, Option<String>),
-    BarWindowOutput(window::Id, Option<String>),
+    BarOutput(u32, Option<String>, BarOutputEvent),
+    BarWindowOutput(window::Id, Option<u32>),
+    ShellWindowClosed(window::Id),
     ToggleConfig,
     TogglePause,
     PopOutOrDock(window::Id),
@@ -33,6 +34,7 @@ pub(super) enum Message {
     BarResizeMove(iced::Point),
     BarResizeEnd,
     Quit,
+    WindowOpened(window::Id),
     WindowClosed(window::Id),
     WindowResized(window::Id, Size),
     Settings(window::Id, SettingsMessage),
@@ -49,13 +51,19 @@ pub(super) fn layershell_open(settings: NewLayerShellSettings) -> (window::Id, T
 
 pub(super) fn shell_event(event: ShellEvent) -> Option<Message> {
     Some(match event {
-        ShellEvent::OutputAdded(output) | ShellEvent::OutputUpdated(output) => {
-            Message::BarOutput(output.id, output.name)
+        ShellEvent::OutputAdded(output) => {
+            Message::BarOutput(output.id, output.name, BarOutputEvent::Added)
         }
-        ShellEvent::OutputRemoved(output) => Message::BarOutput(output.id, None),
+        ShellEvent::OutputUpdated(output) => {
+            Message::BarOutput(output.id, output.name, BarOutputEvent::Updated)
+        }
+        ShellEvent::OutputRemoved(output) => {
+            Message::BarOutput(output.id, output.name, BarOutputEvent::Removed)
+        }
         ShellEvent::WindowOutputChanged { window, output } => {
-            Message::BarWindowOutput(window, output.and_then(|output| output.name))
+            Message::BarWindowOutput(window, output.map(|output| output.id))
         }
+        ShellEvent::Closed(window) => Message::ShellWindowClosed(window),
         _ => return None,
     })
 }
@@ -72,13 +80,20 @@ pub(super) fn bar_drag_events(evt: Event, _: event::Status, _: window::Id) -> Op
     }
 }
 
-pub(super) fn keyboard_shortcut(
+pub(super) fn app_event(
     event: Event,
     status: event::Status,
     window_id: window::Id,
 ) -> Option<Message> {
     let Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) = event else {
-        return None;
+        return match event {
+            Event::Window(window::Event::Opened { .. }) => Some(Message::WindowOpened(window_id)),
+            Event::Window(window::Event::Closed) => Some(Message::WindowClosed(window_id)),
+            Event::Window(window::Event::Resized(size)) => {
+                Some(Message::WindowResized(window_id, size))
+            }
+            _ => None,
+        };
     };
     let (ctrl, shift, no_modifiers) =
         (modifiers.control(), modifiers.shift(), modifiers.is_empty());
@@ -95,6 +110,14 @@ pub(super) fn keyboard_shortcut(
             }
         }
         _ => None,
+    }
+}
+
+fn close_main_layer(app: &mut UiApp, window: window::Id) -> Task<Message> {
+    if app.config_page.retry_bar_after_close() {
+        app.handle_bar_config_change(BarChange::Monitor)
+    } else {
+        app.on_window_closed(window)
     }
 }
 
@@ -165,17 +188,47 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
             app.frames.borrow_mut().watchdog(generation, Instant::now());
             Task::none()
         }
-        Message::BarOutput(id, name) => {
-            app.config_page.sync_bar_output(id, name);
-            Task::none()
+        Message::BarOutput(id, name, event) => {
+            if app.config_page.sync_bar_output(id, name, event) {
+                app.handle_bar_config_change(BarChange::Monitor)
+            } else {
+                Task::none()
+            }
         }
-        Message::BarWindowOutput(window, name) => {
+        Message::BarWindowOutput(window, output) => {
+            if app.main_window_is_layer
+                && window == app.main_window_id
+                && app.config_page.sync_current_bar_output(output)
+            {
+                app.handle_bar_config_change(BarChange::Monitor)
+            } else {
+                Task::none()
+            }
+        }
+        // Shell close events are ordered after output changes in the same stream.
+        Message::ShellWindowClosed(window)
+            if app.main_window_is_layer && window == app.main_window_id =>
+        {
+            close_main_layer(app, window)
+        }
+        Message::ShellWindowClosed(_) => Task::none(),
+        Message::WindowOpened(window) => {
             if app.main_window_is_layer && window == app.main_window_id {
-                app.config_page.sync_current_bar_output(name);
+                app.opened_main_layer_window = Some(window);
             }
             Task::none()
         }
-        Message::WindowClosed(window_id) => app.on_window_closed(window_id),
+        // After Opened, the ordered shell close is authoritative for the main layer.
+        Message::WindowClosed(window)
+            if app.main_window_is_layer && window == app.main_window_id =>
+        {
+            if app.opened_main_layer_window == Some(window) {
+                Task::none()
+            } else {
+                close_main_layer(app, window)
+            }
+        }
+        Message::WindowClosed(window) => app.on_window_closed(window),
         Message::Settings(window_id, settings_msg) => {
             if let Some((wid, panel)) = app.settings_window.as_mut()
                 && *wid == window_id

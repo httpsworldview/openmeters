@@ -40,6 +40,109 @@ impl std::fmt::Display for DeviceOption {
     }
 }
 
+#[derive(Clone, PartialEq, Eq)]
+enum BarMonitorOption {
+    Automatic,
+    Connected(String),
+    Disconnected(String),
+}
+
+impl BarMonitorOption {
+    fn into_monitor(self) -> Option<String> {
+        match self {
+            Self::Automatic => None,
+            Self::Connected(name) | Self::Disconnected(name) => Some(name),
+        }
+    }
+}
+
+impl std::fmt::Display for BarMonitorOption {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Automatic => f.write_str("Automatic"),
+            Self::Connected(name) => f.write_str(name),
+            Self::Disconnected(name) => write!(f, "{name} (disconnected)"),
+        }
+    }
+}
+
+fn bar_monitor_status(selected: &BarMonitorOption, current: Option<&str>) -> Option<String> {
+    use BarMonitorOption::{Automatic, Connected, Disconnected};
+
+    match selected {
+        Automatic | Connected(_) => None,
+        Disconnected(_) => Some(current.map_or_else(
+            || "Finding a fallback...".into(),
+            |current| format!("Fallback: {current}"),
+        )),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::ui) enum BarOutputEvent {
+    Added,
+    Updated,
+    Removed,
+}
+
+#[derive(Default)]
+struct BarOutputState {
+    output: Option<u32>,
+    ready: bool,
+    topology_changed: bool,
+    close_retried: bool,
+}
+
+impl BarOutputState {
+    fn mark_pending(&mut self) {
+        (self.ready, self.topology_changed, self.close_retried) = (false, false, false);
+    }
+
+    fn output_changed(&mut self) -> bool {
+        if self.ready {
+            self.mark_pending();
+            true
+        } else {
+            self.topology_changed = true;
+            false
+        }
+    }
+
+    fn mark_ready(&mut self, output: Option<u32>) -> bool {
+        self.output = output;
+        let recreate = std::mem::take(&mut self.topology_changed);
+        self.ready = !recreate;
+        self.close_retried = false;
+        recreate
+    }
+
+    fn retry_after_close(&mut self) -> bool {
+        let retry = !self.ready && (!self.close_retried || self.topology_changed);
+        self.topology_changed = false;
+        self.close_retried |= retry;
+        retry
+    }
+
+    fn current_output(&self) -> Option<u32> {
+        self.ready.then_some(self.output).flatten()
+    }
+}
+
+fn bar_output_affects_monitor(
+    selected: Option<&str>,
+    current: Option<u32>,
+    output: u32,
+    previous_name: Option<&str>,
+    name: Option<&str>,
+) -> bool {
+    match selected {
+        None => true,
+        Some(selected) => {
+            current == Some(output) || previous_name == Some(selected) || name == Some(selected)
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum ConfigMessage {
     ToggleChanged {
@@ -59,7 +162,7 @@ pub enum ConfigMessage {
     BarModeToggled(bool),
     BarAlignmentChanged(BarAlignment),
     BarHeightChanged(u32),
-    BarMonitorChanged(String),
+    BarMonitorChanged(Option<String>),
     ThemeChanged(String),
     SaveTheme(String),
     ThemeNameInput(String),
@@ -87,7 +190,7 @@ pub struct ConfigPage {
     settings: SettingsHandle,
     bar_supported: bool,
     bar_outputs: BTreeMap<u32, String>,
-    bar_monitors: Vec<String>,
+    bar_output_state: BarOutputState,
     registry_alive: bool,
     applications_expanded: bool,
     device_choices: Vec<DeviceOption>,
@@ -127,7 +230,7 @@ impl ConfigPage {
             settings,
             bar_supported,
             bar_outputs: BTreeMap::new(),
-            bar_monitors: Vec::new(),
+            bar_output_state: BarOutputState::default(),
             registry_alive: true,
             applications_expanded: false,
             device_choices: Vec::new(),
@@ -212,8 +315,11 @@ impl ConfigPage {
                 effect = Some(ConfigEffect::DecorationsChanged(value));
             }
             ConfigMessage::BarModeToggled(value) => {
-                self.settings.update(|s| s.data.bar.enabled = value);
-                effect = Some(ConfigEffect::BarChanged(BarChange::Mode));
+                if self.settings.borrow().data.bar.enabled != value {
+                    self.bar_output_state.mark_pending();
+                    self.settings.update(|s| s.data.bar.enabled = value);
+                    effect = Some(ConfigEffect::BarChanged(BarChange::Mode));
+                }
             }
             ConfigMessage::BarAlignmentChanged(value) => {
                 self.settings.update(|s| s.data.bar.alignment = value);
@@ -224,10 +330,9 @@ impl ConfigPage {
                 effect = Some(ConfigEffect::BarChanged(BarChange::Layout));
             }
             ConfigMessage::BarMonitorChanged(value) => {
-                let changed =
-                    self.settings.borrow().data.bar.monitor.as_deref() != Some(value.as_str());
-                self.settings.update(|s| s.data.bar.monitor = Some(value));
-                if changed {
+                if self.settings.borrow().data.bar.monitor != value {
+                    self.bar_output_state.mark_pending();
+                    self.settings.update(|s| s.data.bar.monitor = value);
                     effect = Some(ConfigEffect::BarChanged(BarChange::Monitor));
                 }
             }
@@ -475,21 +580,69 @@ impl ConfigPage {
         self.theme_choices = self.settings.borrow().theme_store().list();
     }
 
-    pub(in crate::ui) fn sync_bar_output(&mut self, id: u32, name: Option<String>) {
-        match name.filter(|name| !name.is_empty()) {
-            Some(name) => _ = self.bar_outputs.insert(id, name),
-            None => _ = self.bar_outputs.remove(&id),
+    pub(in crate::ui) fn sync_bar_output(
+        &mut self,
+        id: u32,
+        name: Option<String>,
+        event: BarOutputEvent,
+    ) -> bool {
+        let name = name.filter(|name| !name.is_empty());
+        let previous_name = match event {
+            BarOutputEvent::Added | BarOutputEvent::Updated => match name.clone() {
+                Some(name) => self.bar_outputs.insert(id, name),
+                None => self.bar_outputs.remove(&id),
+            },
+            BarOutputEvent::Removed => self.bar_outputs.remove(&id).or_else(|| name.clone()),
+        };
+        let current_name = match event {
+            BarOutputEvent::Added | BarOutputEvent::Updated => name.as_deref(),
+            BarOutputEvent::Removed => None,
+        };
+        let selected = self.settings.borrow().data.bar.monitor.clone();
+        if bar_output_affects_monitor(
+            selected.as_deref(),
+            self.bar_output_state.output,
+            id,
+            previous_name.as_deref(),
+            current_name,
+        ) {
+            self.bar_output_state.output_changed()
+        } else {
+            false
         }
-        self.bar_monitors.clear();
-        self.bar_monitors.extend(self.bar_outputs.values().cloned());
     }
 
-    pub(in crate::ui) fn sync_current_bar_output(&mut self, monitor: Option<String>) {
-        if let Some(monitor) = monitor.filter(|name| !name.is_empty())
-            && self.settings.borrow().data.bar.monitor.as_ref() != Some(&monitor)
-        {
-            self.settings.update(|s| s.data.bar.monitor = Some(monitor));
+    fn bar_monitor_choices(
+        &self,
+        selected: Option<&str>,
+    ) -> (Vec<BarMonitorOption>, BarMonitorOption) {
+        let selected = match selected {
+            None => BarMonitorOption::Automatic,
+            Some(name) if self.bar_outputs.values().any(|output| output == name) => {
+                BarMonitorOption::Connected(name.into())
+            }
+            Some(name) => BarMonitorOption::Disconnected(name.into()),
+        };
+        let mut options = Vec::with_capacity(self.bar_outputs.len() + 2);
+        options.push(BarMonitorOption::Automatic);
+        options.extend(
+            self.bar_outputs
+                .values()
+                .cloned()
+                .map(BarMonitorOption::Connected),
+        );
+        if matches!(&selected, BarMonitorOption::Disconnected(_)) {
+            options.push(selected.clone());
         }
+        (options, selected)
+    }
+
+    pub(in crate::ui) fn sync_current_bar_output(&mut self, output: Option<u32>) -> bool {
+        self.bar_output_state.mark_ready(output)
+    }
+
+    pub(in crate::ui) fn retry_bar_after_close(&mut self) -> bool {
+        self.bar_output_state.retry_after_close()
     }
 
     fn render_bar_card(&self) -> container::Container<'_, ConfigMessage> {
@@ -500,14 +653,18 @@ impl ConfigPage {
         let mut content = form!(toggle("Enabled", bar.enabled, BarModeToggled););
         if bar.enabled {
             let height = bar.height.clamp(BAR_MIN_HEIGHT, BAR_MAX_HEIGHT);
+            let (monitors, selected) = self.bar_monitor_choices(bar.monitor.as_deref());
+            let current = self
+                .bar_output_state
+                .current_output()
+                .and_then(|id| self.bar_outputs.get(&id))
+                .map(String::as_str);
+            let status = bar_monitor_status(&selected, current);
             let monitor = row![
                 text("Monitor").size(theme::BODY_TEXT_SIZE),
-                pick_list(
-                    self.bar_monitors.as_slice(),
-                    bar.monitor.clone(),
-                    BarMonitorChanged,
-                )
-                .placeholder("Detecting monitor...")
+                pick_list(monitors, Some(selected), |choice| {
+                    BarMonitorChanged(choice.into_monitor())
+                })
                 .text_size(theme::BODY_TEXT_SIZE)
                 .width(Length::Fill),
             ]
@@ -523,7 +680,16 @@ impl ConfigPage {
                 |value| BarHeightChanged(value.round() as u32),
                 format!("{height} px")
             );
-            content = content.push(split(monitor, alignment)).push(height_slider);
+            content = content.push(split(monitor, alignment));
+            if let Some(status) = status {
+                content = content.push(
+                    text(status)
+                        .size(theme::BODY_TEXT_SIZE)
+                        .style(theme::weak_text_style)
+                        .width(Length::Fill),
+                );
+            }
+            content = content.push(height_slider);
         }
         card("Bar Mode", content)
     }
@@ -604,4 +770,28 @@ where
         .into()
     }))
     .spacing(6)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BarOutputState, bar_output_affects_monitor};
+
+    #[test]
+    fn output_recreation_is_scoped_coalesced_and_retried() {
+        let affects = |selected, current, output, previous, name| {
+            bar_output_affects_monitor(selected, current, output, previous, name)
+        };
+        assert!(!affects(Some("DP"), Some(1), 2, Some("HDMI"), None));
+        assert!(affects(None, Some(1), 2, Some("HDMI"), Some("HDMI")));
+
+        let mut state = BarOutputState::default();
+        assert!(!state.output_changed());
+        assert!(state.mark_ready(Some(1)));
+        assert!(!state.mark_ready(Some(2)));
+        assert!(state.output_changed());
+        assert!(state.retry_after_close());
+        assert!(!state.retry_after_close());
+        assert!(!state.output_changed());
+        assert!(state.retry_after_close());
+    }
 }
