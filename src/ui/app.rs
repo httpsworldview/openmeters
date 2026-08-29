@@ -36,6 +36,7 @@ use windowing::{
 };
 
 const TOAST_DISPLAY_DURATION: Duration = Duration::from_secs(2);
+const BAR_RETRY_WINDOW: Duration = Duration::from_secs(5);
 const MAINTENANCE_INTERVAL: Duration = Duration::from_millis(100);
 const BAR_RESIZE_HANDLE_THICKNESS: f32 = 6.0;
 
@@ -117,7 +118,9 @@ struct UiApp {
     main_window_size: Size,
     last_base_window_size: Size,
     main_window_is_layer: bool,
-    opened_main_layer_window: Option<window::Id>,
+    main_layer_opened: bool,
+    main_layer_ready: bool,
+    last_bar_retry: Option<Instant>,
     use_layershell: bool,
     settings_window: Option<(window::Id, ActiveSettings)>,
     settings_scroll: ScrollGlow,
@@ -189,7 +192,9 @@ impl UiApp {
             main_window_size: main_size,
             last_base_window_size: base_size,
             main_window_is_layer: main_is_layer,
-            opened_main_layer_window: None,
+            main_layer_opened: false,
+            main_layer_ready: false,
+            last_bar_retry: None,
             use_layershell,
             settings_window: None,
             settings_scroll: ScrollGlow::default(),

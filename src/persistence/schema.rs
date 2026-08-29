@@ -109,6 +109,7 @@ impl UiSettings {
             if let Some(value) = map.remove("bar") {
                 out.bar = lossy::settings(value, "bar", BarSettings::default(), |map, out| {
                     lossy::fields!(map, out, "bar"; enabled, alignment, height, monitor);
+                    out.monitor = out.monitor.take().filter(|name| !name.is_empty());
                 });
             }
             lossy::fields!(map, out, "settings";
@@ -248,6 +249,8 @@ mod tests {
         assert_eq!(settings.bar.alignment, BarAlignment::Bottom);
         assert_eq!(settings.bar.height, BAR_DEFAULT_HEIGHT);
         assert_eq!(settings.bar.monitor.as_deref(), Some("HDMI-A-1"));
+        let empty_monitor = UiSettings::from_json_lossy(r#"{"bar":{"monitor":""}}"#).unwrap();
+        assert!(empty_monitor.bar.monitor.is_none());
 
         assert_eq!(settings.visuals.order, vec![VisualKind::Spectrum]);
         assert_eq!(settings.visuals.width_basis.len(), 1);

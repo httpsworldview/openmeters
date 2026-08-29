@@ -186,29 +186,23 @@ impl UiApp {
         }
     }
 
-    pub(super) fn open_settings_window(
-        &mut self,
-        kind: VisualKind,
-        force_new: bool,
-    ) -> Task<Message> {
-        let new_panel = ActiveSettings::new(kind, &self.visual_manager);
+    pub(super) fn open_settings_window(&mut self, kind: VisualKind) -> Task<Message> {
+        let panel = ActiveSettings::new(kind, &self.visual_manager);
         let previous = self.settings_window.take();
-        let same_kind = previous
+        if previous
             .as_ref()
-            .is_some_and(|(_, panel)| panel.kind() == kind);
-        if same_kind && !force_new {
-            self.settings_window = previous.map(|(id, _)| (id, new_panel));
+            .is_some_and(|(_, current)| current.kind() == kind)
+        {
+            self.settings_window = previous.map(|(id, _)| (id, panel));
             return Task::none();
         }
-        let (new_id, open_task) = open_tool_base_window(self.use_layershell);
-        if !same_kind {
-            self.settings_scroll = ScrollGlow::default();
-        }
-        self.settings_window = Some((new_id, new_panel));
+
+        let (id, open) = open_tool_base_window(self.use_layershell);
+        self.settings_scroll = ScrollGlow::default();
+        self.settings_window = Some((id, panel));
         match previous {
-            Some((old_id, _)) if force_new => Task::batch([open_task, window::close(old_id)]),
-            Some((old_id, _)) => Task::batch([window::close(old_id), open_task]),
-            None => open_task,
+            Some((old, _)) => Task::batch([window::close(old), open]),
+            None => open,
         }
     }
 
@@ -476,39 +470,41 @@ impl UiApp {
         Task::none()
     }
 
-    pub(super) fn recreate_main_window(
-        &mut self,
-        bar_settings: BarSettings,
-        use_decorations: bool,
-    ) -> Task<Message> {
+    pub(super) fn recreate_main_window(&mut self, close_old: bool) -> Task<Message> {
         let old_main_id = self.main_window_id;
+        let (bar, decorations) = {
+            let settings = &self.settings_handle.borrow().data;
+            (settings.bar.clone(), settings.decorations)
+        };
+        self.config_page.sync_current_bar_output(None);
+        self.main_layer_opened = false;
+        self.main_layer_ready = false;
         let (new_main_id, open_main, main_is_layer, main_size) = open_main_window(
             self.use_layershell,
-            bar_settings,
+            bar,
             self.last_base_window_size,
-            use_decorations,
+            decorations,
         );
         self.main_window_id = new_main_id;
         self.main_window_size = main_size;
         self.main_window_is_layer = main_is_layer;
-        Task::batch([open_main, window::close(old_main_id)])
+        if close_old {
+            Task::batch([open_main, window::close(old_main_id)])
+        } else {
+            open_main
+        }
     }
 
     pub(super) fn handle_bar_config_change(&mut self, change: BarChange) -> Task<Message> {
         if !self.use_layershell {
             return Task::none();
         }
-        let (bar, decorations) = {
-            let settings = &self.settings_handle.borrow().data;
-            (settings.bar.clone(), settings.decorations)
-        };
+        let bar = self.settings_handle.borrow().data.bar.clone();
         match change {
             BarChange::Mode if bar.enabled != self.main_window_is_layer => {
-                self.recreate_main_window(bar, decorations)
+                self.recreate_main_window(true)
             }
-            BarChange::Monitor if self.main_window_is_layer => {
-                self.recreate_main_window(bar, decorations)
-            }
+            BarChange::Monitor if self.main_window_is_layer => self.recreate_main_window(true),
             BarChange::Mode | BarChange::Layout if self.main_window_is_layer => {
                 self.apply_bar_layout(bar.alignment, bar.height)
             }
@@ -516,33 +512,23 @@ impl UiApp {
         }
     }
 
-    pub(super) fn recreate_popout_windows(&mut self, use_decorations: bool) -> Task<Message> {
+    pub(super) fn recreate_visual_windows(&mut self) -> Task<Message> {
+        let decorations = self.settings_handle.borrow().data.decorations;
         let old_popouts = std::mem::take(&mut self.popout_windows);
-        let mut tasks = Vec::with_capacity(old_popouts.len() * 2);
-        for (old_id, popout) in old_popouts {
-            let (new_id, open_task) =
-                open_base_window(self.use_layershell, popout.size, use_decorations);
-            self.popout_windows.insert(new_id, popout);
-            tasks.push(open_task);
-            tasks.push(window::close(old_id));
+        let mut tasks = Vec::with_capacity(old_popouts.len() * 2 + 2);
+
+        if !self.main_window_is_layer {
+            let old = self.main_window_id;
+            let (id, open) =
+                open_base_window(self.use_layershell, self.main_window_size, decorations);
+            self.main_window_id = id;
+            tasks.extend([open, window::close(old)]);
+        }
+        for (old, popout) in old_popouts {
+            let (id, open) = open_base_window(self.use_layershell, popout.size, decorations);
+            self.popout_windows.insert(id, popout);
+            tasks.extend([open, window::close(old)]);
         }
         Task::batch(tasks)
-    }
-
-    pub(super) fn recreate_windows(&mut self, use_decorations: bool) -> Task<Message> {
-        let old_main_id = self.main_window_id;
-        let (new_main_id, open_main) =
-            open_base_window(self.use_layershell, self.main_window_size, use_decorations);
-        self.main_window_id = new_main_id;
-        self.main_window_is_layer = false;
-        let settings_kind = self.settings_window.as_ref().map(|(_, panel)| panel.kind());
-        let settings_task =
-            settings_kind.map_or_else(Task::none, |kind| self.open_settings_window(kind, true));
-        Task::batch([
-            open_main,
-            window::close(old_main_id),
-            settings_task,
-            self.recreate_popout_windows(use_decorations),
-        ])
     }
 }

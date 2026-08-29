@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::{TOAST_DISPLAY_DURATION, UiApp, windowing::AppWindow};
-use crate::ui::config::{BarChange, BarOutputEvent, ConfigEffect, ConfigMessage};
+use super::{BAR_RETRY_WINDOW, TOAST_DISPLAY_DURATION, UiApp, windowing::AppWindow};
+use crate::ui::config::{BarOutputChange, BarOutputEvent, ConfigEffect, ConfigMessage};
 use crate::ui::settings::SettingsMessage;
 use crate::ui::visuals::VisualsMessage;
 use crate::ui::widgets::{fill, page, scroll_glow::ScrollGlow};
@@ -50,16 +50,12 @@ pub(super) fn layershell_open(settings: NewLayerShellSettings) -> (window::Id, T
 }
 
 pub(super) fn shell_event(event: ShellEvent) -> Option<Message> {
+    use BarOutputEvent as Change;
+
     Some(match event {
-        ShellEvent::OutputAdded(output) => {
-            Message::BarOutput(output.id, output.name, BarOutputEvent::Added)
-        }
-        ShellEvent::OutputUpdated(output) => {
-            Message::BarOutput(output.id, output.name, BarOutputEvent::Updated)
-        }
-        ShellEvent::OutputRemoved(output) => {
-            Message::BarOutput(output.id, output.name, BarOutputEvent::Removed)
-        }
+        ShellEvent::OutputAdded(o) => Message::BarOutput(o.id, o.name, Change::Added),
+        ShellEvent::OutputUpdated(o) => Message::BarOutput(o.id, o.name, Change::Updated),
+        ShellEvent::OutputRemoved(o) => Message::BarOutput(o.id, o.name, Change::Removed),
         ShellEvent::WindowOutputChanged { window, output } => {
             Message::BarWindowOutput(window, output.map(|output| output.id))
         }
@@ -113,11 +109,22 @@ pub(super) fn app_event(
     }
 }
 
+fn retry_bar(app: &mut UiApp, closed: bool) -> Task<Message> {
+    if app
+        .last_bar_retry
+        .is_some_and(|retry| retry.elapsed() < BAR_RETRY_WINDOW)
+    {
+        return if closed { exit() } else { Task::none() };
+    }
+    app.last_bar_retry = Some(Instant::now());
+    app.recreate_main_window(!closed)
+}
+
 fn close_main_layer(app: &mut UiApp, window: window::Id) -> Task<Message> {
-    if app.config_page.retry_bar_after_close() {
-        app.handle_bar_config_change(BarChange::Monitor)
-    } else {
+    if app.main_layer_ready {
         app.on_window_closed(window)
+    } else {
+        retry_bar(app, true)
     }
 }
 
@@ -141,11 +148,11 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
                 app.frames.borrow_mut().set_rate(rate);
                 Task::none()
             }
-            Some(ConfigEffect::DecorationsChanged(enabled)) if app.main_window_is_layer => {
-                app.recreate_popout_windows(enabled)
+            Some(ConfigEffect::DecorationsChanged) => app.recreate_visual_windows(),
+            Some(ConfigEffect::BarChanged(change)) => {
+                app.last_bar_retry = None;
+                app.handle_bar_config_change(change)
             }
-            Some(ConfigEffect::DecorationsChanged(enabled)) => app.recreate_windows(enabled),
-            Some(ConfigEffect::BarChanged(change)) => app.handle_bar_config_change(change),
             Some(ConfigEffect::ThemeChanged) => {
                 if let Some((_, panel)) = app.settings_window.as_mut() {
                     *panel = super::ActiveSettings::new(panel.kind(), &app.visual_manager);
@@ -154,9 +161,7 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
             }
             None => Task::none(),
         },
-        Message::Visuals(VisualsMessage::SettingsRequested(kind)) => {
-            app.open_settings_window(kind, false)
-        }
+        Message::Visuals(VisualsMessage::SettingsRequested(kind)) => app.open_settings_window(kind),
         Message::Visuals(visuals_msg) => app.visuals_page.update(visuals_msg).map(Message::Visuals),
         Message::ToggleConfig => app.toggle_config_window(),
         Message::TogglePause => {
@@ -189,23 +194,31 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
             Task::none()
         }
         Message::BarOutput(id, name, event) => {
-            if app.config_page.sync_bar_output(id, name, event) {
-                app.handle_bar_config_change(BarChange::Monitor)
+            let change = app.config_page.sync_bar_output(id, name, event);
+            if app.main_window_is_layer && change != BarOutputChange::Unchanged {
+                app.last_bar_retry = None;
+            }
+            if app.main_window_is_layer && change == BarOutputChange::CurrentRemoved {
+                app.main_layer_ready = false;
+            }
+            if app.main_window_is_layer && change == BarOutputChange::Retarget {
+                retry_bar(app, false)
             } else {
                 Task::none()
             }
         }
-        Message::BarWindowOutput(window, output) => {
-            if app.main_window_is_layer
-                && window == app.main_window_id
-                && app.config_page.sync_current_bar_output(output)
-            {
-                app.handle_bar_config_change(BarChange::Monitor)
+        Message::BarWindowOutput(window, output)
+            if app.main_window_is_layer && window == app.main_window_id =>
+        {
+            app.main_layer_ready = true;
+            if app.config_page.sync_current_bar_output(output) {
+                retry_bar(app, false)
             } else {
                 Task::none()
             }
         }
-        // Shell close events are ordered after output changes in the same stream.
+        Message::BarWindowOutput(_, _) => Task::none(),
+        // Output changes and shell closes share one ordered event stream.
         Message::ShellWindowClosed(window)
             if app.main_window_is_layer && window == app.main_window_id =>
         {
@@ -214,7 +227,7 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
         Message::ShellWindowClosed(_) => Task::none(),
         Message::WindowOpened(window) => {
             if app.main_window_is_layer && window == app.main_window_id {
-                app.opened_main_layer_window = Some(window);
+                app.main_layer_opened = true;
             }
             Task::none()
         }
@@ -222,7 +235,7 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
         Message::WindowClosed(window)
             if app.main_window_is_layer && window == app.main_window_id =>
         {
-            if app.opened_main_layer_window == Some(window) {
+            if app.main_layer_opened {
                 Task::none()
             } else {
                 close_main_layer(app, window)
