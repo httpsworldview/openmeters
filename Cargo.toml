@@ -40,10 +40,10 @@ wayland-client = "0.31.15"
   default-features = false
   features = [ "env-filter", "fmt" ]
 
-  [dependencies.iced_layershell]
-  git = "https://github.com/waycrate/exwlshelleventloop"
-  rev = "26a318d714a6324ba014110b8fb5086fdf667169"
+  [dependencies.iced_exwlshell]
+  version = "0.20.0"
   default-features = false
+  features = [ "macros" ]
 
 [dev-dependencies]
 ebur128 = "0.1.10"

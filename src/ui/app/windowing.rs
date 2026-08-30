@@ -12,7 +12,7 @@ use crate::ui::widgets::{fill, scroll_glow::ScrollGlow};
 use crate::visuals::registry::{VisualContent, VisualKind, VisualSlotSnapshot};
 use iced::widget::mouse_area;
 use iced::{Element, Size, Task, exit, window};
-use iced_layershell::reexport::{
+use iced_exwlshell::reexport::{
     Anchor, KeyboardInteractivity, Layer, LayerSize, NewLayerShellSettings, OutputOption, PixelSize,
 };
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
@@ -80,7 +80,7 @@ fn open_base_window(
 ) -> (window::Id, Task<Message>) {
     if layershell {
         let (width, height) = persisted_window_size(size);
-        let settings = iced_layershell::actions::IcedXdgWindowSettings {
+        let settings = iced_exwlshell::actions::IcedXdgWindowSettings {
             size: Some(PixelSize::px(width, height)),
             client_side_decorations: !decorations,
         };

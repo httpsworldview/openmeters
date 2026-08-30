@@ -333,7 +333,7 @@ out.
 
 ### Libraries
 
-- **iced_layershell** and related crates
+- **iced_exwlshell** and related crates
   (<https://github.com/waycrate/exwlshelleventloop>)
   - Special thanks to Decodetalkers for reviewing and merging my
     patches, and for maintaining such a useful library.

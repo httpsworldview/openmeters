@@ -10,10 +10,10 @@ use iced::event::{self, Event};
 use iced::keyboard::{self, Key};
 use iced::widget::text;
 use iced::{Element, Size, Task, exit, mouse, window};
-use iced_layershell::actions::IcedXdgWindowSettings;
-use iced_layershell::reexport::NewLayerShellSettings;
-use iced_layershell::shell::ShellEvent;
-use iced_layershell::to_layer_message;
+use iced_exwlshell::actions::IcedXdgWindowSettings;
+use iced_exwlshell::reexport::NewLayerShellSettings;
+use iced_exwlshell::shell::ShellEvent;
+use iced_exwlshell::to_layer_message;
 use std::time::Instant;
 
 #[to_layer_message(multi)]

@@ -24,7 +24,7 @@ use iced::{
     Element, Length, Settings as IcedSettings, Size, Subscription, Task, daemon as iced_daemon,
     window,
 };
-use iced_layershell::settings::{LayerShellSettings, Settings as LayerSettings, StartMode};
+use iced_exwlshell::settings::{LayerShellSettings, Settings as LayerSettings, StartMode};
 use message::{Message, app_event, shell_event, update, view};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -65,8 +65,8 @@ pub(crate) struct UiConfig {
 
 pub(crate) fn run(config: UiConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if layershell_available() {
-        let (shell_broadcast, shell_events) = iced_layershell::shell::channel();
-        iced_layershell::daemon(
+        let (shell_broadcast, shell_events) = iced_exwlshell::shell::channel();
+        iced_exwlshell::daemon(
             move || UiApp::new(config.clone(), true),
             || APP_ID.to_string(),
             update,
