@@ -50,10 +50,12 @@ pub fn sanitize_sample_rate(sample_rate: f32) -> f32 {
 
 pub fn fmt_freq(frequency: f32) -> String {
     match frequency {
-        f if f >= 10_000.0 => format!("{:.1}kHz", f / 1000.0),
-        f if f >= 1_000.0 => format!("{:.2}kHz", f / 1000.0),
-        f if f >= 100.0 => format!("{f:.1}Hz"),
-        f => format!("{f:.2}Hz"),
+        99_950.0.. => format!("{:.0}kHz", frequency / 1_000.0),
+        9_995.0.. => format!("{:.1}kHz", frequency / 1_000.0),
+        999.5.. => format!("{:.2}kHz", frequency / 1_000.0),
+        99.95.. => format!("{frequency:.0}Hz"),
+        9.995.. => format!("{frequency:.1}Hz"),
+        _ => format!("{frequency:.2}Hz"),
     }
 }
 
