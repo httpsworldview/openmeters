@@ -28,8 +28,6 @@ pub struct OscilloscopeParams {
 
 impl OscilloscopeParams {
     fn build_vertices(&self, scratch: &mut GeometryScratch) {
-        const VERTICAL_PADDING: f32 = 8.0;
-        const CHANNEL_GAP: f32 = 12.0;
         const AMPLITUDE_SCALE: f32 = 0.9;
         const STROKE_WIDTH: f32 = 1.0;
 
@@ -38,13 +36,7 @@ impl OscilloscopeParams {
         let bounds = self.bounds;
         let clip = ClipTransform::from_bounds(bounds);
 
-        let layout = ChannelLayout::new(
-            bounds,
-            if self.stacked { 1 } else { channels },
-            VERTICAL_PADDING,
-            CHANNEL_GAP,
-            AMPLITUDE_SCALE,
-        );
+        let layout = ChannelLayout::new(bounds, if self.stacked { 1 } else { channels }, AMPLITUDE_SCALE);
         let step = bounds.width.max(1.0) / (samples_per_channel - 1) as f32;
         let pixel_width = bounds.width.ceil().max(1.0) as usize;
 

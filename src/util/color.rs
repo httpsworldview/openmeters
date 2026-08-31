@@ -91,3 +91,19 @@ pub fn sanitize_stop_spreads(raw: Option<&[f32]>, count: usize) -> Vec<f32> {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // packed colors must stay raw sRGB. Without it iced linearizes on
+    // pack and fucks up every rendered color.
+    #[test]
+    fn packed_colors_keep_raw_srgb_components() {
+        let color = Color::from_rgb8(0x80, 0x40, 0xC0);
+        assert_eq!(
+            color_to_rgba(color),
+            [128.0 / 255.0, 64.0 / 255.0, 192.0 / 255.0, 1.0]
+        );
+    }
+}

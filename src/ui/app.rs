@@ -6,7 +6,7 @@ mod windowing;
 
 use crate::infra::pipewire::{AudioReader, CaptureControl, audio_wake};
 use crate::meter::MeterEngine;
-use crate::persistence::settings::{BarAlignment, BarSettings, SettingsHandle, clamp_bar_height};
+use crate::persistence::settings::{BarAlignment, SettingsHandle, clamp_bar_height};
 use crate::ui::config::ConfigPage;
 use crate::ui::settings::ActiveSettings;
 use crate::ui::theme;
@@ -310,9 +310,12 @@ impl UiApp {
     }
 
     fn main_window_view(&self) -> Element<'_, Message> {
-        let bar = self.settings_handle.borrow().data.bar.clone();
+        let (bar_enabled, bar_alignment) = {
+            let settings = self.settings_handle.borrow();
+            (settings.data.bar.enabled, settings.data.bar.alignment)
+        };
         let content = self.visuals_with_toasts();
-        let content = self.wrap_bar_resize(content, &bar);
+        let content = self.wrap_bar_resize(content, bar_enabled, bar_alignment);
         self.with_frame_clock(self.main_window_id, content)
     }
 
@@ -372,9 +375,10 @@ impl UiApp {
     fn wrap_bar_resize<'a>(
         &'a self,
         content: Element<'a, Message>,
-        bar: &BarSettings,
+        bar_enabled: bool,
+        bar_alignment: BarAlignment,
     ) -> Element<'a, Message> {
-        if !(self.main_window_is_layer && bar.enabled) {
+        if !(self.main_window_is_layer && bar_enabled) {
             return content;
         }
         let handle = mouse_area(
@@ -384,7 +388,7 @@ impl UiApp {
         )
         .on_press(Message::BarResizeStart)
         .interaction(iced::mouse::Interaction::ResizingVertically);
-        let handle_layer = fill(handle).align_y(match bar.alignment {
+        let handle_layer = fill(handle).align_y(match bar_alignment {
             BarAlignment::Top => Vertical::Bottom,
             BarAlignment::Bottom => Vertical::Top,
         });

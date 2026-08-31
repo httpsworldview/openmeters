@@ -5,7 +5,7 @@ use crate::domain::routing::{CaptureMode, StreamIdentity};
 use crate::infra::pipewire::{CaptureControl, CaptureView};
 use crate::persistence::settings::{
     BAR_MAX_HEIGHT, BAR_MIN_HEIGHT, BUILTIN_THEME, BarAlignment, SettingsHandle, ThemeChoice,
-    ThemeFile, VisualFrameRate, canonical_theme_name,
+    ThemeFile, VisualFrameRate, canonical_theme_name, clamp_bar_height,
 };
 use crate::ui::theme;
 use crate::ui::widgets::palette_editor::{PaletteEditor, PaletteEvent};
@@ -623,7 +623,7 @@ impl ConfigPage {
         let bar = &self.settings.borrow().data.bar;
         let mut content = form!(toggle("Enabled", bar.enabled, BarModeToggled););
         if bar.enabled {
-            let height = bar.height.clamp(BAR_MIN_HEIGHT, BAR_MAX_HEIGHT);
+            let height = clamp_bar_height(bar.height);
             let (monitors, selected) = self.bar_outputs.choices(bar.monitor.as_deref());
             let current = self.bar_outputs.current.map(|id| {
                 self.bar_outputs

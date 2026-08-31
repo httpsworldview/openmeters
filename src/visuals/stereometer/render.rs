@@ -39,9 +39,12 @@ pub(super) const CORR_TRAIL_LEN: usize = 32;
 const CORR_VPAD_RATIO: f32 = 5.0 / 64.0;
 const CORR_EDGE: f32 = 6.0;
 
-static CORR_OPACITIES: LazyLock<[f32; CORR_TRAIL_LEN - 1]> = LazyLock::new(|| {
-    std::array::from_fn(|age| (1.0 - (age + 1) as f32 / CORR_TRAIL_LEN as f32).powf(2.4))
-});
+fn corr_opacity(age: usize, trail_len: usize) -> f32 {
+    (1.0 - (age + 1) as f32 / trail_len as f32).powf(2.4)
+}
+
+static CORR_OPACITIES: LazyLock<[f32; CORR_TRAIL_LEN - 1]> =
+    LazyLock::new(|| std::array::from_fn(|age| corr_opacity(age, CORR_TRAIL_LEN)));
 
 fn scaled_point(x: f32, y: f32) -> (f32, f32) {
     let squared = x * x + y * y;
@@ -405,12 +408,11 @@ impl StereometerParams {
             if trail.len() > 1 {
                 alpha.resize(height, 0.0);
                 alpha.fill(0.0);
-                let len = trail.len() as f32;
                 for (age, pair) in trail.windows(2).enumerate() {
                     let opacity = if trail.len() == CORR_TRAIL_LEN {
                         CORR_OPACITIES[age]
                     } else {
-                        (1.0 - (age + 1) as f32 / len).powf(2.4)
+                        corr_opacity(age, trail.len())
                     };
                     let (y0, y1) = (val_y(pair[0]), val_y(pair[1]));
                     let (top, bottom) = (y0.min(y1) as i32, (y0.max(y1) + 2.0) as i32);

@@ -254,10 +254,7 @@ fn sample_max(pts: &[[f32; 2]], t0: f32, t1: f32) -> f32 {
     let (lo, hi) = (t0.min(t1).clamp(0.0, 1.0), t0.max(t1).clamp(0.0, 1.0));
     let start = pts.partition_point(|p| p[0] < lo);
     let hi_index = pts.partition_point(|p| p[0] < hi);
-    let mut end = hi_index;
-    while end < pts.len() && pts[end][0] <= hi {
-        end += 1;
-    }
+    let end = pts.partition_point(|p| p[0] <= hi);
     pts[start..end]
         .iter()
         .map(|p| p[1])

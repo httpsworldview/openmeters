@@ -500,7 +500,7 @@ impl Spectrogram<'_> {
         let state = self.state.borrow();
         let (min_f, nyq) = display_axis(state.sample_rate);
         let (scale, rot) = (state.settings.frequency_scale, state.rotation_index());
-        let horizontal = matches!(rot, 1 | 3);
+        let horizontal = state.freq_axis_is_horizontal();
 
         let (freq_top, freq_bot) = (
             scale.freq_at(min_f, nyq, uv_range[1]),

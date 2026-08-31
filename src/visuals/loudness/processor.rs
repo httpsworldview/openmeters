@@ -184,14 +184,14 @@ pub struct LoudnessSnapshot {
 }
 
 impl LoudnessSnapshot {
-    pub(in crate::visuals) fn with_floor(floor_db: f32) -> Self {
+    pub(in crate::visuals) fn with_floor(floor_db: f32, channel_count: usize) -> Self {
         Self {
             short_term_loudness: floor_db,
             momentary_loudness: floor_db,
             rms_fast_db: [floor_db; MAX_CHANNELS],
             rms_slow_db: [floor_db; MAX_CHANNELS],
             true_peak_db: [floor_db; MAX_CHANNELS],
-            channel_count: 0,
+            channel_count,
             positions: [ChannelPosition::Unknown; MAX_CHANNELS],
         }
     }
@@ -269,7 +269,7 @@ impl LoudnessProcessor {
         }
 
         let floor = DEFAULT_FLOOR_DB;
-        let mut snapshot = LoudnessSnapshot::with_floor(floor);
+        let mut snapshot = LoudnessSnapshot::with_floor(floor, 0);
         let mut weighted_short_term = 0.0;
         let mut weighted_momentary = 0.0;
 

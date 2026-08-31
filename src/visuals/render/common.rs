@@ -40,14 +40,17 @@ pub struct ChannelLayout {
 }
 
 impl ChannelLayout {
-    pub fn new(bounds: Rectangle, channels: usize, padding: f32, gap: f32, amp: f32) -> Self {
+    const PADDING: f32 = 8.0;
+    const GAP: f32 = 12.0;
+
+    pub fn new(bounds: Rectangle, channels: usize, amp: f32) -> Self {
         let channels = channels.max(1) as f32;
-        let (padding, gap) = (padding.max(0.0), gap.max(0.0));
-        let channel_height =
-            (bounds.height - padding * 2.0 - gap * (channels - 1.0)).max(1.0) / channels;
+        let channel_height = (bounds.height - Self::PADDING * 2.0 - Self::GAP * (channels - 1.0))
+            .max(1.0)
+            / channels;
         Self {
-            top: bounds.y + padding,
-            stride: channel_height + gap,
+            top: bounds.y + Self::PADDING,
+            stride: channel_height + Self::GAP,
             channel_height,
             amplitude_scale: channel_height * 0.5 * amp.max(0.01),
         }

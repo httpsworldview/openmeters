@@ -71,8 +71,7 @@ pub(crate) struct LoudnessState {
 
 impl LoudnessState {
     pub fn new() -> Self {
-        let mut snapshot = LoudnessSnapshot::with_floor(DB_RANGE.0);
-        snapshot.channel_count = 2;
+        let snapshot = LoudnessSnapshot::with_floor(DB_RANGE.0, 2);
         let peak = PeakHold::new(DB_RANGE.0, Instant::now());
         let mut state = Self {
             snapshot,
@@ -93,9 +92,7 @@ impl LoudnessState {
     }
 
     pub fn reset_audio(&mut self) {
-        let mut snapshot = LoudnessSnapshot::with_floor(DB_RANGE.0);
-        snapshot.channel_count = 2;
-        self.snapshot = snapshot;
+        self.snapshot = LoudnessSnapshot::with_floor(DB_RANGE.0, 2);
         self.peaks = [PeakHold::new(DB_RANGE.0, Instant::now()); VISIBLE_METER_COUNT];
         self.refresh_value_label();
         self.geometry.invalidate();
@@ -112,7 +109,7 @@ impl LoudnessState {
         let settled = LoudnessSnapshot {
             channel_count: self.snapshot.channel_count,
             positions: self.snapshot.positions,
-            ..LoudnessSnapshot::with_floor(self.snapshot.short_term_loudness)
+            ..LoudnessSnapshot::with_floor(self.snapshot.short_term_loudness, 0)
         };
         self.snapshot == settled && self.peaks.iter().all(|peak| peak.db <= DB_RANGE.0)
     }

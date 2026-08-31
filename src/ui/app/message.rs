@@ -195,17 +195,18 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
         }
         Message::BarOutput(id, name, event) => {
             let change = app.config_page.sync_bar_output(id, name, event);
-            if app.main_window_is_layer && change != BarOutputChange::Unchanged {
-                app.last_bar_retry = None;
+            if app.main_window_is_layer {
+                if change != BarOutputChange::Unchanged {
+                    app.last_bar_retry = None;
+                }
+                if change == BarOutputChange::CurrentRemoved {
+                    app.main_layer_ready = false;
+                }
+                if change == BarOutputChange::Retarget {
+                    return retry_bar(app, false);
+                }
             }
-            if app.main_window_is_layer && change == BarOutputChange::CurrentRemoved {
-                app.main_layer_ready = false;
-            }
-            if app.main_window_is_layer && change == BarOutputChange::Retarget {
-                retry_bar(app, false)
-            } else {
-                Task::none()
-            }
+            Task::none()
         }
         Message::BarWindowOutput(window, output)
             if app.main_window_is_layer && window == app.main_window_id =>

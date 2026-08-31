@@ -26,8 +26,6 @@ const BAND_LINE_WIDTH: f32 = 1.5;
 const BAND_FILL_ALPHA: f32 = 0.15;
 const MIN_COLUMN_HEIGHT_PIXELS: f32 = 1.0;
 const LOUDNESS_QUIET_DB: f32 = -36.0;
-const VERTICAL_PADDING: f32 = 8.0;
-const CHANNEL_GAP: f32 = 12.0;
 const AMPLITUDE_SCALE: f32 = 1.0;
 
 #[derive(Debug)]
@@ -119,13 +117,7 @@ impl WaveformParams {
         let col_width = COLUMN_WIDTH_PIXELS;
         let right_edge = params.bounds.x + params.bounds.width;
 
-        let layout = ChannelLayout::new(
-            params.bounds,
-            channels,
-            VERTICAL_PADDING,
-            CHANNEL_GAP,
-            AMPLITUDE_SCALE,
-        );
+        let layout = ChannelLayout::new(params.bounds, channels, AMPLITUDE_SCALE);
         let history = match params.history_mode {
             WaveformHistoryMode::Off => None,
             WaveformHistoryMode::RmsFast => Some(0),
