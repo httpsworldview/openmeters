@@ -10,6 +10,9 @@ repository = "https://github.com/httpsworldview/openmeters"
 homepage = "https://github.com/httpsworldview/openmeters"
 readme = "README.md"
 
+[lints.rust]
+unsafe_code = "forbid"
+
 [dependencies]
 pipewire = { version = "0.10.1", features = ["v0_3_77"] }
 rtrb = "0.3.5"
@@ -64,4 +67,4 @@ inherits = "release"
 lto = "off"
 codegen-units = 8
 strip = "none"
-debug = 2
+debug = "full"
