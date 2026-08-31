@@ -1,4 +1,5 @@
-// SDF shader - instanced quads with screen-space antialiasing.
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Maika Namuo
 
 struct InstanceInput {
     @location(0) p0: vec2<f32>,

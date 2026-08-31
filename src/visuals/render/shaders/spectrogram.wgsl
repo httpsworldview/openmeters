@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Maika Namuo
+
 const LOG10_E: f32 = 0.4342944819;
 const LN_TO_DB: f32 = 4.342944819;
 const DB_TO_LOG2: f32 = 0.3321928095;
