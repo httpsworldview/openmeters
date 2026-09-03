@@ -77,6 +77,7 @@ impl PeriodFft {
 struct PeriodEstimator {
     periodicity: Vec<f32>,
     energy_prefix: Vec<f64>,
+    window_stats: Vec<[f64; 2]>,
     last_peak: f32,
     fft: Option<PeriodFft>,
 }
@@ -94,10 +95,25 @@ impl PeriodEstimator {
         self.last_peak = 0.0;
         if samples.len() < 3 { return None; }
 
-        let (sum, min, max) = samples.iter().fold(
-            (0.0_f64, f32::INFINITY, f32::NEG_INFINITY),
-            |(sum, min, max), &x| (sum + f64::from(x), min.min(x), max.max(x)),
-        );
+        let (chunks, remainder) = samples.as_chunks::<4>();
+        let mut sums = [0.0_f64; 4];
+        let mut minima = [f32::INFINITY; 4];
+        let mut maxima = [f32::NEG_INFINITY; 4];
+        for &[a, b, c, d] in chunks {
+            for (lane, sample) in [a, b, c, d].into_iter().enumerate() {
+                sums[lane] += f64::from(sample);
+                minima[lane] = minima[lane].min(sample);
+                maxima[lane] = maxima[lane].max(sample);
+            }
+        }
+        for &sample in remainder {
+            sums[0] += f64::from(sample);
+            minima[0] = minima[0].min(sample);
+            maxima[0] = maxima[0].max(sample);
+        }
+        let sum = (sums[0] + sums[1]) + (sums[2] + sums[3]);
+        let min = minima.into_iter().fold(f32::INFINITY, f32::min);
+        let max = maxima.into_iter().fold(f32::NEG_INFINITY, f32::max);
         let mean = (sum / samples.len() as f64) as f32;
         self.last_peak = (min - mean).abs().max((max - mean).abs());
         if self.last_peak < PeriodEstimator::MIN_SIGNAL_PEAK { return None; }
@@ -197,10 +213,40 @@ fn gaussian(len: usize, index: usize, std: f32) -> f32 {
 }
 
 fn correlation_stats(y: &[f32]) -> [f64; 2] {
-    y.iter().fold([0.0; 2], |[sum, squares], &y| {
+    let (chunks, remainder) = y.as_chunks::<4>();
+    let mut sums = [[0.0; 2]; 4];
+    for chunk in chunks {
+        for lane in 0..4 {
+            let y = f64::from(chunk[lane]);
+            sums[lane][0] += y;
+            sums[lane][1] += y * y;
+        }
+    }
+    let [mut sum, mut squares] = sums
+        .into_iter()
+        .fold([0.0; 2], |[sum, squares], lane| {
+            [sum + lane[0], squares + lane[1]]
+        });
+    for &y in remainder {
         let y = f64::from(y);
-        [sum + y, squares + y * y]
-    })
+        sum += y;
+        squares += y * y;
+    }
+    [sum, squares]
+}
+
+fn sliding_stats(data: &[f32], len: usize, count: usize, stats: &mut Vec<[f64; 2]>) {
+    stats.clear();
+    stats.resize(count, [0.0; 2]);
+    let mut current = correlation_stats(&data[..len]);
+    stats[0] = current;
+    for offset in 1..count {
+        let leaving = f64::from(data[offset - 1]);
+        let entering = f64::from(data[offset + len - 1]);
+        current[0] += entering - leaving;
+        current[1] += entering * entering - leaving * leaving;
+        stats[offset] = current;
+    }
 }
 
 fn normalized_correlation(x: &[f32], y: &[f32], [sum_y, sum_yy]: [f64; 2]) -> f32 {
@@ -224,7 +270,40 @@ fn normalized_correlation(x: &[f32], y: &[f32], [sum_y, sum_yy]: [f64; 2]) -> f3
         sum_xx += x * x;
         sum_xy += x * y;
     }
-    let n = x.len() as f64;
+    finish_correlation(x.len(), sum_x, sum_xx, sum_xy, sum_y, sum_yy)
+}
+
+fn normalized_correlation_with_stats(
+    x: &[f32],
+    y: &[f32],
+    [sum_x, sum_xx]: [f64; 2],
+    [sum_y, sum_yy]: [f64; 2],
+) -> f32 {
+    debug_assert_eq!(x.len(), y.len());
+    let mut products = [0.0; 4];
+    let (x_chunks, x_remainder) = x.as_chunks::<4>();
+    let (y_chunks, y_remainder) = y.as_chunks::<4>();
+    for (x, y) in x_chunks.iter().zip(y_chunks) {
+        for lane in 0..4 {
+            products[lane] += f64::from(x[lane]) * f64::from(y[lane]);
+        }
+    }
+    let mut sum_xy = (products[0] + products[1]) + (products[2] + products[3]);
+    for (&x, &y) in x_remainder.iter().zip(y_remainder) {
+        sum_xy += f64::from(x) * f64::from(y);
+    }
+    finish_correlation(x.len(), sum_x, sum_xx, sum_xy, sum_y, sum_yy)
+}
+
+fn finish_correlation(
+    len: usize,
+    sum_x: f64,
+    sum_xx: f64,
+    sum_xy: f64,
+    sum_y: f64,
+    sum_yy: f64,
+) -> f32 {
+    let n = len as f64;
     let dot = (-sum_x / n).mul_add(sum_y, sum_xy);
     let energy_x = (-sum_x / n).mul_add(sum_x, sum_xx).max(0.0);
     let energy_y = (-sum_y / n).mul_add(sum_y, sum_yy).max(0.0);
@@ -447,13 +526,19 @@ impl StableTrigger {
     fn find_best(&mut self, search: usize, period: f32) -> (usize, f32) {
         let template = &self.candidate;
         let stats = correlation_stats(template);
-        let scores = &mut self.estimator.periodicity;
+        let PeriodEstimator {
+            periodicity: scores,
+            window_stats,
+            ..
+        } = &mut self.estimator;
         scores.clear();
         scores.resize(search + 1, f32::NEG_INFINITY);
+        sliding_stats(&self.work, template.len(), search + 1, window_stats);
         let mut score_at = |offset| {
             if scores[offset] == f32::NEG_INFINITY {
                 let x = &self.work[offset..offset + template.len()];
-                scores[offset] = normalized_correlation(x, template, stats);
+                scores[offset] =
+                    normalized_correlation_with_stats(x, template, window_stats[offset], stats);
             }
             scores[offset]
         };
@@ -1093,6 +1178,37 @@ mod tests {
             ..Default::default()
         };
         assert!(trigger.write_candidate(&[0.001, -0.001, 0.001, -0.001], 1000.0) > 0.99);
+    }
+
+    #[test]
+    fn sliding_correlation_statistics_match_direct_windows() {
+        let data: Vec<_> = (0..97)
+            .map(|index| {
+                let phase = index as f32;
+                (phase * 0.37).sin() + (phase * 0.11).cos() * 0.25
+            })
+            .collect();
+        let len = 31;
+        let count = data.len() - len + 1;
+        let mut stats = Vec::new();
+        sliding_stats(&data, len, count, &mut stats);
+
+        for offset in 0..count {
+            let window = &data[offset..offset + len];
+            let direct = correlation_stats(window);
+            for (rolling, direct) in stats[offset].into_iter().zip(direct) {
+                assert!((rolling - direct).abs() < 1.0e-12);
+            }
+            let template = &data[count - 1 - offset..count - 1 - offset + len];
+            let expected = normalized_correlation(window, template, correlation_stats(template));
+            let actual = normalized_correlation_with_stats(
+                window,
+                template,
+                stats[offset],
+                correlation_stats(template),
+            );
+            assert!((actual - expected).abs() < 1.0e-6);
+        }
     }
 
     #[test]
