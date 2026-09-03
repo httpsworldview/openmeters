@@ -56,7 +56,21 @@ pub(crate) fn window_coefficients(kind: WindowKind, len: usize) -> Arc<[f32]> {
 
 // Wide accumulation keeps long DC windows removable at the f32 noise floor.
 pub(crate) fn mean_f32(samples: &[f32]) -> f32 {
-    (samples.iter().map(|&sample| f64::from(sample)).sum::<f64>() / samples.len() as f64) as f32
+    let (chunks, remainder) = samples.as_chunks::<4>();
+    let mut sums = [0.0_f64; 4];
+    for &[a, b, c, d] in chunks {
+        sums[0] += f64::from(a);
+        sums[1] += f64::from(b);
+        sums[2] += f64::from(c);
+        sums[3] += f64::from(d);
+    }
+    let sum = (sums[0] + sums[1])
+        + (sums[2] + sums[3])
+        + remainder
+            .iter()
+            .map(|&sample| f64::from(sample))
+            .sum::<f64>();
+    (sum / samples.len() as f64) as f32
 }
 
 pub fn copy_dc_removed_windowed_from_deque(dst: &mut [f32], src: &VecDeque<f32>, window: &[f32]) {
