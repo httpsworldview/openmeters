@@ -302,9 +302,7 @@ impl SpectrogramProcessor {
             let col = match self.transforms.as_ref().expect("spectrogram FFT prepared") {
                 Transforms::Reassigned(transforms) => {
                     let [analysis, hilbert_forward, hilbert_inverse] = transforms;
-                    for (dst, &sample) in self.complex.iter_mut().zip(&self.audio_buffer) {
-                        *dst = Complex32::new(sample, 0.0);
-                    }
+                    copy_real_to_complex(&mut self.complex, &self.audio_buffer);
                     // Avoid low-bin pollution from the real signal's negative-frequency mirror.
                     hilbert_transform(
                         &mut self.complex,
@@ -530,6 +528,18 @@ fn hilbert_transform(
     analytic[0] = Complex32::ZERO;
     analytic[n / 2 + 1..].fill(Complex32::ZERO);
     ifft.process_with_scratch(analytic, scratch);
+}
+
+fn copy_real_to_complex(dst: &mut [Complex32], src: &VecDeque<f32>) {
+    let (head, tail) = src.as_slices();
+    let split = head.len().min(dst.len());
+    for (dst, &sample) in dst[..split].iter_mut().zip(&head[..split]) {
+        *dst = Complex32::new(sample, 0.0);
+    }
+    let remaining = dst.len() - split;
+    for (dst, &sample) in dst[split..].iter_mut().zip(&tail[..remaining]) {
+        *dst = Complex32::new(sample, 0.0);
+    }
 }
 
 fn apply_complex_window(analytic: &[Complex32], window: &[f32], output: &mut [Complex32]) {
