@@ -602,8 +602,8 @@ fn build_single_points_into(
     db: &[f32],
     x_cache: &[f32],
 ) {
-    let dr = (MAX_DB - style.floor_db).max(EPSILON);
-    let y = |m: f32| ((m - style.floor_db) / dr).clamp(0.0, 1.0);
+    let inv_dr = (MAX_DB - style.floor_db).max(EPSILON).recip();
+    let y = |m: f32| ((m - style.floor_db) * inv_dr).clamp(0.0, 1.0);
     let mut push = |x, m| {
         let y = y(m);
         if y.is_finite() {
