@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::dsp::{AudioBlock, Biquad, Cascade, ThreeBand};
+use crate::dsp::{AudioBlock, Cascade, StereoBiquad, ThreeBand};
 use crate::util::audio::{BAND_SPLITS_HZ, DEFAULT_SAMPLE_RATE, MAX_DSP_BUFFER_LEN, flush_denormal_f64};
 use std::{collections::VecDeque, sync::Arc};
 
@@ -30,7 +30,7 @@ fn snapshot_points(points: &[(f32, f32)]) -> Arc<[(f32, f32)]> {
     if points.is_empty() { Arc::default() } else { Arc::from(points) }
 }
 
-type BandSplitter = ThreeBand<Cascade<[Biquad; 2], 2>, true>;
+type BandSplitter = ThreeBand<Cascade<StereoBiquad, 2>, true>;
 
 #[derive(Debug, Clone, Copy, Default)]
 struct Correlator {

@@ -314,16 +314,14 @@ where
         }
     }
 
-    pub fn push<const CHECK_FINITE: bool>(&mut self, mut values: [T; VALUES]) {
-        let mapped: [f64; VALUES] = std::array::from_fn(|index| {
-            let value = values[index].into();
-            if !CHECK_FINITE || value.is_finite() {
-                value
-            } else {
-                values[index] = T::from(0.0);
-                0.0
-            }
-        });
+    /// Fast path for values that callers have already made finite and nonnegative.
+    pub fn push_nonnegative_finite(&mut self, values: [T; VALUES]) {
+        let mapped = values.map(Into::into);
+        debug_assert!(
+            mapped
+                .iter()
+                .all(|value| value.is_finite() && *value >= 0.0)
+        );
         let len = self.buffer.len();
         for window in 0..WINDOWS {
             let capacity = self.capacities[window];
@@ -386,13 +384,8 @@ pub trait CrossoverFilter: Sized {
     type Sample: Copy;
     fn new(kind: FilterKind, sample_rate: f32, frequency: f32) -> Self;
     fn process(&mut self, sample: Self::Sample) -> Self::Sample;
-    fn visit_biquads(&mut self, visit: &mut impl FnMut(&mut Biquad));
-    fn flush_denormals(&mut self) {
-        self.visit_biquads(&mut |filter| filter.z.iter_mut().for_each(flush_denormal_f64));
-    }
-    fn clear(&mut self) {
-        self.visit_biquads(&mut |filter| filter.z = [0.0; 2]);
-    }
+    fn flush_denormals(&mut self);
+    fn clear(&mut self);
 }
 
 impl CrossoverFilter for Biquad {
@@ -434,8 +427,65 @@ impl CrossoverFilter for Biquad {
         }
     }
 
-    fn visit_biquads(&mut self, visit: &mut impl FnMut(&mut Biquad)) {
-        visit(self);
+    fn flush_denormals(&mut self) {
+        self.z.iter_mut().for_each(flush_denormal_f64);
+    }
+
+    fn clear(&mut self) {
+        self.z = [0.0; 2];
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct StereoBiquad {
+    b: [f64; 3],
+    a: [f64; 2],
+    z: [[f64; 2]; 2],
+}
+
+impl CrossoverFilter for StereoBiquad {
+    type Sample = [f32; 2];
+
+    fn new(kind: FilterKind, sample_rate: f32, frequency: f32) -> Self {
+        let Biquad { b, a, .. } = Biquad::new(kind, sample_rate, frequency);
+        Self {
+            b,
+            a,
+            z: [[0.0; 2]; 2],
+        }
+    }
+
+    fn process(&mut self, [left, right]: [f32; 2]) -> [f32; 2] {
+        let (left, right) = (f64::from(left), f64::from(right));
+        let [z0, z1] = self.z;
+        let output = [self.b[0] * left + z0[0], self.b[0] * right + z0[1]];
+        self.z = [
+            [
+                self.b[1] * left - self.a[0] * output[0] + z1[0],
+                self.b[1] * right - self.a[0] * output[1] + z1[1],
+            ],
+            [
+                self.b[2] * left - self.a[1] * output[0],
+                self.b[2] * right - self.a[1] * output[1],
+            ],
+        ];
+        std::array::from_fn(|channel| {
+            if output[channel].abs() <= f32::MAX as f64 {
+                output[channel] as f32
+            } else {
+                self.z[0][channel] = 0.0;
+                self.z[1][channel] = 0.0;
+                0.0
+            }
+        })
+    }
+
+    fn flush_denormals(&mut self) {
+        self.z.iter_mut().flatten().for_each(flush_denormal_f64);
+    }
+
+    fn clear(&mut self) {
+        self.z = [[0.0; 2]; 2];
     }
 }
 
@@ -452,10 +502,11 @@ impl<F: CrossoverFilter + Copy, const N: usize> CrossoverFilter for Cascade<F, N
             .iter_mut()
             .fold(sample, |sample, filter| filter.process(sample))
     }
-    fn visit_biquads(&mut self, visit: &mut impl FnMut(&mut Biquad)) {
-        self.0
-            .iter_mut()
-            .for_each(|filter| filter.visit_biquads(visit));
+    fn flush_denormals(&mut self) {
+        self.0.iter_mut().for_each(F::flush_denormals);
+    }
+    fn clear(&mut self) {
+        self.0.iter_mut().for_each(F::clear);
     }
 }
 
@@ -467,9 +518,11 @@ impl<F: CrossoverFilter + Copy, const N: usize> CrossoverFilter for [F; N] {
     fn process(&mut self, sample: Self::Sample) -> Self::Sample {
         std::array::from_fn(|index| self[index].process(sample[index]))
     }
-    fn visit_biquads(&mut self, visit: &mut impl FnMut(&mut Biquad)) {
-        self.iter_mut()
-            .for_each(|filter| filter.visit_biquads(visit));
+    fn flush_denormals(&mut self) {
+        self.iter_mut().for_each(F::flush_denormals);
+    }
+    fn clear(&mut self) {
+        self.iter_mut().for_each(F::clear);
     }
 }
 
@@ -633,35 +686,44 @@ mod tests {
     }
 
     #[test]
-    fn running_means_sanitize_non_finite_values_without_poisoning_state() {
-        let mut means = WindowedMeans::<1, 1>::new([1]);
-        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            means.push::<true>([value]);
-            assert_eq!(means.mean(0), [0.0]);
-        }
-        means.push::<true>([1.0]);
-        assert_eq!(means.mean(0), [1.0]);
-    }
-
-    #[test]
-    fn running_means_preserve_small_values_after_a_large_value_expires() {
-        let mut means = WindowedMeans::<1, 1>::new([4]);
-        for value in [1.0, 1.0e100, 1.0, -1.0e100] {
-            means.push::<true>([value]);
-        }
-        assert_eq!(means.mean(0), [0.5]);
-
+    fn nonnegative_running_means_preserve_small_values_after_a_large_value_expires() {
         let mut means = WindowedMeans::<1, 1>::new([2]);
         for value in [2.0_f64.powi(53), 1.0, 1.0] {
-            means.push::<true>([value]);
+            means.push_nonnegative_finite([value]);
+        }
+        assert_eq!(means.mean(0), [1.0]);
+
+        let mut means = WindowedMeans::<1, 1, f32>::new([2]);
+        for value in [2.0_f32.powi(53), 1.0, 1.0] {
+            means.push_nonnegative_finite([value]);
         }
         assert_eq!(means.mean(0), [1.0]);
 
         let mut means = WindowedMeans::<1, 1>::new([2]);
         for value in [1.0e100, 2.0, 1.0e-100, 1.0e-100] {
-            means.push::<true>([value]);
+            means.push_nonnegative_finite([value]);
         }
         assert_eq!(means.mean(0), [1.0e-100]);
+    }
+
+    #[test]
+    fn stereo_biquad_matches_two_scalar_filters() {
+        for kind in [FilterKind::LowPass, FilterKind::HighPass] {
+            let mut scalar = [Biquad::new(kind, 48_000.0, 2_000.0); 2];
+            let mut stereo = StereoBiquad::new(kind, 48_000.0, 2_000.0);
+            for input in [
+                [0.0, -0.0],
+                [0.25, -0.5],
+                [1.0, 0.75],
+                [f32::INFINITY, f32::NAN],
+                [-0.125, 0.5],
+            ] {
+                let expected = [scalar[0].process(input[0]), scalar[1].process(input[1])];
+                let actual = stereo.process(input);
+                assert_eq!(actual.map(f32::to_bits), expected.map(f32::to_bits));
+            }
+        }
+        assert!(std::mem::size_of::<StereoBiquad>() < std::mem::size_of::<[Biquad; 2]>());
     }
 
     #[test]

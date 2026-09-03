@@ -99,12 +99,13 @@ impl BandTracker {
     }
 
     fn process(&mut self, bands: [f32; NUM_BANDS]) {
-        self.color.push::<false>(std::array::from_fn(|band| {
-            let value = bands[band].abs() * BAND_COLOR_GAINS[band];
-            if value.is_finite() { value } else { 0.0 }
-        }));
+        self.color
+            .push_nonnegative_finite(std::array::from_fn(|band| {
+                let value = bands[band].abs() * BAND_COLOR_GAINS[band];
+                if value.is_finite() { value } else { 0.0 }
+            }));
         if let Some(history) = &mut self.history {
-            history.push::<false>(bands.map(|value| {
+            history.push_nonnegative_finite(bands.map(|value| {
                 let power = value * value;
                 if power.is_finite() { power } else { 0.0 }
             }));

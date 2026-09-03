@@ -260,7 +260,8 @@ impl LoudnessProcessor {
                 }
                 let (windows, filter, true_peak) = channel.as_mut().unwrap();
                 let filtered = k_weighted(sample, filter, weighting);
-                windows.push::<true>([filtered * filtered]);
+                let power = filtered * filtered;
+                windows.push_nonnegative_finite([if power.is_finite() { power } else { 0.0 }]);
                 true_peak.process(sample, firs);
             }
         }
@@ -335,13 +336,13 @@ mod tests {
     #[test]
     fn rolling_mean_square_tracks_average() {
         let mut window = WindowedMeans::<1, 4>::new([4, 2, 1, 4]);
-        window.push::<true>([1.0]);
-        window.push::<true>([9.0]);
+        window.push_nonnegative_finite([1.0]);
+        window.push_nonnegative_finite([9.0]);
         assert!((window.mean(0)[0] - 5.0).abs() < f64::EPSILON);
 
-        window.push::<true>([16.0]);
-        window.push::<true>([25.0]);
-        window.push::<true>([36.0]);
+        window.push_nonnegative_finite([16.0]);
+        window.push_nonnegative_finite([25.0]);
+        window.push_nonnegative_finite([36.0]);
         assert!((window.mean(0)[0] - 21.5).abs() < f64::EPSILON);
         assert!((window.mean(1)[0] - 30.5).abs() < f64::EPSILON);
         assert!((window.mean(2)[0] - 36.0).abs() < f64::EPSILON);
