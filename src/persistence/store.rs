@@ -154,6 +154,19 @@ impl SettingsHandle {
         schedule_persist(manager.path.clone(), manager.data.clone());
     }
 
+    pub(crate) fn set<T: PartialEq>(
+        &self,
+        select: impl FnOnce(&mut UiSettings) -> &mut T,
+        value: T,
+    ) -> bool {
+        let mut manager = self.0.borrow_mut();
+        if !crate::util::set_if_changed(select(&mut manager.data), value) {
+            return false;
+        }
+        schedule_persist(manager.path.clone(), manager.data.clone());
+        true
+    }
+
     pub fn flush() {
         let Some((tx, join)) = crate::util::unpoison(SAVER.lock()).take() else {
             return;
@@ -207,7 +220,9 @@ mod tests {
             theme_store: ThemeStore::new(dir.path()),
         })));
 
-        handle.update(|settings| settings.data.decorations = true);
+        assert!(!handle.set(|settings| &mut settings.decorations, false));
+        assert!(handle.set(|settings| &mut settings.decorations, true));
+        assert!(!handle.set(|settings| &mut settings.decorations, true));
         SettingsHandle::flush();
 
         let saved: UiSettings = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();

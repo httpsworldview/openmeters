@@ -5,6 +5,7 @@ use crate::dsp::{AudioBlock, Biquad, ThreeBand, WindowedMeans};
 use crate::util::audio::{
     BAND_SPLITS_HZ, Channel, DB_FLOOR, DEFAULT_SAMPLE_RATE, power_to_db, sanitize_sample_rate,
 };
+pub(super) use crate::util::audio::BAND_COUNT as NUM_BANDS;
 
 pub const MIN_SCROLL_SPEED: f32 = 10.0;
 pub const MAX_SCROLL_SPEED: f32 = 1000.0;
@@ -20,7 +21,6 @@ const BAND_COLOR_WINDOW_AT_44K1: usize = 2048;
 const BAND_SLOW_WINDOW_AT_44K1: usize = 16_384;
 const BAND_COLOR_GAINS: [f32; NUM_BANDS] = [1.0, 0.7, 2.0];
 pub(super) const WAVEFORM_SILENCE_AMPLITUDE: f32 = 1.584_893_1e-5;
-pub(super) const NUM_BANDS: usize = BAND_SPLITS_HZ.len() + 1;
 pub const MIN_BAND_DB_FLOOR: f32 = -96.0;
 pub const MAX_BAND_DB_FLOOR: f32 = -12.0;
 

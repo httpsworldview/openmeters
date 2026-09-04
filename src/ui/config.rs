@@ -305,14 +305,12 @@ impl ConfigPage {
                 effect = Some(ConfigEffect::VisualToggled { kind, enabled });
             }
             ConfigMessage::CaptureModeChanged(mode) => {
-                if self.settings.borrow().data.capture_mode != mode {
-                    self.settings.update(|s| s.data.capture_mode = mode);
+                if self.settings.set(|s| &mut s.capture_mode, mode) {
                     self.dispatch_capture_config();
                 }
             }
             ConfigMessage::CaptureDeviceChanged(token) => {
-                if self.settings.borrow().data.last_device_name != token {
-                    self.settings.update(|s| s.data.last_device_name = token);
+                if self.settings.set(|s| &mut s.last_device_name, token) {
                     self.dispatch_capture_config();
                 }
             }
@@ -336,8 +334,7 @@ impl ConfigPage {
                 effect = Some(ConfigEffect::DecorationsChanged);
             }
             ConfigMessage::BarModeToggled(value) => {
-                if self.settings.borrow().data.bar.enabled != value {
-                    self.settings.update(|s| s.data.bar.enabled = value);
+                if self.settings.set(|s| &mut s.bar.enabled, value) {
                     effect = Some(ConfigEffect::BarChanged(BarChange::Mode));
                 }
             }
@@ -350,8 +347,7 @@ impl ConfigPage {
                 effect = Some(ConfigEffect::BarChanged(BarChange::Layout));
             }
             ConfigMessage::BarMonitorChanged(value) => {
-                if self.settings.borrow().data.bar.monitor != value {
-                    self.settings.update(|s| s.data.bar.monitor = value);
+                if self.settings.set(|s| &mut s.bar.monitor, value) {
                     effect = Some(ConfigEffect::BarChanged(BarChange::Monitor));
                 }
             }
@@ -360,11 +356,8 @@ impl ConfigPage {
                 effect = Some(ConfigEffect::ThemeChanged);
             }
             ConfigMessage::SaveTheme(name) => {
-                let active = self.settings.borrow().active_theme().to_owned();
-                if let Some(saved_name) = self.save_current_as_theme(&name)
-                    && active != saved_name
-                {
-                    self.settings.update(|s| s.data.theme = Some(saved_name));
+                if let Some(saved_name) = self.save_current_as_theme(&name) {
+                    self.settings.set(|s| &mut s.theme, Some(saved_name));
                 }
                 self.save_theme_name.clear();
             }
@@ -684,13 +677,8 @@ impl ConfigPage {
 
     fn apply_capture_view(&mut self, view: &CaptureView) {
         if let Some(selected) = &view.selected_device {
-            let changed =
-                self.settings.borrow().data.last_device_name.as_deref() != Some(selected.as_ref());
-            if changed {
-                let selected = Arc::clone(selected);
-                self.settings
-                    .update(|settings| settings.data.last_device_name = Some(selected));
-            }
+            self.settings
+                .set(|s| &mut s.last_device_name, Some(Arc::clone(selected)));
         }
         let mut choices = vec![DeviceOption {
             label: Arc::from(format!("Default sink - {}", view.default_sink)),

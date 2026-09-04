@@ -447,10 +447,8 @@ impl UiApp {
         if self.main_window_is_layer {
             self.main_window_size = new_size;
             let height = clamp_bar_height(new_size.height.round().max(1.0) as u32);
-            let current_height = self.settings_handle.borrow().data.bar.height;
-            if current_height != height {
-                self.settings_handle.update(|s| s.data.bar.height = height);
-            }
+            self.settings_handle
+                .set(|settings| &mut settings.bar.height, height);
             return Task::done(Message::ExclusiveZoneChange {
                 id: self.main_window_id,
                 zone_size: height as i32,
@@ -462,11 +460,8 @@ impl UiApp {
         let size = main_window_size(settings);
         self.main_window_size = size;
         self.last_base_window_size = size;
-        let current_settings = self.settings_handle.borrow().data.main_window;
-        if current_settings != settings {
-            self.settings_handle
-                .update(|s| s.data.main_window = settings);
-        }
+        self.settings_handle
+            .set(|state| &mut state.main_window, settings);
         Task::none()
     }
 

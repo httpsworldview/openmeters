@@ -3,11 +3,11 @@
 
 use crate::dsp::{AudioBlock, Cascade, StereoBiquad, ThreeBand};
 use crate::util::audio::{BAND_SPLITS_HZ, DEFAULT_SAMPLE_RATE, MAX_DSP_BUFFER_LEN, flush_denormal_f64};
+pub(super) use crate::util::audio::BAND_COUNT;
 use std::{collections::VecDeque, sync::Arc};
 
 const BAND_DISPLAY_GAIN: f32 = 0.8;
 const MAX_SNAPSHOT_POINTS: usize = 16_384;
-pub(super) const BAND_COUNT: usize = BAND_SPLITS_HZ.len() + 1;
 
 crate::macros::default_struct! {
     #[derive(Debug, Clone, Copy)]

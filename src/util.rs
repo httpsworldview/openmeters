@@ -11,6 +11,14 @@ pub fn finite_positive(value: f32) -> Option<f32> {
     (value.is_finite() && value > 0.0).then_some(value)
 }
 
+pub(crate) fn set_if_changed<T: PartialEq>(target: &mut T, value: T) -> bool {
+    if *target == value {
+        return false;
+    }
+    *target = value;
+    true
+}
+
 pub(crate) fn unpoison<T>(lock: std::sync::LockResult<T>) -> T {
     lock.unwrap_or_else(std::sync::PoisonError::into_inner)
 }

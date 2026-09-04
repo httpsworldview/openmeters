@@ -140,19 +140,12 @@ use crate::persistence::settings::{
 };
 use crate::ui::theme::Palette;
 use crate::ui::widgets::palette_editor::PaletteEditor;
+use crate::util::set_if_changed as set;
 use crate::visuals::registry::{VisualKind, VisualManagerHandle};
 use iced::{Color, Element};
 
 const FFT_OPTIONS: [usize; 5] = [1024, 2048, 4096, 8192, 16384];
 const HOP_DIVISORS: [usize; 7] = [4, 6, 8, 16, 32, 64, 128];
-
-fn set<T: PartialEq>(target: &mut T, value: T) -> bool {
-    if *target == value {
-        return false;
-    }
-    *target = value;
-    true
-}
 
 // Compare bits to avoid spurious writes for identical NaN payloads.
 fn set_f32(target: &mut f32, value: f32) -> bool {
