@@ -417,12 +417,14 @@ crate::visuals::visualization_widget!(Spectrum, SpectrumState, |this, r, th, b| 
         return;
     };
     r.draw_primitive(b, params);
-    if let Some(cutouts) = state.cutout_params(b, th) {
-        r.draw_primitive(b, cutouts);
-    }
     if let Some(range) = grid_range {
-        r.with_layer(b, |r| draw_grid_lines(r, th, b, range, &state));
-        r.with_layer(b, |r| draw_grid_labels(r, th, &state));
+        r.with_layer(b, |r| {
+            draw_grid_lines(r, th, b, range, &state);
+            if let Some(cutouts) = state.cutout_params(b, th) {
+                r.draw_primitive(b, cutouts);
+            }
+            draw_grid_labels(r, th, &state);
+        });
     }
     if let Some((peak, layout)) = peak.zip(peak_layout) {
         let peak_color = state.palette[PEAK_PALETTE_INDEX];
@@ -671,36 +673,15 @@ fn draw_grid_lines(
     let text_color = th.extended_palette().background.base.text;
     let major_color = with_alpha(text_color, 0.25);
     let minor_color = with_alpha(text_color, 0.10);
-    let bottom = bounds.y + bounds.height;
 
     for (frequency, major, _) in &state.grid_ticks {
         let Some(x) = axis.tick_x(*frequency) else { continue };
         let x = (x - 0.5).clamp(bounds.x, (bounds.x + bounds.width - 1.0).max(bounds.x));
-        let color = if *major { major_color } else { minor_color };
-        let label_index = state
-            .grid_labels
-            .partition_point(|label| label.bounds.x + label.bounds.width <= x);
-        let blocker = state
-            .grid_labels
-            .get(label_index)
-            .filter(|label| label.bounds.x < x + 1.0);
-        let mut draw_segment = |top: f32, segment_bottom: f32| {
-            if segment_bottom > top {
-                fill_rect(
-                    r,
-                    Rectangle::new(Point::new(x, top), Size::new(1.0, segment_bottom - top)),
-                    color,
-                );
-            }
-        };
-        if let Some(label) = blocker {
-            let cutout_top = label.bounds.y.clamp(bounds.y, bottom);
-            let cutout_bottom = (label.bounds.y + label.bounds.height).clamp(cutout_top, bottom);
-            draw_segment(bounds.y, cutout_top);
-            draw_segment(cutout_bottom, bottom);
-        } else {
-            draw_segment(bounds.y, bottom);
-        }
+        fill_rect(
+            r,
+            Rectangle::new(Point::new(x, bounds.y), Size::new(1.0, bounds.height)),
+            if *major { major_color } else { minor_color },
+        );
     }
 }
 
