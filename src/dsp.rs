@@ -374,23 +374,13 @@ pub enum FilterKind {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct Biquad {
+struct Biquad<const CHANNELS: usize> {
     b: [f64; 3],
     a: [f64; 2],
-    z: [f64; 2],
+    z: [[f64; CHANNELS]; 2],
 }
 
-pub trait CrossoverFilter: Sized {
-    type Sample: Copy;
-    fn new(kind: FilterKind, sample_rate: f32, frequency: f32) -> Self;
-    fn process(&mut self, sample: Self::Sample) -> Self::Sample;
-    fn flush_denormals(&mut self);
-    fn clear(&mut self);
-}
-
-impl CrossoverFilter for Biquad {
-    type Sample = f32;
-
+impl<const CHANNELS: usize> Biquad<CHANNELS> {
     fn new(kind: FilterKind, sample_rate: f32, frequency: f32) -> Self {
         let ratio = (f64::from(frequency) / f64::from(sample_rate)).clamp(1.0e-6, 0.49);
         let (half_sin, half_cos) = (core::f64::consts::PI * ratio).sin_cos();
@@ -409,65 +399,17 @@ impl CrossoverFilter for Biquad {
                 gain * 0.5 * inv_a0,
             ],
             a: [-2.0 * cos * inv_a0, (1.0 - alpha) * inv_a0],
-            z: [0.0; 2],
+            z: [[0.0; CHANNELS]; 2],
         }
     }
 
-    fn process(&mut self, sample: f32) -> f32 {
-        let sample = f64::from(sample);
+    fn process(&mut self, sample: [f32; CHANNELS]) -> [f32; CHANNELS] {
+        let sample = sample.map(f64::from);
         let [z0, z1] = self.z;
-        let output = self.b[0] * sample + z0;
-        let next = self.b[1] * sample - self.a[0] * output + z1;
-        self.z = [next, self.b[2] * sample - self.a[1] * output];
-        if output.abs() <= f32::MAX as f64 {
-            output as f32
-        } else {
-            self.z = [0.0; 2];
-            0.0
-        }
-    }
-
-    fn flush_denormals(&mut self) {
-        self.z.iter_mut().for_each(flush_denormal_f64);
-    }
-
-    fn clear(&mut self) {
-        self.z = [0.0; 2];
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct StereoBiquad {
-    b: [f64; 3],
-    a: [f64; 2],
-    z: [[f64; 2]; 2],
-}
-
-impl CrossoverFilter for StereoBiquad {
-    type Sample = [f32; 2];
-
-    fn new(kind: FilterKind, sample_rate: f32, frequency: f32) -> Self {
-        let Biquad { b, a, .. } = Biquad::new(kind, sample_rate, frequency);
-        Self {
-            b,
-            a,
-            z: [[0.0; 2]; 2],
-        }
-    }
-
-    fn process(&mut self, [left, right]: [f32; 2]) -> [f32; 2] {
-        let (left, right) = (f64::from(left), f64::from(right));
-        let [z0, z1] = self.z;
-        let output = [self.b[0] * left + z0[0], self.b[0] * right + z0[1]];
+        let output: [f64; CHANNELS] = std::array::from_fn(|i| self.b[0] * sample[i] + z0[i]);
         self.z = [
-            [
-                self.b[1] * left - self.a[0] * output[0] + z1[0],
-                self.b[1] * right - self.a[0] * output[1] + z1[1],
-            ],
-            [
-                self.b[2] * left - self.a[1] * output[0],
-                self.b[2] * right - self.a[1] * output[1],
-            ],
+            std::array::from_fn(|i| self.b[1] * sample[i] - self.a[0] * output[i] + z1[i]),
+            std::array::from_fn(|i| self.b[2] * sample[i] - self.a[1] * output[i]),
         ];
         std::array::from_fn(|channel| {
             if output[channel].abs() <= f32::MAX as f64 {
@@ -485,77 +427,61 @@ impl CrossoverFilter for StereoBiquad {
     }
 
     fn clear(&mut self) {
-        self.z = [[0.0; 2]; 2];
+        self.z = [[0.0; CHANNELS]; 2];
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct Cascade<F, const N: usize>([F; N]);
-
-impl<F: CrossoverFilter + Copy, const N: usize> CrossoverFilter for Cascade<F, N> {
-    type Sample = F::Sample;
-    fn new(kind: FilterKind, sample_rate: f32, frequency: f32) -> Self {
-        Self([F::new(kind, sample_rate, frequency); N])
-    }
-    fn process(&mut self, sample: Self::Sample) -> Self::Sample {
-        self.0
-            .iter_mut()
-            .fold(sample, |sample, filter| filter.process(sample))
-    }
-    fn flush_denormals(&mut self) {
-        self.0.iter_mut().for_each(F::flush_denormals);
-    }
-    fn clear(&mut self) {
-        self.0.iter_mut().for_each(F::clear);
-    }
+pub struct ThreeBand<const CHANNELS: usize, const STAGES: usize, const CASCADE_HIGH: bool> {
+    filters: [[Biquad<CHANNELS>; STAGES]; 4],
 }
 
-impl<F: CrossoverFilter + Copy, const N: usize> CrossoverFilter for [F; N] {
-    type Sample = [F::Sample; N];
-    fn new(kind: FilterKind, sample_rate: f32, frequency: f32) -> Self {
-        [F::new(kind, sample_rate, frequency); N]
-    }
-    fn process(&mut self, sample: Self::Sample) -> Self::Sample {
-        std::array::from_fn(|index| self[index].process(sample[index]))
-    }
-    fn flush_denormals(&mut self) {
-        self.iter_mut().for_each(F::flush_denormals);
-    }
-    fn clear(&mut self) {
-        self.iter_mut().for_each(F::clear);
-    }
-}
-
-pub struct ThreeBand<F: CrossoverFilter, const CASCADE_HIGH: bool> {
-    filters: [F; 4],
-}
-
-impl<F: CrossoverFilter, const CASCADE_HIGH: bool> ThreeBand<F, CASCADE_HIGH> {
+impl<const CHANNELS: usize, const STAGES: usize, const CASCADE_HIGH: bool>
+    ThreeBand<CHANNELS, STAGES, CASCADE_HIGH>
+{
     pub fn new(sample_rate: f32, [low, high]: [f32; 2]) -> Self {
+        let stages = |kind, frequency| [Biquad::new(kind, sample_rate, frequency); STAGES];
         Self {
             filters: [
-                F::new(FilterKind::LowPass, sample_rate, low),
-                F::new(FilterKind::HighPass, sample_rate, low),
-                F::new(FilterKind::LowPass, sample_rate, high),
-                F::new(FilterKind::HighPass, sample_rate, high),
+                stages(FilterKind::LowPass, low),
+                stages(FilterKind::HighPass, low),
+                stages(FilterKind::LowPass, high),
+                stages(FilterKind::HighPass, high),
             ],
         }
     }
 
-    pub fn process(&mut self, sample: F::Sample) -> [F::Sample; 3] {
+    #[inline(always)]
+    pub fn process(&mut self, sample: [f32; CHANNELS]) -> [[f32; CHANNELS]; 3] {
+        let process = |stages: &mut [Biquad<CHANNELS>; STAGES], sample| {
+            stages
+                .iter_mut()
+                .fold(sample, |sample, filter| filter.process(sample))
+        };
         let [low, above_low, mid, high] = &mut self.filters;
-        let low = low.process(sample);
-        let above_low = above_low.process(sample);
+        let low = process(low, sample);
+        let above_low = process(above_low, sample);
         let high_input = if CASCADE_HIGH { above_low } else { sample };
-        [low, mid.process(above_low), high.process(high_input)]
+        [low, process(mid, above_low), process(high, high_input)]
     }
 
     pub fn flush_denormals(&mut self) {
-        self.filters.iter_mut().for_each(F::flush_denormals);
+        self.filters
+            .iter_mut()
+            .flatten()
+            .for_each(Biquad::flush_denormals);
     }
 
     pub fn clear(&mut self) {
-        self.filters.iter_mut().for_each(F::clear);
+        self.filters.iter_mut().flatten().for_each(Biquad::clear);
+    }
+}
+
+impl<const STAGES: usize, const CASCADE_HIGH: bool> ThreeBand<1, STAGES, CASCADE_HIGH> {
+    // Keep the scalar call ABI without expanding the bank into the waveform history loop.
+    #[inline(never)]
+    pub fn process_mono(&mut self, sample: f32) -> [f32; 3] {
+        let [[low], [mid], [high]] = self.process([sample]);
+        [low, mid, high]
     }
 }
 
@@ -709,8 +635,8 @@ mod tests {
     #[test]
     fn stereo_biquad_matches_two_scalar_filters() {
         for kind in [FilterKind::LowPass, FilterKind::HighPass] {
-            let mut scalar = [Biquad::new(kind, 48_000.0, 2_000.0); 2];
-            let mut stereo = StereoBiquad::new(kind, 48_000.0, 2_000.0);
+            let mut scalar = [Biquad::<1>::new(kind, 48_000.0, 2_000.0); 2];
+            let mut stereo = Biquad::<2>::new(kind, 48_000.0, 2_000.0);
             for input in [
                 [0.0, -0.0],
                 [0.25, -0.5],
@@ -718,26 +644,29 @@ mod tests {
                 [f32::INFINITY, f32::NAN],
                 [-0.125, 0.5],
             ] {
-                let expected = [scalar[0].process(input[0]), scalar[1].process(input[1])];
+                let expected = [
+                    scalar[0].process([input[0]])[0],
+                    scalar[1].process([input[1]])[0],
+                ];
                 let actual = stereo.process(input);
                 assert_eq!(actual.map(f32::to_bits), expected.map(f32::to_bits));
             }
         }
-        assert!(std::mem::size_of::<StereoBiquad>() < std::mem::size_of::<[Biquad; 2]>());
+        assert!(std::mem::size_of::<Biquad<2>>() < std::mem::size_of::<[Biquad<1>; 2]>());
     }
 
     #[test]
     fn biquad_response_and_clear_are_precise() {
         use rustfft::num_complex::Complex64;
-        let filter = Biquad::new(FilterKind::LowPass, 768_000.0, 200.0);
+        let filter = Biquad::<1>::new(FilterKind::LowPass, 768_000.0, 200.0);
         let z = Complex64::from_polar(1.0, -core::f64::consts::TAU * 200.0 / 768_000.0);
         let ([b0, b1, b2], [a1, a2]) = (filter.b, filter.a);
         let magnitude = ((b0 + b1 * z + b2 * z * z) / (1.0 + a1 * z + a2 * z * z)).norm();
         assert!((magnitude - core::f64::consts::FRAC_1_SQRT_2).abs() < 1.0e-9);
-        let mut used = Biquad::new(FilterKind::LowPass, 48_000.0, 1_000.0);
+        let mut used = Biquad::<1>::new(FilterKind::LowPass, 48_000.0, 1_000.0);
         let mut fresh = used;
-        used.process(1.0);
+        used.process([1.0]);
         used.clear();
-        assert_eq!(used.process(0.25), fresh.process(0.25));
+        assert_eq!(used.process([0.25]), fresh.process([0.25]));
     }
 }

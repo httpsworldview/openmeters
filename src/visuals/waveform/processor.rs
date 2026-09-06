@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::dsp::{AudioBlock, Biquad, ThreeBand, WindowedMeans};
+use crate::dsp::{AudioBlock, ThreeBand, WindowedMeans};
 use crate::util::audio::{
     BAND_SPLITS_HZ, Channel, DB_FLOOR, DEFAULT_SAMPLE_RATE, power_to_db, sanitize_sample_rate,
 };
@@ -77,7 +77,7 @@ fn window_len(samples_at_reference_rate: usize, sample_rate: f32) -> usize {
 
 type BandWindow = WindowedMeans<NUM_BANDS, 1, f32>;
 type BandHistory = WindowedMeans<NUM_BANDS, 2, f32>;
-type BandFilter = ThreeBand<Biquad, false>;
+type BandFilter = ThreeBand<1, 1, false>;
 
 fn band_means(means: [f64; NUM_BANDS]) -> [f32; NUM_BANDS] {
     means.map(|mean| mean.max(0.0) as f32)
@@ -240,8 +240,8 @@ impl WaveformProcessor {
             let finite = derived.map(f32::is_finite);
             if let Some((filters, trackers)) = &mut self.band_analysis {
                 let filtered = [
-                    filters[0].process(if finite[0] { derived[0] } else { 0.0 }),
-                    filters[1].process(if finite[1] { derived[1] } else { 0.0 }),
+                    filters[0].process_mono(if finite[0] { derived[0] } else { 0.0 }),
+                    filters[1].process_mono(if finite[1] { derived[1] } else { 0.0 }),
                 ];
                 let [left, right] = filtered;
                 let bands = [
@@ -394,9 +394,9 @@ mod tests {
                 (2.0 * PI * 263.0 * n as f32 / RATE).sin(),
             ]);
             let expected: [[f32; NUM_BANDS]; DERIVED_CHANNELS] =
-                std::array::from_fn(|channel| separate[channel].process(derived[channel]));
+                std::array::from_fn(|channel| separate[channel].process_mono(derived[channel]));
             let filtered: [[f32; NUM_BANDS]; 2] =
-                std::array::from_fn(|channel| shared[channel].process(derived[channel]));
+                std::array::from_fn(|channel| shared[channel].process_mono(derived[channel]));
             let actual = [
                 filtered[0], filtered[1],
                 std::array::from_fn(|band| (filtered[0][band] + filtered[1][band]) * 0.5),
