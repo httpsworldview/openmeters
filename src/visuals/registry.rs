@@ -71,7 +71,7 @@ macro_rules! visuals {
     }};
     (@apply_palette $module:ident, $state:ident, $palette:ident) => {};
     ($($variant:ident($default_width_basis:expr, $min_w:expr) =>
-       $module:ident :: $processor:ident, $config:ident, $state:ident.$state_settings:ident;
+       $module:ident :: $processor:ident, $state:ident.$state_settings:ident;
        $settings_ty:ty;
        $(prepare($prepare:ident);)?
        $(ignores_audio($ignores:ident);)?
@@ -100,7 +100,7 @@ macro_rules! visuals {
                 min_width: $min_w,
                 enabled: false,
                 module: Box::new(Visual {
-                    processor: $module::$processor::new($module::$config::default()),
+                    processor: $module::$processor::new(Default::default()),
                     state: Rc::new(RefCell::new($module::$state::new())),
                     pending_audio: false,
                 }),
@@ -175,7 +175,7 @@ macro_rules! visuals {
 
 visuals! {
     Loudness(140.0, 80.0) =>
-        loudness::LoudnessProcessor, LoudnessConfig, LoudnessState.settings;
+        loudness::LoudnessProcessor, LoudnessState.settings;
         settings_cfg::LoudnessSettings;
         apply(_p, s, set) {
             s.borrow_mut().set_modes(set.left_mode, set.right_mode);
@@ -183,7 +183,7 @@ visuals! {
         export(_p, s) none;
 
     Oscilloscope(150.0, 100.0) =>
-        oscilloscope::OscilloscopeProcessor, OscilloscopeConfig, OscilloscopeState.settings;
+        oscilloscope::OscilloscopeProcessor, OscilloscopeState.settings;
         settings_cfg::OscilloscopeSettings;
         ignores_audio(ignores_audio);
         apply(p, s, set) { visuals!(@apply_config p, set); let reset = [set.channel_1, set.channel_2] == [Channel::None; 2];
@@ -192,7 +192,7 @@ visuals! {
         export(p, s) config;
 
     Waveform(220.0, 220.0) =>
-        waveform::WaveformProcessor, WaveformConfig, WaveformState.settings;
+        waveform::WaveformProcessor, WaveformState.settings;
         settings_cfg::WaveformSettings;
         prepare(prepare);
         pre_ingest(p, s) {
@@ -214,7 +214,7 @@ visuals! {
         export(p, s) config;
 
     Spectrogram(320.0, 300.0) =>
-        spectrogram::SpectrogramProcessor, SpectrogramConfig, SpectrogramState.settings;
+        spectrogram::SpectrogramProcessor, SpectrogramState.settings;
         settings_cfg::SpectrogramSettings;
         prepare(prepare);
         buffered_signal(has_buffered_signal);
@@ -234,7 +234,7 @@ visuals! {
         export(p, s) config;
 
     Spectrum(400.0, 400.0) =>
-        spectrum::SpectrumProcessor, SpectrumConfig, SpectrumState.style;
+        spectrum::SpectrumProcessor, SpectrumState.style;
         settings_cfg::SpectrumSettings;
         prepare(prepare);
         ignores_audio(ignores_audio);
@@ -245,7 +245,7 @@ visuals! {
         export(p, s) config;
 
     Stereometer(150.0, 100.0) =>
-        stereometer::StereometerProcessor, StereometerConfig, StereometerState.settings;
+        stereometer::StereometerProcessor, StereometerState.settings;
         settings_cfg::StereometerSettings;
         apply(p, s, set) {
             let mut cfg = p.config();

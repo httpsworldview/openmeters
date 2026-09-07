@@ -115,7 +115,6 @@ struct UiApp {
     rendering_paused: bool,
     toast_until: Option<Instant>,
     main_window_id: window::Id,
-    main_window_size: Size,
     last_base_window_size: Size,
     main_window_is_layer: bool,
     main_layer_opened: bool,
@@ -172,7 +171,7 @@ impl UiApp {
         );
         let visuals_page = VisualsPage::new(visual_manager.clone(), settings_handle.clone());
         let base_size = main_window_size(main_window);
-        let (main_id, open_task, main_is_layer, main_size) =
+        let (main_id, open_task, main_is_layer) =
             open_main_window(use_layershell, bar_settings, base_size, use_decorations);
         let frames = Rc::new(RefCell::new(FrameCoordinator::new(
             meter_engine,
@@ -189,7 +188,6 @@ impl UiApp {
             rendering_paused: false,
             toast_until: None,
             main_window_id: main_id,
-            main_window_size: main_size,
             last_base_window_size: base_size,
             main_window_is_layer: main_is_layer,
             main_layer_opened: false,

@@ -853,7 +853,6 @@ mod tests {
         let update = process_sine(config, frequency, 4096);
         let peak = peak_point(reassigned_points(update.new_columns.last().unwrap()));
 
-        assert!(frequency < config.sample_rate / config.fft_size as f32 * 2.0);
         assert!((peak.freq_hz - frequency).abs() < 2.0);
     }
 

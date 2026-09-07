@@ -139,7 +139,7 @@ impl BarOutputs {
 
     fn set_current(&mut self, output: Option<u32>, selected: Option<&str>) -> bool {
         self.current = output;
-        output.is_some() && selected.is_some_and(|selected| self.selected_is_elsewhere(selected))
+        selected.is_some_and(|selected| self.selected_is_elsewhere(selected))
     }
 
     fn choices(&self, selected: Option<&str>) -> (Vec<BarMonitorOption>, BarMonitorOption) {
@@ -240,7 +240,7 @@ impl ConfigPage {
                 guard.theme_store().list(),
             )
         };
-        let window_themes = theme::window_themes(Some(current_bg));
+        let window_themes = theme::window_themes(current_bg);
         let mut bg_pal = theme::Palette::new(&bg::COLORS, &bg::DEFAULT_POSITIONS, bg::LABELS);
         bg_pal.set_colors(&[current_bg]);
         let bg_palette = PaletteEditor::new(bg_pal);
@@ -321,7 +321,7 @@ impl ConfigPage {
                         s.data.background_color = Some(color.into());
                         s.update_active_theme(|theme| theme.background = Some(color.into()));
                     });
-                    self.window_themes = theme::window_themes(Some(color));
+                    self.window_themes = theme::window_themes(color);
                     self.refresh_theme_choices_if_needed();
                 }
             }
@@ -552,7 +552,7 @@ impl ConfigPage {
             s.data.background_color = Some(bg.into());
             s.data.theme = theme_val;
         });
-        self.window_themes = theme::window_themes(Some(bg));
+        self.window_themes = theme::window_themes(bg);
     }
 
     fn save_current_as_theme(&mut self, name: &str) -> Option<String> {

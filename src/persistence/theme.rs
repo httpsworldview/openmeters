@@ -173,9 +173,9 @@ mod tests {
         assert_eq!(
             names
                 .iter()
-                .map(|choice| (choice.name.as_str(), choice.name == BUILTIN_THEME))
+                .map(|choice| choice.name.as_str())
                 .collect::<Vec<_>>(),
-            vec![("default", true), ("alpha", false), ("zebra", false)]
+            ["default", "alpha", "zebra"]
         );
     }
 

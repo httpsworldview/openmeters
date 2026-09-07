@@ -169,7 +169,7 @@ pub(super) fn desired_links(graph: &Graph, plan: &Plan, tap: &Node) -> Vec<LinkS
                     channel => channel,
                 })
         };
-        for (output, channel) in ports.into_iter().zip(positions).take(MAX_CAPTURE_CHANNELS) {
+        for (output, channel) in ports.into_iter().zip(positions) {
             if let Some(target) = target_for(channel) {
                 links.insert(link(source, output, tap, target));
                 continue;

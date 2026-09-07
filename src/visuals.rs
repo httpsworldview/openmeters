@@ -2,12 +2,12 @@
 // Copyright (C) 2026 Maika Namuo
 
 macro_rules! visual_modules {
-    ($($module:ident { $processor:ident, $config:ident, $state:ident }),+ $(,)?) => {
+    ($($module:ident { $processor:ident, $state:ident }),+ $(,)?) => {
         $(pub mod $module {
             pub mod processor;
             pub mod render;
             pub mod state;
-            pub(in crate::visuals) use processor::{$config, $processor};
+            pub(in crate::visuals) use processor::$processor;
             pub(in crate::visuals) use state::{widget, $state};
         })+
     };
@@ -67,12 +67,12 @@ macro_rules! palette_setter {
 pub(in crate::visuals) use palette_setter;
 
 visual_modules! {
-    loudness { LoudnessProcessor, LoudnessConfig, LoudnessState },
-    oscilloscope { OscilloscopeProcessor, OscilloscopeConfig, OscilloscopeState },
-    spectrogram { SpectrogramProcessor, SpectrogramConfig, SpectrogramState },
-    spectrum { SpectrumProcessor, SpectrumConfig, SpectrumState },
-    stereometer { StereometerProcessor, StereometerConfig, StereometerState },
-    waveform { WaveformProcessor, WaveformConfig, WaveformState },
+    loudness { LoudnessProcessor, LoudnessState },
+    oscilloscope { OscilloscopeProcessor, OscilloscopeState },
+    spectrogram { SpectrogramProcessor, SpectrogramState },
+    spectrum { SpectrumProcessor, SpectrumState },
+    stereometer { StereometerProcessor, StereometerState },
+    waveform { WaveformProcessor, WaveformState },
 }
 
 pub mod options {

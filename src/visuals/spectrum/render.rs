@@ -115,7 +115,7 @@ impl SpectrumParams {
                 ));
             }
             let (x, y) = normalized_to_cartesian(bounds, peak.marker);
-            vertices.push(dot_instance(x, y, 3.0, peak.marker_color, clip, false));
+            vertices.push(dot_instance(x, y, 3.0, peak.marker_color, clip));
         }
     }
 

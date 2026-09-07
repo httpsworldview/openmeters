@@ -320,12 +320,11 @@ impl StereometerParams {
             StereometerScale::Scaled => -1.0,
         };
         let center_radius = [projection.cx, projection.cy, projection.radius];
-        let dots = [false, true].map(|additive| {
-            RadialDotTemplate::new(center_radius, radial_scale, dot_r, clip, additive)
-        });
-        let dot = |l, r, color, additive| {
-            dots[usize::from(additive)]
-                .instance(projection.visible(projection.rotated(l, r)), color)
+        let dots = RadialDotTemplate::new(
+            center_radius, radial_scale, dot_r, clip, p.mode == StereometerMode::DotCloudBands,
+        );
+        let dot = |l, r, color| {
+            dots.instance(projection.visible(projection.rotated(l, r)), color)
         };
 
         let points = &p.points[FULL_BAND];
@@ -334,7 +333,7 @@ impl StereometerParams {
                 let count = points.len() as f32;
                 out.extend(points.iter().enumerate().map(|(i, &(l, r))| {
                     let alpha = ca * (i + 1) as f32 / count;
-                    dot(l, r, [cr, cg, cb, alpha], false)
+                    dot(l, r, [cr, cg, cb, alpha])
                 }));
             }
             StereometerMode::Lissajous => {
@@ -351,7 +350,7 @@ impl StereometerParams {
             StereometerMode::DotCloudBands => {
                 for (pts, colors) in p.points[1..].iter().zip(&p.band_colors) {
                     out.extend(pts.iter().zip(colors.iter()).map(|(&(l, r), &color)| {
-                        dot(l, r, color, true)
+                        dot(l, r, color)
                     }));
                 }
             }
@@ -406,8 +405,8 @@ impl StereometerParams {
             let negative = negative.unwrap_or(positive);
             let color = |is_negative| if is_negative { negative } else { positive };
             if trail.len() > 1 {
+                alpha.clear();
                 alpha.resize(height, 0.0);
-                alpha.fill(0.0);
                 for (age, pair) in trail.windows(2).enumerate() {
                     let opacity = if trail.len() == CORR_TRAIL_LEN {
                         CORR_OPACITIES[age]

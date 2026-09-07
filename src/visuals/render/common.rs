@@ -253,7 +253,6 @@ pub fn dot_instance(
     radius: f32,
     color: [f32; 4],
     clip: ClipTransform,
-    additive: bool,
 ) -> SdfInstance {
     let outer = radius + 1.0;
     SdfInstance {
@@ -261,12 +260,7 @@ pub fn dot_instance(
         p1: [outer * clip.scale[0], -outer * clip.scale[1]],
         color0: color,
         color1: color,
-        params: [
-            radius,
-            if additive { 1.0 } else { 0.0 },
-            0.0,
-            SdfInstance::DOT,
-        ],
+        params: [radius, 0.0, 0.0, SdfInstance::DOT],
     }
 }
 

@@ -65,8 +65,6 @@ impl ChannelPosition {
             }
             positions[index] = std::iter::once(fallback[index])
                 .chain(fallback)
-                .chain(Self::SURROUND)
-                .chain((0..MAX_AUDIO_CHANNELS as u8).map(Self::Aux))
                 .find(|candidate| {
                     *candidate != Self::Unknown && !positions[..channels].contains(candidate)
                 })

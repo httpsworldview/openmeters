@@ -21,17 +21,12 @@ const ACCENT_PRIMARY: Color = Color::from_rgba(0.157, 0.157, 0.157, 1.0);
 const ACCENT_SUCCESS: Color = Color::from_rgba(0.478, 0.557, 0.502, 1.0);
 const ACCENT_DANGER: Color = Color::from_rgba(0.557, 0.478, 0.478, 1.0);
 
-pub fn window_themes(background: Option<Color>) -> [Theme; 3] {
-    [
-        None,
-        background,
-        background.map(|color| with_alpha(color, 1.0)),
-    ]
-    .map(theme)
+pub fn window_themes(background: Color) -> [Theme; 3] {
+    [BG_BASE, background, with_alpha(background, 1.0)].map(theme)
 }
 
-fn theme(custom_bg: Option<Color>) -> Theme {
-    Theme::custom_with_fn("OpenMeters Monochrome", palette(custom_bg), |base| {
+fn theme(background: Color) -> Theme {
+    Theme::custom_with_fn("OpenMeters Monochrome", palette(background), |base| {
         let mut extended = Extended::generate(base);
         extended.background.weak = extended.background.neutral;
         extended
@@ -46,8 +41,7 @@ fn readable_text(background: Color) -> Color {
     }
 }
 
-fn palette(custom_bg: Option<Color>) -> palette::Palette {
-    let background = custom_bg.unwrap_or(BG_BASE);
+fn palette(background: Color) -> palette::Palette {
     let text = readable_text(background);
 
     palette::Palette {

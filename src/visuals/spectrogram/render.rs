@@ -66,13 +66,13 @@ impl Primitive for SpectrogramParams {
         let size = vp.logical_size();
         let viewport = [size.width, size.height];
         let (frame, prune) = pipeline.cache.advance();
-        let inst = pipeline.instances.entry(params.key).or_default();
-        inst.last_used = frame;
         let bgls = pipeline.bgls.each_ref();
-        let res = match &mut inst.resources {
-            Some(res) if res.ring.layout.kind == params.col_kind => res,
-            slot => slot.insert(Resources::new(device, bgls, params)),
-        };
+        let res = pipeline.instances.entry(params.key)
+            .or_insert_with(|| Resources::new(device, bgls, params));
+        if res.ring.layout.kind != params.col_kind {
+            *res = Resources::new(device, bgls, params);
+        }
+        res.last_used = frame;
         res.resize_ring(device, queue, bgls, params);
         res.resize_accum(device, bgls[1], params, scale_factor);
         res.upload_pending(queue, params);
@@ -93,10 +93,7 @@ impl Primitive for SpectrogramParams {
         target: &wgpu::TextureView,
         clip: &Rectangle<u32>,
     ) {
-        let Some(inst) = pipeline.instances.get(&self.key) else {
-            return;
-        };
-        let Some(r) = inst.resources.as_ref() else {
+        let Some(r) = pipeline.instances.get(&self.key) else {
             return;
         };
         let visible_slots = self.col_count.min(r.ring.layout.slots as u32);
@@ -264,7 +261,7 @@ impl Uniforms {
 pub struct Pipeline {
     pipelines: [wgpu::RenderPipeline; 3],
     bgls: [wgpu::BindGroupLayout; 3],
-    instances: HashMap<u64, Instance>,
+    instances: HashMap<u64, Resources>,
     cache: CacheTracker,
 }
 
@@ -383,12 +380,6 @@ fn bgl_entry(binding: u32, ty: wgpu::BindingType) -> wgpu::BindGroupLayoutEntry 
 
 type Bgls<'a> = [&'a wgpu::BindGroupLayout; 3];
 
-#[derive(Default)]
-struct Instance {
-    resources: Option<Resources>,
-    last_used: u64,
-}
-
 fn stored_points_per_col(p: &SpectrogramParams) -> u32 {
     match p.col_kind {
         ColumnKind::Reassigned => p.reassigned_points_per_slot,
@@ -428,6 +419,7 @@ struct AccumTarget {
 }
 
 struct Resources {
+    last_used: u64,
     uniform_buf: wgpu::Buffer,
     uniform_cache: Uniforms,
     ring: ColumnRing,
@@ -446,6 +438,7 @@ impl Resources {
         let ring = create_ring(device, bgls, &uniform_buf, p);
 
         Self {
+            last_used: 0,
             uniform_buf,
             uniform_cache: Uniforms::zeroed(),
             ring,

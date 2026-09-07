@@ -165,8 +165,7 @@ macro_rules! visual_settings {
         }
     };
     ($name:ident from $config_ty:ty { $($field:ident : $ty:ty),* $(,)? } $(extra { $($extra:ident : $extra_ty:ty = $default:expr),* $(,)? })?) => {
-        #[derive(Debug, Clone, Serialize, Deserialize)]
-        #[serde(default)]
+        #[derive(Debug, Clone, Serialize)]
         pub struct $name { $(pub $field: $ty,)* $($(pub $extra: $extra_ty,)*)? pub palette: Option<PaletteSettings> }
         impl Default for $name { fn default() -> Self { let cfg = <$config_ty>::default(); Self { $($field: cfg.$field,)* $($($extra: $default,)*)? palette: None } } }
         impl $name {
@@ -176,8 +175,7 @@ macro_rules! visual_settings {
         visual_settings!(@impls $name { $($field,)* $($($extra,)*)? palette });
     };
     ($name:ident { $($field:ident : $ty:ty = $default:expr),* $(,)? }) => {
-        #[derive(Debug, Clone, Serialize, Deserialize)]
-        #[serde(default)]
+        #[derive(Debug, Clone, Serialize)]
         pub struct $name { $(pub $field: $ty,)* pub palette: Option<PaletteSettings> }
         impl Default for $name { fn default() -> Self { Self { $($field: $default,)* palette: None } } }
         visual_settings!(@impls $name { $($field,)* palette });

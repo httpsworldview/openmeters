@@ -396,7 +396,6 @@ impl CaptureWriter {
             packet.frames += count;
             packet.timeline.end = start + scale(end - start, offset, frames);
             if packet.frames == packet_frames && !self.flush_pending() {
-                self.overflow();
                 return true;
             }
         }

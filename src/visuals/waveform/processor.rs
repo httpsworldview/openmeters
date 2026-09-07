@@ -147,23 +147,19 @@ impl WaveformProcessor {
         self.config
     }
 
-    pub fn reset_audio(&mut self) {
-        self.rebuild();
-    }
-
     pub(in crate::visuals) fn prepare(&mut self) {
         if self.config.analyze_bands && self.band_analysis.is_none() {
             self.band_analysis = Self::band_analysis(self.config);
         }
     }
 
-    fn rebuild(&mut self) {
+    pub fn reset_audio(&mut self) {
         self.column_phase = 0.0;
         self.last_sample = [None; DERIVED_CHANNELS];
         self.pending_columns.clear();
         self.current = [None; DERIVED_CHANNELS];
         if self.band_analysis.is_some() {
-            self.reset_trackers();
+            self.band_analysis = Self::band_analysis(self.config);
         }
         self.reset_pending = true;
     }
@@ -177,10 +173,6 @@ impl WaveformProcessor {
                 std::array::from_fn(|_| BandTracker::new(config.sample_rate, config.track_history)),
             )
         })
-    }
-
-    fn reset_trackers(&mut self) {
-        self.band_analysis = Self::band_analysis(self.config);
     }
 
     fn fit_pending_capacity(&mut self) {
@@ -307,7 +299,7 @@ impl WaveformProcessor {
         if channels != self.source_channels || self.config.sample_rate != sample_rate {
             self.source_channels = channels;
             self.config.sample_rate = sample_rate;
-            self.rebuild();
+            self.reset_audio();
         }
 
         self.prepare();
@@ -337,9 +329,9 @@ impl WaveformProcessor {
             self.fit_pending_capacity();
         }
         if rebuild {
-            self.rebuild();
+            self.reset_audio();
         } else if reset_analysis && self.band_analysis.is_some() {
-            self.reset_trackers();
+            self.band_analysis = Self::band_analysis(self.config);
         }
     }
 }

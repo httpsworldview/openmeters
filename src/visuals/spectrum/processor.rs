@@ -37,7 +37,7 @@ pub struct SpectrumSnapshot {
 }
 
 crate::macros::default_struct! {
-    #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+    #[derive(Debug, Clone, Copy)]
     pub struct SpectrumConfig {
         pub sample_rate: f32 = DEFAULT_SAMPLE_RATE,
         pub fft_size: usize = DEFAULT_SPECTRUM_FFT_SIZE,

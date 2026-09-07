@@ -108,7 +108,7 @@ pub(super) fn open_main_window(
     bar_settings: BarSettings,
     base_size: Size,
     with_decorations: bool,
-) -> (window::Id, Task<Message>, bool, Size) {
+) -> (window::Id, Task<Message>, bool) {
     if use_layershell && bar_settings.enabled {
         let height = clamp_bar_height(bar_settings.height);
         let (id, task) = message::layershell_open(NewLayerShellSettings {
@@ -123,12 +123,11 @@ pub(super) fn open_main_window(
                 .unwrap_or_default(),
             ..Default::default()
         });
-        let new_size = Size::new(base_size.width, height as f32);
-        return (id, task, true, new_size);
+        return (id, task, true);
     }
 
     let (id, task) = open_base_window(use_layershell, base_size, with_decorations);
-    (id, task, false, base_size)
+    (id, task, false)
 }
 
 fn popout_window_settings(size: Size, popped_out: bool) -> PopoutWindowSettings {
@@ -410,7 +409,6 @@ impl UiApp {
             return Task::none();
         }
         let height = clamp_bar_height(height);
-        self.main_window_size.height = height as f32;
         Task::batch([
             Task::done(Message::LayoutChange {
                 id: self.main_window_id,
@@ -445,7 +443,6 @@ impl UiApp {
         }
 
         if self.main_window_is_layer {
-            self.main_window_size = new_size;
             let height = clamp_bar_height(new_size.height.round().max(1.0) as u32);
             self.settings_handle
                 .set(|settings| &mut settings.bar.height, height);
@@ -457,9 +454,7 @@ impl UiApp {
 
         let (width, height) = persisted_window_size(new_size);
         let settings = MainWindowSettings { width, height };
-        let size = main_window_size(settings);
-        self.main_window_size = size;
-        self.last_base_window_size = size;
+        self.last_base_window_size = main_window_size(settings);
         self.settings_handle
             .set(|state| &mut state.main_window, settings);
         Task::none()
@@ -474,14 +469,13 @@ impl UiApp {
         self.config_page.sync_current_bar_output(None);
         self.main_layer_opened = false;
         self.main_layer_ready = false;
-        let (new_main_id, open_main, main_is_layer, main_size) = open_main_window(
+        let (new_main_id, open_main, main_is_layer) = open_main_window(
             self.use_layershell,
             bar,
             self.last_base_window_size,
             decorations,
         );
         self.main_window_id = new_main_id;
-        self.main_window_size = main_size;
         self.main_window_is_layer = main_is_layer;
         if close_old {
             Task::batch([open_main, window::close(old_main_id)])
@@ -515,7 +509,7 @@ impl UiApp {
         if !self.main_window_is_layer {
             let old = self.main_window_id;
             let (id, open) =
-                open_base_window(self.use_layershell, self.main_window_size, decorations);
+                open_base_window(self.use_layershell, self.last_base_window_size, decorations);
             self.main_window_id = id;
             tasks.extend([open, window::close(old)]);
         }
