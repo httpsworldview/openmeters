@@ -53,7 +53,7 @@ impl ChannelPosition {
         let channels = channels.min(MAX_AUDIO_CHANNELS);
         positions[channels..].fill(Self::Unknown);
         for index in 0..channels {
-            if positions[index] == Self::Unknown || positions[..index].contains(&positions[index]) {
+            if positions[..index].contains(&positions[index]) {
                 positions[index] = Self::Unknown;
             }
         }

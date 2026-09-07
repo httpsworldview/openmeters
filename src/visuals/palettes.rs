@@ -64,7 +64,7 @@ impl Palette {
     }
 
     pub fn is_default(&self) -> bool {
-        palettes_equal(self.colors(), self.defaults)
+        self.colors.is_empty()
     }
 
     pub const fn for_kind(kind: VisualKind) -> Self {

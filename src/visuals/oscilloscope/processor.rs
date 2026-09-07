@@ -359,7 +359,6 @@ impl StableTrigger {
     const SEARCH_PERIODS: f32 = 1.5;
     const NORMALIZE_FLOOR: f32 = 0.01;
     const MEAN_RESPONSIVENESS: f32 = 0.25;
-    const EDGE_STRENGTH: f32 = 1.0;
     const BUFFER_RESPONSIVENESS: f32 = 0.5;
     const BUFFER_FALLOFF_PERIODS: f32 = 0.5;
     const BUFFER_RETUNE_SEMITONES: f32 = 1.0;
@@ -513,8 +512,8 @@ impl StableTrigger {
         for i in 0..len.div_ceil(2) {
             let mirror = len - 1 - i;
             let weight = gaussian(len, i, width);
-            self.candidate[i] = -0.5 * StableTrigger::EDGE_STRENGTH * 2.0 * weight;
-            self.candidate[mirror] = 0.5 * StableTrigger::EDGE_STRENGTH * 2.0 * weight;
+            self.candidate[i] = -weight;
+            self.candidate[mirror] = weight;
         }
         if use_reference {
             for (candidate, &reference) in self.candidate.iter_mut().zip(&self.reference) {

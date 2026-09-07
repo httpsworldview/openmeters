@@ -225,7 +225,7 @@ mod tests {
         assert!(!handle.set(|settings| &mut settings.decorations, true));
         SettingsHandle::flush();
 
-        let saved: UiSettings = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+        let saved = UiSettings::from_json_lossy(&fs::read_to_string(path).unwrap()).unwrap();
         assert!(saved.decorations);
     }
 }

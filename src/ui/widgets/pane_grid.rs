@@ -41,8 +41,6 @@ pub enum DragEvent {
     Dropped,
 }
 
-// Element internals do not implement Debug; this mirrors iced's widget types.
-#[allow(missing_debug_implementations)]
 pub struct Content<'a, Message> {
     body: Element<'a, Message>,
     min_width: f32,
@@ -59,8 +57,6 @@ impl<'a, Message> Content<'a, Message> {
     }
 }
 
-// Callback closures do not implement Debug; this mirrors iced's widget types.
-#[allow(missing_debug_implementations)]
 pub struct PaneGrid<'a, Message> {
     entries: Vec<(Pane, Content<'a, Message>)>,
     on_drag: Option<fn(DragEvent) -> Message>,

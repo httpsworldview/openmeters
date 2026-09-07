@@ -122,18 +122,14 @@ impl WaveformParams {
             WaveformHistoryMode::Off => None,
             WaveformHistoryMode::RmsFast => Some(0),
             WaveformHistoryMode::RmsSlow => Some(1),
-        };
-        let history_active = history.is_some() && columns >= 2;
+        }.filter(|_| columns >= 2);
         let floor = sanitize_negative_db(params.band_db_floor, DEFAULT_BAND_DB_FLOOR);
 
         let vertices = &mut scratch.instances;
         vertices.reserve(
             channels * (columns + 1)
-                + usize::from(history_active) * channels * NUM_BANDS * columns * 2,
+                + usize::from(history.is_some()) * channels * NUM_BANDS * columns * 2,
         );
-
-        let static_color =
-            (params.color_mode == WaveformColorMode::Static).then_some(params.palette[0]);
 
         let scroll_offset = if preview_columns.is_some() {
             params.preview.progress * col_width
@@ -149,7 +145,7 @@ impl WaveformParams {
             if let Some((y0, y1)) =
                 sample_y_span(center_y, layout.amplitude_scale, column.min, column.max)
             {
-                let color = static_color.unwrap_or_else(|| params.column_color(column));
+                let color = params.column_color(column);
                 vertices.push(quad_instance(x0, y0, x1, y1, clip, color));
             }
         };
@@ -169,7 +165,7 @@ impl WaveformParams {
                 push_column(vertices, center_y, start_x, right_edge, ps);
             }
 
-            if let Some(history) = history.filter(|_| history_active) {
+            if let Some(history) = history {
                 let baseline = center_y + layout.channel_height * 0.5;
                 let band_height = layout.channel_height;
                 let pts = &mut scratch.points;

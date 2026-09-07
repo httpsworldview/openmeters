@@ -218,14 +218,12 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
                 Task::none()
             }
         }
-        Message::BarWindowOutput(_, _) => Task::none(),
         // Output changes and shell closes share one ordered event stream.
         Message::ShellWindowClosed(window)
             if app.main_window_is_layer && window == app.main_window_id =>
         {
             close_main_layer(app, window)
         }
-        Message::ShellWindowClosed(_) => Task::none(),
         Message::WindowOpened(window) => {
             if app.main_window_is_layer && window == app.main_window_id {
                 app.main_layer_opened = true;

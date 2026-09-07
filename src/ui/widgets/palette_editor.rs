@@ -68,12 +68,11 @@ impl PaletteEditor {
         self.label_overrides = overrides;
     }
 
-    fn label_for(&self, index: usize) -> String {
+    fn label_for(&self, index: usize) -> &'static str {
         self.label_overrides
             .iter()
             .find_map(|&(i, label)| (i == index).then_some(label))
             .unwrap_or(self.palette.labels()[index])
-            .to_owned()
     }
 
     pub fn positions(&self) -> &[f32] {

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Maika Namuo
 use super::{lossy, palette::ColorSetting, visuals::VisualSettings};
 use crate::domain::routing::{CaptureConfig, CaptureMode, StreamIdentity};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
 const MAIN_WINDOW_DEFAULT_WIDTH: u32 = 420;
@@ -37,8 +37,7 @@ impl VisualFrameRate {
 }
 
 crate::macros::default_struct! {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-    #[serde(default)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
     pub struct MainWindowSettings {
         pub width: u32 = MAIN_WINDOW_DEFAULT_WIDTH,
         pub height: u32 = MAIN_WINDOW_DEFAULT_HEIGHT,
@@ -46,8 +45,7 @@ crate::macros::default_struct! {
 }
 
 crate::macros::default_struct! {
-    #[derive(Debug, Clone, Serialize, Deserialize)]
-    #[serde(default)]
+    #[derive(Debug, Clone, Serialize)]
     pub struct BarSettings {
         pub enabled: bool = false,
         pub alignment: BarAlignment = BarAlignment::default(),
@@ -57,8 +55,7 @@ crate::macros::default_struct! {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(default)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct UiSettings {
     pub visuals: VisualSettings,
     pub visual_frame_rate: VisualFrameRate,

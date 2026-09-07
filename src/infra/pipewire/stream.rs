@@ -20,6 +20,8 @@ use tracing::{error, info};
 const DESCRIPTION: &str = "OpenMeters Audio Tap";
 const LATENCY_FRAMES: u32 = 256;
 const EMPTY: i32 = spa::sys::SPA_CHUNK_FLAG_EMPTY as i32;
+const NATIVE_F32: spa::param::audio::AudioFormat =
+    spa::param::audio::AudioFormat(spa::sys::SPA_AUDIO_FORMAT_F32);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct StreamConfig {
@@ -189,7 +191,7 @@ fn handle_format_change(writer: &RefCell<CaptureWriter>, param: Option<&Pod>) {
     };
     let mut info = spa::param::audio::AudioInfoRaw::new();
     let valid = info.parse(param).is_ok()
-        && info.format() == native_f32()
+        && info.format() == NATIVE_F32
         && (1..=MAX_CAPTURE_SAMPLE_RATE).contains(&info.rate())
         && (1..=MAX_CAPTURE_CHANNELS as u32).contains(&info.channels());
     if !valid {
@@ -265,7 +267,7 @@ fn classify(chunk: ChunkFlags, header: MetaHeaderFlags) -> BufferKind {
 
 fn format_pod(layout: &[Channel]) -> Result<Vec<u8>, DynError> {
     let mut info = spa::param::audio::AudioInfoRaw::new();
-    info.set_format(native_f32());
+    info.set_format(NATIVE_F32);
     info.set_channels(layout.len() as u32);
     let mut positions = [0; spa::sys::SPA_AUDIO_MAX_CHANNELS as usize];
     for (position, channel) in positions.iter_mut().zip(layout) {
@@ -283,17 +285,6 @@ fn format_pod(layout: &[Channel]) -> Result<Vec<u8>, DynError> {
     )?
     .0
     .into_inner())
-}
-
-const fn native_f32() -> spa::param::audio::AudioFormat {
-    #[cfg(target_endian = "little")]
-    {
-        spa::param::audio::AudioFormat::F32LE
-    }
-    #[cfg(target_endian = "big")]
-    {
-        spa::param::audio::AudioFormat::F32BE
-    }
 }
 
 #[cfg(test)]

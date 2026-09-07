@@ -11,7 +11,6 @@ use crate::visuals::render::common::{
 pub(super) const DB_RANGE: (f32, f32) = (-60.0, 4.0);
 pub(super) const GUIDE_LEVELS: [f32; 6] = [0.0, -6.0, -12.0, -18.0, -24.0, -36.0];
 
-const FILL_COUNTS: [usize; 2] = [2, 1];
 pub(super) const LEFT_PADDING: f32 = 28.0;
 const RIGHT_PADDING: f32 = 64.0;
 const GAP_FRACTION: f32 = 0.1;
@@ -35,7 +34,7 @@ pub struct LoudnessParams {
     pub geometry: crate::visuals::GeometryKey,
     pub bounds: Rectangle,
     pub bg_color: [f32; 4],
-    pub bars: [[MeterFill; 2]; 2],
+    pub bars: [MeterFill; 3],
     pub guide_color: [f32; 4],
 }
 
@@ -46,8 +45,12 @@ pub(super) fn db_to_ratio(db: f32) -> f32 {
 }
 
 impl LoudnessParams {
+    fn bar_groups(&self) -> [&[MeterFill]; 2] {
+        [&self.bars[..2], &self.bars[2..]]
+    }
+
     pub fn meter_bounds(&self) -> Option<(f32, f32, f32)> {
-        let bar_count = self.bars.len();
+        let bar_count = self.bar_groups().len();
         let meter_width = (self.bounds.width - LEFT_PADDING - RIGHT_PADDING).max(0.0);
         if meter_width <= 0.0 { return None; }
 
@@ -73,11 +76,13 @@ impl LoudnessParams {
         let y1 = bounds.y + bounds.height;
         let height = y1 - y0;
         let y_of = |db| (y1 - height * db_to_ratio(db)).clamp(y0, y1);
-        let bar_count = self.bars.len();
+        let bars = self.bar_groups();
+        let bar_count = bars.len();
         let vertices = &mut scratch.instances;
-        vertices.reserve(bar_count * 2 + FILL_COUNTS.iter().sum::<usize>() * 5 + GUIDE_LEVELS.len());
+        vertices.reserve(bar_count * 2 + self.bars.len() * 5 + GUIDE_LEVELS.len());
 
-        for (i, (bar, &sub_bar_count)) in self.bars.iter().zip(&FILL_COUNTS).enumerate() {
+        for (i, bar) in bars.into_iter().enumerate() {
+            let sub_bar_count = bar.len();
             let x0 = meter_x + i as f32 * stride;
             let x1 = x0 + bar_width;
 
@@ -92,7 +97,7 @@ impl LoudnessParams {
             let total_inner = inner_gap * (sub_bar_count - 1) as f32;
             let seg_width = ((bar_width - total_inner) / sub_bar_count as f32).max(0.0);
 
-            for (j, fill) in bar.iter().take(sub_bar_count).enumerate() {
+            for (j, fill) in bar.iter().enumerate() {
                 let sx0 = x0 + j as f32 * (seg_width + inner_gap);
                 let sx1 = if j + 1 == sub_bar_count {
                     x1

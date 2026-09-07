@@ -270,7 +270,7 @@ impl LoudnessProcessor {
         }
 
         let floor = DEFAULT_FLOOR_DB;
-        let mut snapshot = LoudnessSnapshot::with_floor(floor, 0);
+        let mut snapshot = LoudnessSnapshot::with_floor(floor, self.channels.len());
         let mut weighted_short_term = 0.0;
         let mut weighted_momentary = 0.0;
 
@@ -289,7 +289,6 @@ impl LoudnessProcessor {
 
         snapshot.short_term_loudness = mean_square_to_lufs(weighted_short_term, floor);
         snapshot.momentary_loudness = mean_square_to_lufs(weighted_momentary, floor);
-        snapshot.channel_count = self.channels.len();
         snapshot.positions = block.positions;
 
         snapshot

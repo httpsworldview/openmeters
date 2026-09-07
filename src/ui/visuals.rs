@@ -95,8 +95,6 @@ impl VisualsPage {
     pub fn view(&self, reorder_enabled: bool) -> Element<'_, VisualsMessage> {
         if self.panes.is_empty() {
             return container(text("enable some visuals to see them here (Ctrl+Shift+H)"))
-                .width(Length::Fill)
-                .height(Length::Fill)
                 .center_x(Length::Fill)
                 .center_y(Length::Fill)
                 .into();

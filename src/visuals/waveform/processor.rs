@@ -369,10 +369,6 @@ mod tests {
         column(update, channel, update.columns.len() - 1)
     }
 
-    fn band(update: &WaveformUpdate, channel: usize, band: usize) -> f32 {
-        latest(update, channel).color_bands[band]
-    }
-
     #[test]
     fn derived_band_filters_preserve_all_channel_history() {
         let mut shared: [BandFilter; 2] =
@@ -478,8 +474,7 @@ mod tests {
         fn latest_bands_for(freq: f32) -> [f32; NUM_BANDS] {
             let mut processor = WaveformProcessor::new(config(200.0, 512));
             let samples = sine_wave(freq, RATE, RATE as usize, 0.8);
-            let update = process(&mut processor, &samples, 1);
-            std::array::from_fn(|b| band(&update, 0, b))
+            latest(&process(&mut processor, &samples, 1), 0).color_bands
         }
 
         let low = latest_bands_for(80.0);

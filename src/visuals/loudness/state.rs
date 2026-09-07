@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::processor::{LoudnessSnapshot, MAX_CHANNELS};
+use super::processor::LoudnessSnapshot;
 use super::render::{
     DB_RANGE, GUIDE_LEVELS, LEFT_PADDING, LoudnessParams, MeterFill, db_to_ratio,
 };
@@ -107,9 +107,11 @@ impl LoudnessState {
 
     pub(in crate::visuals) fn is_quiescent(&self) -> bool {
         let settled = LoudnessSnapshot {
-            channel_count: self.snapshot.channel_count,
             positions: self.snapshot.positions,
-            ..LoudnessSnapshot::with_floor(self.snapshot.short_term_loudness, 0)
+            ..LoudnessSnapshot::with_floor(
+                self.snapshot.short_term_loudness,
+                self.snapshot.channel_count,
+            )
         };
         self.snapshot == settled && self.peaks.iter().all(|peak| peak.db <= DB_RANGE.0)
     }
@@ -128,13 +130,12 @@ impl LoudnessState {
     crate::visuals::palette_setter!(PALETTE_SIZE => geometry);
 
     fn get_value(&self, mode: MeterMode, channel: usize) -> f32 {
-        let per_channel = |buf: &[f32; MAX_CHANNELS]| buf[channel];
         match mode {
             MeterMode::LufsShortTerm => self.snapshot.short_term_loudness,
             MeterMode::LufsMomentary => self.snapshot.momentary_loudness,
-            MeterMode::RmsFast => per_channel(&self.snapshot.rms_fast_db),
-            MeterMode::RmsSlow => per_channel(&self.snapshot.rms_slow_db),
-            MeterMode::TruePeak => per_channel(&self.snapshot.true_peak_db),
+            MeterMode::RmsFast => self.snapshot.rms_fast_db[channel],
+            MeterMode::RmsSlow => self.snapshot.rms_slow_db[channel],
+            MeterMode::TruePeak => self.snapshot.true_peak_db[channel],
         }
     }
 
@@ -145,11 +146,9 @@ impl LoudnessState {
             bounds,
             bg_color: color_to_rgba(self.palette[PAL_BACKGROUND]),
             bars: [
-                [
-                    self.meter_fill(0, self.settings.left_mode, values[0]),
-                    self.meter_fill(1, self.settings.left_mode, values[1]),
-                ],
-                [self.meter_fill(2, self.settings.right_mode, values[2]); 2],
+                self.meter_fill(0, self.settings.left_mode, values[0]),
+                self.meter_fill(1, self.settings.left_mode, values[1]),
+                self.meter_fill(2, self.settings.right_mode, values[2]),
             ],
             guide_color: color_to_rgba(self.palette[PAL_GUIDE]),
         }
@@ -361,15 +360,13 @@ crate::visuals::visualization_widget!(Loudness, LoudnessState, |this, renderer, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::visuals::loudness::processor::MAX_CHANNELS;
 
-    fn visible_bar_values(state: &LoudnessState) -> Vec<Vec<f32>> {
-        let params = state.visual_params(Rectangle::new(Point::ORIGIN, Size::new(200.0, 100.0)));
-        params
+    fn visible_bar_values(state: &LoudnessState) -> [f32; VISIBLE_METER_COUNT] {
+        state
+            .visual_params(Rectangle::new(Point::ORIGIN, Size::new(200.0, 100.0)))
             .bars
-            .iter()
-            .zip([2, 1])
-            .map(|(bar, n)| bar.iter().take(n).map(|fill| fill.db).collect())
-            .collect()
+            .map(|fill| fill.db)
     }
 
     #[test]
@@ -385,10 +382,10 @@ mod tests {
             positions: ChannelPosition::fallback(6),
         });
 
-        assert_eq!(visible_bar_values(&state), vec![vec![-2.0, -2.0], vec![-9.0]]);
+        assert_eq!(visible_bar_values(&state), [-2.0, -2.0, -9.0]);
 
         state.set_modes(MeterMode::RmsFast, MeterMode::LufsMomentary);
-        assert_eq!(visible_bar_values(&state), vec![vec![-6.0, -3.0], vec![-7.5]]);
+        assert_eq!(visible_bar_values(&state), [-6.0, -3.0, -7.5]);
     }
 
     #[test]
@@ -408,13 +405,13 @@ mod tests {
         let mut mono = [DB_RANGE.0; MAX_CHANNELS];
         mono[0] = -12.0;
         state.apply_snapshot(snapshot(mono, 1));
-        assert_eq!(visible_bar_values(&state)[0], vec![-12.0, -12.0]);
+        assert_eq!(visible_bar_values(&state)[..2], [-12.0, -12.0]);
 
         let mut quad = [DB_RANGE.0; MAX_CHANNELS];
         quad[2] = -6.0;
         quad[3] = -3.0;
         state.apply_snapshot(snapshot(quad, 4));
-        assert_eq!(visible_bar_values(&state)[0], vec![-6.0, -3.0]);
+        assert_eq!(visible_bar_values(&state)[..2], [-6.0, -3.0]);
     }
 
     #[test]

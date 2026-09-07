@@ -16,14 +16,13 @@ use crate::visuals::{
     stereometer::processor::StereometerConfig,
     waveform::processor::{DEFAULT_BAND_DB_FLOOR, WaveformConfig},
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeMap;
 use tracing::warn;
 
 crate::macros::default_struct! {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-    #[serde(default)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
     pub struct PopoutWindowSettings {
         pub width: u32 = 0,
         pub height: u32 = 0,
@@ -32,8 +31,7 @@ crate::macros::default_struct! {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(default)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct VisualSettings {
     pub modules: BTreeMap<VisualKind, ModuleSettings>,
     pub order: Vec<VisualKind>,
@@ -112,8 +110,7 @@ pub(crate) trait SettingsConfig: Default {
     fn set_palette(&mut self, palette: Option<PaletteSettings>);
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct ModuleSettings {
     pub enabled: Option<bool>,
     config: Value,
