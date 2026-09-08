@@ -33,49 +33,27 @@ fn resolve_palette<const N: usize>(
 }
 
 macro_rules! visuals {
-    (@process loudness, $processor:expr, $block:expr) => { Some($processor.process_block($block)) };
-    (@process waveform, $processor:expr, $block:expr) => { Some($processor.process_block($block)) };
-    (@process $module:ident, $processor:expr, $block:expr) => { $processor.process_block($block) };
-    (@sync_export none, $out:ident, $processor:ident) => {};
-    (@sync_export config, $out:ident, $processor:ident) => {
-        $out.sync_from_config(&$processor.config());
-    };
-    (@export_palette spectrogram, $state:ident) => {
+    (@export_palette $module:ident, $state:ident, $positions:ident, $spreads:ident) => {
         PaletteSettings::from_state(
             &$state.palette,
-            &palettes::spectrogram::COLORS,
-            &$state.stop_positions,
-            &palettes::spectrogram::DEFAULT_POSITIONS,
-            &$state.stop_spreads,
+            &palettes::$module::COLORS,
+            &$state.$positions,
+            &palettes::$module::DEFAULT_POSITIONS,
+            &$state.$spreads,
         )
     };
     (@export_palette $module:ident, $state:ident) => {
         PaletteSettings::if_differs_from(&$state.palette, &palettes::$module::COLORS)
     };
-    (@apply_config $proc:ident, $settings:ident) => {{
-        let mut config = $proc.config();
-        $settings.apply_to(&mut config);
-        $proc.update_config(config)
-    }};
-    (@apply_palette spectrogram, $state:ident, $palette:ident) => {{
-        $state.stop_positions.copy_from_slice(&sanitize_stop_positions(
-            $palette.and_then(|palette| palette.stop_positions.as_deref()),
-            &palettes::spectrogram::DEFAULT_POSITIONS,
-        ));
-        $state.stop_spreads.copy_from_slice(&sanitize_stop_spreads(
-            $palette.and_then(|palette| palette.stop_spreads.as_deref()),
-            palettes::spectrogram::SIZE,
-        ));
-    }};
-    (@apply_palette $module:ident, $state:ident, $palette:ident) => {};
     ($($variant:ident($default_width_basis:expr, $min_w:expr) =>
        $module:ident :: $processor:ident, $state:ident.$state_settings:ident;
+       $(palette_ramp($positions:ident, $spreads:ident);)?
        $(prepare($prepare:ident);)?
        $(ignores_audio($ignores:ident);)?
        $(buffered_signal($buffered_signal:ident);)?
-       $(pre_ingest($pip:ident, $pis:ident) $pre_ingest_body:expr;)?
-       apply($ap:ident, $as:ident, $aset:ident) $apply_body:expr;
-       export($ep:ident, $es:ident) $sync:ident;
+       $(pre_ingest($pip:ident, $pis:ident) $pre_ingest_body:block;)?
+       $(config($cfg:ident) $($configure:block)?;)?
+       apply($ap:ident, $as:ident, $aset:ident) $apply_body:block;
     )*) => {
         #[derive(Clone)]
         pub(crate) enum VisualContent {
@@ -111,7 +89,7 @@ macro_rules! visuals {
                     $pre_ingest_body
                 })?
                 self.pending_audio |= signal;
-                if let Some(snap) = visuals!(@process $module, self.processor, block) {
+                if let Some(snap) = self.processor.process_block(block).into() {
                     self.state.borrow_mut().apply_snapshot(snap);
                     if !signal $(&& !self.processor.$buffered_signal())? {
                         self.pending_audio = false;
@@ -144,29 +122,45 @@ macro_rules! visuals {
                     unreachable!("config routed to the wrong visual");
                 };
                 let ($ap, $as) = (&mut self.processor, &self.state);
+                $({
+                    let mut $cfg = $ap.config();
+                    $aset.apply_to(&mut $cfg);
+                    $($configure)?
+                    $ap.update_config($cfg);
+                })?
                 $apply_body
                 self.pending_audio = true;
                 self.apply_palette($aset.palette.as_ref());
             }
 
             fn export(&self) -> VisualConfig {
-                let ($ep, $es) = (&self.processor, &self.state);
-                let st = $es.borrow();
-                let mut out = st.$state_settings.clone();
-                visuals!(@sync_export $sync, out, $ep);
-                out.palette = visuals!(@export_palette $module, st);
+                let mut out = self.state.borrow().$state_settings.clone();
+                $({
+                    let $cfg = self.processor.config();
+                    out.sync_from_config(&$cfg);
+                })?
+                out.palette = self.export_palette();
                 VisualConfig::$variant(out)
             }
 
             fn export_palette(&self) -> Option<PaletteSettings> {
                 let st = self.state.borrow();
-                visuals!(@export_palette $module, st)
+                visuals!(@export_palette $module, st $(, $positions, $spreads)?)
             }
 
             fn apply_palette(&mut self, palette: Option<&PaletteSettings>) {
                 let mut state = self.state.borrow_mut();
                 state.set_palette(&resolve_palette(palette, &palettes::$module::COLORS));
-                visuals!(@apply_palette $module, state, palette);
+                $(
+                    state.$positions.copy_from_slice(&sanitize_stop_positions(
+                        palette.and_then(|palette| palette.stop_positions.as_deref()),
+                        &palettes::$module::DEFAULT_POSITIONS,
+                    ));
+                    state.$spreads.copy_from_slice(&sanitize_stop_spreads(
+                        palette.and_then(|palette| palette.stop_spreads.as_deref()),
+                        palettes::$module::SIZE,
+                    ));
+                )?
             }
         })*
     };
@@ -178,15 +172,15 @@ visuals! {
         apply(_p, s, set) {
             s.borrow_mut().set_modes(set.left_mode, set.right_mode);
         };
-        export(_p, s) none;
 
     Oscilloscope(150.0, 100.0) =>
         oscilloscope::OscilloscopeProcessor, OscilloscopeState.settings;
         ignores_audio(ignores_audio);
-        apply(p, s, set) { visuals!(@apply_config p, set); let reset = [set.channel_1, set.channel_2] == [Channel::None; 2];
+        config(cfg);
+        apply(p, s, set) {
+            let reset = [set.channel_1, set.channel_2] == [Channel::None; 2];
             s.borrow_mut().update_view_settings(set, reset);
         };
-        export(p, s) config;
 
     Waveform(220.0, 220.0) =>
         waveform::WaveformProcessor, WaveformState.settings;
@@ -199,18 +193,17 @@ visuals! {
                 p.update_config(cfg);
             }
         };
-        apply(p, s, set) {
-            let mut cfg = p.config();
-            set.apply_to(&mut cfg);
+        config(cfg) {
             cfg.track_history = set.history_mode != WaveformHistoryMode::Off;
             cfg.analyze_bands = set.color_mode == WaveformColorMode::Frequency || cfg.track_history;
-            p.update_config(cfg);
+        };
+        apply(p, s, set) {
             s.borrow_mut().update_view_settings(set);
         };
-        export(p, s) config;
 
     Spectrogram(320.0, 300.0) =>
         spectrogram::SpectrogramProcessor, SpectrogramState.settings;
+        palette_ramp(stop_positions, stop_spreads);
         prepare(prepare);
         buffered_signal(has_buffered_signal);
         pre_ingest(p, s) {
@@ -224,32 +217,32 @@ visuals! {
                 }
             }
         };
-        apply(p, s, set) { visuals!(@apply_config p, set);
-            s.borrow_mut().update_view_settings(set); };
-        export(p, s) config;
+        config(cfg);
+        apply(p, s, set) {
+            s.borrow_mut().update_view_settings(set);
+        };
 
     Spectrum(400.0, 400.0) =>
         spectrum::SpectrumProcessor, SpectrumState.style;
         prepare(prepare);
         ignores_audio(ignores_audio);
         buffered_signal(has_buffered_signal);
-        apply(p, s, set) { visuals!(@apply_config p, set); let cfg = p.config();
+        config(cfg);
+        apply(p, s, set) {
+            let cfg = p.config();
             s.borrow_mut().update_view_settings(set, cfg.floor_db);
         };
-        export(p, s) config;
 
     Stereometer(150.0, 100.0) =>
         stereometer::StereometerProcessor, StereometerState.settings;
-        apply(p, s, set) {
-            let mut cfg = p.config();
-            set.apply_to(&mut cfg);
+        config(cfg) {
             cfg.emit_band_points = set.mode == StereometerMode::DotCloudBands;
             cfg.analyze_bands = cfg.emit_band_points
                 || set.correlation_meter == CorrelationMeterMode::MultiBand;
-            p.update_config(cfg);
+        };
+        apply(p, s, set) {
             s.borrow_mut().update_view_settings(set);
         };
-        export(p, s) config;
 }
 
 struct Visual<P, S> {

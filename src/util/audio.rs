@@ -23,7 +23,7 @@ pub const MAX_DSP_BUFFER_LEN: usize = 1 << 20;
 pub const BAND_SPLITS_HZ: [f32; 2] = [200.0, 2000.0];
 pub const BAND_COUNT: usize = BAND_SPLITS_HZ.len() + 1;
 
-crate::macros::choice_enum!(no_default pub enum Channel {
+crate::macros::choice_enum!(pub enum Channel {
     Left => "Left",
     Right => "Right",
     Mid => "Mid",

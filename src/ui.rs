@@ -8,9 +8,10 @@ macro_rules! form {
 }
 
 macro_rules! slider {
-    ($label:expr, $value:expr, $range:expr, $on_change:expr, $fmt:literal) => {
-        slider!($label, $value, $range, $on_change, format!($fmt, $value))
-    };
+    ($label:expr, $value:expr, $range:expr, $on_change:expr, $fmt:literal) => {{
+        let (label, value) = ($label, $value);
+        $crate::ui::widgets::slide(label, value, format!($fmt, value), $range, $on_change)
+    }};
     ($label:expr, $value:expr, $range:expr, $on_change:expr, $display:expr) => {
         $crate::ui::widgets::slide($label, $value, $display, $range, $on_change)
     };

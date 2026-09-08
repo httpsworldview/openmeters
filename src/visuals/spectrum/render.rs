@@ -12,7 +12,7 @@ use crate::visuals::render::common::{
     ClipTransform, GeometryFingerprint, GeometryScratch, SdfInstance, baseline_segment_instance,
     decimate_finite_ordered_line_in_place, dot_instance, extend_aa_line_list,
     gradient_quad_instance, line_instance, pack_f32_pair, quad_instance, replace_quad_instance,
-    sdf_primitive,
+    SdfPipeline, sdf_primitive,
 };
 
 pub(super) const MIN_TRACE_POINTS: usize = 2;
@@ -296,14 +296,14 @@ mod tests {
 }
 
 sdf_primitive!(
-    SpectrumParams,
+    SpectrumParams, SdfPipeline,
     "Spectrum",
     |self| self.geometry.id,
-    self.geometry_fingerprint()
+    Some(self.geometry_fingerprint())
 );
 sdf_primitive!(
-    replace SpectrumCutoutParams,
+    SpectrumCutoutParams, SdfPipeline<true>,
     "Spectrum label cutouts",
     |self| self.geometry.id,
-    self.geometry_fingerprint()
+    Some(self.geometry_fingerprint())
 );

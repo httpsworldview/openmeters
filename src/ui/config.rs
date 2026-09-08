@@ -241,7 +241,7 @@ impl ConfigPage {
             )
         };
         let window_themes = theme::window_themes(current_bg);
-        let mut bg_pal = theme::Palette::new(&bg::COLORS, &bg::DEFAULT_POSITIONS, bg::LABELS);
+        let mut bg_pal = bg::PALETTE;
         bg_pal.set_colors(&[current_bg]);
         let bg_palette = PaletteEditor::new(bg_pal);
 

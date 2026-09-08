@@ -68,18 +68,13 @@ impl Palette {
     }
 
     pub const fn for_kind(kind: VisualKind) -> Self {
-        macro_rules! p {
-            ($m:ident) => {
-                Self::new(&$m::COLORS, &$m::DEFAULT_POSITIONS, $m::LABELS)
-            };
-        }
         match kind {
-            VisualKind::Spectrogram => p!(spectrogram),
-            VisualKind::Spectrum => p!(spectrum),
-            VisualKind::Waveform => p!(waveform),
-            VisualKind::Oscilloscope => p!(oscilloscope),
-            VisualKind::Stereometer => p!(stereometer),
-            VisualKind::Loudness => p!(loudness),
+            VisualKind::Spectrogram => spectrogram::PALETTE,
+            VisualKind::Spectrum => spectrum::PALETTE,
+            VisualKind::Waveform => waveform::PALETTE,
+            VisualKind::Oscilloscope => oscilloscope::PALETTE,
+            VisualKind::Stereometer => stereometer::PALETTE,
+            VisualKind::Loudness => loudness::PALETTE,
         }
     }
 }
@@ -95,20 +90,18 @@ const fn evenly_spaced<const N: usize>() -> [f32; N] {
 }
 
 macro_rules! palette {
-    (@define $name:ident { $($color:expr => $label:expr),+ } $positions:expr) => {
+    ($name:ident { $($color:expr => $label:expr),+ $(,)? } => $positions:expr) => {
         pub mod $name {
             use super::Color;
             pub const LABELS: &[&str] = &[$($label),+];
             pub const COLORS: [Color; LABELS.len()] = [$($color),+];
             pub const SIZE: usize = COLORS.len();
             pub const DEFAULT_POSITIONS: [f32; SIZE] = $positions;
+            pub const PALETTE: super::Palette = super::Palette::new(&COLORS, &DEFAULT_POSITIONS, LABELS);
         }
     };
     ($name:ident { $($color:expr => $label:expr),+ $(,)? }) => {
-        palette!(@define $name { $($color => $label),+ } super::evenly_spaced());
-    };
-    ($name:ident { $($color:expr => $label:expr),+ $(,)? } => $positions:expr) => {
-        palette!(@define $name { $($color => $label),+ } $positions);
+        palette!($name { $($color => $label),+ } => super::evenly_spaced());
     };
 }
 

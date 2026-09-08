@@ -12,7 +12,7 @@ use crate::visuals::options::{
 use crate::visuals::palettes::stereometer::SIZE as PALETTE_SIZE;
 use crate::util::lerp;
 use crate::visuals::render::common::{
-    ClipTransform, RadialDotTemplate, SdfInstance, bounds_fingerprint,
+    ClipTransform, RadialDotTemplate, SdfInstance, SdfPipeline, bounds_fingerprint,
     gradient_quad_instance, line_instance, quad_instance, sdf_primitive,
 };
 
@@ -463,7 +463,7 @@ impl StereometerParams {
 }
 
 sdf_primitive!(
-    StereometerParams,
+    StereometerParams, SdfPipeline,
     RENDER_LABEL,
     layers |self, scratch| {
         (self.grid.id, Some(bounds_fingerprint(self.grid.revision, self.bounds))) => {

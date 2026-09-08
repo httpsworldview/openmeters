@@ -3,7 +3,7 @@
 
 use iced::Rectangle;
 
-use crate::visuals::render::common::sdf_primitive;
+use crate::visuals::render::common::{SdfPipeline, sdf_primitive};
 use crate::visuals::render::common::{
     ClipTransform, GeometryScratch, bounds_fingerprint, line_instance, quad_instance,
 };
@@ -169,8 +169,8 @@ impl LoudnessParams {
 }
 
 sdf_primitive!(
-    LoudnessParams,
+    LoudnessParams, SdfPipeline,
     "Loudness",
     |self| self.geometry.id,
-    bounds_fingerprint(self.geometry.revision, self.bounds)
+    Some(bounds_fingerprint(self.geometry.revision, self.bounds))
 );

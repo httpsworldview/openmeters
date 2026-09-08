@@ -644,31 +644,22 @@ impl<const REPLACE: bool> iced_wgpu::primitive::Pipeline for SdfPipeline<REPLACE
     }
 }
 
+// Keys must stay stable between prepare and draw; a None fingerprint always rebuilds.
 macro_rules! sdf_primitive {
-    (replace $params:ty, $($rest:tt)+) => {
-        $crate::visuals::render::common::sdf_primitive!(@impl
-            $crate::visuals::render::common::SdfPipeline<true>, $params, $($rest)+
-        );
-    };
-    ($params:ty, $($rest:tt)+) => {
-        $crate::visuals::render::common::sdf_primitive!(@impl
-            $crate::visuals::render::common::SdfPipeline, $params, $($rest)+
-        );
-    };
-    (@impl $pipeline:ty, $primitive:ty, $label:expr, |$self:ident| $key:expr $(, $fingerprint:expr)?) => {
-        $crate::visuals::render::common::sdf_primitive!(@impl
-            $pipeline, $primitive, $label,
+    ($primitive:ty, $pipeline:ty, $label:expr, |$self:ident| $key:expr, $fingerprint:expr $(,)?) => {
+        $crate::visuals::render::common::sdf_primitive!(
+            $primitive, $pipeline, $label,
             layers |$self, scratch| {
-                ($key, $crate::visuals::render::common::sdf_primitive!(@fingerprint $self $(, $fingerprint)?)) => {
+                ($key, $fingerprint) => {
                     $self.build_vertices(scratch);
                 }
             }
         );
     };
-    (@impl $pipeline:ty, $primitive:ty, $label:expr,
+    ($primitive:ty, $pipeline:ty, $label:expr,
         layers |$self:ident, $scratch:ident| {
             $(($key:expr, $fingerprint:expr) => $build:block),+ $(,)?
-        }
+        } $(,)?
     ) => {
         impl iced_wgpu::primitive::Primitive for $primitive {
             type Pipeline = $pipeline;
@@ -719,8 +710,6 @@ macro_rules! sdf_primitive {
             }
         }
     };
-    (@fingerprint $self:ident) => { None };
-    (@fingerprint $self:ident, $fingerprint:expr) => { Some($fingerprint) };
 }
 
 pub(in crate::visuals) use sdf_primitive;

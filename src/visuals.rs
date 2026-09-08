@@ -20,14 +20,14 @@ macro_rules! visualization_widget {
         }
 
         impl<M> iced::advanced::widget::Widget<M, iced::Theme, iced::Renderer> for $widget<'_> {
-            crate::macros::widget_method!(layout
+            $crate::macros::widget_method!(layout
                 iced::Size::new(iced::Length::Fill, iced::Length::Fill),
                 |limits| limits.resolve(iced::Length::Fill, iced::Length::Fill, iced::Size::ZERO)
             );
 
-            crate::macros::widget_method!(draw widget; _, renderer, theme, _, layout, _, _ => {
+            $crate::macros::widget_method!(draw $this; _, $renderer, $theme, _, layout, _, _ => {
                 use iced_wgpu::primitive::Renderer as _;
-                let ($this, $renderer, $theme, $bounds) = (widget, renderer, theme, layout.bounds());
+                let $bounds = layout.bounds();
                 $draw
             });
         }
@@ -56,10 +56,10 @@ macro_rules! visualization_widget {
 pub(in crate::visuals) use visualization_widget;
 
 macro_rules! palette_setter {
-    ($size:expr $(=> $geometry:ident)*) => {
+    ($size:expr $(=> $geometry:ident)?) => {
         pub fn set_palette(&mut self, palette: &[iced::Color; $size]) {
             self.palette = *palette;
-            $(self.$geometry.invalidate();)*
+            $(self.$geometry.invalidate();)?
         }
     };
 }
@@ -76,17 +76,17 @@ visual_modules! {
 }
 
 pub mod options {
-    crate::macros::choice_enum!(pub enum StereometerMode {
+    crate::macros::choice_enum!(#[derive(Default)] pub enum StereometerMode {
         Lissajous => "Lissajous",
         #[default] DotCloud => "Dot Cloud",
         DotCloudBands => "Dot Cloud (Bands)",
     });
-    crate::macros::choice_enum!(pub enum StereometerScale { Linear => "Linear", #[default] #[serde(alias = "exponential")] Scaled => "Scaled" });
-    crate::macros::choice_enum!(pub enum CorrelationMeterMode { Off => "Off", SingleBand => "Single Band", #[default] MultiBand => "Multi Band" });
-    crate::macros::choice_enum!(pub enum CorrelationMeterSide { Left => "Left", #[default] Right => "Right" });
-    crate::macros::choice_enum!(pub enum PianoRollOverlay { #[default] Off => "Off", Right => "Right", Left => "Left" });
+    crate::macros::choice_enum!(#[derive(Default)] pub enum StereometerScale { Linear => "Linear", #[default] #[serde(alias = "exponential")] Scaled => "Scaled" });
+    crate::macros::choice_enum!(#[derive(Default)] pub enum CorrelationMeterMode { Off => "Off", SingleBand => "Single Band", #[default] MultiBand => "Multi Band" });
+    crate::macros::choice_enum!(#[derive(Default)] pub enum CorrelationMeterSide { Left => "Left", #[default] Right => "Right" });
+    crate::macros::choice_enum!(#[derive(Default)] pub enum PianoRollOverlay { #[default] Off => "Off", Right => "Right", Left => "Left" });
 
-    crate::macros::choice_enum!(no_default pub enum MeterMode {
+    crate::macros::choice_enum!(pub enum MeterMode {
         LufsShortTerm => "LUFS Short-term",
         LufsMomentary => "LUFS Momentary",
         RmsFast => "RMS Fast",
@@ -94,10 +94,10 @@ pub mod options {
         TruePeak => "True Peak",
     });
 
-    crate::macros::choice_enum!(pub enum SpectrumDisplayMode { #[default] Line => "Line", Bar => "Bar" });
-    crate::macros::choice_enum!(pub enum SpectrumWeightingMode { #[default] AWeighted => "A-Weighted", Raw => "Raw" });
-    crate::macros::choice_enum!(pub enum WaveformColorMode { #[default] Frequency => "Frequency Bands", Loudness => "Loudness", Static => "Static" });
-    crate::macros::choice_enum!(pub enum WaveformHistoryMode { #[default] Off => "Off", RmsFast => "RMS Fast", RmsSlow => "RMS Slow" });
+    crate::macros::choice_enum!(#[derive(Default)] pub enum SpectrumDisplayMode { #[default] Line => "Line", Bar => "Bar" });
+    crate::macros::choice_enum!(#[derive(Default)] pub enum SpectrumWeightingMode { #[default] AWeighted => "A-Weighted", Raw => "Raw" });
+    crate::macros::choice_enum!(#[derive(Default)] pub enum WaveformColorMode { #[default] Frequency => "Frequency Bands", Loudness => "Loudness", Static => "Static" });
+    crate::macros::choice_enum!(#[derive(Default)] pub enum WaveformHistoryMode { #[default] Off => "Off", RmsFast => "RMS Fast", RmsSlow => "RMS Slow" });
 }
 
 pub mod palettes;

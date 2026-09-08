@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Maika Namuo
 
 macro_rules! choice_enum {
-    (@impl [$($default:ident)?] $(#[$attr:meta])* $vis:vis enum $name:ident { $($(#[$var_attr:meta])* $variant:ident => $label:expr),+ $(,)? }) => {
-        #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq $(, $default)?)]
+    ($(#[$attr:meta])* $vis:vis enum $name:ident { $($(#[$var_attr:meta])* $variant:ident => $label:expr),+ $(,)? }) => {
+        #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
         #[serde(rename_all = "snake_case")]
         $(#[$attr])*
         $vis enum $name { $($(#[$var_attr])* $variant,)+ }
@@ -17,8 +17,6 @@ macro_rules! choice_enum {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { f.write_str(self.label()) }
         }
     };
-    (no_default $($rest:tt)+) => { $crate::macros::choice_enum!(@impl [] $($rest)+); };
-    ($($rest:tt)+) => { $crate::macros::choice_enum!(@impl [Default] $($rest)+); };
 }
 
 pub(super) use choice_enum;
@@ -38,7 +36,7 @@ macro_rules! default_struct {
             $($(#[$field_attr])* $field_visibility $field: $field_type,)*
         }
 
-        impl Default for $name {
+        impl std::default::Default for $name {
             fn default() -> Self {
                 Self { $($field: $default,)* }
             }

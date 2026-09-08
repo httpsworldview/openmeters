@@ -3,7 +3,10 @@
 
 use super::{lossy, palette::PaletteSettings};
 use crate::domain::visuals::VisualKind;
-use crate::util::audio::{Channel, FrequencyScale, WindowKind};
+use crate::util::{
+    audio::{Channel, FrequencyScale, WindowKind},
+    finite_or,
+};
 use crate::visuals::options::{
     CorrelationMeterMode, CorrelationMeterSide, MeterMode, PianoRollOverlay, SpectrumDisplayMode,
     SpectrumWeightingMode, StereometerMode, StereometerScale, WaveformColorMode,
@@ -125,7 +128,7 @@ fn width_basis(value: Value, scope: &str) -> Option<f32> {
 fn popout_window(value: Value, scope: &str) -> Option<PopoutWindowSettings> {
     let mut map = lossy::object(value, scope)?;
     let mut out = PopoutWindowSettings::default();
-    lossy::fields!(&mut map, out, scope; width, height, popped_out);
+    lossy::fields!(&mut map, &mut out, scope; width, height, popped_out);
     lossy::unknown(scope, &map);
     Some(out)
 }
@@ -192,8 +195,6 @@ macro_rules! visual_configs {
                 match self { $(Self::$variant(settings) => &mut settings.palette),* }
             }
 
-            /// Replaces non-finite settings fields with defaults, leaving palettes unchanged.
-            /// Processors and visual state enforce runtime constraints.
             pub(crate) fn normalized(mut self) -> Self {
                 match &mut self { $(Self::$variant(settings) => settings.normalize()),* }
                 self
@@ -211,35 +212,43 @@ visual_configs! {
     Stereometer(StereometerSettings),
 }
 
+fn finite_averaging_or(value: AveragingMode, default: AveragingMode) -> AveragingMode {
+    let parameter = match value {
+        AveragingMode::None => return value,
+        AveragingMode::Exponential { factor } => factor,
+        AveragingMode::PeakHold { decay_per_second } => decay_per_second,
+    };
+    if parameter.is_finite() {
+        value
+    } else {
+        default
+    }
+}
+
 macro_rules! visual_settings {
-    (@normalize f32, $value:expr, $default:expr) => {
-        $value = crate::util::finite_or($value, $default);
-    };
-    (@normalize AveragingMode, $value:expr, $default:expr) => {
-        if matches!($value, AveragingMode::Exponential { factor: value }
-            | AveragingMode::PeakHold { decay_per_second: value } if !value.is_finite())
-        {
-            $value = $default;
-        }
-    };
-    (@normalize $ty:ident, $value:expr, $default:expr) => {};
-    ($name:ident from $config_ty:ty { $($field:ident : $ty:ident),* $(,)? } $(extra { $($extra:ident : $extra_ty:ident = $default:expr),* $(,)? })?) => {
+    ($name:ident from $config_ty:ty {
+        $($field:ident: $ty:ty $(=> $normalize:path)?),* $(,)?
+    } $(extra {
+        $($extra:ident: $extra_ty:ty = $default:expr $(=> $extra_normalize:path)?),* $(,)?
+    })?) => {
         visual_settings!($name {
-            $($field: $ty = <$config_ty>::default().$field,)*
-            $($($extra: $extra_ty = $default,)*)?
+            $($field: $ty = <$config_ty>::default().$field $(=> $normalize)?,)*
+            $($($extra: $extra_ty = $default $(=> $extra_normalize)?,)*)?
         });
         impl $name {
             pub fn apply_to(&self, cfg: &mut $config_ty) { $(cfg.$field = self.$field;)* }
             pub fn sync_from_config(&mut self, cfg: &$config_ty) { $(self.$field = cfg.$field;)* }
         }
     };
-    ($name:ident { $($field:ident : $ty:ident = $default:expr),* $(,)? }) => {
-        #[derive(Debug, Clone, PartialEq, Serialize)]
-        pub struct $name { $(pub $field: $ty,)*
-            #[serde(skip_serializing)]
-            pub palette: Option<PaletteSettings>
+    ($name:ident { $($field:ident: $ty:ty = $default:expr $(=> $normalize:path)?),* $(,)? }) => {
+        $crate::macros::default_struct! {
+            #[derive(Debug, Clone, PartialEq, Serialize)]
+            pub struct $name {
+                $(pub $field: $ty = $default,)*
+                #[serde(skip_serializing)]
+                pub palette: Option<PaletteSettings> = None,
+            }
         }
-        impl Default for $name { fn default() -> Self { Self { $($field: $default,)* palette: None } } }
         impl $name {
             fn from_value_lossy(value: Value, scope: &str) -> Self {
                 lossy::settings(value, scope, Self::default(), |map, out| {
@@ -247,24 +256,24 @@ macro_rules! visual_settings {
                 })
             }
             fn normalize(&mut self) {
-                $(visual_settings!(@normalize $ty, self.$field, $default);)*
+                $($(self.$field = $normalize(self.$field, $default);)?)*
             }
         }
     };
 }
 
 visual_settings!(OscilloscopeSettings from OscilloscopeConfig {
-    segment_duration: f32, trigger_mode: TriggerMode, trigger_source: Channel,
+    segment_duration: f32 => finite_or, trigger_mode: TriggerMode, trigger_source: Channel,
     channel_1: Channel, channel_2: Channel,
 } extra {
-    persistence: f32 = 0.0,
+    persistence: f32 = 0.0 => finite_or,
     stacked: bool = false,
 });
 
 visual_settings!(WaveformSettings from WaveformConfig {
-    scroll_speed: f32,
+    scroll_speed: f32 => finite_or,
 } extra {
-    band_db_floor: f32 = DEFAULT_BAND_DB_FLOOR,
+    band_db_floor: f32 = DEFAULT_BAND_DB_FLOOR => finite_or,
     channel_1: Channel = Channel::Mid,
     channel_2: Channel = Channel::None,
     color_mode: WaveformColorMode = WaveformColorMode::default(),
@@ -272,8 +281,9 @@ visual_settings!(WaveformSettings from WaveformConfig {
 });
 
 visual_settings!(SpectrumSettings from SpectrumConfig {
-    fft_size: usize, hop_size: usize, window: WindowKind, averaging: AveragingMode,
-    source: Channel, secondary_source: Channel, floor_db: f32,
+    fft_size: usize, hop_size: usize, window: WindowKind,
+    averaging: AveragingMode => finite_averaging_or,
+    source: Channel, secondary_source: Channel, floor_db: f32 => finite_or,
 } extra {
     frequency_scale: FrequencyScale = FrequencyScale::Logarithmic,
     reverse_frequency: bool = false, show_grid: bool = true, show_peak_label: bool = true,
@@ -281,8 +291,8 @@ visual_settings!(SpectrumSettings from SpectrumConfig {
     weighting_mode: SpectrumWeightingMode = SpectrumWeightingMode::default(),
     secondary_weighting_mode: SpectrumWeightingMode = SpectrumWeightingMode::default(),
     bar_count: usize = 64,
-    bar_gap: f32 = 0.16,
-    highlight_threshold: f32 = 0.52,
+    bar_gap: f32 = 0.16 => finite_or,
+    highlight_threshold: f32 = 0.52 => finite_or,
 });
 
 visual_settings!(SpectrogramSettings from SpectrogramConfig {
@@ -290,16 +300,17 @@ visual_settings!(SpectrogramSettings from SpectrogramConfig {
     zero_padding_factor: usize,
 } extra {
     frequency_scale: FrequencyScale = FrequencyScale::default(),
-    floor_db: f32 = -96.0,
-    tilt_db: f32 = 0.0,
+    floor_db: f32 = -96.0 => finite_or,
+    tilt_db: f32 = 0.0 => finite_or,
     piano_roll_overlay: PianoRollOverlay = PianoRollOverlay::default(),
     rotation: i8 = 0,
 });
 
 visual_settings!(StereometerSettings from StereometerConfig {
-    segment_duration: f32, target_sample_count: usize, correlation_window: f32,
+    segment_duration: f32 => finite_or, target_sample_count: usize,
+    correlation_window: f32 => finite_or,
 } extra {
-    dot_radius: f32 = 1.5, mode: StereometerMode = StereometerMode::default(),
+    dot_radius: f32 = 1.5 => finite_or, mode: StereometerMode = StereometerMode::default(),
     scale: StereometerScale = StereometerScale::default(), rotation: i8 = -1, flip: bool = true,
     unipolar: bool = false,
     correlation_meter: CorrelationMeterMode = CorrelationMeterMode::default(),

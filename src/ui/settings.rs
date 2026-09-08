@@ -87,20 +87,18 @@ macro_rules! settings_pane {
     ) => {
         pub(in crate::ui) struct Pane {
             pub(super) settings: $settings_ty,
-            pub(super) palette: crate::ui::widgets::palette_editor::PaletteEditor,
+            pub(super) palette: $crate::ui::widgets::palette_editor::PaletteEditor,
             $($($field: $ty,)*)?
         }
 
         pub(super) fn create(
             loaded_settings: $settings_ty,
-            palette: crate::ui::widgets::palette_editor::PaletteEditor,
+            palette: $crate::ui::widgets::palette_editor::PaletteEditor,
         ) -> Pane {
-            $($(
-                let $field: $ty = {
-                    let $source = &loaded_settings;
-                    $init
-                };
-            )*)?
+            $(
+                let $source = &loaded_settings;
+                $(let $field: $ty = $init;)*
+            )?
             $(
                 let mut palette = palette;
                 let $editor = &mut palette;
@@ -119,7 +117,7 @@ macro_rules! settings_messages {
         #[derive(Debug, Clone)]
         pub enum Message {
             $($variant($ty),)+
-            Palette(crate::ui::widgets::palette_editor::PaletteEvent),
+            Palette($crate::ui::widgets::palette_editor::PaletteEvent),
         }
 
         impl Pane {

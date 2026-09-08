@@ -10,7 +10,7 @@ pub mod routing {
     #[serde(transparent)]
     pub struct StreamIdentity(pub(crate) Arc<str>);
 
-    crate::macros::choice_enum!(pub enum CaptureMode { #[default] Applications => "Applications", Device => "Devices" });
+    crate::macros::choice_enum!(#[derive(Default)] pub enum CaptureMode { #[default] Applications => "Applications", Device => "Devices" });
 
     #[derive(Debug, Clone, Default, PartialEq, Eq)]
     pub struct CaptureConfig {
@@ -21,7 +21,7 @@ pub mod routing {
 }
 
 pub mod visuals {
-    crate::macros::choice_enum!(no_default
+    crate::macros::choice_enum!(
         #[derive(PartialOrd, Ord)]
         pub enum VisualKind {
             Loudness => "Loudness",

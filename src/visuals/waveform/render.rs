@@ -10,7 +10,7 @@ use crate::util::{
     color::{rgba_with_alpha, sample_rgba_gradient},
 };
 use crate::visuals::options::{WaveformColorMode, WaveformHistoryMode};
-use crate::visuals::render::common::sdf_primitive;
+use crate::visuals::render::common::{SdfPipeline, sdf_primitive};
 use crate::visuals::render::common::{
     ChannelLayout, ClipTransform, GeometryScratch, extend_filled_line, quad_instance,
 };
@@ -197,4 +197,4 @@ impl WaveformParams {
     }
 }
 
-sdf_primitive!(WaveformParams, "Waveform", |self| self.key);
+sdf_primitive!(WaveformParams, SdfPipeline, "Waveform", |self| self.key, None);

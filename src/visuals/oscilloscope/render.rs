@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use super::processor::TRACE_COUNT;
 use crate::util::color::rgba_with_alpha;
-use crate::visuals::render::common::sdf_primitive;
+use crate::visuals::render::common::{SdfPipeline, sdf_primitive};
 use crate::visuals::render::common::{
     ChannelLayout, ClipTransform, GeometryScratch, bounds_fingerprint,
     decimate_finite_ordered_line_in_place, extend_filled_line,
@@ -79,8 +79,8 @@ impl OscilloscopeParams {
 }
 
 sdf_primitive!(
-    OscilloscopeParams,
+    OscilloscopeParams, SdfPipeline,
     "Oscilloscope",
     |self| self.geometry.id,
-    bounds_fingerprint(self.geometry.revision, self.bounds)
+    Some(bounds_fingerprint(self.geometry.revision, self.bounds))
 );
