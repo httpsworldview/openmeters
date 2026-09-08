@@ -4,7 +4,7 @@
 use super::{lossy, palette::PaletteSettings};
 use crate::domain::visuals::VisualKind;
 use crate::util::{
-    audio::{Channel, FrequencyScale, WindowKind},
+    audio::{Channel, FrequencyScale, WindowKind, sanitize_negative_db},
     finite_or,
 };
 use crate::visuals::options::{
@@ -34,44 +34,57 @@ crate::macros::default_struct! {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Default)]
-pub struct VisualSettings {
-    modules: BTreeMap<VisualKind, ModuleSettings>,
-    pub order: Vec<VisualKind>,
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub width_basis: BTreeMap<VisualKind, f32>,
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub popouts: BTreeMap<VisualKind, PopoutWindowSettings>,
+crate::macros::default_struct! {
+    #[derive(Debug, Clone, Serialize)]
+    pub struct VisualSettings {
+        modules: BTreeMap<VisualKind, ModuleSettings> = VisualKind::ALL.iter().map(|&kind| {
+            (kind, ModuleSettings { enabled: true, ..ModuleSettings::new(kind) })
+        }).collect(),
+        pub order: Vec<VisualKind> = Vec::new(),
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        pub width_basis: BTreeMap<VisualKind, f32> = BTreeMap::new(),
+        #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+        pub popouts: BTreeMap<VisualKind, PopoutWindowSettings> = BTreeMap::new(),
+    }
 }
 
 impl VisualSettings {
     pub(super) fn from_value_lossy(value: Value) -> Self {
         lossy::settings(value, "visuals", Self::default(), |map, out| {
             if let Some(value) = map.remove("modules") {
-                out.modules =
-                    visual_map(value, "visuals.modules", ModuleSettings::from_value_lossy);
+                visual_map(
+                    value,
+                    "visuals.modules",
+                    &mut out.modules,
+                    ModuleSettings::from_value_lossy,
+                );
             }
             if let Some(value) = map.remove("order") {
                 out.order = visual_order(value);
             }
             if let Some(value) = map.remove("width_basis") {
-                out.width_basis = visual_map(value, "visuals.width_basis", |_, value, scope| {
-                    width_basis(value, scope)
-                });
+                visual_map(
+                    value,
+                    "visuals.width_basis",
+                    &mut out.width_basis,
+                    |_, value, scope| width_basis(value, scope),
+                );
             }
             if let Some(value) = map.remove("popouts") {
-                out.popouts = visual_map(value, "visuals.popouts", |_, value, scope| {
-                    popout_window(value, scope)
-                });
+                visual_map(
+                    value,
+                    "visuals.popouts",
+                    &mut out.popouts,
+                    |_, value, scope| popout_window(value, scope),
+                );
             }
         })
     }
 
     pub(crate) fn module_config(&self, kind: VisualKind) -> (VisualConfig, bool) {
-        match self.modules.get(&kind) {
-            Some(module) => (module.config.clone(), module.enabled),
-            None => (VisualConfig::default_for(kind), false),
-        }
+        let module = self.modules.get(&kind).cloned();
+        let module = module.unwrap_or_else(|| ModuleSettings::new(kind));
+        (module.config, module.enabled)
     }
 
     pub(crate) fn set_enabled(&mut self, kind: VisualKind, enabled: bool) {
@@ -93,17 +106,20 @@ impl VisualSettings {
 fn visual_map<T>(
     value: Value,
     scope: &str,
+    out: &mut BTreeMap<VisualKind, T>,
     mut parse: impl FnMut(VisualKind, Value, &str) -> Option<T>,
-) -> BTreeMap<VisualKind, T> {
-    lossy::object(value, scope)
-        .unwrap_or_default()
+) {
+    let Some(map) = lossy::object(value, scope) else {
+        return;
+    };
+    *out = map
         .into_iter()
         .filter_map(|(key, value)| {
             let scope = format!("{scope}.{key}");
             let kind = lossy::value(Value::String(key), &scope)?;
             parse(kind, value, &scope).map(|value| (kind, value))
         })
-        .collect()
+        .collect();
 }
 
 fn visual_order(value: Value) -> Vec<VisualKind> {
@@ -149,15 +165,13 @@ impl ModuleSettings {
 
     fn from_value_lossy(kind: VisualKind, value: Value, scope: &str) -> Option<Self> {
         let mut map = lossy::object(value, scope)?;
-        let mut enabled = false;
-        lossy::field(&mut map, "enabled", &mut enabled, scope);
-        let config = VisualConfig::from_value_lossy(
-            kind,
-            map.remove("config").unwrap_or_default(),
-            &format!("{scope}.config"),
-        );
+        let mut out = Self::new(kind);
+        lossy::field(&mut map, "enabled", &mut out.enabled, scope);
+        if let Some(value) = map.remove("config") {
+            out.config = VisualConfig::from_value_lossy(kind, value, &format!("{scope}.config"));
+        }
         lossy::unknown(scope, &map);
-        Some(Self { enabled, config })
+        Some(out)
     }
 }
 
@@ -255,7 +269,7 @@ macro_rules! visual_settings {
                     lossy::fields!(map, out, scope; $($field,)* palette);
                 })
             }
-            fn normalize(&mut self) {
+            pub(crate) fn normalize(&mut self) {
                 $($(self.$field = $normalize(self.$field, $default);)?)*
             }
         }
@@ -286,13 +300,13 @@ visual_settings!(SpectrumSettings from SpectrumConfig {
     source: Channel, secondary_source: Channel, floor_db: f32 => finite_or,
 } extra {
     frequency_scale: FrequencyScale = FrequencyScale::Logarithmic,
-    reverse_frequency: bool = false, show_grid: bool = true, show_peak_label: bool = true,
+    reverse_frequency: bool = false, show_grid: bool = true, show_peak_label: bool = false,
     display_mode: SpectrumDisplayMode = SpectrumDisplayMode::default(),
     weighting_mode: SpectrumWeightingMode = SpectrumWeightingMode::default(),
     secondary_weighting_mode: SpectrumWeightingMode = SpectrumWeightingMode::default(),
     bar_count: usize = 64,
     bar_gap: f32 = 0.16 => finite_or,
-    highlight_threshold: f32 = 0.52 => finite_or,
+    highlight_threshold: f32 = 0.3 => finite_or,
 });
 
 visual_settings!(SpectrogramSettings from SpectrogramConfig {
@@ -300,8 +314,8 @@ visual_settings!(SpectrogramSettings from SpectrogramConfig {
     zero_padding_factor: usize,
 } extra {
     frequency_scale: FrequencyScale = FrequencyScale::default(),
-    floor_db: f32 = -96.0 => finite_or,
-    tilt_db: f32 = 0.0 => finite_or,
+    floor_db: f32 = -120.0 => sanitize_negative_db,
+    tilt_db: f32 = 4.5 => finite_or,
     piano_roll_overlay: PianoRollOverlay = PianoRollOverlay::default(),
     rotation: i8 = 0,
 });
@@ -310,12 +324,19 @@ visual_settings!(StereometerSettings from StereometerConfig {
     segment_duration: f32 => finite_or, target_sample_count: usize,
     correlation_window: f32 => finite_or,
 } extra {
-    dot_radius: f32 = 1.5 => finite_or, mode: StereometerMode = StereometerMode::default(),
+    dot_radius: f32 = 1.0 => finite_or, mode: StereometerMode = StereometerMode::default(),
     scale: StereometerScale = StereometerScale::default(), rotation: i8 = -1, flip: bool = true,
-    unipolar: bool = false,
+    unipolar: bool = true,
     correlation_meter: CorrelationMeterMode = CorrelationMeterMode::default(),
     correlation_meter_side: CorrelationMeterSide = CorrelationMeterSide::default(),
 });
+
+impl StereometerSettings {
+    pub(crate) fn analyzes_bands(&self) -> bool {
+        self.mode == StereometerMode::DotCloudBands
+            || self.correlation_meter == CorrelationMeterMode::MultiBand
+    }
+}
 
 visual_settings!(LoudnessSettings {
     left_mode: MeterMode = MeterMode::TruePeak,

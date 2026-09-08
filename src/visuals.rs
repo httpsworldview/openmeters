@@ -78,8 +78,8 @@ visual_modules! {
 pub mod options {
     crate::macros::choice_enum!(#[derive(Default)] pub enum StereometerMode {
         Lissajous => "Lissajous",
-        #[default] DotCloud => "Dot Cloud",
-        DotCloudBands => "Dot Cloud (Bands)",
+        DotCloud => "Dot Cloud",
+        #[default] DotCloudBands => "Dot Cloud (Bands)",
     });
     crate::macros::choice_enum!(#[derive(Default)] pub enum StereometerScale { Linear => "Linear", #[default] #[serde(alias = "exponential")] Scaled => "Scaled" });
     crate::macros::choice_enum!(#[derive(Default)] pub enum CorrelationMeterMode { Off => "Off", SingleBand => "Single Band", #[default] MultiBand => "Multi Band" });
@@ -97,7 +97,7 @@ pub mod options {
     crate::macros::choice_enum!(#[derive(Default)] pub enum SpectrumDisplayMode { #[default] Line => "Line", Bar => "Bar" });
     crate::macros::choice_enum!(#[derive(Default)] pub enum SpectrumWeightingMode { #[default] AWeighted => "A-Weighted", Raw => "Raw" });
     crate::macros::choice_enum!(#[derive(Default)] pub enum WaveformColorMode { #[default] Frequency => "Frequency Bands", Loudness => "Loudness", Static => "Static" });
-    crate::macros::choice_enum!(#[derive(Default)] pub enum WaveformHistoryMode { #[default] Off => "Off", RmsFast => "RMS Fast", RmsSlow => "RMS Slow" });
+    crate::macros::choice_enum!(#[derive(Default)] pub enum WaveformHistoryMode { Off => "Off", #[default] RmsFast => "RMS Fast", RmsSlow => "RMS Slow" });
 }
 
 pub mod palettes;

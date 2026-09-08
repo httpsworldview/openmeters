@@ -9,7 +9,7 @@ use crate::persistence::settings::SpectrogramSettings;
 use crate::ui::{scroll_delta_lines, theme};
 use crate::util::{
     audio::musical::{MusicalNote, NoteInfo},
-    audio::{DB_FLOOR, FrequencyScale, fmt_duration, fmt_freq, sanitize_negative_db},
+    audio::{FrequencyScale, fmt_duration, fmt_freq},
     color::{color_to_rgba, lerp_color, rgba_with_alpha, with_alpha},
 };
 use crate::visuals::options::PianoRollOverlay;
@@ -234,9 +234,8 @@ impl SpectrogramState {
 
     pub fn update_view_settings(&mut self, settings: &SpectrogramSettings) {
         self.settings = settings.clone();
-        self.settings.floor_db = sanitize_negative_db(settings.floor_db, DB_FLOOR)
-            .min(SPECTROGRAM_DB_CEILING - 1.0);
-        self.settings.tilt_db = if settings.tilt_db.is_finite() { settings.tilt_db } else { 0.0 };
+        self.settings.normalize();
+        self.settings.floor_db = self.settings.floor_db.min(SPECTROGRAM_DB_CEILING - 1.0);
         self.settings.rotation = settings.rotation.clamp(-1, 2);
     }
 
@@ -747,6 +746,7 @@ pub(in crate::visuals) fn widget<'a, Message: 'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::audio::DB_FLOOR;
 
     fn update<T: Copy>(
         history_length: usize,

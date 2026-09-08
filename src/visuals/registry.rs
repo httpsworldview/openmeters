@@ -3,7 +3,7 @@
 
 use super::{
     loudness,
-    options::{CorrelationMeterMode, StereometerMode, WaveformColorMode, WaveformHistoryMode},
+    options::{StereometerMode, WaveformColorMode, WaveformHistoryMode},
     oscilloscope, palettes,
     spectrogram::{self, processor::MAX_SPECTROGRAM_HISTORY_COLUMNS},
     spectrum, stereometer, waveform,
@@ -167,40 +167,6 @@ macro_rules! visuals {
 }
 
 visuals! {
-    Loudness(140.0, 80.0) =>
-        loudness::LoudnessProcessor, LoudnessState.settings;
-        apply(_p, s, set) {
-            s.borrow_mut().set_modes(set.left_mode, set.right_mode);
-        };
-
-    Oscilloscope(150.0, 100.0) =>
-        oscilloscope::OscilloscopeProcessor, OscilloscopeState.settings;
-        ignores_audio(ignores_audio);
-        config(cfg);
-        apply(p, s, set) {
-            let reset = [set.channel_1, set.channel_2] == [Channel::None; 2];
-            s.borrow_mut().update_view_settings(set, reset);
-        };
-
-    Waveform(220.0, 220.0) =>
-        waveform::WaveformProcessor, WaveformState.settings;
-        prepare(prepare);
-        pre_ingest(p, s) {
-            let max_columns = s.borrow().view_columns();
-            let mut cfg = p.config();
-            if cfg.max_columns != max_columns {
-                cfg.max_columns = max_columns;
-                p.update_config(cfg);
-            }
-        };
-        config(cfg) {
-            cfg.track_history = set.history_mode != WaveformHistoryMode::Off;
-            cfg.analyze_bands = set.color_mode == WaveformColorMode::Frequency || cfg.track_history;
-        };
-        apply(p, s, set) {
-            s.borrow_mut().update_view_settings(set);
-        };
-
     Spectrogram(320.0, 300.0) =>
         spectrogram::SpectrogramProcessor, SpectrogramState.settings;
         palette_ramp(stop_positions, stop_spreads);
@@ -233,15 +199,48 @@ visuals! {
             s.borrow_mut().update_view_settings(set, cfg.floor_db);
         };
 
+    Waveform(220.0, 220.0) =>
+        waveform::WaveformProcessor, WaveformState.settings;
+        prepare(prepare);
+        pre_ingest(p, s) {
+            let max_columns = s.borrow().view_columns();
+            let mut cfg = p.config();
+            if cfg.max_columns != max_columns {
+                cfg.max_columns = max_columns;
+                p.update_config(cfg);
+            }
+        };
+        config(cfg) {
+            cfg.track_history = set.history_mode != WaveformHistoryMode::Off;
+            cfg.analyze_bands = set.color_mode == WaveformColorMode::Frequency || cfg.track_history;
+        };
+        apply(p, s, set) {
+            s.borrow_mut().update_view_settings(set);
+        };
+
+    Oscilloscope(150.0, 100.0) =>
+        oscilloscope::OscilloscopeProcessor, OscilloscopeState.settings;
+        ignores_audio(ignores_audio);
+        config(cfg);
+        apply(p, s, set) {
+            let reset = [set.channel_1, set.channel_2] == [Channel::None; 2];
+            s.borrow_mut().update_view_settings(set, reset);
+        };
+
     Stereometer(150.0, 100.0) =>
         stereometer::StereometerProcessor, StereometerState.settings;
         config(cfg) {
             cfg.emit_band_points = set.mode == StereometerMode::DotCloudBands;
-            cfg.analyze_bands = cfg.emit_band_points
-                || set.correlation_meter == CorrelationMeterMode::MultiBand;
+            cfg.analyze_bands = set.analyzes_bands();
         };
         apply(p, s, set) {
             s.borrow_mut().update_view_settings(set);
+        };
+
+    Loudness(140.0, 80.0) =>
+        loudness::LoudnessProcessor, LoudnessState.settings;
+        apply(_p, s, set) {
+            s.borrow_mut().set_modes(set.left_mode, set.right_mode);
         };
 }
 

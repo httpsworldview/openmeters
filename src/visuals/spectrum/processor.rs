@@ -19,7 +19,7 @@ pub const MIN_SPECTRUM_PEAK_DECAY: f32 = 0.0;
 pub const MAX_SPECTRUM_PEAK_DECAY: f32 = 120.0;
 pub const MIN_SPECTRUM_DB_FLOOR: f32 = DB_FLOOR;
 pub const MAX_SPECTRUM_DB_FLOOR: f32 = -1.0;
-pub const DEFAULT_SPECTRUM_DB_FLOOR: f32 = -100.0;
+pub const DEFAULT_SPECTRUM_DB_FLOOR: f32 = -120.0;
 
 const DEFAULT_SPECTRUM_HOP_DIVISOR: usize = 16;
 const DEFAULT_SPECTRUM_FFT_SIZE: usize = 16_384;
@@ -45,7 +45,7 @@ crate::macros::default_struct! {
         pub window: WindowKind = WindowKind::Hann,
         pub averaging: AveragingMode = AveragingMode::None,
         pub source: Channel = Channel::Mid,
-        pub secondary_source: Channel = Channel::None,
+        pub secondary_source: Channel = Channel::Side,
         pub floor_db: f32 = DEFAULT_SPECTRUM_DB_FLOOR,
     }
 }
@@ -454,6 +454,7 @@ mod tests {
     fn floor_change_reseeds_state_buffers_without_clearing_pending_audio() {
         let mut p = SpectrumProcessor::new(SpectrumConfig {
             floor_db: -1.0,
+            secondary_source: Channel::None,
             ..Default::default()
         });
         p.prepare();

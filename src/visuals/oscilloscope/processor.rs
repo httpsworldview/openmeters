@@ -8,6 +8,7 @@ use rustfft::num_complex::Complex;
 use serde::{Deserialize, Serialize};
 use std::{collections::VecDeque, sync::Arc};
 
+pub const DEFAULT_STABLE_CYCLES: usize = 2;
 pub(in crate::visuals::oscilloscope) const TRACE_COUNT: usize = 2;
 
 fn parabolic_refine(y_prev: f32, y_curr: f32, y_next: f32, tau: usize) -> f32 {
@@ -25,7 +26,7 @@ pub enum TriggerMode {
 
 impl Default for TriggerMode {
     fn default() -> Self {
-        Self::Stable { num_cycles: 2 }
+        Self::Stable { num_cycles: DEFAULT_STABLE_CYCLES }
     }
 }
 
@@ -33,9 +34,9 @@ crate::macros::default_struct! {
     #[derive(Debug, Clone, Copy, PartialEq)]
     pub struct OscilloscopeConfig {
         pub sample_rate: f32 = DEFAULT_SAMPLE_RATE,
-        pub segment_duration: f32 = 0.02,
+        pub segment_duration: f32 = 0.05,
         pub trigger_mode: TriggerMode = TriggerMode::default(),
-        pub trigger_source: Channel = Channel::Mid,
+        pub trigger_source: Channel = Channel::None,
         pub channel_1: Channel = Channel::Mid,
         pub channel_2: Channel = Channel::None,
     }

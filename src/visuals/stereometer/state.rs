@@ -19,11 +19,6 @@ use std::sync::Arc;
 
 const CORR_LABEL_SIZE: f32 = 10.0;
 
-fn tracks_band_correlation(s: &StereometerSettings) -> bool {
-    s.mode == StereometerMode::DotCloudBands
-        || s.correlation_meter == CorrelationMeterMode::MultiBand
-}
-
 pub(crate) struct StereometerState {
     points: [Arc<[(f32, f32)]>; BAND_COUNT + 1],
     band_colors: [Arc<[[f32; 4]]>; BAND_COUNT],
@@ -53,7 +48,7 @@ impl StereometerState {
 
     pub fn update_view_settings(&mut self, s: &StereometerSettings) {
         let dot_radius = finite_or(s.dot_radius, StereometerSettings::default().dot_radius);
-        if tracks_band_correlation(&self.settings) != tracks_band_correlation(s) {
+        if self.settings.analyzes_bands() != s.analyzes_bands() {
             self.trails[1..].fill(FixedTrail::default());
         }
         self.settings = StereometerSettings {
@@ -96,7 +91,7 @@ impl StereometerState {
         self.points = snap.points;
         self.sync_band_colors();
         self.trails[FULL_BAND].push_front(snap.correlations[FULL_BAND]);
-        if tracks_band_correlation(&self.settings) {
+        if self.settings.analyzes_bands() {
             for (trail, value) in self.trails[1..].iter_mut().zip(&snap.correlations[1..]) {
                 trail.push_front(*value);
             }

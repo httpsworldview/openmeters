@@ -11,8 +11,8 @@ pub const MIN_SCROLL_SPEED: f32 = 10.0;
 pub const MAX_SCROLL_SPEED: f32 = 1000.0;
 pub const MAX_COLUMN_CAPACITY: usize = 8_192;
 
-const DEFAULT_SCROLL_SPEED: f32 = 300.0;
-pub const DEFAULT_BAND_DB_FLOOR: f32 = -60.0;
+const DEFAULT_SCROLL_SPEED: f32 = 200.0;
+pub const DEFAULT_BAND_DB_FLOOR: f32 = -50.0;
 pub(super) const WAVEFORM_CHANNELS: [Channel; 4] =
     [Channel::Left, Channel::Right, Channel::Mid, Channel::Side];
 pub(super) const DERIVED_CHANNELS: usize = WAVEFORM_CHANNELS.len();

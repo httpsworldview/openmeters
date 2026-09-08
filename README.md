@@ -206,6 +206,13 @@ Fedora, and tarball artifacts.
 
 ## Configuration
 
+On first launch, all six visuals are enabled and docked in this order:
+spectrogram, spectrum analyzer, waveform, oscilloscope, stereometer,
+and loudness. Refresh follows the main display. Bar mode defaults to
+100px high at the bottom edge on supported Wayland compositors; other
+desktops use a normal window. Saved settings, including disabled visuals, take
+precedence over these defaults.
+
 Application settings are saved to
 `$XDG_CONFIG_HOME/openmeters/settings.json`, or to:
 

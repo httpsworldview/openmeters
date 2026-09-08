@@ -35,8 +35,8 @@ crate::macros::default_struct! {
     }
 }
 
-const DEFAULT_SPECTROGRAM_FFT_SIZE: usize = 2048;
-const DEFAULT_SPECTROGRAM_HOP_SIZE: usize = 64;
+const DEFAULT_SPECTROGRAM_FFT_SIZE: usize = 4096;
+const DEFAULT_SPECTROGRAM_HOP_SIZE: usize = 256;
 pub(in crate::visuals) const MAX_SPECTROGRAM_HISTORY_COLUMNS: usize = 8192;
 pub(super) const SPECTROGRAM_HISTORY_BYTE_BUDGET: usize = 128 * 1024 * 1024;
 

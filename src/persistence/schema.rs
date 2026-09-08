@@ -5,23 +5,23 @@ use crate::domain::routing::{CaptureConfig, CaptureMode, StreamIdentity};
 use serde::Serialize;
 use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
-const MAIN_WINDOW_DEFAULT_WIDTH: u32 = 420;
+const MAIN_WINDOW_DEFAULT_WIDTH: u32 = 1200;
 const MAIN_WINDOW_DEFAULT_HEIGHT: u32 = 520;
 
 pub const BAR_MIN_HEIGHT: u32 = 24;
 pub const BAR_MAX_HEIGHT: u32 = 800;
-pub const BAR_DEFAULT_HEIGHT: u32 = 180;
+pub const BAR_DEFAULT_HEIGHT: u32 = 100;
 
 pub fn clamp_bar_height(height: u32) -> u32 {
     height.clamp(BAR_MIN_HEIGHT, BAR_MAX_HEIGHT)
 }
 
-crate::macros::choice_enum!(#[derive(Default)] pub enum BarAlignment { #[default] Top => "Top", Bottom => "Bottom" });
+crate::macros::choice_enum!(#[derive(Default)] pub enum BarAlignment { Top => "Top", #[default] Bottom => "Bottom" });
 crate::macros::choice_enum!(#[derive(Default)] pub enum VisualFrameRate {
     Fps30 => "30 FPS",
-    #[default] Fps60 => "60 FPS",
+    Fps60 => "60 FPS",
     Fps120 => "120 FPS",
-    Display => "Match main display",
+    #[default] Display => "Match main display",
 });
 
 impl VisualFrameRate {
@@ -47,7 +47,7 @@ crate::macros::default_struct! {
 crate::macros::default_struct! {
     #[derive(Debug, Clone, Serialize)]
     pub struct BarSettings {
-        pub enabled: bool = false,
+        pub enabled: bool = true,
         pub alignment: BarAlignment = BarAlignment::default(),
         pub height: u32 = BAR_DEFAULT_HEIGHT,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -124,27 +124,33 @@ mod tests {
     use crate::{domain::visuals::VisualKind, visuals::spectrum::processor::AveragingMode};
 
     #[test]
-    fn visual_frame_rate_defaults_to_60_fps() {
+    fn visual_frame_rate_defaults_to_display_and_preserves_fixed_rates() {
         let default = UiSettings::from_json_lossy("{}").unwrap().visual_frame_rate;
-        let display = UiSettings::from_json_lossy(r#"{"visual_frame_rate":"display"}"#)
-            .unwrap()
-            .visual_frame_rate;
-        assert_eq!(default, VisualFrameRate::Fps60);
-        assert_eq!(display, VisualFrameRate::Display);
-        assert_eq!(display.label(), "Match main display");
-        assert_eq!(default.interval(), Some(Duration::from_nanos(16_666_667)));
-        assert_eq!(display.interval(), None);
+        assert_eq!(default, VisualFrameRate::Display);
+        assert_eq!(default.label(), "Match main display");
+        assert_eq!(default.interval(), None);
+        for (saved, expected, nanos) in [
+            ("fps30", VisualFrameRate::Fps30, 33_333_334),
+            ("fps60", VisualFrameRate::Fps60, 16_666_667),
+            ("fps120", VisualFrameRate::Fps120, 8_333_334),
+        ] {
+            let settings = UiSettings::from_value_lossy(serde_json::json!({
+                "visual_frame_rate": saved,
+            }));
+            assert_eq!(settings.visual_frame_rate, expected);
+            assert_eq!(expected.interval(), Some(Duration::from_nanos(nanos)));
+        }
     }
 
     #[test]
     fn persisted_container_defaults_are_stable() {
         let main = MainWindowSettings::default();
-        assert_eq!((main.width, main.height), (420, 520));
+        assert_eq!((main.width, main.height), (1200, 520));
 
         let bar = BarSettings::default();
         assert_eq!(
             (bar.enabled, bar.alignment, bar.height, bar.monitor),
-            (false, BarAlignment::Top, 180, None)
+            (true, BarAlignment::Bottom, 100, None)
         );
 
         let popout = PopoutWindowSettings::default();
@@ -204,8 +210,8 @@ mod tests {
                 "height": "tall",
             },
             "bar": {
-                "enabled": true,
-                "alignment": "bottom",
+                "enabled": false,
+                "alignment": "top",
                 "height": "tall",
                 "monitor": "HDMI-A-1",
             },
@@ -240,12 +246,12 @@ mod tests {
         }));
 
         assert!(settings.decorations);
-        assert_eq!(settings.visual_frame_rate, VisualFrameRate::Fps60);
+        assert_eq!(settings.visual_frame_rate, VisualFrameRate::Display);
         assert_eq!(settings.capture_mode, CaptureMode::default());
         assert_eq!(settings.main_window.width, 640);
         assert_eq!(settings.main_window.height, MAIN_WINDOW_DEFAULT_HEIGHT);
-        assert!(settings.bar.enabled);
-        assert_eq!(settings.bar.alignment, BarAlignment::Bottom);
+        assert!(!settings.bar.enabled);
+        assert_eq!(settings.bar.alignment, BarAlignment::Top);
         assert_eq!(settings.bar.height, BAR_DEFAULT_HEIGHT);
         assert_eq!(settings.bar.monitor.as_deref(), Some("HDMI-A-1"));
         let empty_monitor = UiSettings::from_json_lossy(r#"{"bar":{"monitor":""}}"#).unwrap();

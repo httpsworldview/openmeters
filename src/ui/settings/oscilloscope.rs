@@ -5,7 +5,7 @@ use super::{set, set_f32};
 use crate::persistence::settings::OscilloscopeSettings;
 use crate::ui::widgets::{SliderRange, pick, toggle};
 use crate::util::audio::Channel;
-use crate::visuals::oscilloscope::processor::TriggerMode;
+use crate::visuals::oscilloscope::processor::{DEFAULT_STABLE_CYCLES, TriggerMode};
 use std::fmt;
 
 settings_pane!(
@@ -13,7 +13,7 @@ settings_pane!(
     extra_from_settings(settings) {
         num_cycles: usize = match settings.trigger_mode {
             TriggerMode::Stable { num_cycles } => num_cycles,
-            TriggerMode::ZeroCrossing => 2,
+            TriggerMode::ZeroCrossing => DEFAULT_STABLE_CYCLES,
         },
     }
 );

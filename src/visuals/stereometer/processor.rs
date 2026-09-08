@@ -15,7 +15,7 @@ crate::macros::default_struct! {
         pub sample_rate: f32 = DEFAULT_SAMPLE_RATE,
         pub segment_duration: f32 = 0.02,
         pub target_sample_count: usize = 2_000,
-        pub correlation_window: f32 = 0.05,
+        pub correlation_window: f32 = 0.3,
         pub analyze_bands: bool = false,
         pub emit_band_points: bool = false,
     }
