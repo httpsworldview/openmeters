@@ -36,8 +36,10 @@ macro_rules! settings_modules {
 
         impl ActiveSettings {
             pub(in crate::ui) fn new(kind: VisualKind, manager: &VisualManagerHandle) -> Self {
-                match kind {
-                    $(VisualKind::$variant => Self::$variant($module::create(manager, kind)),)+
+                let config = manager.borrow().config(kind);
+                let palette = load_palette(&config);
+                match config {
+                    $(VisualConfig::$variant(settings) => Self::$variant($module::create(settings, palette)),)+
                 }
             }
 
@@ -63,8 +65,8 @@ macro_rules! settings_modules {
                             return;
                         }
                         persist_with_palette(
-                            manager, settings, VisualKind::$variant,
-                            &pane.settings, &pane.palette,
+                            manager, settings, VisualConfig::$variant(pane.settings.clone()),
+                            &pane.palette,
                         );
                     })+
                     _ => {}
@@ -90,11 +92,9 @@ macro_rules! settings_pane {
         }
 
         pub(super) fn create(
-            visual_manager: &super::VisualManagerHandle,
-            kind: crate::visuals::registry::VisualKind,
+            loaded_settings: $settings_ty,
+            palette: crate::ui::widgets::palette_editor::PaletteEditor,
         ) -> Pane {
-            let (loaded_settings, palette) =
-                super::load_settings_and_palette::<$settings_ty>(visual_manager, kind);
             $($(
                 let $field: $ty = {
                     let $source = &loaded_settings;
@@ -135,9 +135,7 @@ macro_rules! settings_messages {
     };
 }
 
-use crate::persistence::settings::{
-    BUILTIN_THEME, ModuleSettings, PaletteSettings, SettingsConfig, SettingsHandle,
-};
+use crate::persistence::settings::{BUILTIN_THEME, PaletteSettings, SettingsHandle, VisualConfig};
 use crate::ui::theme::Palette;
 use crate::ui::widgets::palette_editor::PaletteEditor;
 use crate::util::set_if_changed as set;
@@ -195,29 +193,24 @@ settings_modules! {
     waveform => Waveform,
 }
 
-pub(super) fn load_settings_and_palette<T: SettingsConfig>(
-    visual_manager: &VisualManagerHandle,
-    kind: VisualKind,
-) -> (T, PaletteEditor) {
-    let settings: T = visual_manager.borrow().module_settings(kind).parse_config();
-    let mut editor = PaletteEditor::new(Palette::for_kind(kind));
-    if let Some(stored) = settings.palette() {
+fn load_palette(config: &VisualConfig) -> PaletteEditor {
+    let mut editor = PaletteEditor::new(Palette::for_kind(config.kind()));
+    if let Some(stored) = config.palette() {
         let stops: Vec<Color> = stored.stops.iter().copied().map(Into::into).collect();
         editor.set_colors(&stops);
         editor.set_positions(stored.stop_positions.as_deref());
         editor.set_spreads(stored.stop_spreads.as_deref());
     }
-    (settings, editor)
+    editor
 }
 
-pub(super) fn persist_with_palette<T: Clone + serde::Serialize + SettingsConfig>(
+fn persist_with_palette(
     visual_manager: &VisualManagerHandle,
     settings_handle: &SettingsHandle,
-    kind: VisualKind,
-    config: &T,
+    mut config: VisualConfig,
     palette: &PaletteEditor,
 ) {
-    let mut stored = config.clone();
+    let kind = config.kind();
     let palette_settings = PaletteSettings::from_state(
         palette.colors(),
         palette.defaults(),
@@ -225,18 +218,10 @@ pub(super) fn persist_with_palette<T: Clone + serde::Serialize + SettingsConfig>
         palette.default_positions(),
         palette.spreads(),
     );
-    stored.set_palette(palette_settings.clone());
-    visual_manager
-        .borrow_mut()
-        .apply_module_settings(kind, &ModuleSettings::with_config(&stored));
+    *config.palette_mut() = palette_settings.clone();
+    visual_manager.borrow_mut().apply_config(config.clone());
     settings_handle.update(move |settings| {
-        settings
-            .data
-            .visuals
-            .modules
-            .entry(kind)
-            .or_default()
-            .set_config(&stored);
+        settings.data.visuals.set_config(config);
         if palette_settings.is_some() || settings.active_theme() != BUILTIN_THEME {
             settings.update_active_theme(|theme| {
                 if let Some(ps) = palette_settings {

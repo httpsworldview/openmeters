@@ -11,9 +11,7 @@ use super::{
 pub use crate::domain::visuals::VisualKind;
 use crate::{
     dsp::{AudioBlock, AudioFormat},
-    persistence::settings::{
-        self as settings_cfg, ModuleSettings, PaletteSettings, ThemeFile, VisualSettings,
-    },
+    persistence::settings::{PaletteSettings, ThemeFile, VisualConfig, VisualSettings},
     util::audio::Channel,
     util::color::{sanitize_stop_positions, sanitize_stop_spreads},
 };
@@ -72,7 +70,6 @@ macro_rules! visuals {
     (@apply_palette $module:ident, $state:ident, $palette:ident) => {};
     ($($variant:ident($default_width_basis:expr, $min_w:expr) =>
        $module:ident :: $processor:ident, $state:ident.$state_settings:ident;
-       $settings_ty:ty;
        $(prepare($prepare:ident);)?
        $(ignores_audio($ignores:ident);)?
        $(buffered_signal($buffered_signal:ident);)?
@@ -142,21 +139,23 @@ macro_rules! visuals {
                 VisualContent::$variant(self.state.clone())
             }
 
-            fn apply(&mut self, module_cfg: &ModuleSettings) {
-                let $aset: $settings_ty = module_cfg.parse_config();
+            fn apply(&mut self, config: &VisualConfig) {
+                let VisualConfig::$variant($aset) = config else {
+                    unreachable!("config routed to the wrong visual");
+                };
                 let ($ap, $as) = (&mut self.processor, &self.state);
                 $apply_body
                 self.pending_audio = true;
                 self.apply_palette($aset.palette.as_ref());
             }
 
-            fn export(&self) -> ModuleSettings {
+            fn export(&self) -> VisualConfig {
                 let ($ep, $es) = (&self.processor, &self.state);
                 let st = $es.borrow();
-                let mut out: $settings_ty = st.$state_settings.clone();
+                let mut out = st.$state_settings.clone();
                 visuals!(@sync_export $sync, out, $ep);
                 out.palette = visuals!(@export_palette $module, st);
-                ModuleSettings::with_config(&out)
+                VisualConfig::$variant(out)
             }
 
             fn export_palette(&self) -> Option<PaletteSettings> {
@@ -176,7 +175,6 @@ macro_rules! visuals {
 visuals! {
     Loudness(140.0, 80.0) =>
         loudness::LoudnessProcessor, LoudnessState.settings;
-        settings_cfg::LoudnessSettings;
         apply(_p, s, set) {
             s.borrow_mut().set_modes(set.left_mode, set.right_mode);
         };
@@ -184,16 +182,14 @@ visuals! {
 
     Oscilloscope(150.0, 100.0) =>
         oscilloscope::OscilloscopeProcessor, OscilloscopeState.settings;
-        settings_cfg::OscilloscopeSettings;
         ignores_audio(ignores_audio);
         apply(p, s, set) { visuals!(@apply_config p, set); let reset = [set.channel_1, set.channel_2] == [Channel::None; 2];
-            s.borrow_mut().update_view_settings(&set, reset);
+            s.borrow_mut().update_view_settings(set, reset);
         };
         export(p, s) config;
 
     Waveform(220.0, 220.0) =>
         waveform::WaveformProcessor, WaveformState.settings;
-        settings_cfg::WaveformSettings;
         prepare(prepare);
         pre_ingest(p, s) {
             let max_columns = s.borrow().view_columns();
@@ -209,13 +205,12 @@ visuals! {
             cfg.track_history = set.history_mode != WaveformHistoryMode::Off;
             cfg.analyze_bands = set.color_mode == WaveformColorMode::Frequency || cfg.track_history;
             p.update_config(cfg);
-            s.borrow_mut().update_view_settings(&set);
+            s.borrow_mut().update_view_settings(set);
         };
         export(p, s) config;
 
     Spectrogram(320.0, 300.0) =>
         spectrogram::SpectrogramProcessor, SpectrogramState.settings;
-        settings_cfg::SpectrogramSettings;
         prepare(prepare);
         buffered_signal(has_buffered_signal);
         pre_ingest(p, s) {
@@ -230,23 +225,21 @@ visuals! {
             }
         };
         apply(p, s, set) { visuals!(@apply_config p, set);
-            s.borrow_mut().update_view_settings(&set); };
+            s.borrow_mut().update_view_settings(set); };
         export(p, s) config;
 
     Spectrum(400.0, 400.0) =>
         spectrum::SpectrumProcessor, SpectrumState.style;
-        settings_cfg::SpectrumSettings;
         prepare(prepare);
         ignores_audio(ignores_audio);
         buffered_signal(has_buffered_signal);
         apply(p, s, set) { visuals!(@apply_config p, set); let cfg = p.config();
-            s.borrow_mut().update_view_settings(&set, cfg.floor_db);
+            s.borrow_mut().update_view_settings(set, cfg.floor_db);
         };
         export(p, s) config;
 
     Stereometer(150.0, 100.0) =>
         stereometer::StereometerProcessor, StereometerState.settings;
-        settings_cfg::StereometerSettings;
         apply(p, s, set) {
             let mut cfg = p.config();
             set.apply_to(&mut cfg);
@@ -254,7 +247,7 @@ visuals! {
             cfg.analyze_bands = cfg.emit_band_points
                 || set.correlation_meter == CorrelationMeterMode::MultiBand;
             p.update_config(cfg);
-            s.borrow_mut().update_view_settings(&set);
+            s.borrow_mut().update_view_settings(set);
         };
         export(p, s) config;
 }
@@ -265,14 +258,14 @@ struct Visual<P, S> {
     pending_audio: bool,
 }
 
-pub trait VisualModule {
+trait VisualModule {
     fn ingest(&mut self, block: &AudioBlock<'_>, signal: bool);
     fn reset_audio(&mut self);
     fn is_quiescent(&self) -> bool;
     fn prepare(&mut self);
     fn content(&self) -> VisualContent;
-    fn apply(&mut self, settings: &ModuleSettings);
-    fn export(&self) -> ModuleSettings;
+    fn apply(&mut self, config: &VisualConfig);
+    fn export(&self) -> VisualConfig;
     fn export_palette(&self) -> Option<PaletteSettings>;
     fn apply_palette(&mut self, palette: Option<&PaletteSettings>);
 }
@@ -285,11 +278,9 @@ struct Entry {
     module: Box<dyn VisualModule>,
 }
 impl Entry {
-    fn apply_settings(&mut self, settings: &ModuleSettings) {
-        let enabled = settings.enabled.unwrap_or(self.enabled);
-        self.module.apply(settings);
-        self.enabled = enabled;
-        if enabled {
+    fn apply_config(&mut self, config: VisualConfig) {
+        self.module.apply(&config.normalized());
+        if self.enabled {
             self.module.prepare();
         }
     }
@@ -351,11 +342,8 @@ impl VisualManager {
     pub fn order(&self) -> Vec<VisualKind> {
         self.entries.iter().map(|entry| entry.kind).collect()
     }
-    pub fn module_settings(&self, kind: VisualKind) -> ModuleSettings {
-        let entry = &self.entries[self.position(kind)];
-        let mut settings = entry.module.export();
-        settings.enabled.get_or_insert(entry.enabled);
-        settings
+    pub fn config(&self, kind: VisualKind) -> VisualConfig {
+        self.entries[self.position(kind)].module.export()
     }
     pub fn theme_palettes(&self) -> impl Iterator<Item = (VisualKind, PaletteSettings)> + '_ {
         self.entries.iter().filter_map(|entry| {
@@ -365,9 +353,9 @@ impl VisualManager {
                 .map(|palette| (entry.kind, palette))
         })
     }
-    pub fn apply_module_settings(&mut self, kind: VisualKind, settings: &ModuleSettings) {
-        let index = self.position(kind);
-        self.entries[index].apply_settings(settings);
+    pub fn apply_config(&mut self, config: VisualConfig) {
+        let index = self.position(config.kind());
+        self.entries[index].apply_config(config);
     }
     pub fn set_enabled(&mut self, kind: VisualKind, enabled: bool) {
         let index = self.position(kind);
@@ -392,7 +380,6 @@ impl VisualManager {
         }
     }
     pub fn apply_visual_settings(&mut self, settings: &VisualSettings) {
-        let default_settings = ModuleSettings::default();
         for entry in &mut self.entries {
             if let Some(width) = settings
                 .width_basis
@@ -402,12 +389,9 @@ impl VisualManager {
             {
                 entry.width_basis = width;
             }
-            entry.apply_settings(
-                settings
-                    .modules
-                    .get(&entry.kind)
-                    .unwrap_or(&default_settings),
-            );
+            let (config, enabled) = settings.module_config(entry.kind);
+            entry.enabled = enabled;
+            entry.apply_config(config);
         }
         self.reorder(&settings.order);
     }
@@ -449,7 +433,95 @@ pub(crate) type VisualManagerHandle = Shared<VisualManager>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dsp::ChannelPosition;
+    use crate::{dsp::ChannelPosition, persistence::settings as settings_cfg};
+
+    #[test]
+    fn typed_updates_follow_the_variant_after_reordering_and_keep_enablement() {
+        use settings_cfg::*;
+        let mut manager = VisualManager::default();
+        let mut order = manager.order();
+        order.reverse();
+        manager.reorder(&order);
+        manager.set_enabled(VisualKind::Spectrum, true);
+        let configs = [
+            VisualConfig::Loudness(LoudnessSettings {
+                left_mode: crate::visuals::options::MeterMode::RmsFast,
+                ..Default::default()
+            }),
+            VisualConfig::Oscilloscope(OscilloscopeSettings {
+                stacked: true,
+                persistence: 0.75,
+                ..Default::default()
+            }),
+            VisualConfig::Waveform(WaveformSettings {
+                scroll_speed: 72.0,
+                history_mode: WaveformHistoryMode::RmsFast,
+                ..Default::default()
+            }),
+            VisualConfig::Spectrogram(SpectrogramSettings {
+                fft_size: 2048,
+                rotation: -1,
+                ..Default::default()
+            }),
+            VisualConfig::Spectrum(SpectrumSettings {
+                fft_size: 4096,
+                show_grid: false,
+                ..Default::default()
+            }),
+            VisualConfig::Stereometer(StereometerSettings {
+                target_sample_count: 800,
+                flip: false,
+                ..Default::default()
+            }),
+        ];
+        for mut config in configs {
+            let kind = config.kind();
+            *config.palette_mut() = Some(PaletteSettings {
+                stops: vec![
+                    Color::from_rgba(0.12345, 0.34567, 0.56789, 0.78901).into();
+                    palettes::Palette::for_kind(kind).len()
+                ],
+                ..Default::default()
+            });
+            manager.apply_config(config.clone());
+            assert_eq!(manager.config(kind), config);
+        }
+        assert_eq!(manager.order(), order);
+        assert!(
+            manager
+                .entries
+                .iter()
+                .all(|entry| entry.enabled == (entry.kind == VisualKind::Spectrum))
+        );
+    }
+
+    #[test]
+    fn typed_updates_validate_inputs_before_processing() {
+        let mut manager = VisualManager::default();
+        manager.apply_config(VisualConfig::Spectrum(settings_cfg::SpectrumSettings {
+            fft_size: 0,
+            hop_size: 0,
+            floor_db: 1.0,
+            bar_gap: f32::NAN,
+            averaging: spectrum::processor::AveragingMode::PeakHold {
+                decay_per_second: f32::INFINITY,
+            },
+            ..Default::default()
+        }));
+        let VisualConfig::Spectrum(config) = manager.config(VisualKind::Spectrum) else {
+            panic!("expected spectrum settings");
+        };
+        let defaults = settings_cfg::SpectrumSettings::default();
+        assert_eq!((config.fft_size, config.hop_size), (1, 1));
+        assert_eq!(
+            (config.floor_db, config.bar_gap),
+            (defaults.floor_db, defaults.bar_gap)
+        );
+        assert!(matches!(
+            config.averaging,
+            spectrum::processor::AveragingMode::None
+        ));
+    }
 
     #[test]
     fn buffered_signal_prevents_false_quiescence() {

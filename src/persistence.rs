@@ -28,10 +28,8 @@ pub mod settings {
     pub use super::store::SettingsHandle;
     pub(crate) use super::theme::canonical_theme_name;
     pub use super::theme::{BUILTIN_THEME, ThemeChoice, ThemeFile};
-    pub(crate) use super::visuals::SettingsConfig;
     pub use super::visuals::{
-        LoudnessSettings, ModuleSettings, OscilloscopeSettings, PopoutWindowSettings,
-        SpectrogramSettings, SpectrumSettings, StereometerSettings, VisualSettings,
-        WaveformSettings,
+        LoudnessSettings, OscilloscopeSettings, PopoutWindowSettings, SpectrogramSettings,
+        SpectrumSettings, StereometerSettings, VisualConfig, VisualSettings, WaveformSettings,
     };
 }

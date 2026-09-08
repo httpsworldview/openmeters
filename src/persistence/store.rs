@@ -89,10 +89,6 @@ const PERSIST_DEBOUNCE: Duration = Duration::from_millis(500);
 static SAVER: Mutex<Option<(mpsc::Sender<PersistRequest>, JoinHandle<()>)>> = Mutex::new(None);
 
 fn schedule_persist(mut path: PathBuf, mut settings: UiSettings) {
-    for module in settings.visuals.modules.values_mut() {
-        module.strip_palette();
-    }
-
     let mut saver = crate::util::unpoison(SAVER.lock());
     if let Some((tx, _)) = saver.as_ref() {
         match tx.send((path, settings)) {
@@ -211,6 +207,7 @@ mod tests {
 
     #[test]
     fn flush_writes_pending_settings_without_waiting_for_debounce() {
+        use crate::persistence::settings::{PaletteSettings, SpectrogramSettings, VisualConfig};
         SettingsHandle::flush();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
@@ -223,9 +220,28 @@ mod tests {
         assert!(!handle.set(|settings| &mut settings.decorations, false));
         assert!(handle.set(|settings| &mut settings.decorations, true));
         assert!(!handle.set(|settings| &mut settings.decorations, true));
-        SettingsHandle::flush();
+        for fft_size in [2048, 4096] {
+            handle.update(|settings| {
+                settings
+                    .data
+                    .visuals
+                    .set_config(VisualConfig::Spectrogram(SpectrogramSettings {
+                        fft_size,
+                        palette: Some(PaletteSettings {
+                            stops: vec![iced::Color::WHITE.into()],
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    }));
+            });
+            SettingsHandle::flush();
 
-        let saved = UiSettings::from_json_lossy(&fs::read_to_string(path).unwrap()).unwrap();
-        assert!(saved.decorations);
+            let saved: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+            assert_eq!(saved["decorations"], true);
+            let config = &saved["visuals"]["modules"]["spectrogram"]["config"];
+            assert_eq!(config["fft_size"], fft_size);
+            assert!(config.get("palette").is_none());
+        }
     }
 }

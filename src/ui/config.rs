@@ -300,7 +300,7 @@ impl ConfigPage {
             ConfigMessage::VisualToggled { kind, enabled } => {
                 self.visual_manager.borrow_mut().set_enabled(kind, enabled);
                 self.settings.update(|s| {
-                    s.data.visuals.modules.entry(kind).or_default().enabled = Some(enabled);
+                    s.data.visuals.set_enabled(kind, enabled);
                 });
                 effect = Some(ConfigEffect::VisualToggled { kind, enabled });
             }

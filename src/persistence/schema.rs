@@ -119,9 +119,9 @@ impl UiSettings {
 
 #[cfg(test)]
 mod tests {
-    use super::super::visuals::{PopoutWindowSettings, SpectrumSettings};
+    use super::super::visuals::{PopoutWindowSettings, SpectrumSettings, VisualConfig};
     use super::*;
-    use crate::domain::visuals::VisualKind;
+    use crate::{domain::visuals::VisualKind, visuals::spectrum::processor::AveragingMode};
 
     #[test]
     fn visual_frame_rate_defaults_to_60_fps() {
@@ -217,6 +217,8 @@ mod tests {
                             "fft_size": 2048,
                             "floor_db": "quiet",
                             "show_grid": false,
+                            "bar_gap": 1e100,
+                            "averaging": {"mode": "peak_hold", "decay_per_second": 1e100},
                         },
                     },
                     "made_up": { "enabled": true },
@@ -262,14 +264,18 @@ mod tests {
         );
         assert!(!settings.visuals.popouts[&VisualKind::Oscilloscope].popped_out);
 
-        assert_eq!(settings.visuals.modules.len(), 1);
-        let module = settings.visuals.modules.get(&VisualKind::Spectrum).unwrap();
-        assert_eq!(module.enabled, Some(true));
-
-        let spectrum = module.parse_config::<SpectrumSettings>();
+        let saved = serde_json::to_value(&settings.visuals).unwrap();
+        assert_eq!(saved["modules"].as_object().unwrap().len(), 1);
+        let (config, enabled) = settings.visuals.module_config(VisualKind::Spectrum);
+        assert!(enabled);
+        let VisualConfig::Spectrum(spectrum) = config else {
+            panic!("expected spectrum settings");
+        };
         assert_eq!(
             (spectrum.fft_size, spectrum.floor_db, spectrum.show_grid),
             (2048, SpectrumSettings::default().floor_db, false)
         );
+        assert_eq!(spectrum.bar_gap, SpectrumSettings::default().bar_gap);
+        assert!(matches!(spectrum.averaging, AveragingMode::None));
     }
 }

@@ -210,6 +210,12 @@ When adding or changing a visual, also check the related wiring:
 - `src/ui/settings/` for settings panels.
 - `README.md` if the user-visible behavior changes.
 
+Pass visual settings as `VisualConfig` between the UI and registry;
+derive the visual kind from its variant. JSON belongs only at the
+file boundary: decode into typed settings on load and serialize on
+save. Do not retain raw JSON or emulate JSON round-trips internally.
+Invalid fields use defaults; unknown fields are discarded on save.
+
 Always use shared render helpers in `src/visuals/render/common.rs`;
 add new render code only when they don't fit.
 
