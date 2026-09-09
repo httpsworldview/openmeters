@@ -26,10 +26,6 @@ pub struct StereometerSnapshot {
     pub correlations: [f32; BAND_COUNT + 1],
 }
 
-fn snapshot_points(points: &[(f32, f32)]) -> Arc<[(f32, f32)]> {
-    if points.is_empty() { Arc::default() } else { Arc::from(points) }
-}
-
 type BandSplitter = ThreeBand<2, 2, true>;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -184,7 +180,9 @@ impl StereometerProcessor {
         }
 
         Some(StereometerSnapshot {
-            points: std::array::from_fn(|band| snapshot_points(&self.snapshot[band])),
+            points: self.snapshot.each_ref().map(|points| {
+                if points.is_empty() { Arc::default() } else { Arc::from(points.as_slice()) }
+            }),
             correlations: std::array::from_fn(|band| {
                 if band == FULL_BAND || analyze_bands {
                     self.correlators[band].value()

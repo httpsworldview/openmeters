@@ -76,7 +76,7 @@ macro_rules! visuals {
                 enabled: false,
                 module: Box::new(Visual {
                     processor: $module::$processor::new(Default::default()),
-                    state: Rc::new(RefCell::new($module::$state::new())),
+                    state: Rc::new(RefCell::new($module::$state::default())),
                     pending_audio: false,
                 }),
             }),*]

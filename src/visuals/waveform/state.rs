@@ -29,8 +29,8 @@ pub(crate) struct WaveformState {
     key: u64,
 }
 
-impl WaveformState {
-    pub fn new() -> Self {
+impl Default for WaveformState {
+    fn default() -> Self {
         let now = Instant::now();
         Self {
             data: Arc::new(Mutex::new(VecDeque::with_capacity(INITIAL_VIEW_COLUMNS))),
@@ -45,6 +45,9 @@ impl WaveformState {
         }
     }
 
+}
+
+impl WaveformState {
     pub fn reset_audio(&mut self) {
         unpoison(self.data.lock()).clear();
         self.preview = WaveformPreview::default();

@@ -6,10 +6,10 @@ use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
 use iced_wgpu::primitive::{self, Primitive};
 use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 
 use crate::visuals::render::common::{
-    CacheTracker, RenderPipelineSpec, begin_load_pass, create_buffer, create_render_pipeline,
+    CacheTracker, RenderPipelineSpec, begin_pass, create_buffer, create_render_pipeline,
     create_shader_module,
 };
 
@@ -77,6 +77,11 @@ impl Primitive for SpectrogramParams {
         res.resize_accum(device, bgls[1], params, scale_factor);
         res.upload_pending(queue, params);
         let uniforms = Uniforms::from_params(params, viewport, scale_factor);
+        if let Some(accum) = &mut res.accum {
+            *accum.dirty.get_mut() |= uniforms != res.uniform_cache
+                || !params.pending_uploads.is_empty()
+                || params.copy_plan.is_some();
+        }
         if uniforms != res.uniform_cache {
             queue.write_buffer(&res.uniform_buf, 0, bytemuck::bytes_of(&uniforms));
             res.uniform_cache = uniforms;
@@ -104,25 +109,16 @@ impl Primitive for SpectrogramParams {
             return;
         }
 
-        match r.ring.layout.kind {
+        let (index, bg) = match r.ring.layout.kind {
             ColumnKind::Reassigned => {
                 let Some(accum) = r.accum.as_ref() else {
                     return;
                 };
-                {
-                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("Spectrogram accumulation pass"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: &accum.view,
-                            resolve_target: None,
-                            depth_slice: None,
-                            ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                                store: wgpu::StoreOp::Store,
-                            },
-                        })],
-                        ..Default::default()
-                    });
+                if accum.dirty.swap(false, Ordering::Relaxed) {
+                    let mut pass = begin_pass(
+                        encoder, &accum.view, None, "Spectrogram accumulation pass",
+                        wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    );
                     let stride = (r.ring.layout.stride
                         / std::mem::size_of::<SpectrogramPoint>() as u64)
                         as u32;
@@ -150,21 +146,19 @@ impl Primitive for SpectrogramParams {
                     }
                 }
 
-                let mut pass = begin_load_pass(encoder, target, clip, "Spectrogram resolve pass");
-                pass.set_pipeline(&pipeline.pipelines[1]);
-                pass.set_bind_group(0, &accum.bg, &[]);
-                pass.draw(0..4, 0..1);
+                (1, &accum.bg)
             }
             ColumnKind::Classic => {
                 if self.points_per_column < 2 {
                     return;
                 }
-                let mut pass = begin_load_pass(encoder, target, clip, "Spectrogram pass");
-                pass.set_pipeline(&pipeline.pipelines[2]);
-                pass.set_bind_group(0, &r.ring.bg, &[]);
-                pass.draw(0..4, 0..1);
+                (2, &r.ring.bg)
             }
-        }
+        };
+        let mut pass = begin_pass(encoder, target, Some(clip), "Spectrogram pass", wgpu::LoadOp::Load);
+        pass.set_pipeline(&pipeline.pipelines[index]);
+        pass.set_bind_group(0, bg, &[]);
+        pass.draw(0..4, 0..1);
     }
 }
 
@@ -300,18 +294,14 @@ impl primitive::Pipeline for Pipeline {
             },
         );
 
-        let splat_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Spectrogram splat BGL"),
-            entries: &[uniform_entry],
-        });
-        let classic_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Spectrogram classic BGL"),
-            entries: &[uniform_entry, mag_entry],
-        });
-        let resolve_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Spectrogram resolve BGL"),
-            entries: &[uniform_entry, accum_entry],
-        });
+        let [splat_bgl, resolve_bgl, classic_bgl] = [
+            &[uniform_entry][..],
+            &[uniform_entry, accum_entry][..],
+            &[uniform_entry, mag_entry][..],
+        ].map(|entries| device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Spectrogram BGL"),
+            entries,
+        }));
 
         let additive = wgpu::BlendComponent {
             src_factor: wgpu::BlendFactor::One,
@@ -355,13 +345,12 @@ impl primitive::Pipeline for Pipeline {
                 },
             )
         };
-        let (resolve_label, classic_label) =
-            ("Spectrogram resolve pipeline", "Spectrogram classic pipeline");
-        let resolve_pipeline = pipeline(resolve_label, "vs_resolve", "fs_resolve", &resolve_bgl);
-        let classic_pipeline = pipeline(classic_label, "vs_classic", "fs_classic", &classic_bgl);
-
         Self {
-            pipelines: [accum_pipeline, resolve_pipeline, classic_pipeline],
+            pipelines: [
+                accum_pipeline,
+                pipeline("Spectrogram resolve pipeline", "vs_resolve", "fs_resolve", &resolve_bgl),
+                pipeline("Spectrogram classic pipeline", "vs_classic", "fs_classic", &classic_bgl),
+            ],
             bgls: [splat_bgl, resolve_bgl, classic_bgl],
             instances: HashMap::new(),
             cache: CacheTracker::default(),
@@ -413,6 +402,7 @@ struct ColumnRing {
 }
 
 struct AccumTarget {
+    dirty: AtomicBool,
     tex: wgpu::Texture,
     view: wgpu::TextureView,
     bg: wgpu::BindGroup,
@@ -532,7 +522,7 @@ impl Resources {
         });
         let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
         let bg = make_bind_group(device, layout, &self.uniform_buf, None, Some(&view));
-        self.accum = Some(AccumTarget { tex, view, bg });
+        self.accum = Some(AccumTarget { dirty: AtomicBool::new(true), tex, view, bg });
     }
 
     fn upload_pending(&mut self, queue: &wgpu::Queue, p: &SpectrogramParams) {
@@ -585,8 +575,8 @@ fn create_ring(
     p: &SpectrogramParams,
 ) -> ColumnRing {
     let copy = wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC;
-    let ring_layout = ring_layout(p);
-    let (label, usage, bgl) = match ring_layout.kind {
+    let layout = ring_layout(p);
+    let (label, usage, bgl) = match layout.kind {
         ColumnKind::Reassigned => (
             "Spectrogram point ring",
             copy | wgpu::BufferUsages::VERTEX,
@@ -598,14 +588,10 @@ fn create_ring(
             bgls[2],
         ),
     };
-    let buf = create_buffer(device, label, ring_layout.stride * ring_layout.slots, usage);
-    let mag = (ring_layout.kind == ColumnKind::Classic).then_some(&buf);
+    let buf = create_buffer(device, label, layout.stride * layout.slots, usage);
+    let mag = (layout.kind == ColumnKind::Classic).then_some(&buf);
     let bg = make_bind_group(device, bgl, uniform_buf, mag, None);
-    ColumnRing {
-        layout: ring_layout,
-        buf,
-        bg,
-    }
+    ColumnRing { layout, buf, bg }
 }
 
 fn make_bind_group(

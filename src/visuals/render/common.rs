@@ -441,11 +441,12 @@ pub fn create_shader_module(
     })
 }
 
-pub(in crate::visuals) fn begin_load_pass<'a>(
+pub(in crate::visuals) fn begin_pass<'a>(
     encoder: &'a mut wgpu::CommandEncoder,
     target: &'a wgpu::TextureView,
-    clip: &Rectangle<u32>,
+    clip: Option<&Rectangle<u32>>,
     label: &'static str,
+    load: wgpu::LoadOp<wgpu::Color>,
 ) -> wgpu::RenderPass<'a> {
     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
         label: Some(label),
@@ -454,13 +455,15 @@ pub(in crate::visuals) fn begin_load_pass<'a>(
             resolve_target: None,
             depth_slice: None,
             ops: wgpu::Operations {
-                load: wgpu::LoadOp::Load,
+                load,
                 store: wgpu::StoreOp::Store,
             },
         })],
         ..Default::default()
     });
-    pass.set_scissor_rect(clip.x, clip.y, clip.width.max(1), clip.height.max(1));
+    if let Some(clip) = clip {
+        pass.set_scissor_rect(clip.x, clip.y, clip.width.max(1), clip.height.max(1));
+    }
     pass
 }
 

@@ -253,93 +253,69 @@ impl<'a> AudioBlock<'a> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct CompensatedPair {
-    sums: [f64; 2],
-    corrections: [f64; 2],
-}
-impl CompensatedPair {
-    const ZERO: Self = Self {
-        sums: [0.0; 2],
-        corrections: [0.0; 2],
-    };
+type Compensated<const VALUES: usize> = [[f64; VALUES]; 2];
 
-    // Kahan-Babuska-Neumaier compensated addition.
-    fn add(&mut self, index: usize, value: f64) {
-        let sum = self.sums[index];
-        let next = sum + value;
-        self.corrections[index] += if sum.abs() >= value.abs() {
-            (sum - next) + value
-        } else {
-            (value - next) + sum
-        };
-        self.sums[index] = next;
-    }
-
-    fn refresh(&mut self) {
-        (self.sums, self.corrections) = ([self.sums[1], 0.0], [self.corrections[1], 0.0]);
-    }
-
-    fn value(self) -> f64 {
-        self.sums[0] + self.corrections[0]
-    }
-}
-
-/// Running means for several values over one or more independently sized windows.
-/// All windows share the ring sized for the longest duration.
-pub struct WindowedMeans<const VALUES: usize, const WINDOWS: usize, T = f64> {
-    buffer: Box<[[T; VALUES]]>,
+pub struct RunningMeans<const VALUES: usize, const WINDOWS: usize> {
+    buffer: Box<[[f32; VALUES]]>,
     capacities: [usize; WINDOWS],
-    sums: [[CompensatedPair; VALUES]; WINDOWS],
+    sums: [[Compensated<VALUES>; 2]; WINDOWS],
     refresh_counts: [usize; WINDOWS],
     head: usize,
     count: usize,
 }
-impl<const VALUES: usize, const WINDOWS: usize, T> WindowedMeans<VALUES, WINDOWS, T>
-where
-    T: Copy + From<f32> + Into<f64>,
-{
+impl<const VALUES: usize, const WINDOWS: usize> RunningMeans<VALUES, WINDOWS> {
+    const ZERO: Compensated<VALUES> = [[0.0; VALUES]; 2];
+
     pub fn new(capacities: [usize; WINDOWS]) -> Self {
         let capacities = capacities.map(|capacity| capacity.max(1));
         let len = capacities.iter().copied().max().unwrap_or(1);
         Self {
-            buffer: vec![[T::from(0.0); VALUES]; len].into_boxed_slice(),
+            buffer: vec![[0.0; VALUES]; len].into_boxed_slice(),
             capacities,
-            sums: [[CompensatedPair::ZERO; VALUES]; WINDOWS],
+            sums: [[Self::ZERO; 2]; WINDOWS],
             refresh_counts: [0; WINDOWS],
             head: 0,
             count: 0,
         }
     }
 
-    /// Fast path for values that callers have already made finite and nonnegative.
-    pub fn push_nonnegative_finite(&mut self, values: [T; VALUES]) {
-        let mapped = values.map(Into::into);
+    fn add(pair: &mut Compensated<VALUES>, values: [f64; VALUES]) {
+        let [sum, correction] = pair;
+        for ((sum, correction), value) in sum.iter_mut().zip(correction).zip(values) {
+            let next = *sum + value;
+            *correction += if sum.abs() >= value.abs() {
+                (*sum - next) + value
+            } else {
+                (value - next) + *sum
+            };
+            *sum = next;
+        }
+    }
+
+    pub fn push_nonnegative_finite(&mut self, values: [f32; VALUES]) {
         debug_assert!(
-            mapped
+            values
                 .iter()
                 .all(|value| value.is_finite() && *value >= 0.0)
         );
+        let mapped = values.map(f64::from);
         let len = self.buffer.len();
         for window in 0..WINDOWS {
             let capacity = self.capacities[window];
-            let old = (self.count >= capacity).then(|| {
+            for pair in &mut self.sums[window] {
+                Self::add(pair, mapped);
+            }
+            if self.count >= capacity {
                 let index = self.head + len - capacity;
-                self.buffer[if index < len { index } else { index - len }]
-            });
-            for value in 0..VALUES {
-                let sums = &mut self.sums[window][value];
-                sums.add(0, mapped[value]);
-                sums.add(1, mapped[value]);
-                if let Some(old) = old {
-                    sums.add(0, -old[value].into());
-                }
+                let old = self.buffer[if index < len { index } else { index - len }];
+                Self::add(
+                    &mut self.sums[window][0],
+                    old.map(|value| -f64::from(value)),
+                );
             }
             self.refresh_counts[window] += 1;
             if self.refresh_counts[window] == capacity {
-                self.sums[window]
-                    .iter_mut()
-                    .for_each(CompensatedPair::refresh);
+                self.sums[window] = [self.sums[window][1], Self::ZERO];
                 self.refresh_counts[window] = 0;
             }
         }
@@ -351,24 +327,11 @@ where
         self.count = (self.count + 1).min(len);
     }
 
-    pub fn with_leading_zeros(capacities: [usize; WINDOWS], count: usize) -> Self {
-        let mut means = Self::new(capacities);
-        means.head = count % means.buffer.len();
-        means.count = count.min(means.buffer.len());
-        means.refresh_counts = means.capacities.map(|capacity| count % capacity);
-        means
-    }
-
     pub fn mean(&self, window: usize) -> [f64; VALUES] {
-        let count = self.count.min(self.capacities[window]).max(1);
-        std::array::from_fn(|value| self.sums[window][value].value() / count as f64)
+        let count = self.count.min(self.capacities[window]).max(1) as f64;
+        let [sum, correction] = &self.sums[window][0];
+        std::array::from_fn(|i| (sum[i] + correction[i]) / count)
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum FilterKind {
-    LowPass,
-    HighPass,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -379,18 +342,18 @@ struct Biquad<const CHANNELS: usize> {
 }
 
 impl<const CHANNELS: usize> Biquad<CHANNELS> {
-    fn new(kind: FilterKind, sample_rate: f32, frequency: f32) -> Self {
+    fn low_high(sample_rate: f32, frequency: f32) -> [Self; 2] {
         let ratio = (f64::from(frequency) / f64::from(sample_rate)).clamp(1.0e-6, 0.49);
         let (half_sin, half_cos) = (core::f64::consts::PI * ratio).sin_cos();
         let sin = 2.0 * half_sin * half_cos;
         let cos = half_cos.mul_add(half_cos, -half_sin * half_sin);
         let alpha = sin * core::f64::consts::FRAC_1_SQRT_2;
-        let (gain, sign) = match kind {
-            FilterKind::LowPass => (2.0 * half_sin * half_sin, 1.0),
-            FilterKind::HighPass => (2.0 * half_cos * half_cos, -1.0),
-        };
         let inv_a0 = 1.0 / (1.0 + alpha);
-        Self {
+        [
+            (2.0 * half_sin * half_sin, 1.0),
+            (2.0 * half_cos * half_cos, -1.0),
+        ]
+        .map(|(gain, sign)| Self {
             b: [
                 gain * 0.5 * inv_a0,
                 gain * inv_a0 * sign,
@@ -398,7 +361,7 @@ impl<const CHANNELS: usize> Biquad<CHANNELS> {
             ],
             a: [-2.0 * cos * inv_a0, (1.0 - alpha) * inv_a0],
             z: [[0.0; CHANNELS]; 2],
-        }
+        })
     }
 
     fn process(&mut self, sample: [f32; CHANNELS]) -> [f32; CHANNELS] {
@@ -437,14 +400,10 @@ impl<const CHANNELS: usize, const STAGES: usize, const CASCADE_HIGH: bool>
     ThreeBand<CHANNELS, STAGES, CASCADE_HIGH>
 {
     pub fn new(sample_rate: f32, [low, high]: [f32; 2]) -> Self {
-        let stages = |kind, frequency| [Biquad::new(kind, sample_rate, frequency); STAGES];
+        let [low, above_low] = Biquad::low_high(sample_rate, low);
+        let [mid, high] = Biquad::low_high(sample_rate, high);
         Self {
-            filters: [
-                stages(FilterKind::LowPass, low),
-                stages(FilterKind::HighPass, low),
-                stages(FilterKind::LowPass, high),
-                stages(FilterKind::HighPass, high),
-            ],
+            filters: [low, above_low, mid, high].map(|filter| [filter; STAGES]),
         }
     }
 
@@ -611,30 +570,18 @@ mod tests {
 
     #[test]
     fn nonnegative_running_means_preserve_small_values_after_a_large_value_expires() {
-        let mut means = WindowedMeans::<1, 1>::new([2]);
-        for value in [2.0_f64.powi(53), 1.0, 1.0] {
-            means.push_nonnegative_finite([value]);
-        }
-        assert_eq!(means.mean(0), [1.0]);
-
-        let mut means = WindowedMeans::<1, 1, f32>::new([2]);
+        let mut means = RunningMeans::<3, 1>::new([2]);
         for value in [2.0_f32.powi(53), 1.0, 1.0] {
-            means.push_nonnegative_finite([value]);
+            means.push_nonnegative_finite([value, value * 2.0, value * 0.25]);
         }
-        assert_eq!(means.mean(0), [1.0]);
-
-        let mut means = WindowedMeans::<1, 1>::new([2]);
-        for value in [1.0e100, 2.0, 1.0e-100, 1.0e-100] {
-            means.push_nonnegative_finite([value]);
-        }
-        assert_eq!(means.mean(0), [1.0e-100]);
+        assert_eq!(means.mean(0), [1.0, 2.0, 0.25]);
     }
 
     #[test]
     fn stereo_biquad_matches_two_scalar_filters() {
-        for kind in [FilterKind::LowPass, FilterKind::HighPass] {
-            let mut scalar = [Biquad::<1>::new(kind, 48_000.0, 2_000.0); 2];
-            let mut stereo = Biquad::<2>::new(kind, 48_000.0, 2_000.0);
+        for kind in 0..2 {
+            let mut scalar = [Biquad::<1>::low_high(48_000.0, 2_000.0)[kind]; 2];
+            let mut stereo = Biquad::<2>::low_high(48_000.0, 2_000.0)[kind];
             for input in [
                 [0.0, -0.0],
                 [0.25, -0.5],
@@ -656,12 +603,12 @@ mod tests {
     #[test]
     fn biquad_response_and_clear_are_precise() {
         use rustfft::num_complex::Complex64;
-        let filter = Biquad::<1>::new(FilterKind::LowPass, 768_000.0, 200.0);
+        let filter = Biquad::<1>::low_high(768_000.0, 200.0)[0];
         let z = Complex64::from_polar(1.0, -core::f64::consts::TAU * 200.0 / 768_000.0);
         let ([b0, b1, b2], [a1, a2]) = (filter.b, filter.a);
         let magnitude = ((b0 + b1 * z + b2 * z * z) / (1.0 + a1 * z + a2 * z * z)).norm();
         assert!((magnitude - core::f64::consts::FRAC_1_SQRT_2).abs() < 1.0e-9);
-        let mut used = Biquad::<1>::new(FilterKind::LowPass, 48_000.0, 1_000.0);
+        let mut used = Biquad::<1>::low_high(48_000.0, 1_000.0)[0];
         let mut fresh = used;
         used.process([1.0]);
         used.clear();

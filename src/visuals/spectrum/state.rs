@@ -65,41 +65,25 @@ fn rebuild_points(
     build(points);
 }
 
-pub(crate) struct SpectrumState {
-    pub(in crate::visuals) style: SpectrumSettings,
-    pub(in crate::visuals) palette: [Color; PALETTE_SIZE],
-    points: [SharedPoints; 2],
-    geometry: crate::visuals::GeometryKey,
-    peak: Option<PeakLabel>,
-    effective_range: Option<(f32, f32)>,
-    x_cache_key: (usize, u32, FrequencyScale),
-    x_cache: Vec<f32>,
-    grid_ticks: Vec<GridTick>,
-    grid_labels: Vec<GridLabelLayout>,
-    grid_layout_key: Option<GridLayoutKey>,
-    grid_layout_revision: u64,
-    grid_cutouts: Arc<Vec<Rectangle>>,
+crate::macros::default_struct! {
+    pub(crate) struct SpectrumState {
+        pub(in crate::visuals) style: SpectrumSettings = SpectrumSettings::default(),
+        pub(in crate::visuals) palette: [Color; PALETTE_SIZE] = palettes::spectrum::COLORS,
+        points: [SharedPoints; 2] = std::array::from_fn(|_| Arc::clone(&EMPTY_POINTS)),
+        geometry: crate::visuals::GeometryKey = crate::visuals::GeometryKey::new(),
+        peak: Option<PeakLabel> = None,
+        effective_range: Option<(f32, f32)> = None,
+        x_cache_key: (usize, u32, FrequencyScale) = (0, 0, FrequencyScale::default()),
+        x_cache: Vec<f32> = Vec::new(),
+        grid_ticks: Vec<GridTick> = Vec::new(),
+        grid_labels: Vec<GridLabelLayout> = Vec::new(),
+        grid_layout_key: Option<GridLayoutKey> = None,
+        grid_layout_revision: u64 = 0,
+        grid_cutouts: Arc<Vec<Rectangle>> = Arc::new(Vec::new()),
+    }
 }
 
 impl SpectrumState {
-    pub fn new() -> Self {
-        Self {
-            style: SpectrumSettings::default(),
-            palette: palettes::spectrum::COLORS,
-            points: std::array::from_fn(|_| Arc::clone(&EMPTY_POINTS)),
-            geometry: crate::visuals::GeometryKey::new(),
-            peak: None,
-            effective_range: None,
-            x_cache_key: (0, 0, FrequencyScale::default()),
-            x_cache: Vec::new(),
-            grid_ticks: Vec::new(),
-            grid_labels: Vec::new(),
-            grid_layout_key: None,
-            grid_layout_revision: 0,
-            grid_cutouts: Arc::new(Vec::new()),
-        }
-    }
-
     pub fn update_view_settings(&mut self, settings: &SpectrumSettings, floor_db: f32) {
         self.style = settings.clone();
         self.style.floor_db = floor_db;
@@ -479,7 +463,7 @@ mod tests {
 
     #[test]
     fn theme_colors_invalidate_cached_geometry_without_audio_update() {
-        let mut state = SpectrumState::new();
+        let mut state = SpectrumState::default();
         state.style.source = Channel::Left;
         state.points[0] = Arc::new(vec![[0.0, 0.0], [1.0, 1.0]]);
         let bounds = Rectangle {
@@ -504,7 +488,7 @@ mod tests {
     #[test]
     fn secondary_trace_renders_without_primary_source() {
         let trace = [vec![-20.0; 3], vec![-20.0; 3]];
-        let mut state = SpectrumState::new();
+        let mut state = SpectrumState::default();
         state.style.source = Channel::None;
         state.style.secondary_source = Channel::Left;
         state.apply_snapshot(&SpectrumSnapshot {
@@ -526,7 +510,7 @@ mod tests {
 
     #[test]
     fn reversed_grid_cutouts_remain_in_screen_order() {
-        let mut state = SpectrumState::new();
+        let mut state = SpectrumState::default();
         state.style.reverse_frequency = true;
         state.ensure_x_cache(20.0, 24_000.0, &[0.0, 20.0, 24_000.0]);
         state.layout_grid_labels(
@@ -542,7 +526,7 @@ mod tests {
 
     #[test]
     fn grid_layout_and_cutout_geometry_are_cached() {
-        let mut state = SpectrumState::new();
+        let mut state = SpectrumState::default();
         state.ensure_x_cache(20.0, 24_000.0, &[0.0, 20.0, 24_000.0]);
         let bounds = Rectangle::new(Point::ORIGIN, Size::new(600.0, 100.0));
         let range = (20.0, 24_000.0);

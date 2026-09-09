@@ -19,33 +19,22 @@ use std::sync::Arc;
 
 const CORR_LABEL_SIZE: f32 = 10.0;
 
-pub(crate) struct StereometerState {
-    points: [Arc<[(f32, f32)]>; BAND_COUNT + 1],
-    band_colors: [Arc<[[f32; 4]]>; BAND_COUNT],
-    trails: [FixedTrail; BAND_COUNT + 1],
-    pub(in crate::visuals) palette: [Color; PALETTE_SIZE],
-    pub(in crate::visuals) settings: StereometerSettings,
-    labels: [Paragraph; 3],
-    geometry: crate::visuals::GeometryKey,
-    grid: crate::visuals::GeometryKey,
+crate::macros::default_struct! {
+    pub(crate) struct StereometerState {
+        points: [Arc<[(f32, f32)]>; BAND_COUNT + 1] = Default::default(),
+        band_colors: [Arc<[[f32; 4]]>; BAND_COUNT] = Default::default(),
+        trails: [FixedTrail; BAND_COUNT + 1] = Default::default(),
+        pub(in crate::visuals) palette: [Color; PALETTE_SIZE] = palettes::stereometer::COLORS,
+        pub(in crate::visuals) settings: StereometerSettings = StereometerSettings::default(),
+        labels: [Paragraph; 3] = ["+1", "0", "-1"].map(|label| {
+            Paragraph::with_text(raw_text(label, CORR_LABEL_SIZE, Size::new(CORR_LABEL_W, CORR_LABEL_H)))
+        }),
+        geometry: crate::visuals::GeometryKey = crate::visuals::GeometryKey::new(),
+        grid: crate::visuals::GeometryKey = crate::visuals::GeometryKey::new(),
+    }
 }
 
 impl StereometerState {
-    pub fn new() -> Self {
-        Self {
-            points: Default::default(),
-            band_colors: Default::default(),
-            trails: Default::default(),
-            palette: palettes::stereometer::COLORS,
-            settings: StereometerSettings::default(),
-            labels: ["+1", "0", "-1"].map(|label| {
-                Paragraph::with_text(raw_text(label, CORR_LABEL_SIZE, Size::new(CORR_LABEL_W, CORR_LABEL_H)))
-            }),
-            geometry: crate::visuals::GeometryKey::new(),
-            grid: crate::visuals::GeometryKey::new(),
-        }
-    }
-
     pub fn update_view_settings(&mut self, s: &StereometerSettings) {
         let dot_radius = finite_or(s.dot_radius, StereometerSettings::default().dot_radius);
         if self.settings.analyzes_bands() != s.analyzes_bands() {

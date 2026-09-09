@@ -69,8 +69,8 @@ pub(crate) struct LoudnessState {
     geometry: crate::visuals::GeometryKey,
 }
 
-impl LoudnessState {
-    pub fn new() -> Self {
+impl Default for LoudnessState {
+    fn default() -> Self {
         let snapshot = LoudnessSnapshot::with_floor(DB_RANGE.0, 2);
         let peak = PeakHold::new(DB_RANGE.0, Instant::now());
         let mut state = Self {
@@ -91,6 +91,9 @@ impl LoudnessState {
         state
     }
 
+}
+
+impl LoudnessState {
     pub fn reset_audio(&mut self) {
         self.snapshot = LoudnessSnapshot::with_floor(DB_RANGE.0, 2);
         self.peaks = [PeakHold::new(DB_RANGE.0, Instant::now()); VISIBLE_METER_COUNT];
@@ -371,7 +374,7 @@ mod tests {
 
     #[test]
     fn visible_bars_use_configured_modes_and_channel_aggregation() {
-        let mut state = LoudnessState::new();
+        let mut state = LoudnessState::default();
         state.apply_snapshot(LoudnessSnapshot {
             short_term_loudness: -9.0,
             momentary_loudness: -7.5,
@@ -399,7 +402,7 @@ mod tests {
             channel_count,
             positions: [ChannelPosition::Unknown; MAX_CHANNELS],
         };
-        let mut state = LoudnessState::new();
+        let mut state = LoudnessState::default();
         state.set_modes(MeterMode::TruePeak, MeterMode::LufsShortTerm);
 
         let mut mono = [DB_RANGE.0; MAX_CHANNELS];

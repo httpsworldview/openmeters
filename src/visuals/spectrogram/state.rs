@@ -186,50 +186,35 @@ impl SpectrogramHistory {
     }
 }
 
-pub(crate) struct SpectrogramState {
-    pub(in crate::visuals) palette: [Color; SPECTROGRAM_PALETTE_SIZE],
-    pub(in crate::visuals) stop_positions: [f32; SPECTROGRAM_PALETTE_SIZE],
-    pub(in crate::visuals) stop_spreads: [f32; SPECTROGRAM_PALETTE_SIZE],
-    key: u64,
-    pub(in crate::visuals) settings: SpectrogramSettings,
-    sample_rate: f32,
-    fft_size: usize,
-    hop_size: usize,
-    reassigned_power_scale: f32,
-    zoom: f32,
-    pan: f32,
-    pub(in crate::visuals) view_width: u32,
-    piano_labels: [Paragraph; 8],
-    history: SpectrogramHistory,
+crate::macros::default_struct! {
+    pub(crate) struct SpectrogramState {
+        pub(in crate::visuals) palette: [Color; SPECTROGRAM_PALETTE_SIZE] = palettes::spectrogram::COLORS,
+        pub(in crate::visuals) stop_positions: [f32; SPECTROGRAM_PALETTE_SIZE] = palettes::spectrogram::DEFAULT_POSITIONS,
+        pub(in crate::visuals) stop_spreads: [f32; SPECTROGRAM_PALETTE_SIZE] = [1.0; SPECTROGRAM_PALETTE_SIZE],
+        key: u64 = crate::visuals::next_key(),
+        pub(in crate::visuals) settings: SpectrogramSettings = SpectrogramSettings::default(),
+        sample_rate: f32 = SpectrogramConfig::default().sample_rate,
+        fft_size: usize = {
+            let cfg = SpectrogramConfig::default();
+            cfg.fft_size * cfg.zero_padding_factor
+        },
+        hop_size: usize = SpectrogramConfig::default().hop_size,
+        reassigned_power_scale: f32 = 1.0,
+        zoom: f32 = 1.0,
+        pan: f32 = 0.5,
+        pub(in crate::visuals) view_width: u32 = 0,
+        piano_labels: [Paragraph; 8] = std::array::from_fn(|octave| {
+            let text = format!("C{}", octave + 1);
+            let mut label =
+                Paragraph::with_text(raw_text(text.as_str(), PIANO_LABEL_SIZE, Size::INFINITE));
+            label.resize(label.min_bounds());
+            label
+        }),
+        history: SpectrogramHistory = SpectrogramHistory::default(),
+    }
 }
 
 impl SpectrogramState {
-    pub fn new() -> Self {
-        let cfg = SpectrogramConfig::default();
-        Self {
-            palette: palettes::spectrogram::COLORS,
-            stop_positions: palettes::spectrogram::DEFAULT_POSITIONS,
-            stop_spreads: [1.0; SPECTROGRAM_PALETTE_SIZE],
-            key: crate::visuals::next_key(),
-            settings: SpectrogramSettings::default(),
-            sample_rate: cfg.sample_rate,
-            fft_size: cfg.fft_size * cfg.zero_padding_factor,
-            hop_size: cfg.hop_size,
-            reassigned_power_scale: 1.0,
-            zoom: 1.0,
-            pan: 0.5,
-            view_width: 0,
-            piano_labels: std::array::from_fn(|octave| {
-                let text = format!("C{}", octave + 1);
-                let mut label =
-                    Paragraph::with_text(raw_text(text.as_str(), PIANO_LABEL_SIZE, Size::INFINITE));
-                label.resize(label.min_bounds());
-                label
-            }),
-            history: SpectrogramHistory::default(),
-        }
-    }
-
     crate::visuals::palette_setter!(SPECTROGRAM_PALETTE_SIZE);
 
     pub fn update_view_settings(&mut self, settings: &SpectrogramSettings) {
@@ -804,7 +789,7 @@ mod tests {
     }
 
     fn seeded_ring() -> SpectrogramState {
-        let mut state = SpectrogramState::new();
+        let mut state = SpectrogramState::default();
         state.apply_snapshot(classic_update(4, true, &[0.0, 1.0, 2.0, 3.0]));
         assert_eq!(upload_slots(&visual_params(&mut state)), vec![0, 1, 2, 3]);
         state
@@ -812,8 +797,7 @@ mod tests {
 
     #[test]
     fn quiet_history_settles_only_after_filling_the_visible_time_axis() {
-        let mut state = SpectrogramState::new();
-        state.view_width = 4;
+        let mut state = SpectrogramState { view_width: 4, ..Default::default() };
         state.apply_snapshot(classic_update(4, true, &[DB_FLOOR; 3]));
         assert!(!state.is_quiescent());
 
@@ -847,7 +831,7 @@ mod tests {
 
     #[test]
     fn reassigned_params_track_sparse_slot_counts() {
-        let mut state = SpectrogramState::new();
+        let mut state = SpectrogramState::default();
         state.apply_snapshot(reassigned_update(4, true, &[0, 2, 1]));
 
         let params = visual_params(&mut state);

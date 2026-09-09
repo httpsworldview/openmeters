@@ -149,42 +149,29 @@ pub struct SpectrogramUpdate {
     pub new_columns: Vec<SpectrogramColumn>,
 }
 
-pub struct SpectrogramProcessor {
-    config: SpectrogramConfig,
-    transforms: Option<Transforms>,
-    fft_size: usize,
-    window: Arc<[f32]>,
-    real: Vec<f32>,
-    complex: Vec<Complex32>,
-    scratch: Vec<Complex32>,
-    reassign: ReassignmentBuffers,
-    bin_norm: Vec<f32>,
-    reassigned_power_scale: f32,
-    audio_buffer: VecDeque<f32>,
-    pending_skip_samples: usize,
-    audio_last_nonzero: Option<usize>,
-    reset: bool,
+crate::macros::default_struct! {
+    pub struct SpectrogramProcessor {
+        config: SpectrogramConfig = SpectrogramConfig::default(),
+        transforms: Option<Transforms> = None,
+        fft_size: usize = 0,
+        window: Arc<[f32]> = Arc::from([]),
+        real: Vec<f32> = Vec::new(),
+        complex: Vec<Complex32> = Vec::new(),
+        scratch: Vec<Complex32> = Vec::new(),
+        reassign: ReassignmentBuffers = ReassignmentBuffers::default(),
+        bin_norm: Vec<f32> = Vec::new(),
+        reassigned_power_scale: f32 = 1.0,
+        audio_buffer: VecDeque<f32> = VecDeque::new(),
+        pending_skip_samples: usize = 0,
+        audio_last_nonzero: Option<usize> = None,
+        reset: bool = true,
+    }
 }
 
 impl SpectrogramProcessor {
     pub fn new(mut cfg: SpectrogramConfig) -> Self {
         cfg.normalize();
-        Self {
-            config: cfg,
-            transforms: None,
-            fft_size: 0,
-            window: Arc::from([]),
-            real: Vec::new(),
-            complex: Vec::new(),
-            scratch: Vec::new(),
-            reassign: ReassignmentBuffers::default(),
-            bin_norm: Vec::new(),
-            reassigned_power_scale: 1.0,
-            audio_buffer: VecDeque::new(),
-            pending_skip_samples: 0,
-            audio_last_nonzero: None,
-            reset: true,
-        }
+        Self { config: cfg, ..Self::default() }
     }
 
     pub fn config(&self) -> SpectrogramConfig {
@@ -423,9 +410,7 @@ impl SpectrogramProcessor {
         let inv_2pi = sample_rate / core::f32::consts::TAU;
         let inv_hop = 1.0 / hop_size as f32;
         let latency_hops = latency_samples as f32 * inv_hop;
-        let capacity = bin_count
-            .saturating_sub(2)
-            .min(self.config.fft_size / 2);
+        let capacity = bin_count.min(self.config.fft_size / 2 + 1);
         let mut points = Vec::new();
         let (spectrum, auxiliary) = self.reassign.spectra.split_at(self.fft_size);
         let (derivative_spectrum, time_weighted_spectrum) =
@@ -643,7 +628,7 @@ mod tests {
         }
     }
 
-    fn reassigned_points(col: &SpectrogramColumn) -> &[SpectrogramPoint] {
+    fn reassigned_points(col: &SpectrogramColumn) -> &Vec<SpectrogramPoint> {
         match col {
             SpectrogramColumn::Reassigned(v) => v,
             SpectrogramColumn::Classic(_) => panic!("expected reassigned column"),
@@ -883,7 +868,7 @@ mod tests {
         let expected = (position as f32 - config.fft_size as f32 * 0.5 - center_offset as f32)
             / config.hop_size as f32;
 
-        assert!(!points.is_empty());
+        assert!(!points.is_empty() && points.capacity() == config.fft_size / 2 + 1);
         assert!(points
             .iter()
             .all(|point| (point.time_offset - expected).abs() < 1.0e-4));

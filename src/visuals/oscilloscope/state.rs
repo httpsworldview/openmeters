@@ -11,23 +11,16 @@ use std::sync::Arc;
 
 const MAX_PERSISTENCE: f32 = 0.98;
 
-pub(crate) struct OscilloscopeState {
-    snapshot: OscilloscopeSnapshot,
-    pub(in crate::visuals) palette: [Color; TRACE_COUNT],
-    pub(in crate::visuals) settings: OscilloscopeSettings,
-    geometry: crate::visuals::GeometryKey,
+crate::macros::default_struct! {
+    pub(crate) struct OscilloscopeState {
+        snapshot: OscilloscopeSnapshot = OscilloscopeSnapshot::default(),
+        pub(in crate::visuals) palette: [Color; TRACE_COUNT] = palettes::oscilloscope::COLORS,
+        pub(in crate::visuals) settings: OscilloscopeSettings = OscilloscopeSettings::default(),
+        geometry: crate::visuals::GeometryKey = crate::visuals::GeometryKey::new(),
+    }
 }
 
 impl OscilloscopeState {
-    pub fn new() -> Self {
-        Self {
-            snapshot: OscilloscopeSnapshot::default(),
-            palette: palettes::oscilloscope::COLORS,
-            settings: OscilloscopeSettings::default(),
-            geometry: crate::visuals::GeometryKey::new(),
-        }
-    }
-
     pub fn reset_audio(&mut self) {
         self.snapshot = OscilloscopeSnapshot::default();
         self.geometry.invalidate();

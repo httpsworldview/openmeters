@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::dsp::{AudioBlock, ThreeBand, WindowedMeans};
+use crate::dsp::{AudioBlock, ThreeBand, RunningMeans};
 use crate::util::audio::{
     BAND_SPLITS_HZ, Channel, DB_FLOOR, DEFAULT_SAMPLE_RATE, power_to_db, sanitize_sample_rate,
 };
@@ -75,37 +75,34 @@ fn window_len(samples_at_reference_rate: usize, sample_rate: f32) -> usize {
         .max(1)
 }
 
-type BandWindow = WindowedMeans<NUM_BANDS, 1, f32>;
-type BandHistory = WindowedMeans<NUM_BANDS, 2, f32>;
 type BandFilter = ThreeBand<1, 1, false>;
 
-fn band_means(means: [f64; NUM_BANDS]) -> [f32; NUM_BANDS] {
-    means.map(|mean| mean.max(0.0) as f32)
-}
-
 struct BandTracker {
-    color: BandWindow,
-    history: Option<BandHistory>,
+    color: RunningMeans<{ NUM_BANDS * DERIVED_CHANNELS }, 1>,
+    history: Option<RunningMeans<{ NUM_BANDS * DERIVED_CHANNELS }, 2>>,
 }
 
 impl BandTracker {
     fn new(sample_rate: f32, track_history: bool) -> Self {
         let color_len = window_len(BAND_COLOR_WINDOW_AT_44K1, sample_rate);
-        let slow_len = window_len(BAND_SLOW_WINDOW_AT_44K1, sample_rate);
         Self {
-            color: BandWindow::new([color_len]),
-            history: track_history.then(|| BandHistory::new([color_len, slow_len])),
+            color: RunningMeans::new([color_len]),
+            history: track_history.then(|| RunningMeans::new([
+                color_len, window_len(BAND_SLOW_WINDOW_AT_44K1, sample_rate),
+            ])),
         }
     }
 
-    fn process(&mut self, bands: [f32; NUM_BANDS]) {
+    fn process(&mut self, bands: [[f32; NUM_BANDS]; DERIVED_CHANNELS]) {
+        let bands = bands.as_flattened();
         self.color
-            .push_nonnegative_finite(std::array::from_fn(|band| {
-                let value = bands[band].abs() * BAND_COLOR_GAINS[band];
+            .push_nonnegative_finite(std::array::from_fn(|i| {
+                let value = bands[i].abs() * BAND_COLOR_GAINS[i % NUM_BANDS];
                 if value.is_finite() { value } else { 0.0 }
             }));
         if let Some(history) = &mut self.history {
-            history.push_nonnegative_finite(bands.map(|value| {
+            history.push_nonnegative_finite(std::array::from_fn(|i| {
+                let value = bands[i];
                 let power = value * value;
                 if power.is_finite() { power } else { 0.0 }
             }));
@@ -117,30 +114,22 @@ fn derived_frame(stereo: [f32; 2]) -> [f32; DERIVED_CHANNELS] {
     WAVEFORM_CHANNELS.map(|channel| channel.project(stereo))
 }
 
-pub struct WaveformProcessor {
-    config: WaveformConfig,
-    source_channels: usize,
-    band_analysis: Option<([BandFilter; 2], [BandTracker; DERIVED_CHANNELS])>,
-    column_phase: f64,
-    current: [Option<(f32, f32, Option<f32>)>; DERIVED_CHANNELS],
-    last_sample: [Option<f32>; DERIVED_CHANNELS],
-    pending_columns: Vec<WaveFrame>,
-    reset_pending: bool,
+crate::macros::default_struct! {
+    pub struct WaveformProcessor {
+        config: WaveformConfig = WaveformConfig::default(),
+        source_channels: usize = 2,
+        band_analysis: Option<([BandFilter; 2], BandTracker)> = None,
+        column_phase: f64 = 0.0,
+        current: [Option<(f32, f32, Option<f32>)>; DERIVED_CHANNELS] = [None; DERIVED_CHANNELS],
+        last_sample: [Option<f32>; DERIVED_CHANNELS] = [None; DERIVED_CHANNELS],
+        pending_columns: Vec<WaveFrame> = Vec::new(),
+        reset_pending: bool = true,
+    }
 }
 
 impl WaveformProcessor {
     pub fn new(config: WaveformConfig) -> Self {
-        let config = config.normalized();
-        Self {
-            config,
-            source_channels: 2,
-            band_analysis: None,
-            column_phase: 0.0,
-            current: [None; DERIVED_CHANNELS],
-            last_sample: [None; DERIVED_CHANNELS],
-            pending_columns: Vec::new(),
-            reset_pending: true,
-        }
+        Self { config: config.normalized(), ..Self::default() }
     }
 
     pub fn config(&self) -> WaveformConfig {
@@ -166,11 +155,11 @@ impl WaveformProcessor {
 
     fn band_analysis(
         config: WaveformConfig,
-    ) -> Option<([BandFilter; 2], [BandTracker; DERIVED_CHANNELS])> {
+    ) -> Option<([BandFilter; 2], BandTracker)> {
         config.analyze_bands.then(|| {
             (
                 std::array::from_fn(|_| BandFilter::new(config.sample_rate, BAND_SPLITS_HZ)),
-                std::array::from_fn(|_| BandTracker::new(config.sample_rate, config.track_history)),
+                BandTracker::new(config.sample_rate, config.track_history),
             )
         })
     }
@@ -185,33 +174,36 @@ impl WaveformProcessor {
         }
     }
 
-    fn column_for(&self, channel: usize) -> WaveColumn {
-        let (min, max) = self.current[channel].map_or((0.0, 0.0), |(mut min, mut max, _)| {
-            if let Some(last) = self.last_sample[channel] {
-                min = min.min(last);
-                max = max.max(last);
-            }
-            (min, max)
+    fn columns(&self) -> WaveFrame {
+        let mut columns = std::array::from_fn(|channel| {
+            let (min, max) = self.current[channel].map_or((0.0, 0.0), |(mut min, mut max, _)| {
+                if let Some(last) = self.last_sample[channel] {
+                    min = min.min(last);
+                    max = max.max(last);
+                }
+                (min, max)
+            });
+            WaveColumn { min, max, ..WaveColumn::default() }
         });
-        let mut column = WaveColumn {
-            min,
-            max,
-            ..WaveColumn::default()
-        };
-        if let Some((_, trackers)) = &self.band_analysis {
-            let tracker = &trackers[channel];
-            column.color_bands = band_means(tracker.color.mean(0));
+        if let Some((_, tracker)) = &self.band_analysis {
+            let means = tracker.color.mean(0).map(|mean| mean.max(0.0) as f32);
+            for (column, bands) in columns.iter_mut().zip(means.as_chunks::<NUM_BANDS>().0) {
+                column.color_bands = *bands;
+            }
             if let Some(history) = &tracker.history {
-                column.rms_db = std::array::from_fn(|window| {
-                    band_means(history.mean(window)).map(|power| power_to_db(power, DB_FLOOR))
-                });
+                for window in 0..2 {
+                    let db = history.mean(window).map(|mean| power_to_db(mean.max(0.0) as f32, DB_FLOOR));
+                    for (column, bands) in columns.iter_mut().zip(db.as_chunks::<NUM_BANDS>().0) {
+                        column.rms_db[window] = *bands;
+                    }
+                }
             }
         }
-        column
+        columns
     }
 
     fn emit_column(&mut self) {
-        let columns = std::array::from_fn(|channel| self.column_for(channel));
+        let columns = self.columns();
         for channel in 0..DERIVED_CHANNELS {
             if let Some((_, _, Some(last))) = self.current[channel] {
                 self.last_sample[channel] = Some(last);
@@ -230,7 +222,7 @@ impl WaveformProcessor {
         for stereo in block.stereo_frames() {
             let derived = derived_frame(stereo);
             let finite = derived.map(f32::is_finite);
-            if let Some((filters, trackers)) = &mut self.band_analysis {
+            if let Some((filters, tracker)) = &mut self.band_analysis {
                 let filtered = [
                     filters[0].process_mono(if finite[0] { derived[0] } else { 0.0 }),
                     filters[1].process_mono(if finite[1] { derived[1] } else { 0.0 }),
@@ -242,9 +234,9 @@ impl WaveformProcessor {
                     std::array::from_fn(|band| (left[band] + right[band]) * 0.5),
                     std::array::from_fn(|band| (left[band] - right[band]) * 0.5),
                 ];
-                for (channel, tracker) in trackers.iter_mut().enumerate() {
-                    tracker.process(if finite[channel] { bands[channel] } else { [0.0; NUM_BANDS] });
-                }
+                tracker.process(std::array::from_fn(|channel| {
+                    if finite[channel] { bands[channel] } else { [0.0; NUM_BANDS] }
+                }));
             }
             self.ingest_derived(derived, finite, step);
         }
@@ -288,7 +280,7 @@ impl WaveformProcessor {
         let progress = self.column_phase as f32;
         WaveformPreview {
             progress,
-            columns: (progress > 0.0).then(|| std::array::from_fn(|ch| self.column_for(ch))),
+            columns: (progress > 0.0).then(|| self.columns()),
         }
     }
 
