@@ -25,11 +25,12 @@ const ANALYSIS_POWER_EPS: f32 = 1.0023052e-14;
 struct Uniforms {
     freq_axis: vec2<f32>,           // (scaled_min, inverse scaled display span)
     freq_scale: u32,                // 0=linear, 1=log, 2=erb
-    points_per_col: u32,            // reassigned slot stride, or classic FFT bins
+    points_per_col: u32,            // reassigned page-tag shift, or classic FFT bins
 
     history_length: u32,
     col_count: u32,
     rotation: u32,
+    page_mask: u32,
 
     bounds: vec4<f32>,              // (x, y, w, h) physical pixels
     clip_scale: vec2<f32>,          // (2/viewport_w, 2/viewport_h)
@@ -44,6 +45,7 @@ struct Uniforms {
     // FFT bin spacing (sample_rate / fft_size); only used by classic sampling.
     bin_hz: f32,
     reassigned_power_scale: f32,
+    page_slot_mask: u32,
 
     // (pos1, pos2, pos3, spread0), (spread1, spread2, spread3, spread4).
     // Stops 0 and 4 are constant 0.0 / 1.0
@@ -65,6 +67,8 @@ struct ResolveOutput {
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var accum_tex: texture_2d<f32>;
 @group(0) @binding(2) var<storage, read> mags: array<u32>;
+struct ReassignedPoint { time_offset: f32, freq_hz: f32, power: f32 }
+@group(0) @binding(3) var<storage, read> points: array<ReassignedPoint>;
 
 fn freq_to_norm(hz: f32) -> f32 {
     var scaled: f32;
@@ -134,14 +138,28 @@ fn vs_accum_splat(
     @builtin(vertex_index) vertex: u32,
     @builtin(instance_index) inst: u32,
 ) -> AccumOutput {
-    let corner = quad_corner(vertex);
+    let tag = vertex / 4u;
+    let slot = (tag & u.page_mask) + inst / (tag >> u.points_per_col);
+    return splat(time_offset, freq_hz, power, quad_corner(vertex % 4u), slot);
+}
+
+@vertex
+fn vs_accum_indexed(
+    @builtin(vertex_index) vertex: u32,
+    @builtin(instance_index) tag: u32,
+) -> AccumOutput {
+    let point = points[(tag & u.page_slot_mask) * (tag >> u.points_per_col) + vertex / 4u];
+    return splat(point.time_offset, point.freq_hz, point.power, quad_corner(vertex % 4u), tag & u.page_mask);
+}
+
+fn splat(time_offset: f32, freq_hz: f32, power: f32, corner: vec2<f32>, slot: u32) -> AccumOutput {
     let zoomed = (freq_to_norm(freq_hz) - u.uv_y_range.x) * u.inv_uv_range;
     if !(power > 0.0) || zoomed < -0.01 || zoomed > 1.01 {
         return AccumOutput(CULL_POS, power, freq_hz);
     }
     let ext = extents();
     let hl = u.history_length;
-    let age = (u.newest_col + hl - inst / u.points_per_col) % hl;
+    let age = (u.newest_col + hl - slot) % hl;
     let pos = vec2<f32>(ext.x - (f32(age) - time_offset) * u.scale_factor, (1.0 - zoomed) * ext.y)
         + corner * u.scale_factor;
     let size = ceil(max(ext, vec2<f32>(1.0)));

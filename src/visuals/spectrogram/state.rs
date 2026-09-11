@@ -68,7 +68,6 @@ fn display_axis(sample_rate: f32) -> (f32, f32) {
 crate::macros::default_struct! {
     struct SpectrogramHistory {
         col_kind: ColumnKind = ColumnKind::Reassigned,
-        reassigned_points_per_slot: u32 = 1,
         ring_capacity: u32 = 0,
         write_slot: u32 = 0,
         col_count: u32 = 0,
@@ -131,30 +130,11 @@ impl SpectrogramHistory {
             self.write_slot = (self.write_slot + 1) % self.ring_capacity;
             if self.col_count < self.ring_capacity { self.col_count += 1; }
         }
-        self.fit_reassigned_slot_capacity();
     }
 
     fn ensure_pending_copy(&mut self) {
         if self.pending_copy.is_none() && self.col_count as usize > self.pending.len() {
             self.pending_copy = Some((0..self.col_count).collect());
-        }
-    }
-
-    fn fit_reassigned_slot_capacity(&mut self) {
-        if self.col_kind != ColumnKind::Reassigned {
-            self.reassigned_points_per_slot = 1;
-            return;
-        }
-        let needed = self
-            .slot_counts
-            .iter()
-            .take(self.ring_capacity as usize)
-            .copied()
-            .fold(1, u32::max);
-        let current = self.reassigned_points_per_slot;
-        if needed > current || current > needed.saturating_mul(4) {
-            self.ensure_pending_copy();
-            self.reassigned_points_per_slot = needed;
         }
     }
 
@@ -266,7 +246,6 @@ impl SpectrogramState {
             bounds,
             ring_capacity: history.ring_capacity,
             points_per_column: (self.fft_size / 2 + 1) as u32,
-            reassigned_points_per_slot: history.reassigned_points_per_slot,
             col_count: history.col_count,
             write_slot: history.write_slot,
             pending_uploads: std::mem::take(&mut history.pending),
@@ -836,7 +815,6 @@ mod tests {
 
         let params = visual_params(&mut state);
 
-        assert_eq!(params.reassigned_points_per_slot, 2);
         assert_eq!(params.reassigned_power_scale, 0.25);
         assert_eq!(&params.slot_counts[..4], &[0, 2, 1, 0]);
         assert_eq!(

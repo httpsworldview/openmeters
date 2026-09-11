@@ -471,6 +471,7 @@ pub(in crate::visuals) struct RenderPipelineSpec<'a> {
     pub(in crate::visuals) label: &'static str,
     pub(in crate::visuals) shader: &'a wgpu::ShaderModule,
     pub(in crate::visuals) vertex_entry: &'static str,
+    pub(in crate::visuals) topology: wgpu::PrimitiveTopology,
     pub(in crate::visuals) fragment_entry: &'static str,
     pub(in crate::visuals) buffers: &'a [wgpu::VertexBufferLayout<'a>],
     pub(in crate::visuals) bind_group_layouts: &'a [&'a wgpu::BindGroupLayout],
@@ -509,7 +510,7 @@ pub(in crate::visuals) fn create_render_pipeline(
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         }),
         primitive: wgpu::PrimitiveState {
-            topology: wgpu::PrimitiveTopology::TriangleStrip,
+            topology: spec.topology,
             ..Default::default()
         },
         depth_stencil: None,
@@ -623,6 +624,7 @@ impl<const REPLACE: bool> iced_wgpu::primitive::Pipeline for SdfPipeline<REPLACE
                 label: LABEL,
                 shader: &shader,
                 vertex_entry: "vs_main",
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
                 fragment_entry: "fs_main",
                 buffers: &[wgpu::VertexBufferLayout {
                     array_stride: size_of::<SdfInstance>() as wgpu::BufferAddress,
