@@ -400,7 +400,6 @@ crate::visuals::visualization_widget!(Spectrum, SpectrumState, |this, r, th, b| 
         fill_rect(r, b, th.extended_palette().background.base.color);
         return;
     };
-    r.draw_primitive(b, params);
     if let Some(range) = grid_range {
         r.with_layer(b, |r| {
             draw_grid_lines(r, th, b, range, &state);
@@ -410,6 +409,7 @@ crate::visuals::visualization_widget!(Spectrum, SpectrumState, |this, r, th, b| 
             draw_grid_labels(r, th, &state);
         });
     }
+    r.with_layer(b, |r| r.draw_primitive(b, params));
     if let Some((peak, layout)) = peak.zip(peak_layout) {
         let peak_color = state.palette[PEAK_PALETTE_INDEX];
         r.with_layer(b, |r| draw_peak(r, th, peak, layout, peak_color));
