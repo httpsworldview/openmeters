@@ -253,84 +253,166 @@ impl<'a> AudioBlock<'a> {
     }
 }
 
-type Compensated<const VALUES: usize> = [[f64; VALUES]; 2];
-
 pub struct RunningMeans<const VALUES: usize, const WINDOWS: usize> {
-    buffer: Box<[[f32; VALUES]]>,
+    ring: Ring<VALUES>,
     capacities: [usize; WINDOWS],
-    sums: [[Compensated<VALUES>; 2]; WINDOWS],
-    refresh_counts: [usize; WINDOWS],
+    blocks: Box<[[f64; VALUES]]>,
+    partial: [f64; VALUES],
+    len: usize,
     head: usize,
     count: usize,
 }
+
+enum Ring<const VALUES: usize> {
+    Compact(Box<[[f32; VALUES]]>),
+    Wide(Box<[[f64; VALUES]]>),
+}
+
 impl<const VALUES: usize, const WINDOWS: usize> RunningMeans<VALUES, WINDOWS> {
-    const ZERO: Compensated<VALUES> = [[0.0; VALUES]; 2];
+    const BLOCK: usize = 16;
+    const ZERO: [f64; VALUES] = [0.0; VALUES];
 
     pub fn new(capacities: [usize; WINDOWS]) -> Self {
+        Self::seeded(capacities, 0)
+    }
+
+    // Count leading silence without pushing individual zero samples.
+    pub fn seeded(capacities: [usize; WINDOWS], count: usize) -> Self {
         let capacities = capacities.map(|capacity| capacity.max(1));
         let len = capacities.iter().copied().max().unwrap_or(1);
         Self {
-            buffer: vec![[0.0; VALUES]; len].into_boxed_slice(),
+            ring: Ring::Compact(vec![[0.0; VALUES]; len].into_boxed_slice()),
+            blocks: vec![Self::ZERO; len.div_ceil(Self::BLOCK) * 2].into_boxed_slice(),
             capacities,
-            sums: [[Self::ZERO; 2]; WINDOWS],
-            refresh_counts: [0; WINDOWS],
-            head: 0,
-            count: 0,
+            partial: Self::ZERO,
+            len,
+            head: count % len,
+            count: count.min(len),
         }
     }
 
-    fn add(pair: &mut Compensated<VALUES>, values: [f64; VALUES]) {
-        let [sum, correction] = pair;
-        for ((sum, correction), value) in sum.iter_mut().zip(correction).zip(values) {
-            let next = *sum + value;
-            *correction += if sum.abs() >= value.abs() {
-                (*sum - next) + value
-            } else {
-                (value - next) + *sum
-            };
-            *sum = next;
-        }
-    }
-
+    #[inline]
     pub fn push_nonnegative_finite(&mut self, values: [f32; VALUES]) {
         debug_assert!(
             values
                 .iter()
                 .all(|value| value.is_finite() && *value >= 0.0)
         );
-        let mapped = values.map(f64::from);
-        let len = self.buffer.len();
-        for window in 0..WINDOWS {
-            let capacity = self.capacities[window];
-            for pair in &mut self.sums[window] {
-                Self::add(pair, mapped);
+        match &mut self.ring {
+            Ring::Compact(buffer) => {
+                let slot = &mut buffer[self.head];
+                *slot = values;
+                for (partial, &sample) in self.partial.iter_mut().zip(slot.iter()) {
+                    *partial += f64::from(sample);
+                }
             }
-            if self.count >= capacity {
-                let index = self.head + len - capacity;
-                let old = self.buffer[if index < len { index } else { index - len }];
-                Self::add(
-                    &mut self.sums[window][0],
-                    old.map(|value| -f64::from(value)),
-                );
-            }
-            self.refresh_counts[window] += 1;
-            if self.refresh_counts[window] == capacity {
-                self.sums[window] = [self.sums[window][1], Self::ZERO];
-                self.refresh_counts[window] = 0;
+            Ring::Wide(buffer) => {
+                let wide = values.map(f64::from);
+                buffer[self.head] = wide;
+                for (partial, &sample) in self.partial.iter_mut().zip(&wide) {
+                    *partial += sample;
+                }
             }
         }
-        self.buffer[self.head] = values;
-        self.head += 1;
-        if self.head == len {
-            self.head = 0;
-        }
-        self.count = (self.count + 1).min(len);
+        self.flush();
     }
 
+    #[inline]
+    pub fn push_nonnegative_finite_wide(&mut self, values: [f64; VALUES]) {
+        debug_assert!(
+            values
+                .iter()
+                .all(|value| value.is_finite() && *value >= 0.0)
+        );
+        // Preserve compact history until a sample would overflow binary32.
+        if let Ring::Compact(buffer) = &self.ring
+            && values.iter().any(|&value| !(value as f32).is_finite())
+        {
+            self.ring = Ring::Wide(buffer.iter().map(|slot| slot.map(f64::from)).collect());
+        }
+        match &mut self.ring {
+            Ring::Compact(buffer) => {
+                let slot = &mut buffer[self.head];
+                *slot = values.map(|value| value as f32);
+                for (partial, &sample) in self.partial.iter_mut().zip(slot.iter()) {
+                    *partial += f64::from(sample);
+                }
+            }
+            Ring::Wide(buffer) => {
+                buffer[self.head] = values;
+                for (partial, &sample) in self.partial.iter_mut().zip(&values) {
+                    *partial += sample;
+                }
+            }
+        }
+        self.flush();
+    }
+
+    #[inline]
+    fn flush(&mut self) {
+        self.head += 1;
+        if self.head.is_multiple_of(Self::BLOCK) || self.head == self.len {
+            let mut node = self.blocks.len() / 2 + (self.head - 1) / Self::BLOCK;
+            self.blocks[node] = self.partial;
+            self.partial = Self::ZERO;
+            while node > 1 {
+                node /= 2;
+                let left = self.blocks[node * 2];
+                let right = self.blocks[node * 2 + 1];
+                self.blocks[node] = std::array::from_fn(|i| left[i] + right[i]);
+            }
+        }
+        if self.head == self.len {
+            self.head = 0;
+        }
+        self.count = (self.count + 1).min(self.len);
+    }
+
+    #[inline]
     pub fn mean(&self, window: usize) -> [f64; VALUES] {
-        let count = self.count.min(self.capacities[window]).max(1) as f64;
-        let [sum, correction] = &self.sums[window][0];
-        std::array::from_fn(|i| (sum[i] + correction[i]) / count)
+        let count = self.count.min(self.capacities[window]).max(1);
+        // Nonnegative samples make this a valid silence shortcut even when
+        // the tree still holds the previous contents of the partial block.
+        if self.blocks[1] == Self::ZERO && self.partial == Self::ZERO {
+            return Self::ZERO;
+        }
+        let len = self.len;
+        let start = (self.head + len - count) % len;
+        let end = start + count;
+        let mut sum = Self::ZERO;
+        for range in [start..end.min(len), 0..end.saturating_sub(len)] {
+            let first = range.start.next_multiple_of(Self::BLOCK).min(range.end);
+            let last = (range.end / Self::BLOCK * Self::BLOCK).max(first);
+            for index in (range.start..first).chain(last..range.end) {
+                let samples = match &self.ring {
+                    Ring::Compact(buffer) => buffer[index].map(f64::from),
+                    Ring::Wide(buffer) => buffer[index],
+                };
+                for (sum, &sample) in sum.iter_mut().zip(&samples) {
+                    *sum += sample;
+                }
+            }
+            let mut left = self.blocks.len() / 2 + first / Self::BLOCK;
+            let mut right = self.blocks.len() / 2 + last / Self::BLOCK;
+            while left < right {
+                if left % 2 == 1 {
+                    for (sum, &part) in sum.iter_mut().zip(&self.blocks[left]) {
+                        *sum += part;
+                    }
+                    left += 1;
+                }
+                if right % 2 == 1 {
+                    right -= 1;
+                    for (sum, &part) in sum.iter_mut().zip(&self.blocks[right]) {
+                        *sum += part;
+                    }
+                }
+                left /= 2;
+                right /= 2;
+            }
+        }
+        let count = count as f64;
+        sum.map(|value| value / count)
     }
 }
 
@@ -364,23 +446,27 @@ impl<const CHANNELS: usize> Biquad<CHANNELS> {
         })
     }
 
+    #[inline(always)]
     fn process(&mut self, sample: [f32; CHANNELS]) -> [f32; CHANNELS] {
         let sample = sample.map(f64::from);
+        let (b, a) = (self.b, self.a);
         let [z0, z1] = self.z;
-        let output: [f64; CHANNELS] = std::array::from_fn(|i| self.b[0] * sample[i] + z0[i]);
-        self.z = [
-            std::array::from_fn(|i| self.b[1] * sample[i] - self.a[0] * output[i] + z1[i]),
-            std::array::from_fn(|i| self.b[2] * sample[i] - self.a[1] * output[i]),
+        let output: [f64; CHANNELS] = std::array::from_fn(|i| b[0] * sample[i] + z0[i]);
+        let mut state = [
+            std::array::from_fn(|i| b[1] * sample[i] - a[0] * output[i] + z1[i]),
+            std::array::from_fn(|i| b[2] * sample[i] - a[1] * output[i]),
         ];
-        std::array::from_fn(|channel| {
+        let output: [f32; CHANNELS] = std::array::from_fn(|channel| {
             if output[channel].abs() <= f32::MAX as f64 {
                 output[channel] as f32
             } else {
-                self.z[0][channel] = 0.0;
-                self.z[1][channel] = 0.0;
+                state[0][channel] = 0.0;
+                state[1][channel] = 0.0;
                 0.0
             }
-        })
+        });
+        self.z = state;
+        output
     }
 
     fn flush_denormals(&mut self) {
@@ -430,15 +516,6 @@ impl<const CHANNELS: usize, const STAGES: usize, const CASCADE_HIGH: bool>
 
     pub fn clear(&mut self) {
         self.filters.iter_mut().flatten().for_each(Biquad::clear);
-    }
-}
-
-impl<const STAGES: usize, const CASCADE_HIGH: bool> ThreeBand<1, STAGES, CASCADE_HIGH> {
-    // Keep the scalar call ABI without expanding the bank into the waveform history loop.
-    #[inline(never)]
-    pub fn process_mono(&mut self, sample: f32) -> [f32; 3] {
-        let [[low], [mid], [high]] = self.process([sample]);
-        [low, mid, high]
     }
 }
 
@@ -578,6 +655,78 @@ mod tests {
     }
 
     #[test]
+    fn windowed_means_match_direct_sums_across_ring_boundaries() {
+        for len in [0_usize, 1, 2, 15, 16, 17, 31, 32, 33, 129] {
+            let capacities = [len, len / 2, 1, len * 3 / 4];
+            for leading in [0, len / 2, len, len + 7] {
+                let mut means = RunningMeans::<3, 4>::seeded(capacities, leading);
+                let capacities = capacities.map(|capacity| capacity.max(1));
+                let len = len.max(1);
+                let mut history =
+                    std::collections::VecDeque::from(vec![[0.0_f32; 3]; leading.min(len)]);
+                for window in 0..4 {
+                    assert_eq!(means.mean(window), [0.0; 3]);
+                }
+                for step in 0..len * 4 + 33 {
+                    // Dyadic values keep sums exact, including independent silent lanes.
+                    let values = std::array::from_fn(|lane| {
+                        if step > len * 3 || (step + lane) % 7 < 3 {
+                            0.0
+                        } else {
+                            ((step * 37 + lane * 13) % 251) as f32 / 256.0
+                        }
+                    });
+                    means.push_nonnegative_finite(values);
+                    history.push_back(values);
+                    if history.len() > len {
+                        history.pop_front();
+                    }
+                    for (window, capacity) in capacities.into_iter().enumerate() {
+                        let count = history.len().min(capacity);
+                        let expected = history
+                            .iter()
+                            .rev()
+                            .take(count)
+                            .fold([0.0_f64; 3], |acc, values| {
+                                std::array::from_fn(|i| acc[i] + f64::from(values[i]))
+                            })
+                            .map(|sum| sum / count as f64);
+                        assert_eq!(
+                            means.mean(window),
+                            expected,
+                            "len={len}, leading={leading}, step={step}, window={window}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn windowed_means_preserve_all_lanes_when_promoting_to_wide() {
+        let mut means = RunningMeans::<3, 2>::new([33, 2]);
+        for _ in 0..33 {
+            means.push_nonnegative_finite([1.0, 2.0, 3.0]);
+        }
+        means.push_nonnegative_finite_wide([1.0, 2.0, 1.0e100]);
+        assert_eq!(means.mean(0), [1.0, 2.0, 1.0e100 / 33.0]);
+        assert_eq!(means.mean(1), [1.0, 2.0, 5.0e99]);
+        for _ in 0..33 {
+            means.push_nonnegative_finite([1.0, 2.0, 3.0]);
+        }
+        assert_eq!(means.mean(0), [1.0, 2.0, 3.0]);
+        for _ in 0..33 {
+            means.push_nonnegative_finite_wide([1.0e-100, 2.0e-100, 0.0]);
+        }
+        for window in 0..2 {
+            let expected = [1.0e-100, 2.0e-100, 0.0];
+            for (actual, expected) in means.mean(window).into_iter().zip(expected) {
+                assert!((actual - expected).abs() <= expected * 1.0e-14);
+            }
+        }
+    }
+
+    #[test]
     fn stereo_biquad_matches_two_scalar_filters() {
         for kind in 0..2 {
             let mut scalar = [Biquad::<1>::low_high(48_000.0, 2_000.0)[kind]; 2];
@@ -588,6 +737,10 @@ mod tests {
                 [1.0, 0.75],
                 [f32::INFINITY, f32::NAN],
                 [-0.125, 0.5],
+                [f32::INFINITY, 0.375],
+                [0.125, f32::NAN],
+                [f32::MAX, -f32::MAX],
+                [0.0, 0.25],
             ] {
                 let expected = [
                     scalar[0].process([input[0]])[0],

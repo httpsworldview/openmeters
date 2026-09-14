@@ -75,7 +75,7 @@ fn window_len(samples_at_reference_rate: usize, sample_rate: f32) -> usize {
         .max(1)
 }
 
-type BandFilter = ThreeBand<1, 1, false>;
+type BandFilter = ThreeBand<2, 1, false>;
 
 struct BandTracker {
     color: RunningMeans<{ NUM_BANDS * DERIVED_CHANNELS }, 1>,
@@ -118,7 +118,7 @@ crate::macros::default_struct! {
     pub struct WaveformProcessor {
         config: WaveformConfig = WaveformConfig::default(),
         source_channels: usize = 2,
-        band_analysis: Option<([BandFilter; 2], BandTracker)> = None,
+        band_analysis: Option<(BandFilter, BandTracker)> = None,
         column_phase: f64 = 0.0,
         current: [Option<(f32, f32, Option<f32>)>; DERIVED_CHANNELS] = [None; DERIVED_CHANNELS],
         last_sample: [Option<f32>; DERIVED_CHANNELS] = [None; DERIVED_CHANNELS],
@@ -153,12 +153,10 @@ impl WaveformProcessor {
         self.reset_pending = true;
     }
 
-    fn band_analysis(
-        config: WaveformConfig,
-    ) -> Option<([BandFilter; 2], BandTracker)> {
+    fn band_analysis(config: WaveformConfig) -> Option<(BandFilter, BandTracker)> {
         config.analyze_bands.then(|| {
             (
-                std::array::from_fn(|_| BandFilter::new(config.sample_rate, BAND_SPLITS_HZ)),
+                BandFilter::new(config.sample_rate, BAND_SPLITS_HZ),
                 BandTracker::new(config.sample_rate, config.track_history),
             )
         })
@@ -222,12 +220,15 @@ impl WaveformProcessor {
         for stereo in block.stereo_frames() {
             let derived = derived_frame(stereo);
             let finite = derived.map(f32::is_finite);
-            if let Some((filters, tracker)) = &mut self.band_analysis {
-                let filtered = [
-                    filters[0].process_mono(if finite[0] { derived[0] } else { 0.0 }),
-                    filters[1].process_mono(if finite[1] { derived[1] } else { 0.0 }),
+            if let Some((filter, tracker)) = &mut self.band_analysis {
+                let [low, mid, high] = filter.process([
+                    if finite[0] { derived[0] } else { 0.0 },
+                    if finite[1] { derived[1] } else { 0.0 },
+                ]);
+                let [left, right] = [
+                    [low[0], mid[0], high[0]],
+                    [low[1], mid[1], high[1]],
                 ];
-                let [left, right] = filtered;
                 let bands = [
                     left,
                     right,
@@ -296,8 +297,8 @@ impl WaveformProcessor {
 
         self.prepare();
         self.ingest_samples(block);
-        if let Some((filters, _)) = &mut self.band_analysis {
-            filters.iter_mut().for_each(BandFilter::flush_denormals);
+        if let Some((filter, _)) = &mut self.band_analysis {
+            filter.flush_denormals();
         }
 
         self.cap_pending_columns();
@@ -363,10 +364,9 @@ mod tests {
 
     #[test]
     fn derived_band_filters_preserve_all_channel_history() {
-        let mut shared: [BandFilter; 2] =
-            std::array::from_fn(|_| BandFilter::new(RATE, BAND_SPLITS_HZ));
-        let mut separate: [BandFilter; DERIVED_CHANNELS] =
-            std::array::from_fn(|_| BandFilter::new(RATE, BAND_SPLITS_HZ));
+        let mut shared = BandFilter::new(RATE, BAND_SPLITS_HZ);
+        let mut separate: [ThreeBand<1, 1, false>; DERIVED_CHANNELS] =
+            std::array::from_fn(|_| ThreeBand::new(RATE, BAND_SPLITS_HZ));
         let mut max_error = 0.0_f32;
         for n in 0..RATE as usize {
             let derived = derived_frame([
@@ -374,9 +374,12 @@ mod tests {
                 (2.0 * PI * 263.0 * n as f32 / RATE).sin(),
             ]);
             let expected: [[f32; NUM_BANDS]; DERIVED_CHANNELS] =
-                std::array::from_fn(|channel| separate[channel].process_mono(derived[channel]));
-            let filtered: [[f32; NUM_BANDS]; 2] =
-                std::array::from_fn(|channel| shared[channel].process_mono(derived[channel]));
+                std::array::from_fn(|channel| {
+                    let [[low], [mid], [high]] = separate[channel].process([derived[channel]]);
+                    [low, mid, high]
+                });
+            let [low, mid, high] = shared.process([derived[0], derived[1]]);
+            let filtered = [[low[0], mid[0], high[0]], [low[1], mid[1], high[1]]];
             let actual = [
                 filtered[0], filtered[1],
                 std::array::from_fn(|band| (filtered[0][band] + filtered[1][band]) * 0.5),

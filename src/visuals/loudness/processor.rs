@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::dsp::{AudioBlock, ChannelPosition};
+use crate::dsp::{AudioBlock, ChannelPosition, RunningMeans};
 use crate::util::audio::{
     DEFAULT_SAMPLE_RATE, flush_denormal_f64, power_to_db, sanitize_sample_rate,
 };
@@ -156,104 +156,8 @@ fn k_weighted(sample: f32, state: &mut [f64; 4], coefficients: &KWeighting) -> f
     state[3] = b[4] * x - a[4] * y;
     y
 }
-// Compact history and wide fallback share the same binary64 block sums.
-enum EnergyBuffer {
-    Compact(Box<[f32]>),
-    Wide(Box<[f64]>),
-}
-struct EnergyWindows {
-    buffer: EnergyBuffer,
-    capacities: [usize; 4],
-    sums: Box<[f64]>,
-    partial: f64,
-    len: usize,
-    head: usize,
-    count: usize,
-}
-impl EnergyWindows {
-    const BLOCK: usize = 16;
 
-    fn new(capacities: [usize; 4], count: usize) -> Self {
-        let capacities = capacities.map(|capacity| capacity.max(1));
-        let len = capacities.into_iter().max().unwrap();
-        Self {
-            buffer: EnergyBuffer::Compact(vec![0.0; len].into_boxed_slice()),
-            capacities,
-            sums: vec![0.0; len.div_ceil(Self::BLOCK) * 2].into_boxed_slice(),
-            partial: 0.0,
-            len,
-            head: count % len,
-            count: count.min(len),
-        }
-    }
-
-    fn push(&mut self, power: f64) {
-        debug_assert!(power.is_finite() && power >= 0.0);
-        if let EnergyBuffer::Compact(values) = &self.buffer
-            && !(power as f32).is_finite()
-        {
-            self.buffer = EnergyBuffer::Wide(values.iter().map(|&value| f64::from(value)).collect());
-        }
-        let value = match &mut self.buffer {
-            EnergyBuffer::Compact(values) => {
-                values[self.head] = power as f32;
-                f64::from(values[self.head])
-            }
-            EnergyBuffer::Wide(values) => {
-                values[self.head] = power;
-                power
-            }
-        };
-        self.partial += value;
-        self.head += 1;
-        let len = self.len;
-        if self.head.is_multiple_of(Self::BLOCK) || self.head == len {
-            let mut node = self.sums.len() / 2 + (self.head - 1) / Self::BLOCK;
-            self.sums[node] = self.partial;
-            self.partial = 0.0;
-            while node > 1 {
-                node /= 2;
-                self.sums[node] = self.sums[node * 2] + self.sums[node * 2 + 1];
-            }
-        }
-        if self.head == len { self.head = 0; }
-        self.count = (self.count + 1).min(len);
-    }
-
-    fn mean(&self, window: usize) -> f64 {
-        let count = self.count.min(self.capacities[window]);
-        if self.sums[1] == 0.0 && self.partial == 0.0 { return 0.0; }
-        let len = self.len;
-        let start = (self.head + len - count) % len;
-        let end = start + count;
-        let mut sum = 0.0;
-        for range in [start..end.min(len), 0..end.saturating_sub(len)] {
-            let first = range.start.next_multiple_of(Self::BLOCK).min(range.end);
-            let last = (range.end / Self::BLOCK * Self::BLOCK).max(first);
-            for index in (range.start..first).chain(last..range.end) {
-                sum += match &self.buffer {
-                    EnergyBuffer::Compact(values) => f64::from(values[index]),
-                    EnergyBuffer::Wide(values) => values[index],
-                };
-            }
-            let mut left = self.sums.len() / 2 + first / Self::BLOCK;
-            let mut right = self.sums.len() / 2 + last / Self::BLOCK;
-            while left < right {
-                if left % 2 == 1 {
-                    sum += self.sums[left];
-                    left += 1;
-                }
-                if right % 2 == 1 {
-                    right -= 1;
-                    sum += self.sums[right];
-                }
-                left /= 2;
-                right /= 2;
-            }
-        }
-        sum / count.max(1) as f64
-    }
-}
+type EnergyWindows = RunningMeans<1, 4>;
 type ChannelState = Option<(EnergyWindows, [f64; 4], TruePeakMeter)>;
 
 pub(super) const MAX_CHANNELS: usize = crate::dsp::MAX_AUDIO_CHANNELS;
@@ -350,7 +254,7 @@ impl LoudnessProcessor {
                     let capacities =
                         DEFAULT_WINDOWS.map(|window| window_length(self.config.sample_rate, window));
                     *channel = Some((
-                        EnergyWindows::new(capacities, capacities[WIN_SHORT_TERM]),
+                        EnergyWindows::seeded(capacities, capacities[WIN_SHORT_TERM]),
                         [0.0; 4],
                         TruePeakMeter::new(sample_rate),
                     ));
@@ -358,7 +262,7 @@ impl LoudnessProcessor {
                 let (windows, filter, true_peak) = channel.as_mut().unwrap();
                 let filtered = k_weighted(sample, filter, weighting);
                 let power = filtered * filtered;
-                windows.push(if power.is_finite() { power } else { 0.0 });
+                windows.push_nonnegative_finite_wide([if power.is_finite() { power } else { 0.0 }]);
                 true_peak.process(sample, firs);
             }
         }
@@ -374,12 +278,14 @@ impl LoudnessProcessor {
         for (channel_index, channel_state) in self.channels.iter_mut().enumerate() {
             let Some((windows, _, true_peak)) = channel_state else { continue };
             let weight = channel_weight(block.positions[channel_index]);
-            weighted_short_term += windows.mean(WIN_SHORT_TERM) * weight;
-            weighted_momentary += windows.mean(WIN_MOMENTARY) * weight;
-            snapshot.rms_fast_db[channel_index] =
-                power_to_db(windows.mean(WIN_RMS_FAST) as f32, floor);
-            snapshot.rms_slow_db[channel_index] =
-                power_to_db(windows.mean(WIN_RMS_SLOW) as f32, floor);
+            let [short_term] = windows.mean(WIN_SHORT_TERM);
+            let [momentary] = windows.mean(WIN_MOMENTARY);
+            let [rms_fast] = windows.mean(WIN_RMS_FAST);
+            let [rms_slow] = windows.mean(WIN_RMS_SLOW);
+            weighted_short_term += short_term * weight;
+            weighted_momentary += momentary * weight;
+            snapshot.rms_fast_db[channel_index] = power_to_db(rms_fast as f32, floor);
+            snapshot.rms_slow_db[channel_index] = power_to_db(rms_slow as f32, floor);
             let peak = std::mem::take(&mut true_peak.peak);
             snapshot.true_peak_db[channel_index] = power_to_db(peak * peak, floor);
         }
@@ -432,32 +338,39 @@ mod tests {
 
     #[test]
     fn rolling_mean_square_tracks_average() {
-        let mut window = EnergyWindows::new([4, 2, 1, 4], 0);
-        window.push(1.0);
-        window.push(9.0);
-        assert!((window.mean(0) - 5.0).abs() < f64::EPSILON);
+        let mut window = EnergyWindows::seeded([4, 2, 1, 4], 0);
+        window.push_nonnegative_finite_wide([1.0]);
+        window.push_nonnegative_finite_wide([9.0]);
+        assert!((window.mean(0)[0] - 5.0).abs() < f64::EPSILON);
 
-        window.push(16.0);
-        window.push(25.0);
-        window.push(36.0);
-        assert!((window.mean(0) - 21.5).abs() < f64::EPSILON);
-        assert!((window.mean(1) - 30.5).abs() < f64::EPSILON);
-        assert!((window.mean(2) - 36.0).abs() < f64::EPSILON);
-        window.push(1.0e100);
-        assert!(matches!(window.buffer, EnergyBuffer::Wide(_)));
-        assert_eq!(window.mean(0), 2.5e99);
-        for _ in 0..4 { window.push(1.0); }
-        assert_eq!(window.mean(0), 1.0);
+        window.push_nonnegative_finite_wide([16.0]);
+        window.push_nonnegative_finite_wide([25.0]);
+        window.push_nonnegative_finite_wide([36.0]);
+        assert!((window.mean(0)[0] - 21.5).abs() < f64::EPSILON);
+        assert!((window.mean(1)[0] - 30.5).abs() < f64::EPSILON);
+        assert!((window.mean(2)[0] - 36.0).abs() < f64::EPSILON);
+        window.push_nonnegative_finite_wide([1.0e100]);
+        assert_eq!(window.mean(0)[0], 2.5e99);
+        for _ in 0..4 {
+            window.push_nonnegative_finite_wide([1.0]);
+        }
+        assert_eq!(window.mean(0)[0], 1.0);
 
-        let mut window = EnergyWindows::new([2; 4], 0);
-        for value in [2.0_f32.powi(53), 1.0, 1.0] { window.push(f64::from(value)); }
-        assert_eq!(window.mean(0), 1.0);
+        let mut window = EnergyWindows::seeded([2; 4], 0);
+        for value in [2.0_f64.powi(53), 1.0, 1.0] {
+            window.push_nonnegative_finite_wide([value]);
+        }
+        assert_eq!(window.mean(0)[0], 1.0);
 
-        let mut window = EnergyWindows::new([2, 129, 2, 129], 127);
-        for value in [1.0e100, 2.0, 1.0e-100, 1.0e-100] { window.push(value); }
-        assert_eq!(window.mean(0), 1.0e-100);
-        for _ in 0..1022 { window.push(1.0e-100); }
-        assert!((window.mean(1) - 1.0e-100).abs() < 1.0e-113);
+        let mut window = EnergyWindows::seeded([2, 129, 2, 129], 127);
+        for value in [1.0e100, 2.0, 1.0e-100, 1.0e-100] {
+            window.push_nonnegative_finite_wide([value]);
+        }
+        assert_eq!(window.mean(0)[0], 1.0e-100);
+        for _ in 0..1022 {
+            window.push_nonnegative_finite_wide([1.0e-100]);
+        }
+        assert!((window.mean(1)[0] - 1.0e-100).abs() < 1.0e-113);
     }
 
     fn assert_energy_windows_match_direct_sums(
@@ -466,15 +379,15 @@ mod tests {
         powers: impl IntoIterator<Item = f64>,
         relative_tolerance: f64,
     ) {
-        let mut windows = EnergyWindows::new(capacities, leading);
+        let mut windows = EnergyWindows::seeded(capacities, leading);
         let capacities = capacities.map(|capacity| capacity.max(1));
         let len = capacities.into_iter().max().unwrap();
         let mut history = VecDeque::from(vec![0.0; leading.min(len)]);
         for window in 0..4 {
-            assert_eq!(windows.mean(window), 0.0);
+            assert_eq!(windows.mean(window)[0], 0.0);
         }
         for (i, power) in powers.into_iter().enumerate() {
-            windows.push(power);
+            windows.push_nonnegative_finite_wide([power]);
             history.push_back(power);
             if history.len() > len {
                 history.pop_front();
@@ -482,7 +395,7 @@ mod tests {
             for (window, &capacity) in capacities.iter().enumerate() {
                 let count = capacity.min(history.len());
                 let expected = history.iter().rev().take(count).sum::<f64>() / count as f64;
-                let actual = windows.mean(window);
+                let actual = windows.mean(window)[0];
                 assert!(
                     (actual - expected).abs() <= relative_tolerance * expected,
                     "{capacities:?}, leading={leading}, sample={i}, window={window}: {actual:e} != {expected:e}"
@@ -541,7 +454,7 @@ mod tests {
         ] {
             let capacities = DEFAULT_WINDOWS.map(|secs| window_length(sample_rate, secs));
             let len = capacities[WIN_SHORT_TERM];
-            let mut windows = EnergyWindows::new(capacities, len);
+            let mut windows = EnergyWindows::seeded(capacities, len);
             let mut prefix = Vec::with_capacity(len * 2 + 34);
             prefix.push(0.0);
             for i in 0..len * 2 + 33 {
@@ -551,7 +464,7 @@ mod tests {
                 } else {
                     ((i * 991) % 1024) as f64 / 1024.0
                 };
-                windows.push(power);
+                windows.push_nonnegative_finite_wide([power]);
                 prefix.push(prefix[i] + power);
                 let frame = i + 1;
                 if frame.is_multiple_of(997) || frame % 16 <= 1 || frame > len * 2 {
@@ -559,7 +472,7 @@ mod tests {
                         let expected = (prefix[frame] - prefix[frame.saturating_sub(capacity)])
                             / capacity as f64;
                         assert_eq!(
-                            windows.mean(window),
+                            windows.mean(window)[0],
                             expected,
                             "{sample_rate} Hz, frame={frame}, window={window}"
                         );
