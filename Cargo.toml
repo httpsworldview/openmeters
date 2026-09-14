@@ -1,6 +1,6 @@
 [package]
 name = "openmeters"
-version = "1.14.0"
+version = "1.15.0"
 edition = "2024"
 rust-version = "1.95"
 license = "GPL-3.0-or-later"
@@ -44,7 +44,7 @@ wayland-client = "0.31.15"
   features = [ "env-filter", "fmt" ]
 
   [dependencies.iced_exwlshell]
-  version = "0.20.0"
+  version = "0.20.1"
   default-features = false
   features = [ "macros" ]
 
