@@ -34,6 +34,9 @@ const TOOLTIP_OFFSET: f32 = 12.0;
 const TOOLTIP_BG_ALPHA: f32 = 0.85;
 const TOOLTIP_BORDER_ALPHA: f32 = 0.4;
 const PIANO_ROLL_WIDTH: f32 = 18.0;
+const PIANO_STRIP_WIDTH: f32 = 24.0;
+const PIANO_STRIP_ALPHA: f32 = 0.55;
+const PIANO_SELECTED_COLOR: Color = Color::from_rgb(1.0, 0.9, 0.0);
 const PIANO_BLACK_KEY_RATIO: f32 = 0.6;
 const PIANO_LABEL_SIZE: f32 = 9.0;
 const PIANO_MIDI_LO: i32 = 21; // A0
@@ -371,7 +374,46 @@ fn place_tooltip(bounds: Rectangle, cursor: Point, sz: Size, horizontal: bool) -
         let y = (cursor.y - sz.height * 0.5).clamp(bounds.y, max_y);
         (x, y)
     };
-    Rectangle::new(Point::new(x, y), sz)
+    Rectangle::new(Point::new(x.clamp(bounds.x, max_x), y.clamp(bounds.y, max_y)), sz)
+}
+
+fn layout_tooltip(
+    bounds: Rectangle,
+    tooltip_bounds: Rectangle,
+    cursor: Point,
+    sizes: [Size; 3],
+    horizontal: bool,
+) -> (Rectangle, [Point; 3]) {
+    let [fsz, nsz, tsz] = sizes;
+    let column = Size::new(
+        fsz.width.max(nsz.width).max(tsz.width) + TOOLTIP_PAD * 2.0,
+        fsz.height + nsz.height + tsz.height + TOOLTIP_GAP * 2.0 + TOOLTIP_PAD * 2.0,
+    );
+    let row = Size::new(
+        fsz.width + nsz.width + tsz.width + TOOLTIP_PAD * 4.0,
+        fsz.height.max(nsz.height).max(tsz.height) + TOOLTIP_PAD * 2.0,
+    );
+    let (area, size, inline) = [
+        (tooltip_bounds, column, false),
+        (tooltip_bounds, row, true),
+        (bounds, column, false),
+        (bounds, row, true),
+    ]
+    .into_iter()
+    .find(|(area, size, _)| size.width <= area.width && size.height <= area.height)
+    .unwrap_or((bounds, column, false));
+    let rect = place_tooltip(area, cursor, size, horizontal);
+    let mut position = Point::new(rect.x + TOOLTIP_PAD, rect.y + TOOLTIP_PAD);
+    let positions = sizes.map(|size| {
+        let point = position;
+        if inline {
+            position.x += size.width + TOOLTIP_PAD;
+        } else {
+            position.y += size.height + TOOLTIP_GAP;
+        }
+        point
+    });
+    (rect, positions)
 }
 
 impl Spectrogram<'_> {
@@ -398,6 +440,7 @@ impl Spectrogram<'_> {
         renderer: &mut iced::Renderer,
         theme: &iced::Theme,
         bounds: Rectangle,
+        tooltip_bounds: Rectangle,
         cursor: Point,
         uv_range: [f32; 2],
     ) {
@@ -415,14 +458,10 @@ impl Spectrogram<'_> {
         let time_text = time_ago.map_or_else(|| String::from("--"), fmt_duration);
 
         let texts = [freq_text, note_text, time_text];
-        let [fsz, nsz, tsz] = texts.each_ref().map(|text| {
+        let sizes = texts.each_ref().map(|text| {
             Paragraph::with_text(raw_text(text.as_str(), TOOLTIP_SIZE, Size::INFINITE)).min_bounds()
         });
-        let line_h = fsz.height;
-        let content_w = fsz.width.max(nsz.width).max(tsz.width);
-        let content_h = line_h * 3.0 + TOOLTIP_GAP * 2.0;
-        let sz = Size::new(content_w + TOOLTIP_PAD * 2.0, content_h + TOOLTIP_PAD * 2.0);
-        let tb = place_tooltip(bounds, cursor, sz, horizontal);
+        let (tb, positions) = layout_tooltip(bounds, tooltip_bounds, cursor, sizes, horizontal);
 
         let pal = theme.extended_palette();
         fill_bordered_rect(
@@ -438,17 +477,13 @@ impl Spectrogram<'_> {
         );
 
         let text_color = pal.background.base.text;
-        let tx = tb.x + TOOLTIP_PAD;
-        let mut ty = tb.y + TOOLTIP_PAD;
-        for (text, sz) in texts.into_iter().zip([fsz, nsz, tsz]) {
-            let pt = Point::new(tx, ty);
+        for ((text, sz), pt) in texts.into_iter().zip(sizes).zip(positions) {
             renderer.fill_text(
                 raw_text(text, TOOLTIP_SIZE, sz),
                 pt,
                 text_color,
                 Rectangle::new(pt, sz),
             );
-            ty += line_h + TOOLTIP_GAP;
         }
     }
 
@@ -459,11 +494,17 @@ impl Spectrogram<'_> {
         bounds: Rectangle,
         overlay: PianoRollOverlay,
         uv_range: [f32; 2],
-    ) {
+        cursor: Option<Point>,
+    ) -> Rectangle {
+        if bounds.width <= 0.0 || bounds.height <= 0.0 || uv_range[1] <= uv_range[0] {
+            return bounds;
+        }
         let state = self.state.borrow();
         let (min_f, nyq) = display_axis(state.sample_rate);
         let (scale, rot) = (state.settings.frequency_scale, state.rotation_index());
         let horizontal = state.freq_axis_is_horizontal();
+        let selected = cursor.and_then(|c| state.frequency_at_cursor(c, bounds, uv_range))
+            .and_then(MusicalNote::from_frequency);
 
         let (freq_top, freq_bot) = (
             scale.freq_at(min_f, nyq, uv_range[1]),
@@ -489,21 +530,23 @@ impl Spectrogram<'_> {
         let scaled_span = (scaled_max - scaled_min).max(1e-6);
         let scaled_to_px = |f: f32| -> f32 {
             let uv = (f - scaled_min) / scaled_span;
-            let t = ((uv - uv_range[0]) / (uv_range[1] - uv_range[0])).clamp(0.0, 1.0);
+            let t = (uv - uv_range[0]) / (uv_range[1] - uv_range[0]);
             freq_org + freq_ext * if matches!(rot, 1 | 2) { t } else { 1.0 - t }
         };
 
+        let roll_width = PIANO_ROLL_WIDTH.min(time_ext);
+        let strip_width = PIANO_STRIP_WIDTH.min(time_ext);
         let strip = if overlay == PianoRollOverlay::Left {
             time_org
         } else {
-            time_org + time_ext - PIANO_ROLL_WIDTH
+            time_org + time_ext - roll_width
         };
         let wborder = iced::Border {
             color: with_alpha(black, 0.4),
             width: 0.5,
             radius: 0.0.into(),
         };
-        let black_key_width = PIANO_ROLL_WIDTH * PIANO_BLACK_KEY_RATIO;
+        let black_key_width = roll_width * PIANO_BLACK_KEY_RATIO;
         let right = matches!(overlay, PianoRollOverlay::Right);
 
         let orient_rect = |pos: f32, len: f32, cross: f32, cw: f32| -> Rectangle {
@@ -521,6 +564,9 @@ impl Spectrogram<'_> {
             }
         };
 
+        let backing = if right { time_org + time_ext - strip_width } else { time_org };
+        fill_rect(renderer, orient_rect(freq_org, freq_ext, backing, strip_width),
+            with_alpha(pal.background.base.color, PIANO_STRIP_ALPHA));
         let key_scales = &PIANO_KEY_SCALES[scale as usize];
         let key_extent = |midi: i32| -> (f32, f32) {
             let [lo, hi] = key_scales[(midi - PIANO_MIDI_LO) as usize];
@@ -528,6 +574,7 @@ impl Spectrogram<'_> {
             if a < b { (a, b) } else { (b, a) }
         };
 
+        let mut compact_highlight = None;
         for pass in 0..2u8 {
             for midi in midi_lo..=midi_hi {
                 let note = MusicalNote::from_midi(midi);
@@ -536,33 +583,46 @@ impl Spectrogram<'_> {
                     continue;
                 }
                 let (lo, hi) = key_extent(midi);
-                if hi < freq_org || lo > freq_org + freq_ext {
+                if hi <= freq_org || lo >= freq_org + freq_ext {
                     continue;
                 }
-                let key_len = (hi - lo).max(1.0);
+                let (lo, hi) = (lo.max(freq_org), hi.min(freq_org + freq_ext));
+                let key_len = hi - lo;
                 let (fill, brd, w) = if is_blk {
                     (black, iced::Border::default(), black_key_width)
                 } else {
-                    (white, wborder, PIANO_ROLL_WIDTH)
+                    (white, if key_len >= 4.0 { wborder } else { iced::Border::default() }, roll_width)
                 };
                 let anchor = if is_blk && right {
-                    strip + PIANO_ROLL_WIDTH - black_key_width
+                    strip + roll_width - black_key_width
                 } else {
                     strip
                 };
+                let fill = if selected == Some(note) { PIANO_SELECTED_COLOR } else { fill };
                 fill_bordered_rect(renderer, orient_rect(lo, key_len, anchor, w), fill, brd, false);
+                if selected == Some(note) && key_len < 2.0 {
+                    let len = 2.0_f32.min(freq_ext);
+                    let pos = ((lo + hi - len) * 0.5).clamp(freq_org, freq_org + freq_ext - len);
+                    compact_highlight = Some(orient_rect(pos, len, anchor, w));
+                }
                 if note.midi_number % 12 == 0 && key_len >= PIANO_LABEL_SIZE {
                     let label = &state.piano_labels[(note.octave() - 1) as usize];
                     let tsz = label.min_bounds();
                     let fp = lo + (key_len - if horizontal { tsz.width } else { tsz.height }) * 0.5;
                     let tp = strip
-                        + (PIANO_ROLL_WIDTH - if horizontal { tsz.height } else { tsz.width })
-                            * 0.5;
+                        + (roll_width - if horizontal { tsz.height } else { tsz.width }) * 0.5;
                     let pt = orient_point(fp, tp);
-                    renderer.fill_paragraph(label, pt, black, Rectangle::new(pt, tsz));
+                    let rect = Rectangle::new(pt, tsz);
+                    if rect.is_within(&orient_rect(lo, key_len, strip, roll_width)) {
+                        renderer.fill_paragraph(label, pt, black, rect);
+                    }
                 }
             }
         }
+        if let Some(rect) = compact_highlight {
+            fill_bordered_rect(renderer, rect, PIANO_SELECTED_COLOR, iced::Border::default(), false);
+        }
+        orient_rect(freq_org, freq_ext, if right { time_org } else { time_org + strip_width }, time_ext - strip_width)
     }
 }
 
@@ -664,20 +724,22 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'_> {
             params = state.visual_params(bounds, uv_y_range);
         }
         let interaction = tree.state.downcast_ref::<InteractionState>();
+        let inspection = cursor.position().filter(|point| interaction.left_held && bounds.contains(*point));
         if let Some(p) = params {
             renderer.draw_primitive(bounds, p);
         }
+        if let Some(c) = inspection {
+            renderer.with_layer(bounds, |r| Self::draw_crosshair(r, theme, bounds, c));
+        }
+        let mut tooltip_bounds = bounds;
         if piano_roll != PianoRollOverlay::Off {
             renderer.with_layer(bounds, |r| {
-                this.draw_piano_roll(r, theme, bounds, piano_roll, uv_y_range);
+                tooltip_bounds = this.draw_piano_roll(r, theme, bounds, piano_roll, uv_y_range, inspection);
             });
         }
-        if interaction.left_held
-            && let Some(c) = cursor.position().filter(|point| bounds.contains(*point))
-        {
+        if let Some(c) = inspection {
             renderer.with_layer(bounds, |r| {
-                Self::draw_crosshair(r, theme, bounds, c);
-                this.draw_tooltip(r, theme, bounds, c, uv_y_range);
+                this.draw_tooltip(r, theme, bounds, tooltip_bounds, c, uv_y_range);
             });
         }
     });
