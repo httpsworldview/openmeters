@@ -131,17 +131,13 @@ impl GraphDump {
             .count()
     }
 
-    fn ports(&self, node: u32, direction: &str) -> Vec<u32> {
-        let mut ports: Vec<_> = self
-            .objects("PipeWire:Interface:Port")
-            .filter(|object| {
-                json_u64(object, "/info/props/node.id") == Some(u64::from(node))
-                    && json_str(object, "/info/props/port.direction") == Some(direction)
-            })
-            .filter_map(|object| json_u64(object, "/id")?.try_into().ok())
-            .collect();
-        ports.sort_unstable();
-        ports
+    fn port(&self, node: u32, direction: &str, channel: &str) -> Option<u32> {
+        let port = self.objects("PipeWire:Interface:Port").find(|object| {
+            json_u64(object, "/info/props/node.id") == Some(u64::from(node))
+                && json_str(object, "/info/props/port.direction") == Some(direction)
+                && json_str(object, "/info/props/audio.channel") == Some(channel)
+        })?;
+        json_u64(port, "/id")?.try_into().ok()
     }
 
     fn inactive(&self, name: &str) -> bool {
@@ -318,13 +314,25 @@ impl IsolatedPipeWire {
         )
     }
 
-    fn link_nodes(&self, output_node: u32, input_node: u32, channels: usize, passive: bool) {
-        let (outputs, inputs) = self.wait_dump("test fixture ports", |graph| {
-            let outputs = graph.ports(output_node, "out");
-            let inputs = graph.ports(input_node, "in");
-            (outputs.len() >= channels && inputs.len() >= channels).then_some((outputs, inputs))
+    fn link_nodes(
+        &self,
+        output_node: u32,
+        input_node: u32,
+        channels: &[(&str, &str)],
+        passive: bool,
+    ) {
+        let ports: Vec<_> = self.wait_dump("test fixture ports", |graph| {
+            channels
+                .iter()
+                .map(|(output, input)| {
+                    Some((
+                        graph.port(output_node, "out", output)?,
+                        graph.port(input_node, "in", input)?,
+                    ))
+                })
+                .collect::<Option<Vec<_>>>()
         });
-        for (output, input) in outputs.into_iter().zip(inputs).take(channels) {
+        for (output, input) in ports {
             let mut command = self.client_command("pw-link");
             command.arg("--wait");
             if passive {
@@ -352,7 +360,7 @@ struct ApplicationFixture {
 
 impl ApplicationFixture {
     fn active(server: &IsolatedPipeWire, name: &str) -> Self {
-        Self::active_with_layout(server, name, 2, "[ FL, FR ]")
+        Self::active_with_layout(server, name, 2, "[ FL, FR ]", ["FL", "FR"])
     }
 
     fn active_with_layout(
@@ -360,6 +368,7 @@ impl ApplicationFixture {
         name: &str,
         channels: usize,
         channel_map: &str,
+        signal_targets: [&str; 2],
     ) -> Self {
         let target = format!("{name}.sink");
         let capture_props = format!(
@@ -381,19 +390,13 @@ impl ApplicationFixture {
         let capture = server.wait_dump("application capture node", |graph| {
             graph.node_id(&format!("{name}.capture"))
         });
-        let signal_channels = channels.min(2);
-        let signal_map = if signal_channels == 1 {
-            "[ MONO ]"
-        } else {
-            "[ FL, FR ]"
-        };
-        let signal = server.test_source(
-            &format!("{name}.signal"),
-            "Audio/Source",
-            signal_channels,
-            signal_map,
+        let signal = server.test_source(&format!("{name}.signal"), "Audio/Source", 2, "[ FL, FR ]");
+        server.link_nodes(
+            signal.id,
+            capture,
+            &[("FL", signal_targets[0]), ("FR", signal_targets[1])],
+            false,
         );
-        server.link_nodes(signal.id, capture, signal_channels, false);
         Self {
             _source: source,
             _signal: signal,
@@ -468,7 +471,7 @@ fn wide_device(server: &IsolatedPipeWire, name: &str) -> (Process, Process, Ling
         graph.node_id(&format!("{source_name}.capture"))
     });
     let signal = server.test_source(&format!("{name}.tone"), "Audio/Source", 2, "[ FL, FR ]");
-    server.link_nodes(signal.id, capture, 2, false);
+    server.link_nodes(signal.id, capture, &[("FL", "FL"), ("FR", "FR")], false);
     (loopback, source, signal)
 }
 
@@ -503,6 +506,7 @@ fn wait_for_mapped_signal(
     description: &str,
     audio: &mut AudioReader,
     positions: [ChannelPosition; MAX_CAPTURE_CHANNELS],
+    active: &[usize],
 ) {
     wait_for(description, || {
         let mut captured = false;
@@ -519,8 +523,13 @@ fn wait_for_mapped_signal(
                     *peak = peak.max(sample.abs());
                 }
             }
-            captured |= peaks[..2].iter().all(|peak| *peak > 0.01)
-                && peaks[2..].iter().all(|peak| *peak < 0.001);
+            captured |= peaks.iter().enumerate().all(|(channel, &peak)| {
+                if active.contains(&channel) {
+                    peak > 0.01
+                } else {
+                    peak < 0.001
+                }
+            });
         });
         captured.then_some(())
     });
@@ -551,6 +560,7 @@ fn live_backend_recovers_after_server_restart() {
         "initial recovery PCM",
         &mut audio,
         ChannelPosition::SURROUND,
+        &[0, 1],
     );
 
     server.stop();
@@ -574,6 +584,7 @@ fn live_backend_recovers_after_server_restart() {
         "recovered application PCM",
         &mut audio,
         ChannelPosition::SURROUND,
+        &[0, 1],
     );
 
     backend.shutdown();
@@ -626,39 +637,49 @@ fn live_capture_preserves_graph_invariants() {
         "captured application PCM",
         &mut audio,
         ChannelPosition::SURROUND,
+        &[0, 1],
     );
 
-    let surround_name = format!("openmeters-live-surround-{}", std::process::id());
-    let surround_playback = format!("{surround_name}.playback");
-    let surround = ApplicationFixture::active_with_layout(
-        &server,
-        &surround_name,
-        6,
-        "[ FL, FR, FC, LFE, RL, RR ]",
-    );
-    server.wait_audio("surround application mix", &mut audio, |graph| {
-        let tap = graph.node(&tap_name)?;
-        let source = graph.node_id(&surround_playback)?;
-        (json_u64(tap, "/id") == Some(u64::from(tap_id))
-            && graph.link_count(source, tap_id) == 6
-            && graph.link_count(source_id, tap_id) == 2
-            && json_u64(tap, "/info/params/Format/0/channels") == Some(MAX_CAPTURE_CHANNELS as u64))
-        .then_some(())
-    });
-    wait_for_mapped_signal(
-        "captured surround application mix",
-        &mut audio,
-        ChannelPosition::SURROUND,
-    );
-    drop(surround);
-    server.wait_audio("stable application mix", &mut audio, |graph| {
-        let tap = graph.node(&tap_name)?;
-        (json_u64(tap, "/id") == Some(u64::from(tap_id))
-            && graph.node(&surround_playback).is_none()
-            && graph.link_count(source_id, tap_id) == 2
-            && json_u64(tap, "/info/params/Format/0/channels") == Some(MAX_CAPTURE_CHANNELS as u64))
-        .then_some(())
-    });
+    for (channels, channel_map, active_channels) in [
+        (6, "[ RL, RR, FL, FR, FC, LFE ]", [0, 1, 6, 7]),
+        (8, "[ RL, RR, FL, FR, FC, LFE, SL, SR ]", [0, 1, 4, 5]),
+    ] {
+        let surround_name = format!("openmeters-live-surround-{channels}-{}", std::process::id());
+        let surround_playback = format!("{surround_name}.playback");
+        let surround = ApplicationFixture::active_with_layout(
+            &server,
+            &surround_name,
+            channels,
+            channel_map,
+            ["RL", "RR"],
+        );
+        server.wait_audio("surround application mix", &mut audio, |graph| {
+            let tap = graph.node(&tap_name)?;
+            let source = graph.node_id(&surround_playback)?;
+            (json_u64(tap, "/id") == Some(u64::from(tap_id))
+                && graph.link_count(source, tap_id) == channels
+                && graph.link_count(source_id, tap_id) == 2
+                && json_u64(tap, "/info/params/Format/0/channels")
+                    == Some(MAX_CAPTURE_CHANNELS as u64))
+            .then_some(())
+        });
+        wait_for_mapped_signal(
+            "captured surround application mix",
+            &mut audio,
+            ChannelPosition::SURROUND,
+            &active_channels,
+        );
+        drop(surround);
+        server.wait_audio("stable application mix", &mut audio, |graph| {
+            let tap = graph.node(&tap_name)?;
+            (json_u64(tap, "/id") == Some(u64::from(tap_id))
+                && graph.node(&surround_playback).is_none()
+                && graph.link_count(source_id, tap_id) == 2
+                && json_u64(tap, "/info/params/Format/0/channels")
+                    == Some(MAX_CAPTURE_CHANNELS as u64))
+            .then_some(())
+        });
+    }
 
     let mut disabled = HashSet::new();
     disabled.insert(identity);
@@ -702,7 +723,12 @@ fn live_capture_preserves_graph_invariants() {
     let paused_source_id = server.wait_dump("paused application", |graph| {
         graph.node_id(&paused_playback)
     });
-    server.link_nodes(paused_source_id, target_id, 2, true);
+    server.link_nodes(
+        paused_source_id,
+        target_id,
+        &[("FL", "FL"), ("FR", "FR")],
+        true,
+    );
     server.wait_audio("passive tap of paused route", &mut audio, |graph| {
         (graph.link_count(paused_source_id, target_id) == 2
             && graph.link_count(paused_source_id, tap_id) == 2
@@ -746,7 +772,7 @@ fn live_capture_preserves_graph_invariants() {
             && json_u64(tap, "/info/params/Format/0/channels") == Some(MAX_CAPTURE_CHANNELS as u64))
         .then_some(())
     });
-    wait_for_mapped_signal("captured device PCM", &mut audio, WIDE_POSITIONS);
+    wait_for_mapped_signal("captured device PCM", &mut audio, WIDE_POSITIONS, &[0, 1]);
 
     assert!(control.configure(CaptureConfig {
         mode: CaptureMode::Device,

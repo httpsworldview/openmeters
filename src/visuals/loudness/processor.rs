@@ -165,10 +165,8 @@ pub(super) const MAX_CHANNELS: usize = crate::dsp::MAX_AUDIO_CHANNELS;
 fn channel_weight(position: ChannelPosition) -> f64 {
     match position {
         ChannelPosition::LowFrequency => 0.0,
-        ChannelPosition::RearLeft
-        | ChannelPosition::RearRight
-        | ChannelPosition::SideLeft
-        | ChannelPosition::SideRight => 1.41,
+        // BS.1770-5 Annex 3: sides (60..=120 degrees), not 7.1 rears.
+        ChannelPosition::SideLeft | ChannelPosition::SideRight => 1.41,
         _ => 1.0,
     }
 }
@@ -301,39 +299,66 @@ impl LoudnessProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ebur128::{EbuR128, Mode};
-    use std::collections::VecDeque;
+    use ebur128::{Channel as ReferenceChannel, EbuR128, Mode};
+    use std::collections::{BTreeSet, VecDeque};
+
+    const SEVEN_ONE_REFERENCE: [ReferenceChannel; 8] = {
+        use ReferenceChannel::*;
+        [Left, Right, Center, Unused, Mp135, Mm135, Mp090, Mm090]
+    };
 
     fn sine_wave(rate: f32, secs: f32, freq: f32, amp: f32) -> Vec<f32> {
         crate::util::audio::sine_wave(freq, rate, (rate * secs) as usize, amp)
     }
 
     fn assert_loudness_matches_ebur128(
-        sample_rate: f32,
-        tone_secs: f32,
-        leading_secs: f32,
-        channels: usize,
+        block: AudioBlock<'_>,
+        channel_map: Option<&[ReferenceChannel]>,
+        transitions: &[f32],
     ) {
-        let samples: Vec<_> =
-            std::iter::repeat_n(0.0, (sample_rate * leading_secs) as usize * channels)
-                .chain(sine_wave(sample_rate, tone_secs, 1_000.0, 0.5).into_iter().flat_map(
-                    |sample| std::iter::repeat_n(sample, channels),
-                ))
-                .collect();
-        let ours = LoudnessProcessor::new(LoudnessConfig { sample_rate })
-            .process_block(&AudioBlock::new(&samples, channels, sample_rate));
-        let mut reference = EbuR128::new(channels as u32, sample_rate as u32, Mode::S).unwrap();
-        reference.add_frames_f32(&samples).unwrap();
-
-        for (actual, expected) in [
-            (f64::from(ours.momentary_loudness), reference.loudness_momentary().unwrap()),
-            (f64::from(ours.short_term_loudness), reference.loudness_shortterm().unwrap()),
-        ] {
-            assert!(
-                (actual - expected).abs() < 0.001,
-                "{sample_rate}Hz/{channels}ch after {leading_secs}+{tone_secs}s: {actual:.6} vs {expected:.6}"
-            );
+        let config = LoudnessConfig { sample_rate: block.sample_rate };
+        let mut processor = LoudnessProcessor::new(config);
+        let mut reference = EbuR128::new(block.channels as u32, block.sample_rate as u32, Mode::S).unwrap();
+        if let Some(channel_map) = channel_map {
+            reference.set_channel_map(channel_map).unwrap();
         }
+        // Reference queries rescan entire windows; concentrate them at transitions and window expiry.
+        let checkpoints: BTreeSet<_> = transitions.iter()
+            .flat_map(|&start| [0.0, 0.1, 0.4, 1.0, 3.0].map(|delay| ((start + delay) * block.sample_rate).round() as usize))
+            .flat_map(|frame| [frame.saturating_sub(1), frame, frame + 1])
+            .chain([1, 18, 273, block.frame_count()])
+            .filter(|&frame| frame > 0 && frame <= block.frame_count())
+            .collect();
+        let mut chunks = [1, 17, 255, 1_024, 4_093].into_iter().cycle();
+        let mut frame = 0;
+        let mut snapshot = LoudnessSnapshot::default();
+        for checkpoint in checkpoints {
+            while frame < checkpoint {
+                let end = (frame + chunks.next().unwrap()).min(checkpoint);
+                let chunk = &block.samples[frame * block.channels..end * block.channels];
+                snapshot = processor.process_block(&AudioBlock::with_positions(
+                    chunk, block.channels, block.sample_rate, block.positions,
+                ));
+                reference.add_frames_f32(chunk).unwrap();
+                frame = end;
+            }
+            for (metric, actual, expected) in [
+                ("momentary", snapshot.momentary_loudness, reference.loudness_momentary().unwrap()),
+                ("short-term", snapshot.short_term_loudness, reference.loudness_shortterm().unwrap()),
+            ] {
+                let expected = expected.max(f64::from(DEFAULT_FLOOR_DB));
+                assert!(
+                    (f64::from(actual) - expected).abs() < 1.0e-4,
+                    "{} Hz, {:?}, frame={frame}, {metric}: {actual:.9} vs {expected:.9} LUFS",
+                    block.sample_rate, &block.positions[..block.channels],
+                );
+            }
+        }
+        let whole = LoudnessProcessor::new(config).process_block(&block);
+        assert_eq!(snapshot.momentary_loudness, whole.momentary_loudness);
+        assert_eq!(snapshot.short_term_loudness, whole.short_term_loudness);
+        assert_eq!(snapshot.rms_fast_db, whole.rms_fast_db);
+        assert_eq!(snapshot.rms_slow_db, whole.rms_slow_db);
     }
 
     #[test]
@@ -483,30 +508,140 @@ mod tests {
     }
 
     #[test]
-    fn rms_tracks_amplitude() {
-        let measure = |amp| {
-            let samples = sine_wave(DEFAULT_SAMPLE_RATE, 3.0, 1000.0, amp);
-            let block = AudioBlock::new(&samples, 1, DEFAULT_SAMPLE_RATE);
-            LoudnessProcessor::new(LoudnessConfig::default())
-                .process_block(&block)
-                .rms_fast_db[0]
-        };
-        let delta = measure(0.5) - measure(0.25);
-        assert!((5.8..6.3).contains(&delta), "RMS delta was {delta:.4} dB");
+    fn levels_match_bs1770() {
+        use rustfft::num_complex::Complex64;
+
+        let amplitude = 0.125_f64;
+        let phase_step = 2.0 * PI * 1_000.0 / 48_000.0;
+        let z = Complex64::from_polar(1.0, -phase_step);
+        // Independent 48 kHz coefficients from BS.1770-5 Tables 1/2: P = A^2 * |H|^2 / 2.
+        let response = (1.535_124_859_586_97 - 2.691_696_189_406_38 * z + 1.198_392_810_852_85 * z * z)
+            / (1.0 - 1.690_659_293_182_41 * z + 0.732_480_774_215_85 * z * z)
+            * (1.0 - 2.0 * z + z * z) / (1.0 - 1.990_047_454_833_98 * z + 0.990_072_250_366_21 * z * z);
+        let rms_db = 10.0 * (amplitude * amplitude * response.norm_sqr() / 2.0).log10();
+        let peak_db = 20.0 * amplitude.log10();
+        let weights = [1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.41, 1.41]; // Annex 3 Tables 4/5.
+        // Four seconds exclude startup from the 3 s window; the reference test covers transients.
+        let tone: Vec<_> = (0..4 * 48_000)
+            .map(|frame| (phase_step * frame as f64).sin() as f32 * amplitude as f32)
+            .collect();
+        let cases = [
+            vec![4.0], vec![2.0], vec![0.0; 8],
+            vec![0.0, 0.0, 0.0, 7.0, 0.0, 0.0, 0.0, 0.0],
+            vec![0.0, 0.0, 0.0, 0.0, 1.0, -1.0, 0.0, 0.0],
+            vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, -1.0],
+            vec![1.0; 8], vec![1.0, -0.5, 0.25, 7.0, 2.0, -0.125, 0.5, -1.0],
+        ].into_iter().chain((0..8).map(|channel| {
+            let mut gains = vec![0.0; 8];
+            gains[channel] = 1.0;
+            gains
+        }));
+        for gains in cases {
+            let check = |metric, channel: Option<usize>, actual, expected: f64| {
+                let expected = expected.max(f64::from(DEFAULT_FLOOR_DB));
+                let tolerance = if expected == f64::from(DEFAULT_FLOOR_DB) { 0.0 } else { 2.0e-5 };
+                assert!(
+                    (f64::from(actual) - expected).abs() <= tolerance,
+                    "{metric}, channel={channel:?}, gains={gains:?}: {actual:.9} vs {expected:.9}"
+                );
+            };
+            let samples: Vec<_> = tone.iter()
+                .flat_map(|sample| gains.iter().map(move |gain| sample * gain)).collect();
+            let snapshot = LoudnessProcessor::new(LoudnessConfig::default())
+                .process_block(&AudioBlock::new(&samples, gains.len(), 48_000.0));
+            let weighted_gain: f64 = gains.iter().zip(weights).map(|(&gain, weight)| f64::from(gain).powi(2) * weight).sum();
+            let expected = rms_db - 0.691 + 10.0 * weighted_gain.log10();
+            for (metric, actual) in [("momentary LUFS", snapshot.momentary_loudness), ("short-term LUFS", snapshot.short_term_loudness)] {
+                check(metric, None, actual, expected);
+            }
+            for (channel, &gain) in gains.iter().enumerate() {
+                let gain_db = 20.0 * f64::from(gain).abs().log10();
+                for (metric, actual, baseline) in [
+                    ("RMS fast", snapshot.rms_fast_db[channel], rms_db),
+                    ("RMS slow", snapshot.rms_slow_db[channel], rms_db),
+                    ("true peak", snapshot.true_peak_db[channel], peak_db),
+                ] {
+                    check(metric, Some(channel), actual, baseline + gain_db);
+                }
+            }
+        }
     }
 
     #[test]
     fn loudness_matches_ebur128_across_startup_layouts_and_rates() {
+        let check_tone = |sample_rate, leading_secs, channels| {
+            let samples: Vec<_> = std::iter::repeat_n(0.0, (sample_rate * leading_secs) as usize * channels)
+                .chain(sine_wave(sample_rate, 4.0, 1_000.0, 0.5).into_iter()
+                    .flat_map(|sample| std::iter::repeat_n(sample, channels)))
+                .collect();
+            assert_loudness_matches_ebur128(
+                AudioBlock::new(&samples, channels, sample_rate),
+                (channels == 8).then_some(&SEVEN_ONE_REFERENCE[..]),
+                &[leading_secs],
+            );
+        };
         assert_eq!(window_length(11_025.0, 0.3), 3_308);
-        for tone_secs in [0.1, 0.4, 1.0] {
-            assert_loudness_matches_ebur128(48_000.0, tone_secs, 0.0, 1);
-        }
+        check_tone(48_000.0, 1.0, 4);
+        let gains = [0.0625, 0.03125, 0.015625, 0.5, 0.125, -0.0625, 0.25, -0.125];
+        let frequencies = [83.0, 137.0, 701.0, 37.0, 997.0, 1_523.0, 503.0, 7_901.0];
         for sample_rate in [44_100.0, 48_000.0, 96_000.0] {
-            for channels in [2, 4, 5, 6] {
-                assert_loudness_matches_ebur128(sample_rate, 4.0, 0.0, channels);
+            for channels in [1, 2, 4, 5, 6, 8] {
+                check_tone(sample_rate, 0.0, channels);
+            }
+            let rate = sample_rate as usize;
+            let signal: Vec<[f32; 8]> = (0..rate * 6 + rate * 2 / 5)
+                .map(|frame| std::array::from_fn(|channel| {
+                    let active = match frame / rate {
+                        0 => frame >= rate / 4 && matches!(channel, 4 | 5),
+                        1 => matches!(channel, 6 | 7),
+                        2 => true,
+                        3..=5 => channel == 3,
+                        _ => matches!(channel, 4 | 5),
+                    };
+                    if !active { return 0.0; }
+                    let phase = 2.0 * PI * frequencies[channel] * frame as f64 / rate as f64;
+                    phase.sin() as f32 * gains[channel]
+                }))
+                .collect();
+            for order in [[0, 1, 2, 3, 4, 5, 6, 7], [7, 4, 2, 0, 6, 5, 1, 3]] {
+                let samples: Vec<_> = signal.iter().flat_map(|frame| order.map(|channel| frame[channel])).collect();
+                assert_loudness_matches_ebur128(
+                    AudioBlock::with_positions(&samples, 8, sample_rate, order.map(|channel| ChannelPosition::SURROUND[channel])),
+                    Some(&order.map(|channel| SEVEN_ONE_REFERENCE[channel])),
+                    &[0.0, 0.25, 1.0, 2.0, 3.0, 6.0],
+                );
             }
         }
-        assert_loudness_matches_ebur128(48_000.0, 0.1, 1.0, 4);
+    }
+
+    #[test]
+    fn surround_weights_follow_layout_not_channel_order() {
+        for (channels, weights) in [
+            (4, &[1.0, 1.0, 1.41, 1.41][..]),
+            (5, &[1.0, 1.0, 1.0, 1.41, 1.41]),
+            (6, &[1.0, 1.0, 1.0, 0.0, 1.41, 1.41]),
+            (8, &[1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.41, 1.41]),
+        ] {
+            let mut layout: Vec<_> = ChannelPosition::fallback(channels).into_iter().zip(weights).collect();
+            // Rotations in both directions put each role in every slot without exhaustive permutations.
+            for _ in 0..2 {
+                for _ in 0..channels {
+                    // Inactive entries must not turn a 5.1 layout into 7.1.
+                    let positions = std::array::from_fn(|index| {
+                        layout.get(index).map_or(ChannelPosition::SideLeft, |entry| entry.0)
+                    });
+                    let block = AudioBlock::with_positions(&[], channels, 48_000.0, positions);
+                    for (position, &(_, expected)) in block.positions.iter().zip(&layout) {
+                        assert_eq!(channel_weight(*position), *expected, "{layout:?}");
+                    }
+                    let mut resolved = block.positions;
+                    ChannelPosition::resolve_surrounds(&mut resolved[..channels]);
+                    assert_eq!(resolved, block.positions, "{layout:?}");
+                    layout.rotate_left(1);
+                }
+                layout.reverse();
+            }
+        }
     }
 
     #[test]

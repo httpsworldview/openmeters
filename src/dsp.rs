@@ -72,6 +72,23 @@ impl ChannelPosition {
         }
         positions
     }
+
+    pub(crate) fn resolve_surrounds(positions: &mut [Self]) {
+        // Legacy quad/5.x calls its surround pair RL/RR. Only layouts with
+        // SL/SR distinguish those surrounds from the rear pair of 7.x.
+        if !positions
+            .iter()
+            .any(|position| matches!(position, Self::SideLeft | Self::SideRight))
+        {
+            for position in positions {
+                *position = match *position {
+                    Self::RearLeft => Self::SideLeft,
+                    Self::RearRight => Self::SideRight,
+                    other => other,
+                };
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -187,9 +204,10 @@ impl<'a> AudioBlock<'a> {
         samples: &'a [f32],
         channels: usize,
         sample_rate: f32,
-        positions: [ChannelPosition; MAX_AUDIO_CHANNELS],
+        mut positions: [ChannelPosition; MAX_AUDIO_CHANNELS],
     ) -> Self {
         let channels = channels.clamp(1, MAX_AUDIO_CHANNELS);
+        ChannelPosition::resolve_surrounds(&mut positions[..channels]);
         let stereo_channels = (2..channels.min(samples.len()))
             .rfind(|&channel| {
                 samples[channel..]
