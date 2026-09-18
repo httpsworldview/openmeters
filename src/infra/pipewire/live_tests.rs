@@ -5,7 +5,7 @@ use super::*;
 use crate::domain::routing::{CaptureConfig, CaptureMode};
 use crate::dsp::ChannelPosition;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -39,7 +39,7 @@ impl Process {
             name,
             "--channels",
             &channels.to_string(),
-            "--channel-map",
+            "-m",
             channel_map,
             "--capture-props",
             capture_props,
@@ -163,6 +163,17 @@ impl IsolatedPipeWire {
             "context.spa-libs = { audiotestsrc = audiotestsrc/libspa-audiotestsrc }\n",
         )
         .expect("configure PipeWire audio test source");
+        // WirePlumber 0.4 needs these disabled without a session bus.
+        let config_dir = runtime.path().join("wireplumber/main.lua.d");
+        std::fs::create_dir_all(&config_dir).expect("create WirePlumber test config");
+        std::fs::write(
+            config_dir.join("89-headless.lua"),
+            concat!(
+                "alsa_monitor.properties[\"alsa.reserve\"] = false\n",
+                "default_access.properties[\"enable-flatpak-portal\"] = false\n",
+            ),
+        )
+        .expect("configure headless WirePlumber");
         let remote = runtime.path().join("pipewire-0");
         let mut server = Self {
             runtime,
@@ -252,7 +263,22 @@ impl IsolatedPipeWire {
 
     fn dump(&self) -> GraphDump {
         let output = checked_output(&mut self.client_command("pw-dump"), "pw-dump");
-        GraphDump(serde_json::from_slice(&output.stdout).expect("invalid pw-dump JSON"))
+        // Older pw-dump can emit removal batches alongside the snapshot.
+        let mut objects = HashMap::new();
+        for batch in serde_json::Deserializer::from_slice(&output.stdout).into_iter::<Vec<Value>>()
+        {
+            for object in batch.expect("invalid pw-dump JSON") {
+                let id = object["id"].as_u64().expect("pw-dump object ID");
+                if object.get("info") == Some(&Value::Null)
+                    || object.get("props") == Some(&Value::Null)
+                {
+                    objects.remove(&id);
+                } else {
+                    objects.insert(id, object);
+                }
+            }
+        }
+        GraphDump(objects.into_values().collect())
     }
 
     fn wait_dump<T>(&self, description: &str, mut check: impl FnMut(&GraphDump) -> Option<T>) -> T {
@@ -297,10 +323,11 @@ impl IsolatedPipeWire {
         channels: usize,
         channel_map: &str,
     ) -> LingeringNode {
+        // Pull tones on the dummy clock; PipeWire 1.0's audiotestsrc driver can stall.
         self.create_node(
             name,
             &format!(
-                "{{ factory.name = audiotestsrc node.name = \"{name}\" media.class = \"{media_class}\" application.name = \"OpenMeters Live Signal\" application.id = \"org.openmeters.LiveSignal.{name}\" object.linger = true audio.channels = {channels} audio.position = {channel_map} node.param.Props = {{ live = true wave = 0 volume = 0.25 }} }}"
+                "{{ factory.name = audiotestsrc node.name = \"{name}\" media.class = \"{media_class}\" application.name = \"OpenMeters Live Signal\" application.id = \"org.openmeters.LiveSignal.{name}\" object.linger = true node.group = pipewire.dummy audio.channels = {channels} audio.position = {channel_map} node.param.Props = {{ live = false wave = 0 volume = 0.25 }} }}"
             ),
         )
     }
@@ -334,7 +361,6 @@ impl IsolatedPipeWire {
         });
         for (output, input) in ports {
             let mut command = self.client_command("pw-link");
-            command.arg("--wait");
             if passive {
                 command.arg("--passive");
             }

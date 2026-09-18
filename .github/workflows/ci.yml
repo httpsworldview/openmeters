@@ -62,7 +62,10 @@ jobs:
             libfontconfig1-dev \
             libfreetype6-dev \
             libvulkan-dev \
-            pkg-config
+            pipewire \
+            pipewire-bin \
+            pkg-config \
+            wireplumber
           sudo rm -rf /var/lib/apt/lists/*
 
       - name: Cache Cargo builds
@@ -73,3 +76,9 @@ jobs:
 
       - name: Test
         run: cargo test --workspace --locked --all-targets
+
+      - name: Test live PipeWire capture
+        timeout-minutes: 2
+        run: |
+          cargo test --workspace --locked infra::pipewire::live_tests -- \
+            --ignored --nocapture --test-threads=1
