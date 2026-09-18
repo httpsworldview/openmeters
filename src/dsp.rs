@@ -343,10 +343,10 @@ impl<const VALUES: usize, const WINDOWS: usize> RunningMeans<VALUES, WINDOWS> {
                 .all(|value| value.is_finite() && *value >= 0.0)
         );
         // Preserve compact history until a sample would overflow binary32.
-        if let Ring::Compact(buffer) = &self.ring
+        if let Ring::Compact(_) = &self.ring
             && values.iter().any(|&value| !(value as f32).is_finite())
         {
-            self.ring = Ring::Wide(buffer.iter().map(|slot| slot.map(f64::from)).collect());
+            self.widen();
         }
         match &mut self.ring {
             Ring::Compact(buffer) => {
@@ -364,6 +364,13 @@ impl<const VALUES: usize, const WINDOWS: usize> RunningMeans<VALUES, WINDOWS> {
             }
         }
         self.flush();
+    }
+
+    #[cold]
+    fn widen(&mut self) {
+        if let Ring::Compact(buffer) = &self.ring {
+            self.ring = Ring::Wide(buffer.iter().map(|slot| slot.map(f64::from)).collect());
+        }
     }
 
     #[inline]
