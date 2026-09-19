@@ -177,15 +177,23 @@ fn ingest_silence(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dsp::ChannelPosition;
+    use crate::dsp::{AudioBlock, ChannelPosition};
+    use crate::util::audio::sine_wave;
+    use crate::visuals::loudness::processor::{LoudnessProcessor, LoudnessSnapshot};
+    use crate::visuals::registry::{VisualContent, VisualKind};
 
-    fn format(channels: usize, sample_rate: f32, generation: u64) -> AudioFormat {
-        AudioFormat {
-            channels,
-            sample_rate,
-            generation,
-            positions: ChannelPosition::fallback(channels),
-        }
+    fn loudness() -> (VisualManager, impl Fn() -> LoudnessSnapshot) {
+        let mut manager = VisualManager::default();
+        manager.set_enabled(VisualKind::Loudness, true);
+        let state = manager
+            .snapshot()
+            .into_iter()
+            .find_map(|entry| match entry.content {
+                VisualContent::Loudness(state) => Some(state),
+                _ => None,
+            })
+            .unwrap();
+        (manager, move || state.borrow().snapshot())
     }
 
     #[test]
@@ -200,67 +208,71 @@ mod tests {
     }
 
     #[test]
-    fn dsp_batches_are_sample_driven_and_reuse_storage() {
-        let mut manager = VisualManager::default();
+    fn batches_deliver_audio_without_mixing_generations_or_reallocating() {
+        let (mut manager, snapshot) = loudness();
         let mut batcher = DspBatcher::new();
-        let format = format(2, 48_000.0, 1);
-        let block = [0.25; 64 * 2];
         let storage = (batcher.samples.as_ptr(), batcher.samples.capacity());
-        for _ in 0..4 {
-            batcher.push(&mut manager, &block, format);
+        for (rate, generation) in [(48_000, 1), (48_000, 2), (96_000, 3)] {
+            let format = AudioFormat::new(2, rate, generation, ChannelPosition::fallback(2));
+            let batch = rate as usize / 48_000 * 256 * 2;
+            let samples: Vec<_> = sine_wave(1_000.0, rate as f32, batch, 0.5)
+                .into_iter()
+                .flat_map(|sample| [sample, -sample * 0.5])
+                .collect();
+            let mut reference = LoudnessProcessor::new(Default::default());
+            let before = snapshot();
+            batcher.push(&mut manager, &samples[..batch - 2], format);
+            assert_eq!(snapshot(), before);
+            for (start, end) in [(batch - 2, batch), (batch, batch * 2)] {
+                batcher.push(&mut manager, &samples[start..end], format);
+                assert_eq!(
+                    snapshot(),
+                    reference.process_block(&AudioBlock::new(
+                        &samples[end - batch..end],
+                        2,
+                        rate as f32,
+                    ))
+                );
+            }
+            assert!(batcher.samples.is_empty());
+            batcher.push(&mut manager, &[9.0; 2], format);
+            assert_eq!(
+                (batcher.samples.as_ptr(), batcher.samples.capacity()),
+                storage
+            );
         }
-        assert!(batcher.samples.is_empty());
-        assert_eq!(
-            (batcher.samples.as_ptr(), batcher.samples.capacity()),
-            storage
-        );
-
-        let high_rate = AudioFormat {
-            sample_rate: 96_000.0,
-            ..format
-        };
-        for _ in 0..8 {
-            batcher.push(&mut manager, &block, high_rate);
-        }
-        assert_eq!(
-            (batcher.samples.as_ptr(), batcher.samples.capacity()),
-            storage
-        );
-    }
-
-    #[test]
-    fn dsp_batches_never_mix_format_generations() {
-        let mut manager = VisualManager::default();
-        let mut batcher = DspBatcher::new();
-        let old = format(2, 48_000.0, 1);
-        batcher.push(&mut manager, &[0.25; 128 * 2], old);
-        let new = AudioFormat {
-            generation: 2,
-            ..old
-        };
-        batcher.push(&mut manager, &[0.5; 2], new);
-        assert_eq!(batcher.samples.as_slice(), &[0.5, 0.5]);
-        assert_eq!(batcher.format, Some(new));
     }
 
     #[test]
     fn silence_preserves_loudness_history_before_the_hard_reset() {
-        let mut manager = VisualManager::default();
+        let (mut manager, snapshot) = loudness();
         let mut batcher = DspBatcher::new();
-        let format = format(1, 48_000.0, 1);
+        let format = AudioFormat::new(1, 48_000, 1, ChannelPosition::fallback(1));
         let scratch = [0.0; SILENCE_CHUNK_FRAMES * MAX_CAPTURE_CHANNELS];
-        batcher.push(&mut manager, &[0.25; 128], format);
-
-        ingest_silence(&mut manager, &scratch, &mut batcher, 3 * 48_000 + 1, format);
-        assert_eq!(batcher.format, Some(format));
-        ingest_silence(
-            &mut manager,
-            &scratch,
-            &mut batcher,
-            MAX_SILENCE_SECONDS * 48_000 + 1,
-            format,
-        );
-        assert!(batcher.samples.is_empty());
-        assert_eq!(batcher.format, None);
+        let signal = sine_wave(1_000.0, 48_000.0, 256, 0.5);
+        let reset_level = snapshot().short_term_loudness;
+        for frames in [48_000, 144_001, 192_000, 192_001] {
+            batcher.reset(&mut manager);
+            batcher.push(&mut manager, &signal, format);
+            assert!(snapshot().short_term_loudness > reset_level);
+            let mut reference = LoudnessProcessor::new(Default::default());
+            reference.process_block(&AudioBlock::new(&signal, 1, 48_000.0));
+            batcher.push(&mut manager, &[0.0], format);
+            ingest_silence(&mut manager, &scratch, &mut batcher, frames, format);
+            let expected = if frames > 192_000 {
+                assert!(batcher.samples.is_empty());
+                reset_level
+            } else {
+                reference
+                    .process_block(&AudioBlock::new(
+                        &vec![0.0; (frames as usize + 1) / 256 * 256],
+                        1,
+                        48_000.0,
+                    ))
+                    .short_term_loudness
+            };
+            assert_eq!(snapshot().short_term_loudness, expected, "frames={frames}");
+            assert_eq!(batcher.format.is_none(), frames > 192_000);
+        }
     }
 }

@@ -94,6 +94,11 @@ impl Default for LoudnessState {
 }
 
 impl LoudnessState {
+    #[cfg(test)]
+    pub(crate) fn snapshot(&self) -> LoudnessSnapshot {
+        self.snapshot
+    }
+
     pub fn reset_audio(&mut self) {
         self.snapshot = LoudnessSnapshot::with_floor(DB_RANGE.0, 2);
         self.peaks = [PeakHold::new(DB_RANGE.0, Instant::now()); VISIBLE_METER_COUNT];

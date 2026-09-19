@@ -903,22 +903,23 @@ mod tests {
 
         let (_, mut reader, format) = mono(4, 1_000);
         let mut spans = Vec::new();
+        let mut consume = |span: CapturedSpan<'_>| {
+            spans.push(match span {
+                CapturedSpan::Pcm { samples, .. } => (samples.to_vec(), 0),
+                CapturedSpan::Silence { frames, .. } => (Vec::new(), frames),
+                CapturedSpan::Reset => unreachable!(),
+            })
+        };
         for packet in [
             packet(format, 0, &[1.0; 4]),
             packet(format, 6, &[2.0; 4]),
             packet(format, 8, &[3.0; 4]),
         ] {
-            reader.accept(packet, &mut |span| match span {
-                CapturedSpan::Pcm { samples, .. } => spans.push((samples.len() as u64, false)),
-                CapturedSpan::Silence { frames, .. } => spans.push((frames, true)),
-                CapturedSpan::Reset => unreachable!(),
-            });
+            reader.accept(packet, &mut consume);
         }
-        reader.flush(&mut |span| match span {
-            CapturedSpan::Pcm { samples, .. } => spans.push((samples.len() as u64, false)),
-            _ => unreachable!(),
-        });
-        assert_eq!(spans, [(4, false), (2, true), (6, false)]);
+        reader.flush(&mut consume);
+        let tail = vec![2.0, 2.0, 2.0, 2.0, 3.0, 3.0];
+        assert_eq!(spans, [(vec![1.0; 4], 0), (vec![], 2), (tail, 0)]);
     }
 
     #[test]
@@ -935,26 +936,25 @@ mod tests {
 
     #[test]
     fn capture_faults_reset_instead_of_replaying_audio() {
-        let (mut writer, mut reader, _) = mono(1, 48_000);
-        writer.pool.clear();
         let bytes = bytemuck::cast_slice(&[0.25_f32]);
         let chunk = pcm_chunk(bytes.len(), 0, bytes.len() as u32, size_of::<f32>()).unwrap();
-        writer.push_pcm(bytes, &chunk, 1);
-        let mut reset = false;
-        reader.drain(writer.shared.epoch, |span| {
-            reset |= matches!(span, CapturedSpan::Reset)
-        });
-        assert!(reset);
-
-        let (mut writer, mut reader, _) = mono(1, 48_000);
-        writer.push_silence(BLOCK_FRAMES as u64);
-        reset = false;
-        reader.drain(
-            writer.shared.epoch + MAX_BACKLOG + Duration::from_millis(10),
-            |span| reset |= matches!(span, CapturedSpan::Reset),
-        );
-        assert!(reset);
-        assert_eq!(reader.consumer.slots(), 0);
+        for exhaust_pool in [true, false] {
+            let (mut writer, mut reader, _) = mono(1, 48_000);
+            if exhaust_pool {
+                writer.pool.clear();
+            }
+            writer.push_pcm(bytes, &chunk, 1);
+            assert!(writer.flush_pending());
+            let end = writer.previous_timing.end;
+            let now = writer.shared.epoch + Duration::from_nanos(end + 1) + MAX_BACKLOG;
+            let mut resets = 0;
+            reader.drain(now, |span| {
+                assert!(matches!(span, CapturedSpan::Reset));
+                resets += 1;
+            });
+            assert_eq!(resets, 1);
+            assert_eq!(reader.consumer.slots(), 0);
+        }
     }
 
     #[test]

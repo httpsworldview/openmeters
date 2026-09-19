@@ -408,39 +408,17 @@ mod tests {
 
     #[test]
     fn rolling_mean_square_tracks_average() {
-        let mut window = EnergyWindows::seeded([4, 2, 1, 4], 0);
-        window.push_nonnegative_finite_wide([1.0]);
-        window.push_nonnegative_finite_wide([9.0]);
-        assert!((window.mean(0)[0] - 5.0).abs() < f64::EPSILON);
+        assert_energy_windows_match_direct_sums(
+            [4, 2, 1, 4], 0, [1.0, 9.0, 16.0, 25.0, 36.0, 1.0e100, 1.0, 1.0, 1.0, 1.0], 0.0,
+        );
+        assert_energy_windows_match_direct_sums([2; 4], 0, [2.0_f64.powi(53), 1.0, 1.0], 0.0);
 
-        window.push_nonnegative_finite_wide([16.0]);
-        window.push_nonnegative_finite_wide([25.0]);
-        window.push_nonnegative_finite_wide([36.0]);
-        assert!((window.mean(0)[0] - 21.5).abs() < f64::EPSILON);
-        assert!((window.mean(1)[0] - 30.5).abs() < f64::EPSILON);
-        assert!((window.mean(2)[0] - 36.0).abs() < f64::EPSILON);
-        window.push_nonnegative_finite_wide([1.0e100]);
-        assert_eq!(window.mean(0)[0], 2.5e99);
-        for _ in 0..4 {
-            window.push_nonnegative_finite_wide([1.0]);
-        }
-        assert_eq!(window.mean(0)[0], 1.0);
-
-        let mut window = EnergyWindows::seeded([2; 4], 0);
-        for value in [2.0_f64.powi(53), 1.0, 1.0] {
-            window.push_nonnegative_finite_wide([value]);
-        }
-        assert_eq!(window.mean(0)[0], 1.0);
-
-        let mut window = EnergyWindows::seeded([2, 129, 2, 129], 127);
-        for value in [1.0e100, 2.0, 1.0e-100, 1.0e-100] {
-            window.push_nonnegative_finite_wide([value]);
-        }
-        assert_eq!(window.mean(0)[0], 1.0e-100);
-        for _ in 0..1022 {
-            window.push_nonnegative_finite_wide([1.0e-100]);
-        }
-        assert!((window.mean(1)[0] - 1.0e-100).abs() < 1.0e-113);
+        let prefix = [1.0e100, 2.0, 1.0e-100, 1.0e-100];
+        assert_energy_windows_match_direct_sums([2, 129, 2, 129], 127, prefix, 0.0);
+        assert_energy_windows_match_direct_sums(
+            [2, 129, 2, 129], 127,
+            prefix.into_iter().chain(std::iter::repeat_n(1.0e-100, 1_022)), 1.0e-13,
+        );
     }
 
     fn assert_energy_windows_match_direct_sums(
