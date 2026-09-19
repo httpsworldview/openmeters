@@ -46,6 +46,7 @@ fn vs_main(input: InstanceInput, @builtin(vertex_index) vertex: u32) -> VertexOu
             let corner = vec2<f32>(endpoint, parity) * 2.0 - 1.0;
             var point = input.p0;
             if input.params.z < 0.0 {
+                // Constants/cutoff match stereometer/render.rs::scaled_point.
                 let squared = dot(point, point);
                 if squared < 1.4210855e-14 {
                     point = vec2<f32>(0.0);

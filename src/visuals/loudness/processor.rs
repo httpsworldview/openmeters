@@ -7,9 +7,12 @@ use crate::util::audio::{
 };
 use std::{f64::consts::PI, sync::LazyLock};
 
+// BS.1770 LUFS offset.
 const LOUDNESS_OFFSET: f64 = -0.691;
+// Analysis floor, not the visible meter floor.
 const DEFAULT_FLOOR_DB: f32 = -99.9;
 
+// K-weighted windows (seconds): short-term, momentary, fast RMS, slow RMS.
 const DEFAULT_WINDOWS: [f32; 4] = [3.0, 0.4, 0.3, 1.0];
 
 const WIN_SHORT_TERM: usize = 0;
@@ -86,8 +89,7 @@ fn bessel_i0(x: f64) -> f64 {
     sum
 }
 
-// 24-source-sample delay centers the sinc
-// favor accuracy via 8x reconstruction
+// 8x Kaiser-windowed sinc; 24-input-sample delay.
 static TRUE_PEAK_FIR: LazyLock<TruePeakFir> = LazyLock::new(|| {
     let beta = 8.6;
     let window_scale = 1.0 / bessel_i0(beta);
@@ -542,7 +544,7 @@ mod tests {
         let rms_db = 10.0 * (amplitude * amplitude * response.norm_sqr() / 2.0).log10();
         let peak_db = 20.0 * amplitude.log10();
         let weights = [1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.41, 1.41]; // Annex 3 Tables 4/5.
-        // Four seconds exclude startup from the 3 s window; the reference test covers transients.
+        // Final 3 s window after 1 s warm-up.
         let tone: Vec<_> = (0..4 * 48_000)
             .map(|frame| (phase_step * frame as f64).sin() as f32 * amplitude as f32)
             .collect();

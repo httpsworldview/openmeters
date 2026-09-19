@@ -8,6 +8,7 @@ const DB_TO_LOG2: f32 = 0.3321928095;
 const LOW_POWER_SCALE: f32 = 16777216.0;
 const INV_LOW_POWER_SCALE: f32 = 0.000000059604644775390625;
 const F16_MAX: f32 = 65504.0;
+// Match util/audio/frequency.rs::LOG_KNEE_HZ.
 const LOG_KNEE_HZ: f32 = 20.0;
 
 // Classic storage domain -- keep in sync with processor.rs CLASSIC_DB_STORE_*.

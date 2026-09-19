@@ -9,7 +9,7 @@ crate::macros::choice_enum!(#[derive(Default)] #[repr(u32)] pub enum FrequencySc
     #[serde(alias = "mel")] Erb => "Erb",
 });
 
-// Mirrored in visuals/render/shaders/spectrogram.wgsl.
+// Match LOG_KNEE_HZ in visuals/render/shaders/spectrogram.wgsl.
 const LOG_KNEE_HZ: f32 = 20.0;
 
 impl FrequencyScale {

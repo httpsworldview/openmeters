@@ -16,8 +16,8 @@ use crate::visuals::render::common::{
     gradient_quad_instance, line_instance, quad_instance, sdf_primitive,
 };
 
-// 0.66834.powf(0.3) and (1.0 / 0.66834).powi(2), respectively. Working
-// from squared length avoids a square root and division below saturation.
+// For length >= f32::EPSILON: radius = min((0.66834 * length)^0.3, 1).
+// Constants mirrored in render/shaders/sdf.wgsl.
 const SCALED_MODE_SCALE: f32 = 0.886_133_7;
 const SCALED_MODE_SATURATION_SQUARED: f32 = 2.238_747_4;
 const LINEAR_GUIDE_LEVELS: [f32; 3] = [1.0 / 3.0, 2.0 / 3.0, 1.0];

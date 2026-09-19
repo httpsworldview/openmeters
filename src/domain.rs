@@ -5,7 +5,7 @@ pub mod routing {
     use serde::{Deserialize, Serialize};
     use std::{collections::HashSet, sync::Arc};
 
-    /// Stable key for one application's capture policy.
+    /// Shared stream key for persisted capture policy.
     #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
     #[serde(transparent)]
     pub struct StreamIdentity(pub(crate) Arc<str>);

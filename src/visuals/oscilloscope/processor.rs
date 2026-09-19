@@ -89,6 +89,7 @@ impl PeriodEstimator {
     const PROBE_SECONDS: f32 = 0.1;
     const MIN_SIGNAL_PEAK: f32 = 0.001;
     const MIN_PERIODICITY: f32 = 0.5;
+    // First qualifying peak >= this fraction of the strongest.
     const PEAK_CUTOFF: f32 = 0.93;
     const MAX_ANALYSIS_RATE: f32 = 128_000.0;
 
@@ -365,6 +366,7 @@ impl StableTrigger {
     const BUFFER_RETUNE_SEMITONES: f32 = 1.0;
     const SLOPE_WIDTH_PERIODS: f32 = 0.25;
     const RESET_BELOW_MATCH: f32 = 0.3;
+    // Consecutive failed estimates allowed; quiet probes unlock immediately.
     const MAX_MISSED_PERIODS: u8 = 4;
 
     fn unlock(&mut self) {

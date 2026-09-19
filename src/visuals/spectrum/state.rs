@@ -270,6 +270,7 @@ impl SpectrumState {
     }
 
     fn fade_peak(&mut self, incoming: Option<PeakUpdate>) {
+        // Per-snapshot factors.
         const POSITION_TRACKING_RATE: f32 = 0.20;
         const FADE_IN_RATE: f32 = 0.35;
         const FADE_OUT_RETENTION: f32 = 0.88;

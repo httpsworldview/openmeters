@@ -168,7 +168,7 @@ fn get_closest_hop_divisor(fft_size: usize, hop_size: usize) -> usize {
         .unwrap()
 }
 
-// Preserve the hop:fft ratio when fft_size changes.
+// Preserve the nearest supported hop divisor.
 fn update_fft_size(fft_size: &mut usize, hop_size: &mut usize, new_size: usize) -> bool {
     let hop_divisor = get_closest_hop_divisor(*fft_size, *hop_size);
     if !set(fft_size, new_size) {

@@ -36,6 +36,7 @@ use windowing::{
 };
 
 const TOAST_DISPLAY_DURATION: Duration = Duration::from_secs(2);
+// Event-driven retry cooldown, not a timer.
 const BAR_RETRY_WINDOW: Duration = Duration::from_secs(5);
 const MAINTENANCE_INTERVAL: Duration = Duration::from_millis(100);
 const BAR_RESIZE_HANDLE_THICKNESS: f32 = 6.0;

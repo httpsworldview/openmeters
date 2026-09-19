@@ -54,7 +54,7 @@ pub(crate) fn window_coefficients(kind: WindowKind, len: usize) -> Arc<[f32]> {
         .clone()
 }
 
-// Wide accumulation keeps long DC windows removable at the f32 noise floor.
+// Wider sums reduce DC-removal error.
 pub(crate) fn mean_f32(samples: &[f32]) -> f32 {
     let (chunks, remainder) = samples.as_chunks::<4>();
     let mut sums = [0.0_f64; 4];

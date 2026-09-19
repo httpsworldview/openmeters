@@ -57,10 +57,7 @@ static PIANO_KEY_SCALES: LazyLock<[[[f32; 2]; PIANO_KEY_COUNT]; 3]> = LazyLock::
     })
 });
 
-// Display floor for the frequency axis. Reassignment can localize energy far
-// below the FFT bin spacing, so this is intentionally decoupled from fft_size.
-// 1 Hz is about as low as the log axis stays useful before stretching swallows
-// the whole display; ERB and linear scales handle it cleanly either way.
+// Independent of FFT bin spacing.
 const DISPLAY_MIN_HZ: f32 = 1.0;
 
 fn display_axis(sample_rate: f32) -> (f32, f32) {
@@ -282,7 +279,6 @@ impl SpectrogramState {
         crate::util::finite_positive(self.settings.frequency_scale.freq_at(min_f, nyq, tex_uv))
     }
 
-    // Normalized rotation (0..3) matching the shader's rotate_uv convention.
     fn rotation_index(&self) -> u32 {
         (self.settings.rotation as i32).rem_euclid(4) as u32
     }
@@ -291,8 +287,7 @@ impl SpectrogramState {
         matches!(self.rotation_index(), 1 | 3)
     }
 
-    // Maps a screen point to the frequency-axis UV (0..1), matching
-    // the shader's rotate_uv so CPU-side interactions stay consistent.
+    // Pre-zoom/pan frequency UV [0, 1]; matches shader unrotate.
     fn freq_axis_norm(&self, cursor: Point, bounds: Rectangle) -> Option<f32> {
         if !bounds.contains(cursor) { return None; }
         let norm = match self.rotation_index() {

@@ -28,9 +28,9 @@ the existing visuals, but in short:
 4. The oscilloscope uses normalized autocorrelation period estimation
    and waveform-template correlation to keep traces stable across
    complex periodic signals and visible channel selections.
-5. The stereometer separates bands using LR4 Butterworth filters,
-   along with linear and log scaling. The correlation meter uses those
-   same Butterworth crossings.
+5. The stereometer uses LR4 (cascaded Butterworth) crossovers and
+   linear or power-law radial scaling. Multiband correlation uses
+   the same crossover outputs.
 6. The loudness meter implements K-weighting relative to full
    scale/LUFS momentary/short-term, True Peak, and RMS
    fast/slow. Standards used include ITU-R BS.1770.

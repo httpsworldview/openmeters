@@ -18,6 +18,7 @@ use std::rc::Rc;
 use tracing::{error, info};
 
 const DESCRIPTION: &str = "OpenMeters Audio Tap";
+// Requested latency at DEFAULT_SAMPLE_RATE.
 const LATENCY_FRAMES: u32 = 256;
 const EMPTY: i32 = spa::sys::SPA_CHUNK_FLAG_EMPTY as i32;
 const NATIVE_F32: spa::param::audio::AudioFormat =

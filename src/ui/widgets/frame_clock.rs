@@ -16,6 +16,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+// Redraw polling interval and popout takeover delay.
 const WATCHDOG_INTERVAL: Duration = Duration::from_millis(50);
 
 fn next_deadline(deadline: Instant, now: Instant, interval: Duration) -> Instant {
@@ -35,6 +36,7 @@ fn display_frame_due(
         })
 }
 
+// Low bit: suspended. Upper bits: redraw/reset counter.
 #[derive(Clone, Default)]
 pub(in crate::ui) struct FrameHeartbeat(Arc<AtomicU64>);
 

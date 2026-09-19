@@ -20,8 +20,7 @@ use std::{cell::RefCell, rc::Rc};
 
 type Shared<T> = Rc<RefCell<T>>;
 
-// too many stops -> keep first N
-// too few stops -> copy provided, repeat last
+// Empty: defaults. Otherwise truncate or repeat the last stop.
 fn resolve_palette<const N: usize>(
     custom: Option<&PaletteSettings>,
     default: &[Color; N],

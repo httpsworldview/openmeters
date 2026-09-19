@@ -9,6 +9,7 @@ use crate::visuals::palettes;
 use iced::Color;
 use std::sync::Arc;
 
+// Keep new snapshots contributing.
 const MAX_PERSISTENCE: f32 = 0.98;
 
 crate::macros::default_struct! {

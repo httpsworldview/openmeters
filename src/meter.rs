@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-//! Presentation-side ownership of the ordered audio timeline.
+//! Feeds audio and silence to visuals in timeline order.
 //!
 //! Capture stays at its negotiated PipeWire quantum. DSP work is amortized into
 //! sample-rate-scaled batches so compositor cadence does not become DSP cadence.
@@ -15,7 +15,7 @@ use std::time::Instant;
 const SILENCE_CHUNK_FRAMES: usize = 4_096;
 const DSP_BATCH_FRAMES_AT_48K: usize = 256;
 const MAX_DSP_INGEST_FRAMES_AT_48K: usize = 1_024;
-// Cover the three-second loudness window plus recursive filter settling.
+// Per-span limit; longer silence resets audio state.
 const MAX_SILENCE_SECONDS: u64 = 4;
 
 fn scaled_samples(frames_at_48k: usize, format: AudioFormat) -> usize {

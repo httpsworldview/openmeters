@@ -6,7 +6,9 @@ use crate::util::audio::{BAND_SPLITS_HZ, DEFAULT_SAMPLE_RATE, MAX_DSP_BUFFER_LEN
 pub(super) use crate::util::audio::BAND_COUNT;
 use std::{collections::VecDeque, sync::Arc};
 
+// Split-band display only; correlation is unscaled.
 const BAND_DISPLAY_GAIN: f32 = 0.8;
+// Per cloud, including full-band.
 const MAX_SNAPSHOT_POINTS: usize = 16_384;
 
 crate::macros::default_struct! {
@@ -215,6 +217,7 @@ impl StereometerProcessor {
     }
 }
 
+// Time constant in seconds; minimum one sample.
 fn ema_alpha(sample_rate: f32, window: f32) -> f64 {
     -(-1.0 / (f64::from(sample_rate) * f64::from(window)).max(1.0)).exp_m1()
 }

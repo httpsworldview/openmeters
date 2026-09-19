@@ -13,12 +13,17 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tracing::info;
 
+// Packet frame cap, independent of PipeWire's quantum.
 const BLOCK_FRAMES: usize = 256;
 const BLOCK_SAMPLES: usize = BLOCK_FRAMES * MAX_CAPTURE_CHANNELS;
+// Front-packet age from its end; current activity epoch only.
 const MAX_BACKLOG: Duration = Duration::from_secs(1);
+// 4/3 s of full packets at maximum rate.
 const RING_BLOCKS: usize = (MAX_CAPTURE_SAMPLE_RATE as usize * 4).div_ceil(BLOCK_FRAMES * 3);
 const PCM_FLUSH_SAMPLES: usize = BLOCK_SAMPLES * 4;
+// Packet-duration target, not a flush timer.
 const PACKET_FLUSH_INTERVAL: Duration = Duration::from_millis(50);
+// Minimum grace for packet continuity and inferred streaming silence.
 const IDLE_WATCHDOG: Duration = Duration::from_millis(100);
 
 fn packet_frame_limit(rate: u64) -> usize {

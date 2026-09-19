@@ -4,7 +4,8 @@
 pub const DB_FLOOR: f32 = -140.0;
 pub const LN_TO_DB: f32 = 4.342_944_8;
 
-// Stop recursive state well below audibility but before it becomes subnormal.
+// Flush tiny normals too: stop recursive state well below audibility before it
+// becomes subnormal.
 pub fn flush_denormal_f32(value: &mut f32) {
     if value.abs() < 1.0e-20 {
         *value = 0.0;

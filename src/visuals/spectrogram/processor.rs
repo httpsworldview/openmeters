@@ -38,12 +38,14 @@ crate::macros::default_struct! {
 const DEFAULT_SPECTROGRAM_FFT_SIZE: usize = 4096;
 const DEFAULT_SPECTROGRAM_HOP_SIZE: usize = 256;
 pub(in crate::visuals) const MAX_SPECTROGRAM_HISTORY_COLUMNS: usize = 8192;
+// Full-column payload budget: classic 1x, reassigned 2x; minimum one column.
 pub(super) const SPECTROGRAM_HISTORY_BYTE_BUDGET: usize = 128 * 1024 * 1024;
 
 // Fixed shader-mirrored dB domain; u16 gives ~0.0024 dB/step and permits live history recoloring.
 pub(super) const CLASSIC_DB_STORE_LO: f32 = -144.0;
 pub(super) const CLASSIC_DB_STORE_HI: f32 = 12.0;
 pub(super) const CLASSIC_DB_STORE_RANGE: f32 = CLASSIC_DB_STORE_HI - CLASSIC_DB_STORE_LO;
+// Linear-power equivalent of util::audio::DB_FLOOR.
 const ANALYSIS_FLOOR_POWER: f32 = 1e-14;
 
 impl SpectrogramConfig {
@@ -93,8 +95,8 @@ fn reassigned_power_scale(window: &[f32], fft_size: usize) -> f32 {
     (sum * sum / (fft_size as f64 * sum_squares)) as f32
 }
 
-// Reassigned ships fractional (t, f, power) splats, omitting sub-floor bins.
-// Classic ships packed dB bins with implicit frequency; rendering fills between bins.
+// Reassigned: (hop offset, Hz, linear power); omit sub-floor bins.
+// Classic: packed dB; shader interpolates frequency, not time.
 #[derive(Debug)]
 pub enum SpectrogramColumn {
     Reassigned(Vec<SpectrogramPoint>),
@@ -569,7 +571,7 @@ fn compute_derivative_spectral(planner: &mut FftPlanner<f32>, window: &[f32]) ->
     buf.iter().map(|c| c.re * inv_n).collect()
 }
 
-// Reassignment is centered on coherent gain, not the geometric midpoint.
+// Center on the window-weighted mean index.
 fn compute_time_weighted(window: &[f32]) -> Vec<f32> {
     let (weighted, sum) = window.iter().enumerate().fold((0.0, 0.0), |(m, s), (i, &w)| {
         (m + i as f64 * f64::from(w), s + f64::from(w))

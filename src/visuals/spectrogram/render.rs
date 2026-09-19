@@ -22,7 +22,7 @@ pub const SPECTROGRAM_PALETTE_SIZE: usize = crate::visuals::palettes::spectrogra
 const ACCUM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Float;
 const PAGE_COLUMNS: usize = 64;
 
-// preserve GPU columns when the CPU ring is resized or re-linearized.
+// Old GPU slot -> new slot; u32::MAX discards.
 pub type RingCopyPlan = Vec<u32>;
 
 #[derive(Debug)]
@@ -208,7 +208,7 @@ struct Uniforms {
     palette: [[f32; 4]; SPECTROGRAM_PALETTE_SIZE],
 }
 
-// Locks layout to what the WGSL Uniforms struct expects.
+// Rust layout checks against expected WGSL values.
 const _: () = assert!(std::mem::size_of::<Uniforms>() == 208);
 const _: () = assert!(std::mem::offset_of!(Uniforms, page_mask) == 28);
 const _: () = assert!(std::mem::offset_of!(Uniforms, reassigned_power_scale) == 88);

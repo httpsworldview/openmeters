@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-//! Owned PipeWire graph tap and its two narrow cross-thread interfaces.
+//! Threaded PipeWire capture with ordered audio delivery.
 
 mod graph;
 mod policy;

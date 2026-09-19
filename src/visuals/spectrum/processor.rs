@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::Arc;
 
+// GUI ranges only.
 pub const MIN_SPECTRUM_EXP_FACTOR: f32 = 0.0;
 pub const MAX_SPECTRUM_EXP_FACTOR: f32 = 0.95;
 pub const MIN_SPECTRUM_PEAK_DECAY: f32 = 0.0;
@@ -65,7 +66,9 @@ impl SpectrumConfig {
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum AveragingMode {
     None,
+    // Power retention per FFT hop, after seeding.
     Exponential { factor: f32 },
+    // dB per audio second, applied per FFT hop.
     PeakHold { decay_per_second: f32 },
 }
 

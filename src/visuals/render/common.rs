@@ -110,6 +110,7 @@ pub struct SdfInstance {
 }
 
 impl SdfInstance {
+    // Match shaders/sdf.wgsl primitive tags.
     const BASELINE: f32 = 1.0;
     const LINE: f32 = 2.0;
     const DOT: f32 = 3.0;
@@ -417,6 +418,7 @@ pub struct CacheTracker {
 }
 
 impl CacheTracker {
+    // Counts advance calls, not frames.
     const RETAIN: u64 = 256;
     const INTERVAL: u64 = 64;
 
