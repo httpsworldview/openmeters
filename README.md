@@ -210,8 +210,8 @@ On first launch, all six visuals are enabled and docked in this order:
 spectrogram, spectrum analyzer, waveform, oscilloscope, stereometer,
 and loudness. Refresh follows the main display. Bar mode defaults to
 100px high at the bottom edge on supported Wayland compositors; other
-desktops use a normal window. Saved settings, including disabled visuals, take
-precedence over these defaults.
+desktops use a normal window. Saved settings, including disabled
+visuals, take precedence over these defaults.
 
 Application settings are saved to
 `$XDG_CONFIG_HOME/openmeters/settings.json`, or to:
@@ -228,11 +228,12 @@ runtime. Unsupported keys or structurally invalid values are logged
 and ignored at the narrowest practical scope.
 
 Invalid JSON syntax is ignored and default settings are used for that
-run. Your configuration file will not be overwritten unless you explicitly
-change settings in the GUI. Window resize notifications and device discovery
-alone do not authorize replacing that file. Other read errors receive the
-same protection; a missing file can be created normally. Unknown keys are
-not preserved when the file is next written.
+run. Your configuration file will not be overwritten unless you
+explicitly change settings in the GUI. Window resize notifications and
+device discovery alone do not authorize replacing that file. Other
+read errors receive the same protection; a missing file can be created
+normally. Unknown keys are not preserved when the file is next
+written.
 
 If a bug causes OpenMeters to misbehave, you can reset application
 settings by deleting `settings.json`. Please consider reporting the
@@ -251,12 +252,12 @@ when `XDG_CONFIG_HOME` is unset. Theme files own palettes and
 background color; `settings.json` stores the selected theme name and
 non-palette module settings.
 
-You can create and switch between themes in the **Appearance** section of the
-configuration page. Saving a theme refreshes the list of available
-themes, including any files that appeared in the theme directory while
-OpenMeters was running. The built-in theme is read-only in the UI and
-cannot be overwritten. Feel free to share custom themes by sharing the
-corresponding JSON files.
+You can create and switch between themes in the **Appearance** section
+of the configuration page. Saving a theme refreshes the list of
+available themes, including any files that appeared in the theme
+directory while OpenMeters was running. The built-in theme is
+read-only in the UI and cannot be overwritten. Feel free to share
+custom themes by sharing the corresponding JSON files.
 
 ## Frequently Asked Questions
 
@@ -322,11 +323,21 @@ out.
 - **Tim Strasser's Oszilloskop**
   (<https://github.com/timstr/oszilloskop>)
 - **Audacity** (<https://www.audacityteam.org/>)
+- **FFmpeg** (<https://ffmpeg.org/>)
+- **libebur128** (<https://github.com/jiixyj/libebur128>), the
+  original C library for EBU R 128 loudness measurement.
+- **BBC's audiowaveform** (<https://github.com/bbc/audiowaveform>)
+- **librosa** (<https://librosa.org/>)
 
 ### Papers and Standards
 
 - ITU-R BS.1770-5, loudness and true peak measurement.
 - IEC 61672-1, A-weighting reference curve.
+- Brecht De Man, "[Evaluation of Implementations of the EBU R128
+  Loudness
+  Measurement](https://aes2.org/publications/elibrary-page/?id=19790)",
+  145th Audio Engineering Society Convention, paper 10064, October
+  2018.
 - A. de Cheveigné and H. Kawahara, "YIN, a fundamental frequency
   estimator for speech and music".
   - Historically, the algorithm within this paper was implemented by
