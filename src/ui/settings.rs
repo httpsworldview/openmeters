@@ -133,7 +133,9 @@ macro_rules! settings_messages {
     };
 }
 
-use crate::persistence::settings::{BUILTIN_THEME, PaletteSettings, SettingsHandle, VisualConfig};
+use crate::persistence::settings::{
+    BUILTIN_THEME, ChangeOrigin::User, PaletteSettings, SettingsHandle, VisualConfig,
+};
 use crate::ui::theme::Palette;
 use crate::ui::widgets::palette_editor::PaletteEditor;
 use crate::util::set_if_changed as set;
@@ -218,7 +220,7 @@ fn persist_with_palette(
     );
     *config.palette_mut() = palette_settings.clone();
     visual_manager.borrow_mut().apply_config(config.clone());
-    settings_handle.update(move |settings| {
+    settings_handle.update(User, move |settings| {
         settings.data.visuals.set_config(config);
         if palette_settings.is_some() || settings.active_theme() != BUILTIN_THEME {
             settings.update_active_theme(|theme| {

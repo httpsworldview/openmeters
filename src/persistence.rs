@@ -25,7 +25,7 @@ pub mod settings {
         BAR_MAX_HEIGHT, BAR_MIN_HEIGHT, BarAlignment, BarSettings, MainWindowSettings,
         VisualFrameRate, clamp_bar_height,
     };
-    pub use super::store::SettingsHandle;
+    pub use super::store::{ChangeOrigin, SettingsHandle};
     pub(crate) use super::theme::canonical_theme_name;
     pub use super::theme::{BUILTIN_THEME, ThemeChoice, ThemeFile};
     pub use super::visuals::{

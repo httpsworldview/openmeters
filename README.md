@@ -228,9 +228,11 @@ runtime. Unsupported keys or structurally invalid values are logged
 and ignored at the narrowest practical scope.
 
 Invalid JSON syntax is ignored and default settings are used for that
-run. Your configuration file will not be overwritten unless you change
-settings in the GUI. Unknown keys are not preserved when the file is
-next written.
+run. Your configuration file will not be overwritten unless you explicitly
+change settings in the GUI. Window resize notifications and device discovery
+alone do not authorize replacing that file. Other read errors receive the
+same protection; a missing file can be created normally. Unknown keys are
+not preserved when the file is next written.
 
 If a bug causes OpenMeters to misbehave, you can reset application
 settings by deleting `settings.json`. Please consider reporting the

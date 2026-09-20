@@ -4,7 +4,9 @@
 use super::message::{self, Message};
 use super::{ActiveSettings, UiApp};
 use crate::persistence::settings::{
-    BarAlignment, BarSettings, MainWindowSettings, PopoutWindowSettings, clamp_bar_height,
+    BarAlignment, BarSettings,
+    ChangeOrigin::{Automatic, User},
+    MainWindowSettings, PopoutWindowSettings, clamp_bar_height,
 };
 use crate::ui::config::BarChange;
 use crate::ui::visuals::VisualsMessage;
@@ -277,7 +279,7 @@ impl UiApp {
         let Some((settings, task)) = self.create_popout_window(kind, saved_size) else {
             return Task::none();
         };
-        self.settings_handle.update(|s| {
+        self.settings_handle.update(User, |s| {
             s.data.visuals.popouts.insert(kind, settings);
         });
         task
@@ -291,7 +293,7 @@ impl UiApp {
         };
         let popout_settings = popout_window_settings(popout.size, false);
         self.sync_visuals_page();
-        self.settings_handle.update(|settings| {
+        self.settings_handle.update(User, |settings| {
             settings
                 .data
                 .visuals
@@ -334,7 +336,7 @@ impl UiApp {
             .collect();
         // keep disabled popouts restorable when re-enabled.
         if !stale_windows.is_empty() {
-            self.settings_handle.update(|settings| {
+            self.settings_handle.update(Automatic, |settings| {
                 for (_, kind, size) in &stale_windows {
                     settings
                         .data
@@ -432,7 +434,7 @@ impl UiApp {
             if popout_window_settings(popout.size, true) != settings {
                 popout.size = Size::new(settings.width as f32, settings.height as f32);
                 let kind = popout.kind;
-                self.settings_handle.update(|s| {
+                self.settings_handle.update(Automatic, |s| {
                     s.data.visuals.popouts.insert(kind, settings);
                 });
             }
@@ -445,7 +447,7 @@ impl UiApp {
         if self.main_window_is_layer {
             let height = clamp_bar_height(new_size.height.round().max(1.0) as u32);
             self.settings_handle
-                .set(|settings| &mut settings.bar.height, height);
+                .set(Automatic, |settings| &mut settings.bar.height, height);
             return Task::done(Message::ExclusiveZoneChange {
                 id: self.main_window_id,
                 zone_size: height as i32,
@@ -456,7 +458,7 @@ impl UiApp {
         let settings = MainWindowSettings { width, height };
         self.last_base_window_size = main_window_size(settings);
         self.settings_handle
-            .set(|state| &mut state.main_window, settings);
+            .set(Automatic, |state| &mut state.main_window, settings);
         Task::none()
     }
 

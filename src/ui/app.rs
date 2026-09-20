@@ -6,7 +6,9 @@ mod windowing;
 
 use crate::infra::pipewire::{AudioReader, CaptureControl, audio_wake};
 use crate::meter::MeterEngine;
-use crate::persistence::settings::{BarAlignment, SettingsHandle, clamp_bar_height};
+use crate::persistence::settings::{
+    BarAlignment, ChangeOrigin::User, SettingsHandle, clamp_bar_height,
+};
 use crate::ui::config::ConfigPage;
 use crate::ui::settings::ActiveSettings;
 use crate::ui::theme;
@@ -303,7 +305,7 @@ impl UiApp {
             .map_or_else(Task::none, |s| {
                 let alignment = self.settings_handle.borrow().data.bar.alignment;
                 self.settings_handle
-                    .update(|settings| settings.data.bar.height = s.pending_height);
+                    .update(User, |settings| settings.data.bar.height = s.pending_height);
                 self.apply_bar_layout(alignment, s.pending_height)
             })
     }

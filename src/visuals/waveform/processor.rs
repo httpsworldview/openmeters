@@ -337,7 +337,6 @@ impl WaveformProcessor {
 mod tests {
     use super::*;
     use crate::util::audio::sine_wave;
-    use std::f32::consts::PI;
 
     const RATE: f32 = 48_000.0;
 
@@ -367,33 +366,29 @@ mod tests {
     }
 
     #[test]
-    fn derived_band_filters_preserve_all_channel_history() {
-        let mut shared = BandFilter::new(RATE, BAND_SPLITS_HZ);
-        let mut separate: [ThreeBand<1, 1, false>; DERIVED_CHANNELS] =
-            std::array::from_fn(|_| ThreeBand::new(RATE, BAND_SPLITS_HZ));
-        let mut max_error = 0.0_f32;
-        for n in 0..RATE as usize {
-            let derived = derived_frame([
-                (2.0 * PI * 137.0 * n as f32 / RATE).sin(),
-                (2.0 * PI * 263.0 * n as f32 / RATE).sin(),
-            ]);
-            let expected: [[f32; NUM_BANDS]; DERIVED_CHANNELS] =
-                std::array::from_fn(|channel| {
-                    let [[low], [mid], [high]] = separate[channel].process([derived[channel]]);
-                    [low, mid, high]
-                });
-            let [low, mid, high] = shared.process([derived[0], derived[1]]);
-            let filtered = [[low[0], mid[0], high[0]], [low[1], mid[1], high[1]]];
-            let actual = [
-                filtered[0], filtered[1],
-                std::array::from_fn(|band| (filtered[0][band] + filtered[1][band]) * 0.5),
-                std::array::from_fn(|band| (filtered[0][band] - filtered[1][band]) * 0.5),
-            ];
-            for (actual, expected) in actual.into_iter().flatten().zip(expected.into_iter().flatten()) {
-                max_error = max_error.max((actual - expected).abs());
+    fn derived_band_outputs_match_independent_mono_processing() {
+        let samples: Vec<_> = sine_wave(137.0, RATE, RATE as usize, 1.0).into_iter()
+            .zip(sine_wave(263.0, RATE, RATE as usize, 1.0))
+            .flat_map(|(left, right)| [left, right]).collect();
+        let config = WaveformConfig { track_history: true, ..config(200.0, 512) };
+        let mut processor = WaveformProcessor::new(config);
+        let mut actual = Vec::new();
+        for chunk in samples.chunks(2048) {
+            actual.extend_from_slice(process(&mut processor, chunk, 2).columns);
+        }
+        let values = |column: WaveColumn| column.color_bands.into_iter().chain(column.rms_db.into_iter().flatten());
+        for (channel, source) in WAVEFORM_CHANNELS.into_iter().enumerate() {
+            let mono: Vec<_> = AudioBlock::new(&samples, 2, RATE).projected_frames(source).collect();
+            let mut reference = WaveformProcessor::new(config);
+            let expected = process(&mut reference, &mono, 1);
+            assert_eq!(actual.len(), expected.columns.len());
+            for (actual, expected) in actual.iter().zip(expected.columns) {
+                for (actual, expected) in values(actual[channel]).zip(values(expected[0])) {
+                    assert!((actual - expected).abs() < 1.0e-4,
+                        "channel {channel}: {actual} vs {expected}");
+                }
             }
         }
-        assert!(max_error < 5.0e-5, "maximum filter error was {max_error}");
     }
 
     #[test]

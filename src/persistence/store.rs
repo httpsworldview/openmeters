@@ -7,8 +7,8 @@ use super::{
 };
 use std::{
     cell::{Ref, RefCell},
-    fs,
-    path::PathBuf,
+    fs, io,
+    path::{Path, PathBuf},
     rc::Rc,
     sync::{Mutex, mpsc},
     thread::JoinHandle,
@@ -24,25 +24,35 @@ fn config_dir() -> PathBuf {
         .join("openmeters")
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ChangeOrigin {
+    User,
+    Automatic,
+}
+
 pub struct SettingsManager {
     path: PathBuf,
     pub data: UiSettings,
     theme_store: ThemeStore,
+    can_persist: bool,
 }
 
 impl SettingsManager {
-    pub fn load_or_default() -> Self {
-        let dir = config_dir();
+    fn load_from_dir(dir: &Path) -> Self {
         let path = dir.join("settings.json");
-        let mut data: UiSettings = fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| {
-                UiSettings::from_json_lossy(&s)
-                    .inspect_err(|e| warn!("[settings] parse error {path:?}: {e}"))
-                    .ok()
-            })
-            .unwrap_or_default();
-        let theme_store = ThemeStore::new(&dir);
+        let loaded = fs::read_to_string(&path)
+            .and_then(|raw| UiSettings::from_json_lossy(&raw).map_err(io::Error::other));
+        let (mut data, can_persist) = match loaded {
+            Ok(data) => (data, true),
+            Err(err) => {
+                let missing = err.kind() == io::ErrorKind::NotFound;
+                if !missing {
+                    warn!("[settings] load error {path:?}: {err}");
+                }
+                (UiSettings::default(), missing)
+            }
+        };
+        let theme_store = ThemeStore::new(dir);
         if let Some(theme_file) = theme_store.load(data.theme.as_deref().unwrap_or(BUILTIN_THEME))
             && let Some(bg) = theme_file.background
         {
@@ -52,8 +62,18 @@ impl SettingsManager {
             path,
             data,
             theme_store,
+            can_persist,
         }
     }
+
+    fn persist(&mut self, origin: ChangeOrigin) {
+        // Incidental updates must not replace a file that failed to load.
+        self.can_persist |= origin == ChangeOrigin::User;
+        if self.can_persist {
+            schedule_persist(self.path.clone(), self.data.clone());
+        }
+    }
+
     pub fn theme_store(&self) -> &ThemeStore {
         &self.theme_store
     }
@@ -139,19 +159,23 @@ pub struct SettingsHandle(Rc<RefCell<SettingsManager>>);
 
 impl SettingsHandle {
     pub fn load_or_default() -> Self {
-        Self(Rc::new(RefCell::new(SettingsManager::load_or_default())))
+        Self(Rc::new(RefCell::new(SettingsManager::load_from_dir(
+            &config_dir(),
+        ))))
     }
+
     pub fn borrow(&self) -> Ref<'_, SettingsManager> {
         self.0.borrow()
     }
-    pub fn update(&self, mutate: impl FnOnce(&mut SettingsManager)) {
+    pub fn update(&self, origin: ChangeOrigin, mutate: impl FnOnce(&mut SettingsManager)) {
         let mut manager = self.0.borrow_mut();
         mutate(&mut manager);
-        schedule_persist(manager.path.clone(), manager.data.clone());
+        manager.persist(origin);
     }
 
     pub(crate) fn set<T: PartialEq>(
         &self,
+        origin: ChangeOrigin,
         select: impl FnOnce(&mut UiSettings) -> &mut T,
         value: T,
     ) -> bool {
@@ -159,7 +183,7 @@ impl SettingsHandle {
         if !crate::util::set_if_changed(select(&mut manager.data), value) {
             return false;
         }
-        schedule_persist(manager.path.clone(), manager.data.clone());
+        manager.persist(origin);
         true
     }
 
@@ -176,16 +200,12 @@ impl SettingsHandle {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{ChangeOrigin::*, *};
 
     #[test]
     fn builtin_theme_updates_create_auto_theme() {
         let dir = tempfile::tempdir().unwrap();
-        let mut manager = SettingsManager {
-            path: dir.path().join("settings.json"),
-            data: UiSettings::default(),
-            theme_store: ThemeStore::new(dir.path()),
-        };
+        let mut manager = SettingsManager::load_from_dir(dir.path());
         manager
             .theme_store
             .save("default-custom", &ThemeFile::default())
@@ -206,42 +226,42 @@ mod tests {
     }
 
     #[test]
-    fn flush_writes_pending_settings_without_waiting_for_debounce() {
-        use crate::persistence::settings::{PaletteSettings, SpectrogramSettings, VisualConfig};
-        SettingsHandle::flush();
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("settings.json");
-        let handle = SettingsHandle(Rc::new(RefCell::new(SettingsManager {
-            path: path.clone(),
-            data: UiSettings::default(),
-            theme_store: ThemeStore::new(dir.path()),
-        })));
-
-        assert!(!handle.set(|settings| &mut settings.decorations, false));
-        assert!(handle.set(|settings| &mut settings.decorations, true));
-        assert!(!handle.set(|settings| &mut settings.decorations, true));
-        for fft_size in [2048, 4096] {
-            handle.update(|settings| {
-                settings
-                    .data
-                    .visuals
-                    .set_config(VisualConfig::Spectrogram(SpectrogramSettings {
-                        fft_size,
-                        palette: Some(PaletteSettings {
-                            stops: vec![iced::Color::WHITE.into()],
-                            ..Default::default()
-                        }),
-                        ..Default::default()
-                    }));
-            });
+    fn saving_requires_a_valid_load_or_explicit_change() {
+        let window = serde_json::json!({"width":949,"height":514});
+        for (original, can_save, decorations) in [
+            (None, true, false),
+            (Some(br#"{"decorations":true}"#.as_slice()), true, true),
+            (Some(b"{ malformed settings"), false, false),
+            (Some(b"\xff\xfe"), false, false),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("settings.json");
+            if let Some(original) = original {
+                fs::write(&path, original).unwrap();
+            }
+            let manager = SettingsManager::load_from_dir(dir.path());
+            let handle = SettingsHandle(Rc::new(RefCell::new(manager)));
+            let saved =
+                || serde_json::from_slice::<serde_json::Value>(&fs::read(&path).unwrap()).unwrap();
+            let changed = handle.set(User, |s| &mut s.decorations, decorations);
+            handle.set(Automatic, |s| &mut s.main_window.width, 949);
+            handle.update(Automatic, |s| s.data.main_window.height = 514);
             SettingsHandle::flush();
+            assert!(!changed);
+            if can_save {
+                assert_eq!(saved()["main_window"], window);
+            } else {
+                assert_eq!(fs::read(&path).unwrap(), original.unwrap());
+            }
 
-            let saved: serde_json::Value =
-                serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-            assert_eq!(saved["decorations"], true);
-            let config = &saved["visuals"]["modules"]["spectrogram"]["config"];
-            assert_eq!(config["fft_size"], fft_size);
-            assert!(config.get("palette").is_none());
+            handle.set(User, |s| &mut s.decorations, !decorations);
+            SettingsHandle::flush();
+            assert_eq!(saved()["decorations"], !decorations);
+            assert_eq!(saved()["main_window"], window);
+
+            handle.update(Automatic, |s| s.data.main_window.height = 515);
+            SettingsHandle::flush();
+            assert_eq!(saved()["main_window"]["height"], 515);
         }
     }
 }

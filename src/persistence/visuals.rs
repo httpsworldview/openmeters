@@ -364,6 +364,10 @@ mod tests {
         settings.set_enabled(VisualKind::Loudness, true);
         settings.set_config(VisualConfig::Waveform(WaveformSettings {
             scroll_speed: 72.0,
+            palette: Some(PaletteSettings {
+                stops: vec![iced::Color::WHITE.into()],
+                ..Default::default()
+            }),
             ..Default::default()
         }));
         let saved = serde_json::to_value(&settings).unwrap();
@@ -377,6 +381,7 @@ mod tests {
         assert!(modules["spectrum"]["config"].get("future_option").is_none());
         assert_eq!(modules["waveform"]["enabled"], true);
         assert_eq!(modules["waveform"]["config"]["scroll_speed"], 72.0);
+        assert!(modules["waveform"]["config"].get("palette").is_none());
         assert_eq!(modules["loudness"]["enabled"], true);
         assert_eq!(modules["loudness"]["config"]["left_mode"], "true_peak");
         let loaded = VisualSettings::from_value_lossy(saved.clone());

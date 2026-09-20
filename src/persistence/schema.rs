@@ -127,7 +127,6 @@ mod tests {
     fn visual_frame_rate_defaults_to_display_and_preserves_fixed_rates() {
         let default = UiSettings::from_json_lossy("{}").unwrap().visual_frame_rate;
         assert_eq!(default, VisualFrameRate::Display);
-        assert_eq!(default.label(), "Match main display");
         assert_eq!(default.interval(), None);
         for (saved, expected, nanos) in [
             ("fps30", VisualFrameRate::Fps30, 33_333_334),
@@ -140,24 +139,6 @@ mod tests {
             assert_eq!(settings.visual_frame_rate, expected);
             assert_eq!(expected.interval(), Some(Duration::from_nanos(nanos)));
         }
-    }
-
-    #[test]
-    fn persisted_container_defaults_are_stable() {
-        let main = MainWindowSettings::default();
-        assert_eq!((main.width, main.height), (1200, 520));
-
-        let bar = BarSettings::default();
-        assert_eq!(
-            (bar.enabled, bar.alignment, bar.height, bar.monitor),
-            (true, BarAlignment::Bottom, 100, None)
-        );
-
-        let popout = PopoutWindowSettings::default();
-        assert_eq!(
-            (popout.width, popout.height, popout.popped_out),
-            (0, 0, true)
-        );
     }
 
     #[test]

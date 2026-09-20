@@ -391,10 +391,14 @@ impl VisualManager {
             self.move_to(kind, position);
         }
     }
-    pub fn apply_theme(&mut self, theme: &ThemeFile) {
+    pub fn apply_theme(&mut self, theme: &ThemeFile) -> bool {
+        let mut changed = false;
         for entry in &mut self.entries {
+            let previous = entry.module.export_palette();
             entry.module.apply_palette(theme.palettes.get(&entry.kind));
+            changed |= entry.module.export_palette() != previous;
         }
+        changed
     }
     pub fn ingest_samples(&mut self, samples: &[f32], format: AudioFormat) {
         if self

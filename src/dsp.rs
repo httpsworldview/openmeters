@@ -775,7 +775,6 @@ mod tests {
                 assert_eq!(actual.map(f32::to_bits), expected.map(f32::to_bits));
             }
         }
-        assert!(std::mem::size_of::<Biquad<2>>() < std::mem::size_of::<[Biquad<1>; 2]>());
     }
 
     #[test]

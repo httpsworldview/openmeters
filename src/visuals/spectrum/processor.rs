@@ -233,7 +233,11 @@ impl SpectrumProcessor {
             .zip(&self.spectrum_buffer)
             .zip(&self.bin_normalization)
         {
-            *power = complex.norm_sqr() * *norm;
+            let re = f64::from(complex.re);
+            let im = f64::from(complex.im);
+            let normalized = (re * re + im * im) * f64::from(*norm);
+            // Saturate overflow and invalid FFT bins before they can poison smoothing.
+            *power = normalized.min(f64::from(f32::MAX)) as f32;
         }
         level.update_outputs(
             self.config.averaging,
@@ -534,6 +538,48 @@ mod tests {
                 }
             }
             processor.process_block(&AudioBlock::new(&samples[..8], 1, 8.0));
+        }
+    }
+
+    #[test]
+    fn overrange_power_is_finite_and_recovers() {
+        for averaging in [
+            AveragingMode::None,
+            AveragingMode::Exponential { factor: 0.0 },
+            AveragingMode::Exponential { factor: 0.5 },
+            AveragingMode::PeakHold { decay_per_second: 1000.0 },
+        ] {
+            for amplitude in [1.0e18, 1.0e20, f32::MAX] {
+                let config = SpectrumConfig {
+                    fft_size: 128,
+                    hop_size: 128,
+                    window: WindowKind::Rectangular,
+                    source: Channel::Left,
+                    secondary_source: Channel::Right,
+                    averaging,
+                    ..Default::default()
+                };
+                let mut processor = SpectrumProcessor::new(config);
+                let burst = [amplitude, amplitude, -amplitude, -amplitude].repeat(32);
+                let expected_power = 2.0 * f64::from(amplitude).powi(2);
+                for _ in 0..2 {
+                    let snapshot = processor.process_block(&AudioBlock::new(&burst, 1, config.sample_rate)).unwrap();
+                    assert!(snapshot.traces.iter().flatten().flatten().all(|db| db.is_finite()),
+                        "{averaging:?}, amplitude {amplitude}: non-finite levels");
+                    if expected_power <= f64::from(f32::MAX) {
+                        let expected = (10.0 * expected_power.log10()) as f32;
+                        for trace in &snapshot.traces {
+                            let actual = trace[1][32];
+                            assert!((actual - expected).abs() < 1.0e-4,
+                                "{averaging:?}, amplitude {amplitude}: {actual} vs {expected} dB");
+                        }
+                    }
+                }
+                let silence = vec![0.0; config.hop_size * 500];
+                let snapshot = processor.process_block(&AudioBlock::new(&silence, 1, config.sample_rate)).unwrap();
+                assert!(snapshot.traces.iter().flatten().flatten().all(|&db| db == config.floor_db),
+                    "{averaging:?}, amplitude {amplitude}: failed to return to the floor");
+            }
         }
     }
 

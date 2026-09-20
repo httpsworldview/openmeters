@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::persistence::settings::SettingsHandle;
+use crate::persistence::settings::{ChangeOrigin::User, SettingsHandle};
 use crate::ui::widgets::pane_grid::{self, Content as PaneContent, Pane};
 use crate::visuals::registry::{VisualKind, VisualManagerHandle, VisualSlotSnapshot};
 use iced::widget::{container, mouse_area, text};
@@ -54,7 +54,7 @@ impl VisualsPage {
                         manager.set_width_basis(kind, basis);
                     }
                     self.settings
-                        .update(|s| s.data.visuals.width_basis.extend(bases));
+                        .update(User, |s| s.data.visuals.width_basis.extend(bases));
                 }
             }
             VisualsMessage::PaneDragged(pane_grid::DragEvent::Moved { pane, target }) => {
@@ -66,13 +66,12 @@ impl VisualsPage {
                     self.panes.insert(to, visual);
                     let order: Vec<_> = self.panes.iter().map(|visual| visual.kind).collect();
                     self.visual_manager.borrow_mut().reorder(&order);
+                    self.settings.update(User, |s| {
+                        s.data.visuals.order = self.visual_manager.borrow().order();
+                    });
                 }
             }
-            VisualsMessage::PaneDragged(pane_grid::DragEvent::Dropped) => {
-                self.settings.update(|s| {
-                    s.data.visuals.order = self.visual_manager.borrow().order();
-                });
-            }
+            VisualsMessage::PaneDragged(pane_grid::DragEvent::Dropped) => {}
             VisualsMessage::PaneContextRequested(kind) => {
                 if self.panes.iter().any(|visual| visual.kind == kind) {
                     return Task::done(VisualsMessage::SettingsRequested(kind));
