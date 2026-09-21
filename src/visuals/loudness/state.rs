@@ -173,17 +173,18 @@ impl LoudnessState {
                     ch,
                     self.snapshot.channel_count,
                 );
-                side == MeterSide::Both || side == wanted
+                wanted == MeterSide::Both || side == MeterSide::Both || side == wanted
             })
             .map(|ch| self.get_value(mode, ch))
-            .fold(DB_RANGE.0, f32::max)
+            .reduce(f32::max)
+            .unwrap_or(DB_RANGE.0)
     }
 
     fn visible_values(&self) -> [f32; VISIBLE_METER_COUNT] {
         [
             self.aggregate_channels(self.settings.left_mode, MeterSide::Left),
             self.aggregate_channels(self.settings.left_mode, MeterSide::Right),
-            self.get_value(self.settings.right_mode, 0),
+            self.aggregate_channels(self.settings.right_mode, MeterSide::Both),
         ]
     }
 
@@ -213,7 +214,7 @@ impl LoudnessState {
             MeterMode::RmsFast | MeterMode::RmsSlow => "dB",
             MeterMode::TruePeak => "dBTP",
         };
-        let text = format!("{:.1} {unit}", self.get_value(mode, 0));
+        let text = format!("{:.1} {unit}", self.aggregate_channels(mode, MeterSide::Both));
         if self.value_label.0 != text {
             let paragraph = value_label(&text);
             self.value_label = (text, paragraph);
@@ -234,7 +235,6 @@ enum MeterSide {
     Left,
     Right,
     Both,
-    Neither,
 }
 
 fn channel_side(
@@ -254,10 +254,7 @@ fn channel_side(
         ChannelPosition::FrontRight | ChannelPosition::RearRight | ChannelPosition::SideRight => {
             MeterSide::Right
         }
-        ChannelPosition::FrontCenter | ChannelPosition::Mono => MeterSide::Both,
-        ChannelPosition::LowFrequency | ChannelPosition::Aux(_) | ChannelPosition::Unknown => {
-            MeterSide::Neither
-        }
+        _ => MeterSide::Both,
     }
 }
 
@@ -312,6 +309,7 @@ crate::visuals::visualization_widget!(Loudness, LoudnessState, |this, renderer, 
     let state = this.state.borrow();
     let params = state.visual_params(bounds);
     let meter_bounds = params.meter_bounds();
+    let value = params.bars[2].db;
 
     renderer.draw_primitive(bounds, params);
 
@@ -332,7 +330,6 @@ crate::visuals::visualization_widget!(Loudness, LoudnessState, |this, renderer, 
             );
         }
 
-        let value = state.get_value(state.settings.right_mode, 0);
         let y = y_of(value);
 
         let label_x = meter_x + stride + bar_width + 4.0;
@@ -394,6 +391,47 @@ mod tests {
 
         state.set_modes(MeterMode::RmsFast, MeterMode::LufsMomentary);
         assert_eq!(visible_bar_values(&state), [-6.0, -3.0, -7.5]);
+        assert_eq!(state.value_label.0, "-7.5 LUFS");
+
+        state.set_modes(MeterMode::RmsSlow, MeterMode::RmsFast);
+        assert_eq!(visible_bar_values(&state), [-6.0, -3.0, -3.0]);
+        assert_eq!(state.value_label.0, "-3.0 dB");
+
+        state.set_modes(MeterMode::LufsShortTerm, MeterMode::RmsSlow);
+        assert_eq!(visible_bar_values(&state), [-9.0, -9.0, -3.0]);
+        assert_eq!(state.value_label.0, "-3.0 dB");
+    }
+
+    #[test]
+    fn true_peak_bars_and_label_include_every_channel_regardless_of_order() {
+        let floor = DB_RANGE.0;
+        let expected = [
+            [6.0, floor, 6.0], [floor, 6.0, 6.0], [6.0; 3], [6.0; 3],
+            [6.0, floor, 6.0], [floor, 6.0, 6.0],
+            [6.0, floor, 6.0], [floor, 6.0, 6.0],
+        ];
+        let mut state = LoudnessState::default();
+        state.set_modes(MeterMode::TruePeak, MeterMode::TruePeak);
+        for order in [[0, 1, 2, 3, 4, 5, 6, 7], [7, 4, 2, 0, 6, 5, 1, 3]] {
+            for (channel, &position) in order.iter().enumerate() {
+                let mut snapshot = LoudnessSnapshot::with_floor(floor, MAX_CHANNELS);
+                snapshot.positions = order.map(|index| ChannelPosition::SURROUND[index]);
+                snapshot.true_peak_db[channel] = 6.0;
+                state.apply_snapshot(snapshot);
+                assert_eq!(visible_bar_values(&state), expected[position], "channel={channel}, order={order:?}");
+                assert_eq!(state.value_label.0, "6.0 dBTP");
+            }
+        }
+    }
+
+    #[test]
+    fn true_peak_label_preserves_levels_below_the_bar_range() {
+        let mut state = LoudnessState::default();
+        state.set_modes(MeterMode::TruePeak, MeterMode::TruePeak);
+        let mut snapshot = LoudnessSnapshot::with_floor(-99.9, 2);
+        snapshot.true_peak_db[1] = -80.0;
+        state.apply_snapshot(snapshot);
+        assert_eq!(state.value_label.0, "-80.0 dBTP");
     }
 
     #[test]
@@ -408,18 +446,23 @@ mod tests {
             positions: [ChannelPosition::Unknown; MAX_CHANNELS],
         };
         let mut state = LoudnessState::default();
-        state.set_modes(MeterMode::TruePeak, MeterMode::LufsShortTerm);
+        state.set_modes(MeterMode::TruePeak, MeterMode::TruePeak);
 
         let mut mono = [DB_RANGE.0; MAX_CHANNELS];
         mono[0] = -12.0;
         state.apply_snapshot(snapshot(mono, 1));
-        assert_eq!(visible_bar_values(&state)[..2], [-12.0, -12.0]);
+        assert_eq!(visible_bar_values(&state), [-12.0; 3]);
 
         let mut quad = [DB_RANGE.0; MAX_CHANNELS];
         quad[2] = -6.0;
         quad[3] = -3.0;
         state.apply_snapshot(snapshot(quad, 4));
-        assert_eq!(visible_bar_values(&state)[..2], [-6.0, -3.0]);
+        assert_eq!(visible_bar_values(&state), [-6.0, -3.0, -3.0]);
+
+        let mut surround = [DB_RANGE.0; MAX_CHANNELS];
+        surround[3] = 6.0;
+        state.apply_snapshot(snapshot(surround, 6));
+        assert_eq!(visible_bar_values(&state), [6.0; 3]);
     }
 
     #[test]
