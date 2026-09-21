@@ -167,7 +167,7 @@ impl PeriodEstimator {
         {
             let centered = sample - mean;
             *dst = centered;
-            energy = f64::from(centered).mul_add(f64::from(centered), energy);
+            energy += f64::from(centered) * f64::from(centered);
             *prefix = energy;
         }
         fft.input[samples.len()..].fill(0.0);
