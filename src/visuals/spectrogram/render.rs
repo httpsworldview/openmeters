@@ -985,13 +985,16 @@ impl Resources {
     }
 
     fn upload_pending(&mut self, queue: &wgpu::Queue, p: &SpectrogramParams) {
+        if p.pending_uploads.is_empty() {
+            return;
+        }
+        if p.col_kind == ColumnKind::Classic {
+            self.classic_upload_scratch
+                .resize((self.ring.layout.stride / 2) as usize, 0);
+        }
         let first =
             (p.write_slot + p.ring_capacity - p.pending_uploads.len() as u32) % p.ring_capacity;
         for (index, column) in p.pending_uploads.iter().enumerate() {
-            let slot = (first + index as u32) % p.ring_capacity;
-            let Some((buf, offset, stride)) = self.ring.column(slot as usize) else {
-                continue;
-            };
             let data = match (p.col_kind, column) {
                 (ColumnKind::Reassigned, SpectrogramColumn::Reassigned(points))
                     if !points.is_empty() =>
@@ -1000,7 +1003,6 @@ impl Resources {
                 }
                 (ColumnKind::Classic, SpectrogramColumn::Classic(mags)) if !mags.is_empty() => {
                     let packed = &mut self.classic_upload_scratch;
-                    packed.resize((stride / 2) as usize, 0);
                     let written = mags.len().min(packed.len());
                     packed[..written].copy_from_slice(&mags[..written]);
                     packed[written..].fill(0);
@@ -1008,7 +1010,10 @@ impl Resources {
                 }
                 _ => continue,
             };
-            queue.write_buffer(buf, offset, data);
+            let slot = (first + index as u32) % p.ring_capacity;
+            if let Some((buf, offset, _)) = self.ring.column(slot as usize) {
+                queue.write_buffer(buf, offset, data);
+            }
         }
     }
 }

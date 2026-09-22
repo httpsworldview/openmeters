@@ -438,6 +438,44 @@ fn layout_tooltip(
     (rect, positions)
 }
 
+fn piano_key_spans(
+    sample_rate: f32,
+    scale: FrequencyScale,
+    uv_range: [f32; 2],
+    origin: f32,
+    extent: f32,
+    ascending: bool,
+) -> [impl Iterator<Item = (MusicalNote, [f32; 2])>; 2] {
+    let (min_f, nyq) = display_axis(sample_rate);
+    let midi_lo = MusicalNote::from_frequency(scale.freq_at(min_f, nyq, uv_range[0]).max(16.0))
+        .map_or(PIANO_MIDI_LO, |n| (n.midi_number - 1).max(PIANO_MIDI_LO));
+    let midi_hi = MusicalNote::from_frequency(scale.freq_at(min_f, nyq, uv_range[1]))
+        .map_or(PIANO_MIDI_HI, |n| (n.midi_number + 1).min(PIANO_MIDI_HI));
+    let scaled_min = scale.scale(min_f);
+    let scaled_span = (scale.scale(nyq) - scaled_min).max(1e-6);
+    let position = move |scaled| {
+        let uv = (scaled - scaled_min) / scaled_span;
+        let t = (uv - uv_range[0]) / (uv_range[1] - uv_range[0]);
+        origin + extent * if ascending { t } else { 1.0 - t }
+    };
+    let key_scales = &PIANO_KEY_SCALES[scale as usize];
+    // White and black key spans, in paint order.
+    [false, true].map(move |black| {
+        (midi_lo..=midi_hi).filter_map(move |midi| {
+            let note = MusicalNote::from_midi(midi);
+            if note.is_black() != black {
+                return None;
+            }
+            let [a, b] = key_scales[(midi - PIANO_MIDI_LO) as usize].map(position);
+            let (lo, hi) = if a < b { (a, b) } else { (b, a) };
+            if hi <= origin || lo >= origin + extent {
+                return None;
+            }
+            Some((note, [lo.max(origin), hi.min(origin + extent)]))
+        })
+    })
+}
+
 impl Spectrogram<'_> {
     fn draw_crosshair(
         renderer: &mut iced::Renderer,
@@ -522,170 +560,101 @@ impl Spectrogram<'_> {
             return bounds;
         }
         let state = self.state.borrow();
-        let (min_f, nyq) = display_axis(state.sample_rate);
-        let (scale, rot) = (state.settings.frequency_scale, state.rotation_index());
         let horizontal = state.freq_axis_is_horizontal();
-        let selected = cursor
-            .and_then(|c| state.frequency_at_cursor(c, bounds, uv_range))
-            .and_then(MusicalNote::from_frequency);
-
-        let (freq_top, freq_bot) = (
-            scale.freq_at(min_f, nyq, uv_range[1]),
-            scale.freq_at(min_f, nyq, uv_range[0]),
-        );
-        let midi_lo = MusicalNote::from_frequency(freq_bot.max(16.0))
-            .map_or(PIANO_MIDI_LO, |n| (n.midi_number - 1).max(PIANO_MIDI_LO));
-        let midi_hi = MusicalNote::from_frequency(freq_top)
-            .map_or(PIANO_MIDI_HI, |n| (n.midi_number + 1).min(PIANO_MIDI_HI));
-
-        let pal = theme.extended_palette();
-        let (white, black) = (
-            lerp_color(pal.background.weak.color, Color::WHITE, 0.5),
-            Color::from_rgb(0.1, 0.1, 0.1),
-        );
         let (freq_org, freq_ext, time_org, time_ext) = if horizontal {
             (bounds.x, bounds.width, bounds.y, bounds.height)
         } else {
             (bounds.y, bounds.height, bounds.x, bounds.width)
         };
-
-        let (scaled_min, scaled_max) = (scale.scale(min_f), scale.scale(nyq));
-        let scaled_span = (scaled_max - scaled_min).max(1e-6);
-        let scaled_to_px = |f: f32| -> f32 {
-            let uv = (f - scaled_min) / scaled_span;
-            let t = (uv - uv_range[0]) / (uv_range[1] - uv_range[0]);
-            freq_org + freq_ext * if matches!(rot, 1 | 2) { t } else { 1.0 - t }
+        let screen_rect = |pos, len, cross, width| {
+            if horizontal {
+                Rectangle::new(Point::new(pos, cross), Size::new(len, width))
+            } else {
+                Rectangle::new(Point::new(cross, pos), Size::new(width, len))
+            }
         };
-
         let roll_width = PIANO_ROLL_WIDTH.min(time_ext);
+        let black_width = roll_width * PIANO_BLACK_KEY_RATIO;
         let strip_width = PIANO_STRIP_WIDTH.min(time_ext);
         let strip = if overlay == PianoRollOverlay::Left {
             time_org
         } else {
             time_org + time_ext - roll_width
         };
-        let wborder = iced::Border {
-            color: with_alpha(black, 0.4),
-            width: 0.5,
-            radius: 0.0.into(),
-        };
-        let black_key_width = roll_width * PIANO_BLACK_KEY_RATIO;
-        let right = matches!(overlay, PianoRollOverlay::Right);
-
-        let orient_rect = |pos: f32, len: f32, cross: f32, cw: f32| -> Rectangle {
-            if horizontal {
-                Rectangle::new(Point::new(pos, cross), Size::new(len, cw))
-            } else {
-                Rectangle::new(Point::new(cross, pos), Size::new(cw, len))
-            }
-        };
-        let orient_point = |fp: f32, tp: f32| -> Point {
-            if horizontal {
-                Point::new(fp, tp)
-            } else {
-                Point::new(tp, fp)
-            }
-        };
-
-        let backing = if right {
-            time_org + time_ext - strip_width
+        let right = overlay == PianoRollOverlay::Right;
+        let (backing, tooltip) = if right {
+            (time_org + time_ext - strip_width, time_org)
         } else {
-            time_org
+            (time_org, time_org + strip_width)
         };
+        let selected = cursor
+            .and_then(|c| state.frequency_at_cursor(c, bounds, uv_range))
+            .and_then(MusicalNote::from_frequency);
+        let pal = theme.extended_palette();
+        let (white, black) = (
+            lerp_color(pal.background.weak.color, Color::WHITE, 0.5),
+            Color::from_rgb(0.1, 0.1, 0.1),
+        );
+        let borderless = iced::Border::default();
+        let white_border = iced::border::color(with_alpha(black, 0.4)).width(0.5);
         fill_rect(
             renderer,
-            orient_rect(freq_org, freq_ext, backing, strip_width),
+            screen_rect(freq_org, freq_ext, backing, strip_width),
             with_alpha(pal.background.base.color, PIANO_STRIP_ALPHA),
         );
-        let key_scales = &PIANO_KEY_SCALES[scale as usize];
-        let key_extent = |midi: i32| -> (f32, f32) {
-            let [lo, hi] = key_scales[(midi - PIANO_MIDI_LO) as usize];
-            let (a, b) = (scaled_to_px(lo), scaled_to_px(hi));
-            if a < b { (a, b) } else { (b, a) }
-        };
 
+        let [white_keys, black_keys] = piano_key_spans(
+            state.sample_rate,
+            state.settings.frequency_scale,
+            uv_range,
+            freq_org,
+            freq_ext,
+            matches!(state.rotation_index(), 1 | 2),
+        );
+        let black_anchor = if right {
+            strip + roll_width - black_width
+        } else {
+            strip
+        };
         let mut compact_highlight = None;
-        for pass in 0..2u8 {
-            for midi in midi_lo..=midi_hi {
-                let note = MusicalNote::from_midi(midi);
-                let is_blk = note.is_black();
-                if is_blk != (pass == 1) {
-                    continue;
-                }
-                let (lo, hi) = key_extent(midi);
-                if hi <= freq_org || lo >= freq_org + freq_ext {
-                    continue;
-                }
-                let (lo, hi) = (lo.max(freq_org), hi.min(freq_org + freq_ext));
+        for (keys, color, width, anchor, border) in [
+            (white_keys, white, roll_width, strip, white_border),
+            (black_keys, black, black_width, black_anchor, borderless),
+        ] {
+            for (note, [lo, hi]) in keys {
+                let is_selected = selected == Some(note);
                 let key_len = hi - lo;
-                let (fill, brd, w) = if is_blk {
-                    (black, iced::Border::default(), black_key_width)
-                } else {
-                    (
-                        white,
-                        if key_len >= 4.0 {
-                            wborder
-                        } else {
-                            iced::Border::default()
-                        },
-                        roll_width,
-                    )
-                };
-                let anchor = if is_blk && right {
-                    strip + roll_width - black_key_width
-                } else {
-                    strip
-                };
-                let fill = if selected == Some(note) {
+                let fill = if is_selected {
                     PIANO_SELECTED_COLOR
                 } else {
-                    fill
+                    color
                 };
-                fill_bordered_rect(
-                    renderer,
-                    orient_rect(lo, key_len, anchor, w),
-                    fill,
-                    brd,
-                    false,
-                );
-                if selected == Some(note) && key_len < 2.0 {
+                let border = if key_len >= 4.0 { border } else { borderless };
+                let key_rect = screen_rect(lo, key_len, anchor, width);
+                fill_bordered_rect(renderer, key_rect, fill, border, false);
+                if is_selected && key_len < 2.0 {
                     let len = 2.0_f32.min(freq_ext);
                     let pos = ((lo + hi - len) * 0.5).clamp(freq_org, freq_org + freq_ext - len);
-                    compact_highlight = Some(orient_rect(pos, len, anchor, w));
+                    compact_highlight = Some(screen_rect(pos, len, anchor, width));
                 }
                 if note.midi_number % 12 == 0 && key_len >= PIANO_LABEL_SIZE {
                     let label = &state.piano_labels[(note.octave() - 1) as usize];
-                    let tsz = label.min_bounds();
-                    let fp = lo + (key_len - if horizontal { tsz.width } else { tsz.height }) * 0.5;
-                    let tp = strip
-                        + (roll_width - if horizontal { tsz.height } else { tsz.width }) * 0.5;
-                    let pt = orient_point(fp, tp);
-                    let rect = Rectangle::new(pt, tsz);
-                    if rect.is_within(&orient_rect(lo, key_len, strip, roll_width)) {
-                        renderer.fill_paragraph(label, pt, black, rect);
+                    let size = label.min_bounds();
+                    let position = Point::new(
+                        key_rect.x + (key_rect.width - size.width) * 0.5,
+                        key_rect.y + (key_rect.height - size.height) * 0.5,
+                    );
+                    let label_rect = Rectangle::new(position, size);
+                    if label_rect.is_within(&key_rect) {
+                        renderer.fill_paragraph(label, position, black, label_rect);
                     }
                 }
             }
         }
         if let Some(rect) = compact_highlight {
-            fill_bordered_rect(
-                renderer,
-                rect,
-                PIANO_SELECTED_COLOR,
-                iced::Border::default(),
-                false,
-            );
+            fill_bordered_rect(renderer, rect, PIANO_SELECTED_COLOR, borderless, false);
         }
-        orient_rect(
-            freq_org,
-            freq_ext,
-            if right {
-                time_org
-            } else {
-                time_org + strip_width
-            },
-            time_ext - strip_width,
-        )
+        screen_rect(freq_org, freq_ext, tooltip, time_ext - strip_width)
     }
 }
 
