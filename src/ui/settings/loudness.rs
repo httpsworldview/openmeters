@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::set;
+use super::{set, settings_messages, settings_pane, settings_view};
 use crate::persistence::settings::LoudnessSettings;
 use crate::ui::widgets::pick;
 use crate::visuals::options::MeterMode;

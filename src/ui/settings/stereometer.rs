@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::{set, set_f32, set_usize};
+use super::{set, set_f32, set_usize, settings_messages, settings_pane, settings_view};
 use crate::persistence::settings::StereometerSettings;
 use crate::ui::widgets::{SliderRange, pick, split, toggle};
 use crate::visuals::options::{

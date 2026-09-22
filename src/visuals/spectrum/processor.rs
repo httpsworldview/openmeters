@@ -92,7 +92,10 @@ pub struct SpectrumProcessor {
 impl SpectrumProcessor {
     pub fn new(mut config: SpectrumConfig) -> Self {
         config.normalize();
-        Self { config, ..Self::default() }
+        Self {
+            config,
+            ..Self::default()
+        }
     }
 
     pub fn config(&self) -> SpectrumConfig {
@@ -150,7 +153,9 @@ impl SpectrumProcessor {
         let bins = self.config.fft_size / 2 + 1;
         let floor = self.config.floor_db;
         for trace in &mut self.snapshot.traces {
-            for db in trace { reset_to_floor(db, bins, floor); }
+            for db in trace {
+                reset_to_floor(db, bins, floor);
+            }
         }
         let state_floor = smoothing_state_floor(&self.a_weighting_db, floor);
         let active = self.active_traces();
@@ -170,7 +175,10 @@ impl SpectrumProcessor {
 
     fn active_traces(&self) -> [bool; TRACE_COUNT] {
         let [primary, secondary] = self.sources();
-        [primary != Channel::None, secondary != Channel::None && secondary != primary]
+        [
+            primary != Channel::None,
+            secondary != Channel::None && secondary != primary,
+        ]
     }
 
     fn process_ready_windows(&mut self) -> bool {
@@ -183,9 +191,13 @@ impl SpectrumProcessor {
         let mut produced = false;
 
         debug_assert_eq!(self.a_weighting_db.len(), bins);
-        if !active.iter().any(|&active| active) { return false; }
+        if !active.iter().any(|&active| active) {
+            return false;
+        }
 
-        while (0..TRACE_COUNT).all(|trace| !active[trace] || self.pcm_buffers[trace].len() >= fft_size) {
+        while (0..TRACE_COUNT)
+            .all(|trace| !active[trace] || self.pcm_buffers[trace].len() >= fft_size)
+        {
             for (trace, &active) in active.iter().enumerate() {
                 if active {
                     self.process_trace_window(trace, dt_seconds, floor);
@@ -200,9 +212,7 @@ impl SpectrumProcessor {
                     drained = drained.min(count);
                 }
             }
-            self.pending_skip_frames = self
-                .pending_skip_frames
-                .saturating_add(hop - drained);
+            self.pending_skip_frames = self.pending_skip_frames.saturating_add(hop - drained);
             produced = true;
         }
 
@@ -376,7 +386,11 @@ impl SpectrumLevelBuffers {
             }
         };
         let [weighted_out, raw_out] = outputs;
-        let bins = powers.iter().zip(weighting_db).zip(raw_out).zip(weighted_out);
+        let bins = powers
+            .iter()
+            .zip(weighting_db)
+            .zip(raw_out)
+            .zip(weighted_out);
         for (((&power, &weight), raw), weighted) in bins {
             if power < self.state_floor {
                 (*raw, *weighted) = (floor, floor);
@@ -400,7 +414,9 @@ fn a_weight(freq_hz: f32) -> f32 {
     const C3: f64 = 737.862_23 * 737.862_23;
     const C4: f64 = 12_194.217 * 12_194.217;
 
-    if freq_hz <= 0.0 { return f32::NEG_INFINITY; }
+    if freq_hz <= 0.0 {
+        return f32::NEG_INFINITY;
+    }
 
     let f = freq_hz as f64;
     let f2 = f * f;
@@ -428,7 +444,10 @@ mod tests {
         invalid.normalize();
         assert_eq!(invalid.sample_rate, DEFAULT_SAMPLE_RATE);
         assert_eq!(invalid.fft_size, MAX_DSP_BUFFER_LEN);
-        assert_eq!(invalid.hop_size, MAX_DSP_BUFFER_LEN / DEFAULT_SPECTRUM_HOP_DIVISOR);
+        assert_eq!(
+            invalid.hop_size,
+            MAX_DSP_BUFFER_LEN / DEFAULT_SPECTRUM_HOP_DIVISOR
+        );
         assert_eq!(invalid.floor_db, DEFAULT_SPECTRUM_DB_FLOOR);
 
         for (floor_db, expected) in [
@@ -447,26 +466,55 @@ mod tests {
     #[test]
     fn config_changes_reseed_levels_and_rebuild_fft_only_when_needed() {
         let mut processor = SpectrumProcessor::new(SpectrumConfig {
-            fft_size: 128, hop_size: 128, floor_db: -1.0, secondary_source: Channel::None,
+            fft_size: 128,
+            hop_size: 128,
+            floor_db: -1.0,
+            secondary_source: Channel::None,
             ..Default::default()
         });
         processor.prepare();
         for resize in [false, true] {
             processor.pcm_buffers[0].extend([0.25, -0.25]);
             let mut config = processor.config();
-            if resize { config.fft_size *= 2; config.hop_size *= 2; }
-            else { config.floor_db = config.floor_db.next_up(); }
+            if resize {
+                config.fft_size *= 2;
+                config.hop_size *= 2;
+            } else {
+                config.floor_db = config.floor_db.next_up();
+            }
             processor.update_config(config);
             assert_eq!(processor.pcm_buffers[0].len(), if resize { 0 } else { 2 });
             let bins = config.fft_size / 2 + 1;
-            assert!(processor.snapshot.traces.iter().flatten().all(|trace|
-                trace.len() == bins && trace.iter().all(|&db| db == config.floor_db)));
-            assert!(processor.levels.iter().all(|level| level.smoothed_power.is_empty()));
-            let snapshot = processor.process_block(&AudioBlock::new(
-                &vec![0.0; config.fft_size], 1, config.sample_rate,
-            )).unwrap();
+            assert!(
+                processor
+                    .snapshot
+                    .traces
+                    .iter()
+                    .flatten()
+                    .all(|trace| trace.len() == bins
+                        && trace.iter().all(|&db| db == config.floor_db))
+            );
+            assert!(
+                processor
+                    .levels
+                    .iter()
+                    .all(|level| level.smoothed_power.is_empty())
+            );
+            let snapshot = processor
+                .process_block(&AudioBlock::new(
+                    &vec![0.0; config.fft_size],
+                    1,
+                    config.sample_rate,
+                ))
+                .unwrap();
             assert_eq!(snapshot.frequency_bins.len(), bins);
-            assert!(snapshot.traces.iter().flatten().all(|trace| trace.len() == bins));
+            assert!(
+                snapshot
+                    .traces
+                    .iter()
+                    .flatten()
+                    .all(|trace| trace.len() == bins)
+            );
         }
     }
 
@@ -500,9 +548,16 @@ mod tests {
             for (trace, expected_bin) in snapshot.traces.iter().zip(expected_bins) {
                 assert_eq!(trace[1].len(), 5);
                 for (bin, &actual) in trace[1].iter().enumerate() {
-                    let expected = if Some(bin) == expected_bin { 0.0 } else { config.floor_db };
-                    assert!(actual == expected || expected_bin.is_some() && (actual - expected).abs() < 0.01,
-                        "{source:?}, bin {bin}: {actual} vs {expected} dBFS");
+                    let expected = if Some(bin) == expected_bin {
+                        0.0
+                    } else {
+                        config.floor_db
+                    };
+                    assert!(
+                        actual == expected
+                            || expected_bin.is_some() && (actual - expected).abs() < 0.01,
+                        "{source:?}, bin {bin}: {actual} vs {expected} dBFS"
+                    );
                 }
             }
         }
@@ -512,29 +567,48 @@ mod tests {
     fn averaging_follows_each_audio_hop_and_resets_on_mode_changes() {
         use AveragingMode::*;
         let mut processor = SpectrumProcessor::new(SpectrumConfig {
-            sample_rate: 8.0, fft_size: 8, hop_size: 8,
-            window: WindowKind::Rectangular, floor_db: -100.0,
+            sample_rate: 8.0,
+            fft_size: 8,
+            hop_size: 8,
+            window: WindowKind::Rectangular,
+            floor_db: -100.0,
             ..Default::default()
         });
-        let samples: Vec<_> = [1.0, 0.0, 0.5, 0.0].into_iter()
-            .flat_map(|amplitude| sine_wave(1.0, 8.0, 8, amplitude)).collect();
+        let samples: Vec<_> = [1.0, 0.0, 0.5, 0.0]
+            .into_iter()
+            .flat_map(|amplitude| sine_wave(1.0, 8.0, 8, amplitude))
+            .collect();
         for (mode, powers) in [
-            (PeakHold { decay_per_second: 24.0 }, [1.0, 0.0039810717, 0.25, 0.0009952679]),
+            (
+                PeakHold {
+                    decay_per_second: 24.0,
+                },
+                [1.0, 0.0039810717, 0.25, 0.0009952679],
+            ),
             (Exponential { factor: 0.5 }, [1.0, 0.5, 0.375, 0.1875]),
             (None, [1.0, 0.0, 0.25, 0.0]),
             (Exponential { factor: 0.75 }, [1.0, 0.75, 0.625, 0.46875]),
         ] {
-            processor.update_config(SpectrumConfig { averaging: mode, ..processor.config() });
-            let reset = processor.process_block(&AudioBlock::new(&[0.0; 8], 1, 8.0)).unwrap();
+            processor.update_config(SpectrumConfig {
+                averaging: mode,
+                ..processor.config()
+            });
+            let reset = processor
+                .process_block(&AudioBlock::new(&[0.0; 8], 1, 8.0))
+                .unwrap();
             assert_eq!(reset.traces[0][1][1], -100.0, "mode change to {mode:?}");
             for hops in [1, 4] {
                 processor.reset_audio();
                 for (chunk, expected) in samples.chunks(hops * 8).zip(powers.chunks(hops)) {
-                    let snapshot = processor.process_block(&AudioBlock::new(chunk, 1, 8.0)).unwrap();
+                    let snapshot = processor
+                        .process_block(&AudioBlock::new(chunk, 1, 8.0))
+                        .unwrap();
                     let expected = (10.0 * f32::log10(*expected.last().unwrap())).max(-100.0);
                     let actual = snapshot.traces[0][1][1];
-                    assert!((actual - expected).abs() < 1.0e-5,
-                        "{mode:?}, {hops} hops: {actual} vs {expected} dB");
+                    assert!(
+                        (actual - expected).abs() < 1.0e-5,
+                        "{mode:?}, {hops} hops: {actual} vs {expected} dB"
+                    );
                 }
             }
             processor.process_block(&AudioBlock::new(&samples[..8], 1, 8.0));
@@ -547,7 +621,9 @@ mod tests {
             AveragingMode::None,
             AveragingMode::Exponential { factor: 0.0 },
             AveragingMode::Exponential { factor: 0.5 },
-            AveragingMode::PeakHold { decay_per_second: 1000.0 },
+            AveragingMode::PeakHold {
+                decay_per_second: 1000.0,
+            },
         ] {
             for amplitude in [1.0e18, 1.0e20, f32::MAX] {
                 let config = SpectrumConfig {
@@ -563,22 +639,42 @@ mod tests {
                 let burst = [amplitude, amplitude, -amplitude, -amplitude].repeat(32);
                 let expected_power = 2.0 * f64::from(amplitude).powi(2);
                 for _ in 0..2 {
-                    let snapshot = processor.process_block(&AudioBlock::new(&burst, 1, config.sample_rate)).unwrap();
-                    assert!(snapshot.traces.iter().flatten().flatten().all(|db| db.is_finite()),
-                        "{averaging:?}, amplitude {amplitude}: non-finite levels");
+                    let snapshot = processor
+                        .process_block(&AudioBlock::new(&burst, 1, config.sample_rate))
+                        .unwrap();
+                    assert!(
+                        snapshot
+                            .traces
+                            .iter()
+                            .flatten()
+                            .flatten()
+                            .all(|db| db.is_finite()),
+                        "{averaging:?}, amplitude {amplitude}: non-finite levels"
+                    );
                     if expected_power <= f64::from(f32::MAX) {
                         let expected = (10.0 * expected_power.log10()) as f32;
                         for trace in &snapshot.traces {
                             let actual = trace[1][32];
-                            assert!((actual - expected).abs() < 1.0e-4,
-                                "{averaging:?}, amplitude {amplitude}: {actual} vs {expected} dB");
+                            assert!(
+                                (actual - expected).abs() < 1.0e-4,
+                                "{averaging:?}, amplitude {amplitude}: {actual} vs {expected} dB"
+                            );
                         }
                     }
                 }
                 let silence = vec![0.0; config.hop_size * 500];
-                let snapshot = processor.process_block(&AudioBlock::new(&silence, 1, config.sample_rate)).unwrap();
-                assert!(snapshot.traces.iter().flatten().flatten().all(|&db| db == config.floor_db),
-                    "{averaging:?}, amplitude {amplitude}: failed to return to the floor");
+                let snapshot = processor
+                    .process_block(&AudioBlock::new(&silence, 1, config.sample_rate))
+                    .unwrap();
+                assert!(
+                    snapshot
+                        .traces
+                        .iter()
+                        .flatten()
+                        .flatten()
+                        .all(|&db| db == config.floor_db),
+                    "{averaging:?}, amplitude {amplitude}: failed to return to the floor"
+                );
             }
         }
     }
@@ -617,17 +713,29 @@ mod tests {
     fn smoothing_keeps_only_power_visible_after_weighting() {
         for mode in [
             AveragingMode::Exponential { factor: 0.95 },
-            AveragingMode::PeakHold { decay_per_second: 12.0 },
+            AveragingMode::PeakHold {
+                decay_per_second: 12.0,
+            },
         ] {
             let mut buffers = SpectrumLevelBuffers::default();
             buffers.reset(2, smoothing_state_floor(&[0.0, 1.2], -100.0), true);
             buffers.smoothed_power[0] = db_to_power(-101.0);
             let mut outputs = [vec![-100.0; 2], vec![-100.0; 2]];
-            buffers.update_outputs(mode, &[0.0, db_to_power(-100.5)], &mut outputs, &[0.0, 1.2], 1.0, -100.0);
+            buffers.update_outputs(
+                mode,
+                &[0.0, db_to_power(-100.5)],
+                &mut outputs,
+                &[0.0, 1.2],
+                1.0,
+                -100.0,
+            );
             assert_eq!(buffers.smoothed_power[0], 0.0);
             assert_eq!(outputs[1], [-100.0; 2]);
             assert_eq!(outputs[0][0], -100.0);
-            assert!((outputs[0][1] + 99.3).abs() < 1.0e-5, "{mode:?}: {outputs:?}");
+            assert!(
+                (outputs[0][1] + 99.3).abs() < 1.0e-5,
+                "{mode:?}: {outputs:?}"
+            );
         }
     }
 

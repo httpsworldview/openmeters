@@ -2,9 +2,7 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::processor::{BAND_COUNT, FULL_BAND, StereometerSnapshot};
-use super::render::{
-    CORR_LABEL_GAP, CORR_LABEL_H, CORR_LABEL_W, FixedTrail, StereometerParams,
-};
+use super::render::{CORR_LABEL_GAP, CORR_LABEL_H, CORR_LABEL_W, FixedTrail, StereometerParams};
 use crate::persistence::settings::StereometerSettings;
 use crate::util::{color::color_to_rgba, finite_or};
 use crate::visuals::{
@@ -12,8 +10,8 @@ use crate::visuals::{
     palettes::{self, stereometer::SIZE as PALETTE_SIZE},
     render::common::{fill_rect, text as raw_text},
 };
-use iced::advanced::{graphics::text::Paragraph, text};
 use iced::advanced::text::Paragraph as _;
+use iced::advanced::{graphics::text::Paragraph, text};
 use iced::{Color, Point, Size};
 use std::sync::Arc;
 
@@ -50,15 +48,19 @@ impl StereometerState {
     }
 
     pub fn set_palette(&mut self, palette: &[Color; PALETTE_SIZE]) {
-        self.palette = *palette; self.band_colors = Default::default();
+        self.palette = *palette;
+        self.band_colors = Default::default();
         self.sync_band_colors();
-        self.geometry.invalidate(); self.grid.invalidate();
+        self.geometry.invalidate();
+        self.grid.invalidate();
     }
 
     fn sync_band_colors(&mut self) {
         for (band, colors) in self.band_colors.iter_mut().enumerate() {
             let len = self.points[band + 1].len();
-            if colors.len() == len { continue; }
+            if colors.len() == len {
+                continue;
+            }
             let [r, g, b, a] = color_to_rgba(self.palette[5 + band]);
             *colors = (0..len)
                 .map(|i| {
@@ -90,14 +92,18 @@ impl StereometerState {
     }
 
     pub(in crate::visuals) fn is_quiescent(&self) -> bool {
-        let bands = 1 + BAND_COUNT * usize::from(self.settings.mode == StereometerMode::DotCloudBands);
+        let bands =
+            1 + BAND_COUNT * usize::from(self.settings.mode == StereometerMode::DotCloudBands);
         let trails = match self.settings.correlation_meter {
             CorrelationMeterMode::Off => 0,
             CorrelationMeterMode::SingleBand => 1,
             CorrelationMeterMode::MultiBand => BAND_COUNT + 1,
         };
         self.points[..bands].iter().all(|points| {
-            !points.is_empty() && points.iter().all(|&(left, right)| left == 0.0 && right == 0.0)
+            !points.is_empty()
+                && points
+                    .iter()
+                    .all(|&(left, right)| left == 0.0 && right == 0.0)
         }) && self.trails[..trails]
             .iter()
             .all(|trail| !trail.is_empty() && trail.iter().all(|value| *value == 0.0))
@@ -105,7 +111,9 @@ impl StereometerState {
 
     pub fn visual_params(&self, bounds: iced::Rectangle) -> Option<StereometerParams> {
         let s = &self.settings;
-        if self.points[FULL_BAND].is_empty() { return None; }
+        if self.points[FULL_BAND].is_empty() {
+            return None;
+        }
         Some(StereometerParams {
             geometry: self.geometry,
             grid: self.grid,
@@ -126,29 +134,37 @@ impl StereometerState {
     }
 }
 
-crate::visuals::visualization_widget!(Stereometer, StereometerState, |this, renderer, theme, bounds| {
-    let state = this.state.borrow();
-    let Some(params) = state.visual_params(bounds) else {
-        fill_rect(renderer, bounds, theme.extended_palette().background.base.color);
-        return;
-    };
-    let side = params.correlation_meter_side;
-    let (_, meter) = StereometerParams::meter_layout(&params);
-    renderer.draw_primitive(bounds, params);
-
-    if let Some(meter) = meter.filter(|meter| meter.width > 0.0 && meter.height > 0.0) {
-        let left = side == CorrelationMeterSide::Left;
-        let x = if left {
-            meter.x + meter.width + CORR_LABEL_GAP
-        } else {
-            meter.x - CORR_LABEL_GAP
+crate::visuals::visualization_widget!(
+    Stereometer,
+    StereometerState,
+    |this, renderer, theme, bounds| {
+        let state = this.state.borrow();
+        let Some(params) = state.visual_params(bounds) else {
+            fill_rect(
+                renderer,
+                bounds,
+                theme.extended_palette().background.base.color,
+            );
+            return;
         };
-        let color = theme.extended_palette().background.base.text;
-        for (label, value) in state.labels.iter().zip([1.0, 0.0, -1.0]) {
-            let size = label.min_bounds();
-            let x = if left { x } else { x - size.width };
-            let y = StereometerParams::correlation_y(meter, value) - size.height * 0.5;
-            text::Renderer::fill_paragraph(renderer, label, Point::new(x, y), color, bounds);
+        let side = params.correlation_meter_side;
+        let (_, meter) = StereometerParams::meter_layout(&params);
+        renderer.draw_primitive(bounds, params);
+
+        if let Some(meter) = meter.filter(|meter| meter.width > 0.0 && meter.height > 0.0) {
+            let left = side == CorrelationMeterSide::Left;
+            let x = if left {
+                meter.x + meter.width + CORR_LABEL_GAP
+            } else {
+                meter.x - CORR_LABEL_GAP
+            };
+            let color = theme.extended_palette().background.base.text;
+            for (label, value) in state.labels.iter().zip([1.0, 0.0, -1.0]) {
+                let size = label.min_bounds();
+                let x = if left { x } else { x - size.width };
+                let y = StereometerParams::correlation_y(meter, value) - size.height * 0.5;
+                text::Renderer::fill_paragraph(renderer, label, Point::new(x, y), color, bounds);
+            }
         }
     }
-});
+);

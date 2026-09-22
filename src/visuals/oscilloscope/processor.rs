@@ -13,7 +13,9 @@ pub(in crate::visuals::oscilloscope) const TRACE_COUNT: usize = 2;
 
 fn parabolic_refine(y_prev: f32, y_curr: f32, y_next: f32, tau: usize) -> f32 {
     let denom = (y_prev - y_curr) + (y_next - y_curr);
-    if denom == 0.0 || !denom.is_finite() { return tau as f32; }
+    if denom == 0.0 || !denom.is_finite() {
+        return tau as f32;
+    }
     let delta = 0.5 * (y_prev - y_next) / denom;
     (tau as f32 + delta.clamp(-1.0, 1.0)).max(1.0)
 }
@@ -26,7 +28,9 @@ pub enum TriggerMode {
 
 impl Default for TriggerMode {
     fn default() -> Self {
-        Self::Stable { num_cycles: DEFAULT_STABLE_CYCLES }
+        Self::Stable {
+            num_cycles: DEFAULT_STABLE_CYCLES,
+        }
     }
 }
 
@@ -60,10 +64,8 @@ impl PeriodFft {
         let mut planner = RealFftPlanner::new();
         let forward = planner.plan_fft_forward(size);
         let inverse = planner.plan_fft_inverse(size);
-        let scratch = vec![
-            Complex::default();
-            forward.get_scratch_len().max(inverse.get_scratch_len())
-        ];
+        let scratch =
+            vec![Complex::default(); forward.get_scratch_len().max(inverse.get_scratch_len())];
         Self {
             input: forward.make_input_vec(),
             spectrum: forward.make_output_vec(),
@@ -95,7 +97,9 @@ impl PeriodEstimator {
 
     fn estimate_period(&mut self, samples: &[f32], rate: f32) -> Option<PeriodEstimate> {
         self.last_peak = 0.0;
-        if samples.len() < 3 { return None; }
+        if samples.len() < 3 {
+            return None;
+        }
 
         let (chunks, remainder) = samples.as_chunks::<4>();
         let mut sums = [0.0_f64; 4];
@@ -118,18 +122,24 @@ impl PeriodEstimator {
         let max = maxima.into_iter().fold(f32::NEG_INFINITY, f32::max);
         let mean = (sum / samples.len() as f64) as f32;
         self.last_peak = (min - mean).abs().max((max - mean).abs());
-        if self.last_peak < PeriodEstimator::MIN_SIGNAL_PEAK { return None; }
+        if self.last_peak < PeriodEstimator::MIN_SIGNAL_PEAK {
+            return None;
+        }
 
         let min_period = (rate / PeriodEstimator::MAX_HZ).round().max(2.0) as usize;
-        let max_period = (((rate / PeriodEstimator::MIN_HZ).ceil() as usize) + 1)
-            .min(samples.len() / 2 + 1);
-        if max_period <= min_period + 1 { return None; }
+        let max_period =
+            (((rate / PeriodEstimator::MIN_HZ).ceil() as usize) + 1).min(samples.len() / 2 + 1);
+        if max_period <= min_period + 1 {
+            return None;
+        }
         self.compute_periodicity(samples, mean, max_period);
 
         let nsdf = &self.periodicity[..=max_period];
         let zero_crossing = (1..=max_period).find(|&tau| nsdf[tau] <= 0.0)?;
         let first_tau = min_period.max(zero_crossing);
-        if first_tau >= max_period { return None; }
+        if first_tau >= max_period {
+            return None;
+        }
 
         let is_candidate = |tau: &usize| {
             nsdf[*tau] >= PeriodEstimator::MIN_PERIODICITY
@@ -152,10 +162,19 @@ impl PeriodEstimator {
 
     fn compute_periodicity(&mut self, samples: &[f32], mean: f32, max_lag: usize) {
         let fft_size = (samples.len() + max_lag).next_power_of_two();
-        if self.fft.as_ref().is_none_or(|fft| fft.input.len() != fft_size) {
+        if self
+            .fft
+            .as_ref()
+            .is_none_or(|fft| fft.input.len() != fft_size)
+        {
             self.fft = Some(PeriodFft::new(fft_size));
         }
-        let Self { periodicity, energy_prefix, fft, .. } = self;
+        let Self {
+            periodicity,
+            energy_prefix,
+            fft,
+            ..
+        } = self;
         let fft = fft.as_mut().expect("period FFT initialized");
         energy_prefix.resize(samples.len() + 1, 0.0);
         energy_prefix[0] = 0.0;
@@ -224,11 +243,9 @@ fn correlation_stats(y: &[f32]) -> [f64; 2] {
             sums[lane][1] += y * y;
         }
     }
-    let [mut sum, mut squares] = sums
-        .into_iter()
-        .fold([0.0; 2], |[sum, squares], lane| {
-            [sum + lane[0], squares + lane[1]]
-        });
+    let [mut sum, mut squares] = sums.into_iter().fold([0.0; 2], |[sum, squares], lane| {
+        [sum + lane[0], squares + lane[1]]
+    });
     for &y in remainder {
         let y = f64::from(y);
         sum += y;
@@ -264,8 +281,7 @@ fn normalized_correlation(x: &[f32], y: &[f32], [sum_y, sum_yy]: [f64; 2]) -> f3
             sums[2][lane] += x * y;
         }
     }
-    let [mut sum_x, mut sum_xx, mut sum_xy] =
-        sums.map(|[a, b, c, d]| 0.0 + a + b + c + d);
+    let [mut sum_x, mut sum_xx, mut sum_xy] = sums.map(|[a, b, c, d]| 0.0 + a + b + c + d);
     for (&x, &y) in x_remainder.iter().zip(y_remainder) {
         let (x, y) = (f64::from(x), f64::from(y));
         sum_x += x;
@@ -310,11 +326,17 @@ fn finish_correlation(
     let energy_x = (-sum_x / n).mul_add(sum_x, sum_xx).max(0.0);
     let energy_y = (-sum_y / n).mul_add(sum_y, sum_yy).max(0.0);
     let denom = (energy_x * energy_y).sqrt();
-    if denom > f64::EPSILON { (dot / denom).clamp(-1.0, 1.0) as f32 } else { 0.0 }
+    if denom > f64::EPSILON {
+        (dot / denom).clamp(-1.0, 1.0) as f32
+    } else {
+        0.0
+    }
 }
 
 fn sample_linear_zero(data: &[f32], pos: f32) -> f32 {
-    if pos < 0.0 || pos > (data.len() - 1) as f32 { return 0.0; }
+    if pos < 0.0 || pos > (data.len() - 1) as f32 {
+        return 0.0;
+    }
     let idx = pos as usize;
     let frac = pos - idx as f32;
     if frac > f32::EPSILON && idx + 1 < data.len() {
@@ -388,10 +410,16 @@ impl StableTrigger {
         let probe_len = probe_frames.min(trace.len());
         let detected = if probe_len >= 3 {
             let probe = &trace[trace.len() - probe_len..];
-            let factor = (sample_rate / PeriodEstimator::MAX_ANALYSIS_RATE).ceil().max(1.0) as usize;
+            let factor = (sample_rate / PeriodEstimator::MAX_ANALYSIS_RATE)
+                .ceil()
+                .max(1.0) as usize;
             let probe = if factor > 1 {
                 self.work.clear();
-                self.work.extend(probe[probe.len() % factor..].chunks_exact(factor).map(mean_f32));
+                self.work.extend(
+                    probe[probe.len() % factor..]
+                        .chunks_exact(factor)
+                        .map(mean_f32),
+                );
                 self.work.as_slice()
             } else {
                 probe
@@ -428,7 +456,10 @@ impl StableTrigger {
                 self.unlock();
                 return None;
             }
-            return Some(PeriodEstimate { period, confidence: 0.0 });
+            return Some(PeriodEstimate {
+                period,
+                confidence: 0.0,
+            });
         };
         self.missed_periods = 0;
 
@@ -456,7 +487,9 @@ impl StableTrigger {
         let before = len / 2;
         let after = len - before;
         let right = trace.len().checked_sub(frames.max(after))?;
-        if right < before { return None; }
+        if right < before {
+            return None;
+        }
 
         let search = ((period * StableTrigger::SEARCH_PERIODS).round() as usize)
             .max(1)
@@ -503,7 +536,8 @@ impl StableTrigger {
         let mean = mean_f32(data);
         self.mean += StableTrigger::MEAN_RESPONSIVENESS * (mean - self.mean);
         self.work.clear();
-        self.work.extend(data.iter().map(|sample| sample - self.mean));
+        self.work
+            .extend(data.iter().map(|sample| sample - self.mean));
     }
 
     fn prepare_template(&mut self, period: f32, use_reference: bool) {
@@ -544,7 +578,9 @@ impl StableTrigger {
             }
             scores[offset]
         };
-        let stride = ((period / 16.0).round() as usize).clamp(1, 128).min(search.max(1));
+        let stride = ((period / 16.0).round() as usize)
+            .clamp(1, 128)
+            .min(search.max(1));
         let mut best = (search / 2, f32::NEG_INFINITY);
         for offset in (0..=search).rev().step_by(stride).chain([0]) {
             let score = score_at(offset);
@@ -584,16 +620,23 @@ impl StableTrigger {
         }
 
         let semitones = (period / self.reference_period).log2() * 12.0;
-        if self.reference.len() != len || semitones.abs() >= StableTrigger::BUFFER_RETUNE_SEMITONES {
+        if self.reference.len() != len || semitones.abs() >= StableTrigger::BUFFER_RETUNE_SEMITONES
+        {
             self.reference = retune_reference(&self.reference, self.reference_period, period, len);
             self.reference_period = period;
         }
     }
 
     fn update_reference(&mut self, period: f32) {
-        let peak = self.reference.iter().map(|sample| sample.abs()).fold(0.0, f32::max);
+        let peak = self
+            .reference
+            .iter()
+            .map(|sample| sample.abs())
+            .fold(0.0, f32::max);
         let scale = 1.0 / peak.max(StableTrigger::NORMALIZE_FLOOR);
-        for sample in &mut self.reference { *sample *= scale; }
+        for sample in &mut self.reference {
+            *sample *= scale;
+        }
         for (reference, &candidate) in self.reference.iter_mut().zip(&self.candidate) {
             *reference += StableTrigger::BUFFER_RESPONSIVENESS * (candidate - *reference);
         }
@@ -624,7 +667,11 @@ impl StableTrigger {
             }
         }
 
-        normalized_correlation(&self.reference, &self.candidate, correlation_stats(&self.candidate))
+        normalized_correlation(
+            &self.reference,
+            &self.candidate,
+            correlation_stats(&self.candidate),
+        )
     }
 }
 
@@ -635,7 +682,11 @@ fn find_rising_zero_crossing(
     let mut frames = frames;
     let mut previous = frames.next()?;
     for current in frames {
-        let (lo, hi) = if previous < current { (previous, current) } else { (current, previous) };
+        let (lo, hi) = if previous < current {
+            (previous, current)
+        } else {
+            (current, previous)
+        };
         let (&a, &b) = samples.get(lo).zip(samples.get(hi))?;
         if a <= 0.0 && b > 0.0 {
             return Some((lo, (-a / (b - a)).clamp(0.0, 1.0) * (hi - lo) as f32));
@@ -712,20 +763,26 @@ impl OscilloscopeProcessor {
         }
 
         let channel_count = block.channels;
-        if self.history_channels.is_some_and(|channels| channels != channel_count) {
+        if self
+            .history_channels
+            .is_some_and(|channels| channels != channel_count)
+        {
             self.clear_history();
         }
         self.history_channels = Some(channel_count);
 
         let trace_channels = [self.config.channel_1, self.config.channel_2];
-        if trace_channels == [Channel::None; TRACE_COUNT] { return None; }
+        if trace_channels == [Channel::None; TRACE_COUNT] {
+            return None;
+        }
 
         let base_frames = (self.config.sample_rate * self.config.segment_duration)
             .round()
             .max(2.0)
             .min(MAX_DSP_BUFFER_LEN as f32) as usize;
         let max_period = (self.config.sample_rate / PeriodEstimator::MIN_HZ).ceil() as usize;
-        let probe_frames = ((self.config.sample_rate * PeriodEstimator::PROBE_SECONDS).round() as usize)
+        let probe_frames = ((self.config.sample_rate * PeriodEstimator::PROBE_SECONDS).round()
+            as usize)
             .max(max_period * 2);
         let mut mode = self.config.trigger_mode;
         let trigger_frames = match &mut mode {
@@ -738,7 +795,10 @@ impl OscilloscopeProcessor {
             }
         };
         let trigger_source = self.config.trigger_source;
-        let history_frames = probe_frames.max(base_frames).max(trigger_frames).min(MAX_DSP_BUFFER_LEN);
+        let history_frames = probe_frames
+            .max(base_frames)
+            .max(trigger_frames)
+            .min(MAX_DSP_BUFFER_LEN);
         let sample_rate = self.config.sample_rate;
         let capture = |trace: &[f32], trigger: &mut StableTrigger| {
             (trace.len() >= base_frames).then(|| match mode {
@@ -756,13 +816,19 @@ impl OscilloscopeProcessor {
         let separate_source = matching_trace.is_none() && trigger_source != Channel::None;
         let incoming = block.frame_count();
         for (trace, &active) in self.traces.iter_mut().zip(&active_traces) {
-            if active { trace.buffer.reserve(incoming); }
+            if active {
+                trace.buffer.reserve(incoming);
+            }
         }
-        if separate_source { self.source.buffer.reserve(incoming); }
+        if separate_source {
+            self.source.buffer.reserve(incoming);
+        }
 
         for stereo in block.stereo_frames() {
             for (trace, &channel) in self.traces.iter_mut().zip(&trace_channels) {
-                if channel != Channel::None { trace.buffer.push_back(channel.project(stereo)); }
+                if channel != Channel::None {
+                    trace.buffer.push_back(channel.project(stereo));
+                }
             }
             if separate_source {
                 self.source.buffer.push_back(trigger_source.project(stereo));
@@ -770,7 +836,9 @@ impl OscilloscopeProcessor {
         }
         for (trace, &active) in self.traces.iter_mut().zip(&active_traces) {
             let keep = history_frames * usize::from(active);
-            trace.buffer.drain(..trace.buffer.len().saturating_sub(keep));
+            trace
+                .buffer
+                .drain(..trace.buffer.len().saturating_sub(keep));
         }
         if separate_source {
             self.source
@@ -784,7 +852,10 @@ impl OscilloscopeProcessor {
                 &mut self.source.trigger,
             )
         } else if separate_source {
-            capture(self.source.buffer.make_contiguous(), &mut self.source.trigger)
+            capture(
+                self.source.buffer.make_contiguous(),
+                &mut self.source.trigger,
+            )
         } else {
             None
         };
@@ -797,7 +868,9 @@ impl OscilloscopeProcessor {
             })?
         });
 
-        if captures.iter().all(Option::is_none) { return None; }
+        if captures.iter().all(Option::is_none) {
+            return None;
+        }
 
         self.write_snapshot(&captures);
         Some(OscilloscopeSnapshot {
@@ -871,7 +944,9 @@ fn stable_history_frames(max_period: usize, cycles: usize, sample_rate: f32) -> 
         .saturating_add(1)
         .max(max_kernel.div_ceil(2));
     (
-        fixed_frames.saturating_add(max_tail).min(MAX_DSP_BUFFER_LEN),
+        fixed_frames
+            .saturating_add(max_tail)
+            .min(MAX_DSP_BUFFER_LEN),
         cycles,
     )
 }
@@ -948,7 +1023,9 @@ mod tests {
         for block in blocks {
             let offset = block * BLOCK;
             processor.process_block(&AudioBlock::new(&signal[offset..offset + BLOCK], 1, RATE));
-            if predicate(processor) { return Some(block - start); }
+            if predicate(processor) {
+                return Some(block - start);
+            }
         }
         None
     }
@@ -1031,7 +1108,8 @@ mod tests {
         let mut trigger = StableTrigger::default();
         let base_frames = (RATE * stable_config().segment_duration).round() as usize;
         let max_period = (RATE / PeriodEstimator::MIN_HZ).ceil() as usize;
-        let probe_frames = ((RATE * PeriodEstimator::PROBE_SECONDS).round() as usize).max(max_period * 2);
+        let probe_frames =
+            ((RATE * PeriodEstimator::PROBE_SECONDS).round() as usize).max(max_period * 2);
         let (history_frames, _) = stable_history_frames(max_period, 2, RATE);
         let period = RATE / freq;
         let (mut first, mut jitter) = (None, 0.0_f32);
@@ -1053,7 +1131,10 @@ mod tests {
 
     #[test]
     fn period_estimation() {
-        assert_eq!(parabolic_refine(-1.5625e-8, -0.0625e-8, -0.5625e-8, 10), 10.25);
+        assert_eq!(
+            parabolic_refine(-1.5625e-8, -0.0625e-8, -0.5625e-8, 10),
+            10.25
+        );
         let mut estimator = PeriodEstimator::default();
         let long = (RATE * 0.1) as usize;
         for (freq, frames, max_error) in [
@@ -1068,17 +1149,35 @@ mod tests {
             let detected = RATE / estimate.period;
             let error = (detected - freq).abs() / freq;
             assert!(error < max_error, "got {detected}Hz, expected {freq}Hz");
-            assert!(estimate.confidence > 0.9, "confidence was {}", estimate.confidence);
+            assert!(
+                estimate.confidence > 0.9,
+                "confidence was {}",
+                estimate.confidence
+            );
         }
 
         for (freq, samples) in [
-            (110.0, periodic_samples(110.0, RATE, long, |c| 2.0 * c.fract() - 1.0)),
-            (440.0, periodic_samples(440.0, RATE, long, |c| {
-                if c.fract() < 0.5 { 1.0 } else { -1.0 }
-            })),
-            (440.0, periodic_samples(440.0, RATE, long, |c| {
-                (TAU * c).sin() + 2.0 * (TAU * 2.0 * c).sin()
-            })),
+            (
+                110.0,
+                periodic_samples(110.0, RATE, long, |c| 2.0 * c.fract() - 1.0),
+            ),
+            (
+                440.0,
+                periodic_samples(
+                    440.0,
+                    RATE,
+                    long,
+                    |c| {
+                        if c.fract() < 0.5 { 1.0 } else { -1.0 }
+                    },
+                ),
+            ),
+            (
+                440.0,
+                periodic_samples(440.0, RATE, long, |c| {
+                    (TAU * c).sin() + 2.0 * (TAU * 2.0 * c).sin()
+                }),
+            ),
         ] {
             let estimate = estimator.estimate_period(&samples, RATE).expect("period");
             let detected = RATE / estimate.period;
@@ -1086,13 +1185,27 @@ mod tests {
             assert!(estimate.confidence >= PeriodEstimator::MIN_PERIODICITY);
         }
 
-        assert!(estimator.estimate_period(&noise_samples(long), RATE).is_none());
+        assert!(
+            estimator
+                .estimate_period(&noise_samples(long), RATE)
+                .is_none()
+        );
         let high_rate = 768_000.0;
         let mut trigger = StableTrigger::default();
-        trigger.capture(&sine_samples(20.0, high_rate, 76_800), high_rate, 76_800, 960, 2);
+        trigger.capture(
+            &sine_samples(20.0, high_rate, 76_800),
+            high_rate,
+            76_800,
+            960,
+            2,
+        );
         let detected = high_rate / trigger.period.unwrap();
         assert!((detected - 20.0).abs() < 0.001, "detected {detected}");
-        assert!(estimator.estimate_period(&vec![-0.904_308; 76_800], high_rate).is_none());
+        assert!(
+            estimator
+                .estimate_period(&vec![-0.904_308; 76_800], high_rate)
+                .is_none()
+        );
         assert_eq!(estimator.last_peak, 0.0);
     }
 
@@ -1107,7 +1220,10 @@ mod tests {
                     (0.6 + 0.4 * (TAU * c / 37.0).sin()) * (TAU * c).sin() + 0.25
                 }),
             ),
-            ("saw", periodic_samples(440.0, RATE, frames, |c| 2.0 * c.fract() - 1.0)),
+            (
+                "saw",
+                periodic_samples(440.0, RATE, frames, |c| 2.0 * c.fract() - 1.0),
+            ),
             (
                 "square",
                 periodic_samples(440.0, RATE, frames, |c| {
@@ -1287,12 +1403,16 @@ mod tests {
             1,
             RATE,
         ));
-        assert!(processor.last_cycle_rate().is_some(), "brief aperiodic input should hold lock");
+        assert!(
+            processor.last_cycle_rate().is_some(),
+            "brief aperiodic input should hold lock"
+        );
 
-        let released = first_block_where(&mut processor, &signal, warmup + 1..warmup + noise, |p| {
-            p.last_cycle_rate().is_none()
-        })
-        .expect("sustained aperiodic input should release lock");
+        let released =
+            first_block_where(&mut processor, &signal, warmup + 1..warmup + noise, |p| {
+                p.last_cycle_rate().is_none()
+            })
+            .expect("sustained aperiodic input should release lock");
         assert!(released <= 8, "release took {released} blocks");
     }
 
@@ -1329,7 +1449,9 @@ mod tests {
         let (warmup, after) = (20, 20);
         let signal = cycle_rate_switch_signal(440.0, 880.0, warmup, after);
         feed_blocks(&mut processor, &signal, 0..warmup);
-        let pre = processor.last_cycle_rate().expect("cycle rate after warmup");
+        let pre = processor
+            .last_cycle_rate()
+            .expect("cycle rate after warmup");
         assert!(
             (pre - 440.0).abs() < 20.0,
             "pre-transition cycle rate was {pre:.1}"

@@ -4,15 +4,15 @@
 use iced::Rectangle;
 use std::sync::Arc;
 
-use crate::visuals::options::SpectrumDisplayMode;
-use crate::visuals::palettes::spectrum::SIZE as PALETTE_SIZE;
 use crate::util::color::{rgba_with_alpha, sample_rgba_gradient};
 use crate::util::lerp;
+use crate::visuals::options::SpectrumDisplayMode;
+use crate::visuals::palettes::spectrum::SIZE as PALETTE_SIZE;
 use crate::visuals::render::common::{
-    ClipTransform, GeometryFingerprint, GeometryScratch, SdfInstance, baseline_segment_instance,
-    decimate_finite_ordered_line_in_place, dot_instance, extend_aa_line_list,
-    gradient_quad_instance, line_instance, pack_f32_pair, quad_instance, replace_quad_instance,
-    SdfPipeline, sdf_primitive,
+    ClipTransform, GeometryFingerprint, GeometryScratch, SdfInstance, SdfPipeline,
+    baseline_segment_instance, decimate_finite_ordered_line_in_place, dot_instance,
+    extend_aa_line_list, gradient_quad_instance, line_instance, pack_f32_pair, quad_instance,
+    replace_quad_instance, sdf_primitive,
 };
 
 pub(super) const MIN_TRACE_POINTS: usize = 2;
@@ -119,19 +119,37 @@ impl SpectrumParams {
         }
     }
 
-    fn build_line_vertices(&self, scratch: &mut GeometryScratch, clip: ClipTransform, bounds: Rectangle) {
+    fn build_line_vertices(
+        &self,
+        scratch: &mut GeometryScratch,
+        clip: ClipTransform,
+        bounds: Rectangle,
+    ) {
         let pixel_budget = bounds.width.ceil().max(1.0) as usize * 2;
-        let GeometryScratch { instances: vertices, points, points2, .. } = scratch;
+        let GeometryScratch {
+            instances: vertices,
+            points,
+            points2,
+            ..
+        } = scratch;
         let normalized = self.normalized_points.as_ref();
         let has_primary = normalized.len() >= MIN_TRACE_POINTS;
         let has_secondary = self.secondary_points.len() >= MIN_TRACE_POINTS;
         let primary_segments = normalized.len().min(pixel_budget).saturating_sub(1);
-        let secondary_segments = self.secondary_points.len().min(pixel_budget).saturating_sub(1);
+        let secondary_segments = self
+            .secondary_points
+            .len()
+            .min(pixel_budget)
+            .saturating_sub(1);
         vertices.reserve(primary_segments * 2 + secondary_segments);
         let baseline = bounds.y + bounds.height;
 
         if has_primary {
-            points.extend(normalized.iter().map(|&p| normalized_to_cartesian(bounds, p)));
+            points.extend(
+                normalized
+                    .iter()
+                    .map(|&p| normalized_to_cartesian(bounds, p)),
+            );
             decimate_finite_ordered_line_in_place(points, pixel_budget);
             push_highlight_columns(
                 vertices,
@@ -161,17 +179,16 @@ impl SpectrumParams {
         }
 
         if has_primary {
-            extend_aa_line_list(
-                vertices,
-                points,
-                LINE_THICKNESS,
-                self.line_color,
-                clip,
-            );
+            extend_aa_line_list(vertices, points, LINE_THICKNESS, self.line_color, clip);
         }
     }
 
-    fn build_bar_vertices(&self, verts: &mut Vec<SdfInstance>, clip: ClipTransform, bounds: Rectangle) {
+    fn build_bar_vertices(
+        &self,
+        verts: &mut Vec<SdfInstance>,
+        clip: ClipTransform,
+        bounds: Rectangle,
+    ) {
         let pixel_budget = (bounds.width.ceil().max(1.0) as usize).saturating_mul(2);
         let bar_count = self
             .bar_count
@@ -240,7 +257,13 @@ fn push_highlight_columns(
         let c0 = palette_color(palette, (baseline - seg[0].1) / height, threshold);
         let c1 = palette_color(palette, (baseline - seg[1].1) / height, threshold);
         if c0[3] > 0.0 || c1[3] > 0.0 {
-            vertices.push(baseline_segment_instance(seg[0], seg[1], baseline, clip, [c0, c1]));
+            vertices.push(baseline_segment_instance(
+                seg[0],
+                seg[1],
+                baseline,
+                clip,
+                [c0, c1],
+            ));
         }
     }
 }
@@ -255,10 +278,10 @@ fn sample_max(pts: &[[f32; 2]], t0: f32, t1: f32) -> f32 {
     let start = pts.partition_point(|p| p[0] < lo);
     let hi_index = pts.partition_point(|p| p[0] < hi);
     let end = pts.partition_point(|p| p[0] <= hi);
-    pts[start..end]
-        .iter()
-        .map(|p| p[1])
-        .fold(sample_lerp_at(pts, lo, start).max(sample_lerp_at(pts, hi, hi_index)), f32::max)
+    pts[start..end].iter().map(|p| p[1]).fold(
+        sample_lerp_at(pts, lo, start).max(sample_lerp_at(pts, hi, hi_index)),
+        f32::max,
+    )
 }
 
 fn sample_lerp(pts: &[[f32; 2]], t: f32) -> f32 {
@@ -268,8 +291,12 @@ fn sample_lerp(pts: &[[f32; 2]], t: f32) -> f32 {
 }
 
 fn sample_lerp_at(pts: &[[f32; 2]], t: f32, index: usize) -> f32 {
-    if index == 0 { return pts[0][1]; }
-    if index >= pts.len() { return pts[pts.len() - 1][1]; }
+    if index == 0 {
+        return pts[0][1];
+    }
+    if index >= pts.len() {
+        return pts[pts.len() - 1][1];
+    }
     let a = pts[index - 1];
     let b = pts[index];
     lerp(a[1], b[1], (t - a[0]) / (b[0] - a[0]).max(1e-6))
@@ -296,13 +323,15 @@ mod tests {
 }
 
 sdf_primitive!(
-    SpectrumParams, SdfPipeline,
+    SpectrumParams,
+    SdfPipeline,
     "Spectrum",
     |self| self.geometry.id,
     Some(self.geometry_fingerprint())
 );
 sdf_primitive!(
-    SpectrumCutoutParams, SdfPipeline<true>,
+    SpectrumCutoutParams,
+    SdfPipeline<true>,
     "Spectrum label cutouts",
     |self| self.geometry.id,
     Some(self.geometry_fingerprint())

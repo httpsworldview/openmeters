@@ -56,13 +56,13 @@ macro_rules! visuals {
     )*) => {
         #[derive(Clone)]
         pub(crate) enum VisualContent {
-            $($variant(Shared<$module::$state>)),*
+            $($variant(Shared<$module::state::$state>)),*
         }
 
         impl VisualContent {
             pub(crate) fn render<M: 'static>(&self) -> Element<'_, M> {
                 match self {
-                    $(Self::$variant(s) => $module::widget(s)),*
+                    $(Self::$variant(s) => $module::state::widget(s)),*
                 }
             }
         }
@@ -74,14 +74,14 @@ macro_rules! visuals {
                 min_width: $min_w,
                 enabled: false,
                 module: Box::new(Visual {
-                    processor: $module::$processor::new(Default::default()),
-                    state: Rc::new(RefCell::new($module::$state::default())),
+                    processor: $module::processor::$processor::new(Default::default()),
+                    state: Rc::new(RefCell::new($module::state::$state::default())),
                     pending_audio: false,
                 }),
             }),*]
         }
 
-        $(impl VisualModule for Visual<$module::$processor, Shared<$module::$state>> {
+        $(impl VisualModule for Visual<$module::processor::$processor, Shared<$module::state::$state>> {
             fn ingest(&mut self, block: &AudioBlock<'_>, signal: bool) {
                 $({
                     let ($pip, $pis) = (&mut self.processor, &self.state);

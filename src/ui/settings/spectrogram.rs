@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::{
-    FFT_OPTIONS, HOP_DIVISORS, get_closest_hop_divisor, set, set_f32, update_fft_size,
-    update_hop_divisor,
+    FFT_OPTIONS, HOP_DIVISORS, get_closest_hop_divisor, set, set_f32, settings_messages,
+    settings_pane, settings_view, update_fft_size, update_hop_divisor,
 };
 use crate::persistence::settings::SpectrogramSettings;
 use crate::ui::widgets::{SliderRange, pick, split, toggle};

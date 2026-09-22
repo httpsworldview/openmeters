@@ -44,7 +44,6 @@ impl Default for WaveformState {
             key: crate::visuals::next_key(),
         }
     }
-
 }
 
 impl WaveformState {
@@ -125,8 +124,8 @@ impl WaveformState {
         .clamp(0.0, 1.0);
         self.scroll.set((now, scroll_offset));
 
-        let needed = ((bounds.width / COLUMN_WIDTH_PIXELS).ceil() as usize)
-            .clamp(1, MAX_COLUMN_CAPACITY);
+        let needed =
+            ((bounds.width / COLUMN_WIDTH_PIXELS).ceil() as usize).clamp(1, MAX_COLUMN_CAPACITY);
         if bounds.width > 0.0 {
             self.view_columns.set(needed);
         }
@@ -174,7 +173,11 @@ impl WaveformState {
         let mut len = 0;
         for lane in [self.settings.channel_1, self.settings.channel_2]
             .into_iter()
-            .filter_map(|channel| WAVEFORM_CHANNELS.iter().position(|&source| source == channel))
+            .filter_map(|channel| {
+                WAVEFORM_CHANNELS
+                    .iter()
+                    .position(|&source| source == channel)
+            })
         {
             lanes[len] = lane;
             len += 1;

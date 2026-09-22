@@ -52,8 +52,12 @@ impl SpectrogramConfig {
     fn normalize(&mut self) {
         self.sample_rate = sanitize_sample_rate(self.sample_rate);
         self.fft_size = self.fft_size.min(MAX_DSP_BUFFER_LEN);
-        if self.fft_size == 0 { self.fft_size = DEFAULT_SPECTROGRAM_FFT_SIZE; }
-        if self.hop_size == 0 { self.hop_size = DEFAULT_SPECTROGRAM_HOP_SIZE.min(self.fft_size); }
+        if self.fft_size == 0 {
+            self.fft_size = DEFAULT_SPECTROGRAM_FFT_SIZE;
+        }
+        if self.hop_size == 0 {
+            self.hop_size = DEFAULT_SPECTROGRAM_HOP_SIZE.min(self.fft_size);
+        }
         self.zero_padding_factor = self
             .zero_padding_factor
             .clamp(1, MAX_DSP_BUFFER_LEN / self.fft_size);
@@ -120,7 +124,9 @@ impl SpectrogramColumn {
     pub(super) fn is_quiescent(&self) -> bool {
         match self {
             Self::Reassigned(points) => points.is_empty(),
-            Self::Classic(levels) => levels.iter().all(|level| *level == pack_classic_db(DB_FLOOR)),
+            Self::Classic(levels) => levels
+                .iter()
+                .all(|level| *level == pack_classic_db(DB_FLOOR)),
         }
     }
 }
@@ -138,7 +144,9 @@ pub(super) fn history_columns(kind: ColumnKind, points: u32, requested: usize) -
     let affordable = SPECTROGRAM_HISTORY_BYTE_BUDGET
         * (1 + usize::from(kind == ColumnKind::Reassigned))
         / col_byte_stride(kind, points).max(1) as usize;
-    requested.clamp(1, MAX_SPECTROGRAM_HISTORY_COLUMNS).min(affordable.max(1))
+    requested
+        .clamp(1, MAX_SPECTROGRAM_HISTORY_COLUMNS)
+        .min(affordable.max(1))
 }
 
 pub struct SpectrogramUpdate {
@@ -173,7 +181,10 @@ crate::macros::default_struct! {
 impl SpectrogramProcessor {
     pub fn new(mut cfg: SpectrogramConfig) -> Self {
         cfg.normalize();
-        Self { config: cfg, ..Self::default() }
+        Self {
+            config: cfg,
+            ..Self::default()
+        }
     }
 
     pub fn config(&self) -> SpectrogramConfig {
@@ -206,7 +217,11 @@ impl SpectrogramProcessor {
         self.fft_size = window_size * self.config.zero_padding_factor;
         let hilbert_len = Self::hilbert_len_for(window_size);
         let use_reassignment = self.config.use_reassignment;
-        let active_len = if use_reassignment { hilbert_len } else { self.fft_size };
+        let active_len = if use_reassignment {
+            hilbert_len
+        } else {
+            self.fft_size
+        };
         let mut planner = FftPlanner::new();
         let transforms = if use_reassignment {
             Transforms::Reassigned([
@@ -220,7 +235,11 @@ impl SpectrogramProcessor {
         self.window = window_coefficients(self.config.window, window_size);
         let bin_count = self.fft_size / 2 + 1;
         let classic_len = if use_reassignment { 0 } else { self.fft_size };
-        let complex_len = if use_reassignment { hilbert_len } else { bin_count };
+        let complex_len = if use_reassignment {
+            hilbert_len
+        } else {
+            bin_count
+        };
         resize_trim(&mut self.real, classic_len, 0.0);
         resize_trim(&mut self.complex, complex_len, Complex32::ZERO);
         let scratch_len = match &transforms {
@@ -239,7 +258,8 @@ impl SpectrogramProcessor {
             for norm in &mut self.bin_norm {
                 *norm *= inv_hilbert_len * inv_hilbert_len;
             }
-            self.reassign.derivative_window = compute_derivative_spectral(&mut planner, &self.window);
+            self.reassign.derivative_window =
+                compute_derivative_spectral(&mut planner, &self.window);
             self.reassign.time_weighted_window = compute_time_weighted(&self.window);
             self.reassign.spectra = vec![Complex32::ZERO; self.fft_size * 3];
             reassigned_power_scale(&self.window, self.fft_size)
@@ -257,13 +277,14 @@ impl SpectrogramProcessor {
         let window_size = self.config.fft_size;
         let (hop_size, sample_rate) = (self.config.hop_size, self.config.sample_rate);
         let bin_count = self.fft_size / 2 + 1;
-        let (kind, read_len, center_offset) = match self.transforms.as_ref().expect("spectrogram FFT prepared") {
-            Transforms::Reassigned(_) => {
-                let len = Self::hilbert_len_for(window_size);
-                (ColumnKind::Reassigned, len, (len - window_size) / 2)
-            }
-            Transforms::Classic(_) => (ColumnKind::Classic, window_size, 0),
-        };
+        let (kind, read_len, center_offset) =
+            match self.transforms.as_ref().expect("spectrogram FFT prepared") {
+                Transforms::Reassigned(_) => {
+                    let len = Self::hilbert_len_for(window_size);
+                    (ColumnKind::Reassigned, len, (len - window_size) / 2)
+                }
+                Transforms::Classic(_) => (ColumnKind::Classic, window_size, 0),
+            };
 
         let pending = self.audio_buffer.len();
         let ready = if pending >= read_len {
@@ -322,12 +343,8 @@ impl SpectrogramProcessor {
                         &self.window,
                     );
                     self.real[window_size..].fill(0.0);
-                    fft.process_with_scratch(
-                        &mut self.real,
-                        &mut self.complex,
-                        &mut self.scratch,
-                    )
-                    .expect("internally sized spectrogram FFT buffers");
+                    fft.process_with_scratch(&mut self.real, &mut self.complex, &mut self.scratch)
+                        .expect("internally sized spectrogram FFT buffers");
                     SpectrogramColumn::Classic(
                         self.complex
                             .iter()
@@ -364,7 +381,9 @@ impl SpectrogramProcessor {
             return;
         }
         drop(self.audio_buffer.drain(..count));
-        self.audio_last_nonzero = self.audio_last_nonzero.and_then(|index| index.checked_sub(count));
+        self.audio_last_nonzero = self
+            .audio_last_nonzero
+            .and_then(|index| index.checked_sub(count));
     }
 
     fn advance_audio(&mut self, count: usize) {
@@ -415,8 +434,7 @@ impl SpectrogramProcessor {
         let capacity = bin_count.min(self.config.fft_size / 2 + 1);
         let mut points = Vec::new();
         let (spectrum, auxiliary) = self.reassign.spectra.split_at(self.fft_size);
-        let (derivative_spectrum, time_weighted_spectrum) =
-            auxiliary.split_at(self.fft_size);
+        let (derivative_spectrum, time_weighted_spectrum) = auxiliary.split_at(self.fft_size);
 
         for i in 0..bin_count {
             let base = spectrum[i];
@@ -439,8 +457,7 @@ impl SpectrogramProcessor {
                 points.reserve(capacity);
             }
             points.push(SpectrogramPoint {
-                time_offset: (t.re * base.re + t.im * base.im) * inv_pow * inv_hop
-                    - latency_hops,
+                time_offset: (t.re * base.re + t.im * base.im) * inv_pow * inv_hop - latency_hops,
                 freq_hz,
                 power: scaled_power,
             });
@@ -530,10 +547,7 @@ fn copy_real_to_complex(dst: &mut [Complex32], src: &VecDeque<f32>) {
 }
 
 fn apply_complex_window(analytic: &[Complex32], window: &[f32], output: &mut [Complex32]) {
-    for (out, (&sample, &weight)) in output
-        .iter_mut()
-        .zip(analytic.iter().zip(window.iter()))
-    {
+    for (out, (&sample, &weight)) in output.iter_mut().zip(analytic.iter().zip(window.iter())) {
         *out = sample * weight;
     }
     output[window.len()..].fill(Complex32::ZERO);
@@ -573,10 +587,17 @@ fn compute_derivative_spectral(planner: &mut FftPlanner<f32>, window: &[f32]) ->
 
 // Center on the window-weighted mean index.
 fn compute_time_weighted(window: &[f32]) -> Vec<f32> {
-    let (weighted, sum) = window.iter().enumerate().fold((0.0, 0.0), |(m, s), (i, &w)| {
-        (m + i as f64 * f64::from(w), s + f64::from(w))
-    });
-    let center = if sum == 0.0 { (window.len() - 1) as f32 * 0.5 } else { (weighted / sum) as f32 };
+    let (weighted, sum) = window
+        .iter()
+        .enumerate()
+        .fold((0.0, 0.0), |(m, s), (i, &w)| {
+            (m + i as f64 * f64::from(w), s + f64::from(w))
+        });
+    let center = if sum == 0.0 {
+        (window.len() - 1) as f32 * 0.5
+    } else {
+        (weighted / sum) as f32
+    };
     window
         .iter()
         .enumerate()
@@ -612,7 +633,11 @@ mod tests {
     }
 
     fn peak_bin(mags: &[u16]) -> usize {
-        mags.iter().enumerate().max_by_key(|&(_, &db)| db).unwrap().0
+        mags.iter()
+            .enumerate()
+            .max_by_key(|&(_, &db)| db)
+            .unwrap()
+            .0
     }
 
     fn peak_point(points: &[SpectrogramPoint]) -> &SpectrogramPoint {
@@ -669,7 +694,10 @@ mod tests {
         let classic = processor
             .process_block(&AudioBlock::new(&[0.25; 64], 1, config.sample_rate))
             .expect("expected classic snapshot");
-        assert!(matches!(classic.new_columns[0], SpectrogramColumn::Classic(_)));
+        assert!(matches!(
+            classic.new_columns[0],
+            SpectrogramColumn::Classic(_)
+        ));
 
         config.use_reassignment = true;
         processor.update_config(config);
@@ -706,14 +734,19 @@ mod tests {
         full_cfg.history_length = 32;
         let mut capped_cfg = full_cfg;
         capped_cfg.history_length = 3;
-        let samples: Vec<_> = (0..192).map(|i| ((i * i + 3 * i) as f32 * 0.017).sin()).collect();
+        let samples: Vec<_> = (0..192)
+            .map(|i| ((i * i + 3 * i) as f32 * 0.017).sin())
+            .collect();
 
         let full = process_samples(full_cfg, &samples);
         let capped = process_samples(capped_cfg, &samples);
         let expected = &full.new_columns[full.new_columns.len() - capped.new_columns.len()..];
 
         assert_eq!(capped.new_columns.len(), capped_cfg.history_length);
-        assert_ne!(classic_mags(&full.new_columns[0]), classic_mags(&expected[0]));
+        assert_ne!(
+            classic_mags(&full.new_columns[0]),
+            classic_mags(&expected[0])
+        );
         for (expected, actual) in expected.iter().zip(&capped.new_columns) {
             assert_eq!(classic_mags(expected), classic_mags(actual));
         }
@@ -752,11 +785,7 @@ mod tests {
         let points = (16_384 * 32 / 2 + 1) as u32;
         let packed_stride = points.div_ceil(2) as usize * std::mem::size_of::<u32>();
         assert_eq!(
-            history_columns(
-                ColumnKind::Classic,
-                points,
-                MAX_SPECTROGRAM_HISTORY_COLUMNS
-            ),
+            history_columns(ColumnKind::Classic, points, MAX_SPECTROGRAM_HISTORY_COLUMNS),
             SPECTROGRAM_HISTORY_BYTE_BUDGET / packed_stride
         );
         assert_eq!(history_columns(ColumnKind::Classic, 100_000_000, 1), 1);
@@ -772,7 +801,10 @@ mod tests {
         next.fft_size = 16;
         p.update_config(next);
 
-        assert_eq!(p.audio_buffer.iter().copied().collect::<Vec<_>>(), samples[168..]);
+        assert_eq!(
+            p.audio_buffer.iter().copied().collect::<Vec<_>>(),
+            samples[168..]
+        );
     }
 
     #[test]
@@ -782,17 +814,21 @@ mod tests {
 
         let classic = process_samples(cfg(64, 16, false), &samples);
         assert_eq!(classic.new_columns.len(), 4);
-        assert!(classic
-            .new_columns
-            .iter()
-            .all(|col| classic_mags(col).iter().all(|&mag| mag == floor)));
+        assert!(
+            classic
+                .new_columns
+                .iter()
+                .all(|col| classic_mags(col).iter().all(|&mag| mag == floor))
+        );
 
         let reassigned = process_samples(cfg(64, 16, true), &samples);
         assert_eq!(reassigned.new_columns.len(), 4);
-        assert!(reassigned
-            .new_columns
-            .iter()
-            .all(|col| reassigned_points(col).is_empty()));
+        assert!(
+            reassigned
+                .new_columns
+                .iter()
+                .all(|col| reassigned_points(col).is_empty())
+        );
     }
 
     #[test]
@@ -820,10 +856,7 @@ mod tests {
                 "time offset {:.4} vs expected {expected_time:.4}",
                 peak.time_offset
             );
-            let accumulated_power = points
-                .iter()
-                .map(|point| point.power)
-                .sum::<f32>();
+            let accumulated_power = points.iter().map(|point| point.power).sum::<f32>();
             let power = accumulated_power * update.reassigned_power_scale;
             assert!((power - 1.0).abs() < 0.01, "deposited {power} power");
             assert!(points.len() < update.fft_size / 2 + 1);
@@ -871,8 +904,10 @@ mod tests {
             / config.hop_size as f32;
 
         assert!(!points.is_empty() && points.capacity() == config.fft_size / 2 + 1);
-        assert!(points
-            .iter()
-            .all(|point| (point.time_offset - expected).abs() < 1.0e-4));
+        assert!(
+            points
+                .iter()
+                .all(|point| (point.time_offset - expected).abs() < 1.0e-4)
+        );
     }
 }

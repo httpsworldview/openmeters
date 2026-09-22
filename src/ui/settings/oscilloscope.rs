@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::{set, set_f32};
+use super::{set, set_f32, settings_messages, settings_pane, settings_view};
 use crate::persistence::settings::OscilloscopeSettings;
 use crate::ui::widgets::{SliderRange, pick, toggle};
 use crate::util::audio::Channel;

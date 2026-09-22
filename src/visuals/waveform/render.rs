@@ -10,14 +10,13 @@ use crate::util::{
     color::{rgba_with_alpha, sample_rgba_gradient},
 };
 use crate::visuals::options::{WaveformColorMode, WaveformHistoryMode};
-use crate::visuals::render::common::{SdfPipeline, sdf_primitive};
 use crate::visuals::render::common::{
     ChannelLayout, ClipTransform, GeometryScratch, extend_filled_line, quad_instance,
 };
+use crate::visuals::render::common::{SdfPipeline, sdf_primitive};
 use crate::visuals::waveform::processor::{
     DEFAULT_BAND_DB_FLOOR, MAX_COLUMN_CAPACITY, NUM_BANDS, WAVEFORM_SILENCE_AMPLITUDE, WaveColumn,
-    WaveFrame,
-    WaveformPreview,
+    WaveFrame, WaveformPreview,
 };
 
 pub(super) const COLUMN_WIDTH_PIXELS: f32 = 1.0;
@@ -49,11 +48,14 @@ impl WaveformParams {
             WaveformColorMode::Loudness => {
                 let peak = column.min.abs().max(column.max.abs());
                 let db = power_to_db(peak * peak, DB_FLOOR);
-                sample_rgba_gradient(&self.palette, if db.is_finite() {
-                    (db - LOUDNESS_QUIET_DB) / -LOUDNESS_QUIET_DB
-                } else {
-                    0.0
-                })
+                sample_rgba_gradient(
+                    &self.palette,
+                    if db.is_finite() {
+                        (db - LOUDNESS_QUIET_DB) / -LOUDNESS_QUIET_DB
+                    } else {
+                        0.0
+                    },
+                )
             }
             WaveformColorMode::Static => self.palette[0],
         }
@@ -111,7 +113,10 @@ impl WaveformParams {
             .clamp(1, MAX_COLUMN_CAPACITY)
             .min(data.len());
         let start = data.len().saturating_sub(columns);
-        let preview_columns = params.preview.columns.filter(|_| params.preview.progress > 0.0);
+        let preview_columns = params
+            .preview
+            .columns
+            .filter(|_| params.preview.progress > 0.0);
 
         let clip = ClipTransform::from_bounds(params.bounds);
         let col_width = COLUMN_WIDTH_PIXELS;
@@ -122,7 +127,8 @@ impl WaveformParams {
             WaveformHistoryMode::Off => None,
             WaveformHistoryMode::RmsFast => Some(0),
             WaveformHistoryMode::RmsSlow => Some(1),
-        }.filter(|_| columns >= 2);
+        }
+        .filter(|_| columns >= 2);
         let floor = sanitize_negative_db(params.band_db_floor, DEFAULT_BAND_DB_FLOOR);
 
         let vertices = &mut scratch.instances;
@@ -174,12 +180,16 @@ impl WaveformParams {
 
                     pts.clear();
                     pts.reserve(columns + 1);
-                    pts.extend(data.range(start..start + columns).enumerate().map(|(i, frame)| {
-                        let column = frame[params.lanes[ch]];
-                        let db = column.rms_db[history][band].max(floor);
-                        let level = ((db - floor) / -floor).clamp(0.0, 1.0);
-                        (column_x(i), baseline - level * band_height)
-                    }));
+                    pts.extend(
+                        data.range(start..start + columns)
+                            .enumerate()
+                            .map(|(i, frame)| {
+                                let column = frame[params.lanes[ch]];
+                                let db = column.rms_db[history][band].max(floor);
+                                let level = ((db - floor) / -floor).clamp(0.0, 1.0);
+                                (column_x(i), baseline - level * band_height)
+                            }),
+                    );
                     let last_y = pts.last().expect("nonempty waveform history").1;
                     pts.push((right_edge, last_y));
                     extend_filled_line(
@@ -197,4 +207,10 @@ impl WaveformParams {
     }
 }
 
-sdf_primitive!(WaveformParams, SdfPipeline, "Waveform", |self| self.key, None);
+sdf_primitive!(
+    WaveformParams,
+    SdfPipeline,
+    "Waveform",
+    |self| self.key,
+    None
+);

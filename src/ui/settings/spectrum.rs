@@ -2,17 +2,17 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::{
-    FFT_OPTIONS, HOP_DIVISORS, get_closest_hop_divisor, set, set_f32, set_usize,
-    update_fft_size, update_hop_divisor,
+    FFT_OPTIONS, HOP_DIVISORS, get_closest_hop_divisor, set, set_f32, set_usize, settings_messages,
+    settings_pane, settings_view, update_fft_size, update_hop_divisor,
 };
 use crate::persistence::settings::SpectrumSettings;
 use crate::ui::widgets::{SliderRange, pick, split, toggle};
 use crate::util::audio::{Channel, FrequencyScale};
 use crate::visuals::options::{SpectrumDisplayMode, SpectrumWeightingMode as WeightingMode};
 use crate::visuals::spectrum::processor::{
-    AveragingMode, DEFAULT_SPECTRUM_EXP_FACTOR, DEFAULT_SPECTRUM_PEAK_DECAY,
-    MAX_SPECTRUM_DB_FLOOR, MAX_SPECTRUM_EXP_FACTOR, MAX_SPECTRUM_PEAK_DECAY,
-    MIN_SPECTRUM_DB_FLOOR, MIN_SPECTRUM_EXP_FACTOR, MIN_SPECTRUM_PEAK_DECAY,
+    AveragingMode, DEFAULT_SPECTRUM_EXP_FACTOR, DEFAULT_SPECTRUM_PEAK_DECAY, MAX_SPECTRUM_DB_FLOOR,
+    MAX_SPECTRUM_EXP_FACTOR, MAX_SPECTRUM_PEAK_DECAY, MIN_SPECTRUM_DB_FLOOR,
+    MIN_SPECTRUM_EXP_FACTOR, MIN_SPECTRUM_PEAK_DECAY,
 };
 
 const EXP_R: SliderRange = SliderRange::new(MIN_SPECTRUM_EXP_FACTOR, MAX_SPECTRUM_EXP_FACTOR, 0.01);
@@ -170,9 +170,7 @@ fn split_averaging(avg: AveragingMode) -> AveragingControls {
     let default_peak_decay = DEFAULT_SPECTRUM_PEAK_DECAY;
     let (mode, factor, peak_decay) = match avg {
         AveragingMode::None => (AvgMode::None, default_factor, default_peak_decay),
-        AveragingMode::Exponential { factor } => {
-            (AvgMode::Exponential, factor, default_peak_decay)
-        }
+        AveragingMode::Exponential { factor } => (AvgMode::Exponential, factor, default_peak_decay),
         AveragingMode::PeakHold { decay_per_second } => {
             (AvgMode::PeakHold, default_factor, decay_per_second)
         }

@@ -2,17 +2,15 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::processor::LoudnessSnapshot;
-use super::render::{
-    DB_RANGE, GUIDE_LEVELS, LEFT_PADDING, LoudnessParams, MeterFill, db_to_ratio,
-};
+use super::render::{DB_RANGE, GUIDE_LEVELS, LEFT_PADDING, LoudnessParams, MeterFill, db_to_ratio};
 use crate::dsp::ChannelPosition;
 use crate::persistence::settings::LoudnessSettings;
+use crate::util::color::color_to_rgba;
 use crate::visuals::options::MeterMode;
 use crate::visuals::palettes::{self, loudness::SIZE as PALETTE_SIZE};
-use crate::util::color::color_to_rgba;
 use crate::visuals::render::common::{fill_rect, text as raw_text};
-use iced::advanced::{graphics::text::Paragraph, text};
 use iced::advanced::text::Paragraph as _;
+use iced::advanced::{graphics::text::Paragraph, text};
 use iced::alignment::{Horizontal, Vertical};
 use iced::{Color, Point, Rectangle, Size};
 use std::time::{Duration, Instant};
@@ -90,7 +88,6 @@ impl Default for LoudnessState {
         state.refresh_value_label();
         state
     }
-
 }
 
 impl LoudnessState {
@@ -126,8 +123,7 @@ impl LoudnessState {
 
     pub fn set_modes(&mut self, left: MeterMode, right: MeterMode) {
         if self.settings.left_mode != left || self.settings.right_mode != right {
-            self.peaks
-                .fill(PeakHold::new(DB_RANGE.0, Instant::now()));
+            self.peaks.fill(PeakHold::new(DB_RANGE.0, Instant::now()));
         }
         self.settings.left_mode = left;
         self.settings.right_mode = right;
@@ -168,11 +164,8 @@ impl LoudnessState {
         }
         (0..self.snapshot.channel_count)
             .filter(|&ch| {
-                let side = channel_side(
-                    self.snapshot.positions[ch],
-                    ch,
-                    self.snapshot.channel_count,
-                );
+                let side =
+                    channel_side(self.snapshot.positions[ch], ch, self.snapshot.channel_count);
                 wanted == MeterSide::Both || side == MeterSide::Both || side == wanted
             })
             .map(|ch| self.get_value(mode, ch))
@@ -214,7 +207,10 @@ impl LoudnessState {
             MeterMode::RmsFast | MeterMode::RmsSlow => "dB",
             MeterMode::TruePeak => "dBTP",
         };
-        let text = format!("{:.1} {unit}", self.aggregate_channels(mode, MeterSide::Both));
+        let text = format!(
+            "{:.1} {unit}",
+            self.aggregate_channels(mode, MeterSide::Both)
+        );
         if self.value_label.0 != text {
             let paragraph = value_label(&text);
             self.value_label = (text, paragraph);
@@ -288,7 +284,10 @@ fn visible_guide_labels(
         let db = GUIDE_LEVELS[i];
         let y = bounds.y + bounds.height * (1.0 - db_to_ratio(db));
         let rect = Rectangle::new(
-            Point::new(bounds.x, (y - GUIDE_LABEL_HEIGHT * 0.5).clamp(bounds.y, max_top)),
+            Point::new(
+                bounds.x,
+                (y - GUIDE_LABEL_HEIGHT * 0.5).clamp(bounds.y, max_top),
+            ),
             Size::new(LEFT_PADDING, GUIDE_LABEL_HEIGHT),
         );
 
@@ -324,7 +323,10 @@ crate::visuals::visualization_widget!(Loudness, LoudnessState, |this, renderer, 
             text::Renderer::fill_paragraph(
                 renderer,
                 &state.guide_labels[i],
-                Point::new(rect.x + rect.width - 4.0 - size.width, rect.y + (rect.height - size.height) * 0.5),
+                Point::new(
+                    rect.x + rect.width - 4.0 - size.width,
+                    rect.y + (rect.height - size.height) * 0.5,
+                ),
                 label_color,
                 bounds,
             );
@@ -341,11 +343,7 @@ crate::visuals::visualization_widget!(Loudness, LoudnessState, |this, renderer, 
             height: 20.0,
         };
 
-        fill_rect(
-            renderer,
-            label_rect,
-            state.palette[PAL_BACKGROUND],
-        );
+        fill_rect(renderer, label_rect, state.palette[PAL_BACKGROUND]);
 
         let label = &state.value_label.1;
         let label_size = label.min_bounds();
@@ -406,9 +404,14 @@ mod tests {
     fn true_peak_bars_and_label_include_every_channel_regardless_of_order() {
         let floor = DB_RANGE.0;
         let expected = [
-            [6.0, floor, 6.0], [floor, 6.0, 6.0], [6.0; 3], [6.0; 3],
-            [6.0, floor, 6.0], [floor, 6.0, 6.0],
-            [6.0, floor, 6.0], [floor, 6.0, 6.0],
+            [6.0, floor, 6.0],
+            [floor, 6.0, 6.0],
+            [6.0; 3],
+            [6.0; 3],
+            [6.0, floor, 6.0],
+            [floor, 6.0, 6.0],
+            [6.0, floor, 6.0],
+            [floor, 6.0, 6.0],
         ];
         let mut state = LoudnessState::default();
         state.set_modes(MeterMode::TruePeak, MeterMode::TruePeak);
@@ -418,7 +421,11 @@ mod tests {
                 snapshot.positions = order.map(|index| ChannelPosition::SURROUND[index]);
                 snapshot.true_peak_db[channel] = 6.0;
                 state.apply_snapshot(snapshot);
-                assert_eq!(visible_bar_values(&state), expected[position], "channel={channel}, order={order:?}");
+                assert_eq!(
+                    visible_bar_values(&state),
+                    expected[position],
+                    "channel={channel}, order={order:?}"
+                );
                 assert_eq!(state.value_label.0, "6.0 dBTP");
             }
         }

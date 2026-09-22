@@ -53,10 +53,9 @@ impl OscilloscopeState {
             let persistence = self.settings.persistence.clamp(0.0, MAX_PERSISTENCE);
             if persistence > f32::EPSILON {
                 let fresh = 1.0 - persistence;
-                for (current, incoming) in
-                    Arc::make_mut(&mut self.snapshot.samples)
-                        .iter_mut()
-                        .zip(snapshot.samples.iter())
+                for (current, incoming) in Arc::make_mut(&mut self.snapshot.samples)
+                    .iter_mut()
+                    .zip(snapshot.samples.iter())
                 {
                     *current = *current * persistence + incoming * fresh;
                     crate::util::audio::flush_denormal_f32(current);
@@ -82,7 +81,9 @@ impl OscilloscopeState {
 
     pub fn visual_params(&self, bounds: iced::Rectangle) -> Option<OscilloscopeParams> {
         let channels = self.snapshot.channels;
-        if channels == 0 { return None; }
+        if channels == 0 {
+            return None;
+        }
         let samples_per_channel = self.snapshot.samples_per_channel;
         Some(OscilloscopeParams {
             geometry: self.geometry,

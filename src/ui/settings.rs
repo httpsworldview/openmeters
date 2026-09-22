@@ -1,34 +1,27 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-macro_rules! settings_view {
-    (
-        $pane:ident as $settings:ident { $($body:tt)* }
-        $($label:expr => $content:expr;)*
-    ) => {
-        impl Pane {
-            pub(super) fn view(&self) -> iced::Element<'_, Message> {
-                use Message::*;
-                let $pane = self;
-                let $settings = &$pane.settings;
-                $($body)*
-                iced::widget::Column::new()
-                    .spacing($crate::ui::theme::SECTION_GAP)
-                    $(.push($crate::ui::widgets::card($label, $content)))*
-                    .push($crate::ui::widgets::card(
-                        "Colors",
-                        $pane.palette.view().map(Message::Palette),
-                    ))
-                    .into()
-            }
-        }
-    };
-}
+mod loudness;
+mod oscilloscope;
+mod spectrogram;
+mod spectrum;
+mod stereometer;
+mod waveform;
+
+use crate::persistence::settings::{
+    BUILTIN_THEME, ChangeOrigin::User, PaletteSettings, SettingsHandle, VisualConfig,
+};
+use crate::ui::theme::Palette;
+use crate::ui::widgets::palette_editor::PaletteEditor;
+use crate::util::set_if_changed as set;
+use crate::visuals::registry::{VisualKind, VisualManagerHandle};
+use iced::{Color, Element};
+
+const FFT_OPTIONS: [usize; 5] = [1024, 2048, 4096, 8192, 16384];
+const HOP_DIVISORS: [usize; 7] = [4, 6, 8, 16, 32, 64, 128];
 
 macro_rules! settings_modules {
     ($($module:ident => $variant:ident),+ $(,)?) => {
-        $(mod $module;)+
-
         #[derive(Debug, Clone)]
         pub(in crate::ui) enum SettingsMessage { $($variant($module::Message),)+ }
 
@@ -74,6 +67,95 @@ macro_rules! settings_modules {
             }
         }
     };
+}
+
+settings_modules! {
+    loudness => Loudness,
+    oscilloscope => Oscilloscope,
+    spectrogram => Spectrogram,
+    spectrum => Spectrum,
+    stereometer => Stereometer,
+    waveform => Waveform,
+}
+
+fn load_palette(config: &VisualConfig) -> PaletteEditor {
+    let mut editor = PaletteEditor::new(Palette::for_kind(config.kind()));
+    if let Some(stored) = config.palette() {
+        let stops: Vec<Color> = stored.stops.iter().copied().map(Into::into).collect();
+        editor.set_colors(&stops);
+        editor.set_positions(stored.stop_positions.as_deref());
+        editor.set_spreads(stored.stop_spreads.as_deref());
+    }
+    editor
+}
+
+fn persist_with_palette(
+    visual_manager: &VisualManagerHandle,
+    settings_handle: &SettingsHandle,
+    mut config: VisualConfig,
+    palette: &PaletteEditor,
+) {
+    let kind = config.kind();
+    let palette_settings = PaletteSettings::from_state(
+        palette.colors(),
+        palette.defaults(),
+        palette.positions(),
+        palette.default_positions(),
+        palette.spreads(),
+    );
+    *config.palette_mut() = palette_settings.clone();
+    visual_manager.borrow_mut().apply_config(config.clone());
+    settings_handle.update(User, move |settings| {
+        settings.data.visuals.set_config(config);
+        if palette_settings.is_some() || settings.active_theme() != BUILTIN_THEME {
+            settings.update_active_theme(|theme| {
+                if let Some(ps) = palette_settings {
+                    theme.palettes.insert(kind, ps);
+                } else {
+                    theme.palettes.remove(&kind);
+                }
+            });
+        }
+    });
+}
+
+// Compare bits to avoid spurious writes for identical NaN payloads.
+fn set_f32(target: &mut f32, value: f32) -> bool {
+    if target.to_bits() == value.to_bits() {
+        return false;
+    }
+    *target = value;
+    true
+}
+
+fn set_usize(target: &mut usize, value: f32) -> bool {
+    set(target, value.round() as usize)
+}
+
+fn get_closest_hop_divisor(fft_size: usize, hop_size: usize) -> usize {
+    let ratio = fft_size as f32 / hop_size as f32;
+    HOP_DIVISORS
+        .into_iter()
+        .min_by(|&left, &right| {
+            (ratio - left as f32)
+                .abs()
+                .total_cmp(&(ratio - right as f32).abs())
+        })
+        .unwrap()
+}
+
+// Preserve the nearest supported hop divisor.
+fn update_fft_size(fft_size: &mut usize, hop_size: &mut usize, new_size: usize) -> bool {
+    let hop_divisor = get_closest_hop_divisor(*fft_size, *hop_size);
+    if !set(fft_size, new_size) {
+        return false;
+    }
+    *hop_size = new_size / hop_divisor;
+    true
+}
+
+fn update_hop_divisor(fft_size: usize, hop_size: &mut usize, divisor: usize) -> bool {
+    set(hop_size, (fft_size / divisor).max(1))
 }
 
 macro_rules! settings_pane {
@@ -133,103 +215,28 @@ macro_rules! settings_messages {
     };
 }
 
-use crate::persistence::settings::{
-    BUILTIN_THEME, ChangeOrigin::User, PaletteSettings, SettingsHandle, VisualConfig,
-};
-use crate::ui::theme::Palette;
-use crate::ui::widgets::palette_editor::PaletteEditor;
-use crate::util::set_if_changed as set;
-use crate::visuals::registry::{VisualKind, VisualManagerHandle};
-use iced::{Color, Element};
-
-const FFT_OPTIONS: [usize; 5] = [1024, 2048, 4096, 8192, 16384];
-const HOP_DIVISORS: [usize; 7] = [4, 6, 8, 16, 32, 64, 128];
-
-// Compare bits to avoid spurious writes for identical NaN payloads.
-fn set_f32(target: &mut f32, value: f32) -> bool {
-    if target.to_bits() == value.to_bits() {
-        return false;
-    }
-    *target = value;
-    true
-}
-
-fn set_usize(target: &mut usize, value: f32) -> bool {
-    set(target, value.round() as usize)
-}
-
-fn get_closest_hop_divisor(fft_size: usize, hop_size: usize) -> usize {
-    let ratio = fft_size as f32 / hop_size as f32;
-    HOP_DIVISORS
-        .into_iter()
-        .min_by(|&left, &right| {
-            (ratio - left as f32)
-                .abs()
-                .total_cmp(&(ratio - right as f32).abs())
-        })
-        .unwrap()
-}
-
-// Preserve the nearest supported hop divisor.
-fn update_fft_size(fft_size: &mut usize, hop_size: &mut usize, new_size: usize) -> bool {
-    let hop_divisor = get_closest_hop_divisor(*fft_size, *hop_size);
-    if !set(fft_size, new_size) {
-        return false;
-    }
-    *hop_size = new_size / hop_divisor;
-    true
-}
-
-fn update_hop_divisor(fft_size: usize, hop_size: &mut usize, divisor: usize) -> bool {
-    set(hop_size, (fft_size / divisor).max(1))
-}
-
-settings_modules! {
-    loudness => Loudness,
-    oscilloscope => Oscilloscope,
-    spectrogram => Spectrogram,
-    spectrum => Spectrum,
-    stereometer => Stereometer,
-    waveform => Waveform,
-}
-
-fn load_palette(config: &VisualConfig) -> PaletteEditor {
-    let mut editor = PaletteEditor::new(Palette::for_kind(config.kind()));
-    if let Some(stored) = config.palette() {
-        let stops: Vec<Color> = stored.stops.iter().copied().map(Into::into).collect();
-        editor.set_colors(&stops);
-        editor.set_positions(stored.stop_positions.as_deref());
-        editor.set_spreads(stored.stop_spreads.as_deref());
-    }
-    editor
-}
-
-fn persist_with_palette(
-    visual_manager: &VisualManagerHandle,
-    settings_handle: &SettingsHandle,
-    mut config: VisualConfig,
-    palette: &PaletteEditor,
-) {
-    let kind = config.kind();
-    let palette_settings = PaletteSettings::from_state(
-        palette.colors(),
-        palette.defaults(),
-        palette.positions(),
-        palette.default_positions(),
-        palette.spreads(),
-    );
-    *config.palette_mut() = palette_settings.clone();
-    visual_manager.borrow_mut().apply_config(config.clone());
-    settings_handle.update(User, move |settings| {
-        settings.data.visuals.set_config(config);
-        if palette_settings.is_some() || settings.active_theme() != BUILTIN_THEME {
-            settings.update_active_theme(|theme| {
-                if let Some(ps) = palette_settings {
-                    theme.palettes.insert(kind, ps);
-                } else {
-                    theme.palettes.remove(&kind);
-                }
-            });
+macro_rules! settings_view {
+    (
+        $pane:ident as $settings:ident { $($body:tt)* }
+        $($label:expr => $content:expr;)*
+    ) => {
+        impl Pane {
+            pub(super) fn view(&self) -> iced::Element<'_, Message> {
+                use Message::*;
+                let $pane = self;
+                let $settings = &$pane.settings;
+                $($body)*
+                iced::widget::Column::new()
+                    .spacing($crate::ui::theme::SECTION_GAP)
+                    $(.push($crate::ui::widgets::card($label, $content)))*
+                    .push($crate::ui::widgets::card(
+                        "Colors",
+                        $pane.palette.view().map(Message::Palette),
+                    ))
+                    .into()
+            }
         }
-    });
+    };
 }
+
+use {settings_messages, settings_pane, settings_view};

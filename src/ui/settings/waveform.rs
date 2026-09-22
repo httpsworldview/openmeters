@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::{set, set_f32};
+use super::{set, set_f32, settings_messages, settings_pane, settings_view};
 use crate::persistence::settings::WaveformSettings;
 use crate::ui::widgets::{SliderRange, palette_editor::PaletteEditor, pick};
 use crate::util::audio::Channel;
@@ -15,8 +15,7 @@ settings_pane!(WaveformSettings, init_palette(palette, settings) {
 });
 
 const SPEED_RANGE: SliderRange = SliderRange::new(MIN_SCROLL_SPEED, MAX_SCROLL_SPEED, 1.0);
-const FLOOR_RANGE: SliderRange =
-    SliderRange::new(MIN_BAND_DB_FLOOR, MAX_BAND_DB_FLOOR, 1.0);
+const FLOOR_RANGE: SliderRange = SliderRange::new(MIN_BAND_DB_FLOOR, MAX_BAND_DB_FLOOR, 1.0);
 
 fn configure_palette_for_mode(palette: &mut PaletteEditor, mode: WaveformColorMode) {
     palette.set_only_first_visible(mode == WaveformColorMode::Static);

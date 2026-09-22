@@ -1,18 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-macro_rules! visual_modules {
-    ($($module:ident { $processor:ident, $state:ident }),+ $(,)?) => {
-        $(pub mod $module {
-            pub mod processor;
-            pub mod render;
-            pub mod state;
-            pub(in crate::visuals) use processor::$processor;
-            pub(in crate::visuals) use state::{widget, $state};
-        })+
-    };
-}
-
 macro_rules! visualization_widget {
     ($widget:ident, $state:ty, |$this:ident, $renderer:ident, $theme:ident, $bounds:ident| $draw:block) => {
         struct $widget<'a> {
@@ -66,13 +54,40 @@ macro_rules! palette_setter {
 
 pub(in crate::visuals) use palette_setter;
 
-visual_modules! {
-    loudness { LoudnessProcessor, LoudnessState },
-    oscilloscope { OscilloscopeProcessor, OscilloscopeState },
-    spectrogram { SpectrogramProcessor, SpectrogramState },
-    spectrum { SpectrumProcessor, SpectrumState },
-    stereometer { StereometerProcessor, StereometerState },
-    waveform { WaveformProcessor, WaveformState },
+pub mod loudness {
+    pub mod processor;
+    pub mod render;
+    pub mod state;
+}
+
+pub mod oscilloscope {
+    pub mod processor;
+    pub mod render;
+    pub mod state;
+}
+
+pub mod spectrogram {
+    pub mod processor;
+    pub mod render;
+    pub mod state;
+}
+
+pub mod spectrum {
+    pub mod processor;
+    pub mod render;
+    pub mod state;
+}
+
+pub mod stereometer {
+    pub mod processor;
+    pub mod render;
+    pub mod state;
+}
+
+pub mod waveform {
+    pub mod processor;
+    pub mod render;
+    pub mod state;
 }
 
 pub mod options {

@@ -3,10 +3,10 @@
 
 use iced::Rectangle;
 
-use crate::visuals::render::common::{SdfPipeline, sdf_primitive};
 use crate::visuals::render::common::{
     ClipTransform, GeometryScratch, bounds_fingerprint, line_instance, quad_instance,
 };
+use crate::visuals::render::common::{SdfPipeline, sdf_primitive};
 
 pub(super) const DB_RANGE: (f32, f32) = (-60.0, 4.0);
 pub(super) const GUIDE_LEVELS: [f32; 6] = [0.0, -6.0, -12.0, -18.0, -24.0, -36.0];
@@ -52,7 +52,9 @@ impl LoudnessParams {
     pub fn meter_bounds(&self) -> Option<(f32, f32, f32)> {
         let bar_count = self.bar_groups().len();
         let meter_width = (self.bounds.width - LEFT_PADDING - RIGHT_PADDING).max(0.0);
-        if meter_width <= 0.0 { return None; }
+        if meter_width <= 0.0 {
+            return None;
+        }
 
         let gap = meter_width * GAP_FRACTION;
         let total_gap = gap * (bar_count - 1) as f32;
@@ -169,7 +171,8 @@ impl LoudnessParams {
 }
 
 sdf_primitive!(
-    LoudnessParams, SdfPipeline,
+    LoudnessParams,
+    SdfPipeline,
     "Loudness",
     |self| self.geometry.id,
     Some(bounds_fingerprint(self.geometry.revision, self.bounds))

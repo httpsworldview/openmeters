@@ -44,15 +44,29 @@ const PIANO_MIDI_HI: i32 = 119; // B8
 const PIANO_KEY_COUNT: usize = (PIANO_MIDI_HI - PIANO_MIDI_LO + 1) as usize;
 
 static PIANO_KEY_SCALES: LazyLock<[[[f32; 2]; PIANO_KEY_COUNT]; 3]> = LazyLock::new(|| {
-    [FrequencyScale::Linear, FrequencyScale::Logarithmic, FrequencyScale::Erb].map(|scale| {
+    [
+        FrequencyScale::Linear,
+        FrequencyScale::Logarithmic,
+        FrequencyScale::Erb,
+    ]
+    .map(|scale| {
         let semi = (0.5_f32 / 12.0).exp2();
         let (inv_s, whole, inv_w) = (1.0 / semi, semi * semi, 1.0 / (semi * semi));
         std::array::from_fn(|i| {
             let note = MusicalNote::from_midi(PIANO_MIDI_LO + i as i32);
-            let (ml, mh) = if note.is_black() { (inv_s, semi) } else { match note.midi_number % 12 {
-                0 | 5 => (inv_s, whole), 4 | 11 => (inv_w, semi), _ => (inv_w, whole),
-            }};
-            [scale.scale(note.to_frequency() * mh), scale.scale(note.to_frequency() * ml)]
+            let (ml, mh) = if note.is_black() {
+                (inv_s, semi)
+            } else {
+                match note.midi_number % 12 {
+                    0 | 5 => (inv_s, whole),
+                    4 | 11 => (inv_w, semi),
+                    _ => (inv_w, whole),
+                }
+            };
+            [
+                scale.scale(note.to_frequency() * mh),
+                scale.scale(note.to_frequency() * ml),
+            ]
         })
     })
 });
@@ -125,10 +139,14 @@ impl SpectrogramHistory {
             if let SpectrogramColumn::Reassigned(points) = &column {
                 Arc::make_mut(&mut self.slot_counts)[slot as usize] = points.len() as u32;
             }
-            if self.pending.len() as u32 >= self.ring_capacity { self.pending.pop_front(); }
+            if self.pending.len() as u32 >= self.ring_capacity {
+                self.pending.pop_front();
+            }
             self.pending.push_back(column);
             self.write_slot = (self.write_slot + 1) % self.ring_capacity;
-            if self.col_count < self.ring_capacity { self.col_count += 1; }
+            if self.col_count < self.ring_capacity {
+                self.col_count += 1;
+            }
         }
     }
 
@@ -160,7 +178,9 @@ impl SpectrogramHistory {
         self.pending.drain(..discard);
         if let Some(copies) = &mut self.pending_copy {
             for dst in copies {
-                if !remap(dst) { *dst = u32::MAX; }
+                if !remap(dst) {
+                    *dst = u32::MAX;
+                }
             }
         }
     }
@@ -232,12 +252,12 @@ impl SpectrogramState {
         uv_y_range: [f32; 2],
     ) -> Option<SpectrogramParams> {
         let history = &mut self.history;
-        if history.col_count == 0 { return None; }
+        if history.col_count == 0 {
+            return None;
+        }
         let copy_plan = history.pending_copy.take();
         let slot_counts = Arc::clone(&history.slot_counts);
-        let to_rgba = |c: Color| {
-            rgba_with_alpha(color_to_rgba(c), c.a * SPECTROGRAM_OPACITY)
-        };
+        let to_rgba = |c: Color| rgba_with_alpha(color_to_rgba(c), c.a * SPECTROGRAM_OPACITY);
         let bin_hz = self.sample_rate / self.fft_size as f32;
         let (freq_min, freq_max) = display_axis(self.sample_rate);
 
@@ -289,7 +309,9 @@ impl SpectrogramState {
 
     // Pre-zoom/pan frequency UV [0, 1]; matches shader unrotate.
     fn freq_axis_norm(&self, cursor: Point, bounds: Rectangle) -> Option<f32> {
-        if !bounds.contains(cursor) { return None; }
+        if !bounds.contains(cursor) {
+            return None;
+        }
         let norm = match self.rotation_index() {
             1 => (cursor.x - bounds.x) / bounds.width,
             2 => (cursor.y - bounds.y) / bounds.height,
@@ -310,7 +332,9 @@ impl SpectrogramState {
             3 => cursor.y - bounds.y,
             _ => bounds.x + bounds.width - cursor.x,
         };
-        if age >= self.history.col_count as f32 { return None; }
+        if age >= self.history.col_count as f32 {
+            return None;
+        }
         let secs = age * (self.hop_size as f32 / self.sample_rate);
         secs.is_finite().then_some(secs)
     }
@@ -369,7 +393,10 @@ fn place_tooltip(bounds: Rectangle, cursor: Point, sz: Size, horizontal: bool) -
         let y = (cursor.y - sz.height * 0.5).clamp(bounds.y, max_y);
         (x, y)
     };
-    Rectangle::new(Point::new(x.clamp(bounds.x, max_x), y.clamp(bounds.y, max_y)), sz)
+    Rectangle::new(
+        Point::new(x.clamp(bounds.x, max_x), y.clamp(bounds.y, max_y)),
+        sz,
+    )
 }
 
 fn layout_tooltip(
@@ -498,7 +525,8 @@ impl Spectrogram<'_> {
         let (min_f, nyq) = display_axis(state.sample_rate);
         let (scale, rot) = (state.settings.frequency_scale, state.rotation_index());
         let horizontal = state.freq_axis_is_horizontal();
-        let selected = cursor.and_then(|c| state.frequency_at_cursor(c, bounds, uv_range))
+        let selected = cursor
+            .and_then(|c| state.frequency_at_cursor(c, bounds, uv_range))
             .and_then(MusicalNote::from_frequency);
 
         let (freq_top, freq_bot) = (
@@ -559,9 +587,16 @@ impl Spectrogram<'_> {
             }
         };
 
-        let backing = if right { time_org + time_ext - strip_width } else { time_org };
-        fill_rect(renderer, orient_rect(freq_org, freq_ext, backing, strip_width),
-            with_alpha(pal.background.base.color, PIANO_STRIP_ALPHA));
+        let backing = if right {
+            time_org + time_ext - strip_width
+        } else {
+            time_org
+        };
+        fill_rect(
+            renderer,
+            orient_rect(freq_org, freq_ext, backing, strip_width),
+            with_alpha(pal.background.base.color, PIANO_STRIP_ALPHA),
+        );
         let key_scales = &PIANO_KEY_SCALES[scale as usize];
         let key_extent = |midi: i32| -> (f32, f32) {
             let [lo, hi] = key_scales[(midi - PIANO_MIDI_LO) as usize];
@@ -586,15 +621,33 @@ impl Spectrogram<'_> {
                 let (fill, brd, w) = if is_blk {
                     (black, iced::Border::default(), black_key_width)
                 } else {
-                    (white, if key_len >= 4.0 { wborder } else { iced::Border::default() }, roll_width)
+                    (
+                        white,
+                        if key_len >= 4.0 {
+                            wborder
+                        } else {
+                            iced::Border::default()
+                        },
+                        roll_width,
+                    )
                 };
                 let anchor = if is_blk && right {
                     strip + roll_width - black_key_width
                 } else {
                     strip
                 };
-                let fill = if selected == Some(note) { PIANO_SELECTED_COLOR } else { fill };
-                fill_bordered_rect(renderer, orient_rect(lo, key_len, anchor, w), fill, brd, false);
+                let fill = if selected == Some(note) {
+                    PIANO_SELECTED_COLOR
+                } else {
+                    fill
+                };
+                fill_bordered_rect(
+                    renderer,
+                    orient_rect(lo, key_len, anchor, w),
+                    fill,
+                    brd,
+                    false,
+                );
                 if selected == Some(note) && key_len < 2.0 {
                     let len = 2.0_f32.min(freq_ext);
                     let pos = ((lo + hi - len) * 0.5).clamp(freq_org, freq_org + freq_ext - len);
@@ -615,9 +668,24 @@ impl Spectrogram<'_> {
             }
         }
         if let Some(rect) = compact_highlight {
-            fill_bordered_rect(renderer, rect, PIANO_SELECTED_COLOR, iced::Border::default(), false);
+            fill_bordered_rect(
+                renderer,
+                rect,
+                PIANO_SELECTED_COLOR,
+                iced::Border::default(),
+                false,
+            );
         }
-        orient_rect(freq_org, freq_ext, if right { time_org } else { time_org + strip_width }, time_ext - strip_width)
+        orient_rect(
+            freq_org,
+            freq_ext,
+            if right {
+                time_org
+            } else {
+                time_org + strip_width
+            },
+            time_ext - strip_width,
+        )
     }
 }
 
@@ -776,10 +844,11 @@ mod tests {
         column: impl Fn(T) -> SpectrogramColumn,
     ) -> SpectrogramUpdate {
         let new_columns: Vec<_> = values.iter().copied().map(column).collect();
-        let (points_per_column, reassigned_power_scale) = match new_columns.first().map(SpectrogramColumn::kind) {
-            Some(ColumnKind::Reassigned) => (8, 0.25),
-            _ => (2, 1.0),
-        };
+        let (points_per_column, reassigned_power_scale) =
+            match new_columns.first().map(SpectrogramColumn::kind) {
+                Some(ColumnKind::Reassigned) => (8, 0.25),
+                _ => (2, 1.0),
+            };
         SpectrogramUpdate {
             fft_size: (points_per_column - 1) * 2,
             hop_size: 1,
@@ -797,7 +866,11 @@ mod tests {
         })
     }
 
-    fn reassigned_update(history_length: usize, reset: bool, counts: &[usize]) -> SpectrogramUpdate {
+    fn reassigned_update(
+        history_length: usize,
+        reset: bool,
+        counts: &[usize],
+    ) -> SpectrogramUpdate {
         let point = super::super::processor::SpectrogramPoint {
             time_offset: 0.0,
             freq_hz: 100.0,
@@ -820,7 +893,9 @@ mod tests {
     fn upload_slots(params: &SpectrogramParams) -> Vec<u32> {
         let count = params.pending_uploads.len() as u32;
         (0..count)
-            .map(|offset| (params.write_slot + params.ring_capacity - count + offset) % params.ring_capacity)
+            .map(|offset| {
+                (params.write_slot + params.ring_capacity - count + offset) % params.ring_capacity
+            })
             .collect()
     }
 
@@ -833,7 +908,10 @@ mod tests {
 
     #[test]
     fn quiet_history_settles_only_after_filling_the_visible_time_axis() {
-        let mut state = SpectrogramState { view_width: 4, ..Default::default() };
+        let mut state = SpectrogramState {
+            view_width: 4,
+            ..Default::default()
+        };
         state.apply_snapshot(classic_update(4, true, &[DB_FLOOR; 3]));
         assert!(!state.is_quiescent());
 
@@ -852,7 +930,10 @@ mod tests {
 
         state.apply_snapshot(classic_update(6, false, &[6.0]));
         let params = visual_params(&mut state);
-        assert_eq!((params.ring_capacity, params.col_count, params.write_slot), (6, 5, 5));
+        assert_eq!(
+            (params.ring_capacity, params.col_count, params.write_slot),
+            (6, 5, 5)
+        );
         assert!(params.slot_counts.is_empty());
         assert_eq!(upload_slots(&params), vec![4]);
         assert_eq!(params.copy_plan, Some(vec![2, 3, 0, 1]));
@@ -860,7 +941,10 @@ mod tests {
         let mut state = seeded_ring();
         state.apply_snapshot(classic_update(2, false, &[4.0]));
         let params = visual_params(&mut state);
-        assert_eq!((params.ring_capacity, params.col_count, params.write_slot), (2, 2, 1));
+        assert_eq!(
+            (params.ring_capacity, params.col_count, params.write_slot),
+            (2, 2, 1)
+        );
         assert_eq!(upload_slots(&params), vec![0]);
         assert_eq!(params.copy_plan, Some(vec![u32::MAX, u32::MAX, 0, 1]));
     }

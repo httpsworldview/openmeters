@@ -6,11 +6,11 @@ use std::sync::Arc;
 
 use super::processor::TRACE_COUNT;
 use crate::util::color::rgba_with_alpha;
-use crate::visuals::render::common::{SdfPipeline, sdf_primitive};
 use crate::visuals::render::common::{
     ChannelLayout, ClipTransform, GeometryScratch, bounds_fingerprint,
     decimate_finite_ordered_line_in_place, extend_filled_line,
 };
+use crate::visuals::render::common::{SdfPipeline, sdf_primitive};
 
 const FILL_ALPHA: f32 = 0.15;
 
@@ -36,7 +36,11 @@ impl OscilloscopeParams {
         let bounds = self.bounds;
         let clip = ClipTransform::from_bounds(bounds);
 
-        let layout = ChannelLayout::new(bounds, if self.stacked { 1 } else { channels }, AMPLITUDE_SCALE);
+        let layout = ChannelLayout::new(
+            bounds,
+            if self.stacked { 1 } else { channels },
+            AMPLITUDE_SCALE,
+        );
         let step = bounds.width.max(1.0) / (samples_per_channel - 1) as f32;
         let pixel_width = bounds.width.ceil().max(1.0) as usize;
 
@@ -79,7 +83,8 @@ impl OscilloscopeParams {
 }
 
 sdf_primitive!(
-    OscilloscopeParams, SdfPipeline,
+    OscilloscopeParams,
+    SdfPipeline,
     "Oscilloscope",
     |self| self.geometry.id,
     Some(bounds_fingerprint(self.geometry.revision, self.bounds))

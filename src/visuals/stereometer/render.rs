@@ -6,11 +6,11 @@ use std::ops::Deref;
 use std::sync::{Arc, LazyLock};
 
 use super::processor::{BAND_COUNT, FULL_BAND};
+use crate::util::lerp;
 use crate::visuals::options::{
     CorrelationMeterMode, CorrelationMeterSide, StereometerMode, StereometerScale,
 };
 use crate::visuals::palettes::stereometer::SIZE as PALETTE_SIZE;
-use crate::util::lerp;
 use crate::visuals::render::common::{
     ClipTransform, RadialDotTemplate, SdfInstance, SdfPipeline, bounds_fingerprint,
     gradient_quad_instance, line_instance, quad_instance, sdf_primitive,
@@ -75,7 +75,9 @@ impl FixedTrail {
 
 impl Deref for FixedTrail {
     type Target = [f32];
-    fn deref(&self) -> &Self::Target { &self.0[..self.1] }
+    fn deref(&self) -> &Self::Target {
+        &self.0[..self.1]
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -158,7 +160,11 @@ impl Projection {
     }
 
     fn visible(self, (x, y): (f32, f32)) -> (f32, f32) {
-        if self.unipolar && y > 0.0 { (-x, -y) } else { (x, y) }
+        if self.unipolar && y > 0.0 {
+            (-x, -y)
+        } else {
+            (x, y)
+        }
     }
 
     fn segment(self, a: (f32, f32), b: (f32, f32)) -> Option<((f32, f32), (f32, f32))> {
@@ -173,7 +179,10 @@ impl Projection {
 
     fn rotated(self, l: f32, r: f32) -> (f32, f32) {
         let (l, r) = if self.flip { (r, l) } else { (l, r) };
-        (l * self.cos_t + r * self.sin_t, l * self.sin_t - r * self.cos_t)
+        (
+            l * self.cos_t + r * self.sin_t,
+            l * self.sin_t - r * self.cos_t,
+        )
     }
 
     fn unit(self, l: f32, r: f32) -> (f32, f32) {
@@ -321,11 +330,13 @@ impl StereometerParams {
         };
         let center_radius = [projection.cx, projection.cy, projection.radius];
         let dots = RadialDotTemplate::new(
-            center_radius, radial_scale, dot_r, clip, p.mode == StereometerMode::DotCloudBands,
+            center_radius,
+            radial_scale,
+            dot_r,
+            clip,
+            p.mode == StereometerMode::DotCloudBands,
         );
-        let dot = |l, r, color| {
-            dots.instance(projection.visible(projection.rotated(l, r)), color)
-        };
+        let dot = |l, r, color| dots.instance(projection.visible(projection.rotated(l, r)), color);
 
         let points = &p.points[FULL_BAND];
         match p.mode {
@@ -343,15 +354,24 @@ impl StereometerParams {
                         let p0 = projection.project(w[0].0, w[0].1);
                         let p1 = projection.project(w[1].0, w[1].1);
                         let (t0, t1) = (i as f32 / last, (i + 1) as f32 / last);
-                        line_instance(p0, p1, [cr, cg, cb, ca * t0], [cr, cg, cb, ca * t1], 1.5, clip)
+                        line_instance(
+                            p0,
+                            p1,
+                            [cr, cg, cb, ca * t0],
+                            [cr, cg, cb, ca * t1],
+                            1.5,
+                            clip,
+                        )
                     }));
                 }
             }
             StereometerMode::DotCloudBands => {
                 for (pts, colors) in p.points[1..].iter().zip(&p.band_colors) {
-                    out.extend(pts.iter().zip(colors.iter()).map(|(&(l, r), &color)| {
-                        dot(l, r, color)
-                    }));
+                    out.extend(
+                        pts.iter()
+                            .zip(colors.iter())
+                            .map(|(&(l, r), &color)| dot(l, r, color)),
+                    );
                 }
             }
         }
@@ -395,47 +415,58 @@ impl StereometerParams {
             }
         }
 
-        let mut draw_trail = |
-            x0: f32,
-            x1: f32,
-            trail: &[f32],
-            positive: [f32; 4],
-            negative: Option<[f32; 4]>,
-        | {
-            let negative = negative.unwrap_or(positive);
-            let color = |is_negative| if is_negative { negative } else { positive };
-            if trail.len() > 1 {
-                alpha.clear();
-                alpha.resize(height, 0.0);
-                for (age, pair) in trail.windows(2).enumerate() {
-                    let opacity = if trail.len() == CORR_TRAIL_LEN {
-                        CORR_OPACITIES[age]
-                    } else {
-                        corr_opacity(age, trail.len())
-                    };
-                    let (y0, y1) = (val_y(pair[0]), val_y(pair[1]));
-                    let (top, bottom) = (y0.min(y1) as i32, (y0.max(y1) + 2.0) as i32);
-                    for y in top.max(y_min)..=bottom.min(y_max) {
-                        let index = (y - y_min) as usize;
-                        alpha[index] = alpha[index].max(opacity);
+        let mut draw_trail =
+            |x0: f32, x1: f32, trail: &[f32], positive: [f32; 4], negative: Option<[f32; 4]>| {
+                let negative = negative.unwrap_or(positive);
+                let color = |is_negative| if is_negative { negative } else { positive };
+                if trail.len() > 1 {
+                    alpha.clear();
+                    alpha.resize(height, 0.0);
+                    for (age, pair) in trail.windows(2).enumerate() {
+                        let opacity = if trail.len() == CORR_TRAIL_LEN {
+                            CORR_OPACITIES[age]
+                        } else {
+                            corr_opacity(age, trail.len())
+                        };
+                        let (y0, y1) = (val_y(pair[0]), val_y(pair[1]));
+                        let (top, bottom) = (y0.min(y1) as i32, (y0.max(y1) + 2.0) as i32);
+                        for y in top.max(y_min)..=bottom.min(y_max) {
+                            let index = (y - y_min) as usize;
+                            alpha[index] = alpha[index].max(opacity);
+                        }
+                    }
+                    for (index, opacity) in alpha.windows(2).enumerate() {
+                        if opacity[0] > 0.0 || opacity[1] > 0.0 {
+                            let y = (y_min + index as i32) as f32;
+                            let (mut top, mut bottom) =
+                                (color(y > center), color(y + 1.0 > center));
+                            top[3] *= opacity[0];
+                            bottom[3] *= opacity[1];
+                            out.push(gradient_quad_instance(
+                                x0,
+                                y,
+                                x1,
+                                y + 1.0,
+                                clip,
+                                top,
+                                bottom,
+                            ));
+                        }
                     }
                 }
-                for (index, opacity) in alpha.windows(2).enumerate() {
-                    if opacity[0] > 0.0 || opacity[1] > 0.0 {
-                        let y = (y_min + index as i32) as f32;
-                        let (mut top, mut bottom) = (color(y > center), color(y + 1.0 > center));
-                        top[3] *= opacity[0];
-                        bottom[3] *= opacity[1];
-                        out.push(gradient_quad_instance(x0, y, x1, y + 1.0, clip, top, bottom));
-                    }
+                if let Some(&current) = trail.first() {
+                    let y = val_y(current);
+                    let color = color(current < 0.0);
+                    out.push(quad_instance(
+                        x0,
+                        y - marker_h,
+                        x1,
+                        y + marker_h,
+                        clip,
+                        color,
+                    ));
                 }
-            }
-            if let Some(&current) = trail.first() {
-                let y = val_y(current);
-                let color = color(current < 0.0);
-                out.push(quad_instance(x0, y - marker_h, x1, y + marker_h, clip, color));
-            }
-        };
+            };
 
         if multi_band {
             let mut color = p.palette[2];
@@ -457,7 +488,13 @@ impl StereometerParams {
             } else {
                 (&p.trails[FULL_BAND][..], p.palette[3], Some(p.palette[4]))
             };
-            draw_trail(x0 + inset, x0 + bar_width - inset, trail, positive, negative);
+            draw_trail(
+                x0 + inset,
+                x0 + bar_width - inset,
+                trail,
+                positive,
+                negative,
+            );
         }
     }
 }
@@ -511,7 +548,10 @@ mod tests {
     ];
 
     fn assert_close((ax, ay): (f32, f32), (bx, by): (f32, f32)) {
-        assert!((ax - bx).abs() <= EPS && (ay - by).abs() <= EPS, "({ax}, {ay}) != ({bx}, {by})");
+        assert!(
+            (ax - bx).abs() <= EPS && (ay - by).abs() <= EPS,
+            "({ax}, {ay}) != ({bx}, {by})"
+        );
     }
 
     fn assert_inside((x, y): (f32, f32)) {

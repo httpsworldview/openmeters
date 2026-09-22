@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::dsp::{AudioBlock, ThreeBand, RunningMeans};
+use crate::dsp::{AudioBlock, RunningMeans, ThreeBand};
+pub(super) use crate::util::audio::BAND_COUNT as NUM_BANDS;
 use crate::util::audio::{
     BAND_SPLITS_HZ, Channel, DB_FLOOR, DEFAULT_SAMPLE_RATE, power_to_db, sanitize_sample_rate,
 };
-pub(super) use crate::util::audio::BAND_COUNT as NUM_BANDS;
 
 // GUI bounds, in columns/second.
 pub const MIN_SCROLL_SPEED: f32 = 10.0;
@@ -91,19 +91,18 @@ impl BandTracker {
         let color_len = window_len(BAND_COLOR_WINDOW_AT_44K1, sample_rate);
         Self {
             color: RunningMeans::new([color_len]),
-            history: track_history.then(|| RunningMeans::new([
-                color_len, window_len(BAND_SLOW_WINDOW_AT_44K1, sample_rate),
-            ])),
+            history: track_history.then(|| {
+                RunningMeans::new([color_len, window_len(BAND_SLOW_WINDOW_AT_44K1, sample_rate)])
+            }),
         }
     }
 
     fn process(&mut self, bands: [[f32; NUM_BANDS]; DERIVED_CHANNELS]) {
         let bands = bands.as_flattened();
-        self.color
-            .push_nonnegative_finite(std::array::from_fn(|i| {
-                let value = bands[i].abs() * BAND_COLOR_GAINS[i % NUM_BANDS];
-                if value.is_finite() { value } else { 0.0 }
-            }));
+        self.color.push_nonnegative_finite(std::array::from_fn(|i| {
+            let value = bands[i].abs() * BAND_COLOR_GAINS[i % NUM_BANDS];
+            if value.is_finite() { value } else { 0.0 }
+        }));
         if let Some(history) = &mut self.history {
             history.push_nonnegative_finite(std::array::from_fn(|i| {
                 let value = bands[i];
@@ -133,7 +132,10 @@ crate::macros::default_struct! {
 
 impl WaveformProcessor {
     pub fn new(config: WaveformConfig) -> Self {
-        Self { config: config.normalized(), ..Self::default() }
+        Self {
+            config: config.normalized(),
+            ..Self::default()
+        }
     }
 
     pub fn config(&self) -> WaveformConfig {
@@ -185,7 +187,11 @@ impl WaveformProcessor {
                 }
                 (min, max)
             });
-            WaveColumn { min, max, ..WaveColumn::default() }
+            WaveColumn {
+                min,
+                max,
+                ..WaveColumn::default()
+            }
         });
         if let Some((_, tracker)) = &self.band_analysis {
             let means = tracker.color.mean(0).map(|mean| mean.max(0.0) as f32);
@@ -194,7 +200,9 @@ impl WaveformProcessor {
             }
             if let Some(history) = &tracker.history {
                 for window in 0..2 {
-                    let db = history.mean(window).map(|mean| power_to_db(mean.max(0.0) as f32, DB_FLOOR));
+                    let db = history
+                        .mean(window)
+                        .map(|mean| power_to_db(mean.max(0.0) as f32, DB_FLOOR));
                     for (column, bands) in columns.iter_mut().zip(db.as_chunks::<NUM_BANDS>().0) {
                         column.rms_db[window] = *bands;
                     }
@@ -229,10 +237,7 @@ impl WaveformProcessor {
                     if finite[0] { derived[0] } else { 0.0 },
                     if finite[1] { derived[1] } else { 0.0 },
                 ]);
-                let [left, right] = [
-                    [low[0], mid[0], high[0]],
-                    [low[1], mid[1], high[1]],
-                ];
+                let [left, right] = [[low[0], mid[0], high[0]], [low[1], mid[1], high[1]]];
                 let bands = [
                     left,
                     right,
@@ -240,7 +245,11 @@ impl WaveformProcessor {
                     std::array::from_fn(|band| (left[band] - right[band]) * 0.5),
                 ];
                 tracker.process(std::array::from_fn(|channel| {
-                    if finite[channel] { bands[channel] } else { [0.0; NUM_BANDS] }
+                    if finite[channel] {
+                        bands[channel]
+                    } else {
+                        [0.0; NUM_BANDS]
+                    }
                 }));
             }
             self.ingest_derived(derived, finite, step);
@@ -367,25 +376,39 @@ mod tests {
 
     #[test]
     fn derived_band_outputs_match_independent_mono_processing() {
-        let samples: Vec<_> = sine_wave(137.0, RATE, RATE as usize, 1.0).into_iter()
+        let samples: Vec<_> = sine_wave(137.0, RATE, RATE as usize, 1.0)
+            .into_iter()
             .zip(sine_wave(263.0, RATE, RATE as usize, 1.0))
-            .flat_map(|(left, right)| [left, right]).collect();
-        let config = WaveformConfig { track_history: true, ..config(200.0, 512) };
+            .flat_map(|(left, right)| [left, right])
+            .collect();
+        let config = WaveformConfig {
+            track_history: true,
+            ..config(200.0, 512)
+        };
         let mut processor = WaveformProcessor::new(config);
         let mut actual = Vec::new();
         for chunk in samples.chunks(2048) {
             actual.extend_from_slice(process(&mut processor, chunk, 2).columns);
         }
-        let values = |column: WaveColumn| column.color_bands.into_iter().chain(column.rms_db.into_iter().flatten());
+        let values = |column: WaveColumn| {
+            column
+                .color_bands
+                .into_iter()
+                .chain(column.rms_db.into_iter().flatten())
+        };
         for (channel, source) in WAVEFORM_CHANNELS.into_iter().enumerate() {
-            let mono: Vec<_> = AudioBlock::new(&samples, 2, RATE).projected_frames(source).collect();
+            let mono: Vec<_> = AudioBlock::new(&samples, 2, RATE)
+                .projected_frames(source)
+                .collect();
             let mut reference = WaveformProcessor::new(config);
             let expected = process(&mut reference, &mono, 1);
             assert_eq!(actual.len(), expected.columns.len());
             for (actual, expected) in actual.iter().zip(expected.columns) {
                 for (actual, expected) in values(actual[channel]).zip(values(expected[0])) {
-                    assert!((actual - expected).abs() < 1.0e-4,
-                        "channel {channel}: {actual} vs {expected}");
+                    assert!(
+                        (actual - expected).abs() < 1.0e-4,
+                        "channel {channel}: {actual} vs {expected}"
+                    );
                 }
             }
         }
@@ -396,22 +419,33 @@ mod tests {
         let mut processor = WaveformProcessor::new(config(RATE / 2.0, 8));
         assert!(processor.band_analysis.is_none());
         let update = process(&mut processor, &[1.0, 0.0, 0.0, 1.0], 2);
-        assert_eq!((column(&update, 2, 0).min, column(&update, 2, 0).max), (0.5, 0.5));
-        assert_eq!((column(&update, 3, 0).min, column(&update, 3, 0).max), (-0.5, 0.5));
+        assert_eq!(
+            (column(&update, 2, 0).min, column(&update, 2, 0).max),
+            (0.5, 0.5)
+        );
+        assert_eq!(
+            (column(&update, 3, 0).min, column(&update, 3, 0).max),
+            (-0.5, 0.5)
+        );
 
         let mut processor = WaveformProcessor::new(config(RATE / 2.0, 8));
         let update = process(&mut processor, &[0.25, -0.5], 1);
         for channel in 0..3 {
-            assert_eq!((column(&update, channel, 0).min, column(&update, channel, 0).max), (-0.5, 0.25));
+            assert_eq!(
+                (
+                    column(&update, channel, 0).min,
+                    column(&update, channel, 0).max
+                ),
+                (-0.5, 0.25)
+            );
         }
-        assert_eq!((column(&update, 3, 0).min, column(&update, 3, 0).max), (0.0, 0.0));
+        assert_eq!(
+            (column(&update, 3, 0).min, column(&update, 3, 0).max),
+            (0.0, 0.0)
+        );
 
         let mut processor = WaveformProcessor::new(config(RATE / 2.0, 8));
-        let update = process(
-            &mut processor,
-            &[1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
-            4,
-        );
+        let update = process(&mut processor, &[1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0], 4);
         assert_eq!(
             (column(&update, 2, 0).min, column(&update, 2, 0).max),
             (0.5, 0.5 + std::f32::consts::FRAC_1_SQRT_2)
@@ -436,17 +470,31 @@ mod tests {
         assert_eq!(update.columns.len(), 4);
         assert_eq!(column(&update, 0, 3).min, 1.0);
         assert_eq!(column(&update, 0, 3).max, 1.0);
-        assert!(update.columns.iter().flatten().all(|c| c.min.is_finite() && c.max.is_finite()));
-        assert!(update
-            .columns
-            .iter()
-            .flatten()
-            .flat_map(|c| c.color_bands)
-            .all(f32::is_finite));
+        assert!(
+            update
+                .columns
+                .iter()
+                .flatten()
+                .all(|c| c.min.is_finite() && c.max.is_finite())
+        );
+        assert!(
+            update
+                .columns
+                .iter()
+                .flatten()
+                .flat_map(|c| c.color_bands)
+                .all(f32::is_finite)
+        );
 
         let mut processor = WaveformProcessor::new(config(RATE, 8));
         let update = process(&mut processor, &[f32::MAX, f32::MAX], 2);
-        assert!(update.columns.iter().flatten().all(|c| c.min.is_finite() && c.max.is_finite()));
+        assert!(
+            update
+                .columns
+                .iter()
+                .flatten()
+                .all(|c| c.min.is_finite() && c.max.is_finite())
+        );
     }
 
     #[test]
@@ -477,7 +525,10 @@ mod tests {
 
         assert!(low[0] > low[1] && low[0] > low[2], "low bands: {low:?}");
         assert!(mid[1] > mid[0] && mid[1] > mid[2], "mid bands: {mid:?}");
-        assert!(high[2] > high[0] && high[2] > high[1], "high bands: {high:?}");
+        assert!(
+            high[2] > high[0] && high[2] > high[1],
+            "high bands: {high:?}"
+        );
     }
 
     #[test]
@@ -532,7 +583,9 @@ mod tests {
 
         assert_eq!(update.columns.len(), 4);
         assert_eq!(
-            (0..4).map(|i| column(&update, 0, i).max).collect::<Vec<_>>(),
+            (0..4)
+                .map(|i| column(&update, 0, i).max)
+                .collect::<Vec<_>>(),
             [0.2, 0.3, 0.4, 0.5]
         );
     }

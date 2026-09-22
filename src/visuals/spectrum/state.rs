@@ -2,20 +2,18 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::processor::{SpectrumSnapshot, SpectrumTraceSnapshot};
-use super::render::{
-    MIN_TRACE_POINTS, SpectrumCutoutParams, SpectrumParams, SpectrumPeakParams,
-};
+use super::render::{MIN_TRACE_POINTS, SpectrumCutoutParams, SpectrumParams, SpectrumPeakParams};
 use crate::persistence::settings::SpectrumSettings;
-use crate::visuals::options::{SpectrumDisplayMode, SpectrumWeightingMode};
 use crate::util::audio::musical::NoteInfo;
 use crate::util::audio::{Channel, FrequencyScale, fmt_freq};
 use crate::util::color::{color_to_rgba, with_alpha};
 use crate::util::lerp;
+use crate::visuals::options::{SpectrumDisplayMode, SpectrumWeightingMode};
 use crate::visuals::palettes::{self, spectrum::SIZE as PALETTE_SIZE};
 use crate::visuals::render::common::{fill_bordered_rect, fill_rect, text as raw_text};
 use iced::advanced::Renderer as _;
-use iced::advanced::text::{Paragraph as _, Renderer as _};
 use iced::advanced::graphics::text::Paragraph;
+use iced::advanced::text::{Paragraph as _, Renderer as _};
 use iced::{Color, Padding, Point, Rectangle, Size};
 use std::sync::{Arc, LazyLock};
 
@@ -87,8 +85,12 @@ impl SpectrumState {
     pub fn update_view_settings(&mut self, settings: &SpectrumSettings, floor_db: f32) {
         self.style = settings.clone();
         self.style.floor_db = floor_db;
-        if !settings.show_peak_label { self.peak = None; }
-        if !settings.show_grid { self.clear_grid_layout(); }
+        if !settings.show_peak_label {
+            self.peak = None;
+        }
+        if !settings.show_grid {
+            self.clear_grid_layout();
+        }
         self.geometry.invalidate();
     }
 
@@ -140,7 +142,14 @@ impl SpectrumState {
         }
         let peak = primary_trace
             .filter(|_| style.show_peak_label)
-            .and_then(|trace| self.build_peak(bins, trace_db(&snap.traces[trace], style.weighting_mode), min_f, max_f));
+            .and_then(|trace| {
+                self.build_peak(
+                    bins,
+                    trace_db(&snap.traces[trace], style.weighting_mode),
+                    min_f,
+                    max_f,
+                )
+            });
         self.effective_range = Some((min_f, max_f));
         self.fade_peak(peak);
         self.geometry.invalidate();
@@ -149,7 +158,9 @@ impl SpectrumState {
     fn ensure_x_cache(&mut self, min_f: f32, max_f: f32, bins: &[f32]) {
         let scale = self.style.frequency_scale;
         let key = (bins.len(), max_f.to_bits(), scale);
-        if self.x_cache_key == key { return; }
+        if self.x_cache_key == key {
+            return;
+        }
 
         self.x_cache.clear();
         self.x_cache.reserve(bins.len() + 2);
@@ -214,8 +225,12 @@ impl SpectrumState {
         let labels = &mut self.grid_labels;
         let mut last_right = f32::NEG_INFINITY;
         let mut layout_tick = |(tick_index, tick): (usize, &GridTick)| {
-            let (frequency, _, Some(text)) = tick else { return };
-            let Some(x) = axis.tick_x(*frequency) else { return };
+            let (frequency, _, Some(text)) = tick else {
+                return;
+            };
+            let Some(x) = axis.tick_x(*frequency) else {
+                return;
+            };
             let text_bounds = text.min_bounds();
             let label_size = Size::new(
                 text_bounds.width + GRID_LABEL_PADDING_X * 2.0,
@@ -242,21 +257,22 @@ impl SpectrumState {
         self.grid_cutouts = Arc::new(self.grid_labels.iter().map(|label| label.bounds).collect());
     }
 
-    fn build_peak(
-        &self,
-        bins: &[f32],
-        db: &[f32],
-        min_f: f32,
-        max_f: f32,
-    ) -> Option<PeakUpdate> {
+    fn build_peak(&self, bins: &[f32], db: &[f32], min_f: f32, max_f: f32) -> Option<PeakUpdate> {
         const MIN_NORMALIZED_LEVEL: f32 = 0.08;
         let bin = peak_bin(bins, db, min_f, max_f)?;
         let (f, m) = interpolated_peak(bins, db, bin);
         let t = self.style.frequency_scale.pos_of(min_f, max_f, f);
-        let x = if self.style.reverse_frequency { 1.0 - t } else { t }.clamp(0.0, 1.0);
+        let x = if self.style.reverse_frequency {
+            1.0 - t
+        } else {
+            t
+        }
+        .clamp(0.0, 1.0);
         let y = ((m - self.style.floor_db) / (MAX_DB - self.style.floor_db).max(EPSILON))
             .clamp(0.0, 1.0);
-        if y < MIN_NORMALIZED_LEVEL { return None; }
+        if y < MIN_NORMALIZED_LEVEL {
+            return None;
+        }
         let unit = match self.style.weighting_mode {
             SpectrumWeightingMode::AWeighted => "dBFS(A)",
             SpectrumWeightingMode::Raw => "dBFS",
@@ -282,7 +298,9 @@ impl SpectrumState {
                         peak.content[index] = content;
                     }
                 }
-                peak.label_pos = std::array::from_fn(|i| lerp(peak.label_pos[i], position[i], POSITION_TRACKING_RATE));
+                peak.label_pos = std::array::from_fn(|i| {
+                    lerp(peak.label_pos[i], position[i], POSITION_TRACKING_RATE)
+                });
                 peak.marker_pos = position;
                 peak.opacity = lerp(peak.opacity, 1.0, FADE_IN_RATE).min(1.0);
             }
@@ -323,8 +341,7 @@ impl SpectrumState {
             .zip(&self.points)
             .filter(|(source, _)| *source != Channel::None)
             .all(|(_, points)| points.iter().all(|point| point[1] == 0.0));
-        self.ignores_audio()
-            || (self.effective_range.is_some() && self.peak.is_none() && quiet)
+        self.ignores_audio() || (self.effective_range.is_some() && self.peak.is_none() && quiet)
     }
 
     fn visual_params(
@@ -343,7 +360,9 @@ impl SpectrumState {
             visible_points(style.source, &self.points[0]),
             visible_points(style.secondary_source, &self.points[1]),
         );
-        if primary.is_empty() && secondary.is_empty() { return None; }
+        if primary.is_empty() && secondary.is_empty() {
+            return None;
+        }
         if style.display_mode == SpectrumDisplayMode::Bar && primary.is_empty() {
             std::mem::swap(&mut primary, &mut secondary);
         }
@@ -368,13 +387,21 @@ impl SpectrumState {
             peak: self.peak().map(|peak| SpectrumPeakParams {
                 marker: peak.marker_pos,
                 marker_color: color_to_rgba(with_alpha(peak_color, peak.opacity * 0.95)),
-                leader_anchor: peak_layout.map(|layout| point_to_normalized(bounds, layout.leader_anchor)),
-                leader_color: color_to_rgba(with_alpha(peak_color, peak.opacity * AUXILIARY_LINE_ALPHA)),
+                leader_anchor: peak_layout
+                    .map(|layout| point_to_normalized(bounds, layout.leader_anchor)),
+                leader_color: color_to_rgba(with_alpha(
+                    peak_color,
+                    peak.opacity * AUXILIARY_LINE_ALPHA,
+                )),
             }),
         })
     }
 
-    fn cutout_params(&self, bounds: Rectangle, theme: &iced::Theme) -> Option<SpectrumCutoutParams> {
+    fn cutout_params(
+        &self,
+        bounds: Rectangle,
+        theme: &iced::Theme,
+    ) -> Option<SpectrumCutoutParams> {
         (!self.grid_cutouts.is_empty()).then(|| SpectrumCutoutParams {
             bounds,
             rectangles: Arc::clone(&self.grid_cutouts),
@@ -419,8 +446,12 @@ crate::visuals::visualization_widget!(Spectrum, SpectrumState, |this, r, th, b| 
 
 fn value_at(bins: &[f32], mags: &[f32], f: f32) -> f32 {
     let i = bins.partition_point(|&bin| bin < f);
-    if i == 0 { return mags[0]; }
-    if i >= bins.len() { return mags[bins.len() - 1]; }
+    if i == 0 {
+        return mags[0];
+    }
+    if i >= bins.len() {
+        return mags[bins.len() - 1];
+    }
     lerp(
         mags[i - 1],
         mags[i],
@@ -498,13 +529,17 @@ mod tests {
         });
         let bounds = Rectangle::new(Point::ORIGIN, Size::new(100.0, 50.0));
 
-        let line = state.visual_params(bounds, &iced::Theme::Dark, None).unwrap();
+        let line = state
+            .visual_params(bounds, &iced::Theme::Dark, None)
+            .unwrap();
         assert!(line.normalized_points.is_empty());
         assert!(line.secondary_points.len() >= 2);
         assert!(line.peak.is_none());
 
         state.style.display_mode = SpectrumDisplayMode::Bar;
-        let bars = state.visual_params(bounds, &iced::Theme::Dark, None).unwrap();
+        let bars = state
+            .visual_params(bounds, &iced::Theme::Dark, None)
+            .unwrap();
         assert!(bars.normalized_points.len() >= 2);
         assert!(bars.secondary_points.is_empty());
     }
@@ -520,9 +555,11 @@ mod tests {
         );
 
         assert!(state.grid_labels.len() > 2);
-        assert!(state.grid_labels.windows(2).all(|labels| {
-            labels[0].bounds.x + labels[0].bounds.width <= labels[1].bounds.x
-        }));
+        assert!(
+            state.grid_labels.windows(2).all(|labels| {
+                labels[0].bounds.x + labels[0].bounds.width <= labels[1].bounds.x
+            })
+        );
     }
 
     #[test]
@@ -600,7 +637,9 @@ fn build_single_points_into(
 
     let interior = bins.partition_point(|&f| f <= min_f)..bins.partition_point(|&f| f < max_f);
     push(x_cache[0], value_at(bins, db, min_f));
-    for (&x, &m) in x_cache[1..x_cache.len() - 1].iter().zip(&db[interior]) { push(x, m); }
+    for (&x, &m) in x_cache[1..x_cache.len() - 1].iter().zip(&db[interior]) {
+        push(x, m);
+    }
     push(x_cache[x_cache.len() - 1], value_at(bins, db, max_f));
     if style.reverse_frequency {
         out.reverse();
@@ -635,11 +674,16 @@ impl GridAxis {
         if !(self.range.0..=self.range.1).contains(&frequency) {
             return None;
         }
-        let position = ((self.scale.scale(frequency) - self.scaled_min) / self.scaled_span)
-            .clamp(0.0, 1.0);
+        let position =
+            ((self.scale.scale(frequency) - self.scaled_min) / self.scaled_span).clamp(0.0, 1.0);
         position.is_finite().then_some(
             self.bounds.x
-                + self.bounds.width * if self.reverse { 1.0 - position } else { position },
+                + self.bounds.width
+                    * if self.reverse {
+                        1.0 - position
+                    } else {
+                        position
+                    },
         )
     }
 }
@@ -660,7 +704,9 @@ fn draw_grid_lines(
     let minor_color = with_alpha(text_color, 0.10);
 
     for (frequency, major, _) in &state.grid_ticks {
-        let Some(x) = axis.tick_x(*frequency) else { continue };
+        let Some(x) = axis.tick_x(*frequency) else {
+            continue;
+        };
         let x = (x - 0.5).clamp(bounds.x, (bounds.x + bounds.width - 1.0).max(bounds.x));
         fill_rect(
             r,
@@ -675,7 +721,9 @@ fn draw_grid_labels(r: &mut iced::Renderer, th: &iced::Theme, state: &SpectrumSt
     let major_color = with_alpha(text_color, 0.75);
     let minor_color = with_alpha(text_color, 0.20);
     for layout in &state.grid_labels {
-        let (_, major, Some(text)) = &state.grid_ticks[layout.tick_index] else { continue };
+        let (_, major, Some(text)) = &state.grid_ticks[layout.tick_index] else {
+            continue;
+        };
         r.fill_paragraph(
             text,
             Point::new(
@@ -703,7 +751,9 @@ fn peak_label_layout(b: Rectangle, peak: &PeakLabel) -> Option<PeakLayout> {
     const MIN_VIEW_SIZE: f32 = 8.0;
     const LABEL_GAP: f32 = 8.0;
     const LINE_GAP: f32 = 2.0;
-    if peak.opacity < MIN_PEAK_OPACITY || b.width < MIN_VIEW_SIZE || b.height < MIN_VIEW_SIZE { return None; }
+    if peak.opacity < MIN_PEAK_OPACITY || b.width < MIN_VIEW_SIZE || b.height < MIN_VIEW_SIZE {
+        return None;
+    }
     let [title, detail] = peak.text.each_ref().map(|text| text.min_bounds());
     let [px, py] = peak.label_pos;
     let peak_pos = Point::new(b.x + b.width * px, b.y + b.height * (1.0 - py));
@@ -713,9 +763,14 @@ fn peak_label_layout(b: Rectangle, peak: &PeakLabel) -> Option<PeakLayout> {
         title.height + detail.height + padding.y() + LINE_GAP,
     );
     let fits_right = peak_pos.x + size.width + LABEL_GAP <= b.x + b.width;
-    let x = if fits_right { peak_pos.x + LABEL_GAP } else { peak_pos.x - size.width - LABEL_GAP }
-        .clamp(b.x, (b.x + b.width - size.width).max(b.x));
-    let y = (peak_pos.y - size.height - LABEL_GAP).clamp(b.y, (b.y + b.height - size.height).max(b.y));
+    let x = if fits_right {
+        peak_pos.x + LABEL_GAP
+    } else {
+        peak_pos.x - size.width - LABEL_GAP
+    }
+    .clamp(b.x, (b.x + b.width - size.width).max(b.x));
+    let y =
+        (peak_pos.y - size.height - LABEL_GAP).clamp(b.y, (b.y + b.height - size.height).max(b.y));
     let title_pos = Point::new(x + padding.left, y + padding.top);
     let detail_pos = Point::new(title_pos.x, title_pos.y + title.height + LINE_GAP);
     Some(PeakLayout {

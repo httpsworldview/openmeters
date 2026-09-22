@@ -136,7 +136,11 @@ impl TruePeakMeter {
 
     #[inline(always)]
     fn process(&mut self, sample: f32, coefficients: &TruePeakFir) {
-        self.write = if self.write == 0 { TRUE_PEAK_TAPS - 1 } else { self.write - 1 };
+        self.write = if self.write == 0 {
+            TRUE_PEAK_TAPS - 1
+        } else {
+            self.write - 1
+        };
         let pos = self.write;
         self.delay[pos] = sample;
         self.delay[pos + TRUE_PEAK_TAPS] = sample;
@@ -151,11 +155,14 @@ impl TruePeakMeter {
                 }
             }
         }
-        let output: [f32; TRUE_PEAK_PHASES] = std::array::from_fn(|phase| {
-            sums.iter().map(|sum| sum[phase]).sum()
-        });
+        let output: [f32; TRUE_PEAK_PHASES] =
+            std::array::from_fn(|phase| sums.iter().map(|sum| sum[phase]).sum());
         self.points.extend_from_slice(&output);
-        self.peak = if sample.abs() > self.peak { sample.abs() } else { self.peak };
+        self.peak = if sample.abs() > self.peak {
+            sample.abs()
+        } else {
+            self.peak
+        };
         if self.points.len() == TRUE_PEAK_BUFFER_LEN {
             self.refine();
         }
@@ -165,23 +172,37 @@ impl TruePeakMeter {
         let n = self.points.len() - 2;
         // Independent maxima and unconditional assignments keep reductions vectorizable.
         let mut peaks = [self.peak; TRUE_PEAK_PHASES];
-        for points in self.points.windows(TRUE_PEAK_PHASES + 2).step_by(TRUE_PEAK_PHASES) {
+        for points in self
+            .points
+            .windows(TRUE_PEAK_PHASES + 2)
+            .step_by(TRUE_PEAK_PHASES)
+        {
             for (i, peak) in peaks.iter_mut().enumerate() {
                 let [a, b, c] = [points[i], points[i + 1], points[i + 2]];
                 let curve = (b - a) + (b - c);
                 let delta = c - a;
                 // A flat triple has no vertex; never extrapolate beyond half a phase.
                 let denominator = if curve == 0.0 { 1.0 } else { curve };
-                #[expect(clippy::manual_clamp, reason = "min/max also bound NaN ratios after overflow")]
+                #[expect(
+                    clippy::manual_clamp,
+                    reason = "min/max also bound NaN ratios after overflow"
+                )]
                 let offset = (delta * 0.5 / denominator).max(-0.5).min(0.5);
                 let value = b + offset * 0.5 * (delta - offset * curve);
-                let candidate = if value.abs() > c.abs() { value.abs() } else { c.abs() };
+                let candidate = if value.abs() > c.abs() {
+                    value.abs()
+                } else {
+                    c.abs()
+                };
                 *peak = if candidate > *peak { candidate } else { *peak };
             }
         }
-        self.peak = peaks.into_iter().fold(self.peak, |peak, value| {
-            if value > peak { value } else { peak }
-        });
+        self.peak = peaks.into_iter().fold(
+            self.peak,
+            |peak, value| {
+                if value > peak { value } else { peak }
+            },
+        );
         // The untouched final two points bridge batches and audio blocks.
         self.points.copy_within(n.., 0);
         self.points.truncate(2);
@@ -294,12 +315,17 @@ impl LoudnessProcessor {
         let weighting = &self.weighting;
         let firs = &*TRUE_PEAK_FIR;
         let active_channels = block.stereo_channels.max(
-            self.channels.iter().rposition(Option::is_some).map_or(0, |i| i + 1),
+            self.channels
+                .iter()
+                .rposition(Option::is_some)
+                .map_or(0, |i| i + 1),
         );
         for frame in block.samples.chunks_exact(block.channels) {
             for (channel, &sample) in self.channels[..active_channels].iter_mut().zip(frame) {
                 if channel.is_none() {
-                    if sample == 0.0 { continue; }
+                    if sample == 0.0 {
+                        continue;
+                    }
                     *channel = Some(new_channel(self.config.sample_rate));
                 }
                 let (windows, filter, true_peak) = channel.as_mut().unwrap();
@@ -320,7 +346,9 @@ impl LoudnessProcessor {
         let mut weighted_momentary = 0.0;
 
         for (channel_index, channel_state) in self.channels.iter_mut().enumerate() {
-            let Some((windows, _, true_peak)) = channel_state else { continue };
+            let Some((windows, _, true_peak)) = channel_state else {
+                continue;
+            };
             let weight = channel_weight(block.positions[channel_index]);
             let [short_term] = windows.mean(WIN_SHORT_TERM);
             let [momentary] = windows.mean(WIN_MOMENTARY);
@@ -363,15 +391,22 @@ mod tests {
         channel_map: Option<&[ReferenceChannel]>,
         transitions: &[f32],
     ) {
-        let config = LoudnessConfig { sample_rate: block.sample_rate };
+        let config = LoudnessConfig {
+            sample_rate: block.sample_rate,
+        };
         let mut processor = LoudnessProcessor::new(config);
-        let mut reference = EbuR128::new(block.channels as u32, block.sample_rate as u32, Mode::S).unwrap();
+        let mut reference =
+            EbuR128::new(block.channels as u32, block.sample_rate as u32, Mode::S).unwrap();
         if let Some(channel_map) = channel_map {
             reference.set_channel_map(channel_map).unwrap();
         }
         // Reference queries rescan entire windows; concentrate them at transitions and window expiry.
-        let checkpoints: BTreeSet<_> = transitions.iter()
-            .flat_map(|&start| [0.0, 0.1, 0.4, 1.0, 3.0].map(|delay| ((start + delay) * block.sample_rate).round() as usize))
+        let checkpoints: BTreeSet<_> = transitions
+            .iter()
+            .flat_map(|&start| {
+                [0.0, 0.1, 0.4, 1.0, 3.0]
+                    .map(|delay| ((start + delay) * block.sample_rate).round() as usize)
+            })
             .flat_map(|frame| [frame.saturating_sub(1), frame, frame + 1])
             .chain([1, 18, 273, block.frame_count()])
             .filter(|&frame| frame > 0 && frame <= block.frame_count())
@@ -384,20 +419,32 @@ mod tests {
                 let end = (frame + chunks.next().unwrap()).min(checkpoint);
                 let chunk = &block.samples[frame * block.channels..end * block.channels];
                 snapshot = processor.process_block(&AudioBlock::with_positions(
-                    chunk, block.channels, block.sample_rate, block.positions,
+                    chunk,
+                    block.channels,
+                    block.sample_rate,
+                    block.positions,
                 ));
                 reference.add_frames_f32(chunk).unwrap();
                 frame = end;
             }
             for (metric, actual, expected) in [
-                ("momentary", snapshot.momentary_loudness, reference.loudness_momentary().unwrap()),
-                ("short-term", snapshot.short_term_loudness, reference.loudness_shortterm().unwrap()),
+                (
+                    "momentary",
+                    snapshot.momentary_loudness,
+                    reference.loudness_momentary().unwrap(),
+                ),
+                (
+                    "short-term",
+                    snapshot.short_term_loudness,
+                    reference.loudness_shortterm().unwrap(),
+                ),
             ] {
                 let expected = expected.max(f64::from(DEFAULT_FLOOR_DB));
                 assert!(
                     (f64::from(actual) - expected).abs() < 1.0e-4,
                     "{} Hz, {:?}, frame={frame}, {metric}: {actual:.9} vs {expected:.9} LUFS",
-                    block.sample_rate, &block.positions[..block.channels],
+                    block.sample_rate,
+                    &block.positions[..block.channels],
                 );
             }
         }
@@ -523,9 +570,11 @@ mod tests {
         let phase_step = 2.0 * PI * 1_000.0 / 48_000.0;
         let z = Complex64::from_polar(1.0, -phase_step);
         // Independent 48 kHz coefficients from BS.1770-5 Tables 1/2: P = A^2 * |H|^2 / 2.
-        let response = (1.535_124_859_586_97 - 2.691_696_189_406_38 * z + 1.198_392_810_852_85 * z * z)
+        let response = (1.535_124_859_586_97 - 2.691_696_189_406_38 * z
+            + 1.198_392_810_852_85 * z * z)
             / (1.0 - 1.690_659_293_182_41 * z + 0.732_480_774_215_85 * z * z)
-            * (1.0 - 2.0 * z + z * z) / (1.0 - 1.990_047_454_833_98 * z + 0.990_072_250_366_21 * z * z);
+            * (1.0 - 2.0 * z + z * z)
+            / (1.0 - 1.990_047_454_833_98 * z + 0.990_072_250_366_21 * z * z);
         let rms_db = 10.0 * (amplitude * amplitude * response.norm_sqr() / 2.0).log10();
         let peak_db = 20.0 * amplitude.log10();
         let weights = [1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.41, 1.41]; // Annex 3 Tables 4/5.
@@ -534,12 +583,17 @@ mod tests {
             .map(|frame| (phase_step * frame as f64).sin() as f32 * amplitude as f32)
             .collect();
         let cases = [
-            vec![4.0], vec![2.0], vec![0.0; 8],
+            vec![4.0],
+            vec![2.0],
+            vec![0.0; 8],
             vec![0.0, 0.0, 0.0, 7.0, 0.0, 0.0, 0.0, 0.0],
             vec![0.0, 0.0, 0.0, 0.0, 1.0, -1.0, 0.0, 0.0],
             vec![0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, -1.0],
-            vec![1.0; 8], vec![1.0, -0.5, 0.25, 7.0, 2.0, -0.125, 0.5, -1.0],
-        ].into_iter().chain((0..8).map(|channel| {
+            vec![1.0; 8],
+            vec![1.0, -0.5, 0.25, 7.0, 2.0, -0.125, 0.5, -1.0],
+        ]
+        .into_iter()
+        .chain((0..8).map(|channel| {
             let mut gains = vec![0.0; 8];
             gains[channel] = 1.0;
             gains
@@ -560,13 +614,22 @@ mod tests {
                     "{metric}, channel={channel:?}, gains={gains:?}: {actual:.9} vs {expected:.9}"
                 );
             };
-            let samples: Vec<_> = tone.iter()
-                .flat_map(|sample| gains.iter().map(move |gain| sample * gain)).collect();
+            let samples: Vec<_> = tone
+                .iter()
+                .flat_map(|sample| gains.iter().map(move |gain| sample * gain))
+                .collect();
             let snapshot = LoudnessProcessor::new(LoudnessConfig::default())
                 .process_block(&AudioBlock::new(&samples, gains.len(), 48_000.0));
-            let weighted_gain: f64 = gains.iter().zip(weights).map(|(&gain, weight)| f64::from(gain).powi(2) * weight).sum();
+            let weighted_gain: f64 = gains
+                .iter()
+                .zip(weights)
+                .map(|(&gain, weight)| f64::from(gain).powi(2) * weight)
+                .sum();
             let expected = rms_db - 0.691 + 10.0 * weighted_gain.log10();
-            for (metric, actual) in [("momentary LUFS", snapshot.momentary_loudness), ("short-term LUFS", snapshot.short_term_loudness)] {
+            for (metric, actual) in [
+                ("momentary LUFS", snapshot.momentary_loudness),
+                ("short-term LUFS", snapshot.short_term_loudness),
+            ] {
                 check(metric, None, actual, expected);
             }
             for (channel, &gain) in gains.iter().enumerate() {
@@ -585,10 +648,14 @@ mod tests {
     #[test]
     fn loudness_matches_ebur128_across_startup_layouts_and_rates() {
         let check_tone = |sample_rate, leading_secs, channels| {
-            let samples: Vec<_> = std::iter::repeat_n(0.0, (sample_rate * leading_secs) as usize * channels)
-                .chain(sine_wave(sample_rate, 4.0, 1_000.0, 0.5).into_iter()
-                    .flat_map(|sample| std::iter::repeat_n(sample, channels)))
-                .collect();
+            let samples: Vec<_> =
+                std::iter::repeat_n(0.0, (sample_rate * leading_secs) as usize * channels)
+                    .chain(
+                        sine_wave(sample_rate, 4.0, 1_000.0, 0.5)
+                            .into_iter()
+                            .flat_map(|sample| std::iter::repeat_n(sample, channels)),
+                    )
+                    .collect();
             assert_loudness_matches_ebur128(
                 AudioBlock::new(&samples, channels, sample_rate),
                 None,
@@ -607,23 +674,35 @@ mod tests {
         let gains = [0.0625, 0.03125, 0.015625, 0.5, 0.125, -0.0625, 0.25, -0.125];
         let frequencies = [83.0, 137.0, 701.0, 37.0, 997.0, 1_523.0, 503.0, 7_901.0];
         let signal: Vec<[f32; 8]> = (0..rate * 6 + rate * 2 / 5)
-            .map(|frame| std::array::from_fn(|channel| {
-                let active = match frame / rate {
-                    0 => frame >= rate / 4 && matches!(channel, 4 | 5),
-                    1 => matches!(channel, 6 | 7),
-                    2 => true,
-                    3..=5 => channel == 3,
-                    _ => matches!(channel, 4 | 5),
-                };
-                if !active { return 0.0; }
-                let phase = 2.0 * PI * frequencies[channel] * frame as f64 / rate as f64;
-                phase.sin() as f32 * gains[channel]
-            }))
+            .map(|frame| {
+                std::array::from_fn(|channel| {
+                    let active = match frame / rate {
+                        0 => frame >= rate / 4 && matches!(channel, 4 | 5),
+                        1 => matches!(channel, 6 | 7),
+                        2 => true,
+                        3..=5 => channel == 3,
+                        _ => matches!(channel, 4 | 5),
+                    };
+                    if !active {
+                        return 0.0;
+                    }
+                    let phase = 2.0 * PI * frequencies[channel] * frame as f64 / rate as f64;
+                    phase.sin() as f32 * gains[channel]
+                })
+            })
             .collect();
         for order in [[0, 1, 2, 3, 4, 5, 6, 7], [7, 4, 2, 0, 6, 5, 1, 3]] {
-            let samples: Vec<_> = signal.iter().flat_map(|frame| order.map(|channel| frame[channel])).collect();
+            let samples: Vec<_> = signal
+                .iter()
+                .flat_map(|frame| order.map(|channel| frame[channel]))
+                .collect();
             assert_loudness_matches_ebur128(
-                AudioBlock::with_positions(&samples, 8, sample_rate, order.map(|channel| ChannelPosition::SURROUND[channel])),
+                AudioBlock::with_positions(
+                    &samples,
+                    8,
+                    sample_rate,
+                    order.map(|channel| ChannelPosition::SURROUND[channel]),
+                ),
                 Some(&order.map(|channel| SEVEN_ONE_REFERENCE[channel])),
                 &[0.0, 0.25, 1.0, 2.0, 3.0, 6.0],
             );
@@ -638,13 +717,18 @@ mod tests {
             (6, &[1.0, 1.0, 1.0, 0.0, 1.41, 1.41]),
             (8, &[1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.41, 1.41]),
         ] {
-            let mut layout: Vec<_> = ChannelPosition::fallback(channels).into_iter().zip(weights).collect();
+            let mut layout: Vec<_> = ChannelPosition::fallback(channels)
+                .into_iter()
+                .zip(weights)
+                .collect();
             // Rotations in both directions put each role in every slot without exhaustive permutations.
             for _ in 0..2 {
                 for _ in 0..channels {
                     // Inactive entries must not turn a 5.1 layout into 7.1.
                     let positions = std::array::from_fn(|index| {
-                        layout.get(index).map_or(ChannelPosition::SideLeft, |entry| entry.0)
+                        layout
+                            .get(index)
+                            .map_or(ChannelPosition::SideLeft, |entry| entry.0)
                     });
                     let block = AudioBlock::with_positions(&[], channels, 48_000.0, positions);
                     for (position, &(_, expected)) in block.positions.iter().zip(&layout) {
@@ -680,37 +764,81 @@ mod tests {
     #[test]
     fn true_peak_batches_agree_through_wraps_silence_and_extreme_levels() {
         let mut seed = 17_u32;
-        let mut samples: Vec<f32> = (0..4096).map(|i| {
-            seed ^= seed << 13;
-            seed ^= seed >> 17;
-            seed ^= seed << 5;
-            if i % 131 < 65 { 0.0 } else { (seed as i32 as f32) / i32::MAX as f32 }
-        }).collect();
-        for value in [0.0, -0.0, 1.0, -1.0, 1.0e-22, -1.0e-22, 1.0e-35, -1.0e-35, 1.0e12, -1.0e12, f32::MAX] {
+        let mut samples: Vec<f32> = (0..4096)
+            .map(|i| {
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                if i % 131 < 65 {
+                    0.0
+                } else {
+                    (seed as i32 as f32) / i32::MAX as f32
+                }
+            })
+            .collect();
+        for value in [
+            0.0,
+            -0.0,
+            1.0,
+            -1.0,
+            1.0e-22,
+            -1.0e-22,
+            1.0e-35,
+            -1.0e-35,
+            1.0e12,
+            -1.0e12,
+            f32::MAX,
+        ] {
             samples.extend(std::iter::repeat_n(value, TRUE_PEAK_TAPS * 2));
             samples.extend(std::iter::repeat_n(0.0, TRUE_PEAK_TAPS * 2));
         }
         let expected = measure_true_peak(&samples, 1);
-        assert!(expected[expected.len() - TRUE_PEAK_TAPS..].iter().all(|peak| *peak == 0.0));
+        assert!(
+            expected[expected.len() - TRUE_PEAK_TAPS..]
+                .iter()
+                .all(|peak| *peak == 0.0)
+        );
         for frames in [
-            1, 2, 7, 31,
-            TRUE_PEAK_BATCH_FRAMES - 1, TRUE_PEAK_BATCH_FRAMES, TRUE_PEAK_BATCH_FRAMES + 1,
-            TRUE_PEAK_BATCH_FRAMES * 2 + 1, TRUE_PEAK_BATCH_FRAMES * 16, samples.len(),
+            1,
+            2,
+            7,
+            31,
+            TRUE_PEAK_BATCH_FRAMES - 1,
+            TRUE_PEAK_BATCH_FRAMES,
+            TRUE_PEAK_BATCH_FRAMES + 1,
+            TRUE_PEAK_BATCH_FRAMES * 2 + 1,
+            TRUE_PEAK_BATCH_FRAMES * 16,
+            samples.len(),
         ] {
             let actual = measure_true_peak(&samples, frames);
             assert_eq!(actual.len(), samples.len().div_ceil(frames));
             for (i, (&actual, expected)) in actual.iter().zip(expected.chunks(frames)).enumerate() {
                 let expected = expected.iter().copied().fold(0.0_f32, f32::max);
                 let sample_peak = samples[i * frames..((i + 1) * frames).min(samples.len())]
-                    .iter().copied().map(f32::abs).fold(0.0_f32, f32::max);
-                assert!(!actual.is_nan() && actual >= sample_peak, "sample peak lost: frames={frames}, chunk={i}");
-                assert!(actual == expected || (actual.is_finite() && expected.is_finite()
-                    && (actual - expected).abs() <= 2.0e-6 * actual.max(expected) + 1.0e-37),
-                    "frames={frames}, chunk={i}: {actual} vs {expected}");
+                    .iter()
+                    .copied()
+                    .map(f32::abs)
+                    .fold(0.0_f32, f32::max);
+                assert!(
+                    !actual.is_nan() && actual >= sample_peak,
+                    "sample peak lost: frames={frames}, chunk={i}"
+                );
+                assert!(
+                    actual == expected
+                        || (actual.is_finite()
+                            && expected.is_finite()
+                            && (actual - expected).abs()
+                                <= 2.0e-6 * actual.max(expected) + 1.0e-37),
+                    "frames={frames}, chunk={i}: {actual} vs {expected}"
+                );
             }
         }
         let dc = measure_true_peak(&[1.0; TRUE_PEAK_TAPS * 3], 1);
-        assert!(dc[TRUE_PEAK_TAPS..].iter().all(|peak| (*peak - 1.0).abs() < 1.0e-6));
+        assert!(
+            dc[TRUE_PEAK_TAPS..]
+                .iter()
+                .all(|peak| (*peak - 1.0).abs() < 1.0e-6)
+        );
     }
 
     #[test]
@@ -727,16 +855,27 @@ mod tests {
         for rate in [44_100.0_f64, 48_000.0, 96_000.0, 192_000.0] {
             for case in 0..16 {
                 let max_bin = (20_000.0 / rate * PERIOD as f64).floor() as usize;
-                let tones: Vec<_> = (0..12).map(|_| (
-                    1 + (random() * (max_bin - 1) as f64) as usize,
-                    0.2 + random() * 0.8,
-                    random() * 2.0 * PI,
-                )).collect();
-                let samples: Vec<_> = (0..PERIOD * 2).map(|frame| {
-                    tones.iter().map(|&(bin, amplitude, phase)| {
-                        amplitude * (2.0 * PI * bin as f64 * frame as f64 / PERIOD as f64 + phase).sin()
-                    }).sum::<f64>() as f32
-                }).collect();
+                let tones: Vec<_> = (0..12)
+                    .map(|_| {
+                        (
+                            1 + (random() * (max_bin - 1) as f64) as usize,
+                            0.2 + random() * 0.8,
+                            random() * 2.0 * PI,
+                        )
+                    })
+                    .collect();
+                let samples: Vec<_> = (0..PERIOD * 2)
+                    .map(|frame| {
+                        tones
+                            .iter()
+                            .map(|&(bin, amplitude, phase)| {
+                                amplitude
+                                    * (2.0 * PI * bin as f64 * frame as f64 / PERIOD as f64 + phase)
+                                        .sin()
+                            })
+                            .sum::<f64>() as f32
+                    })
+                    .collect();
                 let mut spectrum = vec![Complex64::default(); PERIOD * OVERSAMPLE];
                 for &(bin, amplitude, phase) in &tones {
                     let coefficient = Complex64::from_polar(amplitude * 0.5, phase - PI * 0.5);
@@ -745,8 +884,15 @@ mod tests {
                 }
                 inverse.process(&mut spectrum);
                 let reference = spectrum.iter().map(|x| x.re.abs()).fold(0.0_f64, f64::max);
-                let coarser = spectrum.iter().step_by(2).map(|x| x.re.abs()).fold(0.0_f64, f64::max);
-                assert!(20.0 * (reference / coarser).log10() < 0.0002, "oracle did not converge");
+                let coarser = spectrum
+                    .iter()
+                    .step_by(2)
+                    .map(|x| x.re.abs())
+                    .fold(0.0_f64, f64::max);
+                assert!(
+                    20.0 * (reference / coarser).log10() < 0.0002,
+                    "oracle did not converge"
+                );
                 let peaks = measure_true_peak(&samples, 1);
                 let peak = peaks[PERIOD..].iter().copied().fold(0.0_f32, f32::max);
                 let error = 20.0 * (f64::from(peak) / reference).log10();
@@ -765,7 +911,8 @@ mod tests {
                         .collect();
                     let mut processor = LoudnessProcessor::new(LoudnessConfig { sample_rate });
                     processor.process_block(&AudioBlock::new(&samples[..128], 1, sample_rate));
-                    let peak = processor.process_block(&AudioBlock::new(&samples[128..], 1, sample_rate))
+                    let peak = processor
+                        .process_block(&AudioBlock::new(&samples[128..], 1, sample_rate))
                         .true_peak_db[0];
                     let expected = 20.0 * 1.41_f64.log10();
                     assert!(
@@ -787,28 +934,46 @@ mod tests {
             for samples in [&gains[..], &[], &gains[..]] {
                 processor.process_block(&AudioBlock::new(samples, MAX_CHANNELS, sample_rate));
             }
-            let peak = processor.process_block(&AudioBlock::new(&silence, MAX_CHANNELS, sample_rate))
+            let peak = processor
+                .process_block(&AudioBlock::new(&silence, MAX_CHANNELS, sample_rate))
                 .true_peak_db;
             for (channel, (&peak, gain)) in peak.iter().zip(gains).enumerate() {
                 // sinc(t) + sinc(t - 1) peaks at 4/pi, including on the LFE channel.
                 let expected = (20.0 * (f64::from(gain).abs() * 4.0 / PI).log10())
                     .max(f64::from(DEFAULT_FLOOR_DB));
-                assert!((f64::from(peak) - expected).abs() < 0.02,
-                    "{sample_rate} Hz, channel={channel}: {peak} vs {expected} dBTP");
+                assert!(
+                    (f64::from(peak) - expected).abs() < 0.02,
+                    "{sample_rate} Hz, channel={channel}: {peak} vs {expected} dBTP"
+                );
             }
             assert_eq!(peak[1], DEFAULT_FLOOR_DB);
 
-            assert_eq!(processor.process_block(&AudioBlock::new(&silence, MAX_CHANNELS, sample_rate)).true_peak_db,
-                       [DEFAULT_FLOOR_DB; MAX_CHANNELS]);
+            assert_eq!(
+                processor
+                    .process_block(&AudioBlock::new(&silence, MAX_CHANNELS, sample_rate))
+                    .true_peak_db,
+                [DEFAULT_FLOOR_DB; MAX_CHANNELS]
+            );
             for change in 0..3 {
-                processor.process_block(&AudioBlock::new(&[1.0; MAX_CHANNELS], MAX_CHANNELS, sample_rate));
+                processor.process_block(&AudioBlock::new(
+                    &[1.0; MAX_CHANNELS],
+                    MAX_CHANNELS,
+                    sample_rate,
+                ));
                 let (channels, rate) = match change {
-                    0 => { processor.reset_audio(); (MAX_CHANNELS, sample_rate) }
+                    0 => {
+                        processor.reset_audio();
+                        (MAX_CHANNELS, sample_rate)
+                    }
                     1 => (MAX_CHANNELS, sample_rate + 1.0),
                     _ => (1, sample_rate),
                 };
-                assert_eq!(processor.process_block(&AudioBlock::new(&silence, channels, rate)).true_peak_db,
-			   [DEFAULT_FLOOR_DB; MAX_CHANNELS]);
+                assert_eq!(
+                    processor
+                        .process_block(&AudioBlock::new(&silence, channels, rate))
+                        .true_peak_db,
+                    [DEFAULT_FLOOR_DB; MAX_CHANNELS]
+                );
             }
         }
     }
