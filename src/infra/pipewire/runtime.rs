@@ -189,18 +189,8 @@ fn run_session(
             .register()
     };
 
-    let node_name = format!("openmeters.tap.{}", std::process::id());
-    let mut tap = TapStream::new(
-        core.clone(),
-        Rc::clone(&writer),
-        node_name,
-        Rc::clone(&dirty),
-    );
-    let mut owned_links = OwnedLinks::new(core, Rc::clone(&dirty));
+    let mut capture = CaptureState::new(core, Rc::clone(&writer), dirty);
     let mut errors = 0u32;
-    let mut reported_truncation = 0usize;
-    let mut stream_retry_at = None;
-    let mut stream_retry_delay = RESOURCE_RETRY_MIN;
 
     info!("[pipewire] backend session starting");
     loop {
@@ -228,9 +218,7 @@ fn run_session(
                 Ok(Command::Configure(next)) => {
                     if *config != next {
                         *config = next;
-                        dirty.set(true);
-                        stream_retry_at = None;
-                        stream_retry_delay = RESOURCE_RETRY_MIN;
+                        capture.configuration_changed();
                     }
                 }
                 Ok(Command::Shutdown) | Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
@@ -242,60 +230,111 @@ fn run_session(
         }
         public.alive.store(true, Ordering::Release);
 
-        let now = Instant::now();
-        match tap.status() {
+        capture.reconcile(&graph, config, public, Instant::now());
+    }
+}
+
+struct CaptureState {
+    // Links must be dropped before the tap they reference.
+    owned_links: OwnedLinks,
+    tap: TapStream,
+    dirty: Rc<Cell<bool>>,
+    stream_retry_at: Option<Instant>,
+    stream_retry_delay: Duration,
+    reported_truncation: usize,
+}
+
+impl CaptureState {
+    fn new(
+        core: pw::core::CoreRc,
+        writer: Rc<RefCell<CaptureWriter>>,
+        dirty: Rc<Cell<bool>>,
+    ) -> Self {
+        Self {
+            tap: TapStream::new(
+                core.clone(),
+                writer,
+                format!("openmeters.tap.{}", std::process::id()),
+                Rc::clone(&dirty),
+            ),
+            owned_links: OwnedLinks::new(core, Rc::clone(&dirty)),
+            dirty,
+            stream_retry_at: None,
+            stream_retry_delay: RESOURCE_RETRY_MIN,
+            reported_truncation: 0,
+        }
+    }
+
+    fn configuration_changed(&mut self) {
+        self.dirty.set(true);
+        self.stream_retry_at = None;
+        self.stream_retry_delay = RESOURCE_RETRY_MIN;
+    }
+
+    fn defer_stream_retry(&mut self, now: Instant) {
+        self.tap.clear_failed();
+        self.dirty.set(true);
+        self.stream_retry_at = Some(retry_deadline(now, &mut self.stream_retry_delay));
+    }
+
+    fn reconcile(
+        &mut self,
+        graph: &RefCell<Graph>,
+        config: &mut CaptureConfig,
+        public: &PublicState,
+        now: Instant,
+    ) {
+        match self.tap.status() {
             Some(StreamStatus::Paused | StreamStatus::Streaming) => {
-                stream_retry_delay = RESOURCE_RETRY_MIN;
+                self.stream_retry_delay = RESOURCE_RETRY_MIN;
             }
             Some(StreamStatus::Failed | StreamStatus::Stopped) => {
-                owned_links.clear();
-                tap.clear_failed();
-                dirty.set(true);
-                stream_retry_at = Some(retry_deadline(now, &mut stream_retry_delay));
+                self.owned_links.clear();
+                self.defer_stream_retry(now);
             }
             _ => {}
         }
 
-        if dirty.get() || owned_links.retry_due(now) {
-            if stream_retry_at.is_some_and(|deadline| now < deadline) {
-                continue;
-            }
-            dirty.set(false);
-            let plan = policy::plan(&graph.borrow(), config, tap.node_id());
-            if plan.truncated > 0 && plan.truncated != reported_truncation {
-                warn!(
-                    "[capture] source layout truncated {} channel(s)",
-                    plan.truncated
-                );
-            }
-            reported_truncation = plan.truncated;
-
-            if tap.config() != Some(&plan.stream) {
-                owned_links.clear();
-                if let Err(err) = tap.configure(plan.stream.clone()) {
-                    error!("[capture] stream reconfiguration failed: {err}");
-                    tap.clear_failed();
-                    dirty.set(true);
-                    stream_retry_at = Some(retry_deadline(now, &mut stream_retry_delay));
-                    continue;
-                }
-                stream_retry_at = None;
-            }
-
-            let graph = graph.borrow();
-            let desired = tap
-                .node_id()
-                .and_then(|id| graph.node(id))
-                .map_or_else(Vec::new, |tap| policy::desired_links(&graph, &plan, tap));
-            owned_links.apply(desired, now);
-            let view = graph.view(tap.node_id(), config.device.as_deref());
-            if let Some(selected) = &view.selected_device
-                && config.device.as_deref() != Some(selected)
-            {
-                config.device = Some(Arc::clone(selected));
-            }
-            public.publish(view);
+        if !self.dirty.get() && !self.owned_links.retry_due(now) {
+            return;
         }
+        if self.stream_retry_at.is_some_and(|deadline| now < deadline) {
+            return;
+        }
+        self.dirty.set(false);
+        let plan = policy::plan(&graph.borrow(), config, self.tap.node_id());
+        if plan.truncated > 0 && plan.truncated != self.reported_truncation {
+            warn!(
+                "[capture] source layout truncated {} channel(s)",
+                plan.truncated
+            );
+        }
+        self.reported_truncation = plan.truncated;
+
+        if self.tap.config() != Some(&plan.stream) {
+            self.owned_links.clear();
+            if let Err(err) = self.tap.configure(plan.stream.clone()) {
+                error!("[capture] stream reconfiguration failed: {err}");
+                self.defer_stream_retry(now);
+                return;
+            }
+            self.stream_retry_at = None;
+        }
+
+        let graph = graph.borrow();
+        let desired = self
+            .tap
+            .node_id()
+            .and_then(|id| graph.node(id))
+            .map_or_else(Vec::new, |tap| policy::desired_links(&graph, &plan, tap));
+        self.owned_links.apply(desired, now);
+        let view = graph.view(self.tap.node_id(), config.device.as_deref());
+        if let Some(selected) = &view.selected_device
+            && config.device.as_deref() != Some(selected)
+        {
+            config.device = Some(Arc::clone(selected));
+        }
+        public.publish(view);
     }
 }
 
@@ -519,5 +558,97 @@ impl RegistryContext {
             })
             .register();
         self.metadata.borrow_mut().insert(id, (proxy, listener));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capture_reconciliation_preserves_retry_and_publication_boundaries() {
+        pw::init();
+        let mainloop = pw::main_loop::MainLoopRc::new(None).unwrap();
+        let context = pw::context::ContextRc::new(&mainloop, None).unwrap();
+        // A local socket keeps real PipeWire objects independent of the user's daemon.
+        let (_peer, socket) = UnixStream::pair().unwrap();
+        let core = context.connect_fd_rc(socket.into(), None).unwrap();
+        let (writer, _audio) = super::super::transport::channel();
+        let writer = Rc::new(RefCell::new(writer));
+        let dirty = Rc::new(Cell::new(true));
+        let mut capture = CaptureState::new(core, Rc::clone(&writer), dirty);
+        let graph = RefCell::new(Graph::default());
+        let mut config = CaptureConfig::default();
+        let public = PublicState::default();
+        let now = Instant::now();
+        let deadline = now + RESOURCE_RETRY_MIN;
+        capture.stream_retry_at = Some(deadline);
+        let initial = public.view();
+        capture.reconcile(
+            &graph,
+            &mut config,
+            &public,
+            deadline - Duration::from_nanos(1),
+        );
+        assert!(capture.dirty.get());
+        assert!(capture.tap.config().is_none());
+        assert!(Arc::ptr_eq(&initial, &public.view()));
+        capture.reconcile(&graph, &mut config, &public, deadline);
+        assert!(capture.tap.config().is_some());
+        // Synchronous stream callbacks leave fresh work for the next iteration.
+        assert!(capture.dirty.get());
+        assert_eq!(capture.stream_retry_at, None);
+        assert!(!Arc::ptr_eq(&initial, &public.view()));
+
+        for status in [StreamStatus::Paused, StreamStatus::Streaming] {
+            writer.borrow_mut().set_status(status);
+            capture.dirty.set(true);
+            capture.stream_retry_at = Some(deadline);
+            capture.stream_retry_delay = Duration::from_secs(8);
+            capture.reconcile(&graph, &mut config, &public, now);
+            assert_eq!(capture.stream_retry_delay, RESOURCE_RETRY_MIN);
+            assert_eq!(capture.stream_retry_at, Some(deadline));
+            assert!(capture.dirty.get());
+        }
+        for status in [StreamStatus::Failed, StreamStatus::Stopped] {
+            let published = public.view();
+            capture.owned_links.retry_at.set(Some(now));
+            capture.owned_links.retry_delay.set(Duration::from_secs(8));
+            capture.stream_retry_delay = Duration::from_secs(8);
+            capture.dirty.set(false);
+            writer.borrow_mut().set_status(status);
+            capture.reconcile(&graph, &mut config, &public, now);
+            assert!(capture.tap.config().is_none());
+            assert_eq!(capture.owned_links.retry_at.get(), None);
+            assert_eq!(capture.owned_links.retry_delay.get(), RESOURCE_RETRY_MIN);
+            assert_eq!(capture.stream_retry_at, Some(now + Duration::from_secs(8)));
+            assert_eq!(capture.stream_retry_delay, Duration::from_secs(16));
+            capture.reconcile(&graph, &mut config, &public, now + Duration::from_secs(1));
+            assert_eq!(capture.stream_retry_at, Some(now + Duration::from_secs(8)));
+            assert_eq!(capture.stream_retry_delay, Duration::from_secs(16));
+            assert!(capture.dirty.get());
+            assert!(Arc::ptr_eq(&published, &public.view()));
+            capture.dirty.set(false);
+            capture.configuration_changed();
+            assert_eq!(capture.stream_retry_at, None);
+            assert_eq!(capture.stream_retry_delay, RESOURCE_RETRY_MIN);
+            assert!(capture.dirty.get());
+            capture.reconcile(&graph, &mut config, &public, now);
+            assert!(capture.tap.config().is_some());
+        }
+
+        capture.reconcile(&graph, &mut config, &public, now);
+        assert!(!capture.dirty.get());
+        public.publish(super::super::CaptureView {
+            default_sink: "unpublished".into(),
+            ..Default::default()
+        });
+        let published = public.view();
+        capture.owned_links.retry_at.set(Some(deadline));
+        capture.reconcile(&graph, &mut config, &public, now);
+        assert!(Arc::ptr_eq(&published, &public.view()));
+        capture.reconcile(&graph, &mut config, &public, deadline);
+        assert!(!Arc::ptr_eq(&published, &public.view()));
+        assert_eq!(capture.owned_links.retry_at.get(), None);
     }
 }

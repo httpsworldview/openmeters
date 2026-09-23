@@ -592,14 +592,27 @@ fn live_backend_recovers_after_server_restart() {
     server.stop();
     wait_for("backend outage", || (!control.is_alive()).then_some(()));
     drop(fixture);
+    assert!(control.configure(CaptureConfig {
+        mode: CaptureMode::Device,
+        device: Some("openmeters-definitely-missing".into()),
+        ..Default::default()
+    }));
 
     server.restart();
-    let recovered_tap = server.wait_dump("recovered backend session", |graph| {
-        graph.node_id(&tap_name)
+    wait_for("configuration received during outage", || {
+        let mut configured = false;
+        audio.drain(Instant::now(), |span| {
+            if let CapturedSpan::Silence { format, .. } = span {
+                configured |= format.channels == 2;
+            }
+        });
+        configured.then_some(())
     });
+    assert!(control.configure(CaptureConfig::default()));
 
     let recovered = ApplicationFixture::active(&server, &fixture_name);
     let (source, target) = server.wait_dump("recovered capture links", |graph| {
+        let recovered_tap = graph.node_id(&tap_name)?;
         let source = graph.node_id(&playback_name)?;
         let target = graph.node_id(&target_name)?;
         (graph.link_count(source, target) == 2 && graph.link_count(source, recovered_tap) == 2)
