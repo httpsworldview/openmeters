@@ -2,9 +2,7 @@
 // Copyright (C) 2026 Maika Namuo
 
 use crate::dsp::{AudioBlock, ChannelPosition, RunningMeans};
-use crate::util::audio::{
-    DEFAULT_SAMPLE_RATE, flush_denormal_f64, power_to_db, sanitize_sample_rate,
-};
+use crate::util::audio::{DEFAULT_SAMPLE_RATE, flush_denormal_f64, sanitize_sample_rate};
 use std::{f64::consts::PI, sync::LazyLock};
 
 // BS.1770 LUFS offset.
@@ -57,14 +55,14 @@ fn k_weighting_coefficients(fs: f64) -> KWeighting {
     (conv(pb, rb), conv(pa, ra))
 }
 
-fn mean_square_to_lufs(mean_square: f64, floor: f32) -> f32 {
+fn mean_square_to_db(mean_square: f64, offset: f64) -> f32 {
     if mean_square > 0.0 {
         mean_square
             .log10()
-            .mul_add(10.0, LOUDNESS_OFFSET)
-            .max(f64::from(floor)) as f32
+            .mul_add(10.0, offset)
+            .max(f64::from(DEFAULT_FLOOR_DB)) as f32
     } else {
-        floor
+        DEFAULT_FLOOR_DB
     }
 }
 
@@ -340,8 +338,7 @@ impl LoudnessProcessor {
             state.iter_mut().for_each(flush_denormal_f64);
         }
 
-        let floor = DEFAULT_FLOOR_DB;
-        let mut snapshot = LoudnessSnapshot::with_floor(floor, self.channels.len());
+        let mut snapshot = LoudnessSnapshot::with_floor(DEFAULT_FLOOR_DB, self.channels.len());
         let mut weighted_short_term = 0.0;
         let mut weighted_momentary = 0.0;
 
@@ -356,14 +353,14 @@ impl LoudnessProcessor {
             let [rms_slow] = windows.mean(WIN_RMS_SLOW);
             weighted_short_term += short_term * weight;
             weighted_momentary += momentary * weight;
-            snapshot.rms_fast_db[channel_index] = power_to_db(rms_fast as f32, floor);
-            snapshot.rms_slow_db[channel_index] = power_to_db(rms_slow as f32, floor);
-            let peak = std::mem::take(&mut true_peak.peak);
-            snapshot.true_peak_db[channel_index] = power_to_db(peak * peak, floor);
+            snapshot.rms_fast_db[channel_index] = mean_square_to_db(rms_fast, 0.0);
+            snapshot.rms_slow_db[channel_index] = mean_square_to_db(rms_slow, 0.0);
+            let peak = f64::from(std::mem::take(&mut true_peak.peak));
+            snapshot.true_peak_db[channel_index] = mean_square_to_db(peak * peak, 0.0);
         }
 
-        snapshot.short_term_loudness = mean_square_to_lufs(weighted_short_term, floor);
-        snapshot.momentary_loudness = mean_square_to_lufs(weighted_momentary, floor);
+        snapshot.short_term_loudness = mean_square_to_db(weighted_short_term, LOUDNESS_OFFSET);
+        snapshot.momentary_loudness = mean_square_to_db(weighted_momentary, LOUDNESS_OFFSET);
         snapshot.positions = block.positions;
 
         snapshot
@@ -585,6 +582,7 @@ mod tests {
         let cases = [
             vec![4.0],
             vec![2.0],
+            vec![1.0e21],
             vec![0.0; 8],
             vec![0.0, 0.0, 0.0, 7.0, 0.0, 0.0, 0.0, 0.0],
             vec![0.0, 0.0, 0.0, 0.0, 1.0, -1.0, 0.0, 0.0],
