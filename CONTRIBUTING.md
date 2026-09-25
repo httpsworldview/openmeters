@@ -29,8 +29,8 @@ the existing visuals, but in short:
    and waveform-template correlation to keep traces stable across
    complex periodic signals and visible channel selections.
 5. The stereometer uses LR4 (cascaded Butterworth) crossovers and
-   linear or power-law radial scaling. Multiband correlation uses
-   the same crossover outputs.
+   linear or power-law radial scaling. Multiband correlation uses the
+   same crossover outputs.
 6. The loudness meter implements K-weighting relative to full
    scale/LUFS momentary/short-term, True Peak, and RMS
    fast/slow. Standards used include ITU-R BS.1770.
@@ -156,11 +156,14 @@ Always test relevant behavior through tests and manual verification.
 
 ## Release tags
 
-Release tags use `v<Cargo.toml package.version>` for normal upstream
-releases. For packaging-only rebuilds, append a positive package
-release suffix: `v1.7.1-2`. The suffix does not change the Rust crate
-version; it is passed to `make -C packaging RELEASE=<suffix>` for the
-Debian/RPM release number.
+`v<Cargo.toml package.version>` uses `RELEASE=0`. Packaging rebuilds
+append `-N` and use `RELEASE=N`, without changing the crate version.
+Choose `N` above all tag suffixes and package revisions already used
+for that version. Legacy unsuffixed releases used `RELEASE=1`.
+
+Changelogs start at the highest-version published stable tag in the
+release commit's history. Rerun unchanged failures; otherwise use a
+new rebuild suffix. Try to avoid moving tags.
 
 ## Repository layout
 
@@ -212,10 +215,10 @@ When adding or changing a visual, also check the related wiring:
 - `README.md` if the user-visible behavior changes.
 
 Pass visual settings as `VisualConfig` between the UI and registry;
-derive the visual kind from its variant. JSON belongs only at the
-file boundary: decode into typed settings on load and serialize on
-save. Do not retain raw JSON or emulate JSON round-trips internally.
-Invalid fields use defaults; unknown fields are discarded on save.
+derive the visual kind from its variant. JSON belongs only at the file
+boundary: decode into typed settings on load and serialize on save. Do
+not retain raw JSON or emulate JSON round-trips internally.  Invalid
+fields use defaults; unknown fields are discarded on save.
 
 Always use shared render helpers in `src/visuals/render/common.rs`;
 add new render code only when they don't fit.

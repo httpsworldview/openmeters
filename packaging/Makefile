@@ -4,7 +4,7 @@ REPO_ROOT := $(CURDIR)/..
 VERSION := $(shell awk '/^\[package\]/{p=1;next} /^\[/{p=0} p && /^version[[:space:]]*=/{n=split($$0,a,"\""); print a[2]; exit}' $(REPO_ROOT)/Cargo.toml)
 $(if $(VERSION),,$(error could not parse version from $(REPO_ROOT)/Cargo.toml))
 
-RELEASE ?= 1
+RELEASE ?= 0
 MIN_PIPEWIRE_VERSION ?= 0.3.77
 MAX_GLIBC_VERSION ?=
 

@@ -31,18 +31,20 @@ cd packaging
 make check        # print the package ABI/dependency floor
 make MAX_GLIBC_VERSION=2.39 check
 make tarball      # dist/openmeters-<version>-x86_64-linux-gnu.tar.xz
-make deb          # dist/openmeters_<version>-1_amd64.deb
-make rpm          # dist/openmeters-<version>-1.x86_64.rpm
-make RELEASE=2 all # package rebuild: deb/rpm release number 2
+make deb          # dist/openmeters_<version>-0_amd64.deb
+make rpm          # dist/openmeters-<version>-0.x86_64.rpm
+make RELEASE=1 all # rebuild example
 make all          # all of the above, plus SHA256SUMS
 make clean        # wipe dist/
 ```
 
-Version is parsed from the root `Cargo.toml`. `RELEASE` defaults to
-`1` and is passed to nFPM for Debian/RPM package rebuilds. Run nFPM
-through `make`. `MAX_GLIBC_VERSION` is optional for local builds, but
-CI sets it so official artifacts cannot silently move to a newer glibc
-floor.
+Version comes from the root `Cargo.toml`; `RELEASE` defaults to `0`.
+See [release tags](../CONTRIBUTING.md#release-tags) for rebuild
+numbering.
+
+Run nFPM through `make`. `MAX_GLIBC_VERSION` is optional for local
+builds, but CI sets it so official artifacts cannot move to a newer
+glibc floor.
 
 ## Artifact paths (example version)
 
@@ -62,7 +64,8 @@ dist/
 - `glibc` >= 2.39 for pre-built release artifacts. Local packages
   declare the highest `GLIBC_*` symbol required by the built binary.
 - `libgcc_s.so.1`
-- `libpipewire-0.3.so.0` >= 0.3.77 (audio capture and graph integration)
+- `libpipewire-0.3.so.0` >= 0.3.77 (audio capture and graph
+  integration)
 - `libvulkan.so.1` (wgpu uses the distro's Vulkan loader + ICDs)
 - Wayland: `libwayland-client.so.0`
 - X11: `libX11.so.6`, `libX11-xcb.so.1`, `libxcb.so.1`,

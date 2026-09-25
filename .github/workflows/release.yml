@@ -43,6 +43,7 @@ jobs:
             build-essential \
             ca-certificates \
             curl \
+            gh \
             git \
             libclang-dev \
             libpipewire-0.3-dev \
@@ -98,6 +99,7 @@ jobs:
         env:
           TAG_NAME: ${{ github.ref_name }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
 
@@ -117,13 +119,12 @@ jobs:
           fi
 
           tag="${TAG_NAME}"
-          tag_body="${tag#v}"
-          package_release="1"
+          package_release="0"
           display_version="${version}"
-          if [ "$tag_body" = "$version" ]; then
+          if [ "$tag" = "v${version}" ]; then
             :
-          elif [[ "$tag_body" == "${version}-"* ]]; then
-            package_release="${tag_body#"${version}-"}"
+          elif [[ "$tag" == "v${version}-"* ]]; then
+            package_release="${tag#"v${version}-"}"
             if [[ ! "$package_release" =~ ^[1-9][0-9]*$ ]]; then
               echo "Release tag ${tag} has invalid package release suffix; expected v${version}-<positive integer>." >&2
               exit 1
@@ -135,7 +136,7 @@ jobs:
           fi
 
           head_commit="$(git rev-parse HEAD)"
-          tag_commit="$(git rev-parse "${tag}^{commit}")"
+          tag_commit="$(git rev-parse "refs/tags/${tag}^{commit}")"
           if [ "$tag_commit" != "$head_commit" ]; then
             echo "Release tag ${tag} points at ${tag_commit}, but checkout is ${head_commit}." >&2
             exit 1
@@ -155,16 +156,29 @@ jobs:
           rust_toolchain="$(cargo_value rust-version < Cargo.toml)"
           rust_toolchain="${rust_toolchain:-stable}"
 
-          previous_tag="$(git tag --merged "$head_commit" --sort=-v:refname --list 'v[0-9]*.[0-9]*.[0-9]*' \
-            | grep -Fvx "$tag" \
-            | head -n 1 || true)"
+          published_tags="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name')"
+          merged_tags="$(git tag --merged "$head_commit" --sort=-v:refname --list 'v[0-9]*.[0-9]*.[0-9]*')"
+          previous_tag=""
+          while IFS= read -r candidate; do
+            if [[ "$candidate" == "$tag" || ! "$candidate" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[1-9][0-9]*)?$ ]]; then
+              continue
+            fi
+            if grep -Fxq -- "$candidate" <<< "$published_tags"; then
+              previous_tag="$candidate"
+              break
+            fi
+          done <<< "$merged_tags"
 
           changelog_range="${head_commit}"
-          if [ -n "$previous_tag" ] && git rev-parse "${previous_tag}^{commit}" >/dev/null 2>&1; then
-            changelog_range="${previous_tag}..${head_commit}"
+          if [ -n "$previous_tag" ]; then
+            changelog_range="refs/tags/${previous_tag}..${head_commit}"
+            echo "Changelog baseline: ${previous_tag}"
+          else
+            echo "No earlier published release in history; using full history."
           fi
 
-          changelog="$(git log --no-merges --pretty=format:'%h %s' "$changelog_range" 2>/dev/null || true)"
+          changelog="$(git log --no-merges --pretty=format:'%h %s' "$changelog_range")"
           if [ -z "$changelog" ]; then
             changelog="(no changelog entries)"
           fi
