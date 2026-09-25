@@ -59,6 +59,7 @@ jobs:
             libfontconfig1-dev \
             libfreetype6-dev \
             libvulkan-dev \
+            pipewire-bin \
             pkg-config \
             xz-utils \
             zstd
