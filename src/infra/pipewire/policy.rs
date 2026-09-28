@@ -147,7 +147,7 @@ pub(super) fn desired_links(graph: &Graph, plan: &Plan, tap: &Node) -> Vec<LinkS
             .map(|index| targets[index])
     };
 
-    let mut links = HashSet::new();
+    let mut links = Vec::new();
     for source in plan.sources.iter().filter_map(|id| graph.node(*id)) {
         let ports = graph.output_ports(source);
         let (positions, _) = port_layout(&ports);
@@ -184,12 +184,12 @@ pub(super) fn desired_links(graph: &Graph, plan: &Plan, tap: &Node) -> Vec<LinkS
                 channel => [Some(channel), None],
             };
             for target in remixed.into_iter().flatten().filter_map(target_for) {
-                links.insert(link(source, output, tap, target));
+                links.push(link(source, output, tap, target));
             }
         }
     }
-    let mut links: Vec<_> = links.into_iter().collect();
     links.sort_unstable();
+    links.dedup();
     links
 }
 

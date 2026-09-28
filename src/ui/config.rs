@@ -284,7 +284,6 @@ impl ConfigPage {
     }
 
     pub(in crate::ui) fn update(&mut self, message: ConfigMessage) -> Option<ConfigEffect> {
-        let mut effect = None;
         match message {
             ConfigMessage::ToggleChanged { identity, enabled } => {
                 self.settings.update(User, |settings| {
@@ -304,7 +303,7 @@ impl ConfigPage {
                 self.settings.update(User, |s| {
                     s.data.visuals.set_enabled(kind, enabled);
                 });
-                effect = Some(ConfigEffect::VisualToggled { kind, enabled });
+                return Some(ConfigEffect::VisualToggled { kind, enabled });
             }
             ConfigMessage::CaptureModeChanged(mode) => {
                 if self.settings.set(User, |s| &mut s.capture_mode, mode) {
@@ -328,37 +327,41 @@ impl ConfigPage {
                 }
             }
             ConfigMessage::VisualFrameRateChanged(rate) => {
-                if self.settings.set(User, |s| &mut s.visual_frame_rate, rate) {
-                    effect = Some(ConfigEffect::FrameRateChanged(rate));
-                }
+                return self
+                    .settings
+                    .set(User, |s| &mut s.visual_frame_rate, rate)
+                    .then_some(ConfigEffect::FrameRateChanged(rate));
             }
             ConfigMessage::DecorationsToggled(value) => {
                 self.settings.update(User, |s| s.data.decorations = value);
-                effect = Some(ConfigEffect::DecorationsChanged);
+                return Some(ConfigEffect::DecorationsChanged);
             }
             ConfigMessage::BarModeToggled(value) => {
-                if self.settings.set(User, |s| &mut s.bar.enabled, value) {
-                    effect = Some(ConfigEffect::BarChanged(BarChange::Mode));
-                }
+                return self
+                    .settings
+                    .set(User, |s| &mut s.bar.enabled, value)
+                    .then_some(ConfigEffect::BarChanged(BarChange::Mode));
             }
             ConfigMessage::BarAlignmentChanged(value) => {
-                if self.settings.set(User, |s| &mut s.bar.alignment, value) {
-                    effect = Some(ConfigEffect::BarChanged(BarChange::Layout));
-                }
+                return self
+                    .settings
+                    .set(User, |s| &mut s.bar.alignment, value)
+                    .then_some(ConfigEffect::BarChanged(BarChange::Layout));
             }
             ConfigMessage::BarHeightChanged(value) => {
                 self.settings.update(User, |s| s.data.bar.height = value);
-                effect = Some(ConfigEffect::BarChanged(BarChange::Layout));
+                return Some(ConfigEffect::BarChanged(BarChange::Layout));
             }
             ConfigMessage::BarMonitorChanged(value) => {
-                if self.settings.set(User, |s| &mut s.bar.monitor, value) {
-                    effect = Some(ConfigEffect::BarChanged(BarChange::Monitor));
-                }
+                return self
+                    .settings
+                    .set(User, |s| &mut s.bar.monitor, value)
+                    .then_some(ConfigEffect::BarChanged(BarChange::Monitor));
             }
             ConfigMessage::ThemeChanged(name) => {
-                if self.apply_theme(&name) {
-                    effect = Some(ConfigEffect::ThemeChanged);
-                }
+                return self
+                    .apply_theme(&name)
+                    .then_some(ConfigEffect::ThemeChanged);
             }
             ConfigMessage::SaveTheme(name) => {
                 if let Some(saved_name) = self.save_current_as_theme(&name) {
@@ -369,7 +372,7 @@ impl ConfigPage {
             ConfigMessage::ThemeNameInput(val) => self.save_theme_name = val,
             ConfigMessage::Scrolled(g) => self.scroll = g,
         }
-        effect
+        None
     }
 
     pub fn view(&self) -> Element<'_, ConfigMessage> {

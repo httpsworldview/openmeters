@@ -7,6 +7,7 @@ use iced::widget::{button, container, slider, text};
 use iced::{Background, Color, Theme};
 
 use crate::util::color::{lerp_color, with_alpha};
+use crate::visuals::render::common::border_color;
 
 pub use crate::visuals::palettes::{BG_BASE, Palette, background};
 
@@ -52,12 +53,6 @@ fn palette(background: Color) -> palette::Palette {
         warning: ACCENT_SUCCESS,
         danger: ACCENT_DANGER,
     }
-}
-
-pub fn border_color(theme: &Theme, emphasized: bool) -> Color {
-    let base = theme.extended_palette().background.base;
-    let mix = if emphasized { 0.58 } else { 0.32 };
-    with_alpha(lerp_color(base.color, base.text, mix), 1.0)
 }
 
 pub fn border(theme: &Theme, emphasized: bool) -> Border {

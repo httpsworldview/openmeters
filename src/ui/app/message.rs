@@ -142,56 +142,44 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
                 } else {
                     Task::none()
                 };
-                Task::batch([restore, app.sync_all_windows()])
+                return Task::batch([restore, app.sync_all_windows()]);
             }
             Some(ConfigEffect::FrameRateChanged(rate)) => {
                 app.frames.borrow_mut().set_rate(rate);
-                Task::none()
             }
-            Some(ConfigEffect::DecorationsChanged) => app.recreate_visual_windows(),
+            Some(ConfigEffect::DecorationsChanged) => return app.recreate_visual_windows(),
             Some(ConfigEffect::BarChanged(change)) => {
                 app.last_bar_retry = None;
-                app.handle_bar_config_change(change)
+                return app.handle_bar_config_change(change);
             }
             Some(ConfigEffect::ThemeChanged) => {
                 if let Some((_, panel)) = app.settings_window.as_mut() {
                     *panel = super::ActiveSettings::new(panel.kind(), &app.visual_manager);
                 }
-                Task::none()
             }
-            None => Task::none(),
+            None => {}
         },
-        Message::Visuals(VisualsMessage::SettingsRequested(kind)) => app.open_settings_window(kind),
-        Message::Visuals(visuals_msg) => app.visuals_page.update(visuals_msg).map(Message::Visuals),
-        Message::ToggleConfig => app.toggle_config_window(),
-        Message::TogglePause => {
-            app.set_rendering_paused(!app.rendering_paused);
-            Task::none()
+        Message::Visuals(VisualsMessage::SettingsRequested(kind)) => {
+            return app.open_settings_window(kind);
         }
-        Message::PopOutOrDock(window_id) => app.handle_popout_or_dock(window_id),
-        Message::BarResizeStart => {
-            app.begin_bar_resize();
-            Task::none()
+        Message::Visuals(visuals_msg) => {
+            return app.visuals_page.update(visuals_msg).map(Message::Visuals);
         }
-        Message::BarResizeMove(pos) => {
-            app.handle_bar_resize(pos);
-            Task::none()
-        }
-        Message::BarResizeEnd => app.finish_bar_resize(),
+        Message::ToggleConfig => return app.toggle_config_window(),
+        Message::TogglePause => app.set_rendering_paused(!app.rendering_paused),
+        Message::PopOutOrDock(window_id) => return app.handle_popout_or_dock(window_id),
+        Message::BarResizeStart => app.begin_bar_resize(),
+        Message::BarResizeMove(pos) => app.handle_bar_resize(pos),
+        Message::BarResizeEnd => return app.finish_bar_resize(),
         Message::Quit => {
             if app.exit_warning_until.is_some_and(|d| Instant::now() < d) {
                 return exit();
             }
             app.exit_warning_until = Some(Instant::now() + TOAST_DISPLAY_DURATION);
-            Task::none()
         }
-        Message::Tick => {
-            app.tick();
-            Task::none()
-        }
+        Message::Tick => app.tick(),
         Message::Watchdog(generation) => {
-            app.frames.borrow_mut().watchdog(generation, Instant::now());
-            Task::none()
+            app.frames.borrow_mut().watchdog(generation, Instant::now())
         }
         Message::BarOutput(id, name, event) => {
             let change = app.config_page.sync_bar_output(id, name, event);
@@ -206,41 +194,35 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
                     return retry_bar(app, false);
                 }
             }
-            Task::none()
         }
         Message::BarWindowOutput(window, output)
             if app.main_window_is_layer && window == app.main_window_id =>
         {
             app.main_layer_ready = true;
             if app.config_page.sync_current_bar_output(output) {
-                retry_bar(app, false)
-            } else {
-                Task::none()
+                return retry_bar(app, false);
             }
         }
         // Output changes and shell closes share one ordered event stream.
         Message::ShellWindowClosed(window)
             if app.main_window_is_layer && window == app.main_window_id =>
         {
-            close_main_layer(app, window)
+            return close_main_layer(app, window);
         }
-        Message::WindowOpened(window) => {
-            if app.main_window_is_layer && window == app.main_window_id {
-                app.main_layer_opened = true;
-            }
-            Task::none()
-        }
-        // After Opened, the ordered shell close is authoritative for the main layer.
-        Message::WindowClosed(window)
+        Message::WindowOpened(window)
             if app.main_window_is_layer && window == app.main_window_id =>
         {
-            if app.main_layer_opened {
-                Task::none()
-            } else {
-                close_main_layer(app, window)
+            app.main_layer_opened = true;
+        }
+        // After Opened, the ordered shell close is authoritative for the main layer.
+        Message::WindowClosed(window) => {
+            if !app.main_window_is_layer || window != app.main_window_id {
+                return app.on_window_closed(window);
+            }
+            if !app.main_layer_opened {
+                return close_main_layer(app, window);
             }
         }
-        Message::WindowClosed(window) => app.on_window_closed(window),
         Message::Settings(window_id, settings_msg) => {
             if let Some((wid, panel)) = app.settings_window.as_mut()
                 && *wid == window_id
@@ -248,15 +230,12 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
                 panel.handle(settings_msg, &app.visual_manager, &app.settings_handle);
                 app.config_page.refresh_theme_choices_if_needed();
             }
-            Task::none()
         }
-        Message::SettingsScrolled(g) => {
-            app.settings_scroll = g;
-            Task::none()
-        }
-        Message::WindowResized(id, size) => app.handle_window_resize(id, size),
-        _ => Task::none(),
+        Message::SettingsScrolled(g) => app.settings_scroll = g,
+        Message::WindowResized(id, size) => return app.handle_window_resize(id, size),
+        _ => {}
     }
+    Task::none()
 }
 
 pub(super) fn view(app: &UiApp, window_id: window::Id) -> Element<'_, Message> {

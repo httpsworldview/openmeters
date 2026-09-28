@@ -6,7 +6,6 @@ use super::processor::{
 };
 use super::render::{RingCopyPlan, SPECTROGRAM_PALETTE_SIZE, SpectrogramParams};
 use crate::persistence::settings::SpectrogramSettings;
-use crate::ui::{scroll_delta_lines, theme};
 use crate::util::{
     audio::musical::{MusicalNote, NoteInfo},
     audio::{FrequencyScale, fmt_duration, fmt_freq},
@@ -14,7 +13,9 @@ use crate::util::{
 };
 use crate::visuals::options::PianoRollOverlay;
 use crate::visuals::palettes;
-use crate::visuals::render::common::{fill_bordered_rect, fill_rect, text as raw_text};
+use crate::visuals::render::common::{
+    border_color, fill_bordered_rect, fill_rect, scroll_delta_lines, text as raw_text,
+};
 use iced::advanced::graphics::text::Paragraph;
 use iced::advanced::text::{Paragraph as _, Renderer as _};
 use iced::advanced::widget::Tree;
@@ -111,16 +112,14 @@ impl SpectrogramHistory {
             };
         } else if capacity != self.ring_capacity {
             self.ensure_pending_copy();
-            if capacity > self.ring_capacity && self.col_count >= self.ring_capacity {
-                self.remap_retained(self.write_slot, self.col_count);
-                self.write_slot = self.col_count % capacity;
-            } else if capacity < self.ring_capacity && self.col_count >= capacity {
+            let keep = self.col_count.min(capacity);
+            if self.col_count >= self.ring_capacity.min(capacity) {
                 let oldest_kept =
-                    (self.write_slot + self.ring_capacity - capacity) % self.ring_capacity;
-                self.remap_retained(oldest_kept, capacity);
-                self.col_count = capacity;
-                self.write_slot = 0;
+                    (self.write_slot + self.ring_capacity - keep) % self.ring_capacity.max(1);
+                self.remap_retained(oldest_kept, keep);
+                self.write_slot = keep % capacity;
             }
+            self.col_count = keep;
             self.ring_capacity = capacity;
             if self.col_kind == ColumnKind::Reassigned {
                 let mut counts = self.slot_counts.to_vec();
@@ -144,9 +143,7 @@ impl SpectrogramHistory {
             }
             self.pending.push_back(column);
             self.write_slot = (self.write_slot + 1) % self.ring_capacity;
-            if self.col_count < self.ring_capacity {
-                self.col_count += 1;
-            }
+            self.col_count = (self.col_count + 1).min(self.ring_capacity);
         }
     }
 
@@ -165,14 +162,13 @@ impl SpectrogramHistory {
             *slot < keep
         };
         if self.col_kind == ColumnKind::Reassigned {
-            let mut counts = vec![0; keep as usize];
-            for (src, &count) in self.slot_counts.iter().enumerate().take(old_cap as usize) {
-                let mut dst = src as u32;
-                if remap(&mut dst) {
-                    counts[dst as usize] = count;
-                }
-            }
-            self.slot_counts = counts.into();
+            let (before, after) = self.slot_counts.split_at(start as usize);
+            self.slot_counts = after
+                .iter()
+                .chain(before)
+                .copied()
+                .take(keep as usize)
+                .collect();
         }
         let discard = self.pending.len().saturating_sub(keep as usize);
         self.pending.drain(..discard);
@@ -483,7 +479,7 @@ impl Spectrogram<'_> {
         bounds: Rectangle,
         cursor: Point,
     ) {
-        let color = theme::border_color(theme, false);
+        let color = border_color(theme, false);
         for rect in [
             Rectangle::new(
                 Point::new(cursor.x, bounds.y),
@@ -529,7 +525,7 @@ impl Spectrogram<'_> {
             tb,
             with_alpha(pal.background.strong.color, TOOLTIP_BG_ALPHA),
             iced::Border {
-                color: with_alpha(theme::border_color(theme, false), TOOLTIP_BORDER_ALPHA),
+                color: with_alpha(border_color(theme, false), TOOLTIP_BORDER_ALPHA),
                 width: 1.0,
                 ..Default::default()
             },
@@ -938,5 +934,23 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![0, 2, 1]
         );
+
+        let mut retained = VecDeque::from([0, 2, 1]);
+        for (capacity, incoming) in [(2, 3), (6, 4), (4, 5), (4, 0), (8, 7), (1, 2)] {
+            // Keep updates pending across resizes, while an older snapshot is still shared.
+            state.apply_snapshot(reassigned_update(capacity, false, &[incoming]));
+            retained.push_back(incoming as u32);
+            retained.drain(..retained.len().saturating_sub(capacity));
+            let history = &state.history;
+            let first = (history.write_slot + history.ring_capacity - history.col_count)
+                % history.ring_capacity;
+            let actual: Vec<_> = (0..history.col_count)
+                .map(|offset| {
+                    history.slot_counts[((first + offset) % history.ring_capacity) as usize]
+                })
+                .collect();
+            assert_eq!(actual, retained.iter().copied().collect::<Vec<_>>());
+        }
+        assert_eq!(&params.slot_counts[..4], &[0, 2, 1, 0]);
     }
 }

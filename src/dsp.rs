@@ -413,24 +413,18 @@ impl<const VALUES: usize, const WINDOWS: usize> RunningMeans<VALUES, WINDOWS> {
                     Ring::Compact(buffer) => buffer[index].map(f64::from),
                     Ring::Wide(buffer) => buffer[index],
                 };
-                for (sum, &sample) in sum.iter_mut().zip(&samples) {
-                    *sum += sample;
-                }
+                sum = std::array::from_fn(|i| sum[i] + samples[i]);
             }
             let mut left = self.blocks.len() / 2 + first / Self::BLOCK;
             let mut right = self.blocks.len() / 2 + last / Self::BLOCK;
             while left < right {
                 if left % 2 == 1 {
-                    for (sum, &part) in sum.iter_mut().zip(&self.blocks[left]) {
-                        *sum += part;
-                    }
+                    sum = std::array::from_fn(|i| sum[i] + self.blocks[left][i]);
                     left += 1;
                 }
                 if right % 2 == 1 {
                     right -= 1;
-                    for (sum, &part) in sum.iter_mut().zip(&self.blocks[right]) {
-                        *sum += part;
-                    }
+                    sum = std::array::from_fn(|i| sum[i] + self.blocks[right][i]);
                 }
                 left /= 2;
                 right /= 2;

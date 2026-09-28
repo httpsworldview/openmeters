@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::ui::scroll_delta_lines;
 use crate::ui::theme::{self as ui_theme, Palette};
 use crate::ui::widgets::scroll_glow::ScrollGlow;
 use crate::ui::widgets::{action_button, clipped_text};
@@ -9,6 +8,7 @@ use crate::util::color::{
     EPSILON, STOP_SPREAD_MAX, STOP_SPREAD_MIN, colors_equal, lerp_color, sanitize_stop_positions,
     sanitize_stop_spreads, with_alpha,
 };
+use crate::visuals::render::common::scroll_delta_lines;
 use iced::advanced::renderer::Quad;
 use iced::advanced::{Renderer as _, Widget, mouse};
 use iced::alignment::{Horizontal, Vertical};

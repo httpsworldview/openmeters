@@ -198,17 +198,10 @@ impl SpectrumProcessor {
         while (0..TRACE_COUNT)
             .all(|trace| !active[trace] || self.pcm_buffers[trace].len() >= fft_size)
         {
-            for (trace, &active) in active.iter().enumerate() {
-                if active {
-                    self.process_trace_window(trace, dt_seconds, floor);
-                }
-            }
             let mut drained = hop;
             for (trace, &active) in active.iter().enumerate() {
                 if active {
-                    let buf = &mut self.pcm_buffers[trace];
-                    let count = hop.min(buf.len());
-                    buf.drain(..count);
+                    let count = self.process_trace_window(trace, dt_seconds, floor);
                     drained = drained.min(count);
                 }
             }
@@ -219,7 +212,7 @@ impl SpectrumProcessor {
         produced
     }
 
-    fn process_trace_window(&mut self, trace: usize, dt_seconds: f32, floor: f32) {
+    fn process_trace_window(&mut self, trace: usize, dt_seconds: f32, floor: f32) -> usize {
         copy_dc_removed_windowed_from_deque(
             &mut self.real_buffer,
             &self.pcm_buffers[trace],
@@ -257,6 +250,10 @@ impl SpectrumProcessor {
             dt_seconds,
             floor,
         );
+        let buf = &mut self.pcm_buffers[trace];
+        let count = self.config.hop_size.min(buf.len());
+        buf.drain(..count);
+        count
     }
 
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<&SpectrumSnapshot> {
@@ -681,32 +678,49 @@ mod tests {
 
     #[test]
     fn hops_larger_than_the_fft_are_block_partition_independent() {
-        let config = SpectrumConfig {
-            sample_rate: 32.0,
-            fft_size: 8,
-            hop_size: 16,
-            window: WindowKind::Rectangular,
-            source: Channel::Left,
-            ..Default::default()
-        };
-        let samples: Vec<_> = (0..29).map(|i| (i as f32 * 0.73).sin()).collect();
+        for (channels, source, secondary_source) in [
+            (1, Channel::Left, Channel::Side),
+            (2, Channel::Left, Channel::Right),
+            (2, Channel::None, Channel::Right),
+            (2, Channel::Left, Channel::None),
+            (2, Channel::Left, Channel::Left),
+        ] {
+            let samples: Vec<_> = (0..29)
+                .flat_map(|i| {
+                    [(i as f32 * 0.73).sin(), (i as f32 * 0.37).cos()]
+                        .into_iter()
+                        .take(channels)
+                })
+                .collect();
+            let config = SpectrumConfig {
+                sample_rate: 32.0,
+                fft_size: 8,
+                hop_size: 16,
+                window: WindowKind::Rectangular,
+                source,
+                secondary_source,
+                ..Default::default()
+            };
+            let mut whole_processor = SpectrumProcessor::new(config);
+            let whole = whole_processor
+                .process_block(&AudioBlock::new(&samples, channels, 32.0))
+                .unwrap();
 
-        let mut whole_processor = SpectrumProcessor::new(config);
-        let whole = whole_processor
-            .process_block(&AudioBlock::new(&samples, 1, 32.0))
-            .unwrap();
+            let mut partitioned_processor = SpectrumProcessor::new(config);
+            let mut partitioned = None;
+            for chunk in samples.chunks(channels * 8) {
+                partitioned = partitioned_processor
+                    .process_block(&AudioBlock::new(chunk, channels, 32.0))
+                    .cloned()
+                    .or(partitioned);
+            }
+            let partitioned = partitioned.unwrap();
 
-        let mut partitioned_processor = SpectrumProcessor::new(config);
-        let mut partitioned = None;
-        for chunk in samples.chunks(8) {
-            partitioned = partitioned_processor
-                .process_block(&AudioBlock::new(chunk, 1, 32.0))
-                .cloned()
-                .or(partitioned);
+            assert_eq!(
+                whole.traces, partitioned.traces,
+                "{source:?}/{secondary_source:?}"
+            );
         }
-        let partitioned = partitioned.unwrap();
-
-        assert_eq!(whole.traces[0], partitioned.traces[0]);
     }
 
     #[test]

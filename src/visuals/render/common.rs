@@ -9,6 +9,20 @@ use std::mem::size_of;
 
 pub(in crate::visuals) const SDF_VERTICES_PER_INSTANCE: u32 = 4;
 
+pub(crate) fn scroll_delta_lines(delta: iced::mouse::ScrollDelta) -> f32 {
+    match delta {
+        iced::mouse::ScrollDelta::Lines { y, .. } => y,
+        iced::mouse::ScrollDelta::Pixels { y, .. } => y / 50.0,
+    }
+}
+
+pub(crate) fn border_color(theme: &iced::Theme, emphasized: bool) -> Color {
+    use crate::util::color::{lerp_color, with_alpha};
+    let base = theme.extended_palette().background.base;
+    let mix = if emphasized { 0.58 } else { 0.32 };
+    with_alpha(lerp_color(base.color, base.text, mix), 1.0)
+}
+
 #[derive(Clone, Copy)]
 pub struct ClipTransform {
     origin: [f32; 2],
@@ -333,35 +347,21 @@ pub fn decimate_finite_ordered_line_in_place(pts: &mut Vec<(f32, f32)>, max_poin
 
     let last = pts[pts.len() - 1];
     let (x0, width) = (pts[0].0, last.0 - pts[0].0);
-    let bucketed = crate::util::finite_positive(width).is_some();
-    let buckets = if bucketed {
-        (max_points / 2).min(width.ceil().max(1.0) as usize)
-    } else {
-        1
-    };
-    let bucket_scale = if bucketed {
-        buckets as f32 / width
-    } else {
-        0.0
-    };
-    let bucket_width = if bucketed {
-        width / buckets as f32
-    } else {
-        0.0
-    };
+    let (buckets, bucket_scale, bucket_width) = crate::util::finite_positive(width)
+        .map(|width| {
+            let buckets = (max_points / 2).min(width.ceil().max(1.0) as usize);
+            (buckets, buckets as f32 / width, width / buckets as f32)
+        })
+        .unwrap_or((1, 0.0, 0.0));
     let (mut read, mut out, mut groups) = (0, 0, 0);
 
     while read < pts.len() {
         let start = read;
-        let bucket = if bucketed {
-            ((pts[start].0 - x0) * bucket_scale).clamp(0.0, (buckets - 1) as f32) as usize
-        } else {
-            0
-        };
+        let bucket = ((pts[start].0 - x0) * bucket_scale).clamp(0.0, (buckets - 1) as f32) as usize;
         groups += 1;
         // A rounded edge can fall below a point assigned to its bucket. Let the
         // last budgeted group consume the remainder rather than exceed the cap.
-        let end_x = if bucketed && groups < buckets {
+        let end_x = if groups < buckets {
             x0 + bucket_width * (bucket + 1) as f32
         } else {
             f32::INFINITY
@@ -763,6 +763,12 @@ mod tests {
         assert!(points.windows(2).all(|window| window[0].0 <= window[1].0));
         assert!(points.iter().any(|point| point.1 == min));
         assert!(points.iter().any(|point| point.1 == max));
+
+        for xs in [[1.0; 4], [-f32::MAX, -1.0, 1.0, f32::MAX]] {
+            let mut points: Vec<_> = xs.into_iter().zip([0.0, -2.0, 3.0, 1.0]).collect();
+            decimate_finite_ordered_line_in_place(&mut points, 2);
+            assert_eq!(points, [(xs[1], -2.0), (xs[2], 3.0)]);
+        }
     }
 
     #[test]

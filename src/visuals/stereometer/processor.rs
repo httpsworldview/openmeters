@@ -68,7 +68,6 @@ impl Correlator {
 pub(super) const FULL_BAND: usize = 0;
 pub struct StereometerProcessor {
     config: StereometerConfig,
-    snapshot: [Vec<(f32, f32)>; BAND_COUNT + 1],
     histories: [VecDeque<(f32, f32)>; BAND_COUNT + 1],
     history_channels: usize,
     band_splitter: BandSplitter,
@@ -80,7 +79,6 @@ impl StereometerProcessor {
     pub fn new(mut config: StereometerConfig) -> Self {
         config.analyze_bands |= config.emit_band_points;
         Self {
-            snapshot: Default::default(),
             histories: Default::default(),
             history_channels: 0,
             band_splitter: BandSplitter::new(config.sample_rate, BAND_SPLITS_HZ),
@@ -98,7 +96,6 @@ impl StereometerProcessor {
         self.histories.iter_mut().for_each(VecDeque::clear);
         self.band_splitter.clear();
         self.correlators = Default::default();
-        self.snapshot = Default::default();
     }
 
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<StereometerSnapshot> {
@@ -165,52 +162,38 @@ impl StereometerProcessor {
             .target_sample_count
             .clamp(1, frames)
             .min(MAX_SNAPSHOT_POINTS);
-        for (band, (history, buf)) in self.histories[..history_count]
-            .iter_mut()
-            .zip(&mut self.snapshot[..history_count])
-            .enumerate()
-        {
-            buf.clear();
-            if history.len() < frames {
-                continue;
-            }
-            let data = history.make_contiguous();
-            buf.reserve(target);
-            if target == frames {
-                if band == FULL_BAND {
-                    buf.extend_from_slice(data);
-                } else {
-                    buf.extend(data.iter().map(|&(left, right)| {
-                        (left * BAND_DISPLAY_GAIN, right * BAND_DISPLAY_GAIN)
-                    }));
-                }
-                continue;
-            }
-            let scale = (frames - 1) as f64 / (target - 1).max(1) as f64;
-            let points = (0..target).map(|i| {
-                data[if target == 1 {
-                    frames - 1
-                } else {
-                    (i as f64 * scale).round() as usize
-                }]
-            });
-            if band == FULL_BAND {
-                buf.extend(points);
-            } else {
-                buf.extend(
-                    points
-                        .map(|(left, right)| (left * BAND_DISPLAY_GAIN, right * BAND_DISPLAY_GAIN)),
-                );
-            }
-        }
-
         Some(StereometerSnapshot {
-            points: self.snapshot.each_ref().map(|points| {
-                if points.is_empty() {
-                    Arc::default()
-                } else {
-                    Arc::from(points.as_slice())
+            points: std::array::from_fn(|band| {
+                let history = &mut self.histories[band];
+                if band >= history_count || history.len() < frames {
+                    return Arc::default();
                 }
+                let data = history.make_contiguous();
+                let display = |&(left, right)| {
+                    if band == FULL_BAND {
+                        (left, right)
+                    } else {
+                        (left * BAND_DISPLAY_GAIN, right * BAND_DISPLAY_GAIN)
+                    }
+                };
+                if target == frames {
+                    return if band == FULL_BAND {
+                        Arc::from(&*data)
+                    } else {
+                        data.iter().map(display).collect()
+                    };
+                }
+                let scale = (frames - 1) as f64 / (target - 1).max(1) as f64;
+                (0..target)
+                    .map(|i| {
+                        let index = if target == 1 {
+                            frames - 1
+                        } else {
+                            (i as f64 * scale).round() as usize
+                        };
+                        display(&data[index])
+                    })
+                    .collect()
             }),
             correlations: std::array::from_fn(|band| {
                 if band == FULL_BAND || analyze_bands {
@@ -241,7 +224,6 @@ impl StereometerProcessor {
         }
         if !config.emit_band_points {
             self.histories[1..].fill_with(VecDeque::new);
-            self.snapshot[1..].fill_with(Vec::new);
         }
     }
 }
@@ -276,6 +258,30 @@ mod tests {
             ..Default::default()
         });
         let samples = [1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0];
+        for (target_sample_count, expected) in [
+            (1, vec![(-1.0, 1.0)]),
+            (2, vec![(1.0, -1.0), (-1.0, 1.0)]),
+            (3, vec![(1.0, -1.0), (1.0, -1.0), (-1.0, 1.0)]),
+            (
+                usize::MAX,
+                vec![(1.0, -1.0), (-1.0, 1.0), (1.0, -1.0), (-1.0, 1.0)],
+            ),
+        ] {
+            let mut processor = StereometerProcessor::new(StereometerConfig {
+                target_sample_count,
+                ..processor.config()
+            });
+            for block in [samples.as_slice(), &samples[..2]] {
+                let snapshot = processor
+                    .process_block(&AudioBlock::new(block, 2, 4.0))
+                    .unwrap();
+                if block.len() == samples.len() {
+                    assert_eq!(&*snapshot.points[FULL_BAND], expected);
+                } else {
+                    assert_eq!(snapshot.points[FULL_BAND].last(), Some(&(1.0, -1.0)));
+                }
+            }
+        }
         for emit_band_points in [false, true] {
             let old_alpha = processor.correlation_alpha;
             let correlation_window = processor.config().correlation_window.next_down();

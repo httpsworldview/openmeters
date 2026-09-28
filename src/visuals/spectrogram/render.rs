@@ -113,21 +113,19 @@ impl Primitive for SpectrogramParams {
             return;
         };
         let visible_slots = self.col_count.min(r.ring.layout.slots as u32);
-        if r.ring.layout.kind == ColumnKind::Reassigned
-            && !self
-                .slot_counts
-                .iter()
-                .take(visible_slots as usize)
-                .any(|&count| count > 0)
-        {
-            return;
-        }
-
-        let (index, bg) = match r.ring.layout.kind {
-            ColumnKind::Reassigned => {
+        let (index, bg) = match &r.ring.storage {
+            RingStorage::Reassigned { pages, bg } => {
                 let Some(accum) = r.accum.as_ref() else {
                     return;
                 };
+                if !self
+                    .slot_counts
+                    .iter()
+                    .take(visible_slots as usize)
+                    .any(|&count| count > 0)
+                {
+                    return;
+                }
                 if accum.dirty.swap(false, Ordering::Relaxed) {
                     let mut pass = begin_pass(
                         encoder,
@@ -136,9 +134,6 @@ impl Primitive for SpectrogramParams {
                         "Spectrogram accumulation pass",
                         wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                     );
-                    let RingStorage::Reassigned { pages, bg } = &r.ring.storage else {
-                        return;
-                    };
                     let mut indexed = r.indices.is_some();
                     pass.set_pipeline(&pipeline.pipelines[if indexed { 3 } else { 0 }]);
                     if let Some((_, indices)) = &r.indices {
@@ -151,39 +146,37 @@ impl Primitive for SpectrogramParams {
                         let Some(page) = page else { continue };
                         let first = (index * page_columns) as u32;
                         let columns = visible_slots.saturating_sub(first).min(page_columns as u32);
-                        if columns > 0 {
-                            let counts = &self.slot_counts[first as usize..][..columns as usize];
-                            if let (Some((capacity, _)), Some(bg)) = (&r.indices, &page.indexed_bg)
+                        if columns == 0 {
+                            break;
+                        }
+                        let counts = &self.slot_counts[first as usize..][..columns as usize];
+                        let vertex =
+                            page_vertex(first, page.stride, r.uniform_cache.points_per_col);
+                        if let (Some((capacity, _)), Some(bg)) = (&r.indices, &page.indexed_bg) {
+                            if !indexed {
+                                pass.set_pipeline(&pipeline.pipelines[3]);
+                                indexed = true;
+                            }
+                            pass.set_bind_group(0, bg, &[]);
+                            let tag = vertex / 4;
+                            for (columns, count) in
+                                equal_count_batches(counts, (*capacity).min(page.stride))
                             {
-                                if !indexed {
-                                    pass.set_pipeline(&pipeline.pipelines[3]);
-                                    indexed = true;
-                                }
+                                pass.draw_indexed(
+                                    0..count * 6,
+                                    0,
+                                    tag + columns.start..tag + columns.end,
+                                );
+                            }
+                        } else {
+                            if indexed {
+                                pass.set_pipeline(&pipeline.pipelines[0]);
                                 pass.set_bind_group(0, bg, &[]);
-                                let tag =
-                                    page_vertex(first, page.stride, r.uniform_cache.points_per_col)
-                                        / 4;
-                                for (columns, count) in
-                                    equal_count_batches(counts, (*capacity).min(page.stride))
-                                {
-                                    pass.draw_indexed(
-                                        0..count * 6,
-                                        0,
-                                        tag + columns.start..tag + columns.end,
-                                    );
-                                }
-                            } else {
-                                if indexed {
-                                    pass.set_pipeline(&pipeline.pipelines[0]);
-                                    pass.set_bind_group(0, bg, &[]);
-                                    indexed = false;
-                                }
-                                pass.set_vertex_buffer(0, page.buf.slice(..));
-                                let vertex =
-                                    page_vertex(first, page.stride, r.uniform_cache.points_per_col);
-                                for points in point_draws(counts, page.stride) {
-                                    pass.draw(vertex..vertex + 4, points);
-                                }
+                                indexed = false;
+                            }
+                            pass.set_vertex_buffer(0, page.buf.slice(..));
+                            for points in point_draws(counts, page.stride) {
+                                pass.draw(vertex..vertex + 4, points);
                             }
                         }
                     }
@@ -191,13 +184,10 @@ impl Primitive for SpectrogramParams {
 
                 (1, &accum.bg)
             }
-            ColumnKind::Classic => {
+            RingStorage::Classic { bg, .. } => {
                 if self.points_per_column < 2 {
                     return;
                 }
-                let RingStorage::Classic { bg, .. } = &r.ring.storage else {
-                    return;
-                };
                 (2, bg)
             }
         };
@@ -858,24 +848,25 @@ impl Resources {
                         .enumerate()
                         .filter(|(_, dst)| **dst < p.ring_capacity)
                     {
-                        if let (
+                        let (
                             Some((src_buf, src_offset, src_stride)),
                             Some((dst_buf, dst_offset, dst_stride)),
                         ) = (self.ring.column(src), new_ring.column(dst as usize))
-                        {
-                            let bytes = match layout.kind {
-                                ColumnKind::Reassigned => {
-                                    col_byte_stride(layout.kind, p.slot_counts[dst as usize])
-                                }
-                                ColumnKind::Classic => layout.stride,
+                        else {
+                            continue;
+                        };
+                        let bytes = match layout.kind {
+                            ColumnKind::Reassigned => {
+                                col_byte_stride(layout.kind, p.slot_counts[dst as usize])
                             }
-                            .min(src_stride)
-                            .min(dst_stride);
-                            if bytes > 0 {
-                                encoder.copy_buffer_to_buffer(
-                                    src_buf, src_offset, dst_buf, dst_offset, bytes,
-                                );
-                            }
+                            ColumnKind::Classic => layout.stride,
+                        }
+                        .min(src_stride)
+                        .min(dst_stride);
+                        if bytes > 0 {
+                            encoder.copy_buffer_to_buffer(
+                                src_buf, src_offset, dst_buf, dst_offset, bytes,
+                            );
                         }
                     }
                     queue.submit([encoder.finish()]);
