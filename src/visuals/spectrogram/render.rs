@@ -136,8 +136,8 @@ impl Primitive for SpectrogramParams {
                     );
                     let mut indexed = r.indices.is_some();
                     pass.set_pipeline(&pipeline.pipelines[if indexed { 3 } else { 0 }]);
-                    if let Some((_, indices)) = &r.indices {
-                        pass.set_index_buffer(indices.slice(..), wgpu::IndexFormat::Uint32);
+                    if let Some((_, indices, format)) = &r.indices {
+                        pass.set_index_buffer(indices.slice(..), *format);
                     } else {
                         pass.set_bind_group(0, bg, &[]);
                     }
@@ -152,7 +152,7 @@ impl Primitive for SpectrogramParams {
                         let counts = &self.slot_counts[first as usize..][..columns as usize];
                         let vertex =
                             page_vertex(first, page.stride, r.uniform_cache.points_per_col);
-                        if let (Some((capacity, _)), Some(bg)) = (&r.indices, &page.indexed_bg) {
+                        if let (Some((capacity, ..)), Some(bg)) = (&r.indices, &page.indexed_bg) {
                             if !indexed {
                                 pass.set_pipeline(&pipeline.pipelines[3]);
                                 indexed = true;
@@ -383,46 +383,34 @@ impl primitive::Pipeline for Pipeline {
             dst_factor: wgpu::BlendFactor::One,
             operation: wgpu::BlendOperation::Add,
         };
-        let accum_pipeline = create_render_pipeline(
-            device,
-            ACCUM_FORMAT,
-            RenderPipelineSpec {
-                label: "Spectrogram accumulation pipeline",
-                shader: &shader,
-                vertex_entry: "vs_accum_splat",
-                topology: wgpu::PrimitiveTopology::TriangleStrip,
-                fragment_entry: "fs_accum",
-                buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<SpectrogramPoint>() as wgpu::BufferAddress,
-                    step_mode: wgpu::VertexStepMode::Instance,
-                    attributes: &POINT_ATTRS,
-                }],
-                bind_group_layouts: &[&splat_bgl],
-                blend: Some(wgpu::BlendState {
-                    color: additive,
-                    alpha: additive,
-                }),
-                write_mask: wgpu::ColorWrites::RED | wgpu::ColorWrites::GREEN,
-            },
-        );
-        let indexed_pipeline = create_render_pipeline(
-            device,
-            ACCUM_FORMAT,
-            RenderPipelineSpec {
-                label: "Spectrogram indexed accumulation",
-                shader: &shader,
-                vertex_entry: "vs_accum_indexed",
-                fragment_entry: "fs_accum",
-                buffers: &[],
-                bind_group_layouts: &[&indexed_bgl],
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                blend: Some(wgpu::BlendState {
-                    color: additive,
-                    alpha: additive,
-                }),
-                write_mask: wgpu::ColorWrites::RED | wgpu::ColorWrites::GREEN,
-            },
-        );
+        let accum_spec = RenderPipelineSpec {
+            label: "Spectrogram accumulation pipeline",
+            shader: &shader,
+            vertex_entry: "vs_accum_splat",
+            topology: wgpu::PrimitiveTopology::TriangleStrip,
+            fragment_entry: "fs_accum",
+            buffers: &[wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<SpectrogramPoint>() as wgpu::BufferAddress,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &POINT_ATTRS,
+            }],
+            bind_group_layouts: &[&splat_bgl],
+            blend: Some(wgpu::BlendState {
+                color: additive,
+                alpha: additive,
+            }),
+            write_mask: wgpu::ColorWrites::RED | wgpu::ColorWrites::GREEN,
+        };
+        let indexed_spec = RenderPipelineSpec {
+            label: "Spectrogram indexed accumulation",
+            vertex_entry: "vs_accum_indexed",
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            buffers: &[],
+            bind_group_layouts: &[&indexed_bgl],
+            ..accum_spec
+        };
+        let accum_pipeline = create_render_pipeline(device, ACCUM_FORMAT, accum_spec);
+        let indexed_pipeline = create_render_pipeline(device, ACCUM_FORMAT, indexed_spec);
         let pipeline = |label, vertex_entry, fragment_entry, bgl| {
             create_render_pipeline(
                 device,
@@ -579,20 +567,17 @@ impl RingLayout {
         }
         let layout = ring_layout(p, maxima, self.page_columns < self.slots as usize);
         let copies = match &p.copy_plan {
-            Some(copies) => Cow::Borrowed(copies.as_slice()),
+            Some(copies) => Some(Cow::Borrowed(copies.as_slice())),
             None if self.page_columns != layout.page_columns
                 && same_shape
                 && !reset
                 && p.pending_uploads.len() < p.col_count as usize =>
             {
-                Cow::Owned((0..p.ring_capacity).collect())
+                Some(Cow::Owned((0..p.ring_capacity).collect()))
             }
-            None => Cow::Borrowed(&[][..]),
-        };
-        let copies = copies
-            .iter()
-            .any(|&dst| dst < p.ring_capacity)
-            .then_some(copies);
+            None => None,
+        }
+        .filter(|copies| copies.iter().any(|&dst| dst < p.ring_capacity));
         if can_reuse_ring(self, layout, copies.is_some()) && !reset {
             RingUpdate::ResizePages
         } else {
@@ -751,7 +736,7 @@ struct Resources {
     accum: Option<AccumTarget>,
     classic_upload_scratch: Vec<u16>,
     page_maxima: Vec<u32>,
-    indices: Option<(u32, wgpu::Buffer)>,
+    indices: Option<(u32, wgpu::Buffer, wgpu::IndexFormat)>,
 }
 
 impl Resources {
@@ -797,7 +782,7 @@ impl Resources {
         let needed = self.page_maxima.iter().copied().max().unwrap_or(0);
         let capacity = needed.max(1).next_power_of_two().min(p.points_per_column);
         let bytes: u64 = pages.iter().flatten().map(|page| page.buf.size()).sum();
-        // Bound index overhead to 1/32 of point storage, including after shrinkage.
+        // Keep the 32-bit index budget (1/32 of point storage) for both formats.
         if needed == 0
             || u64::from(capacity) * 24 * 32 > bytes
             || !pages.iter().flatten().any(|page| page.indexed_bg.is_some())
@@ -805,24 +790,38 @@ impl Resources {
             self.indices = None;
             return;
         }
-        if self.indices.as_ref().is_some_and(|(capacity, indices)| {
+        if self.indices.as_ref().is_some_and(|(capacity, ..)| {
             needed <= *capacity
                 && *capacity <= needed.saturating_mul(4)
-                && indices.size() * 32 <= bytes
+                && u64::from(*capacity) * 24 * 32 <= bytes
         }) {
             return;
         }
-        let indices: Vec<u32> = (0..capacity)
-            .flat_map(|point| [0, 1, 2, 2, 1, 3].map(|corner| point * 4 + corner))
-            .collect();
-        self.indices = Some((
-            capacity,
+        let buffer = |contents: &[u8]| {
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("Spectrogram quad indices"),
-                contents: bytemuck::cast_slice(&indices),
+                contents,
                 usage: wgpu::BufferUsages::INDEX,
-            }),
-        ));
+            })
+        };
+        let (indices, format) = if capacity <= (u32::from(u16::MAX) + 1) / 4 {
+            let indices: Vec<u16> = (0..capacity as u16)
+                .flat_map(|point| [0, 1, 2, 2, 1, 3].map(|corner| point * 4 + corner))
+                .collect();
+            (
+                buffer(bytemuck::cast_slice(&indices)),
+                wgpu::IndexFormat::Uint16,
+            )
+        } else {
+            let indices: Vec<u32> = (0..capacity)
+                .flat_map(|point| [0, 1, 2, 2, 1, 3].map(|corner| point * 4 + corner))
+                .collect();
+            (
+                buffer(bytemuck::cast_slice(&indices)),
+                wgpu::IndexFormat::Uint32,
+            )
+        };
+        self.indices = Some((capacity, indices, format));
     }
 
     fn resize_ring(
