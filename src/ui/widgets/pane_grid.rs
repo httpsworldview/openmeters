@@ -609,6 +609,26 @@ mod tests {
     }
 
     #[test]
+    fn default_window_has_room_for_loudness_labels() {
+        let mut manager = crate::visuals::registry::VisualManager::default();
+        manager.apply_visual_settings(&Default::default());
+        let mut panes = manager.snapshot();
+        panes.retain(|slot| slot.enabled);
+        let widths = solve_widths(
+            panes.iter().map(|slot| (slot.min_width, slot.width_basis)),
+            crate::persistence::settings::MainWindowSettings::default().width as f32,
+        );
+        let loudness = panes
+            .iter()
+            .position(|slot| slot.kind == Pane::Loudness)
+            .unwrap();
+        assert!(
+            widths[loudness] >= crate::visuals::loudness::render::MIN_LABELED_WIDTH,
+            "room for meters and their value label"
+        );
+    }
+
+    #[test]
     fn resize_widths_takes_from_nearest_pane_first() {
         assert_eq!(
             resize_widths(&[200.0, 300.0, 500.0], &[100.0, 250.0, 100.0], 0, 200.0),

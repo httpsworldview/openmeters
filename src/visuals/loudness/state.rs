@@ -2,7 +2,10 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::processor::LoudnessSnapshot;
-use super::render::{DB_RANGE, GUIDE_LEVELS, LEFT_PADDING, LoudnessParams, MeterFill, db_to_ratio};
+use super::render::{
+    DB_RANGE, GUIDE_LEVELS, LEFT_PADDING, LoudnessParams, MeterFill, db_to_ratio,
+    value_label_bounds,
+};
 use crate::dsp::ChannelPosition;
 use crate::persistence::settings::LoudnessSettings;
 use crate::util::color::color_to_rgba;
@@ -274,7 +277,7 @@ fn visible_guide_labels(
     bounds: Rectangle,
 ) -> [Option<(usize, Rectangle)>; GUIDE_LABEL_ORDER.len()] {
     let mut labels = [None; GUIDE_LABEL_ORDER.len()];
-    if bounds.height < GUIDE_LABEL_HEIGHT {
+    if bounds.width < LEFT_PADDING || bounds.height < GUIDE_LABEL_HEIGHT {
         return labels;
     }
 
@@ -315,10 +318,12 @@ crate::visuals::visualization_widget!(Loudness, LoudnessState, |this, renderer, 
     let palette = theme.extended_palette();
     let label_color = state.palette[PAL_GUIDE];
 
-    if let Some((meter_x, bar_width, stride)) = meter_bounds {
-        let y_of = |db| bounds.y + bounds.height * (1.0 - db_to_ratio(db));
-
-        for (i, rect) in visible_guide_labels(bounds).into_iter().flatten() {
+    if let Some(meters @ (meter_x, _, _)) = meter_bounds {
+        let guide_bounds = Rectangle {
+            width: meter_x - bounds.x,
+            ..bounds
+        };
+        for (i, rect) in visible_guide_labels(guide_bounds).into_iter().flatten() {
             let size = state.guide_labels[i].min_bounds();
             text::Renderer::fill_paragraph(
                 renderer,
@@ -332,15 +337,8 @@ crate::visuals::visualization_widget!(Loudness, LoudnessState, |this, renderer, 
             );
         }
 
-        let y = y_of(value);
-
-        let label_x = meter_x + stride + bar_width + 4.0;
-        let clamp_max = (bounds.y + bounds.height - 20.0).max(bounds.y);
-        let label_rect = Rectangle {
-            x: label_x,
-            y: (y - 10.0).clamp(bounds.y, clamp_max),
-            width: 68.0,
-            height: 20.0,
+        let Some(label_rect) = value_label_bounds(bounds, meters, value) else {
+            return;
         };
 
         fill_rect(renderer, label_rect, state.palette[PAL_BACKGROUND]);
@@ -370,6 +368,47 @@ mod tests {
             .visual_params(Rectangle::new(Point::ORIGIN, Size::new(200.0, 100.0)))
             .bars
             .map(|fill| fill.db)
+    }
+
+    #[test]
+    fn compact_meters_and_labels_stay_inside_the_pane() {
+        use super::super::render::MIN_LABELED_WIDTH;
+
+        let state = LoudnessState::default();
+        for (width, height, guides_visible, value_visible) in [
+            (1.0, 100.0, false, false),
+            (80.0, 100.0, true, false),
+            (MIN_LABELED_WIDTH - 1.0, 100.0, true, false),
+            (MIN_LABELED_WIDTH, 100.0, true, true),
+            (MIN_LABELED_WIDTH, 20.0, true, true),
+            (MIN_LABELED_WIDTH, 10.0, false, false),
+        ] {
+            let bounds = Rectangle::new(Point::new(10.0, 20.0), Size::new(width, height));
+            let meters @ (x, bar_width, stride) =
+                state.visual_params(bounds).meter_bounds().unwrap();
+            assert!(bar_width > 0.0 && x >= bounds.x && x + stride + bar_width <= bounds.x + width);
+            let guide_bounds = Rectangle {
+                width: x - bounds.x,
+                ..bounds
+            };
+            let guides = visible_guide_labels(guide_bounds);
+            assert_eq!(guides.iter().any(Option::is_some), guides_visible);
+            assert!(
+                guides
+                    .into_iter()
+                    .flatten()
+                    .all(|(_, r)| r.is_within(&guide_bounds))
+            );
+            let value = value_label_bounds(bounds, meters, -12.0);
+            assert_eq!(value.is_some(), value_visible);
+            assert!(value.is_none_or(|r| r.is_within(&bounds) && r.x >= x + stride + bar_width));
+        }
+        assert!(
+            state
+                .visual_params(Rectangle::default())
+                .meter_bounds()
+                .is_none()
+        );
     }
 
     #[test]

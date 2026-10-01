@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use iced::Rectangle;
+use iced::{Rectangle, Size};
 
 use crate::visuals::render::common::{
     ClipTransform, GeometryScratch, bounds_fingerprint, line_instance, quad_instance,
@@ -12,7 +12,11 @@ pub(super) const DB_RANGE: (f32, f32) = (-60.0, 4.0);
 pub(super) const GUIDE_LEVELS: [f32; 6] = [0.0, -6.0, -12.0, -18.0, -24.0, -36.0];
 
 pub(super) const LEFT_PADDING: f32 = 28.0;
-const RIGHT_PADDING: f32 = 64.0;
+const VALUE_LABEL_SIZE: Size = Size::new(68.0, 20.0);
+const VALUE_LABEL_GAP: f32 = 4.0;
+const MIN_METER_AREA_WIDTH: f32 = 28.0;
+pub(crate) const MIN_LABELED_WIDTH: f32 =
+    LEFT_PADDING + MIN_METER_AREA_WIDTH + VALUE_LABEL_GAP + VALUE_LABEL_SIZE.width;
 const GAP_FRACTION: f32 = 0.1;
 const BAR_WIDTH_SCALE: f32 = 0.6;
 const INNER_GAP_RATIO: f32 = 0.09;
@@ -44,6 +48,24 @@ pub(super) fn db_to_ratio(db: f32) -> f32 {
     raw.powf(0.9)
 }
 
+pub(super) fn value_label_bounds(
+    bounds: Rectangle,
+    (meter_x, bar_width, stride): (f32, f32, f32),
+    value: f32,
+) -> Option<Rectangle> {
+    let y = bounds.y + bounds.height * (1.0 - db_to_ratio(value));
+    let rect = Rectangle {
+        x: meter_x + stride + bar_width + VALUE_LABEL_GAP,
+        y: (y - VALUE_LABEL_SIZE.height * 0.5).clamp(
+            bounds.y,
+            (bounds.y + bounds.height - VALUE_LABEL_SIZE.height).max(bounds.y),
+        ),
+        width: VALUE_LABEL_SIZE.width,
+        height: VALUE_LABEL_SIZE.height,
+    };
+    rect.is_within(&bounds).then_some(rect)
+}
+
 impl LoudnessParams {
     fn bar_groups(&self) -> [&[MeterFill]; 2] {
         [&self.bars[..2], &self.bars[2..]]
@@ -51,7 +73,13 @@ impl LoudnessParams {
 
     pub fn meter_bounds(&self) -> Option<(f32, f32, f32)> {
         let bar_count = self.bar_groups().len();
-        let meter_width = (self.bounds.width - LEFT_PADDING - RIGHT_PADDING).max(0.0);
+        let left_padding = LEFT_PADDING.min(self.bounds.width * 0.5);
+        let right_padding = if self.bounds.width >= MIN_LABELED_WIDTH {
+            VALUE_LABEL_GAP + VALUE_LABEL_SIZE.width
+        } else {
+            0.0
+        };
+        let meter_width = (self.bounds.width - left_padding - right_padding).max(0.0);
         if meter_width <= 0.0 {
             return None;
         }
@@ -62,7 +90,7 @@ impl LoudnessParams {
         let bar_width = bar_slot * BAR_WIDTH_SCALE;
         let bar_offset = (bar_slot - bar_width) * 0.5;
         let stride = bar_width + gap;
-        let meter_x = self.bounds.x + LEFT_PADDING + bar_offset;
+        let meter_x = self.bounds.x + left_padding + bar_offset;
 
         Some((meter_x, bar_width, stride))
     }

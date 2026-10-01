@@ -82,16 +82,15 @@ crate::macros::default_struct! {
 }
 
 impl SpectrumState {
-    pub fn update_view_settings(&mut self, settings: &SpectrumSettings, floor_db: f32) {
+    pub fn update_view_settings(
+        &mut self,
+        settings: &SpectrumSettings,
+        snapshot: &SpectrumSnapshot,
+    ) {
         self.style = settings.clone();
-        self.style.floor_db = floor_db;
-        if !settings.show_peak_label {
-            self.peak = None;
-        }
-        if !settings.show_grid {
-            self.clear_grid_layout();
-        }
-        self.geometry.invalidate();
+        // Do not animate from peak coordinates in the old projection.
+        self.peak = None;
+        self.apply_snapshot(snapshot);
     }
 
     crate::visuals::palette_setter!(PALETTE_SIZE => geometry);
@@ -107,6 +106,10 @@ impl SpectrumState {
     pub fn apply_snapshot(&mut self, snap: &SpectrumSnapshot) {
         const MIN_DISPLAY_RANGE_FACTOR: f32 = 1.02;
         let bins = snap.frequency_bins.as_slice();
+        let Some(&max_f) = bins.last() else {
+            self.reset_audio();
+            return;
+        };
         let primary_trace = (self.style.source != Channel::None).then_some(0);
         let secondary_trace = match (self.style.source, self.style.secondary_source) {
             (_, Channel::None) => None,
@@ -114,7 +117,7 @@ impl SpectrumState {
             _ => Some(1),
         };
         let min_f = MIN_FREQUENCY;
-        let max_f = bins[bins.len() - 1].max(min_f * MIN_DISPLAY_RANGE_FACTOR);
+        let max_f = max_f.max(min_f * MIN_DISPLAY_RANGE_FACTOR);
         self.ensure_x_cache(min_f, max_f, bins);
         let style = &self.style;
 
@@ -134,7 +137,7 @@ impl SpectrumState {
                     style,
                     min_f,
                     max_f,
-                    bins,
+                    snap,
                     trace_db(&snap.traces[trace], weighting),
                     &self.x_cache,
                 );
@@ -144,7 +147,7 @@ impl SpectrumState {
             .filter(|_| style.show_peak_label)
             .and_then(|trace| {
                 self.build_peak(
-                    bins,
+                    snap,
                     trace_db(&snap.traces[trace], style.weighting_mode),
                     min_f,
                     max_f,
@@ -257,9 +260,19 @@ impl SpectrumState {
         self.grid_cutouts = Arc::new(self.grid_labels.iter().map(|label| label.bounds).collect());
     }
 
-    fn build_peak(&self, bins: &[f32], db: &[f32], min_f: f32, max_f: f32) -> Option<PeakUpdate> {
+    fn build_peak(
+        &self,
+        snap: &SpectrumSnapshot,
+        db: &[f32],
+        min_f: f32,
+        max_f: f32,
+    ) -> Option<PeakUpdate> {
         const MIN_NORMALIZED_LEVEL: f32 = 0.08;
+        let bins = &snap.frequency_bins;
         let bin = peak_bin(bins, db, min_f, max_f)?;
+        if db[bin] <= snap.floor_db {
+            return None;
+        }
         let (f, m) = interpolated_peak(bins, db, bin);
         let t = self.style.frequency_scale.pos_of(min_f, max_f, f);
         let x = if self.style.reverse_frequency {
@@ -494,36 +507,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn theme_colors_invalidate_cached_geometry_without_audio_update() {
-        let mut state = SpectrumState::default();
-        state.style.source = Channel::Left;
-        state.points[0] = Arc::new(vec![[0.0, 0.0], [1.0, 1.0]]);
-        let bounds = Rectangle {
-            x: 0.0,
-            y: 0.0,
-            width: 100.0,
-            height: 50.0,
-        };
-
-        let dark = state
-            .visual_params(bounds, &iced::Theme::Dark, None)
-            .unwrap();
-        let light = state
-            .visual_params(bounds, &iced::Theme::Light, None)
-            .unwrap();
-
-        assert_eq!(dark.geometry.revision, light.geometry.revision);
-        assert_ne!(dark.line_color, light.line_color);
-        assert_ne!(dark.geometry_fingerprint(), light.geometry_fingerprint());
-    }
-
-    #[test]
     fn secondary_trace_renders_without_primary_source() {
         let trace = [vec![-20.0; 3], vec![-20.0; 3]];
         let mut state = SpectrumState::default();
         state.style.source = Channel::None;
         state.style.secondary_source = Channel::Left;
         state.apply_snapshot(&SpectrumSnapshot {
+            floor_db: state.style.floor_db,
             frequency_bins: vec![0.0, 20.0, 40.0],
             traces: [SpectrumTraceSnapshot::default(), trace],
         });
@@ -545,21 +535,179 @@ mod tests {
     }
 
     #[test]
-    fn reversed_grid_cutouts_remain_in_screen_order() {
-        let mut state = SpectrumState::default();
-        state.style.reverse_frequency = true;
-        state.ensure_x_cache(20.0, 24_000.0, &[0.0, 20.0, 24_000.0]);
-        state.layout_grid_labels(
-            Rectangle::new(Point::ORIGIN, Size::new(600.0, 100.0)),
-            (20.0, 24_000.0),
-        );
+    fn view_changes_rebuild_frozen_traces_and_labels() {
+        let snapshot = SpectrumSnapshot {
+            floor_db: -120.0,
+            frequency_bins: vec![0.0, 6_000.0, 12_000.0, 18_000.0, 24_000.0],
+            traces: std::array::from_fn(|_| {
+                [
+                    vec![-120.0, -60.0, -30.0, -90.0, -120.0],
+                    vec![-120.0, -30.0, -12.0, -60.0, -120.0],
+                ]
+            }),
+        };
+        let baseline = SpectrumSettings {
+            show_peak_label: true,
+            ..Default::default()
+        };
+        let mut state = SpectrumState {
+            style: baseline.clone(),
+            ..Default::default()
+        };
+        state.apply_snapshot(&snapshot);
+        let original = state.points.clone();
+        let peak = |s: &SpectrumState| {
+            s.peak
+                .as_ref()
+                .map(|p| (p.content.clone(), p.marker_pos, p.label_pos))
+        };
+        let changes: [fn(&mut SpectrumSettings); 6] = [
+            |s| s.reverse_frequency = true,
+            |s| s.frequency_scale = FrequencyScale::Linear,
+            |s| s.frequency_scale = FrequencyScale::Erb,
+            |s| s.weighting_mode = SpectrumWeightingMode::Raw,
+            |s| s.secondary_weighting_mode = SpectrumWeightingMode::Raw,
+            |s| s.show_peak_label = false,
+        ];
+        for change in changes {
+            let mut settings = baseline.clone();
+            change(&mut settings);
+            let revision = state.geometry.revision;
+            state.update_view_settings(&settings, &snapshot);
+            let mut expected = SpectrumState {
+                style: settings,
+                ..Default::default()
+            };
+            expected.apply_snapshot(&snapshot);
+            assert_ne!(state.geometry.revision, revision);
+            assert_eq!(state.points, expected.points);
+            assert_eq!(peak(&state), peak(&expected));
+            state.update_view_settings(&baseline, &snapshot);
+            assert_eq!(state.points, original);
+            assert!(state.peak.is_some());
+        }
+    }
 
-        assert!(state.grid_labels.len() > 2);
-        assert!(
-            state.grid_labels.windows(2).all(|labels| {
-                labels[0].bounds.x + labels[0].bounds.width <= labels[1].bounds.x
-            })
+    #[test]
+    fn view_changes_reach_cached_spectrum_without_new_audio() {
+        use crate::dsp::{AudioFormat, ChannelPosition};
+        use crate::persistence::settings::VisualConfig;
+        use crate::visuals::registry::{VisualContent, VisualKind, VisualManager};
+
+        let mut settings = SpectrumSettings {
+            show_peak_label: true,
+            ..Default::default()
+        };
+        let original_floor = settings.floor_db;
+        let mut manager = VisualManager::default();
+        manager.apply_config(VisualConfig::Spectrum(settings.clone()));
+        manager.set_enabled(VisualKind::Spectrum, true);
+        let format = AudioFormat::new(1, 48_000, 1, ChannelPosition::fallback(1));
+        manager.ingest_samples(
+            &crate::util::audio::sine_wave(1_000.0, 48_000.0, settings.fft_size, 0.5),
+            format,
         );
+        let state = manager
+            .snapshot()
+            .into_iter()
+            .find_map(|slot| match slot.content {
+                VisualContent::Spectrum(state) => Some(state),
+                _ => None,
+            })
+            .unwrap();
+        let original = state.borrow().points.clone();
+        let peak_content = state.borrow().peak.as_ref().unwrap().content.clone();
+        assert!(original[0].len() > 2 && original[0].iter().any(|point| point[1] > 0.5));
+        for (floor, peak_visible) in [(-60.0, true), (-3.0, false), (-140.0, true), (-120.0, true)]
+        {
+            for reverse in [false, true] {
+                settings.floor_db = floor;
+                settings.reverse_frequency = reverse;
+                manager.apply_config(VisualConfig::Spectrum(settings.clone()));
+                let state = state.borrow();
+                for (before, after) in original.iter().zip(&state.points) {
+                    let mut expected: Vec<_> = before
+                        .iter()
+                        .map(|&[x, y]| {
+                            let db = original_floor + y * -original_floor;
+                            let y = if y == 0.0 {
+                                0.0
+                            } else {
+                                ((db - floor) / -floor).clamp(0.0, 1.0)
+                            };
+                            [if reverse { 1.0 - x } else { x }, y]
+                        })
+                        .collect();
+                    if reverse {
+                        expected.reverse();
+                    }
+                    assert_eq!(after.len(), expected.len());
+                    for (actual, expected) in after.iter().zip(expected) {
+                        assert_eq!(actual[0], expected[0]);
+                        assert!((actual[1] - expected[1]).abs() < 1.0e-6, "floor={floor}");
+                    }
+                }
+                assert_eq!(
+                    state.peak.as_ref().map(|peak| &peak.content),
+                    peak_visible.then_some(&peak_content),
+                );
+            }
+        }
+
+        manager.ingest_samples(&vec![0.0; settings.fft_size], format);
+        settings.floor_db = -140.0;
+        manager.apply_config(VisualConfig::Spectrum(settings));
+        let state = state.borrow();
+        assert!(
+            state
+                .points
+                .iter()
+                .all(|points| points.iter().all(|point| point[1] == 0.0))
+        );
+        assert!(state.peak.is_none());
+    }
+
+    #[test]
+    fn theme_colors_invalidate_cached_geometry_without_audio_update() {
+        let mut state = SpectrumState::default();
+        state.points[0] = Arc::new(vec![[0.0, 0.0], [1.0, 1.0]]);
+        let bounds = Rectangle::new(Point::ORIGIN, Size::new(100.0, 50.0));
+        let dark = state
+            .visual_params(bounds, &iced::Theme::Dark, None)
+            .unwrap();
+        let light = state
+            .visual_params(bounds, &iced::Theme::Light, None)
+            .unwrap();
+        assert_eq!(dark.geometry.revision, light.geometry.revision);
+        assert_ne!(dark.line_color, light.line_color);
+        assert_ne!(dark.geometry_fingerprint(), light.geometry_fingerprint());
+    }
+
+    #[test]
+    fn grid_labels_stay_in_screen_order_across_projections() {
+        let mut state = SpectrumState::default();
+        for scale in [
+            FrequencyScale::Logarithmic,
+            FrequencyScale::Linear,
+            FrequencyScale::Erb,
+        ] {
+            for reverse in [false, true] {
+                state.style.frequency_scale = scale;
+                state.style.reverse_frequency = reverse;
+                state.ensure_x_cache(20.0, 24_000.0, &[0.0, 20.0, 24_000.0]);
+                state.layout_grid_labels(
+                    Rectangle::new(Point::ORIGIN, Size::new(600.0, 100.0)),
+                    (20.0, 24_000.0),
+                );
+                assert!(state.grid_labels.len() > 2);
+                assert!(
+                    state.grid_labels.windows(2).all(|pair| {
+                        pair[0].bounds.x + pair[0].bounds.width <= pair[1].bounds.x
+                    }),
+                    "scale={scale:?}, reverse={reverse}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -596,7 +744,11 @@ mod tests {
             &SpectrumSettings::default(),
             20.0,
             40.0,
-            &[0.0, 20.0, 30.0, 40.0],
+            &SpectrumSnapshot {
+                floor_db: -120.0,
+                frequency_bins: vec![0.0, 20.0, 30.0, 40.0],
+                ..Default::default()
+            },
             &[0.0, f32::NAN, -10.0, f32::INFINITY],
             &[0.0, 0.5, 1.0],
         );
@@ -622,12 +774,19 @@ fn build_single_points_into(
     style: &SpectrumSettings,
     min_f: f32,
     max_f: f32,
-    bins: &[f32],
+    snap: &SpectrumSnapshot,
     db: &[f32],
     x_cache: &[f32],
 ) {
+    let bins = &snap.frequency_bins;
     let inv_dr = (MAX_DB - style.floor_db).max(EPSILON).recip();
-    let y = |m: f32| ((m - style.floor_db) * inv_dr).clamp(0.0, 1.0);
+    let y = |m: f32| {
+        if m <= snap.floor_db {
+            0.0
+        } else {
+            ((m - style.floor_db) * inv_dr).clamp(0.0, 1.0)
+        }
+    };
     let mut push = |x, m| {
         let y = y(m);
         if y.is_finite() {

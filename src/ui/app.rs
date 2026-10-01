@@ -147,12 +147,17 @@ impl UiApp {
                 settings.decorations,
                 settings.bar.clone(),
                 settings.main_window,
-                guard.theme_store().load(guard.active_theme()),
+                guard
+                    .theme_store()
+                    .load(guard.active_theme())
+                    .inspect_err(|e| {
+                        tracing::warn!("[theme] failed to load {:?}: {e}", guard.active_theme());
+                    }),
             )
         };
         let mut manager = VisualManager::default();
         manager.apply_visual_settings(&visual_settings);
-        if let Some(theme_file) = theme_file {
+        if let Ok(theme_file) = theme_file {
             manager.apply_theme(&theme_file);
         }
         let visuals_active = manager.has_enabled();

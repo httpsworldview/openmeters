@@ -297,7 +297,7 @@ visual_settings!(WaveformSettings from WaveformConfig {
 visual_settings!(SpectrumSettings from SpectrumConfig {
     fft_size: usize, hop_size: usize, window: WindowKind,
     averaging: AveragingMode => finite_averaging_or,
-    source: Channel, secondary_source: Channel, floor_db: f32 => finite_or,
+    source: Channel, secondary_source: Channel, floor_db: f32 => sanitize_negative_db,
 } extra {
     frequency_scale: FrequencyScale = FrequencyScale::Logarithmic,
     reverse_frequency: bool = false, show_grid: bool = true, show_peak_label: bool = false,

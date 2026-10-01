@@ -33,6 +33,8 @@ pub type SpectrumTraceSnapshot = [Vec<f32>; WEIGHTING_COUNT];
 
 #[derive(Debug, Clone, Default)]
 pub struct SpectrumSnapshot {
+    // The floor used when these traces were captured.
+    pub floor_db: f32,
     pub frequency_bins: Vec<f32>,
     pub traces: [SpectrumTraceSnapshot; TRACE_COUNT],
 }
@@ -102,6 +104,10 @@ impl SpectrumProcessor {
         self.config
     }
 
+    pub(in crate::visuals) fn snapshot(&self) -> &SpectrumSnapshot {
+        &self.snapshot
+    }
+
     pub fn reset_audio(&mut self) {
         if self.fft.is_some() {
             self.reset_level_buffers();
@@ -152,12 +158,16 @@ impl SpectrumProcessor {
     fn reset_level_buffers(&mut self) {
         let bins = self.config.fft_size / 2 + 1;
         let floor = self.config.floor_db;
-        for trace in &mut self.snapshot.traces {
-            for db in trace {
-                reset_to_floor(db, bins, floor);
-            }
+        self.snapshot.floor_db = floor;
+        for db in self.snapshot.traces.iter_mut().flatten() {
+            reset_to_floor(db, bins, floor);
         }
-        let state_floor = smoothing_state_floor(&self.a_weighting_db, floor);
+        self.reset_smoothing();
+    }
+
+    fn reset_smoothing(&mut self) {
+        let bins = self.config.fft_size / 2 + 1;
+        let state_floor = smoothing_state_floor(&self.a_weighting_db, self.config.floor_db);
         let active = self.active_traces();
         let smoothing = !matches!(self.config.averaging, AveragingMode::None);
         for (index, buffers) in self.levels.iter_mut().enumerate() {
@@ -209,6 +219,9 @@ impl SpectrumProcessor {
             produced = true;
         }
 
+        if produced {
+            self.snapshot.floor_db = floor;
+        }
         produced
     }
 
@@ -316,8 +329,10 @@ impl SpectrumProcessor {
             || old.secondary_source != config.secondary_source
         {
             self.reset_buffers();
-        } else if averaging_mode_changed || old.floor_db != config.floor_db {
+        } else if averaging_mode_changed {
             self.reset_level_buffers();
+        } else if old.floor_db != config.floor_db {
+            self.reset_smoothing();
         }
     }
 }
@@ -461,7 +476,7 @@ mod tests {
     }
 
     #[test]
-    fn config_changes_reseed_levels_and_rebuild_fft_only_when_needed() {
+    fn config_changes_preserve_snapshots_and_rebuild_fft_only_when_needed() {
         let mut processor = SpectrumProcessor::new(SpectrumConfig {
             fft_size: 128,
             hop_size: 128,
@@ -472,6 +487,7 @@ mod tests {
         processor.prepare();
         for resize in [false, true] {
             processor.pcm_buffers[0].extend([0.25, -0.25]);
+            let previous = processor.snapshot.clone();
             let mut config = processor.config();
             if resize {
                 config.fft_size *= 2;
@@ -482,14 +498,25 @@ mod tests {
             processor.update_config(config);
             assert_eq!(processor.pcm_buffers[0].len(), if resize { 0 } else { 2 });
             let bins = config.fft_size / 2 + 1;
-            assert!(
-                processor
-                    .snapshot
-                    .traces
-                    .iter()
-                    .flatten()
-                    .all(|trace| trace.len() == bins
-                        && trace.iter().all(|&db| db == config.floor_db))
+            if resize {
+                assert_eq!(processor.snapshot.floor_db, config.floor_db);
+                assert!(
+                    processor
+                        .snapshot
+                        .traces
+                        .iter()
+                        .flatten()
+                        .all(|trace| trace.len() == bins
+                            && trace.iter().all(|&db| db == config.floor_db))
+                );
+            } else {
+                assert_eq!(processor.snapshot.floor_db, previous.floor_db);
+                assert_eq!(processor.snapshot.frequency_bins, previous.frequency_bins);
+                assert_eq!(processor.snapshot.traces, previous.traces);
+            }
+            assert_eq!(
+                processor.levels[0].state_floor,
+                smoothing_state_floor(&processor.a_weighting_db, config.floor_db),
             );
             assert!(
                 processor
@@ -505,6 +532,7 @@ mod tests {
                 ))
                 .unwrap();
             assert_eq!(snapshot.frequency_bins.len(), bins);
+            assert_eq!(snapshot.floor_db, config.floor_db);
             assert!(
                 snapshot
                     .traces

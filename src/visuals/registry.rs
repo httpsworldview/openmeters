@@ -194,8 +194,7 @@ visuals! {
         buffered_signal(has_buffered_signal);
         config(cfg);
         apply(p, s, set) {
-            let cfg = p.config();
-            s.borrow_mut().update_view_settings(set, cfg.floor_db);
+            s.borrow_mut().update_view_settings(set, p.snapshot());
         };
 
     Waveform(220.0, 220.0) =>
@@ -236,7 +235,7 @@ visuals! {
             s.borrow_mut().update_view_settings(set);
         };
 
-    Loudness(140.0, 80.0) =>
+    Loudness(140.0, 140.0) =>
         loudness::LoudnessProcessor, LoudnessState.settings;
         apply(_p, s, set) {
             s.borrow_mut().set_modes(set.left_mode, set.right_mode);
@@ -278,6 +277,7 @@ impl Entry {
 
     fn set_enabled(&mut self, enabled: bool) {
         if !std::mem::replace(&mut self.enabled, enabled) && enabled {
+            self.module.reset_audio();
             self.module.prepare();
         }
     }
@@ -381,8 +381,8 @@ impl VisualManager {
                 entry.width_basis = width;
             }
             let (config, enabled) = settings.module_config(entry.kind);
-            entry.enabled = enabled;
             entry.apply_config(config);
+            entry.set_enabled(enabled);
         }
         self.reorder(&settings.order);
     }
@@ -506,6 +506,11 @@ mod tests {
         let VisualConfig::Spectrum(config) = manager.config(VisualKind::Spectrum) else {
             panic!("expected spectrum settings");
         };
+        let entry = &manager.entries[manager.position(VisualKind::Spectrum)];
+        let VisualContent::Spectrum(state) = entry.module.content() else {
+            panic!("expected spectrum state");
+        };
+        assert_eq!(state.borrow().style.floor_db, config.floor_db);
         let defaults = settings_cfg::SpectrumSettings::default();
         assert_eq!((config.fft_size, config.hop_size), (1, 1));
         assert_eq!(

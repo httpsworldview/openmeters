@@ -244,6 +244,34 @@ mod tests {
     }
 
     #[test]
+    fn reenabled_visuals_discard_audio_from_before_the_gap() {
+        let (mut manager, snapshot) = loudness();
+        let reset = snapshot();
+        let format = AudioFormat::new(1, 48_000, 1, ChannelPosition::fallback(1));
+        let signal = sine_wave(1_000.0, 48_000.0, 48_000, 0.5);
+        for bulk in [false, true] {
+            manager.ingest_samples(&signal, format);
+            let before = snapshot();
+            assert!(before.momentary_loudness > reset.momentary_loudness);
+            manager.set_enabled(VisualKind::Loudness, true);
+            assert_eq!(snapshot(), before);
+            manager.set_enabled(VisualKind::Loudness, false);
+            manager.ingest_samples(&vec![0.0; 4 * 48_000], format);
+            assert_eq!(snapshot(), before);
+            if bulk {
+                manager.apply_visual_settings(&Default::default());
+            } else {
+                manager.set_enabled(VisualKind::Loudness, true);
+            }
+            assert_eq!(snapshot(), reset, "bulk={bulk}");
+            let silence = AudioBlock::new(&[0.0; 256], 1, 48_000.0);
+            manager.ingest_samples(silence.samples, format);
+            let mut reference = LoudnessProcessor::new(Default::default());
+            assert_eq!(snapshot(), reference.process_block(&silence));
+        }
+    }
+
+    #[test]
     fn silence_preserves_loudness_history_before_the_hard_reset() {
         let (mut manager, snapshot) = loudness();
         let mut batcher = DspBatcher::new();

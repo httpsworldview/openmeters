@@ -6,7 +6,6 @@ use crate::domain::visuals::VisualKind;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::{fs, io};
-use tracing::warn;
 
 use serde::{Deserialize, Serialize};
 
@@ -78,23 +77,17 @@ impl ThemeStore {
         choices
     }
 
-    pub fn load(&self, name: &str) -> Option<ThemeFile> {
+    pub fn load(&self, name: &str) -> io::Result<ThemeFile> {
         if name == BUILTIN_THEME {
-            return Some(ThemeFile::default());
+            return Ok(ThemeFile::default());
         }
-        let path = self.theme_path(name);
-        let content = fs::read_to_string(&path)
-            .inspect_err(|e| warn!("[theme] failed to read {path:?}: {e}"))
-            .ok()?;
-        serde_json::from_str(&content)
-            .inspect_err(|e| warn!("[theme] parse error in {path:?}: {e}"))
-            .ok()
+        let content = fs::read_to_string(self.theme_path(name))?;
+        Ok(serde_json::from_str(&content)?)
     }
 
     pub fn save(&self, name: &str, theme: &ThemeFile) -> io::Result<()> {
         let path = self.theme_path(name);
-        let json = serde_json::to_string_pretty(theme)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let json = serde_json::to_string_pretty(theme)?;
         super::write_json_atomic(&path, &json)
     }
 
@@ -105,7 +98,7 @@ impl ThemeStore {
                 "cannot modify built-in theme",
             ));
         }
-        let mut theme = self.load(name).unwrap_or_default();
+        let mut theme = self.load(name)?;
         mutate(&mut theme);
         self.save(name, &theme)
     }
@@ -158,6 +151,14 @@ mod tests {
         assert_eq!(loaded.name.as_deref(), Some("Test"));
         assert!(loaded.palettes.contains_key(&VisualKind::Spectrum));
         assert!(!loaded.palettes.contains_key(&VisualKind::Oscilloscope));
+
+        store
+            .update("test", |theme| theme.author = Some("Author".into()))
+            .unwrap();
+        let updated = store.load("test").unwrap();
+        assert_eq!(updated.name, loaded.name);
+        assert_eq!(updated.palettes, loaded.palettes);
+        assert_eq!(updated.author.as_deref(), Some("Author"));
     }
 
     #[test]
@@ -193,10 +194,29 @@ mod tests {
     }
 
     #[test]
-    fn update_builtin_rejected() {
+    fn updates_require_a_readable_custom_theme() {
+        use io::ErrorKind::{InvalidData, NotFound, PermissionDenied, UnexpectedEof};
+
         let dir = tempfile::tempdir().unwrap();
         let store = ThemeStore::new(dir.path());
-        let err = store.update("default", |_| {}).unwrap_err();
-        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+        fs::create_dir_all(&store.dir).unwrap();
+        for (name, content, kind) in [
+            ("default", None, PermissionDenied),
+            ("missing", None, NotFound),
+            ("empty", Some(b"".as_slice()), UnexpectedEof),
+            ("json", Some(b"!"), InvalidData),
+            ("utf8", Some(b"\xff"), InvalidData),
+        ] {
+            let path = store.theme_path(name);
+            if let Some(content) = content {
+                fs::write(&path, content).unwrap();
+            }
+            let err = store
+                .update(name, |_| panic!("unreadable theme"))
+                .unwrap_err();
+            assert_eq!(err.kind(), kind);
+            assert_eq!(path.exists(), content.is_some());
+            assert_eq!(fs::read(path).ok().as_deref(), content);
+        }
     }
 }
