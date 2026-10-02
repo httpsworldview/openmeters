@@ -746,7 +746,7 @@ mod tests {
     fn decimate_line_advances_when_bucket_edge_rounds_below_point() {
         let mut points = vec![(667.6, 0.0), (3881.2603, 1.0)];
         decimate_finite_ordered_line_in_place(&mut points, 5507);
-        assert_eq!(points.len(), 2);
+        assert_eq!(points, [(667.6, 0.0), (3881.2603, 1.0)]);
     }
 
     #[test]
