@@ -103,11 +103,15 @@ fn persist_with_palette(
         palette.default_positions(),
         palette.spreads(),
     );
+    let palette_changed =
+        visual_manager.borrow().config(kind).palette() != palette_settings.as_ref();
     *config.palette_mut() = palette_settings.clone();
     visual_manager.borrow_mut().apply_config(config.clone());
     settings_handle.update(User, move |settings| {
         settings.data.visuals.set_config(config);
-        if palette_settings.is_some() || settings.active_theme() != BUILTIN_THEME {
+        if palette_changed
+            && (palette_settings.is_some() || settings.active_theme() != BUILTIN_THEME)
+        {
             settings.update_active_theme(|theme| {
                 if let Some(ps) = palette_settings {
                     theme.palettes.insert(kind, ps);
