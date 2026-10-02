@@ -85,9 +85,7 @@ fn resize_trim<T: Clone>(buf: &mut Vec<T>, len: usize, value: T) {
 
 pub(super) fn pack_classic_db(db: f32) -> u16 {
     const SCALE: f32 = 65535.0 / CLASSIC_DB_STORE_RANGE;
-    ((db - CLASSIC_DB_STORE_LO) * SCALE)
-        .round()
-        .clamp(0.0, 65535.0) as u16
+    (f64::from((db - CLASSIC_DB_STORE_LO) * SCALE) + 0.5) as u16
 }
 
 // Correct coherent-gain power for ENBW and zero-padding after splat accumulation.
@@ -665,8 +663,19 @@ mod tests {
     #[test]
     fn classic_db_packing_rounds_to_nearest_code() {
         let step = CLASSIC_DB_STORE_RANGE / 65535.0;
-        assert_eq!(pack_classic_db(CLASSIC_DB_STORE_LO + step * 1234.49), 1234);
-        assert_eq!(pack_classic_db(CLASSIC_DB_STORE_LO + step * 1234.50), 1235);
+        for (db, expected) in [
+            (CLASSIC_DB_STORE_LO + step * 1234.49, 1234),
+            (CLASSIC_DB_STORE_LO + step * 1234.50, 1235),
+            (CLASSIC_DB_STORE_LO, 0),
+            (CLASSIC_DB_STORE_LO - 1.0, 0),
+            (CLASSIC_DB_STORE_HI, u16::MAX),
+            (CLASSIC_DB_STORE_HI + 1.0, u16::MAX),
+            (f32::NEG_INFINITY, 0),
+            (f32::INFINITY, u16::MAX),
+            (f32::NAN, 0),
+        ] {
+            assert_eq!(pack_classic_db(db), expected, "{db:?}");
+        }
     }
 
     #[test]
