@@ -544,7 +544,7 @@ fn wait_for_mapped_signal(
                 return;
             }
             let mut peaks = [0.0_f32; MAX_CAPTURE_CHANNELS];
-            for frame in samples.chunks_exact(MAX_CAPTURE_CHANNELS) {
+            for frame in samples.as_chunks::<MAX_CAPTURE_CHANNELS>().0 {
                 for (peak, sample) in peaks.iter_mut().zip(frame) {
                     *peak = peak.max(sample.abs());
                 }

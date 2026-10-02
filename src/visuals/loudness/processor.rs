@@ -145,7 +145,12 @@ impl TruePeakMeter {
         let input = &self.delay[pos..pos + TRUE_PEAK_TAPS];
         // Even/odd tap sums shorten dependency chains while phases stay SIMD-friendly.
         let mut sums = [[0.0; TRUE_PEAK_PHASES]; 2];
-        for (samples, rows) in input.chunks_exact(2).zip(coefficients.chunks_exact(2)) {
+        for (samples, rows) in input
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .zip(coefficients.as_chunks::<2>().0)
+        {
             for lane in 0..2 {
                 for phase in 0..TRUE_PEAK_PHASES {
                     // Avoid software FMA calls on CPUs without hardware support.
