@@ -152,7 +152,7 @@ impl Shared {
 
     fn wake_ingestion(&self) -> bool {
         self.ingest
-            .fetch_update(Ordering::SeqCst, Ordering::Relaxed, |state| {
+            .try_update(Ordering::SeqCst, Ordering::Relaxed, |state| {
                 (state == IngestState::Dormant as u8).then_some(IngestState::Active as u8)
             })
             .is_ok()
@@ -680,7 +680,7 @@ impl AudioReader {
         if let Err(state) =
             self.shared
                 .ingest
-                .fetch_update(Ordering::SeqCst, Ordering::Relaxed, |state| {
+                .try_update(Ordering::SeqCst, Ordering::Relaxed, |state| {
                     (state == IngestState::Active as u8).then_some(IngestState::Dormant as u8)
                 })
         {
