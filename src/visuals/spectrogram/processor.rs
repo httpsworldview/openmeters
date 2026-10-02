@@ -29,6 +29,7 @@ crate::macros::default_struct! {
         pub fft_size: usize = DEFAULT_SPECTROGRAM_FFT_SIZE,
         pub hop_size: usize = DEFAULT_SPECTROGRAM_HOP_SIZE,
         pub window: WindowKind = WindowKind::Hann,
+        pub source: Channel = Channel::Mid,
         pub history_length: usize = 0,
         pub use_reassignment: bool = true,
         pub zero_padding_factor: usize = 1,
@@ -398,18 +399,8 @@ impl SpectrogramProcessor {
             return;
         }
 
-        if block.channels == 1 {
-            let samples = &block.samples[skip..frames];
-            let base = self.audio_buffer.len();
-            if let Some(i) = samples.iter().rposition(|&sample| sample != 0.0) {
-                self.audio_last_nonzero = Some(base + i);
-            }
-            self.audio_buffer.extend(samples);
-            return;
-        }
-
         self.audio_buffer.reserve(frames - skip);
-        for sample in block.projected_frames(Channel::Mid).skip(skip) {
+        for sample in block.projected_frames(self.config.source).skip(skip) {
             if sample != 0.0 {
                 self.audio_last_nonzero = Some(self.audio_buffer.len());
             }
@@ -506,10 +497,9 @@ impl SpectrogramProcessor {
 
         if rebuild && prepared {
             self.rebuild_fft();
-            if rate_changed {
-                self.audio_buffer.clear();
-                self.audio_last_nonzero = None;
-            }
+        }
+        if rate_changed || prev.source != cfg.source {
+            self.reset_audio();
         }
         let hop_changed = prev.hop_size != cfg.hop_size;
         if hop_changed {
@@ -735,6 +725,96 @@ mod tests {
         assert_eq!(mags.len(), cfg.fft_size / 2 + 1);
         assert_eq!(idx, 200);
         assert!(mags[idx] >= pack_classic_db(-0.01));
+    }
+
+    #[test]
+    fn configured_sources_match_projected_input() {
+        let mono = sine_wave(3000.0, DEFAULT_SAMPLE_RATE, 192, 1.0);
+        let stereo: Vec<_> = mono
+            .iter()
+            .flat_map(|&sample| [sample, -0.5 * sample])
+            .collect();
+
+        for use_reassignment in [false, true] {
+            let config = cfg(64, 16, use_reassignment);
+            for (source, mono_gain, stereo_gain) in [
+                (Channel::Left, 1.0, 1.0),
+                (Channel::Right, 1.0, -0.5),
+                (Channel::Mid, 1.0, 0.25),
+                (Channel::Side, 0.0, 0.75),
+                (Channel::None, 0.0, 0.0),
+            ] {
+                for (channels, samples, gain) in [
+                    (1, mono.as_slice(), mono_gain),
+                    (2, stereo.as_slice(), stereo_gain),
+                ] {
+                    let projected: Vec<_> = mono.iter().map(|sample| sample * gain).collect();
+                    let expected = process_samples(config, &projected);
+                    let mut processor =
+                        SpectrogramProcessor::new(SpectrogramConfig { source, ..config });
+                    let actual = processor
+                        .process_block(&AudioBlock::new(samples, channels, config.sample_rate))
+                        .expect("expected snapshot");
+
+                    assert_eq!(actual.new_columns.len(), expected.new_columns.len());
+                    for (actual, expected) in actual.new_columns.iter().zip(&expected.new_columns) {
+                        if use_reassignment {
+                            assert_eq!(
+                                reassigned_points(actual),
+                                reassigned_points(expected),
+                                "{source:?}, {channels} channels"
+                            );
+                        } else {
+                            assert_eq!(
+                                classic_mags(actual),
+                                classic_mags(expected),
+                                "{source:?}, {channels} channels"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn source_changes_discard_pending_audio_and_reset_history() {
+        let samples: Vec<_> = sine_wave(3000.0, DEFAULT_SAMPLE_RATE, 128, 1.0)
+            .into_iter()
+            .flat_map(|sample| [sample, 0.0])
+            .collect();
+        let block = AudioBlock::new(&samples, 2, DEFAULT_SAMPLE_RATE);
+
+        for use_reassignment in [false, true] {
+            for hop_size in [16, 256] {
+                let mut config = cfg(64, hop_size, use_reassignment);
+                let mut processor = SpectrogramProcessor::new(config);
+                assert!(processor.process_block(&block).unwrap().reset);
+                assert!(processor.has_buffered_signal() || processor.pending_skip_samples > 0);
+
+                config.history_length += 1;
+                processor.update_config(config);
+                assert!(!processor.reset);
+
+                config.source = Channel::Right;
+                processor.update_config(config);
+                assert!(processor.audio_buffer.is_empty());
+                assert_eq!(processor.pending_skip_samples, 0);
+                assert!(!processor.has_buffered_signal());
+
+                let update = processor
+                    .process_block(&block)
+                    .expect("expected new source snapshot");
+                assert!(update.reset);
+                assert!(
+                    update
+                        .new_columns
+                        .iter()
+                        .all(SpectrogramColumn::is_quiescent)
+                );
+                assert!(!processor.reset);
+            }
+        }
     }
 
     #[test]

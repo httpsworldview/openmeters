@@ -7,7 +7,7 @@ use super::{
 };
 use crate::persistence::settings::SpectrogramSettings;
 use crate::ui::widgets::{SliderRange, pick, split, toggle};
-use crate::util::audio::{FrequencyScale, WindowKind};
+use crate::util::audio::{Channel, FrequencyScale, WindowKind};
 use crate::visuals::options::PianoRollOverlay;
 
 const ZERO_PAD_OPTIONS: [usize; 6] = [1, 2, 4, 8, 16, 32];
@@ -23,6 +23,7 @@ settings_messages!(pane, settings, value {
     FftSize(usize) => update_fft_size(&mut settings.fft_size, &mut settings.hop_size, value);
     HopDivisor(usize) => update_hop_divisor(settings.fft_size, &mut settings.hop_size, value);
     Window(WindowKind) => set(&mut settings.window, value);
+    Source(Channel) => set(&mut settings.source, value);
     Scale(FrequencyScale) => set(&mut settings.frequency_scale, value);
     UseReassignment(bool) => set(&mut settings.use_reassignment, value);
     FloorDb(f32) => set_f32(&mut settings.floor_db, value);
@@ -45,6 +46,7 @@ settings_view! {
             pick("Window", WindowKind::ALL, settings.window, Window);
         ),
         form!(
+            pick("Source", Channel::ALL, settings.source, Source);
             pick("Zero pad", &ZERO_PAD_OPTIONS[..], settings.zero_padding_factor, ZeroPadding);
             toggle("Time-frequency reassignment", settings.use_reassignment, UseReassignment);
         ),

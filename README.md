@@ -65,6 +65,7 @@ open an issue or pull request.
   - Selectable cycle count in stable trigger mode.
   - Zero-crossing trigger for traditional scope behavior.
 - **Spectrogram**
+  - Selectable source: left, right, mid/mono (default), side, or none.
   - A multitude of window types, lengths, and hop sizes.
   - Classic STFT rendering.
   - Time-frequency reassignment (Similar to Wavecandy's "Enhanced

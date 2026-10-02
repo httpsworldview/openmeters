@@ -182,6 +182,11 @@ mod tests {
 
     #[test]
     fn lossy_value_ignores_invalid_fields_at_their_scope() {
+        assert_eq!(
+            serde_json::to_value(UiSettings::from_json_lossy("{}").unwrap()).unwrap(),
+            serde_json::to_value(UiSettings::default()).unwrap()
+        );
+
         let settings = UiSettings::from_value_lossy(serde_json::json!({
             "decorations": true,
             "visual_frame_rate": "not_a_rate",
@@ -193,7 +198,7 @@ mod tests {
             "bar": {
                 "enabled": false,
                 "alignment": "top",
-                "height": "tall",
+                "height": null,
                 "monitor": "HDMI-A-1",
             },
             "visuals": {

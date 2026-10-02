@@ -311,7 +311,7 @@ visual_settings!(SpectrumSettings from SpectrumConfig {
 
 visual_settings!(SpectrogramSettings from SpectrogramConfig {
     fft_size: usize, hop_size: usize, window: WindowKind, use_reassignment: bool,
-    zero_padding_factor: usize,
+    zero_padding_factor: usize, source: Channel,
 } extra {
     frequency_scale: FrequencyScale = FrequencyScale::default(),
     floor_db: f32 = -120.0 => sanitize_negative_db,
@@ -354,7 +354,8 @@ mod tests {
             "spectrum": {"enabled": true, "config": {
                 "fft_size": 2048, "floor_db": "quiet", "future_option": 42
             }},
-            "waveform": {"enabled": true, "config": false}
+            "waveform": {"enabled": true, "config": false},
+            "spectrogram": {"enabled": true, "config": {"source": "side"}}
         }}));
         assert_eq!(
             settings.module_config(VisualKind::Waveform),
@@ -379,6 +380,7 @@ mod tests {
             SpectrumSettings::default().floor_db
         );
         assert!(modules["spectrum"]["config"].get("future_option").is_none());
+        assert_eq!(modules["spectrogram"]["config"]["source"], "side");
         assert_eq!(modules["waveform"]["enabled"], true);
         assert_eq!(modules["waveform"]["config"]["scroll_speed"], 72.0);
         assert!(modules["waveform"]["config"].get("palette").is_none());

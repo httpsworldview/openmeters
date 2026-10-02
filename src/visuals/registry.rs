@@ -455,6 +455,7 @@ mod tests {
             }),
             VisualConfig::Spectrogram(SpectrogramSettings {
                 fft_size: 2048,
+                source: Channel::Right,
                 rotation: -1,
                 ..Default::default()
             }),
