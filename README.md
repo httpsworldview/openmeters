@@ -288,9 +288,10 @@ WGPU_BACKEND=vulkan openmeters                    # Vulkan
 LIBGL_ALWAYS_SOFTWARE=1 WGPU_BACKEND=gl openmeters # Mesa llvmpipe
 ```
 
-Window transparency requires Vulkan. Software rendering requires
-Mesa's EGL and software drivers and can be much slower. If another EGL
-vendor is selected, also set
+Window transparency is not guaranteed to work across driver/window
+managers/compositors or any arbitrary combination of the
+three. Software rendering requires Mesa's EGL and software drivers and
+can be much slower. If another EGL vendor is selected, also set
 `__EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json`
 using your distribution's Mesa vendor file path.
 
