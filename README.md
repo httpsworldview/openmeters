@@ -105,8 +105,9 @@ OpenMeters requires:
 
 1. A graphical Linux session on X11 or Wayland.
 2. PipeWire 0.3.77 or newer, installed and running.
-3. Vulkan support through your distribution's Vulkan loader and driver
-   stack.
+3. A compatible Vulkan or OpenGL/EGL driver stack. Mesa's llvmpipe can
+   provide CPU rendering when hardware rendering is
+   unavailable. **Vulkan is recommended.**
 4. For pre-built release artifacts: x86_64 GNU/Linux with `glibc` >=
    v2.39. The release workflow builds these artifacts in Ubuntu 24.04.
 
@@ -276,6 +277,22 @@ maintain reliable support for either platform. That said, I aim to
 keep things modular and platform-agnostic where possible. The DSP code
 at the core of this project will run anywhere; the GUI, persistence,
 and audio backend code will not.
+
+Q: **How do I force OpenGL, Vulkan, or software rendering?**
+
+A: Selection is automatic by default. To override it for one launch:
+
+```bash
+WGPU_BACKEND=gl openmeters                        # OpenGL
+WGPU_BACKEND=vulkan openmeters                    # Vulkan
+LIBGL_ALWAYS_SOFTWARE=1 WGPU_BACKEND=gl openmeters # Mesa llvmpipe
+```
+
+Window transparency requires Vulkan. Software rendering requires
+Mesa's EGL and software drivers and can be much slower. If another EGL
+vendor is selected, also set
+`__EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/50_mesa.json`
+using your distribution's Mesa vendor file path.
 
 Q: **Why is OpenMeters' FFT size about twice the value shown in
 MiniMeters or Wave Candy?**

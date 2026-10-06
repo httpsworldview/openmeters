@@ -21,7 +21,9 @@ depends:
   - libgcc-s1
   - libpipewire-0.3-0 (>= ${MIN_PIPEWIRE_VERSION})
   - libwayland-client0
+  - libwayland-egl1
   - libvulkan1
+  - libegl1
   - libx11-6
   - libx11-xcb1
   - libxcb1
@@ -41,7 +43,9 @@ overrides:
       - libgcc
       - pipewire-libs >= ${MIN_PIPEWIRE_VERSION}
       - libwayland-client
+      - libwayland-egl
       - vulkan-loader
+      - libglvnd-egl
       - libX11
       - libX11-xcb
       - libxcb

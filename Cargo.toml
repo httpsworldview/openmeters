@@ -19,7 +19,7 @@ rtrb = "0.3.5"
 serde_json = "1.0.151"
 async-channel = "2.5"
 iced_wgpu = { version = "0.14.0", default-features = false }
-wgpu = { version = "27.0.1", default-features = false, features = [ "std", "wgsl", "vulkan" ] }
+wgpu = { version = "27.0.1", default-features = false, features = [ "std", "wgsl", "vulkan", "gles" ] }
 rustfft = "6.4.1"
 realfft = "3.5"
 tracing = "0.1.44"
@@ -42,7 +42,7 @@ tempfile = "3.27.0"
   [dependencies.tracing-subscriber]
   version = "0.3.23"
   default-features = false
-  features = [ "env-filter", "fmt" ]
+  features = [ "env-filter", "fmt", "tracing-log" ]
 
   [dependencies.iced_exwlshell]
   version = "0.20.1"
@@ -51,6 +51,11 @@ tempfile = "3.27.0"
 
 [dev-dependencies]
 ebur128 = "0.1.10"
+
+[patch.crates-io]
+# I will be maintaining my own fork for the forseeable future as
+# upstream has not had a commit in ~3 years.
+khronos-egl = { git = "https://github.com/httpsworldview/khronos-egl" }
 
 [profile.dev]
 opt-level = 1

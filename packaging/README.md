@@ -66,8 +66,12 @@ dist/
 - `libgcc_s.so.1`
 - `libpipewire-0.3.so.0` >= 0.3.77 (audio capture and graph
   integration)
-- `libvulkan.so.1` (wgpu uses the distro's Vulkan loader + ICDs)
-- Wayland: `libwayland-client.so.0`
+- Graphics: `libvulkan.so.1` plus a Vulkan ICD, or `libEGL.so.1` plus
+  a compatible OpenGL driver. Debian/RPM packages depend on both
+  loaders; Mesa's EGL and software drivers provide the llvmpipe CPU
+  fallback.
+- Wayland: `libwayland-client.so.0`, plus `libwayland-egl.so.1` for
+  OpenGL.
 - X11: `libX11.so.6`, `libX11-xcb.so.1`, `libxcb.so.1`,
   `libXcursor.so.1`, `libXi.so.6`
 - Keyboard input: `libxkbcommon.so.0`, `libxkbcommon-x11.so.0`
