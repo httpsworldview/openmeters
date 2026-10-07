@@ -26,7 +26,7 @@ pub(crate) struct WaveformState {
     quiescent_columns: usize,
     pub(in crate::visuals) palette: [Color; NUM_BANDS],
     pub(in crate::visuals) settings: WaveformSettings,
-    key: u64,
+    keys: [u64; 2],
 }
 
 impl Default for WaveformState {
@@ -41,7 +41,7 @@ impl Default for WaveformState {
             quiescent_columns: 0,
             palette: palettes::waveform::COLORS,
             settings: WaveformSettings::default(),
-            key: crate::visuals::next_key(),
+            keys: std::array::from_fn(|_| crate::visuals::next_key()),
         }
     }
 }
@@ -108,7 +108,10 @@ impl WaveformState {
 
     crate::visuals::palette_setter!(NUM_BANDS);
 
-    pub fn visual_params(&self, bounds: iced::Rectangle) -> Option<WaveformParams> {
+    pub fn visual_params(
+        &self,
+        bounds: iced::Rectangle,
+    ) -> impl Iterator<Item = WaveformParams> + '_ {
         let now = Instant::now();
         let (last, offset) = self.scroll.get();
         let elapsed = now.saturating_duration_since(last);
@@ -130,30 +133,33 @@ impl WaveformState {
             self.view_columns.set(needed);
         }
 
-        let total_columns = unpoison(self.data.lock()).len();
         let (lanes, selected_channels) = self.selected_lanes();
-        if bounds.width <= 0.0
-            || selected_channels == 0
-            || (total_columns == 0 && self.preview.columns.is_none())
-        {
-            return None;
-        }
-
-        Some(WaveformParams {
-            bounds,
-            lanes,
-            channels: selected_channels,
-            data: Arc::clone(&self.data),
-            preview: WaveformPreview {
-                progress: scroll_offset,
-                ..self.preview
-            },
-            color_mode: self.settings.color_mode,
-            history_mode: self.settings.history_mode,
-            band_db_floor: self.settings.band_db_floor,
-            palette: self.palette.map(color_to_rgba),
-            key: self.key,
-        })
+        let channel_height = bounds.height / selected_channels.max(1) as f32;
+        lanes
+            .into_iter()
+            .take(selected_channels)
+            .enumerate()
+            .filter_map(move |(ch, lane)| {
+                let bounds = bounds.intersection(&iced::Rectangle {
+                    y: bounds.y + ch as f32 * channel_height,
+                    height: channel_height,
+                    ..bounds
+                })?;
+                Some(WaveformParams {
+                    bounds,
+                    lane,
+                    data: Arc::clone(&self.data),
+                    preview: WaveformPreview {
+                        progress: scroll_offset,
+                        ..self.preview
+                    },
+                    color_mode: self.settings.color_mode,
+                    history_mode: self.settings.history_mode,
+                    band_db_floor: self.settings.band_db_floor,
+                    palette: self.palette.map(color_to_rgba),
+                    key: self.keys[ch],
+                })
+            })
     }
 
     fn configure_ring(data: &mut VecDeque<WaveFrame>, max_columns: usize, reset: bool) {
@@ -186,4 +192,8 @@ impl WaveformState {
     }
 }
 
-crate::visuals::visualization_widget!(Waveform, WaveformState);
+crate::visuals::visualization_widget!(Waveform, WaveformState, |this, renderer, _theme, bounds| {
+    for params in this.state.borrow().visual_params(bounds) {
+        renderer.draw_primitive(params.bounds, params);
+    }
+});

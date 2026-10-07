@@ -94,7 +94,8 @@ open an issue or pull request.
 - **Waveform**
   - Selectable left, right, mid/mono, side, or `none` channel lanes.
   - Adjustable scroll speed.
-  - Optional low/mid/high band-level history overlay.
+  - Optional low/mid/high band-level history overlay, clipped out at
+    the history floor.
   - Color by low/mid/high band balance, loudness, or a static color.
 
 ## Installation
