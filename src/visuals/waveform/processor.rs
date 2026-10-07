@@ -241,8 +241,8 @@ impl WaveformProcessor {
                 let bands = [
                     left,
                     right,
-                    std::array::from_fn(|band| (left[band] + right[band]) * 0.5),
-                    std::array::from_fn(|band| (left[band] - right[band]) * 0.5),
+                    std::array::from_fn(|band| left[band].midpoint(right[band])),
+                    std::array::from_fn(|band| left[band].midpoint(-right[band])),
                 ];
                 tracker.process(std::array::from_fn(|channel| {
                     if finite[channel] {
@@ -486,15 +486,18 @@ mod tests {
                 .all(f32::is_finite)
         );
 
-        let mut processor = WaveformProcessor::new(config(RATE, 8));
-        let update = process(&mut processor, &[f32::MAX, f32::MAX], 2);
-        assert!(
-            update
-                .columns
-                .iter()
-                .flatten()
-                .all(|c| c.min.is_finite() && c.max.is_finite())
-        );
+        for (right, channel) in [(f32::MAX, 2), (-f32::MAX, 3)] {
+            let mut processor = WaveformProcessor::new(config(RATE, 8));
+            let update = process(&mut processor, &[f32::MAX, right].repeat(128), 2);
+            for frame in update.columns {
+                assert!(frame.iter().all(|c| c.min.is_finite() && c.max.is_finite()));
+                assert_eq!(
+                    (frame[channel].min, frame[channel].max),
+                    (f32::MAX, f32::MAX)
+                );
+                assert_eq!(frame[channel], frame[0]);
+            }
+        }
     }
 
     #[test]

@@ -37,8 +37,8 @@ impl Channel {
         match self {
             Self::Left => left,
             Self::Right => right,
-            Self::Mid => (left + right) * 0.5,
-            Self::Side => (left - right) * 0.5,
+            Self::Mid => left.midpoint(right),
+            Self::Side => left.midpoint(-right),
             Self::None => 0.0,
         }
     }
