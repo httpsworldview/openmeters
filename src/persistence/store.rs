@@ -167,6 +167,11 @@ impl SettingsHandle {
         ))))
     }
 
+    #[cfg(test)]
+    pub(crate) fn for_test(dir: &Path) -> Self {
+        Self(Rc::new(RefCell::new(SettingsManager::load_from_dir(dir))))
+    }
+
     pub fn borrow(&self) -> Ref<'_, SettingsManager> {
         self.0.borrow()
     }

@@ -33,13 +33,11 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 use windowing::{
-    APP_ID, BarResizeState, PopoutWindow, layershell_available, main_window_size, open_main_window,
-    open_tool_base_window,
+    APP_ID, BarResizeState, MainWindow, PopoutWindow, layershell_available, main_window_size,
+    open_main_window, open_tool_base_window,
 };
 
 const TOAST_DISPLAY_DURATION: Duration = Duration::from_secs(2);
-// Event-driven retry cooldown, not a timer.
-const BAR_RETRY_WINDOW: Duration = Duration::from_secs(5);
 const MAINTENANCE_INTERVAL: Duration = Duration::from_millis(100);
 const BAR_RESIZE_HANDLE_THICKNESS: f32 = 6.0;
 
@@ -117,12 +115,8 @@ struct UiApp {
     bar_resize_state: Option<BarResizeState>,
     rendering_paused: bool,
     toast_until: Option<Instant>,
-    main_window_id: window::Id,
+    main_window: MainWindow,
     last_base_window_size: Size,
-    main_window_is_layer: bool,
-    main_layer_opened: bool,
-    main_layer_ready: bool,
-    last_bar_retry: Option<Instant>,
     use_layershell: bool,
     settings_window: Option<(window::Id, ActiveSettings)>,
     settings_scroll: ScrollGlow,
@@ -179,8 +173,13 @@ impl UiApp {
         );
         let visuals_page = VisualsPage::new(visual_manager.clone(), settings_handle.clone());
         let base_size = main_window_size(main_window);
-        let (main_id, open_task, main_is_layer) =
-            open_main_window(use_layershell, bar_settings, base_size, use_decorations);
+        let (main_window, open_task) = open_main_window(
+            use_layershell,
+            bar_settings,
+            base_size,
+            use_decorations,
+            config_page.has_bar_outputs(),
+        );
         let frames = Rc::new(RefCell::new(FrameCoordinator::new(
             meter_engine,
             visual_frame_rate,
@@ -195,12 +194,8 @@ impl UiApp {
             bar_resize_state: None,
             rendering_paused: false,
             toast_until: None,
-            main_window_id: main_id,
+            main_window,
             last_base_window_size: base_size,
-            main_window_is_layer: main_is_layer,
-            main_layer_opened: false,
-            main_layer_ready: false,
-            last_bar_retry: None,
             use_layershell,
             settings_window: None,
             settings_scroll: ScrollGlow::default(),
@@ -269,7 +264,7 @@ impl UiApp {
     }
 
     fn begin_bar_resize(&mut self) {
-        if !self.main_window_is_layer {
+        if !matches!(self.main_window, MainWindow::Bar(Some(_))) {
             return;
         }
         let (enabled, height, alignment) = {
@@ -315,14 +310,14 @@ impl UiApp {
             })
     }
 
-    fn main_window_view(&self) -> Element<'_, Message> {
+    fn main_window_view(&self, window_id: window::Id) -> Element<'_, Message> {
         let (bar_enabled, bar_alignment) = {
             let settings = self.settings_handle.borrow();
             (settings.data.bar.enabled, settings.data.bar.alignment)
         };
         let content = self.visuals_with_toasts();
         let content = self.wrap_bar_resize(content, bar_enabled, bar_alignment);
-        self.with_frame_clock(self.main_window_id, content)
+        self.with_frame_clock(window_id, content)
     }
 
     fn with_frame_clock<'a>(
@@ -336,7 +331,7 @@ impl UiApp {
                 frame_clock(
                     Rc::clone(&self.frames),
                     window,
-                    window == self.main_window_id,
+                    Some(window) == self.main_window.id(),
                 )
             ]
             .into()
@@ -384,7 +379,7 @@ impl UiApp {
         bar_enabled: bool,
         bar_alignment: BarAlignment,
     ) -> Element<'a, Message> {
-        if !(self.main_window_is_layer && bar_enabled) {
+        if !(self.main_window.is_bar() && bar_enabled) {
             return content;
         }
         let handle = mouse_area(

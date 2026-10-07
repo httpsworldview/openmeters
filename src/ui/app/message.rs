@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::{BAR_RETRY_WINDOW, TOAST_DISPLAY_DURATION, UiApp, windowing::AppWindow};
+use super::{TOAST_DISPLAY_DURATION, UiApp, windowing::AppWindow};
 use crate::ui::config::{BarOutputChange, BarOutputEvent, ConfigEffect, ConfigMessage};
 use crate::ui::settings::SettingsMessage;
 use crate::ui::visuals::VisualsMessage;
@@ -34,7 +34,6 @@ pub(super) enum Message {
     BarResizeMove(iced::Point),
     BarResizeEnd,
     Quit,
-    WindowOpened(window::Id),
     WindowClosed(window::Id),
     WindowResized(window::Id, Size),
     Settings(window::Id, SettingsMessage),
@@ -83,7 +82,6 @@ pub(super) fn app_event(
 ) -> Option<Message> {
     let Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) = event else {
         return match event {
-            Event::Window(window::Event::Opened { .. }) => Some(Message::WindowOpened(window_id)),
             Event::Window(window::Event::Closed) => Some(Message::WindowClosed(window_id)),
             Event::Window(window::Event::Resized(size)) => {
                 Some(Message::WindowResized(window_id, size))
@@ -109,25 +107,6 @@ pub(super) fn app_event(
     }
 }
 
-fn retry_bar(app: &mut UiApp, closed: bool) -> Task<Message> {
-    if app
-        .last_bar_retry
-        .is_some_and(|retry| retry.elapsed() < BAR_RETRY_WINDOW)
-    {
-        return if closed { exit() } else { Task::none() };
-    }
-    app.last_bar_retry = Some(Instant::now());
-    app.recreate_main_window(!closed)
-}
-
-fn close_main_layer(app: &mut UiApp, window: window::Id) -> Task<Message> {
-    if app.main_layer_ready {
-        app.on_window_closed(window)
-    } else {
-        retry_bar(app, true)
-    }
-}
-
 pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
     if !app.rendering_paused && !matches!(&msg, Message::Tick | Message::Watchdog(_)) {
         app.frames.borrow_mut().wake();
@@ -149,7 +128,6 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
             }
             Some(ConfigEffect::DecorationsChanged) => return app.recreate_visual_windows(),
             Some(ConfigEffect::BarChanged(change)) => {
-                app.last_bar_retry = None;
                 return app.handle_bar_config_change(change);
             }
             Some(ConfigEffect::ThemeChanged) => {
@@ -183,46 +161,28 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
         }
         Message::BarOutput(id, name, event) => {
             let change = app.config_page.sync_bar_output(id, name, event);
-            if app.main_window_is_layer {
-                if change != BarOutputChange::Unchanged {
-                    app.last_bar_retry = None;
-                }
-                if change == BarOutputChange::CurrentRemoved {
-                    app.main_layer_ready = false;
-                }
-                if change == BarOutputChange::Retarget {
-                    return retry_bar(app, false);
-                }
+            if app.main_window.is_bar()
+                && change != BarOutputChange::Unchanged
+                && (app.main_window.id().is_none()
+                    || change == BarOutputChange::Retarget
+                    || event == BarOutputEvent::Removed)
+            {
+                return app.recreate_main_window();
             }
         }
         Message::BarWindowOutput(window, output)
-            if app.main_window_is_layer && window == app.main_window_id =>
+            if app.main_window.is_bar() && Some(window) == app.main_window.id() =>
         {
-            app.main_layer_ready = true;
             if app.config_page.sync_current_bar_output(output) {
-                return retry_bar(app, false);
+                return app.recreate_main_window();
             }
         }
-        // Output changes and shell closes share one ordered event stream.
         Message::ShellWindowClosed(window)
-            if app.main_window_is_layer && window == app.main_window_id =>
+            if app.main_window.is_bar() && Some(window) == app.main_window.id() =>
         {
-            return close_main_layer(app, window);
+            return app.on_window_closed(window);
         }
-        Message::WindowOpened(window)
-            if app.main_window_is_layer && window == app.main_window_id =>
-        {
-            app.main_layer_opened = true;
-        }
-        // After Opened, the ordered shell close is authoritative for the main layer.
-        Message::WindowClosed(window) => {
-            if !app.main_window_is_layer || window != app.main_window_id {
-                return app.on_window_closed(window);
-            }
-            if !app.main_layer_opened {
-                return close_main_layer(app, window);
-            }
-        }
+        Message::WindowClosed(window) => return app.on_window_closed(window),
         Message::Settings(window_id, settings_msg) => {
             if let Some((wid, panel)) = app.settings_window.as_mut()
                 && *wid == window_id
@@ -240,7 +200,7 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
 
 pub(super) fn view(app: &UiApp, window_id: window::Id) -> Element<'_, Message> {
     match app.window(window_id) {
-        AppWindow::Main => app.main_window_view(),
+        AppWindow::Main => app.main_window_view(window_id),
         AppWindow::Config => page(app.config_page.view().map(Message::Config)).into(),
         AppWindow::Settings(panel) => {
             let content = panel
@@ -256,5 +216,211 @@ pub(super) fn view(app: &UiApp, window_id: window::Id) -> Element<'_, Message> {
             app.with_frame_clock(window_id, popout.view().map(Message::Visuals))
         }
         AppWindow::Unknown => fill(text("")).into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::infra::pipewire::{CaptureControl, test_audio_reader};
+    use crate::persistence::settings::SettingsHandle;
+    use crate::ui::app::{UiConfig, windowing::MainWindow};
+    use crate::ui::config::BarChange;
+    use iced::futures::{StreamExt, executor::block_on};
+    use iced_exwlshell::reexport::{KeyboardInteractivity, Layer, LayerSize, OutputOption};
+    use iced_runtime::{Action, task};
+    use std::{cell::RefCell, rc::Rc};
+
+    fn app(settings: &str) -> (tempfile::TempDir, UiApp, Task<Message>) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("settings.json"), settings).unwrap();
+        let (app, task) = UiApp::new(
+            UiConfig {
+                capture: CaptureControl::for_test(),
+                audio: Rc::new(RefCell::new(Some(test_audio_reader()))),
+                settings_handle: SettingsHandle::for_test(dir.path()),
+            },
+            true,
+        );
+        (dir, app, task)
+    }
+
+    fn actions(task: Task<Message>) -> Vec<Action<Message>> {
+        task::into_stream(task).map_or_else(Vec::new, |stream| block_on(stream.collect()))
+    }
+
+    fn idle(task: Task<Message>) {
+        let actions = actions(task);
+        assert!(actions.is_empty(), "{actions:?}");
+    }
+
+    fn layer(task: Task<Message>, closed: Option<window::Id>, output: OutputOption) -> window::Id {
+        let mut actions = actions(task);
+        if let Some(old) = closed {
+            let index = actions.iter().position(
+                |action| matches!(action, Action::Window(window::Action::Close(id)) if *id == old),
+            );
+            actions
+                .remove(index.unwrap_or_else(|| panic!("missing close for {old:?}: {actions:?}")));
+        }
+        let [Action::Output(Message::NewLayerShell { id, settings })] = actions.as_slice() else {
+            panic!("expected one layer creation: {actions:?}");
+        };
+        assert_eq!(
+            settings,
+            &NewLayerShellSettings {
+                size: LayerSize::fill_width(100),
+                layer: Layer::Top,
+                anchor: super::super::windowing::bar_anchor(
+                    crate::persistence::settings::BarAlignment::Bottom
+                ),
+                exclusive_zone: Some(100),
+                keyboard_interactivity: KeyboardInteractivity::OnDemand,
+                output_option: output,
+                ..Default::default()
+            }
+        );
+        *id
+    }
+
+    fn output(
+        app: &mut UiApp,
+        id: u32,
+        name: Option<&str>,
+        event: BarOutputEvent,
+    ) -> Task<Message> {
+        update(app, Message::BarOutput(id, name.map(str::to_owned), event))
+    }
+
+    #[test]
+    fn bar_waits_for_outputs_and_ignores_retired_window_events() {
+        use BarOutputEvent::{Added, Removed};
+        let (_dir, mut app, initial) = app("{}");
+        idle(initial);
+        for output_id in 1..=3 {
+            let id = layer(
+                output(&mut app, output_id, None, Added),
+                None,
+                OutputOption::Active,
+            );
+            idle(output(&mut app, output_id, None, Added));
+            if output_id % 2 == 0 {
+                idle(update(
+                    &mut app,
+                    Message::BarWindowOutput(id, Some(output_id)),
+                ));
+            }
+            let removed = actions(output(&mut app, output_id, None, Removed));
+            assert!(
+                matches!(removed.as_slice(), [Action::Window(window::Action::Close(old))] if *old == id),
+                "{removed:?}"
+            );
+            idle(update(&mut app, Message::ShellWindowClosed(id)));
+            idle(update(&mut app, Message::WindowClosed(id)));
+            idle(update(
+                &mut app,
+                Message::BarWindowOutput(id, Some(output_id)),
+            ));
+            idle(update(&mut app, Message::Tick));
+            idle(output(&mut app, output_id, None, Removed));
+        }
+    }
+
+    #[test]
+    fn bar_closure_before_removal_waits_then_recovers_and_restores_selected_monitor() {
+        use BarOutputEvent::{Added, Removed};
+        let (_dir, mut app, initial) = app(r#"{"bar":{"monitor":"HDMI"}}"#);
+        idle(initial);
+        let selected = || OutputOption::OutputName("HDMI".into());
+        let first = layer(output(&mut app, 1, Some("HDMI"), Added), None, selected());
+        idle(output(&mut app, 2, Some("DP"), Added));
+        idle(update(&mut app, Message::BarWindowOutput(first, Some(1))));
+        // A shell close is not an application quit, even before output removal arrives.
+        idle(update(&mut app, Message::ShellWindowClosed(first)));
+        idle(update(&mut app, Message::WindowClosed(first)));
+        idle(output(&mut app, 2, Some("DP"), Added));
+        idle(update(&mut app, Message::Tick));
+        let fallback = layer(output(&mut app, 1, Some("HDMI"), Removed), None, selected());
+        idle(update(
+            &mut app,
+            Message::BarWindowOutput(fallback, Some(2)),
+        ));
+        let restored = layer(
+            output(&mut app, 3, Some("HDMI"), Added),
+            Some(fallback),
+            selected(),
+        );
+        assert_ne!(restored, fallback);
+        idle(update(&mut app, Message::ShellWindowClosed(fallback)));
+        idle(update(&mut app, Message::WindowClosed(fallback)));
+        assert_eq!(
+            app.settings_handle.borrow().data.bar.monitor.as_deref(),
+            Some("HDMI")
+        );
+        // Rejection before the first configure must not start a retry loop either.
+        idle(update(&mut app, Message::WindowClosed(restored)));
+        idle(update(&mut app, Message::ShellWindowClosed(restored)));
+        idle(update(
+            &mut app,
+            Message::BarWindowOutput(restored, Some(3)),
+        ));
+        idle(update(&mut app, Message::Tick));
+        idle(update(&mut app, Message::Quit));
+        assert!(matches!(
+            actions(update(&mut app, Message::Quit)).as_slice(),
+            [Action::Exit]
+        ));
+    }
+
+    #[test]
+    fn switching_to_bar_without_outputs_retires_only_the_previous_window() {
+        let (_dir, mut app, initial) = app("{}");
+        idle(initial);
+        // The mode setting has changed, but the previous normal window still exists.
+        let old = window::Id::unique();
+        app.main_window = MainWindow::Window(old);
+        let retired = actions(app.handle_bar_config_change(BarChange::Mode));
+        assert!(
+            matches!(retired.as_slice(), [Action::Window(window::Action::Close(id))] if *id == old),
+            "{retired:?}"
+        );
+        idle(update(&mut app, Message::WindowClosed(old)));
+        idle(app.handle_bar_config_change(BarChange::Layout));
+        idle(app.recreate_visual_windows());
+        idle(update(&mut app, Message::BarResizeStart));
+        assert!(app.bar_resize_state.is_none());
+        let opened = actions(update(&mut app, Message::ToggleConfig));
+        let [Action::Output(Message::NewBaseWindow { id, .. })] = opened.as_slice() else {
+            panic!("expected a configuration window: {opened:?}");
+        };
+        idle(update(&mut app, Message::WindowClosed(*id)));
+        assert!(app.config_window.is_none());
+        layer(
+            output(&mut app, 1, None, BarOutputEvent::Added),
+            None,
+            OutputOption::Active,
+        );
+    }
+
+    #[test]
+    fn normal_window_closing_still_quits_without_outputs() {
+        let (_dir, mut app, initial) = app(r#"{"bar":{"enabled":false}}"#);
+        let initial = actions(initial);
+        let [Action::Output(Message::NewBaseWindow { id, .. })] = initial.as_slice() else {
+            panic!("expected a normal window: {initial:?}");
+        };
+        let close = actions(update(&mut app, Message::WindowClosed(*id)));
+        assert!(matches!(close.as_slice(), [Action::Exit]), "{close:?}");
+
+        // Switching out of bar mode must work even when its surface is absent.
+        app.main_window = MainWindow::Bar(None);
+        let opened = actions(app.handle_bar_config_change(BarChange::Mode));
+        let [Action::Output(Message::NewBaseWindow { id: new_id, .. })] = opened.as_slice() else {
+            panic!("expected a replacement normal window: {opened:?}");
+        };
+        assert_ne!(new_id, id);
+        idle(update(&mut app, Message::WindowClosed(*id)));
+        let close = actions(update(&mut app, Message::WindowClosed(*new_id)));
+        assert!(matches!(close.as_slice(), [Action::Exit]), "{close:?}");
     }
 }

@@ -2264,6 +2264,7 @@ dependencies = [
  "ebur128",
  "iced",
  "iced_exwlshell",
+ "iced_runtime",
  "iced_wgpu",
  "pipewire",
  "realfft",

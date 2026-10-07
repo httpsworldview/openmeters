@@ -51,6 +51,7 @@ tempfile = "3.27.0"
 
 [dev-dependencies]
 ebur128 = "0.1.10"
+iced_runtime = "0.14.0"
 
 [patch.crates-io]
 # I will be maintaining my own fork for the forseeable future as

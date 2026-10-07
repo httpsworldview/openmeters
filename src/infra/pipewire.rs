@@ -81,6 +81,14 @@ pub struct CaptureControl {
 }
 
 impl CaptureControl {
+    #[cfg(test)]
+    pub(crate) fn for_test() -> Self {
+        Self {
+            commands: mpsc::channel().0,
+            public: Arc::default(),
+        }
+    }
+
     pub fn configure(&self, config: CaptureConfig) -> bool {
         self.commands.send(Command::Configure(config)).is_ok()
     }

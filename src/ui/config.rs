@@ -70,20 +70,22 @@ pub(in crate::ui) enum BarOutputChange {
     Unchanged,
     Changed,
     Retarget,
-    CurrentRemoved,
 }
 
 #[derive(Default)]
 struct BarOutputs {
-    names: BTreeMap<u32, String>,
+    names: BTreeMap<u32, Option<String>>,
     current: Option<u32>,
 }
 
 impl BarOutputs {
     fn selected_is_elsewhere(&self, selected: &str) -> bool {
         self.current.is_some_and(|current| {
-            self.names.get(&current).map(String::as_str) != Some(selected)
-                && self.names.values().any(|name| name == selected)
+            self.names.get(&current).and_then(|name| name.as_deref()) != Some(selected)
+                && self
+                    .names
+                    .values()
+                    .any(|name| name.as_deref() == Some(selected))
         })
     }
 
@@ -96,19 +98,21 @@ impl BarOutputs {
     ) -> BarOutputChange {
         use BarOutputEvent::{Added, Removed, Updated};
 
-        let current_removed = event == Removed && self.current == Some(id);
-        let name = name.filter(|name| !name.is_empty());
-        let previous = self.names.remove(&id);
-        if event != Removed
-            && let Some(name) = &name
-        {
-            self.names.insert(id, name.clone());
+        if event == Removed && self.current == Some(id) {
+            self.current = None;
         }
+        let name = name.filter(|name| !name.is_empty());
+        let previous = if event == Removed {
+            self.names.remove(&id)
+        } else {
+            self.names.insert(id, name.clone())
+        };
 
         let topology_changed = event != Updated;
-        let changed = event == Removed
-            || previous.as_deref() != name.as_deref()
-            || event == Added && previous.is_none();
+        let changed = match event {
+            Removed => previous.is_some(),
+            Added | Updated => previous.as_ref() != Some(&name),
+        };
         let route_changed = changed
             && match selected {
                 None => match event {
@@ -118,7 +122,7 @@ impl BarOutputs {
                 },
                 Some(selected) => {
                     self.current == Some(id)
-                        || previous.as_deref() == Some(selected)
+                        || previous.as_ref().and_then(|name| name.as_deref()) == Some(selected)
                         || name.as_deref() == Some(selected)
                         || topology_changed && self.current.is_none()
                 }
@@ -128,9 +132,7 @@ impl BarOutputs {
                 None => event == Added && self.current.is_some_and(|current| current != id),
                 Some(selected) => self.selected_is_elsewhere(selected),
             };
-        if current_removed {
-            BarOutputChange::CurrentRemoved
-        } else if retarget {
+        if retarget {
             BarOutputChange::Retarget
         } else if route_changed {
             BarOutputChange::Changed
@@ -140,13 +142,17 @@ impl BarOutputs {
     }
 
     fn set_current(&mut self, output: Option<u32>, selected: Option<&str>) -> bool {
-        self.current = output;
+        self.current = output.filter(|id| self.names.contains_key(id));
         selected.is_some_and(|selected| self.selected_is_elsewhere(selected))
     }
 
     fn choices(&self, selected: Option<&str>) -> (Vec<BarMonitorOption>, BarMonitorOption) {
-        let disconnected =
-            selected.is_some_and(|name| !self.names.values().any(|output| output == name));
+        let disconnected = selected.is_some_and(|name| {
+            !self
+                .names
+                .values()
+                .any(|output| output.as_deref() == Some(name))
+        });
         let selected = BarMonitorOption {
             monitor: selected.map(str::to_owned),
             disconnected,
@@ -155,6 +161,7 @@ impl BarOutputs {
         options.extend(
             self.names
                 .values()
+                .flatten()
                 .cloned()
                 .map(|monitor| BarMonitorOption {
                     monitor: Some(monitor),
@@ -619,6 +626,10 @@ impl ConfigPage {
         self.theme_choices = self.settings.borrow().theme_store().list();
     }
 
+    pub(in crate::ui) fn has_bar_outputs(&self) -> bool {
+        !self.bar_outputs.names.is_empty()
+    }
+
     pub(in crate::ui) fn sync_bar_output(
         &mut self,
         id: u32,
@@ -649,7 +660,8 @@ impl ConfigPage {
                 self.bar_outputs
                     .names
                     .get(&id)
-                    .map_or("unnamed monitor", String::as_str)
+                    .and_then(|name| name.as_deref())
+                    .unwrap_or("unnamed monitor")
             });
             let status = selected.disconnected.then(|| {
                 current.map_or_else(
@@ -769,17 +781,30 @@ mod tests {
             current: Some(1),
             ..Default::default()
         };
-        outputs.names.insert(1, "HDMI".into());
+        outputs.names.insert(1, Some("HDMI".into()));
 
         assert_eq!(outputs.sync(2, Some("DP".into()), Added, None), Retarget);
         assert_eq!(outputs.sync(2, Some("DP".into()), Added, None), Unchanged);
+        assert_eq!(outputs.sync(1, Some("HDMI".into()), Removed, None), Changed);
+
+        assert_eq!(outputs.current, None);
         assert_eq!(
             outputs.sync(1, Some("HDMI".into()), Removed, None),
-            CurrentRemoved
+            Unchanged
         );
-
-        outputs.names.insert(1, "HDMI".into());
+        outputs.names.insert(1, Some("HDMI".into()));
         assert!(outputs.set_current(Some(1), Some("DP")));
         assert!(!outputs.set_current(Some(1), Some("missing")));
+
+        outputs.sync(3, None, Added, None);
+        assert_eq!(outputs.names.get(&3), Some(&None));
+        assert_eq!(outputs.sync(3, Some(String::new()), Added, None), Unchanged);
+        let (choices, _) = outputs.choices(None);
+        assert_eq!(
+            choices.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            ["Automatic", "HDMI", "DP"]
+        );
+        assert!(!outputs.set_current(Some(99), None));
+        assert_eq!(outputs.current, None);
     }
 }

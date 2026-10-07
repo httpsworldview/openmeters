@@ -105,13 +105,36 @@ pub(super) fn open_tool_base_window(use_layershell: bool) -> (window::Id, Task<M
     open_base_window(use_layershell, TOOL_WINDOW_SIZE, true)
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum MainWindow {
+    Window(window::Id),
+    Bar(Option<window::Id>),
+}
+
+impl MainWindow {
+    pub(super) fn id(self) -> Option<window::Id> {
+        match self {
+            Self::Window(id) => Some(id),
+            Self::Bar(id) => id,
+        }
+    }
+
+    pub(super) fn is_bar(self) -> bool {
+        matches!(self, Self::Bar(_))
+    }
+}
+
 pub(super) fn open_main_window(
     use_layershell: bool,
     bar_settings: BarSettings,
     base_size: Size,
     with_decorations: bool,
-) -> (window::Id, Task<Message>, bool) {
+    outputs_available: bool,
+) -> (MainWindow, Task<Message>) {
     if use_layershell && bar_settings.enabled {
+        if !outputs_available {
+            return (MainWindow::Bar(None), Task::none());
+        }
         let height = clamp_bar_height(bar_settings.height);
         let (id, task) = message::layershell_open(NewLayerShellSettings {
             size: LayerSize::fill_width(height),
@@ -125,11 +148,11 @@ pub(super) fn open_main_window(
                 .unwrap_or_default(),
             ..Default::default()
         });
-        return (id, task, true);
+        return (MainWindow::Bar(Some(id)), task);
     }
 
     let (id, task) = open_base_window(use_layershell, base_size, with_decorations);
-    (id, task, false)
+    (MainWindow::Window(id), task)
 }
 
 fn popout_window_settings(size: Size, popped_out: bool) -> PopoutWindowSettings {
@@ -173,7 +196,7 @@ pub(super) enum AppWindow<'a> {
 
 impl UiApp {
     pub(super) fn window(&self, id: window::Id) -> AppWindow<'_> {
-        if id == self.main_window_id {
+        if Some(id) == self.main_window.id() {
             AppWindow::Main
         } else if self.config_window == Some(id) {
             AppWindow::Config
@@ -304,8 +327,17 @@ impl UiApp {
     }
 
     pub(super) fn on_window_closed(&mut self, id: window::Id) -> Task<Message> {
-        if id == self.main_window_id {
-            return exit();
+        if Some(id) == self.main_window.id() {
+            if !self.main_window.is_bar() {
+                return exit();
+            }
+            self.main_window = MainWindow::Bar(None);
+            self.bar_resize_state = None;
+            self.config_page.sync_current_bar_output(None);
+            // A layer close does not carry a reason. Await output changes rather
+            // than quitting or repeatedly recreating a rejected surface.
+            tracing::debug!("[ui] bar surface closed; waiting for output changes");
+            return Task::none();
         }
         let _ = self.config_window.take_if(|window| *window == id);
         let _ = self.settings_window.take_if(|(window, _)| *window == id);
@@ -407,18 +439,18 @@ impl UiApp {
         alignment: BarAlignment,
         height: u32,
     ) -> Task<Message> {
-        if !self.main_window_is_layer {
+        let MainWindow::Bar(Some(id)) = self.main_window else {
             return Task::none();
-        }
+        };
         let height = clamp_bar_height(height);
         Task::batch([
             Task::done(Message::LayoutChange {
-                id: self.main_window_id,
+                id,
                 anchor: bar_anchor(alignment),
                 size: LayerSize::fill_width(height),
             }),
             Task::done(Message::ExclusiveZoneChange {
-                id: self.main_window_id,
+                id,
                 zone_size: height as i32,
             }),
         ])
@@ -440,16 +472,16 @@ impl UiApp {
             }
             return Task::none();
         }
-        if window_id != self.main_window_id {
+        if Some(window_id) != self.main_window.id() {
             return Task::none();
         }
 
-        if self.main_window_is_layer {
+        if self.main_window.is_bar() {
             let height = clamp_bar_height(new_size.height.round().max(1.0) as u32);
             self.settings_handle
                 .set(Automatic, |settings| &mut settings.bar.height, height);
             return Task::done(Message::ExclusiveZoneChange {
-                id: self.main_window_id,
+                id: window_id,
                 zone_size: height as i32,
             });
         }
@@ -462,28 +494,23 @@ impl UiApp {
         Task::none()
     }
 
-    pub(super) fn recreate_main_window(&mut self, close_old: bool) -> Task<Message> {
-        let old_main_id = self.main_window_id;
+    pub(super) fn recreate_main_window(&mut self) -> Task<Message> {
+        let old_main_id = self.main_window.id();
         let (bar, decorations) = {
             let settings = &self.settings_handle.borrow().data;
             (settings.bar.clone(), settings.decorations)
         };
         self.config_page.sync_current_bar_output(None);
-        self.main_layer_opened = false;
-        self.main_layer_ready = false;
-        let (new_main_id, open_main, main_is_layer) = open_main_window(
+        self.bar_resize_state = None;
+        let (main_window, open_main) = open_main_window(
             self.use_layershell,
             bar,
             self.last_base_window_size,
             decorations,
+            self.config_page.has_bar_outputs(),
         );
-        self.main_window_id = new_main_id;
-        self.main_window_is_layer = main_is_layer;
-        if close_old {
-            Task::batch([open_main, window::close(old_main_id)])
-        } else {
-            open_main
-        }
+        self.main_window = main_window;
+        Task::batch(std::iter::once(open_main).chain(old_main_id.map(window::close)))
     }
 
     pub(super) fn handle_bar_config_change(&mut self, change: BarChange) -> Task<Message> {
@@ -492,11 +519,11 @@ impl UiApp {
         }
         let bar = self.settings_handle.borrow().data.bar.clone();
         match change {
-            BarChange::Mode if bar.enabled != self.main_window_is_layer => {
-                self.recreate_main_window(true)
+            BarChange::Mode if bar.enabled != self.main_window.is_bar() => {
+                self.recreate_main_window()
             }
-            BarChange::Monitor if self.main_window_is_layer => self.recreate_main_window(true),
-            BarChange::Mode | BarChange::Layout if self.main_window_is_layer => {
+            BarChange::Monitor if self.main_window.is_bar() => self.recreate_main_window(),
+            BarChange::Mode | BarChange::Layout if self.main_window.is_bar() => {
                 self.apply_bar_layout(bar.alignment, bar.height)
             }
             BarChange::Mode | BarChange::Layout | BarChange::Monitor => Task::none(),
@@ -508,11 +535,10 @@ impl UiApp {
         let old_popouts = std::mem::take(&mut self.popout_windows);
         let mut tasks = Vec::with_capacity(old_popouts.len() * 2 + 2);
 
-        if !self.main_window_is_layer {
-            let old = self.main_window_id;
+        if let MainWindow::Window(old) = self.main_window {
             let (id, open) =
                 open_base_window(self.use_layershell, self.last_base_window_size, decorations);
-            self.main_window_id = id;
+            self.main_window = MainWindow::Window(id);
             tasks.extend([open, window::close(old)]);
         }
         for (old, popout) in old_popouts {
