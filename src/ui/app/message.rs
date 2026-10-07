@@ -171,11 +171,11 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
             }
         }
         Message::BarWindowOutput(window, output)
-            if app.main_window.is_bar() && Some(window) == app.main_window.id() =>
+            if app.main_window.is_bar()
+                && Some(window) == app.main_window.id()
+                && app.config_page.sync_current_bar_output(output) =>
         {
-            if app.config_page.sync_current_bar_output(output) {
-                return app.recreate_main_window();
-            }
+            return app.recreate_main_window();
         }
         Message::ShellWindowClosed(window)
             if app.main_window.is_bar() && Some(window) == app.main_window.id() =>
@@ -221,13 +221,17 @@ pub(super) fn view(app: &UiApp, window_id: window::Id) -> Element<'_, Message> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{Message::*, *};
     use crate::infra::pipewire::{CaptureControl, test_audio_reader};
-    use crate::persistence::settings::SettingsHandle;
-    use crate::ui::app::{UiConfig, windowing::MainWindow};
+    use crate::persistence::settings::{BarAlignment, SettingsHandle};
+    use crate::ui::app::UiConfig;
+    use crate::ui::app::windowing::{MainWindow, bar_anchor};
     use crate::ui::config::BarChange;
+    use BarOutputEvent::{Added, Removed};
     use iced::futures::{StreamExt, executor::block_on};
+    use iced::window::Action::Close;
     use iced_exwlshell::reexport::{KeyboardInteractivity, Layer, LayerSize, OutputOption};
+    use iced_runtime::Action::{Exit, Output, Window};
     use iced_runtime::{Action, task};
     use std::{cell::RefCell, rc::Rc};
 
@@ -249,21 +253,31 @@ mod tests {
         task::into_stream(task).map_or_else(Vec::new, |stream| block_on(stream.collect()))
     }
 
-    fn idle(task: Task<Message>) {
+    macro_rules! assert_actions {
+        ($task:expr, $pattern:pat $(if $guard:expr)?) => {{
+            let actions = actions($task);
+            assert!(matches!(actions.as_slice(), $pattern $(if $guard)?), "{actions:?}");
+        }};
+    }
+
+    fn base(task: Task<Message>) -> window::Id {
         let actions = actions(task);
-        assert!(actions.is_empty(), "{actions:?}");
+        let [Output(NewBaseWindow { id, .. })] = actions.as_slice() else {
+            panic!("expected one base window: {actions:?}");
+        };
+        *id
     }
 
     fn layer(task: Task<Message>, closed: Option<window::Id>, output: OutputOption) -> window::Id {
         let mut actions = actions(task);
         if let Some(old) = closed {
-            let index = actions.iter().position(
-                |action| matches!(action, Action::Window(window::Action::Close(id)) if *id == old),
-            );
+            let index = actions
+                .iter()
+                .position(|action| matches!(action, Window(Close(id)) if *id == old));
             actions
                 .remove(index.unwrap_or_else(|| panic!("missing close for {old:?}: {actions:?}")));
         }
-        let [Action::Output(Message::NewLayerShell { id, settings })] = actions.as_slice() else {
+        let [Output(NewLayerShell { id, settings })] = actions.as_slice() else {
             panic!("expected one layer creation: {actions:?}");
         };
         assert_eq!(
@@ -271,9 +285,7 @@ mod tests {
             &NewLayerShellSettings {
                 size: LayerSize::fill_width(100),
                 layer: Layer::Top,
-                anchor: super::super::windowing::bar_anchor(
-                    crate::persistence::settings::BarAlignment::Bottom
-                ),
+                anchor: bar_anchor(BarAlignment::Bottom),
                 exclusive_zone: Some(100),
                 keyboard_interactivity: KeyboardInteractivity::OnDemand,
                 output_option: output,
@@ -294,133 +306,93 @@ mod tests {
 
     #[test]
     fn bar_waits_for_outputs_and_ignores_retired_window_events() {
-        use BarOutputEvent::{Added, Removed};
         let (_dir, mut app, initial) = app("{}");
-        idle(initial);
+        assert_actions!(initial, []);
         for output_id in 1..=3 {
             let id = layer(
                 output(&mut app, output_id, None, Added),
                 None,
                 OutputOption::Active,
             );
-            idle(output(&mut app, output_id, None, Added));
+            assert_actions!(output(&mut app, output_id, None, Added), []);
             if output_id % 2 == 0 {
-                idle(update(
-                    &mut app,
-                    Message::BarWindowOutput(id, Some(output_id)),
-                ));
+                assert_actions!(update(&mut app, BarWindowOutput(id, Some(output_id))), []);
             }
-            let removed = actions(output(&mut app, output_id, None, Removed));
-            assert!(
-                matches!(removed.as_slice(), [Action::Window(window::Action::Close(old))] if *old == id),
-                "{removed:?}"
-            );
-            idle(update(&mut app, Message::ShellWindowClosed(id)));
-            idle(update(&mut app, Message::WindowClosed(id)));
-            idle(update(
-                &mut app,
-                Message::BarWindowOutput(id, Some(output_id)),
-            ));
-            idle(update(&mut app, Message::Tick));
-            idle(output(&mut app, output_id, None, Removed));
+            assert_actions!(output(&mut app, output_id, None, Removed), [Window(Close(old))] if *old == id);
+            assert_actions!(update(&mut app, ShellWindowClosed(id)), []);
+            assert_actions!(update(&mut app, WindowClosed(id)), []);
+            assert_actions!(update(&mut app, BarWindowOutput(id, Some(output_id))), []);
+            assert_actions!(update(&mut app, Tick), []);
+            assert_actions!(output(&mut app, output_id, None, Removed), []);
         }
     }
 
     #[test]
     fn bar_closure_before_removal_waits_then_recovers_and_restores_selected_monitor() {
-        use BarOutputEvent::{Added, Removed};
         let (_dir, mut app, initial) = app(r#"{"bar":{"monitor":"HDMI"}}"#);
-        idle(initial);
+        assert_actions!(initial, []);
         let selected = || OutputOption::OutputName("HDMI".into());
         let first = layer(output(&mut app, 1, Some("HDMI"), Added), None, selected());
-        idle(output(&mut app, 2, Some("DP"), Added));
-        idle(update(&mut app, Message::BarWindowOutput(first, Some(1))));
+        assert_actions!(output(&mut app, 2, Some("DP"), Added), []);
+        assert_actions!(update(&mut app, BarWindowOutput(first, Some(1))), []);
         // A shell close is not an application quit, even before output removal arrives.
-        idle(update(&mut app, Message::ShellWindowClosed(first)));
-        idle(update(&mut app, Message::WindowClosed(first)));
-        idle(output(&mut app, 2, Some("DP"), Added));
-        idle(update(&mut app, Message::Tick));
+        assert_actions!(update(&mut app, ShellWindowClosed(first)), []);
+        assert_actions!(update(&mut app, WindowClosed(first)), []);
+        assert_actions!(output(&mut app, 2, Some("DP"), Added), []);
+        assert_actions!(update(&mut app, Tick), []);
         let fallback = layer(output(&mut app, 1, Some("HDMI"), Removed), None, selected());
-        idle(update(
-            &mut app,
-            Message::BarWindowOutput(fallback, Some(2)),
-        ));
+        assert_actions!(update(&mut app, BarWindowOutput(fallback, Some(2))), []);
         let restored = layer(
             output(&mut app, 3, Some("HDMI"), Added),
             Some(fallback),
             selected(),
         );
         assert_ne!(restored, fallback);
-        idle(update(&mut app, Message::ShellWindowClosed(fallback)));
-        idle(update(&mut app, Message::WindowClosed(fallback)));
+        assert_actions!(update(&mut app, ShellWindowClosed(fallback)), []);
+        assert_actions!(update(&mut app, WindowClosed(fallback)), []);
         assert_eq!(
             app.settings_handle.borrow().data.bar.monitor.as_deref(),
             Some("HDMI")
         );
         // Rejection before the first configure must not start a retry loop either.
-        idle(update(&mut app, Message::WindowClosed(restored)));
-        idle(update(&mut app, Message::ShellWindowClosed(restored)));
-        idle(update(
-            &mut app,
-            Message::BarWindowOutput(restored, Some(3)),
-        ));
-        idle(update(&mut app, Message::Tick));
-        idle(update(&mut app, Message::Quit));
-        assert!(matches!(
-            actions(update(&mut app, Message::Quit)).as_slice(),
-            [Action::Exit]
-        ));
+        assert_actions!(update(&mut app, WindowClosed(restored)), []);
+        assert_actions!(update(&mut app, ShellWindowClosed(restored)), []);
+        assert_actions!(update(&mut app, BarWindowOutput(restored, Some(3))), []);
+        assert_actions!(update(&mut app, Tick), []);
+        assert_actions!(update(&mut app, Quit), []);
+        assert_actions!(update(&mut app, Quit), [Exit]);
     }
 
     #[test]
     fn switching_to_bar_without_outputs_retires_only_the_previous_window() {
         let (_dir, mut app, initial) = app("{}");
-        idle(initial);
+        assert_actions!(initial, []);
         // The mode setting has changed, but the previous normal window still exists.
         let old = window::Id::unique();
         app.main_window = MainWindow::Window(old);
-        let retired = actions(app.handle_bar_config_change(BarChange::Mode));
-        assert!(
-            matches!(retired.as_slice(), [Action::Window(window::Action::Close(id))] if *id == old),
-            "{retired:?}"
-        );
-        idle(update(&mut app, Message::WindowClosed(old)));
-        idle(app.handle_bar_config_change(BarChange::Layout));
-        idle(app.recreate_visual_windows());
-        idle(update(&mut app, Message::BarResizeStart));
+        assert_actions!(app.handle_bar_config_change(BarChange::Mode), [Window(Close(id))] if *id == old);
+        assert_actions!(update(&mut app, WindowClosed(old)), []);
+        assert_actions!(app.handle_bar_config_change(BarChange::Layout), []);
+        assert_actions!(app.recreate_visual_windows(), []);
+        assert_actions!(update(&mut app, BarResizeStart), []);
         assert!(app.bar_resize_state.is_none());
-        let opened = actions(update(&mut app, Message::ToggleConfig));
-        let [Action::Output(Message::NewBaseWindow { id, .. })] = opened.as_slice() else {
-            panic!("expected a configuration window: {opened:?}");
-        };
-        idle(update(&mut app, Message::WindowClosed(*id)));
+        let id = base(update(&mut app, ToggleConfig));
+        assert_actions!(update(&mut app, WindowClosed(id)), []);
         assert!(app.config_window.is_none());
-        layer(
-            output(&mut app, 1, None, BarOutputEvent::Added),
-            None,
-            OutputOption::Active,
-        );
+        layer(output(&mut app, 1, None, Added), None, OutputOption::Active);
     }
 
     #[test]
     fn normal_window_closing_still_quits_without_outputs() {
         let (_dir, mut app, initial) = app(r#"{"bar":{"enabled":false}}"#);
-        let initial = actions(initial);
-        let [Action::Output(Message::NewBaseWindow { id, .. })] = initial.as_slice() else {
-            panic!("expected a normal window: {initial:?}");
-        };
-        let close = actions(update(&mut app, Message::WindowClosed(*id)));
-        assert!(matches!(close.as_slice(), [Action::Exit]), "{close:?}");
+        let id = base(initial);
+        assert_actions!(update(&mut app, WindowClosed(id)), [Exit]);
 
         // Switching out of bar mode must work even when its surface is absent.
         app.main_window = MainWindow::Bar(None);
-        let opened = actions(app.handle_bar_config_change(BarChange::Mode));
-        let [Action::Output(Message::NewBaseWindow { id: new_id, .. })] = opened.as_slice() else {
-            panic!("expected a replacement normal window: {opened:?}");
-        };
+        let new_id = base(app.handle_bar_config_change(BarChange::Mode));
         assert_ne!(new_id, id);
-        idle(update(&mut app, Message::WindowClosed(*id)));
-        let close = actions(update(&mut app, Message::WindowClosed(*new_id)));
-        assert!(matches!(close.as_slice(), [Action::Exit]), "{close:?}");
+        assert_actions!(update(&mut app, WindowClosed(id)), []);
+        assert_actions!(update(&mut app, WindowClosed(new_id)), [Exit]);
     }
 }
