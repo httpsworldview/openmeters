@@ -654,9 +654,9 @@ dependencies = [
 
 [[package]]
 name = "either"
-version = "1.18.0"
+version = "1.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "252afb9ae5eaa683babdc6a068b3f5726eb19e05070c731f9b2a23a7c3e8ed34"
+checksum = "0e9c71c2167ca323c882b99918929403426e2373ea17242ff5653e0d5e1058be"
 
 [[package]]
 name = "enumflags2"
@@ -1633,9 +1633,8 @@ dependencies = [
 [[package]]
 name = "khronos-egl"
 version = "6.0.0"
-source = "git+https://github.com/httpsworldview/khronos-egl#121fe6dfe336762ed3496bba9afbab2db613c903"
+source = "git+https://github.com/httpsworldview/khronos-egl#c8687d85ed8475dd1e37974d38f0051aaa1e84cf"
 dependencies = [
- "libc",
  "libloading",
  "pkg-config",
 ]
@@ -2258,7 +2257,7 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
 name = "openmeters"
-version = "1.15.2"
+version = "1.16.0"
 dependencies = [
  "async-channel",
  "bytemuck",
