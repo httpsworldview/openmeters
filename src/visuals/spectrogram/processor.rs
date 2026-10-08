@@ -427,6 +427,8 @@ impl SpectrogramProcessor {
 
         for i in 0..bin_count {
             let base = spectrum[i];
+	    // keep power calculations in f32 for performance. I'm
+	    // willing to accept possible overflow with finite input.
             let pow = base.re * base.re + base.im * base.im;
             let scaled_power = pow * self.bin_norm[i];
             if scaled_power < ANALYSIS_FLOOR_POWER {
