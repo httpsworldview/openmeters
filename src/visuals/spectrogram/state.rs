@@ -342,7 +342,7 @@ const ZOOM_STEP: f32 = 1.15;
 #[derive(Default)]
 struct InteractionState {
     modifiers: keyboard::Modifiers,
-    drag: Option<(f32, f32)>,
+    drag: Option<(mouse::Button, f32, f32)>,
     left_held: bool,
 }
 
@@ -669,7 +669,7 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'_> {
                 if st.left_held || st.drag.is_some() {
                     shell.request_redraw();
                 }
-                if let Some((origin, start_pan)) = st.drag {
+                if let Some((_, origin, start_pan)) = st.drag {
                     let mut state = this.state.borrow_mut();
                     let h = 0.5 / state.zoom;
                     let horiz = state.freq_axis_is_horizontal();
@@ -701,26 +701,30 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'_> {
                     shell.capture_event();
                 }
             }
-            iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Middle)) => {
+            iced::Event::Mouse(mouse::Event::ButtonPressed(button))
+                if *button == mouse::Button::Middle
+                    || (*button == mouse::Button::Left && st.modifiers.control()) => {
                 let state = this.state.borrow();
                 if let Some(pos) = cursor
                     .position()
-                    .filter(|p| b.contains(*p) && state.zoom > MIN_ZOOM)
+                    .filter(|p| b.contains(*p) && state.zoom > MIN_ZOOM && st.drag.is_none())
                 {
                     let origin = if state.freq_axis_is_horizontal() {
                         pos.x
                     } else {
                         pos.y
                     };
-                    st.drag = Some((origin, state.pan));
+                    st.left_held = false;
+                    st.drag = Some((*button, origin, state.pan));
                     shell.capture_event();
                 }
             }
-            iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Middle)) => {
+            iced::Event::Mouse(mouse::Event::ButtonReleased(button))
+                if st.drag.is_some_and(|(owner, ..)| owner == *button) => {
                 st.drag = None;
             }
             iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
-                if cursor.position().is_some_and(|position| b.contains(position)) => {
+                if st.drag.is_none() && cursor.position().is_some_and(|position| b.contains(position)) => {
                     st.left_held = true;
                     shell.request_redraw();
                 }

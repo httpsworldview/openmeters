@@ -8,7 +8,7 @@
 use iced::advanced::renderer::Quad;
 use iced::advanced::widget::{self, tree::Tree};
 use iced::advanced::{Layout, Renderer as _, Shell, Widget, layout, mouse};
-use iced::{Background, Element, Event, Length, Point, Rectangle, Size};
+use iced::{Background, Element, Event, Length, Point, Rectangle, Size, keyboard};
 
 use crate::domain::visuals::VisualKind;
 use crate::util::color::with_alpha;
@@ -31,6 +31,7 @@ struct Interaction {
     dragging: Option<(Pane, Point, f32)>,
     resizing: Option<ResizeState>,
     cursor_over: Option<Pane>,
+    modifiers: keyboard::Modifiers,
 }
 
 pub type ResizeWidths = Vec<(Pane, f32)>;
@@ -197,6 +198,10 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer> for PaneGrid
 
     crate::macros::widget_method!(update Message; this; tree, event, layout, cursor, renderer, clipboard, shell, viewport => {
         let interaction = tree.state.downcast_mut::<Interaction>();
+        if let Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) = event {
+            interaction.modifiers = *modifiers;
+            shell.request_redraw();
+        }
         if let Event::Mouse(event) = event
             && (this.update_resize(interaction, event, shell)
                 || this.update_interaction(interaction, event, layout, cursor, shell))
@@ -242,21 +247,11 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer> for PaneGrid
         if interaction.dragging.is_some() {
             return mouse::Interaction::Grabbing;
         }
-        if interaction.resizing.is_some()
-            || cursor
-                .position()
-                .is_some_and(|p| self.divider_at(layout, p).is_some())
-        {
+        if interaction.resizing.is_some() {
             return mouse::Interaction::ResizingHorizontally;
         }
-        if self.on_drag.is_some()
-            && cursor
-                .position()
-                .is_some_and(|p| self.pane_at(layout, p).is_some())
-        {
-            return mouse::Interaction::Grab;
-        }
-        self.entries
+        let child_interaction = self
+            .entries
             .iter()
             .zip(&tree.children)
             .zip(layout.children())
@@ -270,7 +265,25 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer> for PaneGrid
                 )
             })
             .max()
-            .unwrap_or_default()
+            .unwrap_or_default();
+        if child_interaction == mouse::Interaction::Grabbing {
+            return child_interaction;
+        }
+        if cursor
+            .position()
+            .is_some_and(|p| self.divider_at(layout, p).is_some())
+        {
+            return mouse::Interaction::ResizingHorizontally;
+        }
+        if self.on_drag.is_some()
+            && cursor
+                .position()
+                .and_then(|p| self.pane_at(layout, p))
+                .is_some_and(|pane| pane != Pane::Spectrogram || !interaction.modifiers.control())
+        {
+            return mouse::Interaction::Grab;
+        }
+        child_interaction
     }
 
     crate::macros::widget_method!(draw this; tree, renderer, theme, defaults, layout, cursor, viewport => {
@@ -417,6 +430,7 @@ impl<'a, Message: 'a> PaneGrid<'a, Message> {
             }
             if self.on_drag.is_some()
                 && let Some(pane) = self.pane_at(layout, position)
+                && !(pane == Pane::Spectrogram && interaction.modifiers.control())
             {
                 interaction.dragging = Some((pane, position, position.x));
                 shell.capture_event();

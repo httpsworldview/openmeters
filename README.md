@@ -205,7 +205,7 @@ Fedora, and tarball artifacts.
 | --- | --- |
 | left click+hold | Show the crosshair and frequency/note/time tooltip; highlight the corresponding piano key in yellow. |
 | `ctrl+scroll up/down` | Zoom the frequency axis. |
-| `middle click+drag` | Pan the frequency axis. |
+| `middle click+drag` or `ctrl+left click+drag` | Pan the frequency axis while zoomed in. |
 
 ## Configuration
 
