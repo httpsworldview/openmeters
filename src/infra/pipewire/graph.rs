@@ -386,27 +386,23 @@ impl Graph {
         type_hint: Option<&str>,
         value: Option<&str>,
     ) {
+        let same_entry =
+            |target: &mut Target| target.metadata_id == metadata_id && target.subject == subject;
         let Some(key) = key else {
-            let _ = self
-                .default_sink
-                .take_if(|target| target.metadata_id == metadata_id && target.subject == subject);
+            let _ = self.default_sink.take_if(same_entry);
             return;
         };
         if key != "default.audio.sink" {
             return;
         }
-        let slot = &mut self.default_sink;
         if let Some(value) = value {
-            *slot = Some(Target {
+            self.default_sink = Some(Target {
                 metadata_id,
                 subject,
                 node_id: (subject != 0).then_some(subject),
                 name: metadata_name(type_hint, value).map(Arc::from),
             });
-        } else if slot
-            .take_if(|target| target.metadata_id == metadata_id && target.subject == subject)
-            .is_none()
-        {
+        } else if self.default_sink.take_if(same_entry).is_none() {
             return;
         }
         self.reconcile_targets();

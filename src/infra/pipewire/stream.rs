@@ -64,13 +64,7 @@ impl TapStream {
         writer.publish_format(layout.len(), DEFAULT_SAMPLE_RATE as u32, positions);
         writer.set_status(StreamStatus::Starting);
         drop(writer);
-        let session = Session::new(
-            self.core.clone(),
-            Rc::clone(&self.writer),
-            &self.node_name,
-            &config,
-            Rc::clone(&self.dirty),
-        )?;
+        let session = Session::new(self, &config)?;
         self.writer.borrow().mark_reconnect();
         self.active = Some((session, config));
         Ok(())
@@ -107,20 +101,14 @@ struct Session {
 }
 
 impl Session {
-    fn new(
-        core: pw::core::CoreRc,
-        writer: Rc<RefCell<CaptureWriter>>,
-        node_name: &str,
-        config: &StreamConfig,
-        dirty: Rc<Cell<bool>>,
-    ) -> Result<Self, DynError> {
+    fn new(tap: &TapStream, config: &StreamConfig) -> Result<Self, DynError> {
         let boolean = |value| if value { "true" } else { "false" };
         let mut props = properties! {
             *pw::keys::MEDIA_CLASS => "Stream/Input/Audio",
             *pw::keys::MEDIA_TYPE => "Audio",
             *pw::keys::MEDIA_CATEGORY => "Capture",
             *pw::keys::MEDIA_ROLE => "Production",
-            *pw::keys::NODE_NAME => node_name,
+            *pw::keys::NODE_NAME => tap.node_name.as_str(),
             *pw::keys::NODE_DESCRIPTION => DESCRIPTION,
             *pw::keys::NODE_VIRTUAL => "true",
             *pw::keys::NODE_LATENCY => format!("{LATENCY_FRAMES}/{}", DEFAULT_SAMPLE_RATE as u32),
@@ -137,11 +125,11 @@ impl Session {
             props.insert(*pw::keys::STREAM_CAPTURE_SINK, boolean(config.passive));
         }
 
-        let stream = pw::stream::StreamRc::new(core, DESCRIPTION, props)?;
-        let state_dirty = Rc::clone(&dirty);
-        let format_dirty = dirty;
+        let stream = pw::stream::StreamRc::new(tap.core.clone(), DESCRIPTION, props)?;
+        let state_dirty = Rc::clone(&tap.dirty);
+        let format_dirty = Rc::clone(&tap.dirty);
         let listener = stream
-            .add_local_listener_with_user_data(writer)
+            .add_local_listener_with_user_data(Rc::clone(&tap.writer))
             .state_changed(move |_, writer, old, new| {
                 let status = match &new {
                     pw::stream::StreamState::Streaming => StreamStatus::Streaming,

@@ -94,13 +94,8 @@ pub(super) fn run(
     let mut outage = false;
     loop {
         writer.borrow_mut().set_status(StreamStatus::Starting);
-        let Err(err) = run_session(
-            &commands,
-            &mut config,
-            Rc::clone(&writer),
-            &public,
-            socket.as_deref(),
-        ) else {
+        let Err(err) = run_session(&commands, &mut config, &writer, &public, socket.as_deref())
+        else {
             break;
         };
 
@@ -133,7 +128,7 @@ pub(super) fn run(
 fn run_session(
     commands: &mpsc::Receiver<Command>,
     config: &mut CaptureConfig,
-    writer: Rc<RefCell<CaptureWriter>>,
+    writer: &Rc<RefCell<CaptureWriter>>,
     public: &PublicState,
     socket: Option<&Path>,
 ) -> Result<(), DynError> {
@@ -189,7 +184,7 @@ fn run_session(
             .register()
     };
 
-    let mut capture = CaptureState::new(core, Rc::clone(&writer), dirty);
+    let mut capture = CaptureState::new(core, Rc::clone(writer), dirty);
     let mut errors = 0u32;
 
     info!("[pipewire] backend session starting");

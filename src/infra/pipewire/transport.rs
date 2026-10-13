@@ -454,14 +454,10 @@ impl CaptureWriter {
             return false;
         }
         if self.pending.is_none() {
-            let samples = if pcm {
-                let Some(samples) = self.take_samples() else {
-                    return false;
-                };
-                Some(samples)
-            } else {
-                None
-            };
+            let samples = if pcm { self.take_samples() } else { None };
+            if pcm && samples.is_none() {
+                return false;
+            }
             self.pending = Some(Packet {
                 samples,
                 frames: 0,
@@ -671,8 +667,7 @@ impl AudioReader {
         if self.shared.ingest.swap(next as u8, Ordering::AcqRel) == next as u8 {
             return false;
         }
-        self.shared.activity_epoch.fetch_add(1, Ordering::AcqRel);
-        self.reset_timeline(self.shared.now_ns());
+        self.discard(Instant::now());
         true
     }
 
