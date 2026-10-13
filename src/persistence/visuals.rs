@@ -20,7 +20,7 @@ use crate::visuals::{
     waveform::processor::{DEFAULT_BAND_DB_FLOOR, WaveformConfig},
 };
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use tracing::warn;
 
@@ -50,34 +50,31 @@ crate::macros::default_struct! {
 
 impl VisualSettings {
     pub(super) fn from_value_lossy(value: Value) -> Self {
-        lossy::settings(value, "visuals", Self::default(), |map, out| {
-            if let Some(value) = map.remove("modules") {
-                visual_map(
-                    value,
-                    "visuals.modules",
-                    &mut out.modules,
-                    ModuleSettings::from_value_lossy,
-                );
-            }
+        lossy::settings::<Self>(value, "visuals", |map, out| {
+            visual_map(
+                map,
+                "modules",
+                "visuals.modules",
+                &mut out.modules,
+                ModuleSettings::from_value_lossy,
+            );
             if let Some(value) = map.remove("order") {
                 out.order = visual_order(value);
             }
-            if let Some(value) = map.remove("width_basis") {
-                visual_map(
-                    value,
-                    "visuals.width_basis",
-                    &mut out.width_basis,
-                    |_, value, scope| width_basis(value, scope),
-                );
-            }
-            if let Some(value) = map.remove("popouts") {
-                visual_map(
-                    value,
-                    "visuals.popouts",
-                    &mut out.popouts,
-                    |_, value, scope| popout_window(value, scope),
-                );
-            }
+            visual_map(
+                map,
+                "width_basis",
+                "visuals.width_basis",
+                &mut out.width_basis,
+                width_basis,
+            );
+            visual_map(
+                map,
+                "popouts",
+                "visuals.popouts",
+                &mut out.popouts,
+                popout_window,
+            );
         })
     }
 
@@ -104,11 +101,15 @@ impl VisualSettings {
 }
 
 fn visual_map<T>(
-    value: Value,
+    map: &mut Map<String, Value>,
+    key: &str,
     scope: &str,
     out: &mut BTreeMap<VisualKind, T>,
     mut parse: impl FnMut(VisualKind, Value, &str) -> Option<T>,
 ) {
+    let Some(value) = map.remove(key) else {
+        return;
+    };
     let Some(map) = lossy::object(value, scope) else {
         return;
     };
@@ -133,7 +134,7 @@ fn visual_order(value: Value) -> Vec<VisualKind> {
         .collect()
 }
 
-fn width_basis(value: Value, scope: &str) -> Option<f32> {
+fn width_basis(_: VisualKind, value: Value, scope: &str) -> Option<f32> {
     let basis: f32 = lossy::value(value, scope)?;
     crate::util::finite_positive(basis).or_else(|| {
         warn!("[settings] invalid {scope}: must be finite and greater than zero");
@@ -141,7 +142,7 @@ fn width_basis(value: Value, scope: &str) -> Option<f32> {
     })
 }
 
-fn popout_window(value: Value, scope: &str) -> Option<PopoutWindowSettings> {
+fn popout_window(_: VisualKind, value: Value, scope: &str) -> Option<PopoutWindowSettings> {
     let mut map = lossy::object(value, scope)?;
     let mut out = PopoutWindowSettings::default();
     lossy::fields!(&mut map, &mut out, scope; width, height, popped_out);
@@ -265,7 +266,7 @@ macro_rules! visual_settings {
         }
         impl $name {
             fn from_value_lossy(value: Value, scope: &str) -> Self {
-                lossy::settings(value, scope, Self::default(), |map, out| {
+                lossy::settings::<Self>(value, scope, |map, out| {
                     lossy::fields!(map, out, scope; $($field,)* palette);
                 })
             }

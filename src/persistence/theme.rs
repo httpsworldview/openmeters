@@ -64,11 +64,10 @@ impl ThemeStore {
             choices.extend(entries.flatten().filter_map(|entry| {
                 let path = entry.path();
                 let stem = path.file_stem()?.to_str()?;
-                (path.extension().is_some_and(|e| e == "json") && stem != BUILTIN_THEME).then(
-                    || ThemeChoice {
-                        name: stem.to_owned(),
-                    },
-                )
+                let json = path.extension().is_some_and(|e| e == "json");
+                (json && stem != BUILTIN_THEME).then(|| ThemeChoice {
+                    name: stem.to_owned(),
+                })
             }));
         }
         choices.sort_by_cached_key(|choice| {
@@ -104,17 +103,10 @@ impl ThemeStore {
     }
 
     pub(super) fn next_auto_name(&self) -> String {
-        let mut i = 1_u64;
-        loop {
-            let name = match i {
-                1 => AUTO_THEME_BASE.to_owned(),
-                _ => format!("{AUTO_THEME_BASE}-{i}"),
-            };
-            if !self.theme_path(&name).exists() {
-                return name;
-            }
-            i += 1;
-        }
+        std::iter::once(AUTO_THEME_BASE.to_owned())
+            .chain((2_u64..).map(|i| format!("{AUTO_THEME_BASE}-{i}")))
+            .find(|name| !self.theme_path(name).exists())
+            .expect("auto theme names are unbounded")
     }
 
     fn theme_path(&self, name: &str) -> PathBuf {

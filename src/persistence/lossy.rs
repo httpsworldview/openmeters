@@ -6,20 +6,19 @@ use serde_json::{Map, Value};
 use tracing::warn;
 
 pub(super) fn object(value: Value, scope: &str) -> Option<Map<String, Value>> {
-    if let Value::Object(map) = value {
-        Some(map)
-    } else {
+    let Value::Object(map) = value else {
         warn!("[settings] {scope} must be an object");
-        None
-    }
+        return None;
+    };
+    Some(map)
 }
 
-pub(super) fn settings<T>(
+pub(super) fn settings<T: Default>(
     value: Value,
     scope: &str,
-    mut out: T,
     f: impl FnOnce(&mut Map<String, Value>, &mut T),
 ) -> T {
+    let mut out = T::default();
     if let Some(mut map) = object(value, scope) {
         f(&mut map, &mut out);
         unknown(scope, &map);

@@ -89,22 +89,18 @@ impl UiSettings {
     }
 
     fn from_value_lossy(value: serde_json::Value) -> Self {
-        lossy::settings(value, "settings", Self::default(), |map, out| {
+        lossy::settings::<Self>(value, "settings", |map, out| {
             if let Some(value) = map.remove("visuals") {
                 out.visuals = VisualSettings::from_value_lossy(value);
             }
             if let Some(value) = map.remove("main_window") {
-                out.main_window = lossy::settings(
-                    value,
-                    "main_window",
-                    MainWindowSettings::default(),
-                    |map, out| {
+                out.main_window =
+                    lossy::settings::<MainWindowSettings>(value, "main_window", |map, out| {
                         lossy::fields!(map, out, "main_window"; width, height);
-                    },
-                );
+                    });
             }
             if let Some(value) = map.remove("bar") {
-                out.bar = lossy::settings(value, "bar", BarSettings::default(), |map, out| {
+                out.bar = lossy::settings::<BarSettings>(value, "bar", |map, out| {
                     lossy::fields!(map, out, "bar"; enabled, alignment, height, monitor);
                     out.monitor = out.monitor.take().filter(|name| !name.is_empty());
                 });
