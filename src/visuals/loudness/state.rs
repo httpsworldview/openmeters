@@ -72,13 +72,11 @@ pub(crate) struct LoudnessState {
 
 impl Default for LoudnessState {
     fn default() -> Self {
-        let snapshot = LoudnessSnapshot::with_floor(DB_RANGE.0, 2);
-        let peak = PeakHold::new(DB_RANGE.0, Instant::now());
         let mut state = Self {
-            snapshot,
+            snapshot: LoudnessSnapshot::with_floor(DB_RANGE.0, 2),
             settings: LoudnessSettings::default(),
             palette: palettes::loudness::COLORS,
-            peaks: [peak; VISIBLE_METER_COUNT],
+            peaks: [PeakHold::new(DB_RANGE.0, Instant::now()); VISIBLE_METER_COUNT],
             guide_labels: GUIDE_LABELS.map(|label| {
                 let mut text = raw_text(label, 10.0, Size::new(LEFT_PADDING, GUIDE_LABEL_HEIGHT));
                 text.align_x = Horizontal::Right.into();
@@ -222,9 +220,8 @@ impl LoudnessState {
 
     fn update_peak_holds(&mut self, now: Instant) {
         let values = self.visible_values();
-        let (min, max) = DB_RANGE;
         for (peak, value) in self.peaks.iter_mut().zip(values) {
-            peak.update(value.clamp(min, max), now);
+            peak.update(value.clamp(DB_RANGE.0, DB_RANGE.1), now);
         }
     }
 }

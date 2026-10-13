@@ -133,33 +133,35 @@ impl WaveformState {
             self.view_columns.set(needed);
         }
 
-        let (lanes, selected_channels) = self.selected_lanes();
-        let channel_height = bounds.height / selected_channels.max(1) as f32;
-        lanes
+        let lanes = [self.settings.channel_1, self.settings.channel_2]
             .into_iter()
-            .take(selected_channels)
-            .enumerate()
-            .filter_map(move |(ch, lane)| {
-                let bounds = bounds.intersection(&iced::Rectangle {
-                    y: bounds.y + ch as f32 * channel_height,
-                    height: channel_height,
-                    ..bounds
-                })?;
-                Some(WaveformParams {
-                    bounds,
-                    lane,
-                    data: Arc::clone(&self.data),
-                    preview: WaveformPreview {
-                        progress: scroll_offset,
-                        ..self.preview
-                    },
-                    color_mode: self.settings.color_mode,
-                    history_mode: self.settings.history_mode,
-                    band_db_floor: self.settings.band_db_floor,
-                    palette: self.palette.map(color_to_rgba),
-                    key: self.keys[ch],
-                })
+            .filter_map(|channel| {
+                WAVEFORM_CHANNELS
+                    .iter()
+                    .position(|&source| source == channel)
+            });
+        let channel_height = bounds.height / lanes.clone().count().max(1) as f32;
+        lanes.enumerate().filter_map(move |(ch, lane)| {
+            let bounds = bounds.intersection(&iced::Rectangle {
+                y: bounds.y + ch as f32 * channel_height,
+                height: channel_height,
+                ..bounds
+            })?;
+            Some(WaveformParams {
+                bounds,
+                lane,
+                data: Arc::clone(&self.data),
+                preview: WaveformPreview {
+                    progress: scroll_offset,
+                    ..self.preview
+                },
+                color_mode: self.settings.color_mode,
+                history_mode: self.settings.history_mode,
+                band_db_floor: self.settings.band_db_floor,
+                palette: self.palette.map(color_to_rgba),
+                key: self.keys[ch],
             })
+        })
     }
 
     fn configure_ring(data: &mut VecDeque<WaveFrame>, max_columns: usize, reset: bool) {
@@ -172,23 +174,6 @@ impl WaveformState {
         } else if data.capacity() > max_columns.saturating_mul(2) {
             data.shrink_to(max_columns);
         }
-    }
-
-    fn selected_lanes(&self) -> ([usize; 2], usize) {
-        let mut lanes = [0; 2];
-        let mut len = 0;
-        for lane in [self.settings.channel_1, self.settings.channel_2]
-            .into_iter()
-            .filter_map(|channel| {
-                WAVEFORM_CHANNELS
-                    .iter()
-                    .position(|&source| source == channel)
-            })
-        {
-            lanes[len] = lane;
-            len += 1;
-        }
-        (lanes, len)
     }
 }
 

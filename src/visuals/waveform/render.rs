@@ -100,36 +100,32 @@ fn sample_y_span(center_y: f32, amplitude_scale: f32, min: f32, max: f32) -> Opt
 
 impl WaveformParams {
     fn build_vertices(&self, scratch: &mut GeometryScratch) {
-        let params = self;
-        let data = crate::util::unpoison(params.data.lock());
-        let columns = ((params.bounds.width / COLUMN_WIDTH_PIXELS).ceil() as usize)
+        let data = crate::util::unpoison(self.data.lock());
+        let columns = ((self.bounds.width / COLUMN_WIDTH_PIXELS).ceil() as usize)
             .clamp(1, MAX_COLUMN_CAPACITY)
             .min(data.len());
         let start = data.len().saturating_sub(columns);
-        let preview_columns = params
-            .preview
-            .columns
-            .filter(|_| params.preview.progress > 0.0);
+        let preview_columns = self.preview.columns.filter(|_| self.preview.progress > 0.0);
 
-        let clip = ClipTransform::from_bounds(params.bounds);
+        let clip = ClipTransform::from_bounds(self.bounds);
         let col_width = COLUMN_WIDTH_PIXELS;
-        let right_edge = params.bounds.x + params.bounds.width;
+        let right_edge = self.bounds.x + self.bounds.width;
 
-        let center_y = params.bounds.center_y();
-        let amplitude_scale = params.bounds.height * 0.5;
-        let history = match params.history_mode {
+        let center_y = self.bounds.center_y();
+        let amplitude_scale = self.bounds.height * 0.5;
+        let history = match self.history_mode {
             WaveformHistoryMode::Off => None,
             WaveformHistoryMode::RmsFast => Some(0),
             WaveformHistoryMode::RmsSlow => Some(1),
         }
         .filter(|_| columns >= 2);
-        let floor = sanitize_negative_db(params.band_db_floor, DEFAULT_BAND_DB_FLOOR);
+        let floor = sanitize_negative_db(self.band_db_floor, DEFAULT_BAND_DB_FLOOR);
 
         let vertices = &mut scratch.instances;
         vertices.reserve(columns + 1 + usize::from(history.is_some()) * NUM_BANDS * columns * 2);
 
         let scroll_offset = if preview_columns.is_some() {
-            params.preview.progress * col_width
+            self.preview.progress * col_width
         } else {
             0.0
         };
@@ -141,28 +137,28 @@ impl WaveformParams {
         let push_column = |vertices: &mut Vec<_>, x0, x1, column: WaveColumn| {
             if let Some((y0, y1)) = sample_y_span(center_y, amplitude_scale, column.min, column.max)
             {
-                let color = params.column_color(column);
+                let color = self.column_color(column);
                 vertices.push(quad_instance(x0, y0, x1, y1, clip, color));
             }
         };
 
         for (i, frame) in data.range(start..start + columns).enumerate() {
-            let column = frame[params.lane];
+            let column = frame[self.lane];
             let x = column_x(i);
             push_column(vertices, x, x + col_width, column);
         }
 
         if let Some(preview_columns) = preview_columns {
             let start_x = right_edge - scroll_offset;
-            push_column(vertices, start_x, right_edge, preview_columns[params.lane]);
+            push_column(vertices, start_x, right_edge, preview_columns[self.lane]);
         }
 
         if let Some(history) = history {
             // Put the floor, including its antialias fringe, below the lane's clip edge.
-            let band_height = params.bounds.height + BAND_LINE_WIDTH * 0.5 + 1.0;
-            let baseline = params.bounds.y + band_height;
+            let band_height = self.bounds.height + BAND_LINE_WIDTH * 0.5 + 1.0;
+            let baseline = self.bounds.y + band_height;
             let pts = &mut scratch.points;
-            for (band, &color) in params.palette.iter().enumerate() {
+            for (band, &color) in self.palette.iter().enumerate() {
                 let fill_color = rgba_with_alpha(color, color[3] * BAND_FILL_ALPHA);
 
                 pts.clear();
@@ -171,7 +167,7 @@ impl WaveformParams {
                     data.range(start..start + columns)
                         .enumerate()
                         .map(|(i, frame)| {
-                            let column = frame[params.lane];
+                            let column = frame[self.lane];
                             let db = column.rms_db[history][band];
                             let level = ((db - floor) / -floor).clamp(0.0, 1.0);
                             (column_x(i), baseline - level * band_height)

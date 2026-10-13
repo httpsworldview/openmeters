@@ -216,10 +216,10 @@ impl SpectrogramProcessor {
         self.fft_size = window_size * self.config.zero_padding_factor;
         let hilbert_len = Self::hilbert_len_for(window_size);
         let use_reassignment = self.config.use_reassignment;
-        let active_len = if use_reassignment {
-            hilbert_len
+        let (active_len, complex_len) = if use_reassignment {
+            (hilbert_len, hilbert_len)
         } else {
-            self.fft_size
+            (self.fft_size, self.fft_size / 2 + 1)
         };
         let mut planner = FftPlanner::new();
         let transforms = if use_reassignment {
@@ -232,13 +232,7 @@ impl SpectrogramProcessor {
             Transforms::Classic(RealFftPlanner::new().plan_fft_forward(self.fft_size))
         };
         self.window = window_coefficients(self.config.window, window_size);
-        let bin_count = self.fft_size / 2 + 1;
         let classic_len = if use_reassignment { 0 } else { self.fft_size };
-        let complex_len = if use_reassignment {
-            hilbert_len
-        } else {
-            bin_count
-        };
         resize_trim(&mut self.real, classic_len, 0.0);
         resize_trim(&mut self.complex, complex_len, Complex32::ZERO);
         let scratch_len = match &transforms {
@@ -286,11 +280,9 @@ impl SpectrogramProcessor {
             };
 
         let pending = self.audio_buffer.len();
-        let ready = if pending >= read_len {
-            (pending - read_len) / hop_size + 1
-        } else {
-            0
-        };
+        let ready = pending
+            .checked_sub(read_len)
+            .map_or(0, |extra| extra / hop_size + 1);
         let retained = history_columns(kind, bin_count as u32, self.config.history_length);
         let skip = ready.saturating_sub(retained);
         let mut output = Vec::with_capacity(ready.min(retained));

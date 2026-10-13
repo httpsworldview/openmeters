@@ -172,14 +172,12 @@ visuals! {
         prepare(prepare);
         buffered_signal(has_buffered_signal);
         pre_ingest(p, s) {
-            let vw = { s.borrow().view_width };
-            if vw > 0 {
-                let mut cfg = p.config();
-                let tw = (vw as usize).min(MAX_SPECTROGRAM_HISTORY_COLUMNS);
-                if cfg.history_length != tw {
-                    cfg.history_length = tw;
-                    p.update_config(cfg);
-                }
+            let view_width = s.borrow().view_width;
+            let history_length = (view_width as usize).min(MAX_SPECTROGRAM_HISTORY_COLUMNS);
+            let mut cfg = p.config();
+            if view_width > 0 && cfg.history_length != history_length {
+                cfg.history_length = history_length;
+                p.update_config(cfg);
             }
         };
         config(cfg);

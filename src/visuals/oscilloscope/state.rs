@@ -4,7 +4,7 @@
 use super::processor::{OscilloscopeSnapshot, TRACE_COUNT};
 use super::render::OscilloscopeParams;
 use crate::persistence::settings::OscilloscopeSettings;
-use crate::util::{audio::Channel, color::color_to_rgba};
+use crate::util::{audio::Channel, color::color_to_rgba, finite_or};
 use crate::visuals::palettes;
 use iced::Color;
 use std::sync::Arc;
@@ -28,12 +28,9 @@ impl OscilloscopeState {
     }
 
     pub fn update_view_settings(&mut self, settings: &OscilloscopeSettings, reset_snapshot: bool) {
+        let default = OscilloscopeSettings::default().persistence;
         self.settings = settings.clone();
-        self.settings.persistence = if settings.persistence.is_finite() {
-            settings.persistence.clamp(0.0, 1.0)
-        } else {
-            OscilloscopeSettings::default().persistence
-        };
+        self.settings.persistence = finite_or(settings.persistence, default).clamp(0.0, 1.0);
         if reset_snapshot {
             self.snapshot = OscilloscopeSnapshot::default();
         }

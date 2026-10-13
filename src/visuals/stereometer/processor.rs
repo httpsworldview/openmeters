@@ -144,11 +144,7 @@ impl StereometerProcessor {
             .round()
             .max(1.0)
             .min(MAX_DSP_BUFFER_LEN as f32) as usize;
-        let history_count = if self.config.emit_band_points {
-            BAND_COUNT + 1
-        } else {
-            1
-        };
+        let history_count = 1 + BAND_COUNT * usize::from(self.config.emit_band_points);
         for history in &mut self.histories[..history_count] {
             history.drain(..history.len().saturating_sub(frames));
         }

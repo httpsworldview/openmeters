@@ -351,10 +351,8 @@ impl SpectrogramState {
     }
 
     fn zoom_at(&mut self, y_norm: f32, factor: f32) {
-        let (old_h, old_min) = (
-            0.5 / self.zoom,
-            (self.pan - 0.5 / self.zoom).clamp(0.0, 1.0),
-        );
+        let old_h = 0.5 / self.zoom;
+        let old_min = (self.pan - old_h).clamp(0.0, 1.0);
         let cursor_uv = old_min + y_norm * 2.0 * old_h;
         self.zoom = (self.zoom * factor).clamp(MIN_ZOOM, f32::MAX);
         let new_h = 0.5 / self.zoom;
@@ -569,25 +567,19 @@ impl Spectrogram<'_> {
         let roll_width = PIANO_ROLL_WIDTH.min(time_ext);
         let black_width = roll_width * PIANO_BLACK_KEY_RATIO;
         let strip_width = PIANO_STRIP_WIDTH.min(time_ext);
-        let strip = if overlay == PianoRollOverlay::Left {
-            time_org
-        } else {
-            time_org + time_ext - roll_width
-        };
         let right = overlay == PianoRollOverlay::Right;
-        let (backing, tooltip) = if right {
-            (time_org + time_ext - strip_width, time_org)
+        let (strip, backing, tooltip) = if right {
+            let end = time_org + time_ext;
+            (end - roll_width, end - strip_width, time_org)
         } else {
-            (time_org, time_org + strip_width)
+            (time_org, time_org, time_org + strip_width)
         };
         let selected = cursor
             .and_then(|c| state.frequency_at_cursor(c, bounds, uv_range))
             .and_then(MusicalNote::from_frequency);
         let pal = theme.extended_palette();
-        let (white, black) = (
-            lerp_color(pal.background.weak.color, Color::WHITE, 0.5),
-            Color::from_rgb(0.1, 0.1, 0.1),
-        );
+        let white = lerp_color(pal.background.weak.color, Color::WHITE, 0.5);
+        let black = Color::from_rgb(0.1, 0.1, 0.1);
         let borderless = iced::Border::default();
         let white_border = iced::border::color(with_alpha(black, 0.4)).width(0.5);
         fill_rect(
@@ -739,15 +731,12 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'_> {
         let (uv_y_range, piano_roll, params);
         {
             let mut state = this.state.borrow_mut();
-            let (bw, bh) = (
-                bounds.width.round().max(1.0) as u32,
-                bounds.height.round().max(1.0) as u32,
-            );
-            state.view_width = if matches!(state.rotation_index(), 1 | 3) {
-                bh
+            let time_extent = if state.freq_axis_is_horizontal() {
+                bounds.height
             } else {
-                bw
+                bounds.width
             };
+            state.view_width = time_extent.round().max(1.0) as u32;
             uv_y_range = state.uv_y_range();
             piano_roll = state.settings.piano_roll_overlay;
             params = state.visual_params(bounds, uv_y_range);

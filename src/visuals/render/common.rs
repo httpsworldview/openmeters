@@ -337,22 +337,18 @@ pub fn decimate_finite_ordered_line_in_place(pts: &mut Vec<(f32, f32)>, max_poin
             .all(|point| point.0.is_finite() && point.1.is_finite())
     );
     debug_assert!(pts.windows(2).all(|window| window[0].0 <= window[1].0));
-    if max_points < 2 {
+    if max_points < 2 || pts.len() <= 1 {
         pts.truncate(max_points);
-        return;
-    }
-    if pts.len() <= 1 {
         return;
     }
 
     let last = pts[pts.len() - 1];
     let (x0, width) = (pts[0].0, last.0 - pts[0].0);
-    let (buckets, bucket_scale, bucket_width) = crate::util::finite_positive(width)
-        .map(|width| {
+    let (buckets, bucket_scale, bucket_width) =
+        crate::util::finite_positive(width).map_or((1, 0.0, 0.0), |width| {
             let buckets = (max_points / 2).min(width.ceil().max(1.0) as usize);
             (buckets, buckets as f32 / width, width / buckets as f32)
-        })
-        .unwrap_or((1, 0.0, 0.0));
+        });
     let (mut read, mut out, mut groups) = (0, 0, 0);
 
     while read < pts.len() {
@@ -556,15 +552,13 @@ pub struct SdfPipeline<const REPLACE: bool = false> {
 impl<const REPLACE: bool> SdfPipeline<REPLACE> {
     pub fn prepare_required(&mut self, key: u64, fingerprint: Option<GeometryFingerprint>) -> bool {
         let (frame, threshold) = self.cache.advance();
-        let current = fingerprint.is_some_and(|fingerprint| {
-            self.instances.get_mut(&key).is_some_and(|entry| {
-                let current = entry.fingerprint == Some(fingerprint);
-                if current {
-                    entry.last_used = frame;
-                }
-                current
-            })
-        });
+        let current = match fingerprint.and_then(|_| self.instances.get_mut(&key)) {
+            Some(entry) if entry.fingerprint == fingerprint => {
+                entry.last_used = frame;
+                true
+            }
+            _ => false,
+        };
         if let Some(threshold) = threshold {
             self.instances
                 .retain(|_, entry| entry.last_used >= threshold);

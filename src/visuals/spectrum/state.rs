@@ -222,16 +222,17 @@ impl SpectrumState {
             return;
         }
 
-        let axis = GridAxis::new(bounds, range, &self.style);
+        let style = &self.style;
         let label_y = bounds.y + GRID_LABEL_GAP;
         let min_label_x = bounds.x + GRID_LABEL_GAP;
         let ticks = &self.grid_ticks;
         let labels = &mut self.grid_labels;
+        let tick_x = grid_tick_x(bounds, range, style);
         let mut layout_tick = |(tick_index, tick): (usize, &GridTick)| {
             let (frequency, major, Some(text)) = tick else {
                 return;
             };
-            let Some(x) = axis.tick_x(*frequency) else {
+            let Some(x) = tick_x(*frequency) else {
                 return;
             };
             let text_bounds = text.min_bounds();
@@ -259,7 +260,7 @@ impl SpectrumState {
                 bounds: Rectangle::new(Point::new(label_x, label_y), label_size),
             });
         };
-        if axis.reverse {
+        if style.reverse_frequency {
             ticks.iter().enumerate().rev().for_each(&mut layout_tick);
         } else {
             ticks.iter().enumerate().for_each(layout_tick);
@@ -281,13 +282,7 @@ impl SpectrumState {
             return None;
         }
         let (f, m) = interpolated_peak(bins, db, bin);
-        let t = self.style.frequency_scale.pos_of(min_f, max_f, f);
-        let x = if self.style.reverse_frequency {
-            1.0 - t
-        } else {
-            t
-        }
-        .clamp(0.0, 1.0);
+        let x = view_x(&self.style, (min_f, max_f), f);
         let y = ((m - self.style.floor_db) / (MAX_DB - self.style.floor_db).max(EPSILON))
             .clamp(0.0, 1.0);
         if y < MIN_NORMALIZED_LEVEL {
@@ -376,10 +371,8 @@ impl SpectrumState {
             let visible = source != Channel::None && points.len() >= MIN_TRACE_POINTS;
             Arc::clone(if visible { points } else { &EMPTY_POINTS })
         };
-        let (mut primary, mut secondary) = (
-            visible_points(style.source, &self.points[0]),
-            visible_points(style.secondary_source, &self.points[1]),
-        );
+        let mut primary = visible_points(style.source, &self.points[0]);
+        let mut secondary = visible_points(style.secondary_source, &self.points[1]);
         if primary.is_empty() && secondary.is_empty() {
             return None;
         }
@@ -829,45 +822,32 @@ fn build_single_points_into(
     }
 }
 
-#[derive(Clone, Copy)]
-struct GridAxis {
-    bounds: Rectangle,
-    range: (f32, f32),
-    scale: FrequencyScale,
-    scaled_min: f32,
-    scaled_span: f32,
-    reverse: bool,
+// Normalized display x of a frequency, honoring scale and direction.
+fn view_x(style: &SpectrumSettings, (min_f, max_f): (f32, f32), frequency: f32) -> f32 {
+    let t = style
+        .frequency_scale
+        .pos_of(min_f, max_f, frequency)
+        .clamp(0.0, 1.0);
+    if style.reverse_frequency { 1.0 - t } else { t }
 }
 
-impl GridAxis {
-    fn new(bounds: Rectangle, range: (f32, f32), style: &SpectrumSettings) -> Self {
-        let scale = style.frequency_scale;
-        let scaled_min = scale.scale(range.0);
-        Self {
-            bounds,
-            range,
-            scale,
-            scaled_min,
-            scaled_span: (scale.scale(range.1) - scaled_min).max(EPSILON),
-            reverse: style.reverse_frequency,
-        }
-    }
-
-    fn tick_x(self, frequency: f32) -> Option<f32> {
-        if !(self.range.0..=self.range.1).contains(&frequency) {
+// Screen x of ticks within `range`, matching `view_x`; scales the range once per frame.
+fn grid_tick_x(
+    bounds: Rectangle,
+    range: (f32, f32),
+    style: &SpectrumSettings,
+) -> impl Fn(f32) -> Option<f32> {
+    let scale = style.frequency_scale;
+    let lo = scale.scale(range.0);
+    let span = (scale.scale(range.1) - lo).max(EPSILON);
+    let reverse = style.reverse_frequency;
+    move |frequency| {
+        if !(range.0..=range.1).contains(&frequency) {
             return None;
         }
-        let position =
-            ((self.scale.scale(frequency) - self.scaled_min) / self.scaled_span).clamp(0.0, 1.0);
-        position.is_finite().then_some(
-            self.bounds.x
-                + self.bounds.width
-                    * if self.reverse {
-                        1.0 - position
-                    } else {
-                        position
-                    },
-        )
+        let t = ((scale.scale(frequency) - lo) / span).clamp(0.0, 1.0);
+        let x = if reverse { 1.0 - t } else { t };
+        x.is_finite().then_some(bounds.x + bounds.width * x)
     }
 }
 
@@ -881,13 +861,13 @@ fn draw_grid_lines(
     if bounds.width <= 0.0 || bounds.height <= 0.0 {
         return;
     }
-    let axis = GridAxis::new(bounds, range, &state.style);
     let text_color = th.extended_palette().background.base.text;
     let major_color = with_alpha(text_color, 0.25);
     let minor_color = with_alpha(text_color, 0.10);
+    let tick_x = grid_tick_x(bounds, range, &state.style);
 
     for (frequency, major, _) in &state.grid_ticks {
-        let Some(x) = axis.tick_x(*frequency) else {
+        let Some(x) = tick_x(*frequency) else {
             continue;
         };
         let x = (x - 0.5).clamp(bounds.x, (bounds.x + bounds.width - 1.0).max(bounds.x));

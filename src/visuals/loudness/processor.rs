@@ -134,11 +134,7 @@ impl TruePeakMeter {
 
     #[inline(always)]
     fn process(&mut self, sample: f32, coefficients: &TruePeakFir) {
-        self.write = if self.write == 0 {
-            TRUE_PEAK_TAPS - 1
-        } else {
-            self.write - 1
-        };
+        self.write = self.write.checked_sub(1).unwrap_or(TRUE_PEAK_TAPS - 1);
         let pos = self.write;
         self.delay[pos] = sample;
         self.delay[pos + TRUE_PEAK_TAPS] = sample;

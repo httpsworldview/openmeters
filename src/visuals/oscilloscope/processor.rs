@@ -122,13 +122,12 @@ impl PeriodEstimator {
         let max = maxima.into_iter().fold(f32::NEG_INFINITY, f32::max);
         let mean = (sum / samples.len() as f64) as f32;
         self.last_peak = (min - mean).abs().max((max - mean).abs());
-        if self.last_peak < PeriodEstimator::MIN_SIGNAL_PEAK {
+        if self.last_peak < Self::MIN_SIGNAL_PEAK {
             return None;
         }
 
-        let min_period = (rate / PeriodEstimator::MAX_HZ).round().max(2.0) as usize;
-        let max_period =
-            (((rate / PeriodEstimator::MIN_HZ).ceil() as usize) + 1).min(samples.len() / 2 + 1);
+        let min_period = (rate / Self::MAX_HZ).round().max(2.0) as usize;
+        let max_period = (((rate / Self::MIN_HZ).ceil() as usize) + 1).min(samples.len() / 2 + 1);
         if max_period <= min_period + 1 {
             return None;
         }
@@ -142,14 +141,14 @@ impl PeriodEstimator {
         }
 
         let is_candidate = |tau: &usize| {
-            nsdf[*tau] >= PeriodEstimator::MIN_PERIODICITY
+            nsdf[*tau] >= Self::MIN_PERIODICITY
                 && nsdf[*tau] >= nsdf[*tau - 1]
                 && nsdf[*tau] >= nsdf[*tau + 1]
         };
         let best = (first_tau..max_period)
             .filter(is_candidate)
             .max_by(|&a, &b| nsdf[a].total_cmp(&nsdf[b]))?;
-        let cutoff = nsdf[best] * PeriodEstimator::PEAK_CUTOFF;
+        let cutoff = nsdf[best] * Self::PEAK_CUTOFF;
         let peak = (first_tau..=best)
             .find(|tau| is_candidate(tau) && nsdf[*tau] >= cutoff)
             .unwrap_or(best);
@@ -452,7 +451,7 @@ impl StableTrigger {
         let Some(mut estimate) = detected else {
             let period = self.period?;
             self.missed_periods = self.missed_periods.saturating_add(1);
-            if self.missed_periods > StableTrigger::MAX_MISSED_PERIODS {
+            if self.missed_periods > Self::MAX_MISSED_PERIODS {
                 self.unlock();
                 return None;
             }
@@ -491,7 +490,7 @@ impl StableTrigger {
             return None;
         }
 
-        let search = ((period * StableTrigger::SEARCH_PERIODS).round() as usize)
+        let search = ((period * Self::SEARCH_PERIODS).round() as usize)
             .max(1)
             .min(len / 2)
             .min(right - before);
@@ -505,7 +504,7 @@ impl StableTrigger {
         let segment = |offset| &trace[left + offset - before..left + offset - before + len];
         let reset = confident
             && use_reference
-            && self.write_candidate(segment(offset), period) < StableTrigger::RESET_BELOW_MATCH;
+            && self.write_candidate(segment(offset), period) < Self::RESET_BELOW_MATCH;
         if reset {
             self.reference.fill(0.0);
             self.prepare_template(period, false);
@@ -534,7 +533,7 @@ impl StableTrigger {
         self.retune_reference(len, period);
 
         let mean = mean_f32(data);
-        self.mean += StableTrigger::MEAN_RESPONSIVENESS * (mean - self.mean);
+        self.mean += Self::MEAN_RESPONSIVENESS * (mean - self.mean);
         self.work.clear();
         self.work
             .extend(data.iter().map(|sample| sample - self.mean));
@@ -545,7 +544,7 @@ impl StableTrigger {
         self.candidate.resize(len, 0.0);
         let midpoint = len / 2;
         let max_width = (midpoint.max(1) as f32 / 3.0).max(1.0);
-        let width = (StableTrigger::SLOPE_WIDTH_PERIODS * period).clamp(1.0, max_width);
+        let width = (Self::SLOPE_WIDTH_PERIODS * period).clamp(1.0, max_width);
         for i in 0..len.div_ceil(2) {
             let mirror = len - 1 - i;
             let weight = gaussian(len, i, width);
@@ -620,8 +619,7 @@ impl StableTrigger {
         }
 
         let semitones = (period / self.reference_period).log2() * 12.0;
-        if self.reference.len() != len || semitones.abs() >= StableTrigger::BUFFER_RETUNE_SEMITONES
-        {
+        if self.reference.len() != len || semitones.abs() >= Self::BUFFER_RETUNE_SEMITONES {
             self.reference = retune_reference(&self.reference, self.reference_period, period, len);
             self.reference_period = period;
         }
@@ -633,15 +631,14 @@ impl StableTrigger {
             .iter()
             .map(|sample| sample.abs())
             .fold(0.0, f32::max);
-        let scale = 1.0 / peak.max(StableTrigger::NORMALIZE_FLOOR);
+        let scale = 1.0 / peak.max(Self::NORMALIZE_FLOOR);
         for sample in &mut self.reference {
             *sample *= scale;
         }
         for (reference, &candidate) in self.reference.iter_mut().zip(&self.candidate) {
-            *reference += StableTrigger::BUFFER_RESPONSIVENESS * (candidate - *reference);
+            *reference += Self::BUFFER_RESPONSIVENESS * (candidate - *reference);
         }
-        self.reference_period +=
-            StableTrigger::BUFFER_RESPONSIVENESS * (period - self.reference_period);
+        self.reference_period += Self::BUFFER_RESPONSIVENESS * (period - self.reference_period);
     }
 
     fn write_candidate(&mut self, segment: &[f32], period: f32) -> f32 {
@@ -653,8 +650,8 @@ impl StableTrigger {
             peak = peak.max(sample.abs());
             *dst = sample;
         }
-        let scale = 1.0 / peak.max(StableTrigger::NORMALIZE_FLOOR);
-        let std = (period * StableTrigger::BUFFER_FALLOFF_PERIODS).max(1.0);
+        let scale = 1.0 / peak.max(Self::NORMALIZE_FLOOR);
+        let std = (period * Self::BUFFER_FALLOFF_PERIODS).max(1.0);
         let len = self.candidate.len();
         for i in 0..len.div_ceil(2) {
             let mirror = len - 1 - i;
@@ -677,9 +674,8 @@ impl StableTrigger {
 
 fn find_rising_zero_crossing(
     samples: &[f32],
-    frames: impl Iterator<Item = usize>,
+    mut frames: impl Iterator<Item = usize>,
 ) -> Option<(usize, f32)> {
-    let mut frames = frames;
     let mut previous = frames.next()?;
     for current in frames {
         let (lo, hi) = if previous < current {
@@ -738,9 +734,8 @@ impl OscilloscopeProcessor {
 
     pub fn reset_audio(&mut self) {
         self.clear_history();
-        let epoch = self.snapshot.epoch;
         self.snapshot = SnapshotBuffer {
-            epoch,
+            epoch: self.snapshot.epoch,
             ..Default::default()
         };
     }

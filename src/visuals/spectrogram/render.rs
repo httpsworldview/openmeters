@@ -261,17 +261,15 @@ impl Uniforms {
     }
 
     fn from_params(p: &SpectrogramParams, viewport: [f32; 2], scale_factor: f32) -> Self {
-        let freq_scale = p.freq_scale as u32;
         let freq_lo = p.freq_scale.scale(p.freq_min);
         let freq_hi = p.freq_scale.scale(p.freq_max);
-        let rotation = p.rotation.rem_euclid(4) as u32;
         let sf = scale_factor.max(1.0);
         let hl = p.ring_capacity;
-        let newest_col = (p.write_slot + hl - 1) % hl;
-        let inv_uv_range = 1.0 / (p.uv_y_range[1] - p.uv_y_range[0]).max(1e-12);
+        let [_, pos1, pos2, pos3, _] = p.stop_positions;
+        let [spread0, spread1, spread2, spread3, spread4] = p.stop_spreads;
         Self {
             freq_axis: [freq_lo, 1.0 / (freq_hi - freq_lo).max(1e-12)],
-            freq_scale,
+            freq_scale: p.freq_scale as u32,
             points_per_col: if p.col_kind == ColumnKind::Reassigned {
                 hl.next_power_of_two().trailing_zeros()
             } else {
@@ -279,7 +277,7 @@ impl Uniforms {
             },
             history_length: p.ring_capacity,
             col_count: p.col_count,
-            rotation,
+            rotation: p.rotation.rem_euclid(4) as u32,
             page_mask: hl.next_power_of_two() - 1,
             bounds: [
                 p.bounds.x * sf,
@@ -287,32 +285,19 @@ impl Uniforms {
                 p.bounds.width.max(1.0) * sf,
                 p.bounds.height.max(1.0) * sf,
             ],
-            clip_scale: [
-                2.0 / (viewport[0] * sf).max(1.0),
-                2.0 / (viewport[1] * sf).max(1.0),
-            ],
+            clip_scale: viewport.map(|extent| 2.0 / (extent * sf).max(1.0)),
             uv_y_range: p.uv_y_range,
             scale_factor: sf,
             floor_db: p.floor_db,
             tilt_db: p.tilt_db,
-            newest_col,
-            inv_uv_range,
+            newest_col: (p.write_slot + hl - 1) % hl,
+            inv_uv_range: 1.0 / (p.uv_y_range[1] - p.uv_y_range[0]).max(1e-12),
             bin_hz: p.bin_hz,
             reassigned_power_scale: p.reassigned_power_scale,
             page_slot_mask: 0,
             stops: [
-                [
-                    p.stop_positions[1],
-                    p.stop_positions[2],
-                    p.stop_positions[3],
-                    p.stop_spreads[0],
-                ],
-                [
-                    p.stop_spreads[1],
-                    p.stop_spreads[2],
-                    p.stop_spreads[3],
-                    p.stop_spreads[4],
-                ],
+                [pos1, pos2, pos3, spread0],
+                [spread1, spread2, spread3, spread4],
             ],
             palette: p.palette,
         }
@@ -335,14 +320,12 @@ impl primitive::Pipeline for Pipeline {
         );
         const POINT_ATTRS: [wgpu::VertexAttribute; 3] =
             wgpu::vertex_attr_array![1 => Float32, 2 => Float32, 3 => Float32];
-        let uniform_entry = bgl_entry(
-            0,
-            wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-        );
+        let buffer = |ty| wgpu::BindingType::Buffer {
+            ty,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        };
+        let uniform_entry = bgl_entry(0, buffer(wgpu::BufferBindingType::Uniform));
         let accum_entry = bgl_entry(
             1,
             wgpu::BindingType::Texture {
@@ -353,11 +336,7 @@ impl primitive::Pipeline for Pipeline {
         );
         let mag_entry = bgl_entry(
             2,
-            wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Storage { read_only: true },
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
+            buffer(wgpu::BufferBindingType::Storage { read_only: true }),
         );
 
         let points_entry = wgpu::BindGroupLayoutEntry {
@@ -491,6 +470,12 @@ fn point_page_columns(maxima: &[u32], slots: usize, was_paged: bool) -> usize {
     }
 }
 
+fn page_maxima(slot_counts: &[u32]) -> impl Iterator<Item = u32> + '_ {
+    slot_counts
+        .chunks(PAGE_COLUMNS)
+        .map(|counts| counts.iter().copied().max().unwrap_or(0))
+}
+
 fn pending_pages(p: &SpectrogramParams, columns: usize) -> impl Iterator<Item = usize> + '_ {
     let first = (p.write_slot + p.ring_capacity - p.pending_uploads.len() as u32) % p.ring_capacity;
     (0..p.pending_uploads.len()).filter_map(move |offset| {
@@ -544,11 +529,7 @@ impl RingLayout {
         }
         if !same_shape || p.copy_plan.is_some() || reset {
             maxima.clear();
-            maxima.extend(
-                p.slot_counts
-                    .chunks(PAGE_COLUMNS)
-                    .map(|counts| counts.iter().copied().max().unwrap_or(0)),
-            );
+            maxima.extend(page_maxima(&p.slot_counts));
         } else {
             let mut changed = false;
             for index in pending_pages(p, PAGE_COLUMNS) {
@@ -747,11 +728,7 @@ impl Resources {
             std::mem::size_of::<Uniforms>() as u64,
             wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         );
-        let page_maxima: Vec<_> = p
-            .slot_counts
-            .chunks(PAGE_COLUMNS)
-            .map(|counts| counts.iter().copied().max().unwrap_or(0))
-            .collect();
+        let page_maxima: Vec<_> = page_maxima(&p.slot_counts).collect();
         let ring = create_ring(
             device,
             bgls,
@@ -797,30 +774,22 @@ impl Resources {
         }) {
             return;
         }
-        let buffer = |contents: &[u8]| {
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Spectrogram quad indices"),
-                contents,
-                usage: wgpu::BufferUsages::INDEX,
-            })
-        };
-        let (indices, format) = if capacity <= (u32::from(u16::MAX) + 1) / 4 {
-            let indices: Vec<u16> = (0..capacity as u16)
-                .flat_map(|point| [0, 1, 2, 2, 1, 3].map(|corner| point * 4 + corner))
-                .collect();
-            (
-                buffer(bytemuck::cast_slice(&indices)),
-                wgpu::IndexFormat::Uint16,
-            )
+        let quads =
+            (0..capacity).flat_map(|point| [0, 1, 2, 2, 1, 3].map(|corner| point * 4 + corner));
+        let (contents, format): (Vec<u8>, _) = if capacity <= (u32::from(u16::MAX) + 1) / 4 {
+            let narrow = |index: u32| (index as u16).to_ne_bytes();
+            (quads.flat_map(narrow).collect(), wgpu::IndexFormat::Uint16)
         } else {
-            let indices: Vec<u32> = (0..capacity)
-                .flat_map(|point| [0, 1, 2, 2, 1, 3].map(|corner| point * 4 + corner))
-                .collect();
             (
-                buffer(bytemuck::cast_slice(&indices)),
+                quads.flat_map(u32::to_ne_bytes).collect(),
                 wgpu::IndexFormat::Uint32,
             )
         };
+        let indices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Spectrogram quad indices"),
+            contents: &contents,
+            usage: wgpu::BufferUsages::INDEX,
+        });
         self.indices = Some((capacity, indices, format));
     }
 

@@ -150,9 +150,7 @@ impl SpectrumProcessor {
                 (frequency, a_weight(frequency))
             })
             .unzip();
-        self.reset_level_buffers();
-        self.pcm_buffers.iter_mut().for_each(VecDeque::clear);
-        self.pending_skip_frames = 0;
+        self.reset_audio();
     }
 
     fn reset_level_buffers(&mut self) {
