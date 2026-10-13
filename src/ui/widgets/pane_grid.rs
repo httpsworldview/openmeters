@@ -103,6 +103,13 @@ impl<'a, Message: 'a> PaneGrid<'a, Message> {
             })
     }
 
+    /// The pane a press at `position` drags, unless Ctrl makes it a spectrogram pan.
+    fn draggable_at(&self, layout: Layout<'_>, position: Point, control: bool) -> Option<Pane> {
+        self.on_drag.as_ref()?;
+        let pane = self.pane_at(layout, position)?;
+        (pane != Pane::Spectrogram || !control).then_some(pane)
+    }
+
     fn width_specs(&self) -> impl Iterator<Item = (f32, f32)> + '_ {
         self.entries
             .iter()
@@ -160,10 +167,8 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer> for PaneGrid
             .zip(widths)
             .map(|(((_, content), child), width)| {
                 let width = width.max(0.0);
-                let limits = layout::Limits::new(
-                    Size::new(width, size.height),
-                    Size::new(width, size.height),
-                );
+                let child_size = Size::new(width, size.height);
+                let limits = layout::Limits::new(child_size, child_size);
                 let node = content
                     .body
                     .as_widget_mut()
@@ -408,10 +413,9 @@ impl<'a, Message: 'a> PaneGrid<'a, Message> {
             return true;
         }
 
-        if let mouse::Event::ButtonPressed(Button::Left) = event {
-            let Some(position) = cursor.position() else {
-                return false;
-            };
+        if let mouse::Event::ButtonPressed(Button::Left) = event
+            && let Some(position) = cursor.position()
+        {
             if let Some(divider) = self.divider_at(layout, position) {
                 let start: Vec<_> = layout
                     .children()
@@ -428,9 +432,7 @@ impl<'a, Message: 'a> PaneGrid<'a, Message> {
                 shell.request_redraw();
                 return true;
             }
-            if self.on_drag.is_some()
-                && let Some(pane) = self.pane_at(layout, position)
-                && !(pane == Pane::Spectrogram && interaction.modifiers.control())
+            if let Some(pane) = self.draggable_at(layout, position, interaction.modifiers.control())
             {
                 interaction.dragging = Some((pane, position, position.x));
                 shell.capture_event();

@@ -69,32 +69,30 @@ settings_messages!(pane, settings, value {
 
 settings_view! {
     pane as settings {
-        let preset = match settings.trigger_mode {
-            TriggerMode::ZeroCrossing => TriggerPreset::ZeroCrossing,
-            TriggerMode::Stable { .. } => TriggerPreset::Stable,
+        let (preset, duration_label, cycles) = match settings.trigger_mode {
+            TriggerMode::ZeroCrossing => (TriggerPreset::ZeroCrossing, "Segment duration", None),
+            TriggerMode::Stable { num_cycles } => (
+                TriggerPreset::Stable,
+                "Segment duration (fallback)",
+                Some(slider!(
+                    "Cycles", num_cycles as f32, CYCLES_RANGE,
+                    |value| NumCycles(value.round() as usize), num_cycles.to_string()
+                )),
+            ),
         };
-        let duration_label = match preset {
-            TriggerPreset::Stable => "Segment duration (fallback)",
-            TriggerPreset::ZeroCrossing => "Segment duration",
-        };
-        let mut trigger = form!(
+        let trigger = form!(
             pick("Mode", TriggerPreset::ALL, preset, Preset);
             pick(
                 "Trigger source", TriggerSourceChoice::ALL,
                 TriggerSourceChoice(settings.trigger_source),
                 |choice| TriggerSource(choice.0)
             );
+            cycles;
+            slider!(
+                duration_label, settings.segment_duration, DURATION_RANGE, SegmentDuration,
+                format!("{:.1} ms", settings.segment_duration * 1000.0)
+            );
         );
-        if let TriggerMode::Stable { num_cycles } = settings.trigger_mode {
-            trigger = trigger.push(slider!(
-                "Cycles", num_cycles as f32, CYCLES_RANGE,
-                |value| NumCycles(value.round() as usize), num_cycles.to_string()
-            ));
-        }
-        trigger = trigger.push(slider!(
-            duration_label, settings.segment_duration, DURATION_RANGE, SegmentDuration,
-            format!("{:.1} ms", settings.segment_duration * 1000.0)
-        ));
     }
     "Signal" => form!(
         pick("Channel 1", Channel::ALL, settings.channel_1, Channel1);

@@ -51,16 +51,17 @@ pub(super) fn layershell_open(settings: NewLayerShellSettings) -> (window::Id, T
 pub(super) fn shell_event(event: ShellEvent) -> Option<Message> {
     use BarOutputEvent as Change;
 
-    Some(match event {
-        ShellEvent::OutputAdded(o) => Message::BarOutput(o.id, o.name, Change::Added),
-        ShellEvent::OutputUpdated(o) => Message::BarOutput(o.id, o.name, Change::Updated),
-        ShellEvent::OutputRemoved(o) => Message::BarOutput(o.id, o.name, Change::Removed),
-        ShellEvent::WindowOutputChanged { window, output } => {
-            Message::BarWindowOutput(window, output.map(|output| output.id))
-        }
-        ShellEvent::Closed(window) => Message::ShellWindowClosed(window),
-        _ => return None,
-    })
+    match event {
+        ShellEvent::OutputAdded(o) => Some(Message::BarOutput(o.id, o.name, Change::Added)),
+        ShellEvent::OutputUpdated(o) => Some(Message::BarOutput(o.id, o.name, Change::Updated)),
+        ShellEvent::OutputRemoved(o) => Some(Message::BarOutput(o.id, o.name, Change::Removed)),
+        ShellEvent::WindowOutputChanged { window, output } => Some(Message::BarWindowOutput(
+            window,
+            output.map(|output| output.id),
+        )),
+        ShellEvent::Closed(window) => Some(Message::ShellWindowClosed(window)),
+        _ => None,
+    }
 }
 
 pub(super) fn bar_drag_events(evt: Event, _: event::Status, _: window::Id) -> Option<Message> {
@@ -112,32 +113,11 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
         app.frames.borrow_mut().wake();
     }
     match msg {
-        Message::Config(config_msg) => match app.config_page.update(config_msg) {
-            Some(ConfigEffect::VisualToggled { kind, enabled }) => {
-                let active = app.visuals_active();
-                app.frames.borrow_mut().set_active(active);
-                let restore = if enabled {
-                    app.restore_popout_window(kind)
-                } else {
-                    Task::none()
-                };
-                return Task::batch([restore, app.sync_all_windows()]);
+        Message::Config(config_msg) => {
+            if let Some(effect) = app.config_page.update(config_msg) {
+                return apply_config_effect(app, effect);
             }
-            Some(ConfigEffect::FrameRateChanged(rate)) => {
-                app.frames.borrow_mut().set_rate(rate);
-            }
-            Some(ConfigEffect::DecorationsChanged) => return app.recreate_visual_windows(),
-            Some(ConfigEffect::BarChanged(change)) => {
-                return app.handle_bar_config_change(change);
-            }
-            Some(ConfigEffect::ThemeChanged) => {
-                // The theme replaced every palette, unfinished edits included.
-                if let Some((_, panel)) = app.settings_window.as_mut() {
-                    *panel = super::ActiveSettings::new(panel.kind(), &app.visual_manager);
-                }
-            }
-            None => {}
-        },
+        }
         Message::Visuals(VisualsMessage::SettingsRequested(kind)) => {
             return app.open_settings_window(kind);
         }
@@ -195,6 +175,31 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
         Message::SettingsScrolled(event) => app.settings_scroll.update(event),
         Message::WindowResized(id, size) => return app.handle_window_resize(id, size),
         _ => {}
+    }
+    Task::none()
+}
+
+fn apply_config_effect(app: &mut UiApp, effect: ConfigEffect) -> Task<Message> {
+    match effect {
+        ConfigEffect::VisualToggled { kind, enabled } => {
+            let active = app.visuals_active();
+            app.frames.borrow_mut().set_active(active);
+            let restore = if enabled {
+                app.restore_popout_window(kind)
+            } else {
+                Task::none()
+            };
+            return Task::batch([restore, app.sync_all_windows()]);
+        }
+        ConfigEffect::FrameRateChanged(rate) => app.frames.borrow_mut().set_rate(rate),
+        ConfigEffect::DecorationsChanged => return app.recreate_visual_windows(),
+        ConfigEffect::BarChanged(change) => return app.handle_bar_config_change(change),
+        ConfigEffect::ThemeChanged => {
+            // The theme replaced every palette, unfinished edits included.
+            if let Some((_, panel)) = app.settings_window.as_mut() {
+                *panel = super::ActiveSettings::new(panel.kind(), &app.visual_manager);
+            }
+        }
     }
     Task::none()
 }

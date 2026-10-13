@@ -122,7 +122,7 @@ impl PaletteEditor {
         self.label_overrides
             .iter()
             .find_map(|&(i, label)| (i == index).then_some(label))
-            .unwrap_or(self.palette.labels()[index])
+            .unwrap_or(self.palette.labels[index])
     }
 
     pub fn load(&mut self, stored: &PaletteSettings) {
@@ -718,8 +718,7 @@ fn find_segment(positions: &[f32], spreads: &[f32], t: f32) -> (usize, usize, f3
     let lo = hi - 1;
     let linear =
         ((t - positions[lo]) / (positions[hi] - positions[lo]).max(f32::EPSILON)).clamp(0.0, 1.0);
-    let sl = spreads[lo];
-    let sr = spreads[hi];
+    let (sl, sr) = (spreads[lo], spreads[hi]);
     let f = if (sl - 1.0).abs() < EPSILON && (sr - 1.0).abs() < EPSILON {
         linear
     } else {

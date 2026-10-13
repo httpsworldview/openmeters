@@ -211,16 +211,15 @@ impl UiApp {
     }
 
     pub(super) fn open_settings_window(&mut self, kind: VisualKind) -> Task<Message> {
-        let mut previous = self.settings_window.take();
-        if let Some((_, panel)) = &mut previous {
-            self.close_settings(panel);
-        }
+        let previous = self.settings_window.take().map(|(id, mut panel)| {
+            self.close_settings(&mut panel);
+            (id, panel.kind())
+        });
         let panel = ActiveSettings::new(kind, &self.visual_manager);
-        if previous
-            .as_ref()
-            .is_some_and(|(_, current)| current.kind() == kind)
+        if let Some((id, previous_kind)) = previous
+            && previous_kind == kind
         {
-            self.settings_window = previous.map(|(id, _)| (id, panel));
+            self.settings_window = Some((id, panel));
             return Task::none();
         }
 
@@ -290,13 +289,9 @@ impl UiApp {
     }
 
     pub(super) fn restore_popout_window(&mut self, kind: VisualKind) -> Task<Message> {
-        let saved = self
-            .saved_popout(kind)
-            .filter(|settings| settings.popped_out);
-        let Some(settings) = saved else {
-            return Task::none();
-        };
-        self.create_popout_window(kind, Some(settings))
+        self.saved_popout(kind)
+            .filter(|settings| settings.popped_out)
+            .and_then(|settings| self.create_popout_window(kind, Some(settings)))
             .map_or_else(Task::none, |(_, task)| task)
     }
 
@@ -320,12 +315,9 @@ impl UiApp {
         let popout_settings = popout_window_settings(popout.size, false);
         self.sync_visuals_page();
         self.settings_handle.update(User, |settings| {
-            settings
-                .data
-                .visuals
-                .popouts
-                .insert(popout.kind, popout_settings);
-            settings.data.visuals.order = order;
+            let visuals = &mut settings.data.visuals;
+            visuals.popouts.insert(popout.kind, popout_settings);
+            visuals.order = order;
         });
     }
 
@@ -369,35 +361,29 @@ impl UiApp {
 
     pub(super) fn sync_all_windows(&mut self) -> Task<Message> {
         let snapshot = self.visual_manager.borrow().snapshot();
+        let enabled = |kind| {
+            snapshot
+                .iter()
+                .any(|slot| slot.kind == kind && slot.enabled)
+        };
         let close_settings_task = self
             .settings_window
-            .take_if(|(_, panel)| {
-                !snapshot
-                    .iter()
-                    .any(|slot| slot.kind == panel.kind() && slot.enabled)
-            })
+            .take_if(|(_, panel)| !enabled(panel.kind()))
             .map(|(id, mut panel)| {
                 self.close_settings(&mut panel);
                 window::close::<Message>(id)
             });
         let stale_windows: Vec<_> = self
             .popout_windows
-            .extract_if(|_, popout| {
-                !snapshot
-                    .iter()
-                    .any(|slot| slot.kind == popout.kind && slot.enabled)
-            })
+            .extract_if(|_, popout| !enabled(popout.kind))
             .map(|(id, popout)| (id, popout.kind, popout.size))
             .collect();
         // keep disabled popouts restorable when re-enabled.
         if !stale_windows.is_empty() {
             self.settings_handle.update(Automatic, |settings| {
+                let popouts = &mut settings.data.visuals.popouts;
                 for (_, kind, size) in &stale_windows {
-                    settings
-                        .data
-                        .visuals
-                        .popouts
-                        .insert(*kind, popout_window_settings(*size, true));
+                    popouts.insert(*kind, popout_window_settings(*size, true));
                 }
             });
         }

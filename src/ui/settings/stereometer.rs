@@ -33,7 +33,7 @@ settings_messages!(pane, settings, value {
 settings_view! {
     pane as settings {
         let dot_mode = settings.mode != StereometerMode::Lissajous;
-        let mut meter = form!(
+        let meter = form!(
             pick("Mode", StereometerMode::ALL, settings.mode, Mode);
             slider!(
                 "Segment duration", settings.segment_duration, DURATION_RANGE,
@@ -43,10 +43,8 @@ settings_view! {
                 "Sample count", settings.target_sample_count as f32, SAMPLE_COUNT_RANGE,
                 SampleCount, settings.target_sample_count.to_string()
             );
+            dot_mode.then(|| pick("Scale", StereometerScale::ALL, settings.scale, Scale));
         );
-        if dot_mode {
-            meter = meter.push(pick("Scale", StereometerScale::ALL, settings.scale, Scale));
-        }
 
         let mut display = form!(
             slider!(

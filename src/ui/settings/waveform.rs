@@ -42,22 +42,17 @@ settings_messages!(pane, settings, value {
 });
 
 settings_view! {
-    pane as settings {
-        let mut display = form!(
-            slider!("Scroll speed", settings.scroll_speed, SPEED_RANGE, ScrollSpeed, "{:.0} px/s");
-            pick("Color mode", WaveformColorMode::ALL, settings.color_mode, ColorMode);
-            pick("History", WaveformHistoryMode::ALL, settings.history_mode, HistoryMode);
-        );
-        if settings.history_mode != WaveformHistoryMode::Off {
-            display = display.push(slider!(
-                "History floor", settings.band_db_floor, FLOOR_RANGE,
-                BandDbFloor, "{:.0} dB"
-            ));
-        }
-    }
+    pane as settings {}
     "Signal" => form!(
         pick("Channel 1", Channel::ALL, settings.channel_1, Channel1);
         pick("Channel 2", Channel::ALL, settings.channel_2, Channel2);
     );
-    "Display" => display;
+    "Display" => form!(
+        slider!("Scroll speed", settings.scroll_speed, SPEED_RANGE, ScrollSpeed, "{:.0} px/s");
+        pick("Color mode", WaveformColorMode::ALL, settings.color_mode, ColorMode);
+        pick("History", WaveformHistoryMode::ALL, settings.history_mode, HistoryMode);
+        (settings.history_mode != WaveformHistoryMode::Off).then(|| slider!(
+            "History floor", settings.band_db_floor, FLOOR_RANGE, BandDbFloor, "{:.0} dB"
+        ));
+    );
 }

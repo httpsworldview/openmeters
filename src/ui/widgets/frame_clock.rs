@@ -132,14 +132,15 @@ impl FrameCoordinator {
             return RedrawRequest::NextFrame;
         };
 
-        let deadline = self.next_frame.unwrap_or(now);
+        let mut deadline = self.next_frame.unwrap_or(now);
         if now >= deadline {
             if self.advance(now) {
                 return RedrawRequest::Wait;
             }
-            self.next_frame = Some(next_deadline(deadline, now, interval));
+            deadline = next_deadline(deadline, now, interval);
+            self.next_frame = Some(deadline);
         }
-        RedrawRequest::At(self.next_frame.expect("fixed frame deadline"))
+        RedrawRequest::At(deadline)
     }
 
     pub(in crate::ui) fn heartbeat_handle(&self) -> FrameHeartbeat {
@@ -152,9 +153,7 @@ impl FrameCoordinator {
 
     pub(in crate::ui) fn wake(&mut self) {
         if self.heartbeat.generation() & 1 != 0 && self.meter.wake() {
-            self.heartbeat.set_suspended(false);
-            self.can_quiesce = false;
-            self.reset_clock();
+            self.restart(false);
         }
     }
 
@@ -177,14 +176,17 @@ impl FrameCoordinator {
 
     pub(in crate::ui) fn set_active(&mut self, active: bool) {
         self.meter.set_active(active);
-        self.heartbeat.set_suspended(!active);
-        self.can_quiesce = false;
-        self.reset_clock();
+        self.restart(!active);
     }
 
     pub(in crate::ui) fn set_paused(&mut self, paused: bool, now: Instant) {
         self.meter.set_paused(paused, now);
-        self.heartbeat.set_suspended(paused);
+        self.restart(paused);
+    }
+
+    /// Restarts the clock after a meter state change, which the next advance must not quiesce.
+    fn restart(&mut self, suspended: bool) {
+        self.heartbeat.set_suspended(suspended);
         self.can_quiesce = false;
         self.reset_clock();
     }

@@ -17,7 +17,8 @@ use crate::ui::widgets::{
 };
 use crate::visuals::registry::{VisualKind, VisualManagerHandle, VisualSlotSnapshot};
 use iced::alignment::Vertical;
-use iced::widget::{Column, column, container, pick_list, row, text, text_input};
+use iced::widget::text::IntoFragment;
+use iced::widget::{Column, Text, column, container, pick_list, row, text, text_input};
 use iced::{Element, Length};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -79,13 +80,19 @@ struct BarOutputs {
 }
 
 impl BarOutputs {
+    fn name(&self, id: u32) -> Option<&str> {
+        self.names.get(&id).and_then(|name| name.as_deref())
+    }
+
+    fn has_output(&self, name: &str) -> bool {
+        self.names
+            .values()
+            .any(|output| output.as_deref() == Some(name))
+    }
+
     fn selected_is_elsewhere(&self, selected: &str) -> bool {
         self.current.is_some_and(|current| {
-            self.names.get(&current).and_then(|name| name.as_deref()) != Some(selected)
-                && self
-                    .names
-                    .values()
-                    .any(|name| name.as_deref() == Some(selected))
+            self.name(current) != Some(selected) && self.has_output(selected)
         })
     }
 
@@ -147,12 +154,7 @@ impl BarOutputs {
     }
 
     fn choices(&self, selected: Option<&str>) -> (Vec<BarMonitorOption>, BarMonitorOption) {
-        let disconnected = selected.is_some_and(|name| {
-            !self
-                .names
-                .values()
-                .any(|output| output.as_deref() == Some(name))
-        });
+        let disconnected = selected.is_some_and(|name| !self.has_output(name));
         let selected = BarMonitorOption {
             monitor: selected.map(str::to_owned),
             disconnected,
@@ -239,14 +241,12 @@ impl ConfigPage {
         settings: SettingsHandle,
         bar_supported: bool,
     ) -> Self {
-        let (current_bg, theme_choices) = {
-            let guard = settings.borrow();
-            let data = &guard.data;
-            (
-                data.background_color.map_or(theme::BG_BASE, Into::into),
-                guard.theme_store().list(),
-            )
-        };
+        let current_bg = settings
+            .borrow()
+            .data
+            .background_color
+            .map_or(theme::BG_BASE, Into::into);
+        let theme_choices = settings.borrow().theme_store().list();
         let window_themes = theme::window_themes(current_bg);
         let mut bg_palette = PaletteEditor::new(theme::background::PALETTE);
         bg_palette.set_colors(&[current_bg]);
@@ -421,15 +421,19 @@ impl ConfigPage {
             .iter()
             .filter(|application| disabled.contains(&application.identity))
             .count();
-        let status = match (
-            applications.len(),
-            self.registry_alive,
-            self.capture_view.is_some(),
-        ) {
-            (0, false, _) => "unavailable".into(),
-            (0, true, false) => "waiting...".into(),
-            (0, true, true) => "none detected".into(),
-            (n, _, _) => format!("{n} total"),
+        let registry = (self.registry_alive, self.capture_view.is_some());
+        let (empty_status, empty_message) = match registry {
+            (false, _) => ("unavailable", REGISTRY_UNAVAILABLE_MESSAGE),
+            (true, false) => ("waiting...", "Waiting for PipeWire registry..."),
+            (true, true) => (
+                "none detected",
+                "No audio applications detected. Launch something to see it here.",
+            ),
+        };
+        let status = if applications.is_empty() {
+            empty_status.to_owned()
+        } else {
+            format!("{} total", applications.len())
         };
         let summary = [
             Some(status),
@@ -437,14 +441,7 @@ impl ConfigPage {
         ];
 
         let body: Element<'_, _> = if applications.is_empty() {
-            let message = if !self.registry_alive {
-                REGISTRY_UNAVAILABLE_MESSAGE
-            } else if self.capture_view.is_some() {
-                "No audio applications detected. Launch something to see it here."
-            } else {
-                "Waiting for PipeWire registry..."
-            };
-            text(message).size(theme::BODY_TEXT_SIZE).into()
+            text(empty_message).size(theme::BODY_TEXT_SIZE).into()
         } else {
             render_toggle_grid(applications, |application| {
                 let enabled = !disabled.contains(&application.identity);
@@ -472,11 +469,7 @@ impl ConfigPage {
 
     fn render_device_section(&self) -> Column<'_, ConfigMessage> {
         if !self.registry_alive {
-            return column![
-                text(REGISTRY_UNAVAILABLE_MESSAGE)
-                    .size(theme::BODY_TEXT_SIZE)
-                    .style(theme::weak_text_style)
-            ];
+            return column![note(REGISTRY_UNAVAILABLE_MESSAGE)];
         }
 
         let settings = self.settings.borrow();
@@ -500,9 +493,7 @@ impl ConfigPage {
 
         column![
             container(picker).width(Length::Fill).clip(true),
-            text("Direct device capture. Per-application taps disabled.")
-                .size(theme::BODY_TEXT_SIZE)
-                .style(theme::weak_text_style)
+            note("Direct device capture. Per-application taps disabled."),
         ]
         .spacing(6)
     }
@@ -604,34 +595,27 @@ impl ConfigPage {
             return None;
         }
 
+        let settings = self.settings.borrow();
         let theme_file = ThemeFile {
             name: Some(name.clone()),
             author: None,
-            background: self.settings.borrow().data.background_color,
+            background: settings.data.background_color,
             palettes: self.visual_manager.borrow().theme_palettes().collect(),
         };
-        let saved = self
-            .settings
-            .borrow()
-            .theme_store()
-            .save(&name, &theme_file);
-        if let Err(e) = saved {
+        if let Err(e) = settings.theme_store().save(&name, &theme_file) {
             tracing::warn!("[theme] failed to save theme {name:?}: {e}");
             return None;
         }
-        self.refresh_theme_choices();
+        self.theme_choices = settings.theme_store().list();
         Some(name)
     }
 
     pub(in crate::ui) fn refresh_theme_choices_if_needed(&mut self) {
-        let active = self.settings.borrow().active_theme().to_owned();
+        let settings = self.settings.borrow();
+        let active = settings.active_theme();
         if !self.theme_choices.iter().any(|c| c.name == active) {
-            self.refresh_theme_choices();
+            self.theme_choices = settings.theme_store().list();
         }
-    }
-
-    fn refresh_theme_choices(&mut self) {
-        self.theme_choices = self.settings.borrow().theme_store().list();
     }
 
     pub(in crate::ui) fn has_bar_outputs(&self) -> bool {
@@ -664,13 +648,10 @@ impl ConfigPage {
         if bar.enabled {
             let height = clamp_bar_height(bar.height);
             let (monitors, selected) = self.bar_outputs.choices(bar.monitor.as_deref());
-            let current = self.bar_outputs.current.map(|id| {
-                self.bar_outputs
-                    .names
-                    .get(&id)
-                    .and_then(|name| name.as_deref())
-                    .unwrap_or("unnamed monitor")
-            });
+            let current = self
+                .bar_outputs
+                .current
+                .map(|id| self.bar_outputs.name(id).unwrap_or("unnamed monitor"));
             let status = selected.disconnected.then(|| {
                 current.map_or_else(
                     || "Finding a fallback...".into(),
@@ -689,16 +670,10 @@ impl ConfigPage {
                 |value| BarHeightChanged(value.round() as u32),
                 format!("{height} px")
             );
-            content = content.push(split(monitor, alignment));
-            if let Some(status) = status {
-                content = content.push(
-                    text(status)
-                        .size(theme::BODY_TEXT_SIZE)
-                        .style(theme::weak_text_style)
-                        .width(Length::Fill),
-                );
-            }
-            content = content.push(height_slider);
+            content = content
+                .push(split(monitor, alignment))
+                .push(status.map(|status| note(status).width(Length::Fill)))
+                .push(height_slider);
         }
         card("Bar Mode", content)
     }
@@ -763,6 +738,12 @@ impl ConfigPage {
             tracing::error!("[ui] PipeWire capture backend is unavailable");
         }
     }
+}
+
+fn note<'a>(content: impl IntoFragment<'a>) -> Text<'a> {
+    text(content)
+        .size(theme::BODY_TEXT_SIZE)
+        .style(theme::weak_text_style)
 }
 
 fn render_toggle_grid<T, F>(items: &[T], mut project: F) -> Column<'static, ConfigMessage>

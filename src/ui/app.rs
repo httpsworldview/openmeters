@@ -132,25 +132,17 @@ impl UiApp {
             audio,
             settings_handle,
         } = config;
-        let visual_frame_rate = settings_handle.borrow().data.visual_frame_rate;
-        let (visual_settings, use_decorations, bar_settings, main_window, theme_file) = {
+        let settings = settings_handle.borrow().data.clone();
+        let theme_file = {
             let guard = settings_handle.borrow();
-            let settings = &guard.data;
-            (
-                settings.visuals.clone(),
-                settings.decorations,
-                settings.bar.clone(),
-                settings.main_window,
-                guard
-                    .theme_store()
-                    .load(guard.active_theme())
-                    .inspect_err(|e| {
-                        tracing::warn!("[theme] failed to load {:?}: {e}", guard.active_theme());
-                    }),
-            )
+            let theme = guard.active_theme();
+            guard
+                .theme_store()
+                .load(theme)
+                .inspect_err(|e| tracing::warn!("[theme] failed to load {theme:?}: {e}"))
         };
         let mut manager = VisualManager::default();
-        manager.apply_visual_settings(&visual_settings);
+        manager.apply_visual_settings(&settings.visuals);
         if let Ok(theme_file) = theme_file {
             manager.apply_theme(&theme_file);
         }
@@ -172,17 +164,17 @@ impl UiApp {
             use_layershell,
         );
         let visuals_page = VisualsPage::new(visual_manager.clone(), settings_handle.clone());
-        let base_size = main_window_size(main_window);
+        let base_size = main_window_size(settings.main_window);
         let (main_window, open_task) = open_main_window(
             use_layershell,
-            bar_settings,
+            settings.bar,
             base_size,
-            use_decorations,
+            settings.decorations,
             config_page.has_bar_outputs(),
         );
         let frames = Rc::new(RefCell::new(FrameCoordinator::new(
             meter_engine,
-            visual_frame_rate,
+            settings.visual_frame_rate,
         )));
         let mut app = Self {
             config_page,
@@ -202,7 +194,7 @@ impl UiApp {
             popout_windows: HashMap::default(),
             exit_warning_until: None,
         };
-        let restore_popouts = app.restore_popout_windows(&visual_settings.popouts);
+        let restore_popouts = app.restore_popout_windows(&settings.visuals.popouts);
         if !app.popout_windows.is_empty() {
             app.sync_visuals_page();
         }
@@ -268,15 +260,12 @@ impl UiApp {
         if !matches!(self.main_window, MainWindow::Bar(Some(_))) {
             return;
         }
-        let (enabled, height, alignment) = {
-            let settings = self.settings_handle.borrow();
-            let bar = &settings.data.bar;
-            (bar.enabled, clamp_bar_height(bar.height), bar.alignment)
-        };
-        if !enabled {
+        let bar = &self.settings_handle.borrow().data.bar;
+        if !bar.enabled {
             return;
         }
-        let start_y = match alignment {
+        let height = clamp_bar_height(bar.height);
+        let start_y = match bar.alignment {
             BarAlignment::Top => height as f32,
             BarAlignment::Bottom => 0.0,
         };
@@ -312,13 +301,7 @@ impl UiApp {
     }
 
     fn main_window_view(&self, window_id: window::Id) -> Element<'_, Message> {
-        let (bar_enabled, bar_alignment) = {
-            let settings = self.settings_handle.borrow();
-            (settings.data.bar.enabled, settings.data.bar.alignment)
-        };
-        let content = self.visuals_with_toasts();
-        let content = self.wrap_bar_resize(content, bar_enabled, bar_alignment);
-        self.with_frame_clock(window_id, content)
+        self.with_frame_clock(window_id, self.wrap_bar_resize(self.visuals_with_toasts()))
     }
 
     fn with_frame_clock<'a>(
@@ -354,9 +337,8 @@ impl UiApp {
             is_active(self.exit_warning_until).then_some("q again to exit"),
         ];
 
-        let base: Element<'_, Message> = visuals_view;
         if !toast_msgs.iter().any(Option::is_some) {
-            return base;
+            return visuals_view;
         }
         let toast = container(
             row(toast_msgs
@@ -371,16 +353,12 @@ impl UiApp {
             .padding(8)
             .align_x(Horizontal::Center)
             .align_y(Vertical::Bottom);
-        stack![base, overlay].into()
+        stack![visuals_view, overlay].into()
     }
 
-    fn wrap_bar_resize<'a>(
-        &'a self,
-        content: Element<'a, Message>,
-        bar_enabled: bool,
-        bar_alignment: BarAlignment,
-    ) -> Element<'a, Message> {
-        if !(self.main_window.is_bar() && bar_enabled) {
+    fn wrap_bar_resize<'a>(&'a self, content: Element<'a, Message>) -> Element<'a, Message> {
+        let bar = &self.settings_handle.borrow().data.bar;
+        if !(self.main_window.is_bar() && bar.enabled) {
             return content;
         }
         let handle = mouse_area(
@@ -390,24 +368,19 @@ impl UiApp {
         )
         .on_press(Message::BarResizeStart)
         .interaction(iced::mouse::Interaction::ResizingVertically);
-        let handle_layer = fill(handle).align_y(match bar_alignment {
+        let handle_layer = fill(handle).align_y(match bar.alignment {
             BarAlignment::Top => Vertical::Bottom,
             BarAlignment::Bottom => Vertical::Top,
         });
-
-        if let Some(state) = &self.bar_resize_state {
+        let overlay = self.bar_resize_state.as_ref().map(|state| {
             let (current, pending) = (state.start_height, state.pending_height);
-            let overlay: Element<'_, Message> =
-                container(text(format!("{current}px -> {pending}px")).size(14))
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .align_x(Horizontal::Center)
-                    .align_y(Vertical::Center)
-                    .style(theme::resize_overlay)
-                    .into();
-            stack![content, overlay, handle_layer].into()
-        } else {
-            stack![content, handle_layer].into()
-        }
+            container(text(format!("{current}px -> {pending}px")).size(14))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .align_x(Horizontal::Center)
+                .align_y(Vertical::Center)
+                .style(theme::resize_overlay)
+        });
+        stack![content, overlay, handle_layer].into()
     }
 }

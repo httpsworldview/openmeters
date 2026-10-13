@@ -43,11 +43,9 @@ fn readable_text(background: Color) -> Color {
 }
 
 fn palette(background: Color) -> palette::Palette {
-    let text = readable_text(background);
-
     palette::Palette {
         background,
-        text,
+        text: readable_text(background),
         primary: ACCENT_PRIMARY,
         success: ACCENT_SUCCESS,
         warning: ACCENT_SUCCESS,

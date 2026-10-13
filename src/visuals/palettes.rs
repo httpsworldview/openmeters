@@ -19,7 +19,7 @@ pub struct Palette {
     colors: Vec<Color>,
     pub defaults: &'static [Color],
     pub default_positions: &'static [f32],
-    labels: &'static [&'static str],
+    pub labels: &'static [&'static str],
 }
 
 impl Palette {
@@ -42,10 +42,6 @@ impl Palette {
         } else {
             &self.colors
         }
-    }
-
-    pub fn labels(&self) -> &'static [&'static str] {
-        self.labels
     }
 
     pub fn len(&self) -> usize {
