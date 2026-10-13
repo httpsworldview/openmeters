@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::util::color::{EPSILON, palettes_equal, parse_hex_color, sanitize_stop_spreads};
+use crate::util::color::{EPSILON, palettes_equal, parse_hex_color, sanitize_stop_spreads, to_hex};
 use iced::Color;
 use serde::{Deserialize, Serialize};
 
@@ -19,7 +19,7 @@ impl TryFrom<String> for ColorSetting {
 
 impl From<ColorSetting> for String {
     fn from(ColorSetting(color): ColorSetting) -> Self {
-        color.to_string()
+        to_hex(color)
     }
 }
 

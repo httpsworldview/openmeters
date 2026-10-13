@@ -34,11 +34,10 @@ const HANDLE_WIDTH: f32 = 10.0;
 pub enum PaletteEvent {
     Select(Option<usize>),
     EditHex(Option<String>),
-    /// Ends an edit: applies a valid hex draft and commits a drag preview.
+    /// Applies a valid hex draft and ends a drag.
     Commit,
-    /// Applies a valid hex draft without ending a drag preview.
+    /// Applies a valid hex draft, ending a drag only if it does.
     ApplyHex,
-    /// Previews a color edit until the next commit.
     Adjust(HsvEdit),
     ResetColor,
     AdjustPosition {
@@ -51,6 +50,15 @@ pub enum PaletteEvent {
     },
     Reset,
     HorizontalScroll(ScrollGlow),
+}
+
+/// How an event changed the palette.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaletteChange {
+    /// A drag moved it; show it without saving.
+    Preview,
+    /// It differs from when it was last saved.
+    Save,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -72,7 +80,7 @@ pub struct PaletteEditor {
     positions: Vec<f32>,
     spreads: Vec<f32>,
     active: Option<Selection>,
-    previewing: bool,
+    saved: Option<PaletteSettings>,
     only_first_visible: bool,
     label_overrides: &'static [(usize, &'static str)],
     show_ramp: bool,
@@ -86,7 +94,7 @@ impl PaletteEditor {
             spreads: vec![1.0; palette.len()],
             palette,
             active: None,
-            previewing: false,
+            saved: None,
             only_first_visible: false,
             label_overrides: &[],
             show_ramp: false,
@@ -101,11 +109,6 @@ impl PaletteEditor {
     pub fn set_only_first_visible(&mut self, only: bool) {
         self.only_first_visible = only;
         let _ = self.active.take_if(|active| only && active.index != 0);
-    }
-
-    /// Whether live changes from an unfinished drag await a commit.
-    pub fn is_previewing(&self) -> bool {
-        self.previewing
     }
 
     fn active_index(&self) -> Option<usize> {
@@ -124,11 +127,11 @@ impl PaletteEditor {
     }
 
     pub fn load(&mut self, stored: &PaletteSettings) {
-        let stops: Vec<Color> = stored.stops.iter().copied().map(Into::into).collect();
-        self.set_colors(&stops);
         let positions = stored.stop_positions.as_deref();
         self.positions = sanitize_stop_positions(positions, self.palette.default_positions);
         self.spreads = sanitize_stop_spreads(stored.stop_spreads.as_deref(), self.palette.len());
+        let stops: Vec<Color> = stored.stops.iter().copied().map(Into::into).collect();
+        self.set_colors(&stops);
     }
 
     /// The stored form, or `None` while everything is default.
@@ -142,24 +145,42 @@ impl PaletteEditor {
         )
     }
 
+    /// Replaces the colors with saved ones.
     pub fn set_colors(&mut self, colors: &[Color]) {
         self.palette.set_colors(colors);
-        self.previewing = false;
+        self.saved = self.settings();
         if let Some(active) = &mut self.active {
             active.hex_draft = None;
             active.hsv = to_hsv(self.palette.colors()[active.index], active.hsv);
         }
     }
 
-    pub fn update(&mut self, event: PaletteEvent) -> bool {
+    pub fn update(&mut self, event: PaletteEvent) -> Option<PaletteChange> {
         use PaletteEvent::*;
-        // Discrete edits also commit a preview, e.g. one whose release was lost.
-        let ended = matches!(event, Commit | ResetColor | AdjustSpread { .. } | Reset)
-            && std::mem::take(&mut self.previewing);
-        self.apply(event) | ended
+        let ends_drag = match event {
+            Adjust(_) | AdjustPosition { .. } => {
+                self.apply(event);
+                return Some(PaletteChange::Preview);
+            }
+            Select(_) | EditHex(_) | HorizontalScroll(_) => false,
+            // Blurring the hex input by starting a drag must not end it.
+            ApplyHex => self.draft_color().is_some(),
+            Commit | ResetColor | AdjustSpread { .. } | Reset => true,
+        };
+        self.apply(event);
+        ends_drag.then(|| self.save_changes()).flatten()
     }
 
-    fn apply(&mut self, event: PaletteEvent) -> bool {
+    /// Saves changes since the last save, e.g. from a drag whose release was lost.
+    pub fn save_changes(&mut self) -> Option<PaletteChange> {
+        let settings = self.settings();
+        (settings != self.saved).then(|| {
+            self.saved = settings;
+            PaletteChange::Save
+        })
+    }
+
+    fn apply(&mut self, event: PaletteEvent) {
         match event {
             PaletteEvent::Select(index) => {
                 self.active = index.map(|index| Selection {
@@ -167,20 +188,20 @@ impl PaletteEditor {
                     hex_draft: None,
                     hsv: to_hsv(self.palette.colors()[index], [0.0; 3]),
                 });
-                false
             }
             PaletteEvent::EditHex(value) => {
                 if let Some(active) = &mut self.active {
                     active.hex_draft = value;
                 }
-                false
             }
             PaletteEvent::Commit | PaletteEvent::ApplyHex => {
-                self.draft_color().is_some_and(|c| self.set_color(c, None))
+                if let Some(color) = self.draft_color() {
+                    self.set_color(color, None);
+                }
             }
             PaletteEvent::Adjust(edit) => {
                 let Some(active) = &self.active else {
-                    return false;
+                    return;
                 };
                 // Controls can change before or without blurring the hex input.
                 let (base, hsv) = match self.draft_color() {
@@ -194,46 +215,28 @@ impl PaletteEditor {
                     // Opacity edits skip the lossy HSV round trip.
                     HsvEdit::Alpha(a) => (with_alpha(base, a), hsv),
                 };
-                let changed = self.set_color(color, Some(hsv));
-                self.previewing |= changed;
-                changed
+                self.set_color(color, Some(hsv));
             }
-            PaletteEvent::ResetColor => self
-                .active_index()
-                .is_some_and(|index| self.set_color(self.palette.defaults[index], None)),
+            PaletteEvent::ResetColor => {
+                if let Some(index) = self.active_index() {
+                    self.set_color(self.palette.defaults[index], None);
+                }
+            }
             PaletteEvent::AdjustPosition { index, position } => {
                 let lo = (self.positions[index - 1] + MIN_STOP_GAP).max(MIN_STOP_GAP);
                 let hi = (self.positions[index + 1] - MIN_STOP_GAP).min(1.0 - MIN_STOP_GAP);
-                if lo > hi {
-                    return false;
+                if lo <= hi {
+                    self.positions[index] = position.clamp(lo, hi);
                 }
-                let next = position.clamp(lo, hi);
-                if (self.positions[index] - next).abs() < EPSILON {
-                    return false;
-                }
-                self.positions[index] = next;
-                self.previewing = true;
-                true
             }
-            PaletteEvent::AdjustSpread { index, spread } => {
-                if (self.spreads[index] - spread).abs() < EPSILON {
-                    return false;
-                }
-                self.spreads[index] = spread;
-                true
-            }
-            PaletteEvent::HorizontalScroll(g) => {
-                self.scroll = g;
-                false
-            }
+            PaletteEvent::AdjustSpread { index, spread } => self.spreads[index] = spread,
+            PaletteEvent::HorizontalScroll(g) => self.scroll = g,
             PaletteEvent::Reset => {
                 self.active = None;
-                let changed = !self.is_default();
                 self.palette.reset();
                 self.positions
                     .copy_from_slice(self.palette.default_positions);
                 self.spreads.fill(1.0);
-                changed
             }
         }
     }
@@ -251,30 +254,22 @@ impl PaletteEditor {
     }
 
     /// Replaces the selected color; `hsv` defaults to one derived from it.
-    fn set_color(&mut self, color: Color, hsv: Option<[f32; 3]>) -> bool {
+    fn set_color(&mut self, color: Color, hsv: Option<[f32; 3]>) {
         let Some(active) = &mut self.active else {
-            return false;
+            return;
         };
         let colors = self.palette.colors();
-        let changed = !colors_equal(colors[active.index], color);
-        if changed {
+        if !colors_equal(colors[active.index], color) {
             let mut colors = colors.to_vec();
             colors[active.index] = color;
             self.palette.set_colors(&colors);
         }
         active.hex_draft = None;
         active.hsv = hsv.unwrap_or_else(|| to_hsv(color, active.hsv));
-        changed
     }
 
     pub fn colors(&self) -> &[Color] {
         self.palette.colors()
-    }
-
-    pub fn is_default(&self) -> bool {
-        self.palette.is_default()
-            && self.positions == self.palette.default_positions
-            && self.spreads.iter().all(|&spread| spread == 1.0)
     }
 
     pub fn view(&self) -> Element<'_, PaletteEvent> {
@@ -293,7 +288,7 @@ impl PaletteEditor {
             .extend(self.color_controls())
             .push(action_button(
                 "Reset to defaults",
-                (!self.is_default()).then_some(PaletteEvent::Reset),
+                self.settings().map(|_| PaletteEvent::Reset),
             ))
             .into()
     }
@@ -483,16 +478,14 @@ impl HsvArea {
         }
     }
 
-    /// The edit at `point`, unless it would keep the current value.
-    fn pick(&self, bounds: Rectangle, point: Point) -> Option<PaletteEvent> {
-        // The outermost pixels reach the ends, which presses cannot pass.
-        let fraction =
-            |offset: f32, extent: f32| ((offset - 1.0) / (extent - 2.0).max(1.0)).clamp(0.0, 1.0);
-        let x = fraction(point.x - bounds.x, bounds.width);
+    /// The edit at `point` within `inner`, unless it would keep the current value.
+    fn pick(&self, inner: Rectangle, point: Point) -> Option<PaletteEvent> {
+        let fraction = |offset: f32, extent: f32| (offset / extent.max(1.0)).clamp(0.0, 1.0);
+        let x = fraction(point.x - inner.x, inner.width);
         let [h, s, v, a] = self.hsva;
         let (edit, change) = match self.channel {
             Channel::SatVal => {
-                let y = 1.0 - fraction(point.y - bounds.y, bounds.height);
+                let y = 1.0 - fraction(point.y - inner.y, inner.height);
                 (HsvEdit::SatVal(x, y), (x - s).abs().max((y - v).abs()))
             }
             Channel::Hue => (HsvEdit::Hue(x), (x - h).abs()),
@@ -520,14 +513,16 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for HsvArea {
 
     crate::macros::widget_method!(update PaletteEvent; this; tree, event, layout, cursor, _, _, shell, _ => {
         let bounds = layout.bounds();
-        let pick = |(), point| this.pick(bounds, point);
+        let pick = |(), point| this.pick(bounds.shrink(1.0), point);
         drag(tree.state.downcast_mut(), event, cursor, bounds, shell, |_| Some(()), pick);
     });
 
     crate::macros::widget_method!(draw this; _, renderer, theme, _, layout, _, _ => {
         let bounds = layout.bounds();
+        // Inside the outline, so every value has a pixel, as in `pick`.
+        let inner = bounds.shrink(1.0);
         let hue = |h: f32| from_hsv([h, 1.0, 1.0], 1.0);
-        let area = edges(bounds);
+        let area = edges(inner);
         let bar = Size::new(HANDLE_WIDTH * 0.5, BAR_HEIGHT + 6.0);
         let mut patches = Vec::new();
         let [h, s, v, a] = this.hsva;
@@ -540,7 +535,7 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for HsvArea {
             Channel::Hue => {
                 patches.extend((0..6).map(|i| {
                     let (start, end) = (i as f32 / 6.0, (i + 1) as f32 / 6.0);
-                    horizontal(span(bounds, start, end), hue(start), hue(end))
+                    horizontal(span(inner, start, end), hue(start), hue(end))
                 }));
                 (h, 0.5, bar, hue(h))
             }
@@ -551,8 +546,8 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for HsvArea {
                 (a, 0.5, bar, opaque)
             }
         };
-        patches.extend(outline(area, ui_theme::border(theme, false)));
-        let center = Point::new(bounds.x + x * bounds.width, bounds.y + y * bounds.height);
+        patches.extend(outline(edges(bounds), ui_theme::border(theme, false)));
+        let center = Point::new(inner.x + x * inner.width, inner.y + y * inner.height);
         patches.extend(handle(center, size, fill, ui_theme::border(theme, true)));
         draw(renderer, bounds.expand(HANDLE_WIDTH), patches);
     });
@@ -653,10 +648,6 @@ fn drag<T: Copy>(
     match event {
         Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
         | Event::Touch(touch::Event::FingerPressed { .. }) => {
-            // Commits a drag whose release never arrived.
-            if dragging.take().is_some() {
-                shell.publish(PaletteEvent::Commit);
-            }
             *dragging = cursor.position_over(bounds).and_then(grab);
         }
         Event::Mouse(mouse::Event::CursorMoved { .. })
@@ -779,8 +770,8 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for &PaletteEditor {
         };
         // Meshes interpolate premultiplied colors, unlike the visuals, so spans
         // are only drawn linearly when neither spread nor alpha varies.
-        let mut samples = Vec::new();
-        for (i, (&start, &end)) in positions.iter().zip(&positions[1..]).enumerate() {
+        let samples: Vec<_> = positions.windows(2).enumerate().flat_map(|(i, span)| {
+            let (start, end) = (span[0], span[1]);
             let varies = (spreads[i] - spreads[i + 1]).abs() >= EPSILON
                 || (colors[i].a - colors[i + 1].a).abs() >= EPSILON;
             let count = if varies {
@@ -788,25 +779,25 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for &PaletteEditor {
             } else {
                 1
             };
-            samples.extend((0..count).map(|k| sample(start + (end - start) * k as f32 / count as f32)));
-        }
-        samples.push(sample(1.0));
+            (0..count).map(move |k| sample(start + (end - start) * k as f32 / count as f32))
+        }).chain([sample(1.0)]).collect();
         let ramp = samples.windows(2).map(|w| horizontal(span(bar, w[0].0, w[1].0), w[0].1, w[1].1));
-        let mut patches: Vec<Patch> = checkerboard(bar, 4).chain(ramp).collect();
-        patches.extend(outline(edges(bar), ui_theme::border(theme, false)));
         let handle_y = bar.y + bar.height + (MARKER_HEIGHT + 1.0) * 0.5;
-        for (i, &pos) in positions.iter().enumerate() {
+        let handles = positions.iter().zip(colors).enumerate().flat_map(|(i, (&pos, &c))| {
             let x = bar.x + pos * bar.width;
             let active = editor.active_index() == Some(i);
             let line_alpha = if active { 1.0 } else { 0.5 };
             let line = [x - INDICATOR_WIDTH * 0.5, bar.y, x + INDICATOR_WIDTH * 0.5, bar.y + bar.height];
-            patches.push(solid(line, with_alpha(Color::WHITE, line_alpha)));
             let width = if active { HANDLE_WIDTH } else { HANDLE_WIDTH - 2.0 };
-            let c = colors[i];
             let fill = Color::from_rgb(c.r.max(0.12), c.g.max(0.12), c.b.max(0.12));
             let size = Size::new(width, MARKER_HEIGHT - 1.0);
-            patches.extend(handle(Point::new(x, handle_y), size, fill, ui_theme::border(theme, active)));
-        }
+            std::iter::once(solid(line, with_alpha(Color::WHITE, line_alpha)))
+                .chain(handle(Point::new(x, handle_y), size, fill, ui_theme::border(theme, active)))
+        });
+        let patches = checkerboard(bar, 4)
+            .chain(ramp)
+            .chain(outline(edges(bar), ui_theme::border(theme, false)))
+            .chain(handles);
         draw(renderer, bounds.expand(HANDLE_WIDTH), patches);
     });
 }
@@ -822,27 +813,27 @@ mod tests {
 
     #[test]
     fn hex_and_picker_edits_preserve_precision_and_other_slots() {
-        use {HsvEdit::*, PaletteEvent::*};
+        use {HsvEdit::*, PaletteChange::*, PaletteEvent::*};
         let mut editor = PaletteEditor::new(waveform::PALETTE);
         let mut colors = waveform::COLORS.to_vec();
         colors[0] = Color::from_rgba(0.12345, 0.54321, 0.67891, 0.45678);
         editor.set_colors(&colors);
         editor.update(Select(Some(0)));
-        assert!(!editor.update(Commit));
+        assert_eq!(editor.update(Commit), None);
         for input in [to_hex(colors[0]), "#".into()] {
             editor.update(EditHex(Some(input)));
-            assert!(!editor.update(Commit));
+            assert_eq!(editor.update(Commit), None);
             assert_eq!(editor.colors(), colors);
         }
         assert_eq!(draft(&editor), Some("#"));
         editor.update(EditHex(Some("#fff".into())));
         editor.update(EditHex(None));
-        assert!(!editor.update(Commit));
+        assert_eq!(editor.update(Commit), None);
         assert_eq!(editor.colors(), colors);
         for (input, expected) in [(" #aBc8 ", "#AABBCC88"), ("abc", "#AABBCC")] {
             editor.update(EditHex(Some(input.into())));
             assert_eq!(editor.colors(), colors);
-            assert!(editor.update(Commit));
+            assert_eq!(editor.update(Commit), Some(Save));
             colors[0] = parse_hex_color(expected).unwrap();
             assert_eq!(editor.colors(), colors);
             assert_eq!(to_hex(colors[0]), expected);
@@ -853,48 +844,49 @@ mod tests {
             half(Color::from_rgb(0.0, 1.0, 1.0)),
             half(Color::from_rgb(1.0, 0.0, 0.0)),
         );
-        for (input, edit, expected, changed) in [
-            (Some("#"), Alpha(0.5), half(colors[0]), true),
-            (Some("#"), Alpha(0.5), half(colors[0]), false),
-            (Some("#fff"), Alpha(0.5), white, true),
+        for (input, edit, expected) in [
+            (Some("#"), Alpha(0.5), half(colors[0])),
+            (Some("#fff"), Alpha(0.5), white),
             // Hue survives gray and black.
-            (None, Hue(0.5), white, false),
-            (None, SatVal(1.0, 0.0), black, true),
-            (None, SatVal(1.0, 1.0), cyan, true),
+            (None, Hue(0.5), white),
+            (None, SatVal(1.0, 0.0), black),
+            (None, SatVal(1.0, 1.0), cyan),
             // Full hue stays at the end of the bar.
-            (None, Hue(1.0), red, true),
-            (None, Alpha(0.5), red, false),
+            (None, Hue(1.0), red),
         ] {
             editor.update(EditHex(input.map(str::to_owned)));
-            assert_eq!(editor.update(Adjust(edit)), changed);
+            assert_eq!(editor.update(Adjust(edit)), Some(Preview));
             colors[0] = expected;
             assert!(draft(&editor).is_none());
             assert_eq!(editor.colors(), colors);
         }
         assert_eq!(editor.active.as_ref().unwrap().hsv, [1.0, 1.0, 1.0]);
-        assert!(!editor.update(ApplyHex) && editor.is_previewing());
-        assert!(editor.update(Commit));
-        assert!(!editor.is_previewing() && !editor.update(Commit));
+        assert_eq!(editor.update(ApplyHex), None);
+        assert_eq!(editor.update(Commit), Some(Save));
     }
 
     #[test]
-    fn resets_and_theme_replacement_end_edits() {
-        use {HsvEdit::*, PaletteEvent::*};
+    fn edits_save_once_they_end_and_differ() {
+        use {HsvEdit::*, PaletteChange::*, PaletteEvent::*};
         let mut editor = PaletteEditor::new(waveform::PALETTE);
         let white = [Color::WHITE; 3];
         editor.update(Select(Some(0)));
         editor.update(Adjust(Alpha(0.5)));
         editor.update(EditHex(Some("#abc".into())));
         editor.set_colors(&white);
-        assert!(!editor.update(Commit));
+        assert_eq!(editor.update(Commit), None);
         assert_eq!(editor.colors(), white);
+        for alpha in [0.5, 1.0] {
+            assert_eq!(editor.update(Adjust(Alpha(alpha))), Some(Preview));
+        }
+        assert_eq!(editor.update(Commit), None);
         editor.update(Adjust(Alpha(0.5)));
-        assert!(editor.update(ResetColor) && !editor.is_previewing());
-        assert!(!editor.update(ResetColor));
+        assert_eq!(editor.update(ResetColor), Some(Save));
+        assert_eq!(editor.update(ResetColor), None);
         assert_eq!(editor.colors()[0], waveform::COLORS[0]);
         editor.update(EditHex(Some("#abc".into())));
-        assert!(editor.update(Reset));
-        assert!(!editor.update(Commit));
+        assert_eq!(editor.update(Reset), Some(Save));
+        assert_eq!(editor.update(Commit), None);
         assert_eq!(editor.colors(), waveform::COLORS);
     }
 }

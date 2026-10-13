@@ -131,6 +131,7 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
                 return app.handle_bar_config_change(change);
             }
             Some(ConfigEffect::ThemeChanged) => {
+                // The theme replaced every palette, unfinished edits included.
                 if let Some((_, panel)) = app.settings_window.as_mut() {
                     *panel = super::ActiveSettings::new(panel.kind(), &app.visual_manager);
                 }

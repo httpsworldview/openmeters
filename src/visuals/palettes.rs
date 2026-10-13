@@ -63,10 +63,6 @@ impl Palette {
         self.colors.clear();
     }
 
-    pub fn is_default(&self) -> bool {
-        self.colors.is_empty()
-    }
-
     pub const fn for_kind(kind: VisualKind) -> Self {
         match kind {
             VisualKind::Spectrogram => spectrogram::PALETTE,

@@ -10,7 +10,7 @@ use crate::persistence::settings::{
     clamp_bar_height,
 };
 use crate::ui::theme;
-use crate::ui::widgets::palette_editor::{PaletteEditor, PaletteEvent};
+use crate::ui::widgets::palette_editor::{PaletteChange, PaletteEditor, PaletteEvent};
 use crate::ui::widgets::scroll_glow::ScrollGlow;
 use crate::ui::widgets::{
     SliderRange, action_button, card, pick, selectable_button, split, toggle,
@@ -239,8 +239,6 @@ impl ConfigPage {
         settings: SettingsHandle,
         bar_supported: bool,
     ) -> Self {
-        use theme::background as bg;
-
         let (current_bg, theme_choices) = {
             let guard = settings.borrow();
             let data = &guard.data;
@@ -250,9 +248,8 @@ impl ConfigPage {
             )
         };
         let window_themes = theme::window_themes(current_bg);
-        let mut bg_pal = bg::PALETTE;
-        bg_pal.set_colors(&[current_bg]);
-        let bg_palette = PaletteEditor::new(bg_pal);
+        let mut bg_palette = PaletteEditor::new(theme::background::PALETTE);
+        bg_palette.set_colors(&[current_bg]);
 
         Self {
             capture,
@@ -328,16 +325,15 @@ impl ConfigPage {
                 }
             }
             ConfigMessage::BgPalette(event) => {
-                if self.bg_palette.update(event) {
-                    let color = self.bg_palette.colors()[0];
-                    self.window_themes = theme::window_themes(color);
-                    if !self.bg_palette.is_previewing() {
-                        self.settings.update(User, |s| {
-                            s.data.background_color = Some(color.into());
-                            s.update_active_theme(|theme| theme.background = Some(color.into()));
-                        });
-                        self.refresh_theme_choices_if_needed();
-                    }
+                let change = self.bg_palette.update(event)?;
+                let color = self.bg_palette.colors()[0];
+                self.window_themes = theme::window_themes(color);
+                if change == PaletteChange::Save {
+                    self.settings.update(User, |s| {
+                        s.data.background_color = Some(color.into());
+                        s.update_active_theme(|theme| theme.background = Some(color.into()));
+                    });
+                    self.refresh_theme_choices_if_needed();
                 }
             }
             ConfigMessage::VisualFrameRateChanged(rate) => {

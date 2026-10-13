@@ -348,6 +348,10 @@ impl VisualManager {
         let index = self.position(config.kind());
         self.entries[index].apply_config(config);
     }
+    pub fn apply_palette(&mut self, kind: VisualKind, palette: Option<&PaletteSettings>) {
+        let index = self.position(kind);
+        self.entries[index].module.apply_palette(palette);
+    }
     pub fn set_enabled(&mut self, kind: VisualKind, enabled: bool) {
         let index = self.position(kind);
         self.entries[index].set_enabled(enabled);
