@@ -11,6 +11,8 @@ crate::macros::choice_enum!(#[derive(Default)] #[repr(u32)] pub enum FrequencySc
 
 // Match LOG_KNEE_HZ in visuals/render/shaders/spectrogram.wgsl.
 const LOG_KNEE_HZ: f32 = 20.0;
+// Lower display bound, independent of FFT bin spacing.
+pub const DISPLAY_MIN_HZ: f32 = 1.0;
 
 impl FrequencyScale {
     pub fn freq_at(self, min: f32, max: f32, t: f32) -> f32 {

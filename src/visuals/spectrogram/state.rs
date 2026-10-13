@@ -8,7 +8,7 @@ use super::render::{RingCopyPlan, SPECTROGRAM_PALETTE_SIZE, SpectrogramParams};
 use crate::persistence::settings::SpectrogramSettings;
 use crate::util::{
     audio::musical::{MusicalNote, NoteInfo},
-    audio::{FrequencyScale, fmt_duration, fmt_freq},
+    audio::{DISPLAY_MIN_HZ, FrequencyScale, fmt_duration, fmt_freq},
     color::{color_to_rgba, lerp_color, rgba_with_alpha, with_alpha},
 };
 use crate::visuals::options::PianoRollOverlay;
@@ -71,9 +71,6 @@ static PIANO_KEY_SCALES: LazyLock<[[[f32; 2]; PIANO_KEY_COUNT]; 3]> = LazyLock::
         })
     })
 });
-
-// Independent of FFT bin spacing.
-const DISPLAY_MIN_HZ: f32 = 1.0;
 
 fn display_axis(sample_rate: f32) -> (f32, f32) {
     let nyq = (sample_rate / 2.0).max(1.0);

@@ -5,7 +5,7 @@ use super::processor::{SpectrumSnapshot, SpectrumTraceSnapshot};
 use super::render::{MIN_TRACE_POINTS, SpectrumCutoutParams, SpectrumParams, SpectrumPeakParams};
 use crate::persistence::settings::SpectrumSettings;
 use crate::util::audio::musical::NoteInfo;
-use crate::util::audio::{Channel, FrequencyScale, fmt_freq};
+use crate::util::audio::{Channel, DISPLAY_MIN_HZ, FrequencyScale, fmt_freq};
 use crate::util::color::{color_to_rgba, with_alpha};
 use crate::util::lerp;
 use crate::visuals::options::{SpectrumDisplayMode, SpectrumWeightingMode};
@@ -18,8 +18,9 @@ use iced::{Color, Padding, Point, Rectangle, Size};
 use std::sync::{Arc, LazyLock};
 
 const EPSILON: f32 = 1e-6;
-const MIN_FREQUENCY: f32 = 20.0;
 const MAX_DB: f32 = 0.0;
+// Lower ticks crowd together, and a tick at the 1 Hz edge reads as a bound.
+const MIN_GRID_HZ: f32 = 10.0;
 const GRID_LABEL_SIZE: f32 = 10.0;
 const GRID_LABEL_GAP: f32 = 6.0;
 const GRID_LABEL_PADDING_X: f32 = 4.0;
@@ -116,7 +117,7 @@ impl SpectrumState {
             (primary_source, secondary_source) if primary_source == secondary_source => Some(0),
             _ => Some(1),
         };
-        let min_f = MIN_FREQUENCY;
+        let min_f = DISPLAY_MIN_HZ;
         let max_f = max_f.max(min_f * MIN_DISPLAY_RANGE_FACTOR);
         self.ensure_x_cache(min_f, max_f, bins);
         let style = &self.style;
@@ -175,14 +176,14 @@ impl SpectrumState {
                 .push(scale.pos_of(min_f, max_f, f).clamp(0.0, 1.0));
         }
         self.grid_ticks.clear();
-        let exponents = min_f.max(1.0).log10().floor() as i32..=max_f.log10().ceil() as i32;
+        let exponents = MIN_GRID_HZ.log10().floor() as i32..=max_f.log10().ceil() as i32;
         self.grid_ticks.extend(
             exponents
                 .flat_map(|exponent| {
                     let base = 10f32.powi(exponent);
                     (1..10).map(move |multiplier| (base * multiplier as f32, multiplier))
                 })
-                .filter(|(frequency, _)| (min_f..=max_f).contains(frequency))
+                .filter(|(frequency, _)| (MIN_GRID_HZ..=max_f).contains(frequency))
                 .map(|(frequency, multiplier)| {
                     let label = matches!(multiplier, 1 | 2 | 5).then(|| {
                         let text = raw_text(fmt_freq(frequency), GRID_LABEL_SIZE, Size::INFINITE);
@@ -226,9 +227,8 @@ impl SpectrumState {
         let min_label_x = bounds.x + GRID_LABEL_GAP;
         let ticks = &self.grid_ticks;
         let labels = &mut self.grid_labels;
-        let mut last_right = f32::NEG_INFINITY;
         let mut layout_tick = |(tick_index, tick): (usize, &GridTick)| {
-            let (frequency, _, Some(text)) = tick else {
+            let (frequency, major, Some(text)) = tick else {
                 return;
             };
             let Some(x) = axis.tick_x(*frequency) else {
@@ -242,11 +242,21 @@ impl SpectrumState {
             let max_label_x =
                 (bounds.x + bounds.width - GRID_LABEL_GAP - label_size.width).max(min_label_x);
             let label_x = (x - label_size.width * 0.5).clamp(min_label_x, max_label_x);
-            if label_x < last_right {
+            // Placed labels are in screen order, so only a suffix can overlap.
+            let keep = labels
+                .iter()
+                .rposition(|placed| {
+                    placed.bounds.x + placed.bounds.width + GRID_LABEL_GAP <= label_x
+                })
+                .map_or(0, |index| index + 1);
+            // Decade labels evict overlapping 2x/5x labels; anything else yields.
+            let overlapped = &labels[keep..];
+            if !overlapped.is_empty()
+                && (!major || overlapped.iter().any(|placed| ticks[placed.tick_index].1))
+            {
                 return;
             }
-            last_right = label_x + label_size.width + GRID_LABEL_GAP;
-
+            labels.truncate(keep);
             labels.push(GridLabelLayout {
                 tick_index,
                 bounds: Rectangle::new(Point::new(label_x, label_y), label_size),
@@ -618,6 +628,7 @@ mod tests {
         let original = state.borrow().points.clone();
         let peak_content = state.borrow().peak.as_ref().unwrap().content.clone();
         assert!(original[0].len() > 2 && original[0].iter().any(|point| point[1] > 0.5));
+        assert!(original[0].windows(2).all(|pair| pair[0][0] < pair[1][0]));
         for (floor, peak_visible) in [(-60.0, true), (-3.0, false), (-140.0, true), (-120.0, true)]
         {
             for reverse in [false, true] {
@@ -685,27 +696,43 @@ mod tests {
 
     #[test]
     fn grid_labels_stay_in_screen_order_across_projections() {
+        let range = (DISPLAY_MIN_HZ, 24_000.0);
+        let majors = |state: &SpectrumState| -> Vec<usize> {
+            let ticks = &state.grid_ticks;
+            let labels = state.grid_labels.iter().map(|label| label.tick_index);
+            labels.filter(|&index| ticks[index].1).collect()
+        };
         let mut state = SpectrumState::default();
+        let mut majors_only = SpectrumState::default();
         for scale in [
             FrequencyScale::Logarithmic,
             FrequencyScale::Linear,
             FrequencyScale::Erb,
         ] {
             for reverse in [false, true] {
-                state.style.frequency_scale = scale;
-                state.style.reverse_frequency = reverse;
-                state.ensure_x_cache(20.0, 24_000.0, &[0.0, 20.0, 24_000.0]);
-                state.layout_grid_labels(
-                    Rectangle::new(Point::ORIGIN, Size::new(600.0, 100.0)),
-                    (20.0, 24_000.0),
-                );
-                assert!(state.grid_labels.len() > 2);
-                assert!(
-                    state.grid_labels.windows(2).all(|pair| {
-                        pair[0].bounds.x + pair[0].bounds.width <= pair[1].bounds.x
-                    }),
-                    "scale={scale:?}, reverse={reverse}"
-                );
+                for state in [&mut state, &mut majors_only] {
+                    state.style.frequency_scale = scale;
+                    state.style.reverse_frequency = reverse;
+                    state.ensure_x_cache(range.0, range.1, &[0.0, range.1]);
+                }
+                for tick in majors_only.grid_ticks.iter_mut().filter(|tick| !tick.1) {
+                    tick.2 = None;
+                }
+                assert_eq!(state.grid_ticks.first().map(|tick| tick.0), Some(10.0));
+                for width in [150.0, 600.0] {
+                    let bounds = Rectangle::new(Point::ORIGIN, Size::new(width, 100.0));
+                    state.layout_grid_labels(bounds, range);
+                    majors_only.layout_grid_labels(bounds, range);
+                    let context = format!("scale={scale:?}, reverse={reverse}, width={width}");
+                    assert!(state.grid_labels.len() >= if width > 300.0 { 3 } else { 1 });
+                    assert!(
+                        state.grid_labels.windows(2).all(|pair| {
+                            pair[0].bounds.x + pair[0].bounds.width <= pair[1].bounds.x
+                        }),
+                        "{context}"
+                    );
+                    assert_eq!(majors(&state), majors(&majors_only), "{context}");
+                }
             }
         }
     }
@@ -713,9 +740,9 @@ mod tests {
     #[test]
     fn grid_layout_and_cutout_geometry_are_cached() {
         let mut state = SpectrumState::default();
-        state.ensure_x_cache(20.0, 24_000.0, &[0.0, 20.0, 24_000.0]);
+        state.ensure_x_cache(DISPLAY_MIN_HZ, 24_000.0, &[0.0, 24_000.0]);
         let bounds = Rectangle::new(Point::ORIGIN, Size::new(600.0, 100.0));
-        let range = (20.0, 24_000.0);
+        let range = (DISPLAY_MIN_HZ, 24_000.0);
         state.layout_grid_labels(bounds, range);
         let revision = state.grid_layout_revision;
         let cutouts = Arc::clone(&state.grid_cutouts);

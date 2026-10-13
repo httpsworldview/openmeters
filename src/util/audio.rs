@@ -8,7 +8,7 @@ mod level;
 mod window;
 
 pub use self::{
-    frequency::FrequencyScale,
+    frequency::{DISPLAY_MIN_HZ, FrequencyScale},
     level::{DB_FLOOR, LN_TO_DB, db_to_power, power_to_db, sanitize_negative_db},
     window::{WindowKind, compute_fft_bin_normalization, copy_dc_removed_windowed_from_deque},
 };
