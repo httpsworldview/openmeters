@@ -243,12 +243,9 @@ impl SpectrumState {
                 (bounds.x + bounds.width - GRID_LABEL_GAP - label_size.width).max(min_label_x);
             let label_x = (x - label_size.width * 0.5).clamp(min_label_x, max_label_x);
             // Placed labels are in screen order, so only a suffix can overlap.
-            let keep = labels
-                .iter()
-                .rposition(|placed| {
-                    placed.bounds.x + placed.bounds.width + GRID_LABEL_GAP <= label_x
-                })
-                .map_or(0, |index| index + 1);
+            let keep = labels.partition_point(|placed| {
+                placed.bounds.x + placed.bounds.width + GRID_LABEL_GAP <= label_x
+            });
             // Decade labels evict overlapping 2x/5x labels; anything else yields.
             let overlapped = &labels[keep..];
             if !overlapped.is_empty()
