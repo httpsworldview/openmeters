@@ -462,9 +462,7 @@ impl SpectrogramProcessor {
         if self.config.sample_rate != sample_rate {
             self.config.sample_rate = sample_rate;
             self.rebuild_fft();
-            self.audio_buffer.clear();
-            self.audio_last_nonzero = None;
-            self.reset = true;
+            self.reset_audio();
         }
         self.prepare();
         self.push_audio(block);
