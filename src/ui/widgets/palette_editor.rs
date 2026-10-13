@@ -3,7 +3,7 @@
 
 use crate::persistence::settings::PaletteSettings;
 use crate::ui::theme::{self as ui_theme, Palette};
-use crate::ui::widgets::scroll_glow::ScrollGlow;
+use crate::ui::widgets::scroll_glow::{ScrollEvent, ScrollGlow};
 use crate::ui::widgets::{action_button, clipped_text, split, value_label};
 use crate::util::color::{
     EPSILON, STOP_SPREAD_MAX, STOP_SPREAD_MIN, colors_equal, from_hsv, lerp_color, parse_hex_color,
@@ -15,7 +15,7 @@ use iced::advanced::graphics::mesh::{self, Mesh, Renderer as _, SolidVertex2D};
 use iced::advanced::widget::{Operation, Tree, tree, tree::Tag};
 use iced::advanced::{Layout, Shell, Widget, layout, mouse, text};
 use iced::alignment::{Horizontal, Vertical};
-use iced::widget::{Button, Column, Row, column, container, row, text_input};
+use iced::widget::{Button, Column, Row, Space, column, container, row, text_input};
 use iced::{
     Border, Color, Element, Event, Length, Point, Rectangle, Size, Transformation, Vector,
     keyboard, touch, window,
@@ -49,10 +49,9 @@ pub enum PaletteEvent {
         spread: f32,
     },
     Reset,
-    HorizontalScroll(ScrollGlow),
+    HorizontalScroll(ScrollEvent),
 }
 
-/// How an event changed the palette.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaletteChange {
     /// A drag moved it; show it without saving.
@@ -230,7 +229,7 @@ impl PaletteEditor {
                 }
             }
             PaletteEvent::AdjustSpread { index, spread } => self.spreads[index] = spread,
-            PaletteEvent::HorizontalScroll(g) => self.scroll = g,
+            PaletteEvent::HorizontalScroll(event) => self.scroll.update(event),
             PaletteEvent::Reset => {
                 self.active = None;
                 self.palette.reset();
@@ -272,15 +271,30 @@ impl PaletteEditor {
         self.palette.colors()
     }
 
-    pub fn view(&self) -> Element<'_, PaletteEvent> {
+    fn visible_colors(&self) -> &[Color] {
         let colors = self.palette.colors();
-        let count = if self.only_first_visible {
-            1
+        if self.only_first_visible {
+            &colors[..1]
         } else {
-            colors.len()
-        };
-        let row =
-            Row::with_children((0..count).map(|i| self.color_picker(i, colors[i]))).spacing(12);
+            colors
+        }
+    }
+
+    pub fn preview<'a, M: 'a>(&self) -> Element<'a, M> {
+        let swatches = self.visible_colors().iter().map(|&color| {
+            container(Space::new().width(10).height(10))
+                .style(move |_| container::Style::default().background(color))
+                .into()
+        });
+        container(Row::with_children(swatches))
+            .padding(2)
+            .style(ui_theme::chip)
+            .into()
+    }
+
+    pub fn view(&self) -> Element<'_, PaletteEvent> {
+        let pickers = self.visible_colors().iter().enumerate();
+        let row = Row::with_children(pickers.map(|(i, &c)| self.color_picker(i, c))).spacing(12);
         Column::new()
             .spacing(12)
             .extend(self.show_ramp.then(|| Element::new(self)))
@@ -464,7 +478,6 @@ enum Channel {
     Alpha,
 }
 
-/// Picks a new value for one channel of the `hsva` color.
 struct HsvArea {
     hsva: [f32; 4],
     channel: Channel,
@@ -558,10 +571,15 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for HsvArea {
 type Patch = ([f32; 4], [Color; 4]);
 
 /// Draws patches as one mesh. Unlike Iced's quads, which ease between gradient
-/// stops and antialias every edge, it interpolates linearly without seams.
+/// stops, it interpolates linearly without seams. Meshes skip crisp snapping;
+/// Iced only snaps the clip origin, so edges round relative to it here to keep
+/// outlines one pixel wide.
 fn draw(renderer: &mut iced::Renderer, clip: Rectangle, patches: impl IntoIterator<Item = Patch>) {
     let (mut vertices, mut indices) = (Vec::new(), Vec::new());
+    let snap = |value: f32, origin: f32| (value - origin).round() + origin;
     for ([left, top, right, bottom], colors) in patches {
+        let [left, right] = [left, right].map(|x| snap(x, clip.x));
+        let [top, bottom] = [top, bottom].map(|y| snap(y, clip.y));
         let base = vertices.len() as u32;
         let corners = [[left, top], [right, top], [left, bottom], [right, bottom]];
         vertices.extend(

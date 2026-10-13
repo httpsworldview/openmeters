@@ -33,7 +33,7 @@ tempfile = "3.27.0"
   [dependencies.iced]
   version = "0.14.0"
   default-features = false
-  features = [ "advanced", "wgpu-bare", "wayland", "x11", "thread-pool", "web-colors" ]
+  features = [ "advanced", "crisp", "wgpu-bare", "wayland", "x11", "thread-pool", "web-colors" ]
 
   [dependencies.bytemuck]
   version = "1.25.2"

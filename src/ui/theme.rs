@@ -89,6 +89,41 @@ pub fn weak_container(theme: &Theme) -> container::Style {
         .border(border(theme, false))
 }
 
+pub fn section_header_style(theme: &Theme, status: button::Status) -> button::Style {
+    let palette = theme.extended_palette();
+    let background = match status {
+        button::Status::Hovered => Some(palette::deviate(palette.background.weak.color, 0.04)),
+        button::Status::Pressed => Some(palette::deviate(palette.background.weak.color, 0.08)),
+        _ => None,
+    };
+    button::Style {
+        background: background.map(Background::Color),
+        text_color: palette.background.base.text,
+        ..button::Style::default()
+    }
+}
+
+pub fn section_mark(theme: &Theme, expanded: bool) -> container::Style {
+    let color = if expanded {
+        theme.extended_palette().background.base.text
+    } else {
+        border_color(theme, true)
+    };
+    container::Style::default().background(color)
+}
+
+pub fn divider(theme: &Theme) -> container::Style {
+    container::Style::default().background(border_color(theme, false))
+}
+
+pub fn chip(theme: &Theme) -> container::Style {
+    let palette = theme.extended_palette();
+    container::Style::default()
+        .background(palette.background.base.color)
+        .color(palette.secondary.weak.text)
+        .border(border(theme, false))
+}
+
 pub fn weak_text_style(theme: &Theme) -> text::Style {
     text::Style {
         color: Some(theme.extended_palette().secondary.weak.text),

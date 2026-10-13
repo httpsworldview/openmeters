@@ -3,7 +3,7 @@
 
 use super::{set, set_f32, set_usize, settings_messages, settings_pane, settings_view};
 use crate::persistence::settings::StereometerSettings;
-use crate::ui::widgets::{SliderRange, pick, split, toggle};
+use crate::ui::widgets::{SliderRange, chip, pick, split, toggle};
 use crate::visuals::options::{
     CorrelationMeterMode, CorrelationMeterSide, StereometerMode, StereometerScale,
 };
@@ -88,5 +88,5 @@ settings_view! {
     }
     "Meter" => meter;
     "Display" => display;
-    "Phase Correlation" => correlation;
+    "Phase Correlation" [[chip(settings.correlation_meter.label())]] => correlation;
 }

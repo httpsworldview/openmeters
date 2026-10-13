@@ -334,7 +334,6 @@ impl UiApp {
         self.config_page.refresh_theme_choices_if_needed();
     }
 
-    /// Exits after committing unfinished edits, as closing their windows does.
     pub(super) fn quit(&mut self) -> Task<Message> {
         self.config_page.commit_edits();
         if let Some((_, mut panel)) = self.settings_window.take() {

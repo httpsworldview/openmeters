@@ -6,7 +6,7 @@ use super::{
     settings_pane, settings_view, update_fft_size, update_hop_divisor,
 };
 use crate::persistence::settings::SpectrumSettings;
-use crate::ui::widgets::{SliderRange, pick, split, toggle};
+use crate::ui::widgets::{SliderRange, chip, pick, split, toggle};
 use crate::util::audio::{Channel, FrequencyScale};
 use crate::visuals::options::{SpectrumDisplayMode, SpectrumWeightingMode as WeightingMode};
 use crate::visuals::spectrum::processor::{
@@ -73,78 +73,83 @@ settings_messages!(pane, settings, value {
 settings_view! {
     pane as settings {
         use FrequencyDirection::{HighToLow, LowToHigh};
+        let primary = settings.source != Channel::None;
+        let secondary = settings.secondary_source != Channel::None;
+        let bars = settings.display_mode == SpectrumDisplayMode::Bar;
         let hop_divisor = get_closest_hop_divisor(settings.fft_size, settings.hop_size);
         let direction = if settings.reverse_frequency { HighToLow } else { LowToHigh };
 
         let sources = split(
             form!(
                 pick("Primary source", Channel::ALL, settings.source, Source);
-                pick("Primary weighting", WeightingMode::ALL, settings.weighting_mode, Weighting);
+                primary.then(|| {
+                    pick("Primary weighting", WeightingMode::ALL, settings.weighting_mode, Weighting)
+                });
             ),
             form!(
                 pick("Secondary source", Channel::ALL, settings.secondary_source, SecondarySource);
-                pick(
+                secondary.then(|| pick(
                     "Secondary weighting", WeightingMode::ALL,
                     settings.secondary_weighting_mode, SecondaryWeighting
-                );
+                ));
             ),
         );
-        let mut analysis = form!(
+        let averaging = match pane.averaging.mode {
+            AvgMode::Exponential => Some(slider!(
+                "Exp factor", pane.averaging.factor, EXP_R, AvgFactor, "{:.2}"
+            )),
+            AvgMode::PeakHold => Some(slider!(
+                "Peak decay", pane.averaging.peak_decay, DECAY_R, PeakDecay, "{:.1} dB/s"
+            )),
+            AvgMode::None => None,
+        };
+        let view = form!(
             split(
-                form!(
-                    pick("FFT size", &FFT_OPTIONS[..], settings.fft_size, FftSize);
-                    pick("Hop divisor", &HOP_DIVISORS[..], hop_divisor, HopDivisor);
-                ),
-                form!(
-                    pick("Frequency scale", FrequencyScale::ALL, settings.frequency_scale, Scale);
-                    pick("Averaging", AvgMode::ALL, pane.averaging.mode, Averaging);
-                ),
+                pick("Display", SpectrumDisplayMode::ALL, settings.display_mode, Display),
+                pick("Frequency scale", FrequencyScale::ALL, settings.frequency_scale, Scale),
             );
-        );
-        match pane.averaging.mode {
-            AvgMode::Exponential => {
-                analysis = analysis.push(slider!(
-                    "Exp factor", pane.averaging.factor, EXP_R, AvgFactor, "{:.2}"
-                ));
-            }
-            AvgMode::PeakHold => {
-                analysis = analysis.push(slider!(
-                    "Peak decay", pane.averaging.peak_decay, DECAY_R, PeakDecay, "{:.1} dB/s"
-                ));
-            }
-            AvgMode::None => {}
-        }
-
-        let mut display = form!(
-            pick("Display", SpectrumDisplayMode::ALL, settings.display_mode, Display);
-            split(
-                form!(
-                    pick("Direction", FrequencyDirection::ALL, direction, Direction);
-                    toggle("Frequency grid", settings.show_grid, ShowGrid);
-                ),
-                form!(toggle("Peak label", settings.show_peak_label, ShowPeakLabel);),
-            );
+            pick("Averaging", AvgMode::ALL, pane.averaging.mode, Averaging);
+            averaging;
             slider!("Noise floor", settings.floor_db, FLOOR_R, FloorDb, "{:.0} dB");
         );
-        if settings.display_mode == SpectrumDisplayMode::Bar {
-            display = display
-                .push(slider!(
-                    "Bar count", settings.bar_count as f32, BARS_R, BarCount,
-                    settings.bar_count.to_string()
-                ))
-                .push(slider!(
-                    "Bar gap", settings.bar_gap, GAP_R, BarGap,
-                    format!("{:.0}%", settings.bar_gap * 100.0)
-                ));
-        }
-        display = display.push(slider!(
-            "Color floor", settings.highlight_threshold, HIGH_R, Highlight,
-            format!("{:.0}%", settings.highlight_threshold * 100.0)
-        ));
+
+        let analysis = split(
+            pick("FFT size", &FFT_OPTIONS[..], settings.fft_size, FftSize),
+            pick("Hop divisor", &HOP_DIVISORS[..], hop_divisor, HopDivisor),
+        );
+        let details = form!(
+            pick("Direction", FrequencyDirection::ALL, direction, Direction);
+            split(
+                toggle("Frequency grid", settings.show_grid, ShowGrid),
+                primary.then(|| toggle("Peak label", settings.show_peak_label, ShowPeakLabel)),
+            );
+            bars.then(|| slider!(
+                "Bar count", settings.bar_count as f32, BARS_R, BarCount,
+                settings.bar_count.to_string()
+            ));
+            bars.then(|| slider!(
+                "Bar gap", settings.bar_gap, GAP_R, BarGap,
+                format!("{:.0}%", settings.bar_gap * 100.0)
+            ));
+            slider!(
+                "Color floor", settings.highlight_threshold, HIGH_R, Highlight,
+                format!("{:.0}%", settings.highlight_threshold * 100.0)
+            );
+        );
+        let details_summary = [
+            bars.then(|| format!("{} bars", settings.bar_count)),
+            settings.reverse_frequency.then(|| "Reversed".into()),
+            settings.show_grid.then(|| "Grid".into()),
+            (primary && settings.show_peak_label).then(|| "Peak label".into()),
+        ];
     }
     "Sources" => sources;
-    "Analysis" => analysis;
-    "Display" => display;
+    "View" => view;
+    "Analysis" [[
+        chip(format!("FFT {}", settings.fft_size)),
+        chip(format!("Hop 1/{hop_divisor}")),
+    ]] => analysis;
+    "Details" [details_summary.into_iter().flatten().map(chip)] => details;
 }
 
 impl Pane {

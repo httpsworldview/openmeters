@@ -2,10 +2,12 @@
 // Copyright (C) 2026 Maika Namuo
 
 use crate::util::color::with_alpha;
-use iced::Element;
 use iced::Length::{Fill, Fixed, Shrink};
 use iced::gradient;
-use iced::widget::{Space, column, container, row, scrollable, scrollable::Scrollbar, stack};
+use iced::widget::{
+    Space, column, container, row, scrollable, scrollable::Scrollbar, sensor, stack,
+};
+use iced::{Element, Size};
 use std::f32::consts::{FRAC_PI_2, PI};
 
 const GLOW_SIZE: f32 = 24.0;
@@ -18,25 +20,32 @@ macro_rules! scroll_glow_axis {
         pub fn $name<'a, M: 'a>(
             &self,
             content: impl Into<Element<'a, M>>,
-            on_scroll: impl Fn(Self) -> M + 'a,
+            on_scroll: impl Fn(ScrollEvent) -> M + Copy + 'a,
         ) -> Element<'a, M> {
+            let content = sensor(content).on_resize(move |size: Size| {
+                on_scroll(ScrollEvent::ContentResized(size.$extent))
+            });
             let body = scrollable(content)
                 .direction(scrollable::Direction::$direction(hidden_scrollbar()))
                 .width(Fill)
                 $(.height($height))?
                 .on_scroll(move |vp: scrollable::Viewport| {
-                    on_scroll(Self::from_axis(
-                        vp.content_bounds().$extent,
-                        vp.bounds().$extent,
-                        vp.relative_offset().$offset,
-                    ))
+                    on_scroll(ScrollEvent::Scrolled(Self {
+                        content: vp.content_bounds().$extent,
+                        bounds: vp.bounds().$extent,
+                        offset: vp.absolute_offset().$offset,
+                    }))
                 });
+            let body = sensor(body).on_resize(move |size: Size| {
+                on_scroll(ScrollEvent::BoundsResized(size.$extent))
+            });
+            let [show_start, show_end] = self.visible();
             stack![
                 body,
                 $layout![
-                    glow(self.show_start, $start, $vertical),
+                    glow(show_start, $start, $vertical),
                     Space::new().width(Fill).height($spacer_height),
-                    glow(self.show_end, $end, $vertical),
+                    glow(show_end, $end, $vertical),
                 ]
             ]
             .into()
@@ -44,19 +53,37 @@ macro_rules! scroll_glow_axis {
     };
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ScrollEvent {
+    Scrolled(ScrollGlow),
+    // Iced reports no viewport once content fits, e.g. after it shrinks.
+    ContentResized(f32),
+    BoundsResized(f32),
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct ScrollGlow {
-    pub show_start: bool,
-    pub show_end: bool,
+    content: f32,
+    bounds: f32,
+    offset: f32,
 }
 
 impl ScrollGlow {
-    fn from_axis(content: f32, bounds: f32, rel: f32) -> Self {
-        let overflows = content > bounds;
-        Self {
-            show_start: overflows && rel > 0.01,
-            show_end: overflows && rel < 0.99,
+    pub fn update(&mut self, event: ScrollEvent) {
+        match event {
+            ScrollEvent::Scrolled(glow) => *self = glow,
+            ScrollEvent::ContentResized(content) => self.content = content,
+            ScrollEvent::BoundsResized(bounds) => self.bounds = bounds,
         }
+    }
+
+    fn visible(&self) -> [bool; 2] {
+        let range = self.content - self.bounds;
+        if range <= 0.0 {
+            return [false; 2];
+        }
+        let relative = self.offset / range;
+        [relative > 0.01, relative < 0.99]
     }
 
     scroll_glow_axis!(

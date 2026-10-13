@@ -11,9 +11,9 @@ use crate::persistence::settings::{
 };
 use crate::ui::theme;
 use crate::ui::widgets::palette_editor::{PaletteChange, PaletteEditor, PaletteEvent};
-use crate::ui::widgets::scroll_glow::ScrollGlow;
+use crate::ui::widgets::scroll_glow::{ScrollEvent, ScrollGlow};
 use crate::ui::widgets::{
-    SliderRange, action_button, card, pick, selectable_button, split, toggle,
+    Disclosure, SliderRange, action_button, card, chip, pick, selectable_button, split, toggle,
 };
 use crate::visuals::registry::{VisualKind, VisualManagerHandle, VisualSlotSnapshot};
 use iced::alignment::Vertical;
@@ -181,7 +181,7 @@ pub enum ConfigMessage {
         identity: StreamIdentity,
         enabled: bool,
     },
-    ToggleApplicationsVisibility,
+    ToggleSection(&'static str),
     VisualToggled {
         kind: VisualKind,
         enabled: bool,
@@ -198,7 +198,7 @@ pub enum ConfigMessage {
     ThemeChanged(String),
     SaveTheme(String),
     ThemeNameInput(String),
-    Scrolled(ScrollGlow),
+    Scrolled(ScrollEvent),
 }
 
 pub(in crate::ui) enum BarChange {
@@ -223,7 +223,7 @@ pub struct ConfigPage {
     bar_supported: bool,
     bar_outputs: BarOutputs,
     registry_alive: bool,
-    applications_expanded: bool,
+    disclosure: Disclosure,
     device_choices: Vec<DeviceOption>,
     bg_palette: PaletteEditor,
     scroll: ScrollGlow,
@@ -259,7 +259,7 @@ impl ConfigPage {
             bar_supported,
             bar_outputs: BarOutputs::default(),
             registry_alive: true,
-            applications_expanded: false,
+            disclosure: Disclosure::default(),
             device_choices: Vec::new(),
             bg_palette,
             scroll: ScrollGlow::default(),
@@ -304,9 +304,7 @@ impl ConfigPage {
                 });
                 self.dispatch_capture_config();
             }
-            ConfigMessage::ToggleApplicationsVisibility => {
-                self.applications_expanded = !self.applications_expanded;
-            }
+            ConfigMessage::ToggleSection(title) => self.disclosure.toggle(title),
             ConfigMessage::VisualToggled { kind, enabled } => {
                 self.visual_manager.borrow_mut().set_enabled(kind, enabled);
                 self.settings.update(User, |s| {
@@ -380,7 +378,7 @@ impl ConfigPage {
                 self.save_theme_name.clear();
             }
             ConfigMessage::ThemeNameInput(val) => self.save_theme_name = val,
-            ConfigMessage::Scrolled(g) => self.scroll = g,
+            ConfigMessage::Scrolled(event) => self.scroll.update(event),
         }
         None
     }
@@ -389,7 +387,7 @@ impl ConfigPage {
         let snapshot = self.visual_manager.borrow().snapshot();
         let mut content = column![
             self.render_capture_card(),
-            Self::render_visuals_card(&snapshot),
+            self.render_visuals_card(&snapshot),
             self.render_global_card(),
         ]
         .spacing(theme::SECTION_GAP);
@@ -406,68 +404,70 @@ impl ConfigPage {
             pick("Mode", CaptureMode::ALL, mode, ConfigMessage::CaptureModeChanged);
             match mode {
                 CaptureMode::Applications => self.render_applications_section(),
-                CaptureMode::Device => self.render_device_section(),
+                CaptureMode::Device => self.render_device_section().into(),
             };
         );
         card("Audio Capture", content)
     }
 
-    fn render_applications_section(&self) -> Column<'_, ConfigMessage> {
+    fn render_applications_section(&self) -> Element<'_, ConfigMessage> {
         let applications = self
             .capture_view
             .as_ref()
             .map_or(&[][..], |view| view.applications.as_ref());
-        let status_suffix: String = match (
+        let settings = self.settings.borrow();
+        let disabled = &settings.data.disabled_streams;
+        let disabled_count = applications
+            .iter()
+            .filter(|application| disabled.contains(&application.identity))
+            .count();
+        let status = match (
             applications.len(),
             self.registry_alive,
             self.capture_view.is_some(),
         ) {
-            (0, false, _) => " - unavailable".into(),
-            (0, true, false) => " - waiting...".into(),
-            (0, true, true) => " - none detected".into(),
-            (n, _, _) => format!(" - {n} total"),
+            (0, false, _) => "unavailable".into(),
+            (0, true, false) => "waiting...".into(),
+            (0, true, true) => "none detected".into(),
+            (n, _, _) => format!("{n} total"),
         };
+        let summary = [
+            Some(status),
+            (disabled_count > 0).then(|| format!("{disabled_count} disabled")),
+        ];
 
-        let indicator = if self.applications_expanded { "v" } else { ">" };
-        let summary_button = selectable_button(
-            format!("{indicator} Applications{status_suffix}"),
-            !self.applications_expanded,
-            ConfigMessage::ToggleApplicationsVisibility,
-        );
-
-        let mut section = Column::new()
-            .spacing(theme::CONTROL_GAP)
-            .push(summary_button);
-        if self.applications_expanded {
-            let settings = self.settings.borrow();
-            let disabled = &settings.data.disabled_streams;
-            let content: Element<'_, _> = if applications.is_empty() {
-                let message = if !self.registry_alive {
-                    REGISTRY_UNAVAILABLE_MESSAGE
-                } else if self.capture_view.is_some() {
-                    "No audio applications detected. Launch something to see it here."
-                } else {
-                    "Waiting for PipeWire registry..."
-                };
-                text(message).size(theme::BODY_TEXT_SIZE).into()
+        let body: Element<'_, _> = if applications.is_empty() {
+            let message = if !self.registry_alive {
+                REGISTRY_UNAVAILABLE_MESSAGE
+            } else if self.capture_view.is_some() {
+                "No audio applications detected. Launch something to see it here."
             } else {
-                render_toggle_grid(applications, |application| {
-                    let enabled = !disabled.contains(&application.identity);
-                    (
-                        application.label.as_ref(),
-                        if application.active { "" } else { " (paused)" },
-                        enabled,
-                        ConfigMessage::ToggleChanged {
-                            identity: application.identity.clone(),
-                            enabled: !enabled,
-                        },
-                    )
-                })
-                .into()
+                "Waiting for PipeWire registry..."
             };
-            section = section.push(content);
-        }
-        section
+            text(message).size(theme::BODY_TEXT_SIZE).into()
+        } else {
+            render_toggle_grid(applications, |application| {
+                let enabled = !disabled.contains(&application.identity);
+                (
+                    application.label.as_ref(),
+                    if application.active { "" } else { " (paused)" },
+                    enabled,
+                    ConfigMessage::ToggleChanged {
+                        identity: application.identity.clone(),
+                        enabled: !enabled,
+                    },
+                )
+            })
+            .into()
+        };
+        self.disclosure
+            .card(
+                "Applications",
+                summary.into_iter().flatten().map(chip),
+                ConfigMessage::ToggleSection,
+                body,
+            )
+            .into()
     }
 
     fn render_device_section(&self) -> Column<'_, ConfigMessage> {
@@ -541,7 +541,12 @@ impl ConfigPage {
             row![save_as_input, save_as_btn].spacing(theme::CONTROL_GAP);
             self.bg_palette.view().map(ConfigMessage::BgPalette);
         );
-        card("Appearance", content)
+        self.disclosure.card(
+            "Appearance",
+            [chip(active), self.bg_palette.preview()],
+            ConfigMessage::ToggleSection,
+            content,
+        )
     }
 
     fn render_global_card(&self) -> container::Container<'_, ConfigMessage> {
@@ -699,10 +704,14 @@ impl ConfigPage {
     }
 
     fn render_visuals_card(
+        &self,
         snapshot: &[VisualSlotSnapshot],
-    ) -> container::Container<'static, ConfigMessage> {
-        card(
+    ) -> container::Container<'_, ConfigMessage> {
+        let enabled = snapshot.iter().filter(|slot| slot.enabled).count();
+        self.disclosure.card(
             "Visuals",
+            [chip(format!("{enabled} of {} enabled", snapshot.len()))],
+            ConfigMessage::ToggleSection,
             render_toggle_grid(snapshot, |slot| {
                 (
                     slot.kind.label(),

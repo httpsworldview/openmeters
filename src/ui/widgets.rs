@@ -12,13 +12,13 @@ use iced::{
     Length::{Fill, Shrink},
     alignment::Vertical,
     widget::{
-        Button, Column, Container, Row, Toggler, button, column, container, pick_list, row, slider,
-        text,
+        Button, Column, Container, Row, Space, Toggler, button, column, container, pick_list, row,
+        slider, stack, text,
         text::{IntoFragment, Wrapping},
         toggler,
     },
 };
-use std::{borrow::Cow, fmt};
+use std::{borrow::Cow, collections::BTreeSet, fmt};
 
 pub(super) struct SliderRange {
     pub(super) min: f32,
@@ -88,6 +88,77 @@ pub(super) fn card<'a, M: 'a>(
     .padding(12)
     .width(Fill)
     .style(theme::weak_container)
+}
+
+#[derive(Debug, Default)]
+pub(super) struct Disclosure(BTreeSet<&'static str>);
+
+impl Disclosure {
+    pub(super) fn toggle(&mut self, title: &'static str) {
+        if !self.0.remove(title) {
+            self.0.insert(title);
+        }
+    }
+
+    /// `summary` shows only while collapsed.
+    pub(super) fn card<'a, M: Clone + 'a>(
+        &self,
+        title: &'static str,
+        summary: impl IntoIterator<Item = Element<'a, M>>,
+        on_toggle: impl Fn(&'static str) -> M,
+        body: impl Into<Element<'a, M>>,
+    ) -> Container<'a, M> {
+        let expanded = self.0.contains(&title);
+        let summary = (!expanded).then(|| {
+            container(
+                Row::with_children(summary)
+                    .spacing(4)
+                    .align_y(Vertical::Center),
+            )
+            .align_right(Fill)
+            .clip(true)
+        });
+        let header = button(
+            row![section_mark(expanded), clipped_text(title, 14.0), summary]
+                .spacing(10)
+                .align_y(Vertical::Center),
+        )
+        .padding([10, 11])
+        .width(Fill)
+        .style(theme::section_header_style)
+        .on_press(on_toggle(title));
+        let body = expanded.then(|| {
+            column![
+                container(Space::new().width(Fill).height(1)).style(theme::divider),
+                container(body).padding(11).width(Fill),
+            ]
+        });
+        // The padding keeps the header's hover fill inside the border; inner
+        // paddings are one less so content aligns with `card`.
+        container(column![header, body])
+            .padding(1)
+            .width(Fill)
+            .style(theme::weak_container)
+    }
+}
+
+// Drawn rather than a glyph, so it renders the same in any font.
+fn section_mark<'a, M: 'a>(expanded: bool) -> Element<'a, M> {
+    const SIZE: f32 = 7.0;
+    const STROKE: f32 = 1.0;
+    let bar = |width, height| {
+        let bar = container(Space::new().width(width).height(height))
+            .style(move |theme| theme::section_mark(theme, expanded));
+        container(bar).center(SIZE)
+    };
+    stack![bar(SIZE, STROKE), (!expanded).then(|| bar(STROKE, SIZE))].into()
+}
+
+pub(super) fn chip<'a, M: 'a>(label: impl IntoFragment<'a>) -> Element<'a, M> {
+    container(text(label).size(11).wrapping(Wrapping::None))
+        .padding([1, 6])
+        .style(theme::chip)
+        .into()
 }
 
 pub(super) fn split<'a, M: 'a>(

@@ -5,7 +5,7 @@ use super::{TOAST_DISPLAY_DURATION, UiApp, windowing::AppWindow};
 use crate::ui::config::{BarOutputChange, BarOutputEvent, ConfigEffect, ConfigMessage};
 use crate::ui::settings::SettingsMessage;
 use crate::ui::visuals::VisualsMessage;
-use crate::ui::widgets::{fill, page, scroll_glow::ScrollGlow};
+use crate::ui::widgets::{fill, page, scroll_glow::ScrollEvent};
 use iced::event::{self, Event};
 use iced::keyboard::{self, Key};
 use iced::widget::text;
@@ -37,7 +37,7 @@ pub(super) enum Message {
     WindowClosed(window::Id),
     WindowResized(window::Id, Size),
     Settings(window::Id, SettingsMessage),
-    SettingsScrolled(ScrollGlow),
+    SettingsScrolled(ScrollEvent),
 }
 
 pub(super) fn base_window_open(settings: IcedXdgWindowSettings) -> (window::Id, Task<Message>) {
@@ -192,7 +192,7 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
                 app.config_page.refresh_theme_choices_if_needed();
             }
         }
-        Message::SettingsScrolled(g) => app.settings_scroll = g,
+        Message::SettingsScrolled(event) => app.settings_scroll.update(event),
         Message::WindowResized(id, size) => return app.handle_window_resize(id, size),
         _ => {}
     }

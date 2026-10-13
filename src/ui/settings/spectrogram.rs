@@ -6,7 +6,7 @@ use super::{
     settings_pane, settings_view, update_fft_size, update_hop_divisor,
 };
 use crate::persistence::settings::SpectrogramSettings;
-use crate::ui::widgets::{SliderRange, pick, split, toggle};
+use crate::ui::widgets::{SliderRange, chip, pick, split, toggle};
 use crate::util::audio::{Channel, FrequencyScale, WindowKind};
 use crate::visuals::options::PianoRollOverlay;
 
@@ -39,19 +39,8 @@ settings_view! {
         let tilt_db = settings.tilt_db;
         let tilt = if tilt_db == 0.0 { "Off".to_string() } else { format!("{tilt_db:+.1} dB/oct") };
     }
-    "Analysis" => split(
-        form!(
-            pick("FFT size", &FFT_OPTIONS[..], settings.fft_size, FftSize);
-            pick("Hop divisor", &HOP_DIVISORS[..], hop_divisor, HopDivisor);
-            pick("Window", WindowKind::ALL, settings.window, Window);
-        ),
-        form!(
-            pick("Source", Channel::ALL, settings.source, Source);
-            pick("Zero pad", &ZERO_PAD_OPTIONS[..], settings.zero_padding_factor, ZeroPadding);
-            toggle("Time-frequency reassignment", settings.use_reassignment, UseReassignment);
-        ),
-    );
     "Display" => form!(
+        pick("Source", Channel::ALL, settings.source, Source);
         pick("Frequency scale", FrequencyScale::ALL, settings.frequency_scale, Scale);
         pick(
             "Piano roll overlay", PianoRollOverlay::ALL,
@@ -63,5 +52,20 @@ settings_view! {
             "Rotation", settings.rotation as f32, ROTATION_RANGE, Rotation,
             format!("{}\u{00b0}", settings.rotation as i32 * 90)
         );
+    );
+    "Analysis" [[
+        Some(chip(format!("FFT {}", settings.fft_size))),
+        Some(chip(settings.window.label())),
+        settings.use_reassignment.then(|| chip("Reassign")),
+    ].into_iter().flatten()] => split(
+        form!(
+            pick("FFT size", &FFT_OPTIONS[..], settings.fft_size, FftSize);
+            pick("Hop divisor", &HOP_DIVISORS[..], hop_divisor, HopDivisor);
+            pick("Window", WindowKind::ALL, settings.window, Window);
+        ),
+        form!(
+            pick("Zero pad", &ZERO_PAD_OPTIONS[..], settings.zero_padding_factor, ZeroPadding);
+            toggle("Time-frequency reassignment", settings.use_reassignment, UseReassignment);
+        ),
     );
 }

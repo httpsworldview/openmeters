@@ -46,7 +46,6 @@ macro_rules! settings_modules {
                 }
             }
 
-            /// Commits unfinished palette edits, e.g. before the pane closes.
             pub(in crate::ui) fn commit_edits(
                 &mut self,
                 manager: &VisualManagerHandle,
@@ -178,6 +177,7 @@ macro_rules! settings_pane {
         pub(in crate::ui) struct Pane {
             pub(super) settings: $settings_ty,
             pub(super) palette: $crate::ui::widgets::palette_editor::PaletteEditor,
+            disclosure: $crate::ui::widgets::Disclosure,
             $($($field: $ty,)*)?
         }
 
@@ -195,7 +195,12 @@ macro_rules! settings_pane {
                 $(let $palette_source = &loaded_settings;)?
                 $init_body
             )?
-            Pane { settings: loaded_settings, palette, $($($field,)*)? }
+            Pane {
+                settings: loaded_settings,
+                palette,
+                disclosure: Default::default(),
+                $($($field,)*)?
+            }
         }
     };
 }
@@ -208,6 +213,7 @@ macro_rules! settings_messages {
         pub enum Message {
             $($variant($ty),)+
             Palette($crate::ui::widgets::palette_editor::PaletteEvent),
+            Toggle(&'static str),
         }
 
         impl Pane {
@@ -218,6 +224,10 @@ macro_rules! settings_messages {
                 let changed = match message {
                     $(Message::$variant($value) => $handler,)+
                     Message::Palette($value) => return (false, $pane.palette.update($value)),
+                    Message::Toggle(title) => {
+                        $pane.disclosure.toggle(title);
+                        return (false, None);
+                    }
                 };
                 // Saving settings also saves a drag whose release was lost.
                 (changed, changed.then(|| $pane.palette.save_changes()).flatten())
@@ -226,10 +236,12 @@ macro_rules! settings_messages {
     };
 }
 
+/// Cards are `"Title" => content;`, or collapsible as
+/// `"Title" [summary] => content;`. Colors always come last, collapsible.
 macro_rules! settings_view {
     (
         $pane:ident as $settings:ident { $($body:tt)* }
-        $($label:expr => $content:expr;)*
+        $($label:literal $([$summary:expr])? => $content:expr;)*
     ) => {
         impl Pane {
             pub(super) fn view(&self) -> iced::Element<'_, Message> {
@@ -239,14 +251,22 @@ macro_rules! settings_view {
                 $($body)*
                 iced::widget::Column::new()
                     .spacing($crate::ui::theme::SECTION_GAP)
-                    $(.push($crate::ui::widgets::card($label, $content)))*
-                    .push($crate::ui::widgets::card(
+                    $(.push(settings_view!(@card $pane, $label $(, $summary)?, $content)))*
+                    .push($pane.disclosure.card(
                         "Colors",
-                        $pane.palette.view().map(Message::Palette),
+                        [$pane.palette.preview()],
+                        Toggle,
+                        $pane.palette.view().map(Palette),
                     ))
                     .into()
             }
         }
+    };
+    (@card $pane:ident, $label:literal, $content:expr) => {
+        $crate::ui::widgets::card($label, $content)
+    };
+    (@card $pane:ident, $label:literal, $summary:expr, $content:expr) => {
+        $pane.disclosure.card($label, $summary, Toggle, $content)
     };
 }
 
@@ -291,5 +311,26 @@ mod tests {
         send(ScrollSpeed(123.0));
         assert!(iced::Color::from(theme().unwrap().stops[0]).a < 1.0);
         SettingsHandle::flush();
+    }
+
+    #[test]
+    fn toggling_sections_and_typing_hex_neither_apply_nor_save() {
+        use spectrum::Message;
+        let dir = tempfile::tempdir().unwrap();
+        let settings = SettingsHandle::for_test(dir.path());
+        let manager = VisualManagerHandle::default();
+        let config = || manager.borrow().config(VisualKind::Spectrum);
+        let before = config();
+        let mut pane = ActiveSettings::new(VisualKind::Spectrum, &manager);
+        let toggles = ["Analysis", "Details", "Colors"]
+            .into_iter()
+            .flat_map(|title| [Message::Toggle(title), Message::Toggle(title)]);
+        let draft = [Select(Some(0)), EditHex(Some("#123".into()))].map(Message::Palette);
+        for message in toggles.chain(draft) {
+            pane.handle(SettingsMessage::Spectrum(message), &manager, &settings);
+        }
+        assert_eq!(config(), before);
+        SettingsHandle::flush();
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 }
