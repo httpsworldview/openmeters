@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::util::color::{EPSILON, palettes_equal, sanitize_stop_spreads};
+use crate::util::color::{EPSILON, palettes_equal, parse_hex_color, sanitize_stop_spreads};
 use iced::Color;
 use serde::{Deserialize, Serialize};
 
@@ -10,10 +10,10 @@ use serde::{Deserialize, Serialize};
 pub struct ColorSetting(Color);
 
 impl TryFrom<String> for ColorSetting {
-    type Error = <Color as std::str::FromStr>::Err;
+    type Error = &'static str;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
-        value.parse().map(Self)
+        parse_hex_color(&value).map(Self)
     }
 }
 

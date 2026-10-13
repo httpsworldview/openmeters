@@ -47,6 +47,18 @@ pub(super) fn clipped_text<'a, M: 'a>(
     container(text(content).size(size).wrapping(Wrapping::None)).clip(true)
 }
 
+pub(super) fn value_label<'a, M: 'a>(
+    label: impl IntoFragment<'a>,
+    value: impl IntoFragment<'a>,
+) -> Row<'a, M> {
+    row![
+        clipped_text(label, theme::BODY_TEXT_SIZE).width(Fill),
+        clipped_text(value, 11.0),
+    ]
+    .spacing(6)
+    .width(Fill)
+}
+
 pub(super) fn slide<'a, M: Clone + 'a>(
     label: impl IntoFragment<'a>,
     value: f32,
@@ -55,12 +67,7 @@ pub(super) fn slide<'a, M: Clone + 'a>(
     on_change: impl Fn(f32) -> M + 'a,
 ) -> Column<'a, M> {
     column![
-        row![
-            clipped_text(label, theme::BODY_TEXT_SIZE).width(Fill),
-            clipped_text(formatted, 11.0),
-        ]
-        .spacing(6)
-        .width(Fill),
+        value_label(label, formatted),
         slider::Slider::new(range.min..=range.max, value, on_change)
             .step(range.step)
             .style(theme::slider_style),

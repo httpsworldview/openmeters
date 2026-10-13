@@ -8,6 +8,54 @@ pub const EPSILON: f32 = 1e-4;
 pub const STOP_SPREAD_MIN: f32 = 0.2;
 pub const STOP_SPREAD_MAX: f32 = 5.0;
 
+pub fn parse_hex_color(value: &str) -> Result<Color, &'static str> {
+    const ERROR: &str = "expected 3, 4, 6 or 8 hex digits with optional #";
+    let hex = value.strip_prefix('#').unwrap_or(value);
+    // Iced slices at byte offsets and accepts signs, so only pass it hex digits.
+    if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(ERROR);
+    }
+    hex.parse().map_err(|_| ERROR)
+}
+
+/// Canonical uppercase `#RRGGBB`, or `#RRGGBBAA` when translucent.
+pub fn to_hex(c: Color) -> String {
+    let [r, g, b, a] = c.into_rgba8();
+    if a == 255 {
+        format!("#{r:02X}{g:02X}{b:02X}")
+    } else {
+        format!("#{r:02X}{g:02X}{b:02X}{a:02X}")
+    }
+}
+
+/// Hue and saturation in `0..=1`; `previous` supplies them where they are undefined.
+pub fn to_hsv(c: Color, previous: [f32; 3]) -> [f32; 3] {
+    let v = c.r.max(c.g).max(c.b);
+    let chroma = v - c.r.min(c.g).min(c.b);
+    if v <= 0.0 {
+        return [previous[0], previous[1], 0.0];
+    }
+    if chroma <= 0.0 {
+        return [previous[0], 0.0, v];
+    }
+    let sector = if v == c.r {
+        (c.g - c.b) / chroma
+    } else if v == c.g {
+        2.0 + (c.b - c.r) / chroma
+    } else {
+        4.0 + (c.r - c.g) / chroma
+    };
+    [(sector / 6.0).rem_euclid(1.0), chroma / v, v]
+}
+
+pub fn from_hsv([h, s, v]: [f32; 3], alpha: f32) -> Color {
+    let channel = |n: f32| {
+        let k = (n + h * 6.0) % 6.0;
+        v - v * s * k.min(4.0 - k).clamp(0.0, 1.0)
+    };
+    Color::from_rgba(channel(5.0), channel(3.0), channel(1.0), alpha)
+}
+
 pub fn colors_equal(a: Color, b: Color) -> bool {
     (a.r - b.r).abs() <= EPSILON
         && (a.g - b.g).abs() <= EPSILON
@@ -95,6 +143,40 @@ pub fn sanitize_stop_spreads(raw: Option<&[f32]>, count: usize) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hex_input_preserves_supported_syntax_and_alpha() {
+        for (input, rgba) in [
+            ("12abEF", [0x12, 0xAB, 0xEF, 0xFF]),
+            ("#aBc8", [0xAA, 0xBB, 0xCC, 0x88]),
+        ] {
+            assert_eq!(parse_hex_color(input).unwrap().into_rgba8(), rgba);
+        }
+        for input in ["##fff", " fff", "+f+f+f", "#a\u{00e9}"] {
+            assert!(parse_hex_color(input).is_err(), "{input:?}");
+        }
+    }
+
+    #[test]
+    fn hsv_round_trips_and_keeps_undefined_hue() {
+        let previous = [0.25, 0.75, 0.5];
+        for (rgb, hsv) in [
+            ([1.0, 0.0, 0.0], [0.0, 1.0, 1.0]),
+            ([0.0, 0.0, 1.0], [4.0 / 6.0, 1.0, 1.0]),
+            ([0.0, 0.5, 0.5], [0.5, 1.0, 0.5]),
+            ([0.5, 0.25, 0.5], [5.0 / 6.0, 0.5, 0.5]),
+            ([0.5, 0.5, 0.5], [0.25, 0.0, 0.5]),
+            ([0.0, 0.0, 0.0], [0.25, 0.75, 0.0]),
+        ] {
+            let color = Color::from_rgba(rgb[0], rgb[1], rgb[2], 0.5);
+            let actual = to_hsv(color, previous);
+            assert!(
+                actual.iter().zip(hsv).all(|(a, e)| (a - e).abs() < EPSILON),
+                "{rgb:?}"
+            );
+            assert!(colors_equal(from_hsv(actual, 0.5), color), "{rgb:?}");
+        }
+    }
 
     // Shaders require raw sRGB packing (iced's web-colors feature).
     #[test]

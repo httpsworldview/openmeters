@@ -272,6 +272,11 @@ impl ConfigPage {
         }
     }
 
+    /// The page outlives its window, so closing it commits unfinished edits.
+    pub(in crate::ui) fn commit_edits(&mut self) {
+        self.update(ConfigMessage::BgPalette(PaletteEvent::Commit));
+    }
+
     pub(in crate::ui) fn refresh_registry(&mut self) {
         self.registry_alive = self.capture.is_alive();
         if !self.registry_alive {
@@ -325,12 +330,14 @@ impl ConfigPage {
             ConfigMessage::BgPalette(event) => {
                 if self.bg_palette.update(event) {
                     let color = self.bg_palette.colors()[0];
-                    self.settings.update(User, |s| {
-                        s.data.background_color = Some(color.into());
-                        s.update_active_theme(|theme| theme.background = Some(color.into()));
-                    });
                     self.window_themes = theme::window_themes(color);
-                    self.refresh_theme_choices_if_needed();
+                    if !self.bg_palette.is_previewing() {
+                        self.settings.update(User, |s| {
+                            s.data.background_color = Some(color.into());
+                            s.update_active_theme(|theme| theme.background = Some(color.into()));
+                        });
+                        self.refresh_theme_choices_if_needed();
+                    }
                 }
             }
             ConfigMessage::VisualFrameRateChanged(rate) => {

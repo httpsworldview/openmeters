@@ -254,6 +254,7 @@ impl UiApp {
 
     fn toggle_config_window(&mut self) -> Task<Message> {
         if let Some(id) = self.config_window.take() {
+            self.config_page.commit_edits();
             return window::close(id);
         }
         self.config_page.refresh_registry();

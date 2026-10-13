@@ -9,13 +9,13 @@ mod stereometer;
 mod waveform;
 
 use crate::persistence::settings::{
-    BUILTIN_THEME, ChangeOrigin::User, PaletteSettings, SettingsHandle, VisualConfig,
+    BUILTIN_THEME, ChangeOrigin::User, SettingsHandle, VisualConfig,
 };
 use crate::ui::theme::Palette;
-use crate::ui::widgets::palette_editor::PaletteEditor;
+use crate::ui::widgets::palette_editor::{PaletteEditor, PaletteEvent};
 use crate::util::set_if_changed as set;
 use crate::visuals::registry::{VisualKind, VisualManagerHandle};
-use iced::{Color, Element};
+use iced::Element;
 
 const FFT_OPTIONS: [usize; 5] = [1024, 2048, 4096, 8192, 16384];
 const HOP_DIVISORS: [usize; 7] = [4, 6, 8, 16, 32, 64, 128];
@@ -46,6 +46,20 @@ macro_rules! settings_modules {
                 }
             }
 
+            /// Commits unfinished palette edits, e.g. before the pane closes.
+            pub(in crate::ui) fn commit_edits(
+                &mut self,
+                manager: &VisualManagerHandle,
+                settings: &SettingsHandle,
+            ) {
+                let message = match self {
+                    $(Self::$variant(_) => {
+                        SettingsMessage::$variant($module::Message::Palette(PaletteEvent::Commit))
+                    })+
+                };
+                self.handle(message, manager, settings);
+            }
+
             pub(in crate::ui) fn handle(
                 &mut self,
                 message: SettingsMessage,
@@ -54,12 +68,13 @@ macro_rules! settings_modules {
             ) {
                 match (self, message) {
                     $((Self::$variant(pane), SettingsMessage::$variant(message)) => {
+                        let palette_edit = matches!(message, $module::Message::Palette(_));
                         if !pane.handle(message) {
                             return;
                         }
                         persist_with_palette(
                             manager, settings, VisualConfig::$variant(pane.settings.clone()),
-                            &pane.palette,
+                            &pane.palette, palette_edit,
                         );
                     })+
                     _ => {}
@@ -81,10 +96,7 @@ settings_modules! {
 fn load_palette(config: &VisualConfig) -> PaletteEditor {
     let mut editor = PaletteEditor::new(Palette::for_kind(config.kind()));
     if let Some(stored) = config.palette() {
-        let stops: Vec<Color> = stored.stops.iter().copied().map(Into::into).collect();
-        editor.set_colors(&stops);
-        editor.set_positions(stored.stop_positions.as_deref());
-        editor.set_spreads(stored.stop_spreads.as_deref());
+        editor.load(stored);
     }
     editor
 }
@@ -94,23 +106,18 @@ fn persist_with_palette(
     settings_handle: &SettingsHandle,
     mut config: VisualConfig,
     palette: &PaletteEditor,
+    palette_edit: bool,
 ) {
     let kind = config.kind();
-    let palette_settings = PaletteSettings::from_state(
-        palette.colors(),
-        palette.defaults(),
-        palette.positions(),
-        palette.default_positions(),
-        palette.spreads(),
-    );
-    let palette_changed =
-        visual_manager.borrow().config(kind).palette() != palette_settings.as_ref();
+    let palette_settings = palette.settings();
     *config.palette_mut() = palette_settings.clone();
     visual_manager.borrow_mut().apply_config(config.clone());
+    if palette_edit && palette.is_previewing() {
+        return;
+    }
     settings_handle.update(User, move |settings| {
         settings.data.visuals.set_config(config);
-        if palette_changed
-            && (palette_settings.is_some() || settings.active_theme() != BUILTIN_THEME)
+        if palette_edit && (palette_settings.is_some() || settings.active_theme() != BUILTIN_THEME)
         {
             settings.update_active_theme(|theme| {
                 if let Some(ps) = palette_settings {
@@ -244,3 +251,31 @@ macro_rules! settings_view {
 }
 
 use {settings_messages, settings_pane, settings_view};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ui::widgets::palette_editor::{HsvEdit::SatVal, PaletteEvent::*};
+
+    #[test]
+    fn palette_drags_save_once_committed() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = SettingsHandle::for_test(dir.path());
+        let manager = VisualManagerHandle::default();
+        let mut pane = ActiveSettings::new(VisualKind::Waveform, &manager);
+        let palette = |pane: &mut ActiveSettings, event| {
+            let message = SettingsMessage::Waveform(waveform::Message::Palette(event));
+            pane.handle(message, &manager, &settings);
+        };
+        palette(&mut pane, Select(Some(0)));
+        palette(&mut pane, Adjust(SatVal(0.0, 0.5)));
+        let live = manager.borrow().config(VisualKind::Waveform);
+        assert!(live.palette().is_some());
+        assert_eq!(settings.borrow().active_theme(), BUILTIN_THEME);
+        pane.commit_edits(&manager, &settings);
+        let theme = settings.borrow().active_theme().to_owned();
+        let saved = settings.borrow().theme_store().load(&theme).unwrap();
+        assert!(saved.palettes.contains_key(&VisualKind::Waveform));
+        SettingsHandle::flush();
+    }
+}

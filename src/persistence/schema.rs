@@ -189,6 +189,7 @@ mod tests {
 
         let settings = UiSettings::from_value_lossy(serde_json::json!({
             "decorations": true,
+            "background_color": "#a\u{00e9}",
             "visual_frame_rate": "not_a_rate",
             "capture_mode": "not_a_mode",
             "main_window": {
@@ -232,6 +233,7 @@ mod tests {
         }));
 
         assert!(settings.decorations);
+        assert!(settings.background_color.is_none());
         assert_eq!(settings.visual_frame_rate, VisualFrameRate::Display);
         assert_eq!(settings.capture_mode, CaptureMode::default());
         assert_eq!(settings.main_window.width, 640);

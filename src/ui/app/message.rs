@@ -9,7 +9,7 @@ use crate::ui::widgets::{fill, page, scroll_glow::ScrollGlow};
 use iced::event::{self, Event};
 use iced::keyboard::{self, Key};
 use iced::widget::text;
-use iced::{Element, Size, Task, exit, mouse, window};
+use iced::{Element, Size, Task, mouse, window};
 use iced_exwlshell::actions::IcedXdgWindowSettings;
 use iced_exwlshell::reexport::NewLayerShellSettings;
 use iced_exwlshell::shell::ShellEvent;
@@ -151,7 +151,7 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
         Message::BarResizeEnd => return app.finish_bar_resize(),
         Message::Quit => {
             if app.exit_warning_until.is_some_and(|d| Instant::now() < d) {
-                return exit();
+                return app.quit();
             }
             app.exit_warning_until = Some(Instant::now() + TOAST_DISPLAY_DURATION);
         }
@@ -380,6 +380,37 @@ mod tests {
         assert_actions!(update(&mut app, WindowClosed(id)), []);
         assert!(app.config_window.is_none());
         layer(output(&mut app, 1, None, Added), None, OutputOption::Active);
+    }
+
+    #[test]
+    fn background_drags_save_on_release_or_window_close() {
+        use crate::ui::widgets::palette_editor::{HsvEdit::SatVal, PaletteEvent::*};
+        let (_dir, mut app, _) = app(r#"{"bar":{"enabled":false}}"#);
+        let saved = |app: &UiApp| {
+            let settings = app.settings_handle.borrow();
+            let theme = settings.theme_store().load(settings.active_theme());
+            theme.unwrap().background.map(iced::Color::from)
+        };
+        let bg = |app: &mut UiApp, event| update(app, Config(ConfigMessage::BgPalette(event)));
+        let id = base(update(&mut app, ToggleConfig));
+        assert_actions!(bg(&mut app, Select(Some(0))), []);
+        for value in [0.5, 0.25] {
+            assert_actions!(bg(&mut app, Adjust(SatVal(0.0, value))), []);
+            assert_eq!(saved(&app), None);
+        }
+        assert_actions!(bg(&mut app, Commit), []);
+        let released = saved(&app);
+        assert!(released.is_some());
+        assert_actions!(bg(&mut app, Adjust(SatVal(0.0, 0.75))), []);
+        assert_eq!(saved(&app), released);
+        assert_actions!(update(&mut app, WindowClosed(id)), []);
+        let closed = saved(&app);
+        assert_ne!(closed, released);
+        assert_actions!(bg(&mut app, Adjust(SatVal(0.0, 0.5))), []);
+        assert_actions!(update(&mut app, Quit), []);
+        assert_actions!(update(&mut app, Quit), [Exit]);
+        assert_ne!(saved(&app), closed);
+        SettingsHandle::flush();
     }
 
     #[test]

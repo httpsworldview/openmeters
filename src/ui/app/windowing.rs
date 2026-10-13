@@ -211,8 +211,11 @@ impl UiApp {
     }
 
     pub(super) fn open_settings_window(&mut self, kind: VisualKind) -> Task<Message> {
+        let mut previous = self.settings_window.take();
+        if let Some((_, panel)) = &mut previous {
+            self.close_settings(panel);
+        }
         let panel = ActiveSettings::new(kind, &self.visual_manager);
-        let previous = self.settings_window.take();
         if previous
             .as_ref()
             .is_some_and(|(_, current)| current.kind() == kind)
@@ -326,10 +329,24 @@ impl UiApp {
         });
     }
 
+    fn close_settings(&mut self, panel: &mut ActiveSettings) {
+        panel.commit_edits(&self.visual_manager, &self.settings_handle);
+        self.config_page.refresh_theme_choices_if_needed();
+    }
+
+    /// Exits after committing unfinished edits, as closing their windows does.
+    pub(super) fn quit(&mut self) -> Task<Message> {
+        self.config_page.commit_edits();
+        if let Some((_, mut panel)) = self.settings_window.take() {
+            self.close_settings(&mut panel);
+        }
+        exit()
+    }
+
     pub(super) fn on_window_closed(&mut self, id: window::Id) -> Task<Message> {
         if Some(id) == self.main_window.id() {
             if !self.main_window.is_bar() {
-                return exit();
+                return self.quit();
             }
             self.main_window = MainWindow::Bar(None);
             self.bar_resize_state = None;
@@ -339,8 +356,12 @@ impl UiApp {
             tracing::debug!("[ui] bar surface closed; waiting for output changes");
             return Task::none();
         }
-        let _ = self.config_window.take_if(|window| *window == id);
-        let _ = self.settings_window.take_if(|(window, _)| *window == id);
+        if self.config_window.take_if(|window| *window == id).is_some() {
+            self.config_page.commit_edits();
+        }
+        if let Some((_, mut panel)) = self.settings_window.take_if(|(window, _)| *window == id) {
+            self.close_settings(&mut panel);
+        }
         if let Some(popout) = self.popout_windows.remove(&id) {
             self.dock_popout(popout);
         }
@@ -356,7 +377,10 @@ impl UiApp {
                     .iter()
                     .any(|slot| slot.kind == panel.kind() && slot.enabled)
             })
-            .map(|(id, _)| window::close::<Message>(id));
+            .map(|(id, mut panel)| {
+                self.close_settings(&mut panel);
+                window::close::<Message>(id)
+            });
         let stale_windows: Vec<_> = self
             .popout_windows
             .extract_if(|_, popout| {
