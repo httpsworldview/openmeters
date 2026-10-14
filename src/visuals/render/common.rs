@@ -3,7 +3,7 @@
 
 use bytemuck::{Pod, Zeroable};
 use iced::advanced::text::Text as IcedText;
-use iced::{Border, Color, Rectangle, Renderer, Size};
+use iced::{Border, Color, Point, Rectangle, Renderer, Size};
 use std::collections::HashMap;
 use std::mem::size_of;
 
@@ -42,6 +42,66 @@ impl ClipTransform {
             (x - self.origin[0]) * self.scale[0] - 1.0,
             1.0 - (y - self.origin[1]) * self.scale[1],
         ]
+    }
+}
+
+// Clockwise quarter turns of a pane. Content is laid out unturned in `frame`,
+// which shares the pane's origin and swaps its size on odd turns.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct QuarterTurn(u8);
+
+impl QuarterTurn {
+    pub fn new(rotation: i8) -> Self {
+        Self(rotation.rem_euclid(4) as u8)
+    }
+
+    pub fn turns(self) -> u8 {
+        self.0
+    }
+
+    pub fn swaps_axes(self) -> bool {
+        self.0 % 2 == 1
+    }
+
+    // Whether the frame's y axis runs against its screen axis.
+    pub fn flips_y(self) -> bool {
+        matches!(self.0, 1 | 2)
+    }
+
+    pub fn frame_size(self, size: Size) -> Size {
+        if self.swaps_axes() {
+            Size::new(size.height, size.width)
+        } else {
+            size
+        }
+    }
+
+    pub fn frame(self, bounds: Rectangle) -> Rectangle {
+        Rectangle::new(bounds.position(), self.frame_size(bounds.size()))
+    }
+
+    fn point_to_screen(self, bounds: Rectangle, p: Point) -> Point {
+        let (u, v) = (p.x - bounds.x, p.y - bounds.y);
+        let (x, y) = match self.0 {
+            0 => return p,
+            1 => (bounds.width - v, u),
+            2 => (bounds.width - u, bounds.height - v),
+            _ => (v, bounds.height - u),
+        };
+        Point::new(bounds.x + x, bounds.y + y)
+    }
+
+    pub fn to_screen(self, bounds: Rectangle, r: Rectangle) -> Rectangle {
+        let a = self.point_to_screen(bounds, r.position());
+        let b = self.point_to_screen(bounds, r.position() + r.size().into());
+        Rectangle::new(
+            Point::new(a.x.min(b.x), a.y.min(b.y)),
+            self.frame_size(r.size()),
+        )
+    }
+
+    pub fn to_frame(self, bounds: Rectangle, p: Point) -> Point {
+        Self((4 - self.0) % 4).point_to_screen(self.frame(bounds), p)
     }
 }
 
@@ -129,6 +189,20 @@ impl SdfInstance {
     const LINE: f32 = 2.0;
     const DOT: f32 = 3.0;
     const RADIAL_DOT: f32 = 4.0;
+    // Tag bits above the primitive count clockwise quarter turns.
+    const TURN: f32 = 8.0;
+}
+
+const _: () = assert!(SdfInstance::RADIAL_DOT < SdfInstance::TURN);
+
+// Turns instances built in `turn.frame(bounds)` with a clip transform of that
+// frame so they fill `bounds`. The shader turns each primitive after expanding
+// it, so fills and gradients keep their frame axes.
+pub(in crate::visuals) fn turn_instances(instances: &mut [SdfInstance], turn: QuarterTurn) {
+    let tag = SdfInstance::TURN * f32::from(turn.0);
+    for instance in instances {
+        instance.params[3] = instance.params[3] % SdfInstance::TURN + tag;
+    }
 }
 
 pub fn quad_instance(
@@ -719,6 +793,32 @@ pub(in crate::visuals) use sdf_primitive;
 mod tests {
     use super::*;
     use wgpu::naga::front::wgsl::parse_str;
+
+    #[test]
+    fn quarter_turns_map_frame_onto_pane() {
+        let bounds = Rectangle::new(Point::new(10.0, 20.0), Size::new(100.0, 50.0));
+        // A 4x2 rectangle at the frame's top-left corner.
+        let rect = Rectangle::new(bounds.position(), Size::new(4.0, 2.0));
+        for (rotation, [x, y, width, height]) in [
+            (0, [10.0, 20.0, 4.0, 2.0]),
+            (1, [108.0, 20.0, 2.0, 4.0]),
+            (2, [106.0, 68.0, 4.0, 2.0]),
+            (-1, [10.0, 66.0, 2.0, 4.0]),
+        ] {
+            let turn = QuarterTurn::new(rotation);
+            let expected = Rectangle::new(Point::new(x, y), Size::new(width, height));
+            assert_eq!(
+                turn.to_screen(bounds, rect),
+                expected,
+                "rotation={rotation}"
+            );
+            let point = Point::new(13.0, 21.0);
+            let screen = turn.point_to_screen(bounds, point);
+            assert_eq!(turn.to_frame(bounds, screen), point, "rotation={rotation}");
+        }
+        assert_eq!(QuarterTurn::new(3), QuarterTurn::new(-1));
+        assert_eq!(QuarterTurn::new(i8::MIN), QuarterTurn::new(0));
+    }
 
     #[test]
     fn shaders_are_valid() {

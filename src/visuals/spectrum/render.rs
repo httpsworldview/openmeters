@@ -9,10 +9,10 @@ use crate::util::lerp;
 use crate::visuals::options::SpectrumDisplayMode;
 use crate::visuals::palettes::spectrum::SIZE as PALETTE_SIZE;
 use crate::visuals::render::common::{
-    ClipTransform, GeometryFingerprint, GeometryScratch, SdfInstance, SdfPipeline,
+    ClipTransform, GeometryFingerprint, GeometryScratch, QuarterTurn, SdfInstance, SdfPipeline,
     baseline_segment_instance, decimate_finite_ordered_line_in_place, dot_instance,
     extend_aa_line_list, gradient_quad_instance, line_instance, pack_f32_pair, quad_instance,
-    replace_quad_instance, sdf_primitive,
+    replace_quad_instance, sdf_primitive, turn_instances,
 };
 
 pub(super) const MIN_TRACE_POINTS: usize = 2;
@@ -71,6 +71,7 @@ pub struct SpectrumParams {
     pub highlight_threshold: f32,
     pub spectrum_palette: [[f32; 4]; PALETTE_SIZE],
     pub display_mode: SpectrumDisplayMode,
+    pub turn: QuarterTurn,
     pub bar_count: usize,
     pub bar_gap: f32,
     pub peak: Option<SpectrumPeakParams>,
@@ -89,7 +90,7 @@ impl SpectrumParams {
     }
 
     fn build_vertices(&self, scratch: &mut GeometryScratch) {
-        let bounds = self.bounds;
+        let bounds = self.turn.frame(self.bounds);
         let clip = ClipTransform::from_bounds(bounds);
 
         let has_primary = self.normalized_points.len() >= MIN_TRACE_POINTS;
@@ -117,6 +118,7 @@ impl SpectrumParams {
             let (x, y) = normalized_to_cartesian(bounds, peak.marker);
             vertices.push(dot_instance(x, y, 3.0, peak.marker_color, clip));
         }
+        turn_instances(vertices, self.turn);
     }
 
     fn build_line_vertices(

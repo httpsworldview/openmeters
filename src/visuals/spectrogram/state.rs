@@ -14,13 +14,13 @@ use crate::util::{
 use crate::visuals::options::PianoRollOverlay;
 use crate::visuals::palettes;
 use crate::visuals::render::common::{
-    border_color, fill_bordered_rect, fill_rect, scroll_delta_lines, text as raw_text,
+    QuarterTurn, border_color, fill_bordered_rect, fill_rect, scroll_delta_lines, text as raw_text,
 };
 use iced::advanced::graphics::text::Paragraph;
 use iced::advanced::text::{Paragraph as _, Renderer as _};
 use iced::advanced::widget::Tree;
 use iced::advanced::{Layout, Renderer as _, Widget, mouse};
-use iced::{Color, Element, Length, Point, Rectangle, Size, keyboard};
+use iced::{Color, Element, Length, Point, Rectangle, Size, Vector, keyboard};
 use iced_wgpu::primitive::Renderer as _;
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -214,7 +214,6 @@ impl SpectrogramState {
         self.settings = settings.clone();
         self.settings.normalize();
         self.settings.floor_db = self.settings.floor_db.min(SPECTROGRAM_DB_CEILING - 1.0);
-        self.settings.rotation = settings.rotation.clamp(-1, 2);
     }
 
     pub fn reset_audio(&mut self) {
@@ -276,7 +275,7 @@ impl SpectrogramState {
             floor_db: self.settings.floor_db,
             tilt_db: self.settings.tilt_db,
             uv_y_range,
-            rotation: self.settings.rotation,
+            turn: self.turn(),
         })
     }
 
@@ -292,39 +291,37 @@ impl SpectrogramState {
         crate::util::finite_positive(self.settings.frequency_scale.freq_at(min_f, nyq, tex_uv))
     }
 
-    fn rotation_index(&self) -> u32 {
-        (self.settings.rotation as i32).rem_euclid(4) as u32
+    fn turn(&self) -> QuarterTurn {
+        QuarterTurn::new(self.settings.rotation)
     }
 
     fn freq_axis_is_horizontal(&self) -> bool {
-        matches!(self.rotation_index(), 1 | 3)
+        self.turn().swaps_axes()
     }
 
-    // Pre-zoom/pan frequency UV [0, 1]; matches shader unrotate.
+    // Cursor offset in the unturned frame and the frame size; matches shader unrotate.
+    fn frame_cursor(&self, cursor: Point, bounds: Rectangle) -> Option<(Vector, Size)> {
+        let turn = self.turn();
+        bounds.contains(cursor).then(|| {
+            let offset = turn.to_frame(bounds, cursor) - bounds.position();
+            (offset, turn.frame_size(bounds.size()))
+        })
+    }
+
+    // Pre-zoom/pan frequency UV [0, 1].
     fn freq_axis_norm(&self, cursor: Point, bounds: Rectangle) -> Option<f32> {
-        if !bounds.contains(cursor) {
-            return None;
-        }
-        let norm = match self.rotation_index() {
-            1 => (cursor.x - bounds.x) / bounds.width,
-            2 => (cursor.y - bounds.y) / bounds.height,
-            3 => 1.0 - (cursor.x - bounds.x) / bounds.width,
-            _ => 1.0 - (cursor.y - bounds.y) / bounds.height,
-        };
+        let (offset, size) = self.frame_cursor(cursor, bounds)?;
+        let norm = 1.0 - offset.y / size.height;
         norm.is_finite().then(|| norm.clamp(0.0, 1.0))
     }
 
     // 1 column = 1 logical pixel on the time axis, matching the shader.
     fn time_ago_at_cursor(&self, cursor: Point, bounds: Rectangle) -> Option<f32> {
-        if !bounds.contains(cursor) || self.history.col_count == 0 {
+        if self.history.col_count == 0 {
             return None;
         }
-        let age = match self.rotation_index() {
-            1 => bounds.y + bounds.height - cursor.y,
-            2 => cursor.x - bounds.x,
-            3 => cursor.y - bounds.y,
-            _ => bounds.x + bounds.width - cursor.x,
-        };
+        let (offset, size) = self.frame_cursor(cursor, bounds)?;
+        let age = size.width - offset.x;
         if age >= self.history.col_count as f32 {
             return None;
         }
@@ -594,7 +591,7 @@ impl Spectrogram<'_> {
             uv_range,
             freq_org,
             freq_ext,
-            matches!(state.rotation_index(), 1 | 2),
+            state.turn().flips_y(),
         );
         let black_anchor = if right {
             strip + roll_width - black_width
@@ -661,15 +658,9 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'_> {
                 if let Some((_, origin, start_pan)) = st.drag {
                     let mut state = this.state.borrow_mut();
                     let h = 0.5 / state.zoom;
-                    let horiz = state.freq_axis_is_horizontal();
-                    let extent = if horiz { b.width } else { b.height };
-                    let current = if horiz { position.x } else { position.y };
-                    let sign = if matches!(state.rotation_index(), 1 | 2) {
-                        -1.0
-                    } else {
-                        1.0
-                    };
-                    state.pan = (start_pan + sign * (current - origin) / extent / state.zoom)
+                    let turn = state.turn();
+                    let current = turn.to_frame(b, *position).y;
+                    state.pan = (start_pan + (current - origin) / turn.frame(b).height / state.zoom)
                         .clamp(h, 1.0 - h);
                 }
             }
@@ -698,13 +689,8 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'_> {
                     .position()
                     .filter(|p| b.contains(*p) && state.zoom > MIN_ZOOM && st.drag.is_none())
                 {
-                    let origin = if state.freq_axis_is_horizontal() {
-                        pos.x
-                    } else {
-                        pos.y
-                    };
                     st.left_held = false;
-                    st.drag = Some((*button, origin, state.pan));
+                    st.drag = Some((*button, state.turn().to_frame(b, pos).y, state.pan));
                     shell.capture_event();
                 }
             }
@@ -731,11 +717,7 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'_> {
         let (uv_y_range, piano_roll, params);
         {
             let mut state = this.state.borrow_mut();
-            let time_extent = if state.freq_axis_is_horizontal() {
-                bounds.height
-            } else {
-                bounds.width
-            };
+            let time_extent = state.turn().frame(bounds).width;
             state.view_width = time_extent.round().max(1.0) as u32;
             uv_y_range = state.uv_y_range();
             piano_roll = state.settings.piano_roll_overlay;

@@ -10,7 +10,9 @@ use crate::util::color::{color_to_rgba, with_alpha};
 use crate::util::lerp;
 use crate::visuals::options::{SpectrumDisplayMode, SpectrumWeightingMode};
 use crate::visuals::palettes::{self, spectrum::SIZE as PALETTE_SIZE};
-use crate::visuals::render::common::{fill_bordered_rect, fill_rect, text as raw_text};
+use crate::visuals::render::common::{
+    QuarterTurn, fill_bordered_rect, fill_rect, text as raw_text,
+};
 use iced::advanced::Renderer as _;
 use iced::advanced::graphics::text::Paragraph;
 use iced::advanced::text::{Paragraph as _, Renderer as _};
@@ -48,6 +50,7 @@ struct GridLayoutKey {
     range: [u32; 2],
     scale: FrequencyScale,
     reverse: bool,
+    turn: QuarterTurn,
 }
 type SharedPoints = Arc<Vec<[f32; 2]>>;
 static EMPTY_POINTS: LazyLock<SharedPoints> = LazyLock::new(|| Arc::new(Vec::new()));
@@ -95,6 +98,10 @@ impl SpectrumState {
     }
 
     crate::visuals::palette_setter!(PALETTE_SIZE => geometry);
+
+    fn turn(&self) -> QuarterTurn {
+        QuarterTurn::new(self.style.rotation)
+    }
 
     pub fn reset_audio(&mut self) {
         self.points.fill_with(|| Arc::clone(&EMPTY_POINTS));
@@ -210,6 +217,7 @@ impl SpectrumState {
             range: [range.0.to_bits(), range.1.to_bits()],
             scale: self.style.frequency_scale,
             reverse: self.style.reverse_frequency,
+            turn: self.turn(),
         };
         if self.grid_layout_key == Some(key) {
             return;
@@ -222,12 +230,15 @@ impl SpectrumState {
             return;
         }
 
+        // Lay out in the unturned frame, then turn the finished labels.
+        let turn = self.turn();
         let style = &self.style;
-        let label_y = bounds.y + GRID_LABEL_GAP;
-        let min_label_x = bounds.x + GRID_LABEL_GAP;
+        let frame = turn.frame(bounds);
+        let label_y = frame.y + GRID_LABEL_GAP;
+        let min_label_x = frame.x + GRID_LABEL_GAP;
         let ticks = &self.grid_ticks;
         let labels = &mut self.grid_labels;
-        let tick_x = grid_tick_x(bounds, range, style);
+        let tick_x = grid_tick_x(frame, range, style);
         let mut layout_tick = |(tick_index, tick): (usize, &GridTick)| {
             let (frequency, major, Some(text)) = tick else {
                 return;
@@ -236,14 +247,14 @@ impl SpectrumState {
                 return;
             };
             let text_bounds = text.min_bounds();
-            let label_size = Size::new(
+            let label_size = turn.frame_size(Size::new(
                 text_bounds.width + GRID_LABEL_PADDING_X * 2.0,
                 text_bounds.height + GRID_LABEL_PADDING_Y * 2.0,
-            );
+            ));
             let max_label_x =
-                (bounds.x + bounds.width - GRID_LABEL_GAP - label_size.width).max(min_label_x);
+                (frame.x + frame.width - GRID_LABEL_GAP - label_size.width).max(min_label_x);
             let label_x = (x - label_size.width * 0.5).clamp(min_label_x, max_label_x);
-            // Placed labels are in screen order, so only a suffix can overlap.
+            // Placed labels are in frame order, so only a suffix can overlap.
             let keep = labels.partition_point(|placed| {
                 placed.bounds.x + placed.bounds.width + GRID_LABEL_GAP <= label_x
             });
@@ -264,6 +275,9 @@ impl SpectrumState {
             ticks.iter().enumerate().rev().for_each(&mut layout_tick);
         } else {
             ticks.iter().enumerate().for_each(layout_tick);
+        }
+        for label in &mut self.grid_labels {
+            label.bounds = turn.to_screen(bounds, label.bounds);
         }
         self.grid_cutouts = Arc::new(self.grid_labels.iter().map(|label| label.bounds).collect());
     }
@@ -395,13 +409,13 @@ impl SpectrumState {
             highlight_threshold: style.highlight_threshold,
             spectrum_palette: self.palette.map(color_to_rgba),
             display_mode: style.display_mode,
+            turn: self.turn(),
             bar_count: style.bar_count,
             bar_gap: style.bar_gap,
             peak: self.peak().map(|peak| SpectrumPeakParams {
                 marker: peak.marker_pos,
                 marker_color: color_to_rgba(with_alpha(peak_color, peak.opacity * 0.95)),
-                leader_anchor: peak_layout
-                    .map(|layout| point_to_normalized(bounds, layout.leader_anchor)),
+                leader_anchor: peak_layout.map(|layout| layout.leader_anchor),
                 leader_color: color_to_rgba(with_alpha(
                     peak_color,
                     peak.opacity * AUXILIARY_LINE_ALPHA,
@@ -436,7 +450,7 @@ crate::visuals::visualization_widget!(Spectrum, SpectrumState, |this, r, th, b| 
     }
 
     let peak = state.peak();
-    let peak_layout = peak.and_then(|p| peak_label_layout(b, p));
+    let peak_layout = peak.and_then(|p| peak_label_layout(b, state.turn(), p));
     let Some(params) = state.visual_params(b, th, peak_layout) else {
         fill_rect(r, b, th.extended_palette().background.base.color);
         return;
@@ -561,8 +575,10 @@ mod tests {
                 .as_ref()
                 .map(|p| (p.content.clone(), p.marker_pos, p.label_pos))
         };
-        let changes: [fn(&mut SpectrumSettings); 6] = [
+        let changes: [fn(&mut SpectrumSettings); 8] = [
             |s| s.reverse_frequency = true,
+            |s| s.rotation = 1,
+            |s| s.rotation = -1,
             |s| s.frequency_scale = FrequencyScale::Linear,
             |s| s.frequency_scale = FrequencyScale::Erb,
             |s| s.weighting_mode = SpectrumWeightingMode::Raw,
@@ -621,9 +637,10 @@ mod tests {
         assert!(original[0].windows(2).all(|pair| pair[0][0] < pair[1][0]));
         for (floor, peak_visible) in [(-60.0, true), (-3.0, false), (-140.0, true), (-120.0, true)]
         {
-            for reverse in [false, true] {
+            for (reverse, rotation) in [(false, 0), (true, 1), (false, 2), (true, -1)] {
                 settings.floor_db = floor;
                 settings.reverse_frequency = reverse;
+                settings.rotation = rotation;
                 manager.apply_config(VisualConfig::Spectrum(settings.clone()));
                 let state = state.borrow();
                 for (before, after) in original.iter().zip(&state.points) {
@@ -722,6 +739,25 @@ mod tests {
                         "{context}"
                     );
                     assert_eq!(majors(&state), majors(&majors_only), "{context}");
+
+                    // Turned labels stay upright, inside the pane, and in order.
+                    let pane = Rectangle::new(Point::ORIGIN, Size::new(100.0, width));
+                    state.style.rotation = 1;
+                    state.layout_grid_labels(pane, range);
+                    state.style.rotation = 0;
+                    assert!(!state.grid_labels.is_empty(), "{context}");
+                    for label in &state.grid_labels {
+                        let text = state.grid_ticks[label.tick_index].2.as_ref().unwrap();
+                        let text_width = text.min_bounds().width + GRID_LABEL_PADDING_X * 2.0;
+                        assert_eq!(label.bounds.width, text_width, "{context}");
+                        assert!(label.bounds.is_within(&pane), "{context}");
+                    }
+                    assert!(
+                        state.grid_labels.windows(2).all(|pair| {
+                            pair[0].bounds.y + pair[0].bounds.height <= pair[1].bounds.y
+                        }),
+                        "{context}"
+                    );
                 }
             }
         }
@@ -751,6 +787,33 @@ mod tests {
         state.layout_grid_labels(bounds.expand(1.0), range);
         assert_ne!(state.grid_layout_revision, revision);
         assert!(!Arc::ptr_eq(&state.grid_cutouts, &cutouts));
+
+        let revision = state.grid_layout_revision;
+        state.style.rotation = 1;
+        state.layout_grid_labels(bounds.expand(1.0), range);
+        assert_ne!(state.grid_layout_revision, revision);
+    }
+
+    #[test]
+    fn turned_peak_label_stays_upright_inside_pane() {
+        let peak = PeakLabel {
+            text: ["A4", "440 Hz"].map(|text| peak_text(text, 0)),
+            content: ["A4".into(), "440 Hz".into()],
+            label_pos: [0.3, 0.5],
+            marker_pos: [0.3, 0.5],
+            opacity: 1.0,
+        };
+        let bounds = Rectangle::new(Point::new(5.0, 7.0), Size::new(400.0, 300.0));
+        let upright = peak_label_layout(bounds, QuarterTurn::default(), &peak).unwrap();
+        for rotation in [1, 2, -1] {
+            let layout = peak_label_layout(bounds, QuarterTurn::new(rotation), &peak).unwrap();
+            assert_eq!(
+                layout.rect.size(),
+                upright.rect.size(),
+                "rotation={rotation}"
+            );
+            assert!(layout.rect.is_within(&bounds), "rotation={rotation}");
+        }
     }
 
     #[test]
@@ -864,16 +927,21 @@ fn draw_grid_lines(
     let text_color = th.extended_palette().background.base.text;
     let major_color = with_alpha(text_color, 0.25);
     let minor_color = with_alpha(text_color, 0.10);
-    let tick_x = grid_tick_x(bounds, range, &state.style);
+    let turn = state.turn();
+    let frame = turn.frame(bounds);
+    let tick_x = grid_tick_x(frame, range, &state.style);
 
     for (frequency, major, _) in &state.grid_ticks {
         let Some(x) = tick_x(*frequency) else {
             continue;
         };
-        let x = (x - 0.5).clamp(bounds.x, (bounds.x + bounds.width - 1.0).max(bounds.x));
+        let x = (x - 0.5).clamp(frame.x, (frame.x + frame.width - 1.0).max(frame.x));
         fill_rect(
             r,
-            Rectangle::new(Point::new(x, bounds.y), Size::new(1.0, bounds.height)),
+            turn.to_screen(
+                bounds,
+                Rectangle::new(Point::new(x, frame.y), Size::new(1.0, frame.height)),
+            ),
             if *major { major_color } else { minor_color },
         );
     }
@@ -903,17 +971,19 @@ fn draw_grid_labels(r: &mut iced::Renderer, th: &iced::Theme, state: &SpectrumSt
 struct PeakLayout {
     rect: Rectangle,
     text_layouts: [(Point, Size); 2],
-    leader_anchor: Point,
+    leader_anchor: [f32; 2],
 }
 
 fn point_to_normalized(b: Rectangle, p: Point) -> [f32; 2] {
     [(p.x - b.x) / b.width, 1.0 - (p.y - b.y) / b.height]
 }
 
-fn peak_label_layout(b: Rectangle, peak: &PeakLabel) -> Option<PeakLayout> {
+// Places the label in the unturned frame, then turns it upright into `bounds`.
+fn peak_label_layout(bounds: Rectangle, turn: QuarterTurn, peak: &PeakLabel) -> Option<PeakLayout> {
     const MIN_VIEW_SIZE: f32 = 8.0;
     const LABEL_GAP: f32 = 8.0;
     const LINE_GAP: f32 = 2.0;
+    let b = turn.frame(bounds);
     if peak.opacity < MIN_PEAK_OPACITY || b.width < MIN_VIEW_SIZE || b.height < MIN_VIEW_SIZE {
         return None;
     }
@@ -921,10 +991,10 @@ fn peak_label_layout(b: Rectangle, peak: &PeakLabel) -> Option<PeakLayout> {
     let [px, py] = peak.label_pos;
     let peak_pos = Point::new(b.x + b.width * px, b.y + b.height * (1.0 - py));
     let padding = Padding::new(7.0).top(6.0).bottom(5.0);
-    let size = Size::new(
+    let size = turn.frame_size(Size::new(
         title.width.max(detail.width) + padding.x(),
         title.height + detail.height + padding.y() + LINE_GAP,
-    );
+    ));
     let fits_right = peak_pos.x + size.width + LABEL_GAP <= b.x + b.width;
     let x = if fits_right {
         peak_pos.x + LABEL_GAP
@@ -934,12 +1004,14 @@ fn peak_label_layout(b: Rectangle, peak: &PeakLabel) -> Option<PeakLayout> {
     .clamp(b.x, (b.x + b.width - size.width).max(b.x));
     let y =
         (peak_pos.y - size.height - LABEL_GAP).clamp(b.y, (b.y + b.height - size.height).max(b.y));
-    let title_pos = Point::new(x + padding.left, y + padding.top);
+    let rect = turn.to_screen(bounds, Rectangle::new(Point::new(x, y), size));
+    let title_pos = Point::new(rect.x + padding.left, rect.y + padding.top);
     let detail_pos = Point::new(title_pos.x, title_pos.y + title.height + LINE_GAP);
+    let anchor = Point::new(if fits_right { x } else { x + size.width }, y + size.height);
     Some(PeakLayout {
-        rect: Rectangle::new(Point::new(x, y), size),
+        rect,
         text_layouts: [(title_pos, title), (detail_pos, detail)],
-        leader_anchor: Point::new(if fits_right { x } else { x + size.width }, y + size.height),
+        leader_anchor: point_to_normalized(b, anchor),
     })
 }
 

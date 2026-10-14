@@ -23,7 +23,8 @@ fn vs_main(input: InstanceInput, @builtin(vertex_index) vertex: u32) -> VertexOu
     var color = input.color0;
     var sdf = vec4<f32>(0.0, 0.0, 1000.0, 0.0);
 
-    switch u32(input.params.w) {
+    let tag = u32(input.params.w);
+    switch tag & 7u {
         case 0u: {
             let corner = vec2<f32>(endpoint, 1.0 - parity);
             position = mix(input.p0, input.p1, corner);
@@ -67,6 +68,14 @@ fn vs_main(input: InstanceInput, @builtin(vertex_index) vertex: u32) -> VertexOu
             position = input.p0 + input.p1 * corner;
             sdf = vec4<f32>(corner * (input.params.x + 1.0), input.params.x, input.params.y);
         }
+    }
+
+    // High tag bits turn the expanded primitive clockwise; see render/common.rs.
+    switch tag >> 3u {
+        case 1u: { position = vec2<f32>(position.y, -position.x); }
+        case 2u: { position = -position; }
+        case 3u: { position = vec2<f32>(-position.y, position.x); }
+        default: {}
     }
 
     var output: VertexOutput;

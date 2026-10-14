@@ -185,7 +185,7 @@ visuals! {
             s.borrow_mut().update_view_settings(set);
         };
 
-    Spectrum(400.0, 400.0) =>
+    Spectrum(400.0, 100.0) =>
         spectrum::SpectrumProcessor, SpectrumState.style;
         prepare(prepare);
         ignores_audio(ignores_audio);

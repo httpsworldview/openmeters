@@ -2,8 +2,9 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::{
-    FFT_OPTIONS, HOP_DIVISORS, get_closest_hop_divisor, set, set_f32, set_usize, settings_messages,
-    settings_pane, settings_view, update_fft_size, update_hop_divisor,
+    FFT_OPTIONS, HOP_DIVISORS, QUARTER_TURNS, get_closest_hop_divisor, quarter_turn_label, set,
+    set_f32, set_usize, settings_messages, settings_pane, settings_view, update_fft_size,
+    update_hop_divisor,
 };
 use crate::persistence::settings::SpectrumSettings;
 use crate::ui::widgets::{SliderRange, chip, pick, split, toggle};
@@ -56,6 +57,7 @@ settings_messages!(pane, settings, value {
     Direction(FrequencyDirection) => {
         set(&mut settings.reverse_frequency, value == FrequencyDirection::HighToLow)
     };
+    Rotation(f32) => set(&mut settings.rotation, value.round() as i8);
     Display(SpectrumDisplayMode) => set(&mut settings.display_mode, value);
     Weighting(WeightingMode) => set(&mut settings.weighting_mode, value);
     SecondaryWeighting(WeightingMode) => set(&mut settings.secondary_weighting_mode, value);
@@ -119,6 +121,10 @@ settings_view! {
         );
         let details = form!(
             pick("Direction", FrequencyDirection::ALL, direction, Direction);
+            slider!(
+                "Rotation", settings.rotation as f32, QUARTER_TURNS, Rotation,
+                quarter_turn_label(settings.rotation)
+            );
             split(
                 toggle("Frequency grid", settings.show_grid, ShowGrid),
                 primary.then(|| toggle("Peak label", settings.show_peak_label, ShowPeakLabel)),
@@ -139,6 +145,7 @@ settings_view! {
         let details_summary = [
             bars.then(|| format!("{} bars", settings.bar_count)),
             settings.reverse_frequency.then(|| "Reversed".into()),
+            (settings.rotation != 0).then(|| quarter_turn_label(settings.rotation)),
             settings.show_grid.then(|| "Grid".into()),
             (primary && settings.show_peak_label).then(|| "Peak label".into()),
         ];

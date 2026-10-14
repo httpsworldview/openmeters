@@ -240,6 +240,11 @@ fn finite_averaging_or(value: AveragingMode, default: AveragingMode) -> Averagin
     }
 }
 
+// Quarter-turn controls offer -1..=2; other turn counts wrap into it.
+fn wrap_quarter_turns(value: i8, _: i8) -> i8 {
+    (value.rem_euclid(4) + 1) % 4 - 1
+}
+
 macro_rules! visual_settings {
     ($name:ident from $config_ty:ty {
         $($field:ident: $ty:ty $(=> $normalize:path)?),* $(,)?
@@ -301,7 +306,8 @@ visual_settings!(SpectrumSettings from SpectrumConfig {
     source: Channel, secondary_source: Channel, floor_db: f32 => sanitize_negative_db,
 } extra {
     frequency_scale: FrequencyScale = FrequencyScale::Logarithmic,
-    reverse_frequency: bool = false, show_grid: bool = true, show_peak_label: bool = false,
+    reverse_frequency: bool = false, rotation: i8 = 0 => wrap_quarter_turns, show_grid: bool = true,
+    show_peak_label: bool = false,
     display_mode: SpectrumDisplayMode = SpectrumDisplayMode::default(),
     weighting_mode: SpectrumWeightingMode = SpectrumWeightingMode::default(),
     secondary_weighting_mode: SpectrumWeightingMode = SpectrumWeightingMode::default(),
@@ -318,7 +324,7 @@ visual_settings!(SpectrogramSettings from SpectrogramConfig {
     floor_db: f32 = -120.0 => sanitize_negative_db,
     tilt_db: f32 = 4.5 => finite_or,
     piano_roll_overlay: PianoRollOverlay = PianoRollOverlay::default(),
-    rotation: i8 = 0,
+    rotation: i8 = 0 => wrap_quarter_turns,
 });
 
 visual_settings!(StereometerSettings from StereometerConfig {
@@ -387,7 +393,25 @@ mod tests {
         assert!(modules["waveform"]["config"].get("palette").is_none());
         assert_eq!(modules["loudness"]["enabled"], true);
         assert_eq!(modules["loudness"]["config"]["left_mode"], "true_peak");
+        assert_eq!(modules["spectrum"]["config"]["rotation"], 0);
         let loaded = VisualSettings::from_value_lossy(saved.clone());
         assert_eq!(serde_json::to_value(loaded).unwrap(), saved);
+
+        for (rotation, expected) in [
+            (json!(-1), -1),
+            (json!(-2), 2),
+            (json!(3), -1),
+            (json!(1.5), 0),
+            (json!(300), 0),
+        ] {
+            let settings = VisualSettings::from_value_lossy(json!({"modules": {
+                "spectrum": {"enabled": true, "config": {"rotation": rotation, "fft_size": 2048}}
+            }}));
+            let (VisualConfig::Spectrum(config), _) = settings.module_config(VisualKind::Spectrum)
+            else {
+                panic!("expected spectrum settings");
+            };
+            assert_eq!((config.rotation, config.fft_size), (expected, 2048));
+        }
     }
 }

@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::{
-    FFT_OPTIONS, HOP_DIVISORS, get_closest_hop_divisor, set, set_f32, settings_messages,
-    settings_pane, settings_view, update_fft_size, update_hop_divisor,
+    FFT_OPTIONS, HOP_DIVISORS, QUARTER_TURNS, get_closest_hop_divisor, quarter_turn_label, set,
+    set_f32, settings_messages, settings_pane, settings_view, update_fft_size, update_hop_divisor,
 };
 use crate::persistence::settings::SpectrogramSettings;
 use crate::ui::widgets::{SliderRange, chip, pick, split, toggle};
@@ -13,7 +13,6 @@ use crate::visuals::options::PianoRollOverlay;
 const ZERO_PAD_OPTIONS: [usize; 6] = [1, 2, 4, 8, 16, 32];
 const FLOOR_RANGE: SliderRange = SliderRange::new(-140.0, -1.0, 1.0);
 const TILT_RANGE: SliderRange = SliderRange::new(-6.0, 6.0, 0.5);
-const ROTATION_RANGE: SliderRange = SliderRange::new(-1.0, 2.0, 1.0);
 
 settings_pane!(SpectrogramSettings, init_palette(palette) {
     palette.set_show_ramp(true);
@@ -49,8 +48,8 @@ settings_view! {
         slider!("Floor", settings.floor_db, FLOOR_RANGE, FloorDb, "{:.0} dB");
         slider!("Spectral tilt", tilt_db, TILT_RANGE, TiltDb, tilt);
         slider!(
-            "Rotation", settings.rotation as f32, ROTATION_RANGE, Rotation,
-            format!("{}\u{00b0}", settings.rotation as i32 * 90)
+            "Rotation", settings.rotation as f32, QUARTER_TURNS, Rotation,
+            quarter_turn_label(settings.rotation)
         );
     );
     "Analysis" [[

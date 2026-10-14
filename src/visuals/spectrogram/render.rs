@@ -14,8 +14,8 @@ use std::sync::{
 use wgpu::util::DeviceExt as _;
 
 use crate::visuals::render::common::{
-    CacheTracker, RenderPipelineSpec, begin_pass, create_buffer, create_render_pipeline,
-    create_shader_module,
+    CacheTracker, QuarterTurn, RenderPipelineSpec, begin_pass, create_buffer,
+    create_render_pipeline, create_shader_module,
 };
 
 use super::processor::{ColumnKind, SpectrogramColumn, SpectrogramPoint, col_byte_stride};
@@ -52,7 +52,7 @@ pub struct SpectrogramParams {
     pub floor_db: f32,
     pub tilt_db: f32,
     pub uv_y_range: [f32; 2],
-    pub rotation: i8,
+    pub turn: QuarterTurn,
 }
 
 impl Primitive for SpectrogramParams {
@@ -277,7 +277,7 @@ impl Uniforms {
             },
             history_length: p.ring_capacity,
             col_count: p.col_count,
-            rotation: p.rotation.rem_euclid(4) as u32,
+            rotation: u32::from(p.turn.turns()),
             page_mask: hl.next_power_of_two() - 1,
             bounds: [
                 p.bounds.x * sf,
@@ -906,12 +906,8 @@ impl Resources {
             return;
         }
         let scale = scale_factor.max(1.0);
-        let [width, height] = if matches!(p.rotation.rem_euclid(4), 1 | 3) {
-            [p.bounds.height, p.bounds.width]
-        } else {
-            [p.bounds.width, p.bounds.height]
-        };
-        let size = [width, height].map(|value| (value.max(1.0) * scale).ceil() as u32);
+        let size = <[f32; 2]>::from(p.turn.frame_size(p.bounds.size()))
+            .map(|value| (value.max(1.0) * scale).ceil() as u32);
         if self
             .accum
             .as_ref()

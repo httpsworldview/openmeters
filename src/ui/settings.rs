@@ -12,6 +12,7 @@ use crate::persistence::settings::{
     BUILTIN_THEME, ChangeOrigin::User, PaletteSettings, SettingsHandle, VisualConfig,
 };
 use crate::ui::theme::Palette;
+use crate::ui::widgets::SliderRange;
 use crate::ui::widgets::palette_editor::{PaletteChange, PaletteEditor, PaletteEvent};
 use crate::util::set_if_changed as set;
 use crate::visuals::registry::{VisualKind, VisualManagerHandle};
@@ -19,6 +20,11 @@ use iced::Element;
 
 const FFT_OPTIONS: [usize; 5] = [1024, 2048, 4096, 8192, 16384];
 const HOP_DIVISORS: [usize; 7] = [4, 6, 8, 16, 32, 64, 128];
+const QUARTER_TURNS: SliderRange = SliderRange::new(-1.0, 2.0, 1.0);
+
+fn quarter_turn_label(rotation: i8) -> String {
+    format!("{}\u{00b0}", i32::from(rotation) * 90)
+}
 
 macro_rules! settings_modules {
     ($($module:ident => $variant:ident),+ $(,)?) => {
