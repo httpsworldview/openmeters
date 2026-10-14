@@ -245,7 +245,6 @@ impl UiApp {
     fn create_popout_window(
         &mut self,
         kind: VisualKind,
-        saved_size: Option<PopoutWindowSettings>,
     ) -> Option<(PopoutWindowSettings, Task<Message>)> {
         if self
             .popout_windows
@@ -259,7 +258,7 @@ impl UiApp {
             .iter()
             .enumerate()
             .find(|(_, slot)| slot.kind == kind && slot.enabled)?;
-        let saved = saved_size.unwrap_or_default();
+        let saved = self.saved_popout(kind).unwrap_or_default();
         let dim = |saved: u32, default| if saved > 0 { saved as f32 } else { default };
         let window_size =
             clamp_window_size(Size::new(dim(saved.width, 400.0), dim(saved.height, 300.0)));
@@ -276,28 +275,24 @@ impl UiApp {
         Some((popout_window_settings(window_size, true), open_task))
     }
 
-    pub(super) fn restore_popout_windows(
-        &mut self,
-        saved: &std::collections::BTreeMap<VisualKind, PopoutWindowSettings>,
-    ) -> Task<Message> {
+    pub(super) fn restore_popout_windows(&mut self) -> Task<Message> {
         let order = self.visual_manager.borrow().order();
-        Task::batch(order.into_iter().filter_map(|kind| {
-            let settings = saved.get(&kind).copied().filter(|s| s.popped_out)?;
-            self.create_popout_window(kind, Some(settings))
-                .map(|(_, task)| task)
-        }))
+        Task::batch(
+            order
+                .into_iter()
+                .map(|kind| self.restore_popout_window(kind)),
+        )
     }
 
     pub(super) fn restore_popout_window(&mut self, kind: VisualKind) -> Task<Message> {
         self.saved_popout(kind)
             .filter(|settings| settings.popped_out)
-            .and_then(|settings| self.create_popout_window(kind, Some(settings)))
+            .and_then(|_| self.create_popout_window(kind))
             .map_or_else(Task::none, |(_, task)| task)
     }
 
     fn open_popout_window(&mut self, kind: VisualKind) -> Task<Message> {
-        let saved_size = self.saved_popout(kind);
-        let Some((settings, task)) = self.create_popout_window(kind, saved_size) else {
+        let Some((settings, task)) = self.create_popout_window(kind) else {
             return Task::none();
         };
         self.settings_handle.update(User, |s| {
@@ -443,19 +438,16 @@ impl UiApp {
         self.apply_visual_snapshot(&snapshot);
     }
 
-    pub(super) fn apply_bar_layout(
-        &mut self,
-        alignment: BarAlignment,
-        height: u32,
-    ) -> Task<Message> {
+    pub(super) fn apply_bar_layout(&self) -> Task<Message> {
         let MainWindow::Bar(Some(id)) = self.main_window else {
             return Task::none();
         };
-        let height = clamp_bar_height(height);
+        let bar = &self.settings_handle.borrow().data.bar;
+        let height = clamp_bar_height(bar.height);
         Task::batch([
             Task::done(Message::LayoutChange {
                 id,
-                anchor: bar_anchor(alignment),
+                anchor: bar_anchor(bar.alignment),
                 size: LayerSize::fill_width(height),
             }),
             Task::done(Message::ExclusiveZoneChange {
@@ -497,7 +489,6 @@ impl UiApp {
 
         let (width, height) = persisted_window_size(new_size);
         let settings = MainWindowSettings { width, height };
-        self.last_base_window_size = main_window_size(settings);
         self.settings_handle
             .set(Automatic, |state| &mut state.main_window, settings);
         Task::none()
@@ -505,16 +496,20 @@ impl UiApp {
 
     pub(super) fn recreate_main_window(&mut self) -> Task<Message> {
         let old_main_id = self.main_window.id();
-        let (bar, decorations) = {
+        let (bar, decorations, size) = {
             let settings = &self.settings_handle.borrow().data;
-            (settings.bar.clone(), settings.decorations)
+            (
+                settings.bar.clone(),
+                settings.decorations,
+                main_window_size(settings.main_window),
+            )
         };
         self.config_page.sync_current_bar_output(None);
         self.bar_resize_state = None;
         let (main_window, open_main) = open_main_window(
             self.use_layershell,
             bar,
-            self.last_base_window_size,
+            size,
             decorations,
             self.config_page.has_bar_outputs(),
         );
@@ -526,14 +521,12 @@ impl UiApp {
         if !self.use_layershell {
             return Task::none();
         }
-        let bar = self.settings_handle.borrow().data.bar.clone();
+        let enabled = self.settings_handle.borrow().data.bar.enabled;
         match change {
-            BarChange::Mode if bar.enabled != self.main_window.is_bar() => {
-                self.recreate_main_window()
-            }
+            BarChange::Mode if enabled != self.main_window.is_bar() => self.recreate_main_window(),
             BarChange::Monitor if self.main_window.is_bar() => self.recreate_main_window(),
             BarChange::Mode | BarChange::Layout if self.main_window.is_bar() => {
-                self.apply_bar_layout(bar.alignment, bar.height)
+                self.apply_bar_layout()
             }
             BarChange::Mode | BarChange::Layout | BarChange::Monitor => Task::none(),
         }
@@ -541,12 +534,12 @@ impl UiApp {
 
     pub(super) fn recreate_visual_windows(&mut self) -> Task<Message> {
         let decorations = self.settings_handle.borrow().data.decorations;
+        let base_size = main_window_size(self.settings_handle.borrow().data.main_window);
         let old_popouts = std::mem::take(&mut self.popout_windows);
         let mut tasks = Vec::with_capacity(old_popouts.len() * 2 + 2);
 
         if let MainWindow::Window(old) = self.main_window {
-            let (id, open) =
-                open_base_window(self.use_layershell, self.last_base_window_size, decorations);
+            let (id, open) = open_base_window(self.use_layershell, base_size, decorations);
             self.main_window = MainWindow::Window(id);
             tasks.extend([open, window::close(old)]);
         }

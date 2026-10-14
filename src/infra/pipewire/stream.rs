@@ -34,7 +34,6 @@ pub(super) struct StreamConfig {
 pub(super) struct TapStream {
     core: pw::core::CoreRc,
     writer: Rc<RefCell<CaptureWriter>>,
-    node_name: String,
     dirty: Rc<Cell<bool>>,
     active: Option<(Session, StreamConfig)>,
 }
@@ -43,13 +42,11 @@ impl TapStream {
     pub(super) fn new(
         core: pw::core::CoreRc,
         writer: Rc<RefCell<CaptureWriter>>,
-        node_name: String,
         dirty: Rc<Cell<bool>>,
     ) -> Self {
         Self {
             core,
             writer,
-            node_name,
             dirty,
             active: None,
         }
@@ -108,7 +105,7 @@ impl Session {
             *pw::keys::MEDIA_TYPE => "Audio",
             *pw::keys::MEDIA_CATEGORY => "Capture",
             *pw::keys::MEDIA_ROLE => "Production",
-            *pw::keys::NODE_NAME => tap.node_name.as_str(),
+            *pw::keys::NODE_NAME => format!("openmeters.tap.{}", std::process::id()),
             *pw::keys::NODE_DESCRIPTION => DESCRIPTION,
             *pw::keys::NODE_VIRTUAL => "true",
             *pw::keys::NODE_LATENCY => format!("{LATENCY_FRAMES}/{}", DEFAULT_SAMPLE_RATE as u32),

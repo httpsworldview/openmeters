@@ -54,9 +54,6 @@ pub enum CapturedSpan<'a> {
     Reset,
 }
 
-trait SpanConsumer: for<'a> FnMut(CapturedSpan<'a>) {}
-impl<T: for<'a> FnMut(CapturedSpan<'a>)> SpanConsumer for T {}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub(super) enum StreamStatus {
@@ -591,10 +588,7 @@ pub struct AudioReader {
 }
 
 impl AudioReader {
-    pub fn drain<F>(&mut self, now: Instant, mut consume: F)
-    where
-        F: for<'a> FnMut(CapturedSpan<'a>),
-    {
+    pub fn drain(&mut self, now: Instant, mut consume: impl FnMut(CapturedSpan<'_>)) {
         if self.shared.ingest() != IngestState::Active {
             return;
         }
@@ -707,7 +701,7 @@ impl AudioReader {
         self.shared.reconnects.load(Ordering::Relaxed)
     }
 
-    fn synchronize_fault(&mut self, consume: &mut impl SpanConsumer) -> bool {
+    fn synchronize_fault(&mut self, consume: &mut impl FnMut(CapturedSpan<'_>)) -> bool {
         let fault = self.shared.fault_epoch.load(Ordering::Acquire);
         if fault == self.fault_epoch {
             return false;
@@ -719,7 +713,7 @@ impl AudioReader {
         true
     }
 
-    fn accept(&mut self, packet: Packet, consume: &mut impl SpanConsumer) {
+    fn accept(&mut self, packet: Packet, consume: &mut impl FnMut(CapturedSpan<'_>)) {
         if packet.epoch != self.shared.activity_epoch.load(Ordering::Acquire) {
             if let Some(samples) = packet.samples {
                 let _ = self.recycler.push(samples);
@@ -773,14 +767,14 @@ impl AudioReader {
         }
     }
 
-    fn switch(&mut self, format: AudioFormat, consume: &mut impl SpanConsumer) {
+    fn switch(&mut self, format: AudioFormat, consume: &mut impl FnMut(CapturedSpan<'_>)) {
         if self.format != format {
             self.flush(consume);
             self.format = format;
         }
     }
 
-    fn flush(&mut self, consume: &mut impl SpanConsumer) {
+    fn flush(&mut self, consume: &mut impl FnMut(CapturedSpan<'_>)) {
         if self.scratch.is_empty() {
             return;
         }

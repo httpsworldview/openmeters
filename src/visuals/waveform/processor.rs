@@ -113,10 +113,6 @@ impl BandTracker {
     }
 }
 
-fn derived_frame(stereo: [f32; 2]) -> [f32; DERIVED_CHANNELS] {
-    WAVEFORM_CHANNELS.map(|channel| channel.project(stereo))
-}
-
 crate::macros::default_struct! {
     pub struct WaveformProcessor {
         config: WaveformConfig = WaveformConfig::default(),
@@ -230,7 +226,7 @@ impl WaveformProcessor {
         let step =
             (f64::from(self.config.scroll_speed) / f64::from(self.config.sample_rate)).min(1.0);
         for stereo in block.stereo_frames() {
-            let derived = derived_frame(stereo);
+            let derived = WAVEFORM_CHANNELS.map(|channel| channel.project(stereo));
             let finite = derived.map(f32::is_finite);
             if let Some((filter, tracker)) = &mut self.band_analysis {
                 let [low, mid, high] = filter.process([

@@ -54,27 +54,14 @@ impl VisualSettings {
             visual_map(
                 map,
                 "modules",
-                "visuals.modules",
                 &mut out.modules,
                 ModuleSettings::from_value_lossy,
             );
             if let Some(value) = map.remove("order") {
                 out.order = visual_order(value);
             }
-            visual_map(
-                map,
-                "width_basis",
-                "visuals.width_basis",
-                &mut out.width_basis,
-                width_basis,
-            );
-            visual_map(
-                map,
-                "popouts",
-                "visuals.popouts",
-                &mut out.popouts,
-                popout_window,
-            );
+            visual_map(map, "width_basis", &mut out.width_basis, width_basis);
+            visual_map(map, "popouts", &mut out.popouts, popout_window);
         })
     }
 
@@ -103,14 +90,14 @@ impl VisualSettings {
 fn visual_map<T>(
     map: &mut Map<String, Value>,
     key: &str,
-    scope: &str,
     out: &mut BTreeMap<VisualKind, T>,
     mut parse: impl FnMut(VisualKind, Value, &str) -> Option<T>,
 ) {
     let Some(value) = map.remove(key) else {
         return;
     };
-    let Some(map) = lossy::object(value, scope) else {
+    let scope = format!("visuals.{key}");
+    let Some(map) = lossy::object(value, &scope) else {
         return;
     };
     *out = map

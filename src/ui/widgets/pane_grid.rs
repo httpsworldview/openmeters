@@ -280,11 +280,10 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer> for PaneGrid
         {
             return mouse::Interaction::ResizingHorizontally;
         }
-        if self.on_drag.is_some()
-            && cursor
-                .position()
-                .and_then(|p| self.pane_at(layout, p))
-                .is_some_and(|pane| pane != Pane::Spectrogram || !interaction.modifiers.control())
+        if cursor
+            .position()
+            .and_then(|p| self.draggable_at(layout, p, interaction.modifiers.control()))
+            .is_some()
         {
             return mouse::Interaction::Grab;
         }

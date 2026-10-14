@@ -17,6 +17,8 @@ const DSP_BATCH_FRAMES_AT_48K: usize = 256;
 const MAX_DSP_INGEST_FRAMES_AT_48K: usize = 1_024;
 // Per-span limit; longer silence resets audio state.
 const MAX_SILENCE_SECONDS: u64 = 4;
+static SILENCE: [f32; SILENCE_CHUNK_FRAMES * MAX_CAPTURE_CHANNELS] =
+    [0.0; SILENCE_CHUNK_FRAMES * MAX_CAPTURE_CHANNELS];
 
 fn scaled_samples(frames_at_48k: usize, format: AudioFormat) -> usize {
     ((frames_at_48k as f64 * f64::from(format.sample_rate) / f64::from(DEFAULT_SAMPLE_RATE))
@@ -74,7 +76,6 @@ impl DspBatcher {
 pub(crate) struct MeterEngine {
     audio: AudioReader,
     visuals: VisualManagerHandle,
-    silence: Vec<f32>,
     batcher: DspBatcher,
     active: bool,
     paused: bool,
@@ -85,7 +86,6 @@ impl MeterEngine {
         Self {
             audio,
             visuals,
-            silence: vec![0.0; SILENCE_CHUNK_FRAMES * MAX_CAPTURE_CHANNELS],
             batcher: DspBatcher::new(),
             active: true,
             paused: false,
@@ -99,7 +99,6 @@ impl MeterEngine {
         let Self {
             audio,
             visuals,
-            silence,
             batcher,
             ..
         } = self;
@@ -109,7 +108,7 @@ impl MeterEngine {
                 batcher.push(&mut manager, samples, format);
             }
             CapturedSpan::Silence { frames, format } => {
-                ingest_silence(&mut manager, silence, batcher, frames, format);
+                ingest_silence(&mut manager, batcher, frames, format);
             }
             CapturedSpan::Reset => batcher.reset(&mut manager),
         });
@@ -153,7 +152,6 @@ impl MeterEngine {
 
 fn ingest_silence(
     manager: &mut VisualManager,
-    scratch: &[f32],
     batcher: &mut DspBatcher,
     frames: u64,
     format: AudioFormat,
@@ -165,11 +163,11 @@ fn ingest_silence(
         batcher.reset(manager);
         return;
     }
-    let capacity = scratch.len() / format.channels;
+    let capacity = SILENCE.len() / format.channels;
     let mut remaining = frames;
     while remaining > 0 {
         let chunk = remaining.min(capacity as u64) as usize;
-        batcher.push(manager, &scratch[..chunk * format.channels], format);
+        batcher.push(manager, &SILENCE[..chunk * format.channels], format);
         remaining -= chunk as u64;
     }
 }
@@ -276,7 +274,6 @@ mod tests {
         let (mut manager, snapshot) = loudness();
         let mut batcher = DspBatcher::new();
         let format = AudioFormat::new(1, 48_000, 1, ChannelPosition::fallback(1));
-        let scratch = [0.0; SILENCE_CHUNK_FRAMES * MAX_CAPTURE_CHANNELS];
         let signal = sine_wave(1_000.0, 48_000.0, 256, 0.5);
         let reset_level = snapshot().short_term_loudness;
         for frames in [48_000, 144_001, 192_000, 192_001] {
@@ -286,7 +283,7 @@ mod tests {
             let mut reference = LoudnessProcessor::new(Default::default());
             reference.process_block(&AudioBlock::new(&signal, 1, 48_000.0));
             batcher.push(&mut manager, &[0.0], format);
-            ingest_silence(&mut manager, &scratch, &mut batcher, frames, format);
+            ingest_silence(&mut manager, &mut batcher, frames, format);
             let expected = if frames > 192_000 {
                 assert!(batcher.samples.is_empty());
                 reset_level

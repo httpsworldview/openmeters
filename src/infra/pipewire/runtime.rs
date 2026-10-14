@@ -246,12 +246,7 @@ impl CaptureState {
         dirty: Rc<Cell<bool>>,
     ) -> Self {
         Self {
-            tap: TapStream::new(
-                core.clone(),
-                writer,
-                format!("openmeters.tap.{}", std::process::id()),
-                Rc::clone(&dirty),
-            ),
+            tap: TapStream::new(core.clone(), writer, Rc::clone(&dirty)),
             owned_links: OwnedLinks::new(core, Rc::clone(&dirty)),
             dirty,
             stream_retry_at: None,

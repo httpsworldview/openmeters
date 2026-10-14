@@ -12,7 +12,6 @@ pub use crate::domain::visuals::VisualKind;
 use crate::{
     dsp::{AudioBlock, AudioFormat},
     persistence::settings::{PaletteSettings, ThemeFile, VisualConfig, VisualSettings},
-    util::audio::Channel,
     util::color::{sanitize_stop_positions, sanitize_stop_spreads},
 };
 use iced::{Color, Element};
@@ -220,8 +219,7 @@ visuals! {
         ignores_audio(ignores_audio);
         config(cfg);
         apply(p, s, set) {
-            let reset = [set.channel_1, set.channel_2] == [Channel::None; 2];
-            s.borrow_mut().update_view_settings(set, reset);
+            s.borrow_mut().update_view_settings(set);
         };
 
     Stereometer(150.0, 100.0) =>
@@ -291,16 +289,10 @@ pub(crate) struct VisualSlotSnapshot {
     pub content: VisualContent,
 }
 
-pub(crate) struct VisualManager {
-    entries: Vec<Entry>,
-    format_generation: Option<u64>,
-}
-impl Default for VisualManager {
-    fn default() -> Self {
-        Self {
-            entries: entries(),
-            format_generation: None,
-        }
+crate::macros::default_struct! {
+    pub(crate) struct VisualManager {
+        entries: Vec<Entry> = entries(),
+        format_generation: Option<u64> = None,
     }
 }
 impl VisualManager {
@@ -458,7 +450,7 @@ mod tests {
             }),
             VisualConfig::Spectrogram(SpectrogramSettings {
                 fft_size: 2048,
-                source: Channel::Right,
+                source: crate::util::audio::Channel::Right,
                 rotation: -1,
                 ..Default::default()
             }),

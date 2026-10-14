@@ -29,11 +29,11 @@ impl OscilloscopeState {
         self.geometry.invalidate();
     }
 
-    pub fn update_view_settings(&mut self, settings: &OscilloscopeSettings, reset_snapshot: bool) {
+    pub fn update_view_settings(&mut self, settings: &OscilloscopeSettings) {
         let default = OscilloscopeSettings::default().persistence;
         self.settings = settings.clone();
         self.settings.persistence = finite_or(settings.persistence, default).clamp(0.0, 1.0);
-        if reset_snapshot {
+        if self.ignores_audio() {
             self.snapshot = OscilloscopeSnapshot::default();
         }
         self.geometry.invalidate();

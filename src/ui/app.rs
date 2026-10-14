@@ -23,8 +23,7 @@ use iced::alignment::{Horizontal, Vertical};
 use iced::event;
 use iced::widget::{Space, container, mouse_area, row, stack, text};
 use iced::{
-    Element, Length, Settings as IcedSettings, Size, Subscription, Task, daemon as iced_daemon,
-    window,
+    Element, Length, Settings as IcedSettings, Subscription, Task, daemon as iced_daemon, window,
 };
 use iced_exwlshell::settings::{LayerShellSettings, Settings as LayerSettings, StartMode};
 use message::{Message, app_event, shell_event, update, view};
@@ -116,7 +115,6 @@ struct UiApp {
     rendering_paused: bool,
     toast_until: Option<Instant>,
     main_window: MainWindow,
-    last_base_window_size: Size,
     use_layershell: bool,
     settings_window: Option<(window::Id, ActiveSettings)>,
     settings_scroll: ScrollGlow,
@@ -164,11 +162,10 @@ impl UiApp {
             use_layershell,
         );
         let visuals_page = VisualsPage::new(visual_manager.clone(), settings_handle.clone());
-        let base_size = main_window_size(settings.main_window);
         let (main_window, open_task) = open_main_window(
             use_layershell,
             settings.bar,
-            base_size,
+            main_window_size(settings.main_window),
             settings.decorations,
             config_page.has_bar_outputs(),
         );
@@ -187,14 +184,13 @@ impl UiApp {
             rendering_paused: false,
             toast_until: None,
             main_window,
-            last_base_window_size: base_size,
             use_layershell,
             settings_window: None,
             settings_scroll: ScrollGlow::default(),
             popout_windows: HashMap::default(),
             exit_warning_until: None,
         };
-        let restore_popouts = app.restore_popout_windows(&settings.visuals.popouts);
+        let restore_popouts = app.restore_popout_windows();
         if !app.popout_windows.is_empty() {
             app.sync_visuals_page();
         }
@@ -293,10 +289,9 @@ impl UiApp {
             .take()
             .filter(|s| s.pending_height != s.start_height)
             .map_or_else(Task::none, |s| {
-                let alignment = self.settings_handle.borrow().data.bar.alignment;
                 self.settings_handle
                     .update(User, |settings| settings.data.bar.height = s.pending_height);
-                self.apply_bar_layout(alignment, s.pending_height)
+                self.apply_bar_layout()
             })
     }
 
@@ -375,10 +370,7 @@ impl UiApp {
         let overlay = self.bar_resize_state.as_ref().map(|state| {
             let (current, pending) = (state.start_height, state.pending_height);
             container(text(format!("{current}px -> {pending}px")).size(14))
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .align_x(Horizontal::Center)
-                .align_y(Vertical::Center)
+                .center(Length::Fill)
                 .style(theme::resize_overlay)
         });
         stack![content, overlay, handle_layer].into()
