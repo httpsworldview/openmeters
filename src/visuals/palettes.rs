@@ -14,10 +14,12 @@ const HEAT_RAMP: [Color; 5] = [
     Color::from_rgb8(0xFF, 0xFF, 0x21),
     Color::from_rgb8(0xFF, 0xFF, 0xFF),
 ];
+const HEAT_POSITIONS: [f32; 5] = [0.0, 0.402_523_83, 0.679_189_3, 0.869_322_26, 1.0];
 
 pub struct Palette {
     colors: Vec<Color>,
     pub defaults: &'static [Color],
+    /// Stop positions of the ramp that the leading colors form; empty without one.
     pub default_positions: &'static [f32],
     pub labels: &'static [&'static str],
 }
@@ -44,10 +46,6 @@ impl Palette {
         }
     }
 
-    pub fn len(&self) -> usize {
-        self.defaults.len()
-    }
-
     pub fn set_colors(&mut self, colors: &[Color]) {
         self.colors.clear();
         if colors.len() == self.defaults.len() && !palettes_equal(colors, self.defaults) {
@@ -71,29 +69,22 @@ impl Palette {
     }
 }
 
-const fn evenly_spaced<const N: usize>() -> [f32; N] {
-    let mut positions = [0.0; N];
-    let mut i = 1;
-    while i < N {
-        positions[i] = i as f32 / (N - 1) as f32;
-        i += 1;
-    }
-    positions
-}
-
 macro_rules! palette {
-    ($name:ident { $($color:expr => $label:expr),+ $(,)? } => $positions:expr) => {
+    (@positions) => { &[] };
+    (@positions $positions:expr) => { &DEFAULT_POSITIONS };
+    ($name:ident { $($color:expr => $label:expr),+ $(,)? } $(=> $positions:expr)?) => {
         pub mod $name {
             use super::Color;
             pub const LABELS: &[&str] = &[$($label),+];
-            pub const COLORS: [Color; LABELS.len()] = [$($color),+];
-            pub const SIZE: usize = COLORS.len();
-            pub const DEFAULT_POSITIONS: [f32; SIZE] = $positions;
-            pub const PALETTE: super::Palette = super::Palette::new(&COLORS, &DEFAULT_POSITIONS, LABELS);
+            pub const SIZE: usize = LABELS.len();
+            pub const COLORS: [Color; SIZE] = [$($color),+];
+            $(
+                pub const DEFAULT_POSITIONS: [f32; $positions.len()] = $positions;
+                const _: () = assert!(matches!(DEFAULT_POSITIONS.len(), 2..=SIZE));
+            )?
+            pub const PALETTE: super::Palette =
+                super::Palette::new(&COLORS, palette!(@positions $($positions)?), LABELS);
         }
-    };
-    ($name:ident { $($color:expr => $label:expr),+ $(,)? }) => {
-        palette!($name { $($color => $label),+ } => super::evenly_spaced());
     };
 }
 
@@ -103,16 +94,16 @@ palette!(spectrogram {
     super::HEAT_RAMP[2] => "->",
     super::HEAT_RAMP[3] => "->",
     super::HEAT_RAMP[4] => "Loud",
-} => [0.0, 0.402_523_83, 0.679_189_3, 0.869_322_26, 1.0]);
+} => super::HEAT_POSITIONS);
 
 palette!(spectrum {
-    super::HEAT_RAMP[0] => "Floor",
-    super::HEAT_RAMP[1] => "Low",
-    super::HEAT_RAMP[2] => "Low-Mid",
-    super::HEAT_RAMP[3] => "Mid",
-    super::HEAT_RAMP[4] => "High",
-    super::HEAT_RAMP[4] => "Peak",
-});
+    super::HEAT_RAMP[0] => "Quietest",
+    super::HEAT_RAMP[1] => "->",
+    super::HEAT_RAMP[2] => "->",
+    super::HEAT_RAMP[3] => "->",
+    super::HEAT_RAMP[4] => "Loud",
+    Color::WHITE => "Peak",
+} => super::HEAT_POSITIONS);
 
 palette!(waveform {
     Color::from_rgb8(0xFF, 0x00, 0x00) => "Low",
@@ -145,6 +136,6 @@ palette!(loudness {
     Color::from_rgb8(0xFF, 0x5C, 0x4F) => "Danger",
     Color::from_rgb8(0xF5, 0xED, 0xC4) => "Peak",
     Color::from_rgba8(0xB7, 0xC2, 0xC9, 224.0 / 255.0) => "Guide",
-} => [0.0, 0.16, 0.32, 0.48, 0.64, 0.80, 1.0]);
+});
 
 palette!(background { super::BG_BASE => "Background" });

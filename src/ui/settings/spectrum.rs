@@ -21,7 +21,6 @@ const DECAY_R: SliderRange =
     SliderRange::new(MIN_SPECTRUM_PEAK_DECAY, MAX_SPECTRUM_PEAK_DECAY, 0.5);
 const BARS_R: SliderRange = SliderRange::new(8.0, 128.0, 1.0);
 const GAP_R: SliderRange = SliderRange::new(0.0, 0.8, 0.05);
-const HIGH_R: SliderRange = SliderRange::new(0.0, 0.9, 0.01);
 const FLOOR_R: SliderRange = SliderRange::new(MIN_SPECTRUM_DB_FLOOR, MAX_SPECTRUM_DB_FLOOR, 1.0);
 
 crate::macros::choice_enum!(pub(in crate::ui) enum AvgMode {
@@ -69,7 +68,6 @@ settings_messages!(pane, settings, value {
     FloorDb(f32) => set_f32(&mut settings.floor_db, value);
     BarCount(f32) => set_usize(&mut settings.bar_count, value);
     BarGap(f32) => set_f32(&mut settings.bar_gap, value);
-    Highlight(f32) => set_f32(&mut settings.highlight_threshold, value);
 });
 
 settings_view! {
@@ -137,10 +135,6 @@ settings_view! {
                 "Bar gap", settings.bar_gap, GAP_R, BarGap,
                 format!("{:.0}%", settings.bar_gap * 100.0)
             ));
-            slider!(
-                "Color floor", settings.highlight_threshold, HIGH_R, Highlight,
-                format!("{:.0}%", settings.highlight_threshold * 100.0)
-            );
         );
         let details_summary = [
             bars.then(|| format!("{} bars", settings.bar_count)),

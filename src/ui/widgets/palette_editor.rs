@@ -7,7 +7,7 @@ use crate::ui::widgets::scroll_glow::{ScrollEvent, ScrollGlow};
 use crate::ui::widgets::{action_button, clipped_text, split, value_label};
 use crate::util::color::{
     EPSILON, STOP_SPREAD_MAX, STOP_SPREAD_MIN, colors_equal, from_hsv, lerp_color, parse_hex_color,
-    sanitize_stop_positions, sanitize_stop_spreads, to_hex, to_hsv, with_alpha,
+    ramp_segment, sanitize_stop_positions, sanitize_stop_spreads, to_hex, to_hsv, with_alpha,
 };
 use crate::visuals::render::common::scroll_delta_lines;
 use iced::advanced::graphics::color;
@@ -82,7 +82,6 @@ pub struct PaletteEditor {
     saved: Option<PaletteSettings>,
     only_first_visible: bool,
     label_overrides: &'static [(usize, &'static str)],
-    show_ramp: bool,
     scroll: ScrollGlow,
 }
 
@@ -90,19 +89,14 @@ impl PaletteEditor {
     pub fn new(palette: Palette) -> Self {
         Self {
             positions: palette.default_positions.to_vec(),
-            spreads: vec![1.0; palette.len()],
+            spreads: vec![1.0; palette.default_positions.len()],
             palette,
             active: None,
             saved: None,
             only_first_visible: false,
             label_overrides: &[],
-            show_ramp: false,
             scroll: ScrollGlow::default(),
         }
-    }
-
-    pub fn set_show_ramp(&mut self, show: bool) {
-        self.show_ramp = show;
     }
 
     pub fn set_only_first_visible(&mut self, only: bool) {
@@ -128,7 +122,7 @@ impl PaletteEditor {
     pub fn load(&mut self, stored: &PaletteSettings) {
         let positions = stored.stop_positions.as_deref();
         self.positions = sanitize_stop_positions(positions, self.palette.default_positions);
-        self.spreads = sanitize_stop_spreads(stored.stop_spreads.as_deref(), self.palette.len());
+        self.spreads = sanitize_stop_spreads(stored.stop_spreads.as_deref(), self.positions.len());
         let stops: Vec<Color> = stored.stops.iter().copied().map(Into::into).collect();
         self.set_colors(&stops);
     }
@@ -297,7 +291,7 @@ impl PaletteEditor {
         let row = Row::with_children(pickers.map(|(i, &c)| self.color_picker(i, c))).spacing(12);
         Column::new()
             .spacing(12)
-            .extend(self.show_ramp.then(|| Element::new(self)))
+            .extend((!self.positions.is_empty()).then(|| Element::new(self)))
             .push(self.scroll.horizontal(row, PaletteEvent::HorizontalScroll))
             .extend(self.color_controls())
             .push(action_button(
@@ -709,24 +703,6 @@ fn nearest_handle(
         .map(|(i, _)| i)
 }
 
-fn find_segment(positions: &[f32], spreads: &[f32], t: f32) -> (usize, usize, f32) {
-    let count = positions.len();
-    let t = t.clamp(0.0, 1.0);
-    let hi = positions
-        .partition_point(|&pos| pos < t)
-        .clamp(1, count - 1);
-    let lo = hi - 1;
-    let linear =
-        ((t - positions[lo]) / (positions[hi] - positions[lo]).max(f32::EPSILON)).clamp(0.0, 1.0);
-    let (sl, sr) = (spreads[lo], spreads[hi]);
-    let f = if (sl - 1.0).abs() < EPSILON && (sr - 1.0).abs() < EPSILON {
-        linear
-    } else {
-        linear.powf(sl / sr).clamp(0.0, 1.0)
-    };
-    (lo, hi, f)
-}
-
 impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for &PaletteEditor {
     crate::macros::widget_method!(state Option<(usize, f32)>);
 
@@ -782,7 +758,7 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for &PaletteEditor {
         let bar = Rectangle::new(bounds.position(), Size::new(bounds.width, GRADIENT_BAR_HEIGHT));
         let (positions, spreads) = (&editor.positions, &editor.spreads);
         let sample = |t| {
-            let (lo, hi, f) = find_segment(positions, spreads, t);
+            let (lo, hi, f) = ramp_segment(positions, spreads, t);
             (t, lerp_color(colors[lo], colors[hi], f))
         };
         // Meshes interpolate premultiplied colors, unlike the visuals, so spans

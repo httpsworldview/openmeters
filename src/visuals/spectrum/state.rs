@@ -2,7 +2,9 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::processor::{SpectrumSnapshot, SpectrumTraceSnapshot};
-use super::render::{MIN_TRACE_POINTS, SpectrumCutoutParams, SpectrumParams, SpectrumPeakParams};
+use super::render::{
+    MIN_TRACE_POINTS, RAMP_SIZE, SpectrumCutoutParams, SpectrumParams, SpectrumPeakParams,
+};
 use crate::persistence::settings::SpectrumSettings;
 use crate::util::audio::musical::NoteInfo;
 use crate::util::audio::{Channel, DISPLAY_MIN_HZ, FrequencyScale, fmt_freq};
@@ -71,6 +73,8 @@ crate::macros::default_struct! {
     pub(crate) struct SpectrumState {
         pub(in crate::visuals) style: SpectrumSettings = SpectrumSettings::default(),
         pub(in crate::visuals) palette: [Color; PALETTE_SIZE] = palettes::spectrum::COLORS,
+        pub(in crate::visuals) stop_positions: [f32; RAMP_SIZE] = palettes::spectrum::DEFAULT_POSITIONS,
+        pub(in crate::visuals) stop_spreads: [f32; RAMP_SIZE] = [1.0; RAMP_SIZE],
         points: [SharedPoints; 2] = std::array::from_fn(|_| Arc::clone(&EMPTY_POINTS)),
         geometry: crate::visuals::GeometryKey = crate::visuals::GeometryKey::new(),
         peak: Option<PeakLabel> = None,
@@ -406,8 +410,9 @@ impl SpectrumState {
             geometry: self.geometry,
             line_color: color_to_rgba(with_alpha(primary_color, 0.92)),
             secondary_line_color: color_to_rgba(with_alpha(secondary_color, AUXILIARY_LINE_ALPHA)),
-            highlight_threshold: style.highlight_threshold,
-            spectrum_palette: self.palette.map(color_to_rgba),
+            ramp: std::array::from_fn(|i| color_to_rgba(self.palette[i])),
+            stop_positions: self.stop_positions,
+            stop_spreads: self.stop_spreads,
             display_mode: style.display_mode,
             turn: self.turn(),
             bar_count: style.bar_count,

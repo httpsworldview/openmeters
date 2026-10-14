@@ -157,7 +157,7 @@ macro_rules! visuals {
                     ));
                     state.$spreads.copy_from_slice(&sanitize_stop_spreads(
                         palette.and_then(|palette| palette.stop_spreads.as_deref()),
-                        palettes::$module::SIZE,
+                        palettes::$module::DEFAULT_POSITIONS.len(),
                     ));
                 )?
             }
@@ -187,6 +187,7 @@ visuals! {
 
     Spectrum(400.0, 100.0) =>
         spectrum::SpectrumProcessor, SpectrumState.style;
+        palette_ramp(stop_positions, stop_spreads);
         prepare(prepare);
         ignores_audio(ignores_audio);
         buffered_signal(has_buffered_signal);
@@ -474,12 +475,19 @@ mod tests {
         ];
         for mut config in configs {
             let kind = config.kind();
+            let palette = palettes::Palette::for_kind(kind);
+            let ramp = palette.default_positions.len();
             *config.palette_mut() = Some(PaletteSettings {
                 stops: vec![
                     Color::from_rgba(0.12345, 0.34567, 0.56789, 0.78901).into();
-                    palettes::Palette::for_kind(kind).len()
+                    palette.defaults.len()
                 ],
-                ..Default::default()
+                stop_positions: (ramp > 2).then(|| {
+                    (1..ramp - 1)
+                        .map(|i| i as f32 / (ramp - 1) as f32)
+                        .collect()
+                }),
+                stop_spreads: (ramp > 0).then(|| vec![2.0; ramp]),
             });
             manager.apply_config(config.clone());
             assert_eq!(manager.config(kind), config);

@@ -102,6 +102,25 @@ pub fn sample_rgba_gradient(palette: &[[f32; 4]], t: f32) -> [f32; 4] {
     std::array::from_fn(|ch| lerp(a[ch], b[ch], pos - i as f32))
 }
 
+/// The ramp stops around `t` and the blend between them.
+pub fn ramp_segment(positions: &[f32], spreads: &[f32], t: f32) -> (usize, usize, f32) {
+    let count = positions.len();
+    let t = t.clamp(0.0, 1.0);
+    let hi = positions
+        .partition_point(|&pos| pos < t)
+        .clamp(1, count - 1);
+    let lo = hi - 1;
+    let linear =
+        ((t - positions[lo]) / (positions[hi] - positions[lo]).max(f32::EPSILON)).clamp(0.0, 1.0);
+    let (sl, sr) = (spreads[lo], spreads[hi]);
+    let f = if (sl - 1.0).abs() < EPSILON && (sr - 1.0).abs() < EPSILON {
+        linear
+    } else {
+        linear.powf(sl / sr).clamp(0.0, 1.0)
+    };
+    (lo, hi, f)
+}
+
 pub fn sanitize_stop_positions(raw: Option<&[f32]>, defaults: &[f32]) -> Vec<f32> {
     let count = defaults.len();
     if count < 2 {

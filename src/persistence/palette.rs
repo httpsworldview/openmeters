@@ -59,7 +59,7 @@ impl PaletteSettings {
         default_positions: &[f32],
         spreads: &[f32],
     ) -> Option<Self> {
-        let count = defaults.len();
+        let count = default_positions.len();
         let stops = color_stops_if_differ(colors, defaults);
         let positions_differ = positions
             .iter()

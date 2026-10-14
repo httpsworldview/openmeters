@@ -4,10 +4,10 @@
 use iced::Rectangle;
 use std::sync::Arc;
 
-use crate::util::color::{rgba_with_alpha, sample_rgba_gradient};
+use crate::util::color::{ramp_segment, rgba_with_alpha};
 use crate::util::lerp;
 use crate::visuals::options::SpectrumDisplayMode;
-use crate::visuals::palettes::spectrum::SIZE as PALETTE_SIZE;
+use crate::visuals::palettes::spectrum::DEFAULT_POSITIONS;
 use crate::visuals::render::common::{
     ClipTransform, GeometryFingerprint, GeometryScratch, QuarterTurn, SdfInstance, SdfPipeline,
     baseline_segment_instance, decimate_line, dot_instance, extend_aa_line_list,
@@ -16,6 +16,7 @@ use crate::visuals::render::common::{
 };
 
 pub(super) const MIN_TRACE_POINTS: usize = 2;
+pub(super) const RAMP_SIZE: usize = DEFAULT_POSITIONS.len();
 const MIN_BAR_COUNT: usize = 4;
 const LINE_THICKNESS: f32 = 1.0;
 const SECONDARY_LINE_THICKNESS: f32 = 0.75;
@@ -68,8 +69,9 @@ pub struct SpectrumParams {
     pub geometry: crate::visuals::GeometryKey,
     pub line_color: [f32; 4],
     pub secondary_line_color: [f32; 4],
-    pub highlight_threshold: f32,
-    pub spectrum_palette: [[f32; 4]; PALETTE_SIZE],
+    pub ramp: [[f32; 4]; RAMP_SIZE],
+    pub stop_positions: [f32; RAMP_SIZE],
+    pub stop_spreads: [f32; RAMP_SIZE],
     pub display_mode: SpectrumDisplayMode,
     pub turn: QuarterTurn,
     pub bar_count: usize,
@@ -153,15 +155,7 @@ impl SpectrumParams {
                     .map(|&p| normalized_to_cartesian(bounds, p)),
             );
             decimate_line(points, pixel_budget);
-            push_highlight_columns(
-                vertices,
-                clip,
-                baseline,
-                bounds.height,
-                points,
-                &self.spectrum_palette,
-                self.highlight_threshold,
-            );
+            self.push_highlight_columns(vertices, clip, baseline, bounds.height, points);
         }
 
         if has_secondary {
@@ -214,7 +208,7 @@ impl SpectrumParams {
             let x1 = x0 + bar_w;
             if amp >= 1e-4 {
                 let y = y_at(amp);
-                let color = palette_color(&self.spectrum_palette, amp, self.highlight_threshold);
+                let color = self.ramp_color(amp);
                 verts.push(gradient_quad_instance(
                     x0,
                     y,
@@ -240,40 +234,40 @@ impl SpectrumParams {
             }
         }
     }
+
+    fn push_highlight_columns(
+        &self,
+        vertices: &mut Vec<SdfInstance>,
+        clip: ClipTransform,
+        baseline: f32,
+        height: f32,
+        positions: &[(f32, f32)],
+    ) {
+        for seg in positions.windows(2) {
+            let c0 = self.ramp_color((baseline - seg[0].1) / height);
+            let c1 = self.ramp_color((baseline - seg[1].1) / height);
+            if c0[3] > 0.0 || c1[3] > 0.0 {
+                vertices.push(baseline_segment_instance(
+                    seg[0],
+                    seg[1],
+                    baseline,
+                    clip,
+                    [c0, c1],
+                    false,
+                ));
+            }
+        }
+    }
+
+    fn ramp_color(&self, amp: f32) -> [f32; 4] {
+        let (lo, hi, f) = ramp_segment(&self.stop_positions, &self.stop_spreads, amp);
+        let [a, b] = [self.ramp[lo], self.ramp[hi]];
+        std::array::from_fn(|ch| lerp(a[ch], b[ch], f))
+    }
 }
 
 fn normalized_to_cartesian(b: Rectangle, [x, y]: [f32; 2]) -> (f32, f32) {
     (b.x + b.width * x, b.y + b.height * (1.0 - y))
-}
-
-fn push_highlight_columns(
-    vertices: &mut Vec<SdfInstance>,
-    clip: ClipTransform,
-    baseline: f32,
-    height: f32,
-    positions: &[(f32, f32)],
-    palette: &[[f32; 4]],
-    threshold: f32,
-) {
-    for seg in positions.windows(2) {
-        let c0 = palette_color(palette, (baseline - seg[0].1) / height, threshold);
-        let c1 = palette_color(palette, (baseline - seg[1].1) / height, threshold);
-        if c0[3] > 0.0 || c1[3] > 0.0 {
-            vertices.push(baseline_segment_instance(
-                seg[0],
-                seg[1],
-                baseline,
-                clip,
-                [c0, c1],
-                false,
-            ));
-        }
-    }
-}
-
-fn palette_color(palette: &[[f32; 4]], amp: f32, threshold: f32) -> [f32; 4] {
-    let intensity = (amp - threshold) / (1.0 - threshold).max(1e-6);
-    sample_rgba_gradient(palette, intensity)
 }
 
 fn sample_max(pts: &[[f32; 2]], t0: f32, t1: f32) -> f32 {

@@ -313,7 +313,6 @@ visual_settings!(SpectrumSettings from SpectrumConfig {
     secondary_weighting_mode: SpectrumWeightingMode = SpectrumWeightingMode::default(),
     bar_count: usize = 64,
     bar_gap: f32 = 0.16 => finite_or,
-    highlight_threshold: f32 = 0.3 => finite_or,
 });
 
 visual_settings!(SpectrogramSettings from SpectrogramConfig {

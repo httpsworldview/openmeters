@@ -14,9 +14,7 @@ const ZERO_PAD_OPTIONS: [usize; 6] = [1, 2, 4, 8, 16, 32];
 const FLOOR_RANGE: SliderRange = SliderRange::new(-140.0, -1.0, 1.0);
 const TILT_RANGE: SliderRange = SliderRange::new(-6.0, 6.0, 0.5);
 
-settings_pane!(SpectrogramSettings, init_palette(palette) {
-    palette.set_show_ramp(true);
-});
+settings_pane!(SpectrogramSettings);
 
 settings_messages!(pane, settings, value {
     FftSize(usize) => update_fft_size(&mut settings.fft_size, &mut settings.hop_size, value);
