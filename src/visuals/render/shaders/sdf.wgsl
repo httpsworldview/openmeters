@@ -35,7 +35,14 @@ fn vs_main(input: InstanceInput, @builtin(vertex_index) vertex: u32) -> VertexOu
             let top_y = mix(max(input.p0.y, input.params.x), max(input.p1.y, input.params.x), endpoint);
             let bottom_y = mix(min(input.p0.y, input.params.x), min(input.p1.y, input.params.x), endpoint);
             position = vec2<f32>(mix(input.p0.x, input.p1.x, endpoint), mix(top_y, bottom_y, 1.0 - parity));
-            color = mix(input.color0, input.color1, endpoint);
+            if input.params.y > 0.5 {
+                // Fade from color0 on the trace to color1 on the baseline.
+                let trace_y = mix(input.p0.y, input.p1.y, endpoint);
+                let on_trace = select(trace_y < input.params.x, trace_y > input.params.x, parity > 0.5);
+                color = select(input.color1, input.color0, on_trace);
+            } else {
+                color = mix(input.color0, input.color1, endpoint);
+            }
         }
         case 2u: {
             let side = 1.0 - 2.0 * parity;

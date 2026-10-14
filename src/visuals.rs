@@ -27,15 +27,9 @@ macro_rules! visualization_widget {
         }
     };
     ($widget:ident, $state:ty) => {
-        $crate::visuals::visualization_widget!($widget, $state, |this, renderer, theme, bounds| {
-            let state = this.state.borrow();
-            match state.visual_params(bounds) {
-                Some(params) => renderer.draw_primitive(bounds, params),
-                None => $crate::visuals::render::common::fill_rect(
-                    renderer,
-                    bounds,
-                    theme.extended_palette().background.base.color,
-                ),
+        $crate::visuals::visualization_widget!($widget, $state, |this, renderer, _theme, bounds| {
+            for params in this.state.borrow().visual_params(bounds) {
+                renderer.draw_primitive(params.bounds, params);
             }
         });
     };

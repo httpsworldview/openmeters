@@ -8,7 +8,7 @@ use crate::util::{color::color_to_rgba, finite_or};
 use crate::visuals::{
     options::{CorrelationMeterMode, CorrelationMeterSide, StereometerMode},
     palettes::{self, stereometer::SIZE as PALETTE_SIZE},
-    render::common::{fill_rect, text as raw_text},
+    render::common::text as raw_text,
 };
 use iced::advanced::text::Paragraph as _;
 use iced::advanced::{graphics::text::Paragraph, text};
@@ -140,11 +140,6 @@ crate::visuals::visualization_widget!(
     |this, renderer, theme, bounds| {
         let state = this.state.borrow();
         let Some(params) = state.visual_params(bounds) else {
-            fill_rect(
-                renderer,
-                bounds,
-                theme.extended_palette().background.base.color,
-            );
             return;
         };
         let side = params.correlation_meter_side;

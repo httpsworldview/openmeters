@@ -10,9 +10,9 @@ use crate::visuals::options::SpectrumDisplayMode;
 use crate::visuals::palettes::spectrum::SIZE as PALETTE_SIZE;
 use crate::visuals::render::common::{
     ClipTransform, GeometryFingerprint, GeometryScratch, QuarterTurn, SdfInstance, SdfPipeline,
-    baseline_segment_instance, decimate_finite_ordered_line_in_place, dot_instance,
-    extend_aa_line_list, gradient_quad_instance, line_instance, pack_f32_pair, quad_instance,
-    replace_quad_instance, sdf_primitive, turn_instances,
+    baseline_segment_instance, decimate_line, dot_instance, extend_aa_line_list,
+    gradient_quad_instance, line_instance, pack_f32_pair, quad_instance, replace_quad_instance,
+    sdf_primitive, turn_instances,
 };
 
 pub(super) const MIN_TRACE_POINTS: usize = 2;
@@ -152,7 +152,7 @@ impl SpectrumParams {
                     .iter()
                     .map(|&p| normalized_to_cartesian(bounds, p)),
             );
-            decimate_finite_ordered_line_in_place(points, pixel_budget);
+            decimate_line(points, pixel_budget);
             push_highlight_columns(
                 vertices,
                 clip,
@@ -170,7 +170,7 @@ impl SpectrumParams {
                     .iter()
                     .map(|&p| normalized_to_cartesian(bounds, p)),
             );
-            decimate_finite_ordered_line_in_place(points2, pixel_budget);
+            decimate_line(points2, pixel_budget);
             extend_aa_line_list(
                 vertices,
                 points2,
@@ -265,6 +265,7 @@ fn push_highlight_columns(
                 baseline,
                 clip,
                 [c0, c1],
+                false,
             ));
         }
     }

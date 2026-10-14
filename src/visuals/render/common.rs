@@ -45,8 +45,9 @@ impl ClipTransform {
     }
 }
 
-// Clockwise quarter turns of a pane. Content is laid out unturned in `frame`,
-// which shares the pane's origin and swaps its size on odd turns.
+// Clockwise quarter turns of a pane. Content is laid out unturned in
+// `frame`, which shares the pane's origin and swaps its size on odd
+// turns.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct QuarterTurn(u8);
 
@@ -105,34 +106,17 @@ impl QuarterTurn {
     }
 }
 
-#[derive(Clone, Copy)]
-pub struct ChannelLayout {
-    top: f32,
-    stride: f32,
-    pub channel_height: f32,
-    pub amplitude_scale: f32,
+pub fn lane_bounds(bounds: Rectangle, count: usize, index: usize) -> Option<Rectangle> {
+    let height = bounds.height / count as f32;
+    bounds.intersection(&Rectangle {
+        y: bounds.y + index as f32 * height,
+        height,
+        ..bounds
+    })
 }
 
-impl ChannelLayout {
-    const PADDING: f32 = 8.0;
-    const GAP: f32 = 12.0;
-
-    pub fn new(bounds: Rectangle, channels: usize, amp: f32) -> Self {
-        let channels = channels.max(1) as f32;
-        let channel_height = (bounds.height - Self::PADDING * 2.0 - Self::GAP * (channels - 1.0))
-            .max(1.0)
-            / channels;
-        Self {
-            top: bounds.y + Self::PADDING,
-            stride: channel_height + Self::GAP,
-            channel_height,
-            amplitude_scale: channel_height * 0.5 * amp.max(0.01),
-        }
-    }
-
-    pub fn center_y(self, channel: usize) -> f32 {
-        self.top + channel as f32 * self.stride + self.channel_height * 0.5
-    }
+pub fn amplitude_y(lane: Rectangle, amplitude: f32) -> f32 {
+    lane.center_y() - amplitude * (lane.height * 0.5)
 }
 
 pub(in crate::visuals) fn text<C>(content: C, px: f32, bounds: Size) -> IcedText<C> {
@@ -189,15 +173,16 @@ impl SdfInstance {
     const LINE: f32 = 2.0;
     const DOT: f32 = 3.0;
     const RADIAL_DOT: f32 = 4.0;
-    // Tag bits above the primitive count clockwise quarter turns.
+    // bits > primitive count = clockwise quarter turns.
     const TURN: f32 = 8.0;
 }
 
 const _: () = assert!(SdfInstance::RADIAL_DOT < SdfInstance::TURN);
 
-// Turns instances built in `turn.frame(bounds)` with a clip transform of that
-// frame so they fill `bounds`. The shader turns each primitive after expanding
-// it, so fills and gradients keep their frame axes.
+// Turns instances built in `turn.frame(bounds)` with a clip transform
+// of that frame so they fill `bounds`. The shader turns each
+// primitive after expanding it, so fills and gradients keep their
+// frame axes.
 pub(in crate::visuals) fn turn_instances(instances: &mut [SdfInstance], turn: QuarterTurn) {
     let tag = SdfInstance::TURN * f32::from(turn.0);
     for instance in instances {
@@ -257,6 +242,7 @@ pub(in crate::visuals) fn baseline_segment_instance(
     baseline: f32,
     clip: ClipTransform,
     [color0, color1]: [[f32; 4]; 2],
+    fade: bool,
 ) -> SdfInstance {
     SdfInstance {
         p0: clip.to_clip(p0.0, p0.1),
@@ -265,7 +251,7 @@ pub(in crate::visuals) fn baseline_segment_instance(
         color1,
         params: [
             1.0 - (baseline - clip.origin[1]) * clip.scale[1],
-            0.0,
+            if fade { 1.0 } else { 0.0 },
             0.0,
             SdfInstance::BASELINE,
         ],
@@ -376,14 +362,24 @@ pub fn extend_filled_line(
     baseline: f32,
     stroke: f32,
     line: [f32; 4],
-    fill: [f32; 4],
+    fill: [[f32; 4]; 2],
     clip: ClipTransform,
 ) {
     out.reserve(pts.len().saturating_sub(1) * 2);
-    for seg in pts.windows(2) {
+    let mut push_fill = |p0, p1| {
         out.push(baseline_segment_instance(
-            seg[0], seg[1], baseline, clip, [fill; 2],
-        ));
+            p0, p1, baseline, clip, fill, true,
+        ))
+    };
+    for seg in pts.windows(2) {
+        let (d0, d1) = (seg[0].1 - baseline, seg[1].1 - baseline);
+        if d0 * d1 < 0.0 {
+            let crossing = (seg[0].0 + (seg[1].0 - seg[0].0) * d0 / (d0 - d1), baseline);
+            push_fill(seg[0], crossing);
+            push_fill(crossing, seg[1]);
+        } else {
+            push_fill(seg[0], seg[1]);
+        }
     }
     extend_aa_line_list(out, pts, stroke, line, clip);
 }
@@ -405,15 +401,25 @@ impl GeometryScratch {
     }
 }
 
-pub fn decimate_finite_ordered_line_in_place(pts: &mut Vec<(f32, f32)>, max_points: usize) {
+pub fn decimate_line(pts: &mut Vec<(f32, f32)>, max_points: usize) {
     debug_assert!(
         pts.iter()
             .all(|point| point.0.is_finite() && point.1.is_finite())
     );
     debug_assert!(pts.windows(2).all(|window| window[0].0 <= window[1].0));
-    if max_points < 2 || pts.len() <= 1 {
+    let len = pts.len();
+    if max_points < 2 || len <= 2 {
         pts.truncate(max_points);
         return;
+    }
+    let kept = decimate_finite_ordered_line_in_place(&mut pts[1..len - 1], max_points - 2);
+    pts[kept + 1] = pts[len - 1];
+    pts.truncate(kept + 2);
+}
+
+fn decimate_finite_ordered_line_in_place(pts: &mut [(f32, f32)], max_points: usize) -> usize {
+    if max_points < 2 || pts.len() <= 1 {
+        return pts.len().min(max_points);
     }
 
     let last = pts[pts.len() - 1];
@@ -429,8 +435,6 @@ pub fn decimate_finite_ordered_line_in_place(pts: &mut Vec<(f32, f32)>, max_poin
         let start = read;
         let bucket = ((pts[start].0 - x0) * bucket_scale).clamp(0.0, (buckets - 1) as f32) as usize;
         groups += 1;
-        // A rounded edge can fall below a point assigned to its bucket. Let the
-        // last budgeted group consume the remainder rather than exceed the cap.
         let end_x = if groups < buckets {
             x0 + bucket_width * (bucket + 1) as f32
         } else {
@@ -465,7 +469,7 @@ pub fn decimate_finite_ordered_line_in_place(pts: &mut Vec<(f32, f32)>, max_poin
             }
         }
     }
-    pts.truncate(out);
+    out
 }
 
 pub(in crate::visuals) fn create_buffer(
@@ -488,7 +492,7 @@ pub struct CacheTracker {
 }
 
 impl CacheTracker {
-    // Counts advance calls, not frames.
+    // in advance calls
     const RETAIN: u64 = 256;
     const INTERVAL: u64 = 64;
 
@@ -719,7 +723,6 @@ impl<const REPLACE: bool> iced_wgpu::primitive::Pipeline for SdfPipeline<REPLACE
     }
 }
 
-// Keys must stay stable between prepare and draw; a None fingerprint always rebuilds.
 macro_rules! sdf_primitive {
     ($primitive:ty, $pipeline:ty, $label:expr, |$self:ident| $key:expr, $fingerprint:expr $(,)?) => {
         $crate::visuals::render::common::sdf_primitive!(
@@ -797,7 +800,6 @@ mod tests {
     #[test]
     fn quarter_turns_map_frame_onto_pane() {
         let bounds = Rectangle::new(Point::new(10.0, 20.0), Size::new(100.0, 50.0));
-        // A 4x2 rectangle at the frame's top-left corner.
         let rect = Rectangle::new(bounds.position(), Size::new(4.0, 2.0));
         for (rotation, [x, y, width, height]) in [
             (0, [10.0, 20.0, 4.0, 2.0]),
@@ -838,9 +840,9 @@ mod tests {
 
     #[test]
     fn decimate_line_advances_when_bucket_edge_rounds_below_point() {
-        let mut points = vec![(667.6, 0.0), (3881.2603, 1.0)];
-        decimate_finite_ordered_line_in_place(&mut points, 5507);
-        assert_eq!(points, [(667.6, 0.0), (3881.2603, 1.0)]);
+        let mut points = [(667.6, 0.0), (3881.2603, 1.0)];
+        let kept = decimate_finite_ordered_line_in_place(&mut points, 5507);
+        assert_eq!(points[..kept], [(667.6, 0.0), (3881.2603, 1.0)]);
     }
 
     #[test]
@@ -851,7 +853,8 @@ mod tests {
         let min = points.iter().map(|point| point.1).reduce(f32::min).unwrap();
         let max = points.iter().map(|point| point.1).reduce(f32::max).unwrap();
 
-        decimate_finite_ordered_line_in_place(&mut points, 2_000);
+        let kept = decimate_finite_ordered_line_in_place(&mut points, 2_000);
+        let points = &points[..kept];
 
         assert!(points.len() <= 2_000);
         assert!(points.windows(2).all(|window| window[0].0 <= window[1].0));
@@ -860,19 +863,30 @@ mod tests {
 
         for xs in [[1.0; 4], [-f32::MAX, -1.0, 1.0, f32::MAX]] {
             let mut points: Vec<_> = xs.into_iter().zip([0.0, -2.0, 3.0, 1.0]).collect();
-            decimate_finite_ordered_line_in_place(&mut points, 2);
-            assert_eq!(points, [(xs[1], -2.0), (xs[2], 3.0)]);
+            let kept = decimate_finite_ordered_line_in_place(&mut points, 2);
+            assert_eq!(points[..kept], [(xs[1], -2.0), (xs[2], 3.0)]);
         }
     }
 
     #[test]
     fn ordered_decimation_honors_budget_at_rounded_bucket_edges() {
-        let mut points = (0..8)
+        let mut points: Vec<_> = (0..8)
             .map(|i| (0.1 + 1_000.3 * i as f32 / 7.0, (-1.0_f32).powi(i)))
             .collect();
 
-        decimate_finite_ordered_line_in_place(&mut points, 6);
+        assert!(decimate_finite_ordered_line_in_place(&mut points, 6) <= 6);
+    }
 
-        assert!(points.len() <= 6);
+    #[test]
+    fn filled_line_splits_fill_at_baseline_crossings() {
+        let clip = ClipTransform::from_bounds(Rectangle::new(Point::ORIGIN, Size::new(8.0, 40.0)));
+        let pts = [(0.0, 10.0), (4.0, 30.0), (6.0, 20.0), (8.0, 10.0)];
+        let mut out = Vec::new();
+        extend_filled_line(&mut out, &pts, 20.0, 1.0, [1.0; 4], [[0.0; 4]; 2], clip);
+        let ends = [pts[0], (2.0, 20.0), pts[1], pts[2], pts[3]].map(|(x, y)| clip.to_clip(x, y));
+        let fills: Vec<_> = out[..4].iter().map(|i| [i.p0, i.p1]).collect();
+        assert_eq!(fills, ends.windows(2).collect::<Vec<_>>());
+        assert!(out[..4].iter().all(|i| i.params[1] == 1.0));
+        assert_eq!(out.len(), 4 + pts.len() - 1);
     }
 }

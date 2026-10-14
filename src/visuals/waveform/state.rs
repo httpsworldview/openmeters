@@ -8,6 +8,7 @@ use super::render::{COLUMN_WIDTH_PIXELS, WaveformParams};
 use crate::persistence::settings::WaveformSettings;
 use crate::util::{color::color_to_rgba, unpoison};
 use crate::visuals::palettes;
+use crate::visuals::render::common::lane_bounds;
 use iced::Color;
 use std::cell::Cell;
 use std::collections::VecDeque;
@@ -140,15 +141,10 @@ impl WaveformState {
                     .iter()
                     .position(|&source| source == channel)
             });
-        let channel_height = bounds.height / lanes.clone().count().max(1) as f32;
+        let count = lanes.clone().count();
         lanes.enumerate().filter_map(move |(ch, lane)| {
-            let bounds = bounds.intersection(&iced::Rectangle {
-                y: bounds.y + ch as f32 * channel_height,
-                height: channel_height,
-                ..bounds
-            })?;
             Some(WaveformParams {
-                bounds,
+                bounds: lane_bounds(bounds, count, ch)?,
                 lane,
                 data: Arc::clone(&self.data),
                 preview: WaveformPreview {
@@ -177,8 +173,4 @@ impl WaveformState {
     }
 }
 
-crate::visuals::visualization_widget!(Waveform, WaveformState, |this, renderer, _theme, bounds| {
-    for params in this.state.borrow().visual_params(bounds) {
-        renderer.draw_primitive(params.bounds, params);
-    }
-});
+crate::visuals::visualization_widget!(Waveform, WaveformState);

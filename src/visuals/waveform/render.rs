@@ -11,7 +11,7 @@ use crate::util::{
 };
 use crate::visuals::options::{WaveformColorMode, WaveformHistoryMode};
 use crate::visuals::render::common::{
-    ClipTransform, GeometryScratch, extend_filled_line, quad_instance,
+    ClipTransform, GeometryScratch, amplitude_y, extend_filled_line, quad_instance,
 };
 use crate::visuals::render::common::{SdfPipeline, sdf_primitive};
 use crate::visuals::waveform::processor::{
@@ -83,7 +83,7 @@ impl WaveformParams {
     }
 }
 
-fn sample_y_span(center_y: f32, amplitude_scale: f32, min: f32, max: f32) -> Option<(f32, f32)> {
+fn sample_y_span(lane: Rectangle, min: f32, max: f32) -> Option<(f32, f32)> {
     let (lo, hi) = (min.min(max), min.max(max));
     let (min, max) = (lo.clamp(-1.0, 1.0), hi.clamp(-1.0, 1.0));
     if min.abs().max(max.abs()) < WAVEFORM_SILENCE_AMPLITUDE {
@@ -93,8 +93,8 @@ fn sample_y_span(center_y: f32, amplitude_scale: f32, min: f32, max: f32) -> Opt
     // Cover both extrema, including fractional pixels at a lane's clip edge.
     let half_pixel = MIN_COLUMN_HEIGHT_PIXELS * 0.5;
     Some((
-        center_y - max * amplitude_scale - half_pixel,
-        center_y - min * amplitude_scale + half_pixel,
+        amplitude_y(lane, max) - half_pixel,
+        amplitude_y(lane, min) + half_pixel,
     ))
 }
 
@@ -111,8 +111,6 @@ impl WaveformParams {
         let col_width = COLUMN_WIDTH_PIXELS;
         let right_edge = self.bounds.x + self.bounds.width;
 
-        let center_y = self.bounds.center_y();
-        let amplitude_scale = self.bounds.height * 0.5;
         let history = match self.history_mode {
             WaveformHistoryMode::Off => None,
             WaveformHistoryMode::RmsFast => Some(0),
@@ -135,8 +133,7 @@ impl WaveformParams {
             right_edge - dist_steps * col_width - scroll_offset - col_width
         };
         let push_column = |vertices: &mut Vec<_>, x0, x1, column: WaveColumn| {
-            if let Some((y0, y1)) = sample_y_span(center_y, amplitude_scale, column.min, column.max)
-            {
+            if let Some((y0, y1)) = sample_y_span(self.bounds, column.min, column.max) {
                 let color = self.column_color(column);
                 vertices.push(quad_instance(x0, y0, x1, y1, clip, color));
             }
@@ -181,7 +178,7 @@ impl WaveformParams {
                     baseline,
                     BAND_LINE_WIDTH,
                     color,
-                    fill_color,
+                    [fill_color; 2],
                     clip,
                 );
             }

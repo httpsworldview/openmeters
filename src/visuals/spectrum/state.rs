@@ -452,7 +452,6 @@ crate::visuals::visualization_widget!(Spectrum, SpectrumState, |this, r, th, b| 
     let peak = state.peak();
     let peak_layout = peak.and_then(|p| peak_label_layout(b, state.turn(), p));
     let Some(params) = state.visual_params(b, th, peak_layout) else {
-        fill_rect(r, b, th.extended_palette().background.base.color);
         return;
     };
     if let Some(range) = grid_range {

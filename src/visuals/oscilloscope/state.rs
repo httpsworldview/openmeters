@@ -6,7 +6,8 @@ use super::render::OscilloscopeParams;
 use crate::persistence::settings::OscilloscopeSettings;
 use crate::util::{audio::Channel, color::color_to_rgba, finite_or};
 use crate::visuals::palettes;
-use iced::Color;
+use crate::visuals::render::common::lane_bounds;
+use iced::{Color, Rectangle};
 use std::sync::Arc;
 
 // Keep new snapshots contributing.
@@ -18,6 +19,7 @@ crate::macros::default_struct! {
         pub(in crate::visuals) palette: [Color; TRACE_COUNT] = palettes::oscilloscope::COLORS,
         pub(in crate::visuals) settings: OscilloscopeSettings = OscilloscopeSettings::default(),
         geometry: crate::visuals::GeometryKey = crate::visuals::GeometryKey::new(),
+        lane_1_key: u64 = crate::visuals::next_key(),
     }
 }
 
@@ -76,21 +78,23 @@ impl OscilloscopeState {
                 && self.snapshot.samples.iter().all(|&sample| sample == 0.0))
     }
 
-    pub fn visual_params(&self, bounds: iced::Rectangle) -> Option<OscilloscopeParams> {
+    pub fn visual_params(&self, bounds: Rectangle) -> impl Iterator<Item = OscilloscopeParams> {
         let channels = self.snapshot.channels;
-        if channels == 0 {
-            return None;
-        }
-        let samples_per_channel = self.snapshot.samples_per_channel;
-        Some(OscilloscopeParams {
-            geometry: self.geometry,
-            bounds,
-            channels,
-            samples_per_channel,
-            slots: self.snapshot.slots,
-            samples: self.snapshot.samples.clone(),
-            colors: self.palette.map(color_to_rgba),
-            stacked: self.settings.stacked,
+        let stacked = self.settings.stacked;
+        let lanes = if stacked { channels.min(1) } else { channels };
+        (0..lanes).filter_map(move |lane| {
+            Some(OscilloscopeParams {
+                geometry: crate::visuals::GeometryKey {
+                    id: [self.geometry.id, self.lane_1_key][lane],
+                    ..self.geometry
+                },
+                bounds: lane_bounds(bounds, lanes, lane)?,
+                channels: if stacked { 0..channels } else { lane..lane + 1 },
+                samples_per_channel: self.snapshot.samples_per_channel,
+                slots: self.snapshot.slots,
+                samples: self.snapshot.samples.clone(),
+                colors: self.palette.map(color_to_rgba),
+            })
         })
     }
 }
