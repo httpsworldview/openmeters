@@ -31,7 +31,7 @@ struct Uniforms {
     history_length: u32,
     col_count: u32,
     rotation: u32,
-    page_mask: u32,
+    ring_origin: u32,               // reassigned: frame x is stored at texel (x + ring_origin) % width
 
     bounds: vec4<f32>,              // (x, y, w, h) physical pixels
     clip_scale: vec2<f32>,          // (2/viewport_w, 2/viewport_h)
@@ -63,6 +63,8 @@ struct AccumOutput {
 struct ResolveOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) accum_pos: vec2<f32>,
+    // (origin, width) of the accumulation ring
+    @location(1) @interpolate(flat) ring: vec2<f32>,
 }
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -119,6 +121,8 @@ fn unpack_mag(slot: u32, bin_in_col: u32) -> f32 {
     return select(pair.y, pair.x, (idx & 1u) == 0u) * DB_STORE_RANGE + DB_STORE_LO;
 }
 
+// Instance flag: splat one texture width left (render.rs WRAP_BIT).
+const WRAPPED: u32 = 0x80000000u;
 const CULL_POS: vec4<f32> = vec4<f32>(0.0, 0.0, 2.0, 1.0);
 const CLASSIC_SENTINEL_DB: f32 = -10000.0;
 
@@ -131,29 +135,20 @@ fn quad_clip(local: vec2<f32>) -> vec4<f32> {
     return vec4<f32>(px.x * u.clip_scale.x - 1.0, 1.0 - px.y * u.clip_scale.y, 0.0, 1.0);
 }
 
+// Instances are page tags (stride << points_per_col | slot), maybe WRAPPED.
 @vertex
-fn vs_accum_splat(
-    @location(1) time_offset: f32,
-    @location(2) freq_hz: f32,
-    @location(3) power: f32,
+fn vs_accum(
     @builtin(vertex_index) vertex: u32,
-    @builtin(instance_index) inst: u32,
+    @builtin(instance_index) instance: u32,
 ) -> AccumOutput {
-    let tag = vertex / 4u;
-    let slot = (tag & u.page_mask) + inst / (tag >> u.points_per_col);
-    return splat(time_offset, freq_hz, power, quad_corner(vertex % 4u), slot);
-}
-
-@vertex
-fn vs_accum_indexed(
-    @builtin(vertex_index) vertex: u32,
-    @builtin(instance_index) tag: u32,
-) -> AccumOutput {
+    let tag = instance & ~WRAPPED;
     let point = points[(tag & u.page_slot_mask) * (tag >> u.points_per_col) + vertex / 4u];
-    return splat(point.time_offset, point.freq_hz, point.power, quad_corner(vertex % 4u), tag & u.page_mask);
+    let slot = tag & ((1u << u.points_per_col) - 1u);
+    let corner = quad_corner(vertex % 4u);
+    return splat(point.time_offset, point.freq_hz, point.power, corner, slot, instance >= WRAPPED);
 }
 
-fn splat(time_offset: f32, freq_hz: f32, power: f32, corner: vec2<f32>, slot: u32) -> AccumOutput {
+fn splat(time_offset: f32, freq_hz: f32, power: f32, corner: vec2<f32>, slot: u32, wrapped: bool) -> AccumOutput {
     let zoomed = (freq_to_norm(freq_hz) - u.uv_y_range.x) * u.inv_uv_range;
     if !(power > 0.0) || zoomed < -0.01 || zoomed > 1.01 {
         return AccumOutput(CULL_POS, power, freq_hz);
@@ -164,7 +159,8 @@ fn splat(time_offset: f32, freq_hz: f32, power: f32, corner: vec2<f32>, slot: u3
     let pos = vec2<f32>(ext.x - (f32(age) - time_offset) * u.scale_factor, (1.0 - zoomed) * ext.y)
         + corner * u.scale_factor;
     let size = ceil(max(ext, vec2<f32>(1.0)));
-    let clip = vec4<f32>(pos.x / size.x * 2.0 - 1.0, 1.0 - pos.y / size.y * 2.0, 0.0, 1.0);
+    let x = pos.x + f32(u.ring_origin) - select(0.0, size.x, wrapped);
+    let clip = vec4<f32>(x / size.x * 2.0 - 1.0, 1.0 - pos.y / size.y * 2.0, 0.0, 1.0);
     return AccumOutput(clip, power, freq_hz);
 }
 
@@ -176,7 +172,20 @@ fn vs_classic(@builtin(vertex_index) vertex: u32) -> @builtin(position) vec4<f32
 @vertex
 fn vs_resolve(@builtin(vertex_index) vertex: u32) -> ResolveOutput {
     let local = (quad_corner(vertex) + vec2<f32>(0.5)) * u.bounds.zw;
-    return ResolveOutput(quad_clip(local), unrotate(local, extents()));
+    let ext = extents();
+    let ring = vec2<f32>(f32(u.ring_origin), ceil(max(ext.x, 1.0)));
+    return ResolveOutput(quad_clip(local), unrotate(local, ext), ring);
+}
+
+// Full-target triangle.
+@vertex
+fn vs_fill(@builtin(vertex_index) vertex: u32) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(vec2<f32>(f32(vertex & 1u), f32(vertex >> 1u)) * 4.0 - 1.0, 0.0, 1.0);
+}
+
+@fragment
+fn fs_clear() -> @location(0) vec2<f32> {
+    return vec2<f32>(0.0);
 }
 
 fn norm_to_freq(norm: f32) -> f32 {
@@ -248,7 +257,9 @@ fn fs_accum(in: AccumOutput) -> @location(0) vec2<f32> {
 
 @fragment
 fn fs_resolve(in: ResolveOutput) -> @location(0) vec4<f32> {
-    let scaled = textureLoad(accum_tex, vec2<i32>(in.accum_pos), 0).rg;
+    let x = in.accum_pos.x + in.ring.x;
+    let texel = vec2<i32>(vec2<f32>(select(x, x - in.ring.y, x >= in.ring.y), in.accum_pos.y));
+    let scaled = textureLoad(accum_tex, texel, 0).rg;
     let scaled_low_power = scaled.g > 0.0 && scaled.g < F16_MAX;
     let power = select(scaled.r, scaled.g * INV_LOW_POWER_SCALE, scaled_low_power)
         * u.reassigned_power_scale;
