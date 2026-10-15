@@ -16,13 +16,22 @@ use crate::visuals::render::common::{
     create_render_pipeline, create_shader_module,
 };
 
-use super::processor::{ColumnKind, SpectrogramColumn, col_byte_stride};
+use super::processor::{ColumnKind, SpectrogramColumn, SpectrogramPoint, col_byte_stride};
 use crate::util::audio::FrequencyScale;
 
 pub const SPECTROGRAM_PALETTE_SIZE: usize = crate::visuals::palettes::spectrogram::SIZE;
 
 const ACCUM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Float;
 const PAGE_COLUMNS: usize = 64;
+const PAGE_SNAP: u32 = 8;
+// Columns kept right of the view in the accumulation ring, so that a scroll of up to this many
+// columns clears only texels no splat reaches.
+const RING_MARGIN_COLUMNS: f32 = 16.0;
+const SPLAT_STRIDE: usize = 64;
+// Instanced column runs pad at most 1/RUN_PADDING of their points and span at most RUN_QUADS
+// quads, past which one draw measured slower than several.
+const RUN_PADDING: u64 = 8;
+const RUN_QUADS: u64 = 1 << 16;
 const NO_SPAN: [f32; 2] = [f32::INFINITY, f32::NEG_INFINITY];
 // Set in a draw's instance indices to splat one texture width left, onto the wrapped part
 // of the ring.
@@ -87,7 +96,7 @@ impl Primitive for SpectrogramParams {
         res.last_used = frame;
         res.resize_ring(device, queue, bgls, params);
         res.resize_accum(device, bgls[0], params, scale_factor);
-        let reach = res.upload_pending(queue, params);
+        res.upload_pending(queue, params);
         let mut uniforms = Uniforms::from_params(params, viewport, scale_factor);
         uniforms.page_slot_mask = (res.ring.layout.page_columns as u32).next_power_of_two() - 1;
         let (old, hl) = (&res.uniform_cache, uniforms.history_length);
@@ -96,7 +105,7 @@ impl Primitive for SpectrogramParams {
             && uniforms.accumulation_key() == old.accumulation_key()
             && uniforms.col_count == (old.col_count + columns).min(hl)
             && uniforms.newest_col == (old.newest_col + columns) % hl;
-        res.plan(&mut uniforms, appended.then_some((columns, reach)));
+        res.plan(&mut uniforms, appended.then_some(columns));
         let changed = uniforms != res.uniform_cache;
         if changed {
             queue.write_buffer(&res.uniform_buf, 0, bytemuck::bytes_of(&uniforms));
@@ -142,6 +151,7 @@ impl Primitive for SpectrogramParams {
                     }
                 }
                 state.origin = r.uniform_cache.ring_origin;
+                state.phase = r.uniform_cache.scroll_phase;
                 (1, &accum.bg)
             }
             RingStorage::Classic { bg, .. } => {
@@ -173,7 +183,7 @@ struct Uniforms {
     history_length: u32,
     col_count: u32,
     rotation: u32,
-    ring_origin: u32, // reassigned: frame x is stored at texel (x + ring_origin) % width
+    ring_origin: u32, // reassigned: frame x is stored at texel (x + ring_origin) % ring_width
     bounds: [f32; 4],
     clip_scale: [f32; 2],
     uv_y_range: [f32; 2],
@@ -185,6 +195,13 @@ struct Uniforms {
     bin_hz: f32,
     reassigned_power_scale: f32,
     page_slot_mask: u32,
+    // Reassigned: splats sit this far left of their ideal x, so scrolls move whole pixels.
+    scroll_phase: f32,
+    // Reassigned: accumulation texture width, the view plus a margin.
+    ring_width: u32,
+    // Reassigned: frame x where the resolve begins showing the accumulation.
+    image_start: f32,
+    _pad: u32,
     // (pos1, pos2, pos3, spread0), (spread1, spread2, spread3, spread4).
     // Stops 0 and 4 are constant 0.0 / 1.0 and live in the shader.
     stops: [[f32; 4]; 2],
@@ -192,12 +209,13 @@ struct Uniforms {
 }
 
 // Rust layout checks against expected WGSL values.
-const _: () = assert!(std::mem::size_of::<Uniforms>() == 208);
+const _: () = assert!(std::mem::size_of::<Uniforms>() == 224);
 const _: () = assert!(std::mem::offset_of!(Uniforms, ring_origin) == 28);
 const _: () = assert!(std::mem::offset_of!(Uniforms, reassigned_power_scale) == 88);
 const _: () = assert!(std::mem::offset_of!(Uniforms, page_slot_mask) == 92);
-const _: () = assert!(std::mem::offset_of!(Uniforms, stops) == 96);
-const _: () = assert!(std::mem::offset_of!(Uniforms, palette) == 128);
+const _: () = assert!(std::mem::offset_of!(Uniforms, scroll_phase) == 96);
+const _: () = assert!(std::mem::offset_of!(Uniforms, stops) == 112);
+const _: () = assert!(std::mem::offset_of!(Uniforms, palette) == 144);
 
 impl Uniforms {
     // Unrotated frame size, as the shader's extents().
@@ -261,6 +279,10 @@ impl Uniforms {
             bin_hz: p.bin_hz,
             reassigned_power_scale: p.reassigned_power_scale,
             page_slot_mask: 0,
+            scroll_phase: 0.0,
+            ring_width: 0,
+            image_start: 0.0,
+            _pad: 0,
             stops: [
                 [pos1, pos2, pos3, spread0],
                 [spread1, spread2, spread3, spread4],
@@ -565,17 +587,19 @@ fn page_tag(first_slot: u32, stride: u32, shift: u32) -> u32 {
         .expect("history budget bounds the page tag")
 }
 
-// Indexed draws as (columns, quads): runs of columns with equal point counts, split at
-// QUAD_BATCH. Longer columns draw alone, so each column's points stay in order.
+// Indexed draws as (columns, quads): runs of columns drawn at their largest point count, the
+// shader culling the zeroed padding past each column's points, split at QUAD_BATCH. Longer
+// columns draw alone, so each column's points stay in order.
 fn quad_draws(counts: &[u32], limit: u32) -> impl Iterator<Item = (Range<u32>, Range<u32>)> + '_ {
-    equal_count_batches(counts, limit).flat_map(|(columns, count)| {
+    column_runs(counts, limit).flat_map(|(columns, count)| {
         (0..count)
             .step_by(QUAD_BATCH as usize)
             .map(move |first| (columns.clone(), first..count.min(first + QUAD_BATCH)))
     })
 }
 
-fn equal_count_batches(counts: &[u32], limit: u32) -> impl Iterator<Item = (Range<u32>, u32)> + '_ {
+// Runs of non-empty columns as (columns, largest count), within RUN_PADDING and RUN_QUADS.
+fn column_runs(counts: &[u32], limit: u32) -> impl Iterator<Item = (Range<u32>, u32)> + '_ {
     let mut slot = 0;
     std::iter::from_fn(move || {
         while slot < counts.len() && counts[slot] == 0 {
@@ -585,29 +609,50 @@ fn equal_count_batches(counts: &[u32], limit: u32) -> impl Iterator<Item = (Rang
             return None;
         }
         let first = slot;
-        let count = counts[slot].min(limit);
+        let mut longest = counts[slot].min(limit);
+        let mut points = u64::from(longest);
         slot += 1;
-        while count <= QUAD_BATCH && slot < counts.len() && counts[slot].min(limit) == count {
+        while longest <= QUAD_BATCH && slot < counts.len() {
+            let count = counts[slot].min(limit);
+            let (wider, total) = (longest.max(count), points + u64::from(count));
+            let drawn = u64::from(wider) * (slot - first + 1) as u64;
+            let padded = (drawn - total) * RUN_PADDING > total;
+            if count == 0 || wider > QUAD_BATCH || padded || drawn > RUN_QUADS {
+                break;
+            }
+            (longest, points) = (wider, total);
             slot += 1;
         }
-        Some((first as u32..slot as u32, count))
+        Some((first as u32..slot as u32, longest))
     })
 }
 
 struct PointPage {
     stride: u32,
+    // Per slot bound on the points it holds; past them it holds zeros.
+    stored: Vec<u32>,
     buf: wgpu::Buffer,
     bg: wgpu::BindGroup,
 }
 
 impl PointPage {
+    // A page for columns of `counts` points, of `full` possible, holding at most `counts`;
+    // None when none has points. Strides within 1/PAGE_SNAP of full snap to it: dense columns
+    // vary just below full, so exact strides would keep growing, and each growth reallocates
+    // and copies the page.
     fn new(
         device: &wgpu::Device,
         bgl: &wgpu::BindGroupLayout,
         ub: &wgpu::Buffer,
         counts: &[u32],
+        full: u32,
     ) -> Option<Self> {
-        let stride = counts.iter().copied().max().filter(|&n| n > 0)?;
+        let max = counts.iter().copied().max().filter(|&n| n > 0)?;
+        let stride = if max >= full - full / PAGE_SNAP {
+            full.max(max)
+        } else {
+            max
+        };
         let buf = create_buffer(
             device,
             "Spectrogram point page",
@@ -617,7 +662,45 @@ impl PointPage {
                 | wgpu::BufferUsages::COPY_DST,
         );
         let bg = make_bind_group(device, bgl, ub, 3, buf.as_entire_binding());
-        Some(Self { stride, buf, bg })
+        Some(Self {
+            stride,
+            stored: counts.to_vec(),
+            buf,
+            bg,
+        })
+    }
+
+    // Stores a column's points in sweeps of every SPLAT_STRIDE-th one, then zeroes what earlier
+    // columns left past them: instanced runs draw that padding and the shader culls it.
+    // Neighbouring bins often share a pixel, and blending into one pixel serializes, most on
+    // short views.
+    fn write(&mut self, queue: &wgpu::Queue, slot: usize, points: &[SpectrogramPoint]) {
+        const POINT_BYTES: usize = std::mem::size_of::<SpectrogramPoint>();
+        let count = points.len().min(self.stride as usize);
+        let len = count.max(self.stored[slot] as usize) * POINT_BYTES;
+        let offset = slot as u64 * col_byte_stride(ColumnKind::Reassigned, self.stride);
+        let Some(size) = wgpu::BufferSize::new(len as u64) else {
+            return;
+        };
+        let Some(mut view) = queue.write_buffer_with(&self.buf, offset, size) else {
+            return;
+        };
+        // Reading the view warns and reads mapped memory, so size it from the count instead.
+        let (filled, stale) = view.split_at_mut(count * POINT_BYTES);
+        // Whole-array stores, as a slice copy per point compiled to a call in some builds.
+        let filled: &mut [[u8; POINT_BYTES]] = bytemuck::cast_slice_mut(filled);
+        // Index loops: an iterator chain here measured 2-3x slower.
+        let mut dst = 0;
+        for first in 0..SPLAT_STRIDE {
+            let mut index = first;
+            while index < points.len() && dst < filled.len() {
+                filled[dst] = bytemuck::cast(points[index]);
+                dst += 1;
+                index += SPLAT_STRIDE;
+            }
+        }
+        stale.fill(0);
+        self.stored[slot] = count as u32;
     }
 }
 
@@ -662,19 +745,18 @@ enum Pending {
     // Clear and splat every live column at ring origin 0.
     #[default]
     Redraw,
-    // `columns` appended, `reach` the farthest right span edge among the columns they
-    // overwrote, and the scroll that splats them in place.
+    // `columns` appended, and the scroll that splats them in place.
     Scroll {
         columns: u32,
-        reach: f32,
         scroll: Scroll,
     },
 }
 
-// Moves the ring origin to `origin`, clears the edge strips, then splats each piece within
-// its scissor.
+// Moves the ring origin to `origin` and the splats to `phase`, clears the right strip, then
+// splats each piece within its scissor.
 struct Scroll {
     origin: u32,
+    phase: f32,
     pieces: Vec<Piece>,
 }
 
@@ -682,8 +764,8 @@ struct Piece {
     // Frame pixel columns, stored one texture width left when `wrapped`.
     px: Range<u32>,
     wrapped: bool,
-    // Edge strips are cleared and splat every column touching them; the middle keeps
-    // its scrolled content and splats only new columns.
+    // The right strip is cleared and splats every column reaching it; the rest of the image
+    // keeps its scrolled content and splats only new columns.
     clear: bool,
     // Slot runs, oldest first.
     runs: Vec<Range<u32>>,
@@ -692,8 +774,9 @@ struct Piece {
 #[derive(Default)]
 struct Accumulation {
     pending: Pending,
-    // Ring origin left by the last accumulation.
+    // Ring origin and scroll phase left by the last accumulation.
     origin: u32,
+    phase: f32,
 }
 
 struct AccumTarget {
@@ -711,8 +794,9 @@ struct Resources {
     accum: Option<AccumTarget>,
     classic_upload_scratch: Vec<u16>,
     page_maxima: Vec<u32>,
-    // Per slot splat x extent in columns.
+    // Per slot splat x extent in columns, and the farthest right edge among them.
     spans: Vec<[f32; 2]>,
+    reach: f32,
 }
 
 impl Resources {
@@ -742,41 +826,45 @@ impl Resources {
             classic_upload_scratch: Vec::new(),
             page_maxima,
             spans: vec![NO_SPAN; p.ring_capacity as usize],
+            reach: f32::NEG_INFINITY,
         }
     }
 
-    // Plans the next accumulation and sets the ring origin it leaves behind.
-    fn plan(&mut self, u: &mut Uniforms, appended: Option<(u32, f32)>) {
+    // Plans the next accumulation and sets the ring origin, width, phase and image start it
+    // leaves.
+    fn plan(&mut self, u: &mut Uniforms, appended: Option<u32>) {
         let (spans, Some(accum)) = (&self.spans, &mut self.accum) else {
             return;
         };
         let (s, width) = (accum.state.get_mut().unwrap(), accum.tex.width());
-        // (columns appended, farthest right span edge of the columns they overwrote)
-        let owed = match std::mem::take(&mut s.pending) {
-            Pending::Idle => Some((0, f32::NEG_INFINITY)),
+        // Columns appended since the last accumulation.
+        let owed = match s.pending {
+            Pending::Idle => Some(0),
             Pending::Redraw => None,
-            Pending::Scroll { columns, reach, .. } => Some((columns, reach)),
+            Pending::Scroll { columns, .. } => Some(columns),
         };
         s.pending = match owed.zip(appended) {
             None => Pending::Redraw,
-            Some(((0, _), (0, _))) => Pending::Idle,
-            Some((a, b)) => {
-                let (columns, reach) = (a.0.saturating_add(b.0), a.1.max(b.1));
-                match plan_scroll(spans, u, s.origin, width, columns, reach) {
-                    Some(scroll) => Pending::Scroll {
-                        columns,
-                        reach,
-                        scroll,
-                    },
+            Some((0, 0)) => Pending::Idle,
+            Some((owed, appended)) => {
+                let columns = owed.saturating_add(appended);
+                match plan_scroll(spans, self.reach, u, s, width, columns) {
+                    Some(scroll) => Pending::Scroll { columns, scroll },
                     None => Pending::Redraw,
                 }
             }
         };
-        u.ring_origin = match &s.pending {
-            Pending::Idle => s.origin,
-            Pending::Redraw => 0,
-            Pending::Scroll { scroll, .. } => scroll.origin,
+        if matches!(s.pending, Pending::Redraw) {
+            // Uploads only extend the reach; a redraw is the time to tighten it.
+            self.reach = reach(spans);
+        }
+        (u.ring_origin, u.scroll_phase) = match &s.pending {
+            Pending::Idle => (s.origin, s.phase),
+            Pending::Redraw => (0, s.phase),
+            Pending::Scroll { scroll, .. } => (scroll.origin, scroll.phase),
         };
+        u.ring_width = width;
+        u.image_start = image_start(u, self.reach);
     }
 
     // Splats in age order, so a scroll leaves each pixel the sum a full redraw would.
@@ -806,7 +894,7 @@ impl Resources {
             let x = piece.px.start + scroll.origin - if piece.wrapped { width } else { 0 };
             pass.set_scissor_rect(x, 0, piece.px.len() as u32, height);
         };
-        // Clear the strips in their own pass: RADV may reorder them with later blending.
+        // Clear the strip in its own pass: RADV may reorder it with later blending.
         let mut pass = begin_pass(encoder, &accum.view, None, label, wgpu::LoadOp::Load);
         pass.set_pipeline(&pipeline.pipelines[3]);
         for piece in scroll.pieces.iter().filter(|piece| piece.clear) {
@@ -944,7 +1032,8 @@ impl Resources {
             if needed <= current && current <= needed.saturating_mul(4) {
                 continue;
             }
-            let new_page = PointPage::new(device, bgl, &self.uniform_buf, counts);
+            let new_page =
+                PointPage::new(device, bgl, &self.uniform_buf, counts, p.points_per_column);
             if let (Some(old), Some(new)) = (page.as_ref(), new_page.as_ref()) {
                 let encoder = encoder
                     .get_or_insert_with(|| device.create_command_encoder(&Default::default()));
@@ -980,8 +1069,12 @@ impl Resources {
             return;
         }
         let scale = scale_factor.max(1.0);
-        let size = <[f32; 2]>::from(p.turn.frame_size(p.bounds.size()))
+        let [width, height] = <[f32; 2]>::from(p.turn.frame_size(p.bounds.size()))
             .map(|value| (value.max(1.0) * scale).ceil() as u32);
+        // Room to scroll that many columns past the newest splats, which overhang the view by
+        // up to half a column, the phase, and plan_scroll's slop.
+        let margin = ((RING_MARGIN_COLUMNS + 0.5) * scale).ceil() as u32 + 2;
+        let size = [width + margin, height];
         if self
             .accum
             .as_ref()
@@ -1014,9 +1107,7 @@ impl Resources {
         });
     }
 
-    // Returns the farthest right span edge among overwritten columns.
-    fn upload_pending(&mut self, queue: &wgpu::Queue, p: &SpectrogramParams) -> f32 {
-        let mut reach = f32::NEG_INFINITY;
+    fn upload_pending(&mut self, queue: &wgpu::Queue, p: &SpectrogramParams) {
         if p.col_kind == ColumnKind::Classic {
             self.classic_upload_scratch
                 .resize((self.ring.layout.stride / 2) as usize, 0);
@@ -1030,55 +1121,71 @@ impl Resources {
                 let (lo, hi) = times.fold(NO_SPAN.into(), |(lo, hi): (f32, f32), t| {
                     (lo.min(t), hi.max(t))
                 });
-                let old = std::mem::replace(&mut self.spans[slot as usize], [lo - 0.5, hi + 0.5]);
-                reach = reach.max(old[1]);
+                let span = [lo - 0.5, hi + 0.5];
+                self.spans[slot as usize] = span;
+                self.reach = self.reach.max(span[1]);
             }
-            let data = match (p.col_kind, column) {
-                (ColumnKind::Reassigned, SpectrogramColumn::Reassigned(points))
+            let slot = slot as usize;
+            match (&mut self.ring.storage, column) {
+                // Runs skip empty columns, so their slots need no zeroing.
+                (RingStorage::Reassigned { pages }, SpectrogramColumn::Reassigned(points))
                     if !points.is_empty() =>
                 {
-                    bytemuck::cast_slice(points)
+                    let columns = self.ring.layout.page_columns;
+                    if let Some(page) = &mut pages[slot / columns] {
+                        page.write(queue, slot % columns, points);
+                    }
                 }
-                (ColumnKind::Classic, SpectrogramColumn::Classic(mags)) if !mags.is_empty() => {
+                (RingStorage::Classic { buf, .. }, SpectrogramColumn::Classic(mags))
+                    if !mags.is_empty() =>
+                {
                     let packed = &mut self.classic_upload_scratch;
                     let written = mags.len().min(packed.len());
                     packed[..written].copy_from_slice(&mags[..written]);
                     packed[written..].fill(0);
-                    bytemuck::cast_slice(packed)
+                    let offset = slot as u64 * self.ring.layout.stride;
+                    queue.write_buffer(buf, offset, bytemuck::cast_slice(packed));
                 }
-                _ => continue,
-            };
-            if let Some((buf, offset, _)) = self.ring.column(slot as usize) {
-                queue.write_buffer(buf, offset, data);
+                _ => {}
             }
         }
-        reach
     }
 }
 
-// Plans scrolling the accumulation, left at ring origin `origin`, by `columns` appended
-// columns; None when the shift is fractional, the edge strips meet, or a full redraw would
-// splat no more columns.
+// First frame column of the image, where the resolve starts showing it: evicted columns splat
+// only left of it. It is past zero only when the history budget keeps fewer columns than the
+// view spans, and it never decreases between redraws, as the reach only grows.
+fn image_start(u: &Uniforms, reach: f32) -> f32 {
+    // Rightmost evicted splat edge at any phase, plus plan_scroll's slop.
+    let edge = u.extents()[0] + 0.5 - (u.history_length as f32 - reach) * u.scale_factor;
+    (edge + 1.0).ceil().max(0.0)
+}
+
+// Plans scrolling the accumulation `last` left by `columns` appended columns; None when the
+// image would not span the scroll, or a full redraw would splat no more columns.
 fn plan_scroll(
     spans: &[[f32; 2]],
+    reach: f32,
     u: &Uniforms,
-    origin: u32,
+    last: &Accumulation,
     width: u32,
     columns: u32,
-    reach: f32,
 ) -> Option<Scroll> {
     let (hl, sf, live) = (u.history_length, u.scale_factor, u.live_columns());
-    let ext_x = u.extents()[0];
-    let shift = columns as f32 * sf;
-    let left = (ext_x - (hl as f32 - reach) * sf + 1.0).ceil().max(0.0);
-    if shift.fract() != 0.0 || left >= width as f32 - shift {
+    // Scroll whole pixels and carry the remainder in the phase, within half a pixel.
+    let advance = columns as f32 * sf;
+    let shift = (advance - last.phase).round();
+    let phase = last.phase + shift - advance;
+    let ext_x = u.extents()[0] - phase;
+    let start = image_start(u, reach);
+    if start >= width as f32 - shift {
         return None;
     }
-    let (shift, left) = (shift as u32, left as u32);
-    let (origin, right) = ((origin + shift) % width, width - shift);
+    let (shift, start) = (shift as u32, start as u32);
+    let (origin, right) = ((last.origin + shift) % width, width - shift);
     // Frame columns from `cut` on wrap past the texture edge.
     let cut = width - origin;
-    let mut pieces: Vec<Piece> = [(0..left, true), (left..right, false), (right..width, true)]
+    let mut pieces: Vec<Piece> = [(start..right, false), (right..width, true)]
         .into_iter()
         .flat_map(|(px, clear)| {
             [
@@ -1094,8 +1201,11 @@ fn plan_scroll(
         })
         .filter(|piece| !piece.px.is_empty())
         .collect();
-    let mut slot = (u.newest_col + 1 + hl - live) % hl;
-    for age in (0..live).rev() {
+    // Only new columns, and old ones young enough to reach the right strip.
+    let reaching = (reach + (ext_x - right as f32 + 1.0) / sf + 1.0).floor() + 1.0;
+    let ages = columns.max(reaching.max(0.0) as u32).min(live);
+    for age in (0..ages).rev() {
+        let slot = (u.newest_col + hl - age) % hl;
         let [lo, hi] = spans[slot as usize].map(|edge| ext_x - (age as f32 - edge) * sf);
         for piece in &mut pieces {
             if (piece.clear || age < columns)
@@ -1108,14 +1218,24 @@ fn plan_scroll(
                 }
             }
         }
-        slot = if slot + 1 == hl { 0 } else { slot + 1 };
     }
     let drawn: usize = pieces
         .iter()
         .flat_map(|piece| &piece.runs)
         .map(|run| run.len())
         .sum();
-    (drawn < live as usize).then_some(Scroll { origin, pieces })
+    (drawn < live as usize).then_some(Scroll {
+        origin,
+        phase,
+        pieces,
+    })
+}
+
+fn reach(spans: &[[f32; 2]]) -> f32 {
+    spans
+        .iter()
+        .map(|span| span[1])
+        .fold(f32::NEG_INFINITY, f32::max)
 }
 
 fn create_ring(
@@ -1131,7 +1251,9 @@ fn create_ring(
             let pages: Vec<_> = p
                 .slot_counts
                 .chunks(layout.page_columns)
-                .map(|values| PointPage::new(device, bgls[2], uniform_buf, values))
+                .map(|counts| {
+                    PointPage::new(device, bgls[2], uniform_buf, counts, p.points_per_column)
+                })
                 .collect();
             RingStorage::Reassigned { pages }
         }
@@ -1199,6 +1321,27 @@ mod tests {
     }
 
     #[test]
+    fn history_margin_keeps_the_whole_view_shown() {
+        use super::super::processor::history_columns;
+        // Reassigned splats end at most half a column right of their own (processor
+        // time_support).
+        let reach = 0.5;
+        for sf in [1.0, 1.25, 1.5, 1.75, 2.0, 3.0] {
+            for tenths in 10..20_000 {
+                let width = tenths as f32 / 10.0;
+                let requested = width.round() as usize;
+                let u = Uniforms {
+                    bounds: [0.0, 0.0, width * sf, sf],
+                    history_length: history_columns(ColumnKind::Reassigned, 1, requested) as u32,
+                    scale_factor: sf,
+                    ..Uniforms::zeroed()
+                };
+                assert_eq!(image_start(&u, reach), 0.0, "{width} wide at scale {sf}");
+            }
+        }
+    }
+
+    #[test]
     fn quad_draws_cover_live_points_in_column_order() {
         let long = QUAD_BATCH + 2;
         let small = (0..=7).flat_map(|len| {
@@ -1212,21 +1355,34 @@ mod tests {
                     .collect::<Vec<u32>>()
             })
         });
-        for counts in small.chain([vec![long, long, 3, 3, 0, QUAD_BATCH, QUAD_BATCH, long]]) {
-            // A draw splats its instances in turn, each over the draw's quads.
-            let actual: Vec<_> = quad_draws(&counts, u32::MAX)
+        let edge = [long, long, 3, 3, 0, QUAD_BATCH, QUAD_BATCH - 1, long];
+        for counts in small.chain([edge.to_vec()]) {
+            // A draw splats its instances in turn, each over the draw's quads; the shader
+            // culls quads past a column's count.
+            let draws: Vec<_> = quad_draws(&counts, u32::MAX).collect();
+            let actual: Vec<_> = draws
+                .iter()
                 .flat_map(|(columns, quads)| {
-                    columns.flat_map(move |c| quads.clone().map(move |q| (c, q)))
+                    columns
+                        .clone()
+                        .flat_map(move |c| quads.clone().map(move |q| (c, q)))
                 })
+                .filter(|&(c, q)| q < counts[c as usize])
                 .collect();
             let expected: Vec<_> = (0..counts.len() as u32)
                 .flat_map(|c| (0..counts[c as usize]).map(move |q| (c, q)))
                 .collect();
             assert!(actual == expected, "{:?}", &counts[..counts.len().min(8)]);
+            let drawn: u64 = draws
+                .iter()
+                .map(|(columns, quads)| u64::from(columns.len() as u32 * quads.len() as u32))
+                .sum();
+            let points: u64 = counts.iter().map(|&count| u64::from(count)).sum();
+            assert!((drawn - points) * RUN_PADDING <= points, "{counts:?}");
         }
         assert_eq!(
-            quad_draws(&[4, 4, 0, 2, 4, 4], u32::MAX).collect::<Vec<_>>(),
-            [(0..2, 0..4), (3..4, 0..2), (4..6, 0..4)]
+            quad_draws(&[4, 4, 0, 2, 4, 4, 5, 4, 5], u32::MAX).collect::<Vec<_>>(),
+            [(0..2, 0..4), (3..4, 0..2), (4..6, 0..4), (6..9, 0..5)]
         );
     }
 

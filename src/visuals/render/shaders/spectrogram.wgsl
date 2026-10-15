@@ -31,7 +31,7 @@ struct Uniforms {
     history_length: u32,
     col_count: u32,
     rotation: u32,
-    ring_origin: u32,               // reassigned: frame x is stored at texel (x + ring_origin) % width
+    ring_origin: u32,               // reassigned: frame x is stored at texel (x + ring_origin) % ring_width
 
     bounds: vec4<f32>,              // (x, y, w, h) physical pixels
     clip_scale: vec2<f32>,          // (2/viewport_w, 2/viewport_h)
@@ -47,6 +47,9 @@ struct Uniforms {
     bin_hz: f32,
     reassigned_power_scale: f32,
     page_slot_mask: u32,
+    scroll_phase: f32,              // reassigned: splat x offset that keeps scrolls whole-pixel
+    ring_width: u32,                // reassigned: accumulation width, the view plus a margin
+    image_start: f32,               // reassigned: frame x where the accumulation starts showing
 
     // (pos1, pos2, pos3, spread0), (spread1, spread2, spread3, spread4).
     // Stops 0 and 4 are constant 0.0 / 1.0
@@ -156,9 +159,11 @@ fn splat(time_offset: f32, freq_hz: f32, power: f32, corner: vec2<f32>, slot: u3
     let ext = extents();
     let hl = u.history_length;
     let age = (u.newest_col + hl - slot) % hl;
-    let pos = vec2<f32>(ext.x - (f32(age) - time_offset) * u.scale_factor, (1.0 - zoomed) * ext.y)
-        + corner * u.scale_factor;
-    let size = ceil(max(ext, vec2<f32>(1.0)));
+    let pos = vec2<f32>(
+        ext.x - u.scroll_phase - (f32(age) - time_offset) * u.scale_factor,
+        (1.0 - zoomed) * ext.y,
+    ) + corner * u.scale_factor;
+    let size = vec2<f32>(f32(u.ring_width), ceil(max(ext.y, 1.0)));
     let x = pos.x + f32(u.ring_origin) - select(0.0, size.x, wrapped);
     let clip = vec4<f32>(x / size.x * 2.0 - 1.0, 1.0 - pos.y / size.y * 2.0, 0.0, 1.0);
     return AccumOutput(clip, power, freq_hz);
@@ -173,8 +178,11 @@ fn vs_classic(@builtin(vertex_index) vertex: u32) -> @builtin(position) vec4<f32
 fn vs_resolve(@builtin(vertex_index) vertex: u32) -> ResolveOutput {
     let local = (quad_corner(vertex) + vec2<f32>(0.5)) * u.bounds.zw;
     let ext = extents();
-    let ring = vec2<f32>(f32(u.ring_origin), ceil(max(ext.x, 1.0)));
-    return ResolveOutput(quad_clip(local), unrotate(local, ext), ring);
+    // Cover only the image: texels left of it may hold splats of evicted columns.
+    var frame = unrotate(local, ext);
+    frame.x = max(frame.x, min(u.image_start, ext.x));
+    let ring = vec2<f32>(f32(u.ring_origin), f32(u.ring_width));
+    return ResolveOutput(quad_clip(rotate(frame, ext)), frame, ring);
 }
 
 // Full-target triangle.
@@ -203,6 +211,15 @@ fn unrotate(local: vec2<f32>, ext: vec2<f32>) -> vec2<f32> {
         case 2u: { return vec2<f32>(ext.x - local.x, ext.y - local.y); }
         case 3u: { return vec2<f32>(ext.x - local.y, local.x); }
         default: { return local; }
+    }
+}
+
+fn rotate(frame: vec2<f32>, ext: vec2<f32>) -> vec2<f32> {
+    switch u.rotation {
+        case 1u: { return vec2<f32>(ext.y - frame.y, frame.x); }
+        case 2u: { return ext - frame; }
+        case 3u: { return vec2<f32>(frame.y, ext.x - frame.x); }
+        default: { return frame; }
     }
 }
 

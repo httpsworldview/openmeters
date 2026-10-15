@@ -74,6 +74,8 @@ enum Transforms {
 struct ReassignmentBuffers {
     derivative_window: Vec<f32>,
     time_weighted_window: Vec<f32>,
+    // Reassigned times the window can hold, in samples from its weighted center.
+    time_support: [f32; 2],
     spectra: Vec<Complex32>,
 }
 
@@ -139,13 +141,17 @@ pub(super) fn col_byte_stride(kind: ColumnKind, points: u32) -> u64 {
     }
 }
 
+// Columns past the view that keep evicted splats off it (render.rs image_start), for splats
+// reaching at most half a column right (time_support), the view's width rounding (half a
+// column), and the renderer's phase and slop (1.5 px).
+const REASSIGNED_HISTORY_MARGIN: usize = 3;
+
 pub(super) fn history_columns(kind: ColumnKind, points: u32, requested: usize) -> usize {
     let affordable = SPECTROGRAM_HISTORY_BYTE_BUDGET
         * (1 + usize::from(kind == ColumnKind::Reassigned))
         / col_byte_stride(kind, points).max(1) as usize;
-    requested
-        .clamp(1, MAX_SPECTROGRAM_HISTORY_COLUMNS)
-        .min(affordable.max(1))
+    let margin = REASSIGNED_HISTORY_MARGIN * usize::from(kind == ColumnKind::Reassigned);
+    (requested.clamp(1, MAX_SPECTROGRAM_HISTORY_COLUMNS) + margin).min(affordable.max(1))
 }
 
 pub struct SpectrogramUpdate {
@@ -253,7 +259,10 @@ impl SpectrogramProcessor {
             }
             self.reassign.derivative_window =
                 compute_derivative_spectral(&mut planner, &self.window);
-            self.reassign.time_weighted_window = compute_time_weighted(&self.window);
+            (
+                self.reassign.time_weighted_window,
+                self.reassign.time_support,
+            ) = compute_time_weighted(&self.window);
             self.reassign.spectra = vec![Complex32::ZERO; self.fft_size * 3];
             reassigned_power_scale(&self.window, self.fft_size)
         } else {
@@ -416,6 +425,7 @@ impl SpectrogramProcessor {
         let mut points = Vec::new();
         let (spectrum, auxiliary) = self.reassign.spectra.split_at(self.fft_size);
         let (derivative_spectrum, time_weighted_spectrum) = auxiliary.split_at(self.fft_size);
+        let [earliest, latest] = self.reassign.time_support;
 
         for i in 0..bin_count {
             let base = spectrum[i];
@@ -430,6 +440,11 @@ impl SpectrogramProcessor {
             let d = derivative_spectrum[i];
             let t = time_weighted_spectrum[i];
             let inv_pow = 1.0 / pow;
+            // No sample lies outside the window; such times come from near-zeros of the STFT.
+            let time = (t.re * base.re + t.im * base.im) * inv_pow;
+            if !(earliest..=latest).contains(&time) {
+                continue;
+            }
             let d_omega = -(d.im * base.re - d.re * base.im) * inv_pow;
             let freq_hz = i as f32 * bin_hz + d_omega * inv_2pi;
             if !(freq_hz > 0.0 && max_hz - freq_hz > 0.0) {
@@ -440,7 +455,7 @@ impl SpectrogramProcessor {
                 points.reserve(capacity);
             }
             points.push(SpectrogramPoint {
-                time_offset: (t.re * base.re + t.im * base.im) * inv_pow * inv_hop - latency_hops,
+                time_offset: time * inv_hop - latency_hops,
                 freq_hz,
                 power: scaled_power,
             });
@@ -565,8 +580,8 @@ fn compute_derivative_spectral(planner: &mut FftPlanner<f32>, window: &[f32]) ->
     buf.iter().map(|c| c.re * inv_n).collect()
 }
 
-// Center on the window-weighted mean index.
-fn compute_time_weighted(window: &[f32]) -> Vec<f32> {
+// Center on the window-weighted mean index; also returns the times the window holds.
+fn compute_time_weighted(window: &[f32]) -> (Vec<f32>, [f32; 2]) {
     let (weighted, sum) = window
         .iter()
         .enumerate()
@@ -578,11 +593,13 @@ fn compute_time_weighted(window: &[f32]) -> Vec<f32> {
     } else {
         (weighted / sum) as f32
     };
-    window
+    let weighted = window
         .iter()
         .enumerate()
         .map(|(i, &weight)| (i as f32 - center) * weight)
-        .collect()
+        .collect();
+    let last = (window.len() - 1) as f32;
+    (weighted, [-center - 0.5, last - center + 0.5])
 }
 
 #[cfg(test)]
@@ -890,7 +907,7 @@ mod tests {
 
     #[test]
     fn silent_input_advances_transparent_columns() {
-        let samples = vec![0.0; 192];
+        let samples = vec![0.0; 256];
         let floor = pack_classic_db(DB_FLOOR);
 
         let classic = process_samples(cfg(64, 16, false), &samples);
@@ -903,7 +920,7 @@ mod tests {
         );
 
         let reassigned = process_samples(cfg(64, 16, true), &samples);
-        assert_eq!(reassigned.new_columns.len(), 4);
+        assert_eq!(reassigned.new_columns.len(), 4 + REASSIGNED_HISTORY_MARGIN);
         assert!(
             reassigned
                 .new_columns
@@ -968,6 +985,37 @@ mod tests {
             };
             assert!(points.is_empty());
             assert_eq!(points.capacity(), 0);
+        }
+    }
+
+    #[test]
+    fn reassigned_times_stay_within_the_window() {
+        let config = SpectrogramConfig {
+            history_length: 512,
+            ..cfg(256, 32, true)
+        };
+        let mut state = 1_u32;
+        let noise: Vec<f32> = (0..16_384)
+            .map(|_| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                state as f32 / u32::MAX as f32 - 0.5
+            })
+            .collect();
+        let update = process_samples(config, &noise);
+        let read_len = SpectrogramProcessor::hilbert_len_for(config.fft_size);
+        let center_offset = (read_len - config.fft_size) / 2;
+        let half = config.fft_size as f32 * 0.5;
+        let hops = |samples: f32| (samples - center_offset as f32) / config.hop_size as f32;
+        let (earliest, latest) = (hops(-half - 0.5), hops(half - 0.5));
+
+        let times = update.new_columns.iter().flat_map(|column| {
+            reassigned_points(column)
+                .iter()
+                .map(|point| point.time_offset)
+        });
+        assert!(times.clone().count() > 10_000);
+        for time in times {
+            assert!((earliest..=latest).contains(&time), "time offset {time}");
         }
     }
 

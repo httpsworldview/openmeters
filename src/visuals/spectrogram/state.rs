@@ -912,7 +912,8 @@ mod tests {
             // Keep updates pending across resizes, while an older snapshot is still shared.
             state.apply_snapshot(reassigned_update(capacity, false, &[incoming]));
             retained.push_back(incoming as u32);
-            retained.drain(..retained.len().saturating_sub(capacity));
+            let kept = history_columns(ColumnKind::Reassigned, 8, capacity);
+            retained.drain(..retained.len().saturating_sub(kept));
             let history = &state.history;
             let first = (history.write_slot + history.ring_capacity - history.col_count)
                 % history.ring_capacity;
