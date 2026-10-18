@@ -84,10 +84,10 @@ Where:
 
 ## AI policy
 
-AI tools have (for the most part) fundamentally changed how software
-is written. Personally, I limit my use of these tools heavily. All
-code *must* be reviewed *extensively* by a human prior to being pushed
-upstream.
+OpenMeters is software made by humans, for humans.
+
+The bottom line is that all code *must* be reviewed *extensively* by a
+human prior to being pushed upstream.
 
 Low-quality and obviously AI-generated pull requests and issues will
 be closed. If you cannot find the time to review or test your own
