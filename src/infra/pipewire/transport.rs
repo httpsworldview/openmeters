@@ -3,7 +3,10 @@
 
 use super::{MAX_CAPTURE_CHANNELS, MAX_CAPTURE_SAMPLE_RATE};
 use crate::dsp::{AudioFormat, ChannelPosition};
-use crate::util::{audio::DEFAULT_SAMPLE_RATE, unpoison};
+use crate::util::{
+    audio::{DEFAULT_SAMPLE_RATE, flush_denormal_f32},
+    unpoison,
+};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 use std::hash::{Hash, Hasher};
 use std::io::Read;
@@ -197,6 +200,16 @@ pub(super) fn pcm_chunk(
     Some([start..start + first, 0..len - first])
 }
 
+// Producer IIR tails can settle on subnormals, which *MIGHT* stall
+// f32 DSP on CPUs that handle subnormals in microcode (e.g. Intel).
+fn sanitize_pcm(mut sample: f32) -> f32 {
+    if !sample.is_finite() {
+        return 0.0;
+    }
+    flush_denormal_f32(&mut sample);
+    sample
+}
+
 fn pcm_has_signal(bytes: &[u8], chunk: &[Range<usize>; 2]) -> bool {
     let mut source = Read::chain(&bytes[chunk[0].clone()], &bytes[chunk[1].clone()]);
     let mut raw = [0; 4];
@@ -204,7 +217,7 @@ fn pcm_has_signal(bytes: &[u8], chunk: &[Range<usize>; 2]) -> bool {
         source.read_exact(&mut raw).ok()?;
         Some(f32::from_ne_bytes(raw))
     })
-    .any(|sample| sample != 0.0 && sample.is_finite())
+    .any(|sample| sanitize_pcm(sample) != 0.0)
 }
 
 struct Packet {
@@ -332,11 +345,8 @@ impl CaptureWriter {
                     .read_exact(bytemuck::cast_slice_mut(samples))
                     .expect("valid PCM bounds");
                 for sample in samples {
-                    if sample.is_finite() {
-                        signal |= *sample != 0.0;
-                    } else {
-                        *sample = 0.0;
-                    }
+                    *sample = sanitize_pcm(*sample);
+                    signal |= *sample != 0.0;
                 }
             });
             if accepted {
@@ -611,7 +621,10 @@ impl AudioReader {
             return;
         }
 
-        while let Ok(packet) = self.consumer.pop() {
+        for _ in 0..self.consumer.slots() {
+            let Ok(packet) = self.consumer.pop() else {
+                break;
+            };
             self.accept(packet, &mut consume);
             if self.scratch.len() >= PCM_FLUSH_SAMPLES {
                 self.flush(&mut consume);
@@ -917,15 +930,15 @@ mod tests {
     }
 
     #[test]
-    fn pcm_copy_handles_wrapping_and_sanitizes_non_finite_samples() {
+    fn pcm_copy_handles_wrapping_and_sanitizes_non_finite_and_tiny_samples() {
         let (mut writer, mut reader, _) = mono(4, 1_000);
-        let mut bytes = bytemuck::cast_slice(&[1.0_f32, f32::NAN, 2.0]).to_vec();
+        let mut bytes = bytemuck::cast_slice(&[1.0_f32, f32::NAN, 2.0, 1.0e-40, -1.0e-30]).to_vec();
         bytes.rotate_right(3);
         let chunk = pcm_chunk(bytes.len(), 3, bytes.len() as u32, size_of::<f32>()).unwrap();
-        writer.push_pcm(&bytes, &chunk, 3);
+        writer.push_pcm(&bytes, &chunk, 5);
         assert!(writer.flush_pending());
         let samples = reader.consumer.pop().unwrap().samples.unwrap();
-        assert_eq!(&samples[..3], &[1.0, 0.0, 2.0]);
+        assert_eq!(&samples[..5], &[1.0, 0.0, 2.0, 0.0, 0.0]);
     }
 
     #[test]
@@ -958,11 +971,13 @@ mod tests {
         assert!(reader.sleep_until_signal());
 
         writer.push_silence(BLOCK_FRAMES as u64);
-        let zero = 0.0_f32.to_ne_bytes();
-        let chunk = pcm_chunk(zero.len(), 0, zero.len() as u32, zero.len()).unwrap();
-        writer.push_pcm(&zero, &chunk, 1);
-        assert!(!reader.is_active());
-        assert!(audio_wake(&wake).try_recv().is_err());
+        for quiet in [0.0_f32, 1.0e-40] {
+            let quiet = quiet.to_ne_bytes();
+            let chunk = pcm_chunk(quiet.len(), 0, quiet.len() as u32, quiet.len()).unwrap();
+            writer.push_pcm(&quiet, &chunk, 1);
+            assert!(!reader.is_active());
+            assert!(audio_wake(&wake).try_recv().is_err());
+        }
 
         let mut signal = 0.25_f32.to_ne_bytes();
         signal.rotate_right(1);
