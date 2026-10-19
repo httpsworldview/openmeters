@@ -46,7 +46,7 @@ impl fmt::Display for TriggerSourceChoice {
 
 settings_messages!(pane, settings, value {
     SegmentDuration(f32) => set_f32(&mut settings.segment_duration, value);
-    Persistence(f32) => set_f32(&mut settings.persistence, value);
+    Persistence(f32) => set_f32(&mut settings.persistence_time_constant, value);
     Preset(TriggerPreset) => {
         let mode = match value {
             TriggerPreset::Stable => TriggerMode::Stable { num_cycles: pane.num_cycles },
@@ -101,7 +101,10 @@ settings_view! {
     "Trigger" => trigger;
     "Display" => form!(
         toggle("Stacked", settings.stacked, Stacked);
-        slider!("Persistence", settings.persistence, PERSISTENCE_RANGE, Persistence, "{:.2}");
+        slider!(
+            "Persistence", settings.persistence_time_constant, PERSISTENCE_RANGE, Persistence,
+            format!("{:.0} ms", settings.persistence_time_constant * 1000.0)
+        );
     );
 }
 

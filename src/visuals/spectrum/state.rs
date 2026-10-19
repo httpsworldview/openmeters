@@ -7,7 +7,7 @@ use super::render::{
 };
 use crate::persistence::settings::SpectrumSettings;
 use crate::util::audio::musical::NoteInfo;
-use crate::util::audio::{Channel, DISPLAY_MIN_HZ, FrequencyScale, fmt_freq};
+use crate::util::audio::{Channel, DISPLAY_MIN_HZ, FrequencyScale, fmt_freq, smoothing_weight};
 use crate::util::color::{color_to_rgba, with_alpha};
 use crate::util::lerp;
 use crate::visuals::options::{SpectrumDisplayMode, SpectrumWeightingMode};
@@ -166,7 +166,7 @@ impl SpectrumState {
                 )
             });
         self.effective_range = Some((min_f, max_f));
-        self.fade_peak(peak);
+        self.fade_peak(peak, snap.elapsed);
         self.geometry.invalidate();
     }
 
@@ -318,11 +318,10 @@ impl SpectrumState {
         Some((text, [x, y]))
     }
 
-    fn fade_peak(&mut self, incoming: Option<PeakUpdate>) {
-        // Per-snapshot factors.
-        const POSITION_TRACKING_RATE: f32 = 0.20;
-        const FADE_IN_RATE: f32 = 0.35;
-        const FADE_OUT_RETENTION: f32 = 0.88;
+    fn fade_peak(&mut self, incoming: Option<PeakUpdate>, elapsed: f32) {
+        const POSITION_TRACKING: f32 = 0.1;
+        const FADE_IN: f32 = 0.05;
+        const FADE_OUT: f32 = 0.17;
         match (incoming, &mut self.peak) {
             (Some((contents, position)), Some(peak)) => {
                 for (index, content) in contents.into_iter().enumerate() {
@@ -331,11 +330,11 @@ impl SpectrumState {
                         peak.content[index] = content;
                     }
                 }
-                peak.label_pos = std::array::from_fn(|i| {
-                    lerp(peak.label_pos[i], position[i], POSITION_TRACKING_RATE)
-                });
+                let tracking = smoothing_weight(elapsed, POSITION_TRACKING);
+                peak.label_pos =
+                    std::array::from_fn(|i| lerp(peak.label_pos[i], position[i], tracking));
                 peak.marker_pos = position;
-                peak.opacity = lerp(peak.opacity, 1.0, FADE_IN_RATE).min(1.0);
+                peak.opacity = lerp(peak.opacity, 1.0, smoothing_weight(elapsed, FADE_IN)).min(1.0);
             }
             (Some((contents, position)), None) => {
                 self.peak = Some(PeakLabel {
@@ -347,7 +346,7 @@ impl SpectrumState {
                 });
             }
             (None, Some(peak)) => {
-                peak.opacity *= FADE_OUT_RETENTION;
+                peak.opacity *= 1.0 - smoothing_weight(elapsed, FADE_OUT);
                 if peak.opacity < MIN_PEAK_OPACITY {
                     self.peak = None;
                 }
@@ -534,6 +533,7 @@ mod tests {
             floor_db: state.style.floor_db,
             frequency_bins: vec![0.0, 20.0, 40.0],
             traces: [SpectrumTraceSnapshot::default(), trace],
+            ..Default::default()
         });
         let bounds = Rectangle::new(Point::ORIGIN, Size::new(100.0, 50.0));
 
@@ -563,6 +563,7 @@ mod tests {
                     vec![-120.0, -30.0, -12.0, -60.0, -120.0],
                 ]
             }),
+            ..Default::default()
         };
         let baseline = SpectrumSettings {
             show_peak_label: true,

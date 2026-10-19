@@ -2,7 +2,9 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::processor::{BAND_COUNT, FULL_BAND, StereometerSnapshot};
-use super::render::{CORR_LABEL_GAP, CORR_LABEL_H, CORR_LABEL_W, FixedTrail, StereometerParams};
+use super::render::{
+    CORR_LABEL_GAP, CORR_LABEL_H, CORR_LABEL_W, CORR_TRAIL_STEP, FixedTrail, StereometerParams,
+};
 use crate::persistence::settings::StereometerSettings;
 use crate::util::{color::color_to_rgba, finite_or};
 use crate::visuals::{
@@ -22,6 +24,7 @@ crate::macros::default_struct! {
         points: [Arc<[(f32, f32)]>; BAND_COUNT + 1] = Default::default(),
         band_colors: [Arc<[[f32; 4]]>; BAND_COUNT] = Default::default(),
         trails: [FixedTrail; BAND_COUNT + 1] = Default::default(),
+        trail_clock: f32 = 0.0,
         pub(in crate::visuals) palette: [Color; PALETTE_SIZE] = palettes::stereometer::COLORS,
         pub(in crate::visuals) settings: StereometerSettings = StereometerSettings::default(),
         labels: [Paragraph; 3] = ["+1", "0", "-1"].map(|label| {
@@ -73,7 +76,7 @@ impl StereometerState {
 
     pub fn reset_audio(&mut self) {
         self.points = Default::default();
-        self.trails = Default::default();
+        (self.trails, self.trail_clock) = Default::default();
         self.geometry.invalidate();
     }
 
@@ -81,13 +84,11 @@ impl StereometerState {
         self.geometry.invalidate();
         self.points = snap.points;
         self.sync_band_colors();
-        self.trails[FULL_BAND].push_front(snap.correlations[FULL_BAND]);
-        if self.settings.analyzes_bands() {
-            for (trail, value) in self.trails[1..].iter_mut().zip(&snap.correlations[1..]) {
-                trail.push_front(*value);
-            }
-        } else {
-            self.trails[1..].fill(FixedTrail::default());
+        let clock = self.trail_clock + snap.elapsed / CORR_TRAIL_STEP;
+        self.trail_clock = clock.fract();
+        let bands = 1 + BAND_COUNT * usize::from(self.settings.analyzes_bands());
+        for (trail, &value) in self.trails[..bands].iter_mut().zip(&snap.correlations) {
+            trail.advance(value, clock as usize);
         }
     }
 

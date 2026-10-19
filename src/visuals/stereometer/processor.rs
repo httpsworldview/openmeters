@@ -4,7 +4,7 @@
 use crate::dsp::{AudioBlock, ThreeBand};
 pub(super) use crate::util::audio::BAND_COUNT;
 use crate::util::audio::{
-    BAND_SPLITS_HZ, DEFAULT_SAMPLE_RATE, MAX_DSP_BUFFER_LEN, flush_denormal_f64,
+    BAND_SPLITS_HZ, DEFAULT_SAMPLE_RATE, MAX_DSP_BUFFER_LEN, flush_denormal_f64, smoothing_weight,
 };
 use std::{collections::VecDeque, sync::Arc};
 
@@ -26,6 +26,7 @@ crate::macros::default_struct! {
 }
 
 pub struct StereometerSnapshot {
+    pub elapsed: f32,
     pub points: [Arc<[(f32, f32)]>; BAND_COUNT + 1],
     pub correlations: [f32; BAND_COUNT + 1],
 }
@@ -72,7 +73,6 @@ pub struct StereometerProcessor {
     history_channels: usize,
     band_splitter: BandSplitter,
     correlators: [Correlator; BAND_COUNT + 1],
-    correlation_alpha: f64,
 }
 
 impl StereometerProcessor {
@@ -83,7 +83,6 @@ impl StereometerProcessor {
             history_channels: 0,
             band_splitter: BandSplitter::new(config.sample_rate, BAND_SPLITS_HZ),
             correlators: Default::default(),
-            correlation_alpha: ema_alpha(config.sample_rate, config.correlation_window),
             config,
         }
     }
@@ -113,7 +112,10 @@ impl StereometerProcessor {
         }
 
         let analyze_bands = self.config.analyze_bands;
-        let alpha = self.correlation_alpha;
+        let frame = sample_rate.recip();
+        // A zero window would pin correlation to +/-1.
+        let window = self.config.correlation_window.max(frame);
+        let alpha = f64::from(smoothing_weight(frame, window));
         for [left, right] in block.stereo_frames() {
             self.histories[FULL_BAND].push_back((left, right));
             self.correlators[FULL_BAND].update(left, right, alpha);
@@ -159,6 +161,7 @@ impl StereometerProcessor {
             .clamp(1, frames)
             .min(MAX_SNAPSHOT_POINTS);
         Some(StereometerSnapshot {
+            elapsed: block.duration(),
             points: std::array::from_fn(|band| {
                 let history = &mut self.histories[band];
                 if band >= history_count || history.len() < frames {
@@ -203,16 +206,12 @@ impl StereometerProcessor {
     pub fn update_config(&mut self, mut config: StereometerConfig) {
         config.analyze_bands |= config.emit_band_points;
         let sample_rate_changed = self.config.sample_rate != config.sample_rate;
-        let window_changed = self.config.correlation_window != config.correlation_window;
         let band_analysis_changed = self.config.analyze_bands != config.analyze_bands;
         self.config = config;
 
         if sample_rate_changed {
             *self = Self::new(self.config);
             return;
-        }
-        if window_changed {
-            self.correlation_alpha = ema_alpha(config.sample_rate, config.correlation_window);
         }
         if band_analysis_changed {
             self.band_splitter = BandSplitter::new(config.sample_rate, BAND_SPLITS_HZ);
@@ -222,11 +221,6 @@ impl StereometerProcessor {
             self.histories[1..].fill_with(VecDeque::new);
         }
     }
-}
-
-// Time constant in seconds; minimum one sample.
-fn ema_alpha(sample_rate: f32, window: f32) -> f64 {
-    -(-1.0 / (f64::from(sample_rate) * f64::from(window)).max(1.0)).exp_m1()
 }
 
 #[cfg(test)]
@@ -279,14 +273,10 @@ mod tests {
             }
         }
         for emit_band_points in [false, true] {
-            let old_alpha = processor.correlation_alpha;
-            let correlation_window = processor.config().correlation_window.next_down();
             processor.update_config(StereometerConfig {
                 emit_band_points,
-                correlation_window,
                 ..processor.config()
             });
-            assert_ne!(processor.correlation_alpha, old_alpha);
             let snapshot = processor
                 .process_block(&AudioBlock::new(&samples, 2, 4.0))
                 .unwrap();

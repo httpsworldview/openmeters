@@ -5,7 +5,7 @@ use crate::dsp::AudioBlock;
 use crate::util::audio::{
     Channel, DB_FLOOR, DEFAULT_SAMPLE_RATE, LN_TO_DB, MAX_DSP_BUFFER_LEN, WindowKind,
     compute_fft_bin_normalization, copy_dc_removed_windowed_from_deque, db_to_power,
-    sanitize_negative_db, sanitize_sample_rate, window_coefficients,
+    sanitize_negative_db, sanitize_sample_rate, smoothing_weight, window_coefficients,
 };
 use realfft::{RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex32;
@@ -14,8 +14,8 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 
 // GUI ranges only.
-pub const MIN_SPECTRUM_EXP_FACTOR: f32 = 0.0;
-pub const MAX_SPECTRUM_EXP_FACTOR: f32 = 0.95;
+pub const MIN_SPECTRUM_TIME_CONSTANT: f32 = 0.0;
+pub const MAX_SPECTRUM_TIME_CONSTANT: f32 = 1.0;
 pub const MIN_SPECTRUM_PEAK_DECAY: f32 = 0.0;
 pub const MAX_SPECTRUM_PEAK_DECAY: f32 = 120.0;
 pub const MIN_SPECTRUM_DB_FLOOR: f32 = DB_FLOOR;
@@ -24,7 +24,7 @@ pub const DEFAULT_SPECTRUM_DB_FLOOR: f32 = -120.0;
 
 const DEFAULT_SPECTRUM_HOP_DIVISOR: usize = 16;
 const DEFAULT_SPECTRUM_FFT_SIZE: usize = 16_384;
-pub const DEFAULT_SPECTRUM_EXP_FACTOR: f32 = 0.5;
+pub const DEFAULT_SPECTRUM_TIME_CONSTANT: f32 = 0.03;
 pub const DEFAULT_SPECTRUM_PEAK_DECAY: f32 = 12.0;
 const TRACE_COUNT: usize = 2;
 const WEIGHTING_COUNT: usize = 2;
@@ -35,6 +35,7 @@ pub type SpectrumTraceSnapshot = [Vec<f32>; WEIGHTING_COUNT];
 pub struct SpectrumSnapshot {
     // The floor used when these traces were captured.
     pub floor_db: f32,
+    pub elapsed: f32,
     pub frequency_bins: Vec<f32>,
     pub traces: [SpectrumTraceSnapshot; TRACE_COUNT],
 }
@@ -68,10 +69,18 @@ impl SpectrumConfig {
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum AveragingMode {
     None,
-    // Power retention per FFT hop, after seeding.
-    Exponential { factor: f32 },
+    Exponential {
+        #[serde(default = "default_time_constant")]
+        time_constant: f32,
+    },
     // dB per audio second, applied per FFT hop.
-    PeakHold { decay_per_second: f32 },
+    PeakHold {
+        decay_per_second: f32,
+    },
+}
+
+fn default_time_constant() -> f32 {
+    DEFAULT_SPECTRUM_TIME_CONSTANT
 }
 
 #[derive(Default)]
@@ -164,17 +173,11 @@ impl SpectrumProcessor {
     }
 
     fn reset_smoothing(&mut self) {
-        let bins = self.config.fft_size / 2 + 1;
         let state_floor = smoothing_state_floor(&self.a_weighting_db, self.config.floor_db);
-        let active = self.active_traces();
-        let smoothing = !matches!(self.config.averaging, AveragingMode::None);
-        for (index, buffers) in self.levels.iter_mut().enumerate() {
-            if active[index] {
-                buffers.reset(bins, state_floor, smoothing);
-            } else {
-                *buffers = SpectrumLevelBuffers::default();
-            }
-        }
+        self.levels = std::array::from_fn(|_| SpectrumLevelBuffers {
+            state_floor,
+            ..Default::default()
+        });
     }
 
     fn sources(&self) -> [Channel; TRACE_COUNT] {
@@ -196,7 +199,7 @@ impl SpectrumProcessor {
         let floor = self.config.floor_db;
         let dt_seconds = hop as f32 / self.config.sample_rate;
         let active = self.active_traces();
-        let mut produced = false;
+        let mut hops = 0;
 
         debug_assert_eq!(self.a_weighting_db.len(), bins);
         if !active.iter().any(|&active| active) {
@@ -214,13 +217,14 @@ impl SpectrumProcessor {
                 }
             }
             self.pending_skip_frames = self.pending_skip_frames.saturating_add(hop - drained);
-            produced = true;
+            hops += 1;
         }
 
-        if produced {
+        if hops > 0 {
             self.snapshot.floor_db = floor;
+            self.snapshot.elapsed = hops as f32 * dt_seconds;
         }
-        produced
+        hops > 0
     }
 
     fn process_trace_window(&mut self, trace: usize, dt_seconds: f32, floor: f32) -> usize {
@@ -348,15 +352,6 @@ fn smoothing_state_floor(weighting_db: &[f32], floor: f32) -> f32 {
 }
 
 impl SpectrumLevelBuffers {
-    fn reset(&mut self, bins: usize, state_floor: f32, smoothing: bool) {
-        self.state_floor = state_floor;
-        if smoothing {
-            reset_to_floor(&mut self.smoothed_power, bins, 0.0);
-        } else {
-            self.smoothed_power = Vec::new();
-        }
-    }
-
     fn update_outputs(
         &mut self,
         mode: AveragingMode,
@@ -368,17 +363,17 @@ impl SpectrumLevelBuffers {
     ) {
         debug_assert!(outputs.iter().all(|output| output.len() == powers.len()));
         debug_assert_eq!(weighting_db.len(), powers.len());
+        // The first hop after a reset seeds the state.
+        if self.smoothed_power.is_empty() && mode != AveragingMode::None {
+            self.smoothed_power.extend_from_slice(powers);
+        }
         let powers = match mode {
             AveragingMode::None => powers,
-            AveragingMode::Exponential { factor } => {
-                let alpha = factor.clamp(0.0, 0.9999);
+            AveragingMode::Exponential { time_constant } => {
+                let weight = smoothing_weight(dt_seconds, time_constant);
                 for (avg, &power) in self.smoothed_power.iter_mut().zip(powers) {
-                    *avg = if *avg <= 0.0 {
-                        power
-                    } else {
-                        *avg * alpha + power * (1.0 - alpha)
-                    };
-                    if *avg < self.state_floor {
+                    *avg += weight * (power - *avg);
+                    if *avg < self.state_floor && power < self.state_floor {
                         *avg = 0.0;
                     }
                 }
@@ -589,6 +584,9 @@ mod tests {
     #[test]
     fn averaging_follows_each_audio_hop_and_resets_on_mode_changes() {
         use AveragingMode::*;
+        let exponential = |retention_per_second: f32| Exponential {
+            time_constant: -1.0 / retention_per_second.ln(),
+        };
         let mut processor = SpectrumProcessor::new(SpectrumConfig {
             sample_rate: 8.0,
             fft_size: 8,
@@ -608,9 +606,9 @@ mod tests {
                 },
                 [1.0, 0.0039810717, 0.25, 0.0009952679],
             ),
-            (Exponential { factor: 0.5 }, [1.0, 0.5, 0.375, 0.1875]),
+            (exponential(0.5), [1.0, 0.5, 0.375, 0.1875]),
             (None, [1.0, 0.0, 0.25, 0.0]),
-            (Exponential { factor: 0.75 }, [1.0, 0.75, 0.625, 0.46875]),
+            (exponential(0.75), [1.0, 0.75, 0.625, 0.46875]),
         ] {
             processor.update_config(SpectrumConfig {
                 averaging: mode,
@@ -642,8 +640,10 @@ mod tests {
     fn overrange_power_is_finite_and_recovers() {
         for averaging in [
             AveragingMode::None,
-            AveragingMode::Exponential { factor: 0.0 },
-            AveragingMode::Exponential { factor: 0.5 },
+            AveragingMode::Exponential { time_constant: 0.0 },
+            AveragingMode::Exponential {
+                time_constant: 0.01,
+            },
             AveragingMode::PeakHold {
                 decay_per_second: 1000.0,
             },
@@ -752,23 +752,26 @@ mod tests {
     #[test]
     fn smoothing_keeps_only_power_visible_after_weighting() {
         for mode in [
-            AveragingMode::Exponential { factor: 0.95 },
+            AveragingMode::Exponential { time_constant: 1.0 },
             AveragingMode::PeakHold {
                 decay_per_second: 12.0,
             },
         ] {
-            let mut buffers = SpectrumLevelBuffers::default();
-            buffers.reset(2, smoothing_state_floor(&[0.0, 1.2], -100.0), true);
-            buffers.smoothed_power[0] = db_to_power(-101.0);
+            let mut buffers = SpectrumLevelBuffers {
+                smoothed_power: vec![db_to_power(-101.0), 0.0],
+                state_floor: smoothing_state_floor(&[0.0, 1.2], -100.0),
+            };
             let mut outputs = [vec![-100.0; 2], vec![-100.0; 2]];
-            buffers.update_outputs(
-                mode,
-                &[0.0, db_to_power(-100.5)],
-                &mut outputs,
-                &[0.0, 1.2],
-                1.0,
-                -100.0,
-            );
+            for _ in 0..20 {
+                buffers.update_outputs(
+                    mode,
+                    &[0.0, db_to_power(-100.5)],
+                    &mut outputs,
+                    &[0.0, 1.2],
+                    1.0,
+                    -100.0,
+                );
+            }
             assert_eq!(buffers.smoothed_power[0], 0.0);
             assert_eq!(outputs[1], [-100.0; 2]);
             assert_eq!(outputs[0][0], -100.0);

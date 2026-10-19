@@ -36,6 +36,7 @@ pub(super) const CORR_LABEL_GAP: f32 = 5.0;
 pub(super) const CORR_LABEL_H: f32 = 12.0;
 pub(super) const CORR_LABEL_W: f32 = 16.0;
 pub(super) const CORR_TRAIL_LEN: usize = 32;
+pub(super) const CORR_TRAIL_STEP: f32 = 1.0 / 60.0;
 const CORR_VPAD_RATIO: f32 = 5.0 / 64.0;
 const CORR_EDGE: f32 = 6.0;
 
@@ -66,10 +67,11 @@ fn scaled_point(x: f32, y: f32) -> (f32, f32) {
 pub struct FixedTrail([f32; CORR_TRAIL_LEN], usize);
 
 impl FixedTrail {
-    pub(super) fn push_front(&mut self, value: f32) {
-        self.1 = (self.1 + 1).min(CORR_TRAIL_LEN);
-        self.0[..self.1].rotate_right(1);
-        self.0[0] = value;
+    pub(super) fn advance(&mut self, value: f32, steps: usize) {
+        let steps = steps.min(CORR_TRAIL_LEN);
+        self.1 = (self.1 + steps).clamp(1, CORR_TRAIL_LEN);
+        self.0[..self.1].rotate_right(steps);
+        self.0[..steps.max(1)].fill(value);
     }
 }
 
@@ -565,10 +567,13 @@ mod tests {
     fn fixed_trail_is_newest_first_and_bounded() {
         let mut trail = FixedTrail::default();
         for value in 0..CORR_TRAIL_LEN + 2 {
-            trail.push_front(value as f32);
+            trail.advance(value as f32, 1);
         }
         assert_eq!(trail.len(), CORR_TRAIL_LEN);
         assert_eq!((trail[0], trail[CORR_TRAIL_LEN - 1]), (33.0, 2.0));
+        trail.advance(40.0, 0);
+        trail.advance(41.0, 2);
+        assert_eq!(trail[..4], [41.0, 41.0, 40.0, 32.0]);
     }
 
     #[test]

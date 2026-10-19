@@ -234,6 +234,10 @@ impl<'a> AudioBlock<'a> {
         self.samples.len() / self.channels
     }
 
+    pub fn duration(&self) -> f32 {
+        self.frame_count() as f32 / self.sample_rate
+    }
+
     pub fn stereo_frames(
         &self,
     ) -> impl ExactSizeIterator<Item = [f32; 2]> + DoubleEndedIterator + '_ {

@@ -50,6 +50,14 @@ pub fn sanitize_sample_rate(sample_rate: f32) -> f32 {
         .clamp(1.0, MAX_SAMPLE_RATE)
 }
 
+pub fn smoothing_weight(elapsed: f32, time_constant: f32) -> f32 {
+    if time_constant > 0.0 {
+        -(-elapsed / time_constant).exp_m1()
+    } else {
+        1.0
+    }
+}
+
 pub fn fmt_freq(frequency: f32) -> String {
     match frequency {
         99_950.0.. => format!("{:.0}kHz", frequency / 1_000.0),

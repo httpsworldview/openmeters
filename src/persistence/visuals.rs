@@ -214,16 +214,23 @@ visual_configs! {
     Stereometer(StereometerSettings),
 }
 
-fn finite_averaging_or(value: AveragingMode, default: AveragingMode) -> AveragingMode {
-    let parameter = match value {
-        AveragingMode::None => return value,
-        AveragingMode::Exponential { factor } => factor,
-        AveragingMode::PeakHold { decay_per_second } => decay_per_second,
-    };
-    if parameter.is_finite() {
-        value
-    } else {
-        default
+// Bounds hand-edited settings so new input keeps showing.
+const MAX_TIME_CONSTANT: f32 = 10.0;
+
+fn time_constant_or(value: f32, default: f32) -> f32 {
+    finite_or(value, default).clamp(0.0, MAX_TIME_CONSTANT)
+}
+
+fn averaging_or(value: AveragingMode, default: AveragingMode) -> AveragingMode {
+    match value {
+        AveragingMode::None => value,
+        AveragingMode::Exponential { time_constant } if time_constant.is_finite() => {
+            AveragingMode::Exponential {
+                time_constant: time_constant.clamp(0.0, MAX_TIME_CONSTANT),
+            }
+        }
+        AveragingMode::PeakHold { decay_per_second } if decay_per_second.is_finite() => value,
+        _ => default,
     }
 }
 
@@ -273,7 +280,7 @@ visual_settings!(OscilloscopeSettings from OscilloscopeConfig {
     segment_duration: f32 => finite_or, trigger_mode: TriggerMode, trigger_source: Channel,
     channel_1: Channel, channel_2: Channel,
 } extra {
-    persistence: f32 = 0.0 => finite_or,
+    persistence_time_constant: f32 = 0.0 => time_constant_or,
     stacked: bool = false,
 });
 
@@ -289,7 +296,7 @@ visual_settings!(WaveformSettings from WaveformConfig {
 
 visual_settings!(SpectrumSettings from SpectrumConfig {
     fft_size: usize, hop_size: usize, window: WindowKind,
-    averaging: AveragingMode => finite_averaging_or,
+    averaging: AveragingMode => averaging_or,
     source: Channel, secondary_source: Channel, floor_db: f32 => sanitize_negative_db,
 } extra {
     frequency_scale: FrequencyScale = FrequencyScale::Logarithmic,
@@ -315,7 +322,7 @@ visual_settings!(SpectrogramSettings from SpectrogramConfig {
 
 visual_settings!(StereometerSettings from StereometerConfig {
     segment_duration: f32 => finite_or, target_sample_count: usize,
-    correlation_window: f32 => finite_or,
+    correlation_window: f32 => time_constant_or,
 } extra {
     dot_radius: f32 = 1.0 => finite_or, mode: StereometerMode = StereometerMode::default(),
     scale: StereometerScale = StereometerScale::default(), rotation: i8 = -1, flip: bool = true,

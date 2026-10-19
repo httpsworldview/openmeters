@@ -4,14 +4,14 @@
 use super::processor::{OscilloscopeSnapshot, TRACE_COUNT};
 use super::render::OscilloscopeParams;
 use crate::persistence::settings::OscilloscopeSettings;
-use crate::util::{audio::Channel, color::color_to_rgba, finite_or};
+use crate::util::{
+    audio::{Channel, smoothing_weight},
+    color::color_to_rgba,
+};
 use crate::visuals::palettes;
 use crate::visuals::render::common::lane_bounds;
 use iced::{Color, Rectangle};
 use std::sync::Arc;
-
-// Keep new snapshots contributing.
-const MAX_PERSISTENCE: f32 = 0.98;
 
 crate::macros::default_struct! {
     pub(crate) struct OscilloscopeState {
@@ -30,9 +30,7 @@ impl OscilloscopeState {
     }
 
     pub fn update_view_settings(&mut self, settings: &OscilloscopeSettings) {
-        let default = OscilloscopeSettings::default().persistence;
         self.settings = settings.clone();
-        self.settings.persistence = finite_or(settings.persistence, default).clamp(0.0, 1.0);
         if self.ignores_audio() {
             self.snapshot = OscilloscopeSnapshot::default();
         }
@@ -43,24 +41,22 @@ impl OscilloscopeState {
 
     pub fn apply_snapshot(&mut self, snapshot: OscilloscopeSnapshot) {
         self.geometry.invalidate();
-        if !self.snapshot.samples.is_empty()
+        let weight = smoothing_weight(snapshot.elapsed, self.settings.persistence_time_constant);
+        if weight < 1.0
+            && !self.snapshot.samples.is_empty()
             && snapshot.epoch == self.snapshot.epoch
             && snapshot.channels == self.snapshot.channels
             && snapshot.samples_per_channel == self.snapshot.samples_per_channel
             && snapshot.slots[..snapshot.channels] == self.snapshot.slots[..self.snapshot.channels]
         {
-            let persistence = self.settings.persistence.clamp(0.0, MAX_PERSISTENCE);
-            if persistence > f32::EPSILON {
-                let fresh = 1.0 - persistence;
-                for (current, incoming) in Arc::make_mut(&mut self.snapshot.samples)
-                    .iter_mut()
-                    .zip(snapshot.samples.iter())
-                {
-                    *current = *current * persistence + incoming * fresh;
-                    crate::util::audio::flush_denormal_f32(current);
-                }
-                return;
+            for (current, incoming) in Arc::make_mut(&mut self.snapshot.samples)
+                .iter_mut()
+                .zip(snapshot.samples.iter())
+            {
+                *current += weight * (incoming - *current);
+                crate::util::audio::flush_denormal_f32(current);
             }
+            return;
         }
 
         self.snapshot = snapshot;

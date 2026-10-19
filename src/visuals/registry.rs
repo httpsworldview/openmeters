@@ -440,7 +440,7 @@ mod tests {
             }),
             VisualConfig::Oscilloscope(OscilloscopeSettings {
                 stacked: true,
-                persistence: 0.75,
+                persistence_time_constant: 0.25,
                 ..Default::default()
             }),
             VisualConfig::Waveform(WaveformSettings {
