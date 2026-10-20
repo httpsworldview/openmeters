@@ -67,16 +67,22 @@ macro_rules! visuals {
         }
 
         fn entries() -> Vec<Entry> {
-            vec![$(Entry {
-                kind: VisualKind::$variant,
-                width_basis: $default_width_basis,
-                min_width: $min_w,
-                enabled: false,
-                module: Box::new(Visual {
-                    processor: $module::processor::$processor::new(Default::default()),
-                    state: Rc::new(RefCell::new($module::state::$state::default())),
-                    pending_audio: false,
-                }),
+            vec![$({
+                let state = Rc::new(RefCell::new($module::state::$state::default()));
+                Entry {
+                    slot: VisualSlotSnapshot {
+                        kind: VisualKind::$variant,
+                        enabled: false,
+                        width_basis: $default_width_basis,
+                        min_width: $min_w,
+                        content: VisualContent::$variant(state.clone()),
+                    },
+                    module: Box::new(Visual {
+                        processor: $module::processor::$processor::new(Default::default()),
+                        state,
+                        pending_audio: false,
+                    }),
+                }
             }),*]
         }
 
@@ -109,10 +115,6 @@ macro_rules! visuals {
             fn prepare(&mut self) {
                 self.pending_audio = true;
                 $(self.processor.$prepare();)?
-            }
-
-            fn content(&self) -> VisualContent {
-                VisualContent::$variant(self.state.clone())
             }
 
             fn apply(&mut self, config: &VisualConfig) {
@@ -250,7 +252,6 @@ trait VisualModule {
     fn reset_audio(&mut self);
     fn is_quiescent(&self) -> bool;
     fn prepare(&mut self);
-    fn content(&self) -> VisualContent;
     fn apply(&mut self, config: &VisualConfig);
     fn export(&self) -> VisualConfig;
     fn export_palette(&self) -> Option<PaletteSettings>;
@@ -258,22 +259,19 @@ trait VisualModule {
 }
 
 struct Entry {
-    kind: VisualKind,
-    width_basis: f32,
-    min_width: f32,
-    enabled: bool,
+    slot: VisualSlotSnapshot,
     module: Box<dyn VisualModule>,
 }
 impl Entry {
     fn apply_config(&mut self, config: VisualConfig) {
         self.module.apply(&config.normalized());
-        if self.enabled {
+        if self.slot.enabled {
             self.module.prepare();
         }
     }
 
     fn set_enabled(&mut self, enabled: bool) {
-        if !std::mem::replace(&mut self.enabled, enabled) && enabled {
+        if !std::mem::replace(&mut self.slot.enabled, enabled) && enabled {
             self.module.reset_audio();
             self.module.prepare();
         }
@@ -299,7 +297,7 @@ impl VisualManager {
     fn position(&self, kind: VisualKind) -> usize {
         self.entries
             .iter()
-            .position(|entry| entry.kind == kind)
+            .position(|entry| entry.slot.kind == kind)
             .expect("visual kind missing from registry")
     }
     pub fn move_to(&mut self, kind: VisualKind, target: usize) {
@@ -312,17 +310,11 @@ impl VisualManager {
     pub fn snapshot(&self) -> Vec<VisualSlotSnapshot> {
         self.entries
             .iter()
-            .map(|entry| VisualSlotSnapshot {
-                kind: entry.kind,
-                enabled: entry.enabled,
-                width_basis: entry.width_basis,
-                min_width: entry.min_width,
-                content: entry.module.content(),
-            })
+            .map(|entry| entry.slot.clone())
             .collect()
     }
     pub fn order(&self) -> Vec<VisualKind> {
-        self.entries.iter().map(|entry| entry.kind).collect()
+        self.entries.iter().map(|entry| entry.slot.kind).collect()
     }
     pub fn config(&self, kind: VisualKind) -> VisualConfig {
         self.entries[self.position(kind)].module.export()
@@ -332,7 +324,7 @@ impl VisualManager {
             entry
                 .module
                 .export_palette()
-                .map(|palette| (entry.kind, palette))
+                .map(|palette| (entry.slot.kind, palette))
         })
     }
     pub fn apply_config(&mut self, config: VisualConfig) {
@@ -349,15 +341,15 @@ impl VisualManager {
     }
     pub fn set_width_basis(&mut self, kind: VisualKind, width_basis: f32) {
         let index = self.position(kind);
-        self.entries[index].width_basis = width_basis;
+        self.entries[index].slot.width_basis = width_basis;
     }
     pub fn has_enabled(&self) -> bool {
-        self.entries.iter().any(|entry| entry.enabled)
+        self.entries.iter().any(|entry| entry.slot.enabled)
     }
     pub fn is_quiescent(&self) -> bool {
         self.entries
             .iter()
-            .all(|entry| !entry.enabled || entry.module.is_quiescent())
+            .all(|entry| !entry.slot.enabled || entry.module.is_quiescent())
     }
     pub fn reset_audio(&mut self) {
         self.format_generation = None;
@@ -369,13 +361,13 @@ impl VisualManager {
         for entry in &mut self.entries {
             if let Some(width) = settings
                 .width_basis
-                .get(&entry.kind)
+                .get(&entry.slot.kind)
                 .copied()
                 .and_then(crate::util::finite_positive)
             {
-                entry.width_basis = width;
+                entry.slot.width_basis = width;
             }
-            let (config, enabled) = settings.module_config(entry.kind);
+            let (config, enabled) = settings.module_config(entry.slot.kind);
             entry.apply_config(config);
             entry.set_enabled(enabled);
         }
@@ -390,7 +382,9 @@ impl VisualManager {
         let mut changed = false;
         for entry in &mut self.entries {
             let previous = entry.module.export_palette();
-            entry.module.apply_palette(theme.palettes.get(&entry.kind));
+            entry
+                .module
+                .apply_palette(theme.palettes.get(&entry.slot.kind));
             changed |= entry.module.export_palette() != previous;
         }
         changed
@@ -411,7 +405,7 @@ impl VisualManager {
             format.positions,
         );
         for entry in &mut self.entries {
-            if entry.enabled {
+            if entry.slot.enabled {
                 entry.module.ingest(&block, signal);
             }
         }
@@ -489,7 +483,7 @@ mod tests {
             manager
                 .entries
                 .iter()
-                .all(|entry| entry.enabled == (entry.kind == VisualKind::Spectrum))
+                .all(|entry| entry.slot.enabled == (entry.slot.kind == VisualKind::Spectrum))
         );
     }
 
@@ -510,7 +504,7 @@ mod tests {
             panic!("expected spectrum settings");
         };
         let entry = &manager.entries[manager.position(VisualKind::Spectrum)];
-        let VisualContent::Spectrum(state) = entry.module.content() else {
+        let VisualContent::Spectrum(state) = &entry.slot.content else {
             panic!("expected spectrum state");
         };
         assert_eq!(state.borrow().style.floor_db, config.floor_db);
