@@ -164,20 +164,11 @@ impl PeriodEstimator {
 
     fn compute_periodicity(&mut self, samples: &[f32], mean: f32, max_lag: usize) {
         let fft_size = (samples.len() + max_lag).next_power_of_two();
-        if self
-            .fft
-            .as_ref()
-            .is_none_or(|fft| fft.input.len() != fft_size)
-        {
-            self.fft = Some(PeriodFft::new(fft_size));
-        }
-        let Self {
-            periodicity,
-            energy_prefix,
-            fft,
-            ..
-        } = self;
-        let fft = fft.as_mut().expect("period FFT initialized");
+        let fft = match &mut self.fft {
+            Some(fft) if fft.input.len() == fft_size => fft,
+            slot => slot.insert(PeriodFft::new(fft_size)),
+        };
+        let (periodicity, energy_prefix) = (&mut self.periodicity, &mut self.energy_prefix);
         energy_prefix.resize(samples.len() + 1, 0.0);
         energy_prefix[0] = 0.0;
         let mut energy = 0.0_f64;
@@ -407,33 +398,28 @@ impl StableTrigger {
         cycles: usize,
         elapsed: f32,
     ) -> Capture {
-        let probe_len = probe_frames.min(trace.len());
-        let detected = if probe_len >= 3 {
-            let probe = &trace[trace.len() - probe_len..];
-            let factor = (sample_rate / PeriodEstimator::MAX_ANALYSIS_RATE)
-                .ceil()
-                .max(1.0) as usize;
-            let probe = if factor > 1 {
-                self.work.clear();
-                self.work.extend(
-                    probe[probe.len() % factor..]
-                        .chunks_exact(factor)
-                        .map(mean_f32),
-                );
-                self.work.as_slice()
-            } else {
-                probe
-            };
-            self.estimator
-                .estimate_period(probe, sample_rate / factor as f32)
-                .map(|mut estimate| {
-                    estimate.period *= factor as f32;
-                    estimate
-                })
+        let probe = &trace[trace.len() - probe_frames.min(trace.len())..];
+        let factor = (sample_rate / PeriodEstimator::MAX_ANALYSIS_RATE)
+            .ceil()
+            .max(1.0) as usize;
+        let probe = if factor > 1 {
+            self.work.clear();
+            self.work.extend(
+                probe[probe.len() % factor..]
+                    .chunks_exact(factor)
+                    .map(mean_f32),
+            );
+            self.work.as_slice()
         } else {
-            self.estimator.last_peak = 0.0;
-            None
+            probe
         };
+        let detected = self
+            .estimator
+            .estimate_period(probe, sample_rate / factor as f32)
+            .map(|mut estimate| {
+                estimate.period *= factor as f32;
+                estimate
+            });
 
         if self.estimator.last_peak < PeriodEstimator::MIN_SIGNAL_PEAK {
             self.unlock();
@@ -669,11 +655,7 @@ fn find_rising_zero_crossing(
 ) -> Option<(usize, f32)> {
     let mut previous = frames.next()?;
     for current in frames {
-        let (lo, hi) = if previous < current {
-            (previous, current)
-        } else {
-            (current, previous)
-        };
+        let (lo, hi) = (previous.min(current), previous.max(current));
         let (&a, &b) = samples.get(lo).zip(samples.get(hi))?;
         if a <= 0.0 && b > 0.0 {
             return Some((lo, (-a / (b - a)).clamp(0.0, 1.0) * (hi - lo) as f32));
@@ -684,39 +666,33 @@ fn find_rising_zero_crossing(
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct OscilloscopeSnapshot<S = Arc<[f32]>> {
+pub struct OscilloscopeSnapshot {
     pub elapsed: f32,
     pub epoch: u64,
     pub channels: usize,
     pub slots: [usize; TRACE_COUNT],
-    pub samples: S,
+    pub samples: Arc<[f32]>,
     pub samples_per_channel: usize,
 }
 
-type SnapshotBuffer = OscilloscopeSnapshot<Vec<f32>>;
+// Index of the separate trigger source buffer and of the linked trigger.
+const SOURCE: usize = TRACE_COUNT;
 
 #[derive(Default)]
-struct TraceState {
-    buffer: VecDeque<f32>,
-    trigger: StableTrigger,
-}
-
 pub struct OscilloscopeProcessor {
     config: OscilloscopeConfig,
-    snapshot: SnapshotBuffer,
+    epoch: u64,
+    samples: Vec<f32>,
     history_channels: Option<usize>,
-    traces: [TraceState; TRACE_COUNT],
-    source: TraceState,
+    buffers: [VecDeque<f32>; TRACE_COUNT + 1],
+    triggers: [StableTrigger; TRACE_COUNT + 1],
 }
 
 impl OscilloscopeProcessor {
     pub fn new(config: OscilloscopeConfig) -> Self {
         Self {
             config,
-            snapshot: SnapshotBuffer::default(),
-            history_channels: None,
-            traces: std::array::from_fn(|_| TraceState::default()),
-            source: TraceState::default(),
+            ..Self::default()
         }
     }
 
@@ -726,19 +702,13 @@ impl OscilloscopeProcessor {
 
     pub fn reset_audio(&mut self) {
         self.clear_history();
-        self.snapshot = SnapshotBuffer {
-            epoch: self.snapshot.epoch,
-            ..Default::default()
-        };
+        self.samples = Vec::new();
     }
 
     #[cfg(test)]
     fn last_cycle_rate(&self) -> Option<f32> {
-        self.source
-            .trigger
-            .period
-            .or_else(|| self.traces.iter().find_map(|trace| trace.trigger.period))
-            .map(|period| self.config.sample_rate / period)
+        let period = self.triggers.iter().find_map(|trigger| trigger.period)?;
+        Some(self.config.sample_rate / period)
     }
 
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<OscilloscopeSnapshot> {
@@ -801,123 +771,102 @@ impl OscilloscopeProcessor {
                 ),
             })
         };
-        let active_traces = trace_channels.map(|channel| channel != Channel::None);
         let matching_trace = trace_channels
             .iter()
-            .position(|&channel| channel == trigger_source)
-            .filter(|&slot| active_traces[slot]);
-        let separate_source = matching_trace.is_none() && trigger_source != Channel::None;
+            .position(|&channel| channel == trigger_source);
+        let separate_source = matching_trace.map_or(trigger_source, |_| Channel::None);
+        let [channel_1, channel_2] = trace_channels;
+        let channels = [channel_1, channel_2, separate_source];
         let incoming = block.frame_count();
-        for (trace, &active) in self.traces.iter_mut().zip(&active_traces) {
-            if active {
-                trace.buffer.reserve(incoming);
+        for (buffer, &channel) in self.buffers.iter_mut().zip(&channels) {
+            if channel != Channel::None {
+                buffer.reserve(incoming);
             }
-        }
-        if separate_source {
-            self.source.buffer.reserve(incoming);
         }
 
         for stereo in block.stereo_frames() {
-            for (trace, &channel) in self.traces.iter_mut().zip(&trace_channels) {
+            for (buffer, &channel) in self.buffers.iter_mut().zip(&channels) {
                 if channel != Channel::None {
-                    trace.buffer.push_back(channel.project(stereo));
+                    buffer.push_back(channel.project(stereo));
                 }
             }
-            if separate_source {
-                self.source.buffer.push_back(trigger_source.project(stereo));
-            }
         }
-        for (trace, &active) in self.traces.iter_mut().zip(&active_traces) {
-            let keep = history_frames * usize::from(active);
-            trace
-                .buffer
-                .drain(..trace.buffer.len().saturating_sub(keep));
-        }
-        if separate_source {
-            self.source
-                .buffer
-                .drain(..self.source.buffer.len().saturating_sub(history_frames));
+        for (buffer, &channel) in self.buffers.iter_mut().zip(&channels) {
+            let keep = history_frames * usize::from(channel != Channel::None);
+            buffer.drain(..buffer.len().saturating_sub(keep));
         }
 
-        let linked_capture = if let Some(slot) = matching_trace {
-            capture(
-                self.traces[slot].buffer.make_contiguous(),
-                &mut self.source.trigger,
-            )
-        } else if separate_source {
-            capture(
-                self.source.buffer.make_contiguous(),
-                &mut self.source.trigger,
-            )
-        } else {
+        let linked_capture = if trigger_source == Channel::None {
             None
+        } else {
+            let buffer = &mut self.buffers[matching_trace.unwrap_or(SOURCE)];
+            capture(buffer.make_contiguous(), &mut self.triggers[SOURCE])
         };
 
         let captures = std::array::from_fn(|slot| {
-            let trace = &mut self.traces[slot];
-            active_traces[slot].then(|| {
-                linked_capture
-                    .or_else(|| capture(trace.buffer.make_contiguous(), &mut trace.trigger))
+            (trace_channels[slot] != Channel::None).then(|| {
+                linked_capture.or_else(|| {
+                    capture(
+                        self.buffers[slot].make_contiguous(),
+                        &mut self.triggers[slot],
+                    )
+                })
             })?
         });
 
-        if captures.iter().all(Option::is_none) {
-            return None;
-        }
-
-        self.write_snapshot(&captures);
-        Some(OscilloscopeSnapshot {
-            elapsed,
-            epoch: self.snapshot.epoch,
-            channels: self.snapshot.channels,
-            slots: self.snapshot.slots,
-            samples: Arc::from(self.snapshot.samples.as_slice()),
-            samples_per_channel: self.snapshot.samples_per_channel,
-        })
+        self.emit_snapshot(&captures, elapsed)
     }
 
     fn clear_history(&mut self) {
-        self.snapshot.epoch = self.snapshot.epoch.wrapping_add(1);
+        self.epoch = self.epoch.wrapping_add(1);
         self.history_channels = None;
-        self.traces.iter_mut().for_each(|trace| {
-            trace.buffer.clear();
-            trace.trigger.unlock();
-        });
-        self.source.buffer.clear();
-        self.source.trigger.unlock();
+        self.buffers.iter_mut().for_each(VecDeque::clear);
+        self.triggers.iter_mut().for_each(StableTrigger::unlock);
     }
 
-    fn write_snapshot(&mut self, captures: &[Option<Capture>; TRACE_COUNT]) {
+    fn emit_snapshot(
+        &mut self,
+        captures: &[Option<Capture>; TRACE_COUNT],
+        elapsed: f32,
+    ) -> Option<OscilloscopeSnapshot> {
         const TARGET: usize = 4096;
 
-        let target = captures
+        let samples_per_channel = captures
             .iter()
-            .filter_map(|capture| capture.map(|capture| capture.span.round().max(1.0) as usize + 1))
-            .max()
-            .unwrap()
+            .flatten()
+            .map(|capture| capture.span.round().max(1.0) as usize + 1)
+            .max()?
             .clamp(2, TARGET);
 
-        self.snapshot.samples.clear();
-        self.snapshot.channels = 0;
+        self.samples.clear();
+        let (mut channels, mut slots) = (0, [0; TRACE_COUNT]);
         for (slot, capture) in captures.iter().copied().enumerate() {
             let Some(capture) = capture else { continue };
             downsample_trace(
-                &mut self.snapshot.samples,
-                self.traces[slot].buffer.make_contiguous(),
+                &mut self.samples,
+                self.buffers[slot].make_contiguous(),
                 capture,
-                target,
+                samples_per_channel,
             );
-            self.snapshot.slots[self.snapshot.channels] = slot;
-            self.snapshot.channels += 1;
+            slots[channels] = slot;
+            channels += 1;
         }
-        self.snapshot.samples_per_channel = target;
+        Some(OscilloscopeSnapshot {
+            elapsed,
+            epoch: self.epoch,
+            channels,
+            slots,
+            samples: Arc::from(self.samples.as_slice()),
+            samples_per_channel,
+        })
     }
 
     pub fn update_config(&mut self, config: OscilloscopeConfig) {
         if self.config != config {
-            let epoch = self.snapshot.epoch.wrapping_add(1);
-            *self = Self::new(config);
-            self.snapshot.epoch = epoch;
+            *self = Self {
+                epoch: self.epoch.wrapping_add(1),
+                ..Self::new(config)
+            };
         }
     }
 }
@@ -1385,7 +1334,7 @@ mod tests {
         let silence = vec![0.0; BLOCK * 2];
         processor.process_block(&AudioBlock::new(&silence, 2, RATE));
 
-        assert_eq!(processor.traces[0].buffer.len(), silence.len() / 2);
+        assert_eq!(processor.buffers[0].len(), silence.len() / 2);
         assert!(processor.last_cycle_rate().is_none());
     }
 
