@@ -280,14 +280,14 @@ impl StereometerParams {
         bounds.y + (1.0 - value.clamp(-1.0, 1.0)) * bounds.height * 0.5
     }
 
-    pub(super) fn meter_layout(p: &StereometerParams) -> (Rectangle, Option<Rectangle>) {
-        let has_meter = p.correlation_meter != CorrelationMeterMode::Off;
-        let left = p.correlation_meter_side == CorrelationMeterSide::Left;
-        let scale = match p.correlation_meter {
+    pub(super) fn meter_layout(&self) -> (Rectangle, Option<Rectangle>) {
+        let has_meter = self.correlation_meter != CorrelationMeterMode::Off;
+        let left = self.correlation_meter_side == CorrelationMeterSide::Left;
+        let scale = match self.correlation_meter {
             CorrelationMeterMode::SingleBand => 0.5,
             _ => 1.0,
         };
-        let available_height = p.bounds.height.max(0.0);
+        let available_height = self.bounds.height.max(0.0);
         let width = (available_height * 5.0 / 32.0).min(CORR_W) * scale;
         let margin = if has_meter {
             CORR_EDGE + width + CORR_LABEL_GAP + CORR_LABEL_W + CORR_PAD
@@ -295,22 +295,22 @@ impl StereometerParams {
             0.0
         };
         let vector = Rectangle {
-            x: p.bounds.x + if left { margin } else { 0.0 },
-            width: (p.bounds.width - margin).max(0.0),
-            ..p.bounds
+            x: self.bounds.x + if left { margin } else { 0.0 },
+            width: (self.bounds.width - margin).max(0.0),
+            ..self.bounds
         };
         let meter = has_meter.then(|| {
             let x = if left {
-                p.bounds.x + CORR_EDGE
+                self.bounds.x + CORR_EDGE
             } else {
-                (p.bounds.x + p.bounds.width - width - CORR_EDGE).max(p.bounds.x)
+                (self.bounds.x + self.bounds.width - width - CORR_EDGE).max(self.bounds.x)
             };
             let vpad = (available_height * CORR_VPAD_RATIO)
                 .max(CORR_LABEL_H * 0.5)
                 .min(available_height * 0.5);
             Rectangle {
                 x,
-                y: p.bounds.y + vpad,
+                y: self.bounds.y + vpad,
                 width,
                 height: (available_height - 2.0 * vpad).max(0.0),
             }
@@ -319,13 +319,13 @@ impl StereometerParams {
     }
 
     fn add_trace_vertices(
+        &self,
         out: &mut Vec<SdfInstance>,
-        p: &StereometerParams,
         projection: Projection,
         clip: ClipTransform,
     ) {
-        let [cr, cg, cb, ca] = p.palette[0];
-        let dot_r = p.dot_radius;
+        let [cr, cg, cb, ca] = self.palette[0];
+        let dot_r = self.dot_radius;
         let radial_scale = match projection.scale {
             StereometerScale::Linear => projection.fit,
             StereometerScale::Scaled => -1.0,
@@ -336,12 +336,12 @@ impl StereometerParams {
             radial_scale,
             dot_r,
             clip,
-            p.mode == StereometerMode::DotCloudBands,
+            self.mode == StereometerMode::DotCloudBands,
         );
         let dot = |l, r, color| dots.instance(projection.visible(projection.rotated(l, r)), color);
 
-        let points = &p.points[FULL_BAND];
-        match p.mode {
+        let points = &self.points[FULL_BAND];
+        match self.mode {
             StereometerMode::DotCloud => {
                 let count = points.len() as f32;
                 out.extend(points.iter().enumerate().map(|(i, &(l, r))| {
@@ -368,7 +368,7 @@ impl StereometerParams {
                 }
             }
             StereometerMode::DotCloudBands => {
-                for (pts, colors) in p.points[1..].iter().zip(&p.band_colors) {
+                for (pts, colors) in self.points[1..].iter().zip(&self.band_colors) {
                     out.extend(
                         pts.iter()
                             .zip(colors.iter())
@@ -380,9 +380,9 @@ impl StereometerParams {
     }
 
     fn add_correlation_vertices(
+        &self,
         out: &mut Vec<SdfInstance>,
         alpha: &mut Vec<f32>,
-        p: &StereometerParams,
         bounds: Rectangle,
         clip: ClipTransform,
     ) {
@@ -390,36 +390,29 @@ impl StereometerParams {
             return;
         }
 
-        let multi_band = p.correlation_meter == CorrelationMeterMode::MultiBand;
+        let multi_band = self.correlation_meter == CorrelationMeterMode::MultiBand;
         let bars = if multi_band { BAND_COUNT } else { 1 };
         let bar_width = bounds.width / bars as f32;
         let val_y = |value| Self::correlation_y(bounds, value);
         let center = val_y(0.0);
-        let marker_h = (p.bounds.height / 128.0).clamp(1.0, 3.0) * 0.5;
+        let marker_h = (self.bounds.height / 128.0).clamp(1.0, 3.0) * 0.5;
         let y_min = bounds.y as i32;
         let height = (bounds.height as i32 + 1).max(0) as usize;
         let y_max = y_min + height as i32 - 1;
 
-        {
-            let mut quad = |y0, y1, color| {
-                out.push(quad_instance(
-                    bounds.x,
-                    y0,
-                    bounds.x + bounds.width,
-                    y1,
-                    clip,
-                    color,
-                ));
-            };
-            quad(bounds.y, bounds.y + bounds.height, p.palette[1]);
-            for y in [val_y(1.0), center, val_y(-1.0)] {
-                quad(y - 0.5, y + 0.5, p.palette[2]);
-            }
+        let (trails, palette) = (&self.trails, &self.palette);
+
+        let quad =
+            |y0, y1, color| quad_instance(bounds.x, y0, bounds.x + bounds.width, y1, clip, color);
+        out.push(quad(bounds.y, bounds.y + bounds.height, palette[1]));
+        for y in [val_y(1.0), center, val_y(-1.0)] {
+            out.push(quad(y - 0.5, y + 0.5, palette[2]));
         }
 
         let mut draw_trail =
-            |x0: f32, x1: f32, trail: &[f32], positive: [f32; 4], negative: Option<[f32; 4]>| {
-                let negative = negative.unwrap_or(positive);
+            |x: f32, width: f32, trail: &[f32], positive: [f32; 4], negative: [f32; 4]| {
+                let inset = (width * 0.5).min(0.25);
+                let (x0, x1) = (x + inset, x + width - inset);
                 let color = |is_negative| if is_negative { negative } else { positive };
                 if trail.len() > 1 {
                     alpha.clear();
@@ -439,64 +432,36 @@ impl StereometerParams {
                     }
                     for (index, opacity) in alpha.windows(2).enumerate() {
                         if opacity[0] > 0.0 || opacity[1] > 0.0 {
-                            let y = (y_min + index as i32) as f32;
-                            let (mut top, mut bottom) =
-                                (color(y > center), color(y + 1.0 > center));
+                            let y0 = (y_min + index as i32) as f32;
+                            let y1 = y0 + 1.0;
+                            let (mut top, mut bottom) = (color(y0 > center), color(y1 > center));
                             top[3] *= opacity[0];
                             bottom[3] *= opacity[1];
-                            out.push(gradient_quad_instance(
-                                x0,
-                                y,
-                                x1,
-                                y + 1.0,
-                                clip,
-                                top,
-                                bottom,
-                            ));
+                            out.push(gradient_quad_instance(x0, y0, x1, y1, clip, top, bottom));
                         }
                     }
                 }
                 if let Some(&current) = trail.first() {
                     let y = val_y(current);
+                    let (top, bottom) = (y - marker_h, y + marker_h);
                     let color = color(current < 0.0);
-                    out.push(quad_instance(
-                        x0,
-                        y - marker_h,
-                        x1,
-                        y + marker_h,
-                        clip,
-                        color,
-                    ));
+                    out.push(quad_instance(x0, top, x1, bottom, clip, color));
                 }
             };
 
         if multi_band {
-            let mut color = p.palette[2];
+            let mut color = palette[2];
             color[3] *= 0.25;
-            let inset = (bounds.width * 0.5).min(0.25);
-            draw_trail(
-                bounds.x + inset,
-                bounds.x + bounds.width - inset,
-                &p.trails[FULL_BAND],
-                color,
-                None,
-            );
+            draw_trail(bounds.x, bounds.width, &trails[FULL_BAND], color, color);
         }
-        let inset = (bar_width * 0.5).min(0.25);
         for band in 0..bars {
-            let x0 = bounds.x + band as f32 * bar_width;
+            let x = bounds.x + band as f32 * bar_width;
             let (trail, positive, negative) = if multi_band {
-                (&p.trails[band + 1][..], p.palette[5 + band], None)
+                (&trails[band + 1][..], palette[5 + band], palette[5 + band])
             } else {
-                (&p.trails[FULL_BAND][..], p.palette[3], Some(p.palette[4]))
+                (&trails[FULL_BAND][..], palette[3], palette[4])
             };
-            draw_trail(
-                x0 + inset,
-                x0 + bar_width - inset,
-                trail,
-                positive,
-                negative,
-            );
+            draw_trail(x, bar_width, trail, positive, negative);
         }
     }
 }
@@ -506,22 +471,20 @@ sdf_primitive!(
     RENDER_LABEL,
     layers |self, scratch| {
         (self.grid.id, Some(bounds_fingerprint(self.grid.revision, self.bounds))) => {
-            let p = self;
             self.add_grid_vertices(
                 &mut scratch.instances,
-                Projection::from_params(p, Self::meter_layout(p).0),
-                ClipTransform::from_bounds(p.bounds),
+                Projection::from_params(self, self.meter_layout().0),
+                ClipTransform::from_bounds(self.bounds),
             );
         },
         (self.geometry.id, Some(bounds_fingerprint(self.geometry.revision, self.bounds))) => {
-            let p = self;
-            let clip = ClipTransform::from_bounds(p.bounds);
-            let (vector, correlation) = Self::meter_layout(p);
-            let projection = Projection::from_params(p, vector);
-            Self::add_trace_vertices(&mut scratch.instances, p, projection, clip);
+            let clip = ClipTransform::from_bounds(self.bounds);
+            let (vector, correlation) = self.meter_layout();
+            let projection = Projection::from_params(self, vector);
+            self.add_trace_vertices(&mut scratch.instances, projection, clip);
             if let Some(meter) = correlation {
-                Self::add_correlation_vertices(
-                    &mut scratch.instances, &mut scratch.scalars, p, meter, clip,
+                self.add_correlation_vertices(
+                    &mut scratch.instances, &mut scratch.scalars, meter, clip,
                 );
             }
         },

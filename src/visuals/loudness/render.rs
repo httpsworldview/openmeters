@@ -106,6 +106,8 @@ impl LoudnessParams {
         let y1 = bounds.y + bounds.height;
         let height = y1 - y0;
         let y_of = |db| (y1 - height * db_to_ratio(db)).clamp(y0, y1);
+        let hline =
+            |x0, x1, y, width, color| line_instance((x0, y), (x1, y), color, color, width, clip);
         let bars = self.bar_groups();
         let bar_count = bars.len();
         let vertices = &mut scratch.instances;
@@ -140,14 +142,8 @@ impl LoudnessParams {
                     let ceiling = ceiling.clamp(DB_RANGE.0, DB_RANGE.1);
                     let upper = value.min(ceiling);
                     if upper > lower {
-                        vertices.push(quad_instance(
-                            sx0,
-                            y_of(upper),
-                            sx1,
-                            y_of(lower),
-                            clip,
-                            color,
-                        ));
+                        let (top, bottom) = (y_of(upper), y_of(lower));
+                        vertices.push(quad_instance(sx0, top, sx1, bottom, clip, color));
                     }
                     lower = lower.max(ceiling);
                     if value <= ceiling {
@@ -156,44 +152,22 @@ impl LoudnessParams {
                 }
 
                 if let Some((db, color)) = fill.peak {
-                    let cy = y_of(db);
-                    vertices.push(line_instance(
-                        (sx0, cy),
-                        (sx1, cy),
-                        color,
-                        color,
-                        PEAK_THICKNESS,
-                        clip,
-                    ));
+                    vertices.push(hline(sx0, sx1, y_of(db), PEAK_THICKNESS, color));
                 }
             }
         }
 
-        let guide_anchor = meter_x - GUIDE_PADDING;
+        let guide = self.guide_color;
+        let guide_x1 = meter_x - GUIDE_PADDING;
         for db in GUIDE_LEVELS {
-            let cy = y_of(db);
-            vertices.push(line_instance(
-                (guide_anchor - GUIDE_LENGTH, cy),
-                (guide_anchor, cy),
-                self.guide_color,
-                self.guide_color,
-                GUIDE_THICKNESS,
-                clip,
-            ));
+            let x0 = guide_x1 - GUIDE_LENGTH;
+            vertices.push(hline(x0, guide_x1, y_of(db), GUIDE_THICKNESS, guide));
         }
 
         let cy = y_of(0.0);
         for i in 0..bar_count {
             let x0 = meter_x + i as f32 * stride;
-            let x1 = x0 + bar_width;
-            vertices.push(line_instance(
-                (x0, cy),
-                (x1, cy),
-                self.guide_color,
-                self.guide_color,
-                THRESHOLD_THICKNESS,
-                clip,
-            ));
+            vertices.push(hline(x0, x0 + bar_width, cy, THRESHOLD_THICKNESS, guide));
         }
     }
 }

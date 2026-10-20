@@ -497,17 +497,12 @@ fn peak_bin(bins: &[f32], db: &[f32], min_f: f32, max_f: f32) -> Option<usize> {
 }
 
 fn interpolated_peak(bins: &[f32], db: &[f32], bin: usize) -> (f32, f32) {
-    let next = bin + 1;
     let bin_hz = bins[1] - bins[0];
     let (center_freq, center) = (bins[bin], db[bin]);
-    let (left, right) = (db[bin - 1], db[next]);
-    let offset = if left.is_finite() && right.is_finite() {
-        let denom = left - 2.0 * center + right;
-        if denom < -EPSILON {
-            (0.5 * (left - right) / denom).clamp(-0.5, 0.5)
-        } else {
-            0.0
-        }
+    let (left, right) = (db[bin - 1], db[bin + 1]);
+    let denom = left - 2.0 * center + right;
+    let offset = if left.is_finite() && right.is_finite() && denom < -EPSILON {
+        (0.5 * (left - right) / denom).clamp(-0.5, 0.5)
     } else {
         0.0
     };

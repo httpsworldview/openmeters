@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::processor::{
-    MAX_COLUMN_CAPACITY, NUM_BANDS, WAVEFORM_CHANNELS, WaveFrame, WaveformPreview, WaveformUpdate,
-};
-use super::render::{COLUMN_WIDTH_PIXELS, WaveformParams};
+use super::processor::{NUM_BANDS, WAVEFORM_CHANNELS, WaveFrame, WaveformPreview, WaveformUpdate};
+use super::render::{WaveformParams, column_count};
 use crate::persistence::settings::WaveformSettings;
 use crate::util::{color::color_to_rgba, unpoison};
 use crate::visuals::palettes;
@@ -128,10 +126,8 @@ impl WaveformState {
         .clamp(0.0, 1.0);
         self.scroll.set((now, scroll_offset));
 
-        let needed =
-            ((bounds.width / COLUMN_WIDTH_PIXELS).ceil() as usize).clamp(1, MAX_COLUMN_CAPACITY);
         if bounds.width > 0.0 {
-            self.view_columns.set(needed);
+            self.view_columns.set(column_count(bounds.width));
         }
 
         let lanes = [self.settings.channel_1, self.settings.channel_2]

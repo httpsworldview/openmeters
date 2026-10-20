@@ -149,14 +149,13 @@ pub fn sanitize_stop_positions(raw: Option<&[f32]>, defaults: &[f32]) -> Vec<f32
 }
 
 pub fn sanitize_stop_spreads(raw: Option<&[f32]>, count: usize) -> Vec<f32> {
-    let mut out = vec![1.0; count];
-    let Some(raw) = raw.filter(|raw| raw.len() == count) else {
-        return out;
-    };
-    for (dst, &value) in out.iter_mut().zip(raw.iter()) {
-        *dst = finite_or(value, 1.0).clamp(STOP_SPREAD_MIN, STOP_SPREAD_MAX);
+    match raw.filter(|raw| raw.len() == count) {
+        Some(raw) => raw
+            .iter()
+            .map(|&value| finite_or(value, 1.0).clamp(STOP_SPREAD_MIN, STOP_SPREAD_MAX))
+            .collect(),
+        None => vec![1.0; count],
     }
-    out
 }
 
 #[cfg(test)]

@@ -19,7 +19,7 @@ use crate::visuals::waveform::processor::{
     WaveFrame, WaveformPreview,
 };
 
-pub(super) const COLUMN_WIDTH_PIXELS: f32 = 1.0;
+const COLUMN_WIDTH_PIXELS: f32 = 1.0;
 
 const BAND_LINE_WIDTH: f32 = 1.5;
 const BAND_FILL_ALPHA: f32 = 0.15;
@@ -83,6 +83,10 @@ impl WaveformParams {
     }
 }
 
+pub(super) fn column_count(width: f32) -> usize {
+    ((width / COLUMN_WIDTH_PIXELS).ceil() as usize).clamp(1, MAX_COLUMN_CAPACITY)
+}
+
 fn sample_y_span(lane: Rectangle, min: f32, max: f32) -> Option<(f32, f32)> {
     let (lo, hi) = (min.min(max), min.max(max));
     let (min, max) = (lo.clamp(-1.0, 1.0), hi.clamp(-1.0, 1.0));
@@ -101,9 +105,7 @@ fn sample_y_span(lane: Rectangle, min: f32, max: f32) -> Option<(f32, f32)> {
 impl WaveformParams {
     fn build_vertices(&self, scratch: &mut GeometryScratch) {
         let data = crate::util::unpoison(self.data.lock());
-        let columns = ((self.bounds.width / COLUMN_WIDTH_PIXELS).ceil() as usize)
-            .clamp(1, MAX_COLUMN_CAPACITY)
-            .min(data.len());
+        let columns = column_count(self.bounds.width).min(data.len());
         let start = data.len().saturating_sub(columns);
         let preview_columns = self.preview.columns.filter(|_| self.preview.progress > 0.0);
 

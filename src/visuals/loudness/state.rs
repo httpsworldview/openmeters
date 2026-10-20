@@ -145,16 +145,12 @@ impl LoudnessState {
     }
 
     fn visual_params(&self, bounds: Rectangle) -> LoudnessParams {
-        let values = self.visible_values();
+        let meters = self.visible_meters();
         LoudnessParams {
             geometry: self.geometry,
             bounds,
             bg_color: color_to_rgba(self.palette[PAL_BACKGROUND]),
-            bars: [
-                self.meter_fill(0, self.settings.left_mode, values[0]),
-                self.meter_fill(1, self.settings.left_mode, values[1]),
-                self.meter_fill(2, self.settings.right_mode, values[2]),
-            ],
+            bars: std::array::from_fn(|i| self.meter_fill(self.peaks[i].db, meters[i])),
             guide_color: color_to_rgba(self.palette[PAL_GUIDE]),
         }
     }
@@ -174,31 +170,28 @@ impl LoudnessState {
             .unwrap_or(DB_RANGE.0)
     }
 
-    fn visible_values(&self) -> [f32; VISIBLE_METER_COUNT] {
+    fn visible_meters(&self) -> [(MeterMode, f32); VISIBLE_METER_COUNT] {
+        let (left, right) = (self.settings.left_mode, self.settings.right_mode);
         [
-            self.aggregate_channels(self.settings.left_mode, MeterSide::Left),
-            self.aggregate_channels(self.settings.left_mode, MeterSide::Right),
-            self.aggregate_channels(self.settings.right_mode, MeterSide::Both),
+            (left, MeterSide::Left),
+            (left, MeterSide::Right),
+            (right, MeterSide::Both),
         ]
+        .map(|(mode, side)| (mode, self.aggregate_channels(mode, side)))
     }
 
-    fn meter_fill(&self, peak_index: usize, mode: MeterMode, db: f32) -> MeterFill {
-        let peak_db = self.peaks[peak_index].db;
+    fn meter_fill(&self, peak_db: f32, (mode, db): (MeterMode, f32)) -> MeterFill {
+        let thresholds = zone_thresholds(mode);
+        let colors = &self.palette[PAL_LOW..];
         MeterFill {
             db,
-            segments: self.meter_segments(mode),
+            segments: std::array::from_fn(|i| (thresholds[i], color_to_rgba(colors[i]))),
             peak: (peak_db > DB_RANGE.0).then(|| {
-                let danger = peak_db >= zone_thresholds(mode)[DANGER_THRESHOLD_INDEX];
+                let danger = peak_db >= thresholds[DANGER_THRESHOLD_INDEX];
                 let color = self.palette[if danger { PAL_DANGER } else { PAL_PEAK }];
                 (peak_db, color_to_rgba(color))
             }),
         }
-    }
-
-    fn meter_segments(&self, mode: MeterMode) -> [(f32, [f32; 4]); ZONE_COUNT] {
-        let [low, mid, high] = zone_thresholds(mode);
-        let thresholds = [low, mid, high, DB_RANGE.1];
-        std::array::from_fn(|i| (thresholds[i], color_to_rgba(self.palette[PAL_LOW + i])))
     }
 
     fn refresh_value_label(&mut self) {
@@ -219,8 +212,8 @@ impl LoudnessState {
     }
 
     fn update_peak_holds(&mut self, now: Instant) {
-        let values = self.visible_values();
-        for (peak, value) in self.peaks.iter_mut().zip(values) {
+        let meters = self.visible_meters();
+        for (peak, (_, value)) in self.peaks.iter_mut().zip(meters) {
             peak.update(value.clamp(DB_RANGE.0, DB_RANGE.1), now);
         }
     }
@@ -254,10 +247,12 @@ fn channel_side(
     }
 }
 
-fn zone_thresholds(mode: MeterMode) -> [f32; 3] {
+fn zone_thresholds(mode: MeterMode) -> [f32; ZONE_COUNT] {
     match mode {
-        MeterMode::LufsShortTerm | MeterMode::LufsMomentary => [-24.0, -18.0, -9.0],
-        MeterMode::RmsFast | MeterMode::RmsSlow | MeterMode::TruePeak => [-12.0, -6.0, -1.0],
+        MeterMode::LufsShortTerm | MeterMode::LufsMomentary => [-24.0, -18.0, -9.0, DB_RANGE.1],
+        MeterMode::RmsFast | MeterMode::RmsSlow | MeterMode::TruePeak => {
+            [-12.0, -6.0, -1.0, DB_RANGE.1]
+        }
     }
 }
 

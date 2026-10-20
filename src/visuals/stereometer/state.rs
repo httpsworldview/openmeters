@@ -144,7 +144,7 @@ crate::visuals::visualization_widget!(
             return;
         };
         let side = params.correlation_meter_side;
-        let (_, meter) = StereometerParams::meter_layout(&params);
+        let (_, meter) = params.meter_layout();
         renderer.draw_primitive(bounds, params);
 
         if let Some(meter) = meter.filter(|meter| meter.width > 0.0 && meter.height > 0.0) {

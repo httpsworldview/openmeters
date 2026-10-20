@@ -62,6 +62,23 @@ impl DspBatcher {
         self.samples.extend_from_slice(&samples[ready..]);
     }
 
+    fn push_silence(&mut self, manager: &mut VisualManager, frames: u64, format: AudioFormat) {
+        let limit = (MAX_SILENCE_SECONDS as f64 * f64::from(format.sample_rate))
+            .round()
+            .max(1.0) as u64;
+        if frames > limit {
+            self.reset(manager);
+            return;
+        }
+        let capacity = SILENCE.len() / format.channels;
+        let mut remaining = frames;
+        while remaining > 0 {
+            let chunk = remaining.min(capacity as u64) as usize;
+            self.push(manager, &SILENCE[..chunk * format.channels], format);
+            remaining -= chunk as u64;
+        }
+    }
+
     fn reset(&mut self, manager: &mut VisualManager) {
         self.clear();
         manager.reset_audio();
@@ -108,7 +125,7 @@ impl MeterEngine {
                 batcher.push(&mut manager, samples, format);
             }
             CapturedSpan::Silence { frames, format } => {
-                ingest_silence(&mut manager, batcher, frames, format);
+                batcher.push_silence(&mut manager, frames, format);
             }
             CapturedSpan::Reset => batcher.reset(&mut manager),
         });
@@ -147,28 +164,6 @@ impl MeterEngine {
             self.audio.discard(now);
         }
         self.batcher.clear();
-    }
-}
-
-fn ingest_silence(
-    manager: &mut VisualManager,
-    batcher: &mut DspBatcher,
-    frames: u64,
-    format: AudioFormat,
-) {
-    let limit = (MAX_SILENCE_SECONDS as f64 * f64::from(format.sample_rate))
-        .round()
-        .max(1.0) as u64;
-    if frames > limit {
-        batcher.reset(manager);
-        return;
-    }
-    let capacity = SILENCE.len() / format.channels;
-    let mut remaining = frames;
-    while remaining > 0 {
-        let chunk = remaining.min(capacity as u64) as usize;
-        batcher.push(manager, &SILENCE[..chunk * format.channels], format);
-        remaining -= chunk as u64;
     }
 }
 
@@ -283,7 +278,7 @@ mod tests {
             let mut reference = LoudnessProcessor::new(Default::default());
             reference.process_block(&AudioBlock::new(&signal, 1, 48_000.0));
             batcher.push(&mut manager, &[0.0], format);
-            ingest_silence(&mut manager, &mut batcher, frames, format);
+            batcher.push_silence(&mut manager, frames, format);
             let expected = if frames > 192_000 {
                 assert!(batcher.samples.is_empty());
                 reset_level

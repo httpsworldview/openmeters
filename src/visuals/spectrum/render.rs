@@ -136,35 +136,28 @@ impl SpectrumParams {
             points2,
             ..
         } = scratch;
-        let normalized = self.normalized_points.as_ref();
-        let has_primary = normalized.len() >= MIN_TRACE_POINTS;
-        let has_secondary = self.secondary_points.len() >= MIN_TRACE_POINTS;
-        let primary_segments = normalized.len().min(pixel_budget).saturating_sub(1);
-        let secondary_segments = self
-            .secondary_points
-            .len()
-            .min(pixel_budget)
-            .saturating_sub(1);
-        vertices.reserve(primary_segments * 2 + secondary_segments);
+        let segments = |points: &[[f32; 2]]| points.len().min(pixel_budget).saturating_sub(1);
+        vertices.reserve(segments(&self.normalized_points) * 2 + segments(&self.secondary_points));
         let baseline = bounds.y + bounds.height;
+        let project = |out: &mut Vec<(f32, f32)>, normalized: &[[f32; 2]]| {
+            let visible = normalized.len() >= MIN_TRACE_POINTS;
+            if visible {
+                out.extend(
+                    normalized
+                        .iter()
+                        .map(|&p| normalized_to_cartesian(bounds, p)),
+                );
+                decimate_line(out, pixel_budget);
+            }
+            visible
+        };
 
+        let has_primary = project(points, &self.normalized_points);
         if has_primary {
-            points.extend(
-                normalized
-                    .iter()
-                    .map(|&p| normalized_to_cartesian(bounds, p)),
-            );
-            decimate_line(points, pixel_budget);
             self.push_highlight_columns(vertices, clip, baseline, bounds.height, points);
         }
 
-        if has_secondary {
-            points2.extend(
-                self.secondary_points
-                    .iter()
-                    .map(|&p| normalized_to_cartesian(bounds, p)),
-            );
-            decimate_line(points2, pixel_budget);
+        if project(points2, &self.secondary_points) {
             extend_aa_line_list(
                 vertices,
                 points2,
