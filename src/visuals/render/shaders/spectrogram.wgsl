@@ -111,11 +111,7 @@ fn palette_color(t: f32) -> vec4<f32> {
 }
 
 fn extents() -> vec2<f32> {
-    let swapped = u.rotation == 1u || u.rotation == 3u;
-    return vec2<f32>(
-        select(u.bounds.z, u.bounds.w, swapped),
-        select(u.bounds.w, u.bounds.z, swapped),
-    );
+    return select(u.bounds.zw, u.bounds.wz, u.rotation % 2u == 1u);
 }
 
 fn unpack_mag(slot: u32, bin_in_col: u32) -> f32 {
@@ -127,7 +123,6 @@ fn unpack_mag(slot: u32, bin_in_col: u32) -> f32 {
 // Instance flag: splat one texture width left (render.rs WRAP_BIT).
 const WRAPPED: u32 = 0x80000000u;
 const CULL_POS: vec4<f32> = vec4<f32>(0.0, 0.0, 2.0, 1.0);
-const CLASSIC_SENTINEL_DB: f32 = -10000.0;
 
 fn quad_corner(vertex: u32) -> vec2<f32> {
     return vec2<f32>(f32(vertex / 2u) - 0.5, 0.5 - f32(vertex % 2u));
@@ -146,27 +141,22 @@ fn vs_accum(
 ) -> AccumOutput {
     let tag = instance & ~WRAPPED;
     let point = points[(tag & u.page_slot_mask) * (tag >> u.points_per_col) + vertex / 4u];
-    let slot = tag & ((1u << u.points_per_col) - 1u);
-    let corner = quad_corner(vertex % 4u);
-    return splat(point.time_offset, point.freq_hz, point.power, corner, slot, instance >= WRAPPED);
-}
-
-fn splat(time_offset: f32, freq_hz: f32, power: f32, corner: vec2<f32>, slot: u32, wrapped: bool) -> AccumOutput {
-    let zoomed = (freq_to_norm(freq_hz) - u.uv_y_range.x) * u.inv_uv_range;
-    if !(power > 0.0) || zoomed < -0.01 || zoomed > 1.01 {
-        return AccumOutput(CULL_POS, power, freq_hz);
+    let zoomed = (freq_to_norm(point.freq_hz) - u.uv_y_range.x) * u.inv_uv_range;
+    if !(point.power > 0.0) || zoomed < -0.01 || zoomed > 1.01 {
+        return AccumOutput(CULL_POS, point.power, point.freq_hz);
     }
     let ext = extents();
+    let slot = tag & ((1u << u.points_per_col) - 1u);
     let hl = u.history_length;
     let age = (u.newest_col + hl - slot) % hl;
     let pos = vec2<f32>(
-        ext.x - u.scroll_phase - (f32(age) - time_offset) * u.scale_factor,
+        ext.x - u.scroll_phase - (f32(age) - point.time_offset) * u.scale_factor,
         (1.0 - zoomed) * ext.y,
-    ) + corner * u.scale_factor;
+    ) + quad_corner(vertex % 4u) * u.scale_factor;
     let size = vec2<f32>(f32(u.ring_width), ceil(max(ext.y, 1.0)));
-    let x = pos.x + f32(u.ring_origin) - select(0.0, size.x, wrapped);
+    let x = pos.x + f32(u.ring_origin) - select(0.0, size.x, instance >= WRAPPED);
     let clip = vec4<f32>(x / size.x * 2.0 - 1.0, 1.0 - pos.y / size.y * 2.0, 0.0, 1.0);
-    return AccumOutput(clip, power, freq_hz);
+    return AccumOutput(clip, point.power, point.freq_hz);
 }
 
 @vertex
@@ -223,13 +213,13 @@ fn rotate(frame: vec2<f32>, ext: vec2<f32>) -> vec2<f32> {
     }
 }
 
-fn classic_sample(frag_xy: vec2<f32>) -> vec2<f32> {
-    let local = frag_xy - u.bounds.xy;
+@fragment
+fn fs_classic(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     let ext = extents();
-    let pos = unrotate(local, ext);
+    let pos = unrotate(position.xy - u.bounds.xy, ext);
     let age_f = floor((ext.x - pos.x) / u.scale_factor);
     if age_f < 0.0 || age_f >= f32(u.col_count) {
-        return vec2<f32>(CLASSIC_SENTINEL_DB, 0.0);
+        return vec4<f32>(0.0);
     }
     let hl = u.history_length;
     let slot = (u.newest_col + hl - u32(age_f)) % hl;
@@ -240,13 +230,20 @@ fn classic_sample(frag_xy: vec2<f32>) -> vec2<f32> {
     let max_bin = u.points_per_col - 1u;
     let bin_f = freq_hz / u.bin_hz;
     if bin_f > f32(max_bin) {
-        return vec2<f32>(CLASSIC_SENTINEL_DB, 0.0);
+        return vec4<f32>(0.0);
     }
 
     let bin0 = u32(floor(bin_f));
     let bin1 = min(bin0 + 1u, max_bin);
-    let mag = mix(unpack_mag(slot, bin0), unpack_mag(slot, bin1), fract(bin_f));
-    return vec2<f32>(mag, freq_hz);
+    var mag = mix(unpack_mag(slot, bin0), unpack_mag(slot, bin1), fract(bin_f));
+    // dB/octave tilt relative to 1 kHz. Do not lift floor bins.
+    if u.tilt_db != 0.0 && !(mag > DB_ANALYSIS_FLOOR + DB_FLOOR_EPS) {
+        return vec4<f32>(0.0);
+    }
+    if u.tilt_db != 0.0 && freq_hz > 0.0 {
+        mag += u.tilt_db * log2(freq_hz / 1000.0);
+    }
+    return shade_db(mag);
 }
 
 fn shade_db(mag: f32) -> vec4<f32> {
@@ -284,18 +281,4 @@ fn fs_resolve(in: ResolveOutput) -> @location(0) vec4<f32> {
         return vec4<f32>(0.0);
     }
     return shade_db(max(log(max(power, 1e-20)) * LN_TO_DB, DB_ANALYSIS_FLOOR));
-}
-
-@fragment
-fn fs_classic(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
-    let sample = classic_sample(position.xy);
-    var mag = sample.x;
-    // dB/octave tilt relative to 1 kHz. Do not lift sentinels/floor bins.
-    if mag < -9000.0 || (u.tilt_db != 0.0 && !(mag > DB_ANALYSIS_FLOOR + DB_FLOOR_EPS)) {
-        return vec4<f32>(0.0);
-    }
-    if u.tilt_db != 0.0 && sample.y > 0.0 {
-        mag += u.tilt_db * log2(sample.y / 1000.0);
-    }
-    return shade_db(mag);
 }

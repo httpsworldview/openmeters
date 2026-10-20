@@ -220,39 +220,16 @@ impl SpectrogramProcessor {
     fn rebuild_fft(&mut self) {
         let window_size = self.config.fft_size;
         self.fft_size = window_size * self.config.zero_padding_factor;
-        let hilbert_len = Self::hilbert_len_for(window_size);
-        let use_reassignment = self.config.use_reassignment;
-        let (active_len, complex_len) = if use_reassignment {
-            (hilbert_len, hilbert_len)
-        } else {
-            (self.fft_size, self.fft_size / 2 + 1)
-        };
-        let mut planner = FftPlanner::new();
-        let transforms = if use_reassignment {
-            Transforms::Reassigned([
+        self.window = window_coefficients(self.config.window, window_size);
+        self.bin_norm = compute_fft_bin_normalization(&self.window, self.fft_size);
+        let (transforms, active_len) = if self.config.use_reassignment {
+            let hilbert_len = Self::hilbert_len_for(window_size);
+            let mut planner = FftPlanner::new();
+            let ffts = [
                 planner.plan_fft_forward(self.fft_size),
                 planner.plan_fft_forward(hilbert_len),
                 planner.plan_fft_inverse(hilbert_len),
-            ])
-        } else {
-            Transforms::Classic(RealFftPlanner::new().plan_fft_forward(self.fft_size))
-        };
-        self.window = window_coefficients(self.config.window, window_size);
-        let classic_len = if use_reassignment { 0 } else { self.fft_size };
-        resize_trim(&mut self.real, classic_len, 0.0);
-        resize_trim(&mut self.complex, complex_len, Complex32::ZERO);
-        let scratch_len = match &transforms {
-            Transforms::Reassigned(transforms) => transforms
-                .iter()
-                .map(|fft| fft.get_inplace_scratch_len())
-                .max()
-                .unwrap_or(0),
-            Transforms::Classic(fft) => fft.get_scratch_len(),
-        };
-        resize_trim(&mut self.scratch, scratch_len, Complex32::ZERO);
-        self.transforms = Some(transforms);
-        self.bin_norm = compute_fft_bin_normalization(&self.window, self.fft_size);
-        self.reassigned_power_scale = if use_reassignment {
+            ];
             let inv_hilbert_len = (hilbert_len as f32).recip();
             for norm in &mut self.bin_norm {
                 *norm *= inv_hilbert_len * inv_hilbert_len;
@@ -264,11 +241,22 @@ impl SpectrogramProcessor {
                 self.reassign.time_support,
             ) = compute_time_weighted(&self.window);
             self.reassign.spectra = vec![Complex32::ZERO; self.fft_size * 3];
-            reassigned_power_scale(&self.window, self.fft_size)
+            self.reassigned_power_scale = reassigned_power_scale(&self.window, self.fft_size);
+            let scratch_len = ffts.iter().map(|fft| fft.get_inplace_scratch_len()).max();
+            resize_trim(&mut self.real, 0, 0.0);
+            resize_trim(&mut self.complex, hilbert_len, Complex32::ZERO);
+            resize_trim(&mut self.scratch, scratch_len.unwrap_or(0), Complex32::ZERO);
+            (Transforms::Reassigned(ffts), hilbert_len)
         } else {
             self.reassign = ReassignmentBuffers::default();
-            1.0
+            self.reassigned_power_scale = 1.0;
+            let fft = RealFftPlanner::new().plan_fft_forward(self.fft_size);
+            resize_trim(&mut self.real, self.fft_size, 0.0);
+            resize_trim(&mut self.complex, self.fft_size / 2 + 1, Complex32::ZERO);
+            resize_trim(&mut self.scratch, fft.get_scratch_len(), Complex32::ZERO);
+            (Transforms::Classic(fft), self.fft_size)
         };
+        self.transforms = Some(transforms);
         let buffered_len = active_len.saturating_mul(2);
         self.drain_audio(self.audio_buffer.len().saturating_sub(buffered_len));
         self.pending_skip_samples = 0;
@@ -298,18 +286,12 @@ impl SpectrogramProcessor {
         self.advance_audio(skip.saturating_mul(hop_size));
 
         for _ in skip..ready {
-            if self.audio_last_nonzero.is_none() {
-                output.push(match kind {
-                    ColumnKind::Reassigned => SpectrogramColumn::Reassigned(Vec::new()),
-                    ColumnKind::Classic => {
-                        SpectrogramColumn::Classic(vec![pack_classic_db(DB_FLOOR); bin_count])
-                    }
-                });
-                self.advance_audio(hop_size);
-                continue;
-            }
-
+            let silent = self.audio_last_nonzero.is_none();
             let col = match self.transforms.as_ref().expect("spectrogram FFT prepared") {
+                Transforms::Reassigned(_) if silent => SpectrogramColumn::Reassigned(Vec::new()),
+                Transforms::Classic(_) if silent => {
+                    SpectrogramColumn::Classic(vec![pack_classic_db(DB_FLOOR); bin_count])
+                }
                 Transforms::Reassigned(transforms) => {
                     let [analysis, hilbert_forward, hilbert_inverse] = transforms;
                     copy_real_to_complex(&mut self.complex, &self.audio_buffer);
@@ -474,19 +456,15 @@ impl SpectrogramProcessor {
         self.prepare();
         self.push_audio(block);
         let cols = self.process_ready_windows();
-        if cols.is_empty() {
-            None
-        } else {
-            Some(SpectrogramUpdate {
-                fft_size: self.fft_size,
-                hop_size: self.config.hop_size,
-                sample_rate: self.config.sample_rate,
-                history_length: self.config.history_length,
-                reset: std::mem::take(&mut self.reset),
-                reassigned_power_scale: self.reassigned_power_scale,
-                new_columns: cols,
-            })
-        }
+        (!cols.is_empty()).then(|| SpectrogramUpdate {
+            fft_size: self.fft_size,
+            hop_size: self.config.hop_size,
+            sample_rate: self.config.sample_rate,
+            history_length: self.config.history_length,
+            reset: std::mem::take(&mut self.reset),
+            reassigned_power_scale: self.reassigned_power_scale,
+            new_columns: cols,
+        })
     }
 
     pub fn update_config(&mut self, mut cfg: SpectrogramConfig) {

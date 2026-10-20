@@ -80,34 +80,30 @@ impl Primitive for SpectrogramParams {
         _: &Rectangle,
         vp: &Viewport,
     ) {
-        let params = self;
         let scale_factor = vp.scale_factor();
-        let size = vp.logical_size();
-        let viewport = [size.width, size.height];
         let (frame, prune) = pipeline.cache.advance();
-        let bgls = pipeline.bgls.each_ref();
+        let bgls = &pipeline.bgls;
         let res = pipeline
             .instances
-            .entry(params.key)
-            .or_insert_with(|| Resources::new(device, bgls, params));
-        if res.ring.layout.kind != params.col_kind {
-            *res = Resources::new(device, bgls, params);
+            .entry(self.key)
+            .or_insert_with(|| Resources::new(device, bgls, self));
+        if res.ring.layout.kind != self.col_kind {
+            *res = Resources::new(device, bgls, self);
         }
         res.last_used = frame;
-        res.resize_ring(device, queue, bgls, params);
-        res.resize_accum(device, bgls[0], params, scale_factor);
-        res.upload_pending(queue, params);
-        let mut uniforms = Uniforms::from_params(params, viewport, scale_factor);
+        res.resize_ring(device, queue, bgls, self);
+        res.resize_accum(device, &bgls[0], self, scale_factor);
+        res.upload_pending(queue, self);
+        let mut uniforms = Uniforms::from_params(self, vp.logical_size().into(), scale_factor);
         uniforms.page_slot_mask = (res.ring.layout.page_columns as u32).next_power_of_two() - 1;
         let (old, hl) = (&res.uniform_cache, uniforms.history_length);
-        let columns = params.pending_uploads.len() as u32;
-        let appended = params.copy_plan.is_none()
+        let columns = self.pending_uploads.len() as u32;
+        let appended = self.copy_plan.is_none()
             && uniforms.accumulation_key() == old.accumulation_key()
             && uniforms.col_count == (old.col_count + columns).min(hl)
             && uniforms.newest_col == (old.newest_col + columns) % hl;
         res.plan(&mut uniforms, appended.then_some(columns));
-        let changed = uniforms != res.uniform_cache;
-        if changed {
+        if uniforms != res.uniform_cache {
             queue.write_buffer(&res.uniform_buf, 0, bytemuck::bytes_of(&uniforms));
             res.uniform_cache = uniforms;
         }
@@ -295,7 +291,7 @@ impl Uniforms {
 pub struct Pipeline {
     pipelines: [wgpu::RenderPipeline; 4],
     quads: wgpu::Buffer,
-    bgls: [wgpu::BindGroupLayout; 3],
+    bgls: Bgls,
     instances: HashMap<u64, Resources>,
     cache: CacheTracker,
 }
@@ -307,41 +303,37 @@ impl primitive::Pipeline for Pipeline {
             "Spectrogram shader",
             include_str!("../render/shaders/spectrogram.wgsl"),
         );
+        let entry = |binding, visibility, ty| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility,
+            ty,
+            count: None,
+        };
         let buffer = |ty| wgpu::BindingType::Buffer {
             ty,
             has_dynamic_offset: false,
             min_binding_size: None,
         };
-        let uniform_entry = bgl_entry(0, buffer(wgpu::BufferBindingType::Uniform));
-        let accum_entry = bgl_entry(
-            1,
-            wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                view_dimension: wgpu::TextureViewDimension::D2,
-                multisampled: false,
-            },
-        );
-        let mag_entry = bgl_entry(
-            2,
-            buffer(wgpu::BufferBindingType::Storage { read_only: true }),
-        );
-
-        let points_entry = wgpu::BindGroupLayoutEntry {
-            binding: 3,
-            visibility: wgpu::ShaderStages::VERTEX,
-            ..mag_entry
+        let stages = wgpu::ShaderStages::VERTEX_FRAGMENT;
+        let storage = buffer(wgpu::BufferBindingType::Storage { read_only: true });
+        let accum = wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+            view_dimension: wgpu::TextureViewDimension::D2,
+            multisampled: false,
         };
-        let [resolve_bgl, classic_bgl, points_bgl] = [
-            &[uniform_entry, accum_entry][..],
-            &[uniform_entry, mag_entry][..],
-            &[uniform_entry, points_entry][..],
+        let uniform_entry = entry(0, stages, buffer(wgpu::BufferBindingType::Uniform));
+        let bgls = [
+            entry(1, stages, accum),
+            entry(2, stages, storage),
+            entry(3, wgpu::ShaderStages::VERTEX, storage),
         ]
-        .map(|entries| {
+        .map(|data_entry| {
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Spectrogram BGL"),
-                entries,
+                entries: &[uniform_entry, data_entry],
             })
         });
+        let [resolve_bgl, classic_bgl, points_bgl] = &bgls;
 
         let additive = wgpu::BlendComponent {
             src_factor: wgpu::BlendFactor::One,
@@ -355,7 +347,7 @@ impl primitive::Pipeline for Pipeline {
             topology: wgpu::PrimitiveTopology::TriangleList,
             fragment_entry: "fs_accum",
             buffers: &[],
-            bind_group_layouts: &[&points_bgl],
+            bind_group_layouts: &[points_bgl],
             blend: Some(wgpu::BlendState {
                 color: additive,
                 alpha: additive,
@@ -370,8 +362,6 @@ impl primitive::Pipeline for Pipeline {
             blend: None,
             ..accum_spec
         };
-        let clear_pipeline = create_render_pipeline(device, ACCUM_FORMAT, clear_spec);
-        let accum_pipeline = create_render_pipeline(device, ACCUM_FORMAT, accum_spec);
         let indices: Vec<u32> = (0..QUAD_BATCH)
             .flat_map(|quad| [0, 1, 2, 2, 1, 3].map(|corner| quad * 4 + corner))
             .collect();
@@ -399,39 +389,30 @@ impl primitive::Pipeline for Pipeline {
         };
         Self {
             pipelines: [
-                accum_pipeline,
+                create_render_pipeline(device, ACCUM_FORMAT, accum_spec),
                 pipeline(
                     "Spectrogram resolve pipeline",
                     "vs_resolve",
                     "fs_resolve",
-                    &resolve_bgl,
+                    resolve_bgl,
                 ),
                 pipeline(
                     "Spectrogram classic pipeline",
                     "vs_classic",
                     "fs_classic",
-                    &classic_bgl,
+                    classic_bgl,
                 ),
-                clear_pipeline,
+                create_render_pipeline(device, ACCUM_FORMAT, clear_spec),
             ],
             quads,
-            bgls: [resolve_bgl, classic_bgl, points_bgl],
+            bgls,
             instances: HashMap::new(),
             cache: CacheTracker::default(),
         }
     }
 }
 
-fn bgl_entry(binding: u32, ty: wgpu::BindingType) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-        ty,
-        count: None,
-    }
-}
-
-type Bgls<'a> = [&'a wgpu::BindGroupLayout; 3];
+type Bgls = [wgpu::BindGroupLayout; 3];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RingLayout {
@@ -800,7 +781,7 @@ struct Resources {
 }
 
 impl Resources {
-    fn new(device: &wgpu::Device, bgls: Bgls<'_>, p: &SpectrogramParams) -> Self {
+    fn new(device: &wgpu::Device, bgls: &Bgls, p: &SpectrogramParams) -> Self {
         let uniform_buf = create_buffer(
             device,
             "Spectrogram UB",
@@ -954,7 +935,7 @@ impl Resources {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        bgls: Bgls<'_>,
+        bgls: &Bgls,
         p: &SpectrogramParams,
     ) {
         let binding = u64::from(device.limits().max_storage_buffer_binding_size);
@@ -965,7 +946,7 @@ impl Resources {
             binding,
         ) {
             RingUpdate::Unchanged => {}
-            RingUpdate::ResizePages => self.resize_point_pages(device, queue, bgls[2], p),
+            RingUpdate::ResizePages => self.resize_point_pages(device, queue, &bgls[2], p),
             RingUpdate::Replace { layout, copies } => {
                 // Spans may not survive the replace, and scrolls need them to clear evicted
                 // splats.
@@ -1240,7 +1221,7 @@ fn reach(spans: &[[f32; 2]]) -> f32 {
 
 fn create_ring(
     device: &wgpu::Device,
-    bgls: Bgls<'_>,
+    bgls: &Bgls,
     uniform_buf: &wgpu::Buffer,
     p: &SpectrogramParams,
     layout: RingLayout,
@@ -1252,7 +1233,7 @@ fn create_ring(
                 .slot_counts
                 .chunks(layout.page_columns)
                 .map(|counts| {
-                    PointPage::new(device, bgls[2], uniform_buf, counts, p.points_per_column)
+                    PointPage::new(device, &bgls[2], uniform_buf, counts, p.points_per_column)
                 })
                 .collect();
             RingStorage::Reassigned { pages }
@@ -1264,7 +1245,7 @@ fn create_ring(
                 layout.stride * layout.slots,
                 copy | wgpu::BufferUsages::STORAGE,
             );
-            let bg = make_bind_group(device, bgls[1], uniform_buf, 2, buf.as_entire_binding());
+            let bg = make_bind_group(device, &bgls[1], uniform_buf, 2, buf.as_entire_binding());
             RingStorage::Classic { buf, bg }
         }
     };
