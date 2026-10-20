@@ -2,10 +2,12 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::MAX_CAPTURE_CHANNELS;
-use super::graph::{Channel, Graph, Node, NodeKind, Port, stereo_layout};
+use super::graph::{Channel, Graph, Node, NodeKind, Port};
 use super::stream::StreamConfig;
 use crate::domain::routing::{CaptureConfig, CaptureMode};
 use std::collections::HashSet;
+
+const STEREO_LAYOUT: [Channel; 2] = [Channel::FrontLeft, Channel::FrontRight];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) struct LinkSpec {
@@ -60,7 +62,7 @@ pub(super) fn plan(graph: &Graph, config: &CaptureConfig, tap_id: Option<u32>) -
             if let Some(device) = device {
                 let ports = graph.output_ports(device);
                 let (layout, truncated) = if ports.is_empty() {
-                    (stereo_layout(), 0)
+                    (STEREO_LAYOUT.into(), 0)
                 } else {
                     let (positions, truncated) = port_layout(&ports);
                     (
@@ -78,7 +80,7 @@ pub(super) fn plan(graph: &Graph, config: &CaptureConfig, tap_id: Option<u32>) -
                 };
                 (layout, target, passive, sources, truncated)
             } else {
-                (stereo_layout(), None, true, Vec::new(), 0)
+                (STEREO_LAYOUT.into(), None, true, Vec::new(), 0)
             }
         }
     };
