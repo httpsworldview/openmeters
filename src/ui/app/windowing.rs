@@ -4,9 +4,9 @@
 use super::message::{self, Message};
 use super::{ActiveSettings, UiApp};
 use crate::persistence::settings::{
-    BarAlignment, BarSettings,
+    BarAlignment,
     ChangeOrigin::{Automatic, User},
-    MainWindowSettings, PopoutWindowSettings, clamp_bar_height,
+    MainWindowSettings, PopoutWindowSettings, UiSettings, clamp_bar_height,
 };
 use crate::ui::config::BarChange;
 use crate::ui::visuals::VisualsMessage;
@@ -71,7 +71,7 @@ fn persisted_window_size(size: Size) -> (u32, u32) {
     (size.width.round() as u32, size.height.round() as u32)
 }
 
-pub(super) fn main_window_size(settings: MainWindowSettings) -> Size {
+fn main_window_size(settings: MainWindowSettings) -> Size {
     clamp_window_size(Size::new(settings.width as f32, settings.height as f32))
 }
 
@@ -125,33 +125,33 @@ impl MainWindow {
 }
 
 pub(super) fn open_main_window(
+    settings: &UiSettings,
     use_layershell: bool,
-    bar_settings: BarSettings,
-    base_size: Size,
-    with_decorations: bool,
-    outputs_available: bool,
+    has_bar_outputs: bool,
 ) -> (MainWindow, Task<Message>) {
-    if use_layershell && bar_settings.enabled {
-        if !outputs_available {
+    let bar = &settings.bar;
+    if use_layershell && bar.enabled {
+        if !has_bar_outputs {
             return (MainWindow::Bar(None), Task::none());
         }
-        let height = clamp_bar_height(bar_settings.height);
+        let height = clamp_bar_height(bar.height);
         let (id, task) = message::layershell_open(NewLayerShellSettings {
             size: LayerSize::fill_width(height),
             layer: Layer::Top,
-            anchor: bar_anchor(bar_settings.alignment),
+            anchor: bar_anchor(bar.alignment),
             exclusive_zone: Some(height as i32),
             keyboard_interactivity: KeyboardInteractivity::OnDemand,
-            output_option: bar_settings
+            output_option: bar
                 .monitor
+                .clone()
                 .map(OutputOption::OutputName)
                 .unwrap_or_default(),
             ..Default::default()
         });
         return (MainWindow::Bar(Some(id)), task);
     }
-
-    let (id, task) = open_base_window(use_layershell, base_size, with_decorations);
+    let size = main_window_size(settings.main_window);
+    let (id, task) = open_base_window(use_layershell, size, settings.decorations);
     (MainWindow::Window(id), task)
 }
 
@@ -211,10 +211,7 @@ impl UiApp {
     }
 
     pub(super) fn open_settings_window(&mut self, kind: VisualKind) -> Task<Message> {
-        let previous = self.settings_window.take().map(|(id, mut panel)| {
-            self.close_settings(&mut panel);
-            (id, panel.kind())
-        });
+        let previous = self.take_settings_if(|_| true);
         let panel = ActiveSettings::new(kind, &self.visual_manager);
         if let Some((id, previous_kind)) = previous
             && previous_kind == kind
@@ -316,16 +313,20 @@ impl UiApp {
         });
     }
 
-    fn close_settings(&mut self, panel: &mut ActiveSettings) {
+    /// Takes the settings window if `take` accepts it, committing its unfinished edits.
+    fn take_settings_if(
+        &mut self,
+        take: impl FnOnce(&(window::Id, ActiveSettings)) -> bool,
+    ) -> Option<(window::Id, VisualKind)> {
+        let (id, mut panel) = self.settings_window.take_if(|window| take(window))?;
         panel.commit_edits(&self.visual_manager, &self.settings_handle);
         self.config_page.refresh_theme_choices_if_needed();
+        Some((id, panel.kind()))
     }
 
     pub(super) fn quit(&mut self) -> Task<Message> {
         self.config_page.commit_edits();
-        if let Some((_, mut panel)) = self.settings_window.take() {
-            self.close_settings(&mut panel);
-        }
+        self.take_settings_if(|_| true);
         exit()
     }
 
@@ -345,9 +346,7 @@ impl UiApp {
         if self.config_window.take_if(|window| *window == id).is_some() {
             self.config_page.commit_edits();
         }
-        if let Some((_, mut panel)) = self.settings_window.take_if(|(window, _)| *window == id) {
-            self.close_settings(&mut panel);
-        }
+        self.take_settings_if(|(window, _)| *window == id);
         if let Some(popout) = self.popout_windows.remove(&id) {
             self.dock_popout(popout);
         }
@@ -362,12 +361,8 @@ impl UiApp {
                 .any(|slot| slot.kind == kind && slot.enabled)
         };
         let close_settings_task = self
-            .settings_window
-            .take_if(|(_, panel)| !enabled(panel.kind()))
-            .map(|(id, mut panel)| {
-                self.close_settings(&mut panel);
-                window::close::<Message>(id)
-            });
+            .take_settings_if(|(_, panel)| !enabled(panel.kind()))
+            .map(|(id, _)| window::close::<Message>(id));
         let stale_windows: Vec<_> = self
             .popout_windows
             .extract_if(|_, popout| !enabled(popout.kind))
@@ -496,22 +491,13 @@ impl UiApp {
 
     pub(super) fn recreate_main_window(&mut self) -> Task<Message> {
         let old_main_id = self.main_window.id();
-        let (bar, decorations, size) = {
-            let settings = &self.settings_handle.borrow().data;
-            (
-                settings.bar.clone(),
-                settings.decorations,
-                main_window_size(settings.main_window),
-            )
-        };
         self.config_page.sync_current_bar_output(None);
         self.bar_resize_state = None;
+        let has_bar_outputs = self.config_page.has_bar_outputs();
         let (main_window, open_main) = open_main_window(
+            &self.settings_handle.borrow().data,
             self.use_layershell,
-            bar,
-            size,
-            decorations,
-            self.config_page.has_bar_outputs(),
+            has_bar_outputs,
         );
         self.main_window = main_window;
         Task::batch(std::iter::once(open_main).chain(old_main_id.map(window::close)))

@@ -32,8 +32,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 use windowing::{
-    APP_ID, BarResizeState, MainWindow, PopoutWindow, layershell_available, main_window_size,
-    open_main_window, open_tool_base_window,
+    APP_ID, BarResizeState, MainWindow, PopoutWindow, layershell_available, open_main_window,
+    open_tool_base_window,
 };
 
 const TOAST_DISPLAY_DURATION: Duration = Duration::from_secs(2);
@@ -158,13 +158,8 @@ impl UiApp {
             use_layershell,
         );
         let visuals_page = VisualsPage::new(visual_manager.clone(), settings_handle.clone());
-        let (main_window, open_task) = open_main_window(
-            use_layershell,
-            settings.bar,
-            main_window_size(settings.main_window),
-            settings.decorations,
-            config_page.has_bar_outputs(),
-        );
+        let (main_window, open_task) =
+            open_main_window(&settings, use_layershell, config_page.has_bar_outputs());
         let frames = Rc::new(RefCell::new(FrameCoordinator::new(
             meter_engine,
             settings.visual_frame_rate,

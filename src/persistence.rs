@@ -56,7 +56,7 @@ mod tests {
 pub mod settings {
     pub use super::palette::PaletteSettings;
     pub use super::schema::{
-        BAR_MAX_HEIGHT, BAR_MIN_HEIGHT, BarAlignment, BarSettings, MainWindowSettings,
+        BAR_MAX_HEIGHT, BAR_MIN_HEIGHT, BarAlignment, MainWindowSettings, UiSettings,
         VisualFrameRate, clamp_bar_height,
     };
     pub use super::store::{ChangeOrigin, SettingsHandle};
