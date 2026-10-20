@@ -133,15 +133,11 @@ impl UiApp {
         let settings = settings_handle.borrow().data.clone();
         let theme_file = {
             let guard = settings_handle.borrow();
-            let theme = guard.active_theme();
-            guard
-                .theme_store()
-                .load(theme)
-                .inspect_err(|e| tracing::warn!("[theme] failed to load {theme:?}: {e}"))
+            guard.theme_store().load_or_warn(guard.active_theme())
         };
         let mut manager = VisualManager::default();
         manager.apply_visual_settings(&settings.visuals);
-        if let Ok(theme_file) = theme_file {
+        if let Some(theme_file) = theme_file {
             manager.apply_theme(&theme_file);
         }
         let visuals_active = manager.has_enabled();

@@ -84,6 +84,12 @@ impl ThemeStore {
         Ok(serde_json::from_str(&content)?)
     }
 
+    pub fn load_or_warn(&self, name: &str) -> Option<ThemeFile> {
+        self.load(name)
+            .inspect_err(|e| tracing::warn!("[theme] failed to load {name:?}: {e}"))
+            .ok()
+    }
+
     pub fn save(&self, name: &str, theme: &ThemeFile) -> io::Result<()> {
         let path = self.theme_path(name);
         let json = serde_json::to_string_pretty(theme)?;

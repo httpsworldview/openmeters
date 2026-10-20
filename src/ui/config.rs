@@ -555,13 +555,7 @@ impl ConfigPage {
     }
 
     fn apply_theme(&mut self, name: &str) -> bool {
-        let Ok(theme_file) = self
-            .settings
-            .borrow()
-            .theme_store()
-            .load(name)
-            .inspect_err(|e| tracing::warn!("[theme] failed to load {name:?}: {e}"))
-        else {
+        let Some(theme_file) = self.settings.borrow().theme_store().load_or_warn(name) else {
             return false;
         };
         let palettes_changed = self.visual_manager.borrow_mut().apply_theme(&theme_file);

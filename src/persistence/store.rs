@@ -54,9 +54,7 @@ impl SettingsManager {
         };
         let theme_store = ThemeStore::new(dir);
         let theme_name = data.theme.as_deref().unwrap_or(BUILTIN_THEME);
-        if let Ok(theme_file) = theme_store
-            .load(theme_name)
-            .inspect_err(|e| warn!("[theme] failed to load {theme_name:?}: {e}"))
+        if let Some(theme_file) = theme_store.load_or_warn(theme_name)
             && let Some(bg) = theme_file.background
         {
             data.background_color = Some(bg);
