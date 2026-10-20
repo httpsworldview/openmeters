@@ -383,7 +383,6 @@ impl StableTrigger {
     const MIN_CYCLES: f32 = 2.0;
     const SEARCH_PERIODS: f32 = 1.5;
     const NORMALIZE_FLOOR: f32 = 0.01;
-    const PERIOD_SMOOTHING: f32 = 0.05;
     const BUFFER_SMOOTHING: f32 = 0.03;
     const BUFFER_FALLOFF_PERIODS: f32 = 0.5;
     const BUFFER_RETUNE_SEMITONES: f32 = 1.0;
@@ -454,7 +453,7 @@ impl StableTrigger {
         detected: Option<PeriodEstimate>,
         elapsed: f32,
     ) -> Option<PeriodEstimate> {
-        let Some(mut estimate) = detected else {
+        let Some(estimate) = detected else {
             let period = self.period?;
             self.missed_seconds += elapsed;
             if self.missed_seconds > Self::MAX_MISSED_SECONDS {
@@ -467,14 +466,6 @@ impl StableTrigger {
             });
         };
         self.missed_seconds = 0.0;
-
-        if let Some(prev) = self.period
-            && (0.9..=1.1).contains(&(estimate.period / prev))
-        {
-            let weight = smoothing_weight(elapsed, Self::PERIOD_SMOOTHING);
-            estimate.period = lerp(prev, estimate.period, weight);
-        }
-
         self.period = Some(estimate.period);
         Some(estimate)
     }
