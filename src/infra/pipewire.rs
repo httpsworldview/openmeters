@@ -12,9 +12,8 @@ mod transport;
 #[cfg(test)]
 mod live_tests;
 
-use crate::domain::routing::{CaptureConfig, CaptureMode, StreamIdentity};
-use crate::dsp::ChannelPosition;
-use crate::util::{audio::DEFAULT_SAMPLE_RATE, unpoison};
+use crate::domain::routing::{CaptureConfig, StreamIdentity};
+use crate::util::unpoison;
 use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -117,11 +116,8 @@ impl AudioBackend {
         socket: Option<PathBuf>,
     ) -> io::Result<(Self, CaptureControl, AudioReader)> {
         let (writer, audio) = transport::channel();
-        let (channels, positions) = match config.mode {
-            CaptureMode::Applications => (MAX_CAPTURE_CHANNELS, ChannelPosition::SURROUND),
-            CaptureMode::Device => (2, ChannelPosition::fallback(2)),
-        };
-        writer.publish_format(channels, DEFAULT_SAMPLE_RATE as u32, positions);
+        let initial = policy::plan(&Default::default(), &config, None);
+        writer.publish_layout(&initial.stream.layout);
         let (commands, receiver) = mpsc::channel();
         let public = Arc::new(PublicState::default());
         let control = CaptureControl {

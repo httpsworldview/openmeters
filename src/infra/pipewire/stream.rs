@@ -56,9 +56,7 @@ impl TapStream {
         self.active = None;
         let mut writer = self.writer.borrow_mut();
         writer.clear_format();
-        let layout = &config.layout;
-        let positions = std::array::from_fn(|index| layout.get(index).copied().unwrap_or_default());
-        writer.publish_format(layout.len(), DEFAULT_SAMPLE_RATE as u32, positions);
+        writer.publish_layout(&config.layout);
         writer.set_status(StreamStatus::Starting);
         drop(writer);
         let session = Session::new(self, &config)?;

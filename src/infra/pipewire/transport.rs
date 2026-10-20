@@ -303,7 +303,7 @@ impl CaptureWriter {
         format
     }
 
-    pub(super) fn publish_format(
+    fn publish_format(
         &self,
         channels: usize,
         rate: u32,
@@ -320,6 +320,11 @@ impl CaptureWriter {
             self.shared.notify();
         }
         format
+    }
+
+    pub(super) fn publish_layout(&self, layout: &[ChannelPosition]) {
+        let positions = std::array::from_fn(|index| layout.get(index).copied().unwrap_or_default());
+        self.publish_format(layout.len(), DEFAULT_SAMPLE_RATE as u32, positions);
     }
 
     pub(super) fn mark_reconnect(&self) {
