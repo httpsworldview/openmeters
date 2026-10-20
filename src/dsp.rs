@@ -129,24 +129,6 @@ pub struct AudioBlock<'a> {
     pub(crate) stereo_channels: usize,
 }
 
-fn stereo_indices(channels: usize, positions: [ChannelPosition; MAX_AUDIO_CHANNELS]) -> [usize; 2] {
-    let find = |position| {
-        positions[..channels]
-            .iter()
-            .position(|candidate| *candidate == position)
-    };
-    let explicit_right = find(ChannelPosition::FrontRight);
-    let left = find(ChannelPosition::FrontLeft)
-        .or_else(|| find(ChannelPosition::Mono))
-        .or_else(|| (0..channels).find(|index| Some(*index) != explicit_right))
-        .unwrap_or(0);
-    let right = explicit_right
-        .filter(|index| *index != left)
-        .or_else(|| (0..channels).find(|index| *index != left))
-        .unwrap_or(left);
-    [left, right]
-}
-
 fn stereo_matrix(
     channels: usize,
     positions: [ChannelPosition; MAX_AUDIO_CHANNELS],
@@ -173,10 +155,10 @@ fn stereo_matrix(
             .any(|weights| weights[side] != 0.0)
     };
     match (populated(0), populated(1)) {
+        // No channel maps to either side, so take the first two
         (false, false) => {
-            let [left, right] = stereo_indices(channels, positions);
-            matrix[left][0] = 1.0;
-            matrix[right][1] = 1.0;
+            matrix[0][0] = 1.0;
+            matrix[usize::from(channels > 1)][1] = 1.0;
         }
         (false, true) => matrix
             .iter_mut()
