@@ -118,11 +118,15 @@ mode additionally requires a Wayland compositor that exposes
 
 ### Arch Linux
 
-Install the `openmeters-git` package from the AUR:
+Install `openmeters` or `openmeters-git` from the AUR:
 
 ```bash
-yay -S openmeters-git
+yay -S openmeters      # stable
+yay -S openmeters-git  # development
 ```
+
+> [!NOTE]
+> The stable `openmeters` package is maintained by a third party.
 
 ### Debian
 
