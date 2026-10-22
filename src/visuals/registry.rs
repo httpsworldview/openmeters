@@ -4,9 +4,7 @@
 use super::{
     loudness,
     options::{StereometerMode, WaveformColorMode, WaveformHistoryMode},
-    oscilloscope, palettes,
-    spectrogram::{self, processor::MAX_SPECTROGRAM_HISTORY_COLUMNS},
-    spectrum, stereometer, waveform,
+    oscilloscope, palettes, spectrogram, spectrum, stereometer, waveform,
 };
 pub use crate::domain::visuals::VisualKind;
 use crate::{
@@ -174,7 +172,7 @@ visuals! {
         buffered_signal(has_buffered_signal);
         pre_ingest(p, s) {
             let view_width = s.borrow().view_width;
-            let history_length = (view_width as usize).min(MAX_SPECTROGRAM_HISTORY_COLUMNS);
+            let history_length = view_width as usize;
             let mut cfg = p.config();
             if view_width > 0 && cfg.history_length != history_length {
                 cfg.history_length = history_length;

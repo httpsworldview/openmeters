@@ -26,7 +26,6 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::sync::{Arc, LazyLock};
 
-const SPECTROGRAM_DB_CEILING: f32 = 0.0;
 const SPECTROGRAM_OPACITY: f32 = 0.95;
 const TOOLTIP_SIZE: f32 = 14.0;
 const TOOLTIP_PAD: f32 = 8.0;
@@ -213,7 +212,6 @@ impl SpectrogramState {
     pub fn update_view_settings(&mut self, settings: &SpectrogramSettings) {
         self.settings = settings.clone();
         self.settings.normalize();
-        self.settings.floor_db = self.settings.floor_db.min(SPECTROGRAM_DB_CEILING - 1.0);
     }
 
     pub fn reset_audio(&mut self) {
@@ -435,12 +433,12 @@ fn piano_key_spans(
     ascending: bool,
 ) -> [impl Iterator<Item = (MusicalNote, [f32; 2])>; 2] {
     let (min_f, nyq) = display_axis(sample_rate);
-    let midi_lo = MusicalNote::from_frequency(scale.freq_at(min_f, nyq, uv_range[0]).max(16.0))
+    let midi_lo = MusicalNote::from_frequency(scale.freq_at(min_f, nyq, uv_range[0]))
         .map_or(PIANO_MIDI_LO, |n| (n.midi_number - 1).max(PIANO_MIDI_LO));
     let midi_hi = MusicalNote::from_frequency(scale.freq_at(min_f, nyq, uv_range[1]))
         .map_or(PIANO_MIDI_HI, |n| (n.midi_number + 1).min(PIANO_MIDI_HI));
     let scaled_min = scale.scale(min_f);
-    let scaled_span = (scale.scale(nyq) - scaled_min).max(1e-6);
+    let scaled_span = scale.scale(nyq) - scaled_min;
     let position = move |scaled| {
         let uv = (scaled - scaled_min) / scaled_span;
         let t = (uv - uv_range[0]) / (uv_range[1] - uv_range[0]);

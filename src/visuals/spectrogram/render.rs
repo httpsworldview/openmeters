@@ -240,15 +240,14 @@ impl Uniforms {
         )
     }
 
-    fn from_params(p: &SpectrogramParams, viewport: [f32; 2], scale_factor: f32) -> Self {
+    fn from_params(p: &SpectrogramParams, viewport: [f32; 2], sf: f32) -> Self {
         let freq_lo = p.freq_scale.scale(p.freq_min);
         let freq_hi = p.freq_scale.scale(p.freq_max);
-        let sf = scale_factor.max(1.0);
         let hl = p.ring_capacity;
         let [_, pos1, pos2, pos3, _] = p.stop_positions;
         let [spread0, spread1, spread2, spread3, spread4] = p.stop_spreads;
         Self {
-            freq_axis: [freq_lo, 1.0 / (freq_hi - freq_lo).max(1e-12)],
+            freq_axis: [freq_lo, 1.0 / (freq_hi - freq_lo)],
             freq_scale: p.freq_scale as u32,
             points_per_col: if p.col_kind == ColumnKind::Reassigned {
                 hl.next_power_of_two().trailing_zeros()
@@ -745,8 +744,7 @@ struct Piece {
     // Frame pixel columns, stored one texture width left when `wrapped`.
     px: Range<u32>,
     wrapped: bool,
-    // The right strip is cleared and splats every column reaching it; the rest of the image
-    // keeps its scrolled content and splats only new columns.
+    // The right strip is cleared; the rest of the image keeps its scrolled content.
     clear: bool,
     // Slot runs, oldest first.
     runs: Vec<Range<u32>>,
@@ -1049,12 +1047,11 @@ impl Resources {
             self.accum = None;
             return;
         }
-        let scale = scale_factor.max(1.0);
         let [width, height] = <[f32; 2]>::from(p.turn.frame_size(p.bounds.size()))
-            .map(|value| (value.max(1.0) * scale).ceil() as u32);
+            .map(|value| (value.max(1.0) * scale_factor).ceil() as u32);
         // Room to scroll that many columns past the newest splats, which overhang the view by
-        // up to half a column, the phase, and plan_scroll's slop.
-        let margin = ((RING_MARGIN_COLUMNS + 0.5) * scale).ceil() as u32 + 2;
+        // up to half a column, and the phase.
+        let margin = ((RING_MARGIN_COLUMNS + 0.5) * scale_factor).ceil() as u32 + 2;
         let size = [width + margin, height];
         if self
             .accum
@@ -1137,9 +1134,9 @@ impl Resources {
 // only left of it. It is past zero only when the history budget keeps fewer columns than the
 // view spans, and it never decreases between redraws, as the reach only grows.
 fn image_start(u: &Uniforms, reach: f32) -> f32 {
-    // Rightmost evicted splat edge at any phase, plus plan_scroll's slop.
+    // Rightmost evicted splat edge at any phase.
     let edge = u.extents()[0] + 0.5 - (u.history_length as f32 - reach) * u.scale_factor;
-    (edge + 1.0).ceil().max(0.0)
+    edge.ceil().max(0.0)
 }
 
 // Plans scrolling the accumulation `last` left by `columns` appended columns; None when the
@@ -1182,17 +1179,12 @@ fn plan_scroll(
         })
         .filter(|piece| !piece.px.is_empty())
         .collect();
-    // Only new columns, and old ones young enough to reach the right strip.
-    let reaching = (reach + (ext_x - right as f32 + 1.0) / sf + 1.0).floor() + 1.0;
-    let ages = columns.max(reaching.max(0.0) as u32).min(live);
-    for age in (0..ages).rev() {
+    // Only new columns: the ring margin keeps the right strip past older splats.
+    for age in (0..columns.min(live)).rev() {
         let slot = (u.newest_col + hl - age) % hl;
         let [lo, hi] = spans[slot as usize].map(|edge| ext_x - (age as f32 - edge) * sf);
         for piece in &mut pieces {
-            if (piece.clear || age < columns)
-                && lo <= piece.px.end as f32 + 1.0
-                && hi >= piece.px.start as f32 - 1.0
-            {
+            if lo <= piece.px.end as f32 && hi >= piece.px.start as f32 {
                 match piece.runs.last_mut() {
                     Some(run) if run.end == slot => run.end += 1,
                     _ => piece.runs.push(slot..slot + 1),
@@ -1274,13 +1266,9 @@ mod tests {
 
     #[test]
     fn pages_and_tags_fit_the_history_budget() {
-        use super::super::processor::{MAX_SPECTROGRAM_HISTORY_COLUMNS, history_columns};
+        use super::super::processor::history_columns;
         for bins in 1..=(crate::util::audio::MAX_DSP_BUFFER_LEN / 2 + 1) as u32 {
-            let capacity = history_columns(
-                ColumnKind::Reassigned,
-                bins,
-                MAX_SPECTROGRAM_HISTORY_COLUMNS,
-            ) as u32;
+            let capacity = history_columns(ColumnKind::Reassigned, bins, u32::MAX as usize) as u32;
             let shift = capacity.next_power_of_two().trailing_zeros();
             let mask = capacity.next_power_of_two() - 1;
             let tag = page_tag(capacity - 1, bins, shift);
@@ -1307,7 +1295,7 @@ mod tests {
         // Reassigned splats end at most half a column right of their own (processor
         // time_support).
         let reach = 0.5;
-        for sf in [1.0, 1.25, 1.5, 1.75, 2.0, 3.0] {
+        for sf in [0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 3.0] {
             for tenths in 10..20_000 {
                 let width = tenths as f32 / 10.0;
                 let requested = width.round() as usize;

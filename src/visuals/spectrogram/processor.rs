@@ -38,7 +38,6 @@ crate::macros::default_struct! {
 
 const DEFAULT_SPECTROGRAM_FFT_SIZE: usize = 4096;
 const DEFAULT_SPECTROGRAM_HOP_SIZE: usize = 256;
-pub(in crate::visuals) const MAX_SPECTROGRAM_HISTORY_COLUMNS: usize = 8192;
 // Full-column payload budget: classic 1x, reassigned 2x; minimum one column.
 pub(super) const SPECTROGRAM_HISTORY_BYTE_BUDGET: usize = 128 * 1024 * 1024;
 
@@ -79,16 +78,9 @@ struct ReassignmentBuffers {
     spectra: Vec<Complex32>,
 }
 
-fn resize_trim<T: Clone>(buf: &mut Vec<T>, len: usize, value: T) {
-    buf.resize(len, value);
-    if buf.capacity() > len.saturating_mul(4).max(1) {
-        buf.shrink_to(len);
-    }
-}
-
 pub(super) fn pack_classic_db(db: f32) -> u16 {
     const SCALE: f32 = 65535.0 / CLASSIC_DB_STORE_RANGE;
-    (f64::from((db - CLASSIC_DB_STORE_LO) * SCALE) + 0.5) as u16
+    ((db - CLASSIC_DB_STORE_LO) * SCALE + 0.5) as u16
 }
 
 // Correct coherent-gain power for ENBW and zero-padding after splat accumulation.
@@ -141,17 +133,15 @@ pub(super) fn col_byte_stride(kind: ColumnKind, points: u32) -> u64 {
     }
 }
 
-// Columns past the view that keep evicted splats off it (render.rs image_start), for splats
-// reaching at most half a column right (time_support), the view's width rounding (half a
-// column), and the renderer's phase and slop (1.5 px).
-const REASSIGNED_HISTORY_MARGIN: usize = 3;
+// Columns past the view that keep evicted splats off it (render.rs image_start).
+const REASSIGNED_HISTORY_MARGIN: usize = 2;
 
 pub(super) fn history_columns(kind: ColumnKind, points: u32, requested: usize) -> usize {
     let affordable = SPECTROGRAM_HISTORY_BYTE_BUDGET
         * (1 + usize::from(kind == ColumnKind::Reassigned))
         / col_byte_stride(kind, points).max(1) as usize;
     let margin = REASSIGNED_HISTORY_MARGIN * usize::from(kind == ColumnKind::Reassigned);
-    (requested.clamp(1, MAX_SPECTROGRAM_HISTORY_COLUMNS) + margin).min(affordable.max(1))
+    (requested.max(1) + margin).min(affordable.max(1))
 }
 
 pub struct SpectrogramUpdate {
@@ -243,24 +233,24 @@ impl SpectrogramProcessor {
             self.reassign.spectra = vec![Complex32::ZERO; self.fft_size * 3];
             self.reassigned_power_scale = reassigned_power_scale(&self.window, self.fft_size);
             let scratch_len = ffts.iter().map(|fft| fft.get_inplace_scratch_len()).max();
-            resize_trim(&mut self.real, 0, 0.0);
-            resize_trim(&mut self.complex, hilbert_len, Complex32::ZERO);
-            resize_trim(&mut self.scratch, scratch_len.unwrap_or(0), Complex32::ZERO);
+            self.real = Vec::new();
+            self.complex = vec![Complex32::ZERO; hilbert_len];
+            self.scratch = vec![Complex32::ZERO; scratch_len.unwrap_or(0)];
             (Transforms::Reassigned(ffts), hilbert_len)
         } else {
             self.reassign = ReassignmentBuffers::default();
             self.reassigned_power_scale = 1.0;
             let fft = RealFftPlanner::new().plan_fft_forward(self.fft_size);
-            resize_trim(&mut self.real, self.fft_size, 0.0);
-            resize_trim(&mut self.complex, self.fft_size / 2 + 1, Complex32::ZERO);
-            resize_trim(&mut self.scratch, fft.get_scratch_len(), Complex32::ZERO);
+            self.real = vec![0.0; self.fft_size];
+            self.complex = vec![Complex32::ZERO; self.fft_size / 2 + 1];
+            self.scratch = vec![Complex32::ZERO; fft.get_scratch_len()];
             (Transforms::Classic(fft), self.fft_size)
         };
         self.transforms = Some(transforms);
         let buffered_len = active_len.saturating_mul(2);
         self.drain_audio(self.audio_buffer.len().saturating_sub(buffered_len));
         self.pending_skip_samples = 0;
-        self.shrink_audio_buffer(buffered_len);
+        self.audio_buffer.shrink_to(buffered_len);
     }
 
     fn process_ready_windows(&mut self) -> Vec<SpectrogramColumn> {
@@ -346,15 +336,7 @@ impl SpectrogramProcessor {
             output.push(col);
             self.advance_audio(hop_size);
         }
-        self.shrink_audio_buffer(read_len.saturating_mul(4));
         output
-    }
-
-    fn shrink_audio_buffer(&mut self, target: usize) {
-        let target = target.max(self.audio_buffer.len());
-        if self.audio_buffer.capacity() > target.saturating_mul(4).max(1) {
-            self.audio_buffer.shrink_to(target);
-        }
     }
 
     fn drain_audio(&mut self, count: usize) {
@@ -528,9 +510,6 @@ fn apply_complex_window(analytic: &[Complex32], window: &[f32], output: &mut [Co
 
 fn compute_derivative_spectral(planner: &mut FftPlanner<f32>, window: &[f32]) -> Vec<f32> {
     let n = window.len();
-    if n <= 1 {
-        return vec![0.0; n];
-    }
     let fwd = planner.plan_fft_forward(n);
     let inv = planner.plan_fft_inverse(n);
 
@@ -566,11 +545,7 @@ fn compute_time_weighted(window: &[f32]) -> (Vec<f32>, [f32; 2]) {
         .fold((0.0, 0.0), |(m, s), (i, &w)| {
             (m + i as f64 * f64::from(w), s + f64::from(w))
         });
-    let center = if sum == 0.0 {
-        (window.len() - 1) as f32 * 0.5
-    } else {
-        (weighted / sum) as f32
-    };
+    let center = (weighted / sum) as f32;
     let weighted = window
         .iter()
         .enumerate()
@@ -861,7 +836,7 @@ mod tests {
         let points = (16_384 * 32 / 2 + 1) as u32;
         let packed_stride = points.div_ceil(2) as usize * std::mem::size_of::<u32>();
         assert_eq!(
-            history_columns(ColumnKind::Classic, points, MAX_SPECTROGRAM_HISTORY_COLUMNS),
+            history_columns(ColumnKind::Classic, points, u32::MAX as usize),
             SPECTROGRAM_HISTORY_BYTE_BUDGET / packed_stride
         );
         assert_eq!(history_columns(ColumnKind::Classic, 100_000_000, 1), 1);

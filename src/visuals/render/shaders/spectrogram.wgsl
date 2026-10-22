@@ -237,17 +237,17 @@ fn fs_classic(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> 
     let bin1 = min(bin0 + 1u, max_bin);
     var mag = mix(unpack_mag(slot, bin0), unpack_mag(slot, bin1), fract(bin_f));
     // dB/octave tilt relative to 1 kHz. Do not lift floor bins.
-    if u.tilt_db != 0.0 && !(mag > DB_ANALYSIS_FLOOR + DB_FLOOR_EPS) {
-        return vec4<f32>(0.0);
-    }
-    if u.tilt_db != 0.0 && freq_hz > 0.0 {
+    if u.tilt_db != 0.0 {
+        if !(mag > DB_ANALYSIS_FLOOR + DB_FLOOR_EPS) {
+            return vec4<f32>(0.0);
+        }
         mag += u.tilt_db * log2(freq_hz / 1000.0);
     }
     return shade_db(mag);
 }
 
 fn shade_db(mag: f32) -> vec4<f32> {
-    let range = max(-u.floor_db, 0.001);
+    let range = -u.floor_db;
     let level = clamp((mag - u.floor_db) / range, 0.0, 1.0);
 
     // Mix palette stops in sRGB space (web-colors pipeline).
@@ -260,10 +260,10 @@ fn shade_db(mag: f32) -> vec4<f32> {
 @fragment
 fn fs_accum(in: AccumOutput) -> @location(0) vec2<f32> {
     var power = in.power;
-    if u.tilt_db != 0.0 && !(power > ANALYSIS_POWER_EPS) {
-        return vec2<f32>(0.0);
-    }
-    if u.tilt_db != 0.0 && in.freq_hz > 0.0 {
+    if u.tilt_db != 0.0 {
+        if !(power > ANALYSIS_POWER_EPS) {
+            return vec2<f32>(0.0);
+        }
         power *= exp2(u.tilt_db * log2(in.freq_hz / 1000.0) * DB_TO_LOG2);
     }
     return vec2<f32>(power, power * LOW_POWER_SCALE);
@@ -280,5 +280,5 @@ fn fs_resolve(in: ResolveOutput) -> @location(0) vec4<f32> {
     if power <= 0.0 {
         return vec4<f32>(0.0);
     }
-    return shade_db(max(log(max(power, 1e-20)) * LN_TO_DB, DB_ANALYSIS_FLOOR));
+    return shade_db(max(log(power) * LN_TO_DB, DB_ANALYSIS_FLOOR));
 }
