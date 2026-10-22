@@ -213,15 +213,8 @@ Fedora, and tarball artifacts.
 
 ## Configuration
 
-On first launch, all six visuals are enabled and docked in this order:
-spectrogram, spectrum analyzer, waveform, oscilloscope, stereometer,
-and loudness. Refresh follows the main display. Bar mode defaults to
-100px high at the bottom edge on supported Wayland compositors; other
-desktops use a normal window. Saved settings, including disabled
-visuals, take precedence over these defaults.
-
-Application settings are saved to
-`$XDG_CONFIG_HOME/openmeters/settings.json`, or to:
+On first launch, all six visuals are enabled Application settings are
+saved to `$XDG_CONFIG_HOME/openmeters/settings.json`, or to:
 
 ```text
 ~/.config/openmeters/settings.json
@@ -230,17 +223,12 @@ Application settings are saved to
 when `XDG_CONFIG_HOME` is unset.
 
 `settings.json` is intentionally editable. GUI ranges are not hard
-limits; processors normalize only the bare minimum necessary for
-runtime. Unsupported keys or structurally invalid values are logged
-and ignored at the narrowest practical scope.
+limits, but visuals normalize some invalid entries. Unsupported keys
+or structurally invalid values are logged and ignored.
 
 Invalid JSON syntax is ignored and default settings are used for that
 run. Your configuration file will not be overwritten unless you
-explicitly change settings in the GUI. Window resize notifications and
-device discovery alone do not authorize replacing that file. Other
-read errors receive the same protection; a missing file can be created
-normally. Unknown keys are not preserved when the file is next
-written.
+explicitly change settings in the GUI.
 
 If a bug causes OpenMeters to misbehave, you can reset application
 settings by deleting `settings.json`. Please consider reporting the
@@ -249,22 +237,12 @@ bug if you run into this.
 ### Theming
 
 Themes are saved as separate JSON files in
-`$XDG_CONFIG_HOME/openmeters/themes/`, or in:
-
-```text
-~/.config/openmeters/themes/
-```
-
-when `XDG_CONFIG_HOME` is unset. Theme files own palettes and
-background color; `settings.json` stores the selected theme name and
-non-palette module settings.
+`$XDG_CONFIG_HOME/openmeters/themes/`, or in the same alternate
+location as above.
 
 You can create and switch between themes in the **Appearance** section
-of the configuration page. Saving a theme refreshes the list of
-available themes, including any files that appeared in the theme
-directory while OpenMeters was running. The built-in theme is
-read-only in the UI and cannot be overwritten. Feel free to share
-custom themes by sharing the corresponding JSON files.
+of the configuration page. Feel free to share custom themes by sharing
+the corresponding JSON files.
 
 ## Frequently Asked Questions
 
