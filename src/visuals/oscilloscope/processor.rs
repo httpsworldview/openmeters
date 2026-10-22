@@ -16,11 +16,11 @@ pub(in crate::visuals::oscilloscope) const TRACE_COUNT: usize = 2;
 
 fn parabolic_refine(y_prev: f32, y_curr: f32, y_next: f32, tau: usize) -> f32 {
     let denom = (y_prev - y_curr) + (y_next - y_curr);
-    if denom == 0.0 || !denom.is_finite() {
+    if denom == 0.0 {
         return tau as f32;
     }
     let delta = 0.5 * (y_prev - y_next) / denom;
-    (tau as f32 + delta.clamp(-1.0, 1.0)).max(1.0)
+    (tau as f32 + delta).max(1.0)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,11 +93,6 @@ impl PeriodEstimator {
     const MAX_ANALYSIS_RATE: f32 = 128_000.0;
 
     fn estimate_period(&mut self, samples: &[f32], rate: f32) -> Option<f32> {
-        self.last_peak = 0.0;
-        if samples.len() < 3 {
-            return None;
-        }
-
         let (chunks, remainder) = samples.as_chunks::<4>();
         let mut sums = [0.0_f64; 4];
         let mut minima = [f32::INFINITY; 4];
@@ -196,11 +191,7 @@ impl PeriodEstimator {
             periodicity.iter_mut().zip(&fft.input).zip(energies)
         {
             let denom = left + (total_energy - right);
-            *value = if denom > 0.0 {
-                (2.0 * f64::from(autocorrelation) * norm / denom) as f32
-            } else {
-                0.0
-            };
+            *value = (2.0 * f64::from(autocorrelation) * norm / denom) as f32;
         }
     }
 }
@@ -208,8 +199,7 @@ impl PeriodEstimator {
 fn trigger_kernel_len(period: f32, rate: f32) -> usize {
     (rate * StableTrigger::WINDOW_SECONDS)
         .max(period * StableTrigger::MIN_CYCLES)
-        .round()
-        .max(2.0) as usize
+        .round() as usize
 }
 
 fn gaussian(len: usize, index: usize, std: f32) -> f32 {
@@ -274,11 +264,11 @@ fn normalized_correlation(
     }
     let n = x.len() as f64;
     let dot = (-sum_x / n).mul_add(sum_y, sum_xy);
-    let energy_x = (-sum_x / n).mul_add(sum_x, sum_xx).max(0.0);
-    let energy_y = (-sum_y / n).mul_add(sum_y, sum_yy).max(0.0);
+    let energy_x = (-sum_x / n).mul_add(sum_x, sum_xx);
+    let energy_y = (-sum_y / n).mul_add(sum_y, sum_yy);
     let denom = (energy_x * energy_y).sqrt();
     if denom > f64::EPSILON {
-        (dot / denom).clamp(-1.0, 1.0) as f32
+        (dot / denom) as f32
     } else {
         0.0
     }
@@ -339,9 +329,7 @@ impl StableTrigger {
 
     fn unlock(&mut self) {
         self.period = None;
-        self.missed_seconds = 0.0;
         self.reference.clear();
-        self.reference_period = 0.0;
     }
 
     fn capture(
@@ -354,9 +342,7 @@ impl StableTrigger {
         elapsed: f32,
     ) -> Capture {
         let probe = &trace[trace.len() - probe_frames.min(trace.len())..];
-        let factor = (sample_rate / PeriodEstimator::MAX_ANALYSIS_RATE)
-            .ceil()
-            .max(1.0) as usize;
+        let factor = (sample_rate / PeriodEstimator::MAX_ANALYSIS_RATE).ceil() as usize;
         let probe = if factor > 1 {
             self.work.clear();
             self.work.extend(
@@ -382,7 +368,7 @@ impl StableTrigger {
                 self.locate(trace, period, fresh, cycles, sample_rate, elapsed)
             })
             .unwrap_or_else(|| Capture {
-                span: fallback_frames.saturating_sub(1).max(1) as f32,
+                span: fallback_frames.saturating_sub(1) as f32,
                 start: trace.len().saturating_sub(fallback_frames),
                 frac_offset: 0.0,
             })
@@ -414,9 +400,8 @@ impl StableTrigger {
         rate: f32,
         elapsed: f32,
     ) -> Option<Capture> {
-        let period = period.max(1.0);
-        let span = period * cycles.max(1) as f32;
-        let frames = (span.ceil() as usize).checked_add(1)?;
+        let span = period * cycles as f32;
+        let frames = span.ceil() as usize + 1;
         let len = trigger_kernel_len(period, rate);
         let before = len / 2;
         let after = len - before;
@@ -425,15 +410,11 @@ impl StableTrigger {
             return None;
         }
 
-        let search = ((period * Self::SEARCH_PERIODS).round() as usize)
-            .max(1)
-            .min(right - before);
+        let search = ((period * Self::SEARCH_PERIODS).round() as usize).min(right - before);
         let left = right - search;
         let window = &trace[left - before..right + after];
         self.retune_reference(len, period);
-
-        let use_reference = self.reference.iter().any(|sample| sample.abs() > 1.0e-3);
-        self.prepare_template(period, use_reference);
+        self.prepare_template(period);
         let (offset, mut frac_offset) = self.find_best(window, search, period);
         if fresh {
             self.write_candidate(&window[offset..offset + len], period);
@@ -452,20 +433,18 @@ impl StableTrigger {
         })
     }
 
-    fn prepare_template(&mut self, period: f32, use_reference: bool) {
+    fn prepare_template(&mut self, period: f32) {
         let len = self.reference.len();
         self.candidate.resize(len, 0.0);
-        let width = (Self::SLOPE_WIDTH_PERIODS * period).max(1.0);
+        let width = Self::SLOPE_WIDTH_PERIODS * period;
         for i in 0..len.div_ceil(2) {
             let mirror = len - 1 - i;
             let weight = gaussian(len, i, width);
             self.candidate[i] = -weight;
             self.candidate[mirror] = weight;
         }
-        if use_reference {
-            for (candidate, &reference) in self.candidate.iter_mut().zip(&self.reference) {
-                *candidate += reference;
-            }
+        for (candidate, &reference) in self.candidate.iter_mut().zip(&self.reference) {
+            *candidate += reference;
         }
     }
 
@@ -487,9 +466,7 @@ impl StableTrigger {
             }
             scores[offset]
         };
-        let stride = ((period / 16.0).round() as usize)
-            .clamp(1, 128)
-            .min(search.max(1));
+        let stride = ((period / 16.0).round() as usize).clamp(1, 128);
         let mut best = (0, f32::NEG_INFINITY);
         for offset in (0..=search).rev().step_by(stride).chain([0]) {
             let score = score_at(offset);
@@ -558,7 +535,7 @@ impl StableTrigger {
             *dst = sample;
         }
         let scale = 1.0 / peak.max(f32::EPSILON);
-        let std = (period * Self::BUFFER_FALLOFF_PERIODS).max(1.0);
+        let std = period * Self::BUFFER_FALLOFF_PERIODS;
         let len = self.candidate.len();
         for i in 0..len.div_ceil(2) {
             let mirror = len - 1 - i;
@@ -582,7 +559,7 @@ fn find_rising_zero_crossing(
         let (lo, hi) = (previous.min(current), previous.max(current));
         let (&a, &b) = samples.get(lo).zip(samples.get(hi))?;
         if a <= 0.0 && b > 0.0 {
-            return Some((lo, (-a / (b - a)).clamp(0.0, 1.0) * (hi - lo) as f32));
+            return Some((lo, -a / (b - a) * (hi - lo) as f32));
         }
         previous = current;
     }
@@ -665,7 +642,7 @@ impl OscilloscopeProcessor {
         let probe_frames = max_period * 2;
         let mut mode = self.config.trigger_mode;
         let trigger_frames = match &mut mode {
-            TriggerMode::ZeroCrossing => base_frames + max_period,
+            TriggerMode::ZeroCrossing => base_frames + max_period + 1,
             TriggerMode::Stable { num_cycles } => {
                 let (frames, bounded_cycles) =
                     stable_history_frames(max_period, *num_cycles, self.config.sample_rate);
@@ -674,10 +651,7 @@ impl OscilloscopeProcessor {
             }
         };
         let trigger_source = self.config.trigger_source;
-        let history_frames = probe_frames
-            .max(base_frames)
-            .max(trigger_frames)
-            .min(MAX_DSP_BUFFER_LEN);
+        let history_frames = base_frames.max(trigger_frames).min(MAX_DSP_BUFFER_LEN);
         let sample_rate = self.config.sample_rate;
         let elapsed = block.duration();
         let capture = |trace: &[f32], trigger: &mut StableTrigger| {
@@ -794,7 +768,6 @@ impl OscilloscopeProcessor {
 }
 
 fn stable_history_frames(max_period: usize, cycles: usize, sample_rate: f32) -> (usize, usize) {
-    let max_period = max_period.max(1);
     let max_period_f = max_period as f32;
     let max_kernel = trigger_kernel_len(max_period_f, sample_rate);
     let max_search = (max_period_f * StableTrigger::SEARCH_PERIODS).ceil() as usize;
@@ -803,11 +776,8 @@ fn stable_history_frames(max_period: usize, cycles: usize, sample_rate: f32) -> 
         .saturating_sub(fixed_frames)
         .saturating_sub(1)
         / max_period;
-    let cycles = cycles.clamp(1, max_cycles.max(1));
-    let max_tail = max_period
-        .saturating_mul(cycles)
-        .saturating_add(1)
-        .max(max_kernel.div_ceil(2));
+    let cycles = cycles.clamp(1, max_cycles);
+    let max_tail = max_period.saturating_mul(cycles).saturating_add(1);
     (
         fixed_frames
             .saturating_add(max_tail)
@@ -1137,13 +1107,13 @@ mod tests {
             reference_period: period,
             ..Default::default()
         };
-        trigger.prepare_template(period, false);
+        trigger.prepare_template(period);
         let edge_template = trigger.candidate.clone();
         let segment: Vec<_> = (0..17).map(|i| (i as f32 * 0.7).sin()).collect();
         trigger.write_candidate(&segment, period);
         assert_ne!(trigger.candidate, edge_template);
 
-        trigger.prepare_template(period, false);
+        trigger.prepare_template(period);
         assert_eq!(trigger.candidate, edge_template);
     }
 
