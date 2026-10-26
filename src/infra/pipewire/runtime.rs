@@ -240,6 +240,7 @@ struct CaptureState {
     dirty: Rc<Cell<bool>>,
     stream_retry_at: Option<Instant>,
     stream_retry_delay: Duration,
+    paused_since: Option<Instant>,
     reported_truncation: usize,
 }
 
@@ -255,6 +256,7 @@ impl CaptureState {
             dirty,
             stream_retry_at: None,
             stream_retry_delay: RESOURCE_RETRY_MIN,
+            paused_since: None,
             reported_truncation: 0,
         }
     }
@@ -278,9 +280,19 @@ impl CaptureState {
         public: &PublicState,
         now: Instant,
     ) {
-        match self.tap.status() {
-            Some(StreamStatus::Paused | StreamStatus::Streaming) => {
-                self.stream_retry_delay = RESOURCE_RETRY_MIN;
+        let status = self.tap.status();
+        if status != Some(StreamStatus::Paused) {
+            self.paused_since = None;
+        }
+        match status {
+            // Paused only means the server accepted the node; the session manager may still
+            // reject its target, so it proves the retry only once it outlasts the backoff.
+            Some(StreamStatus::Streaming) => self.stream_retry_delay = RESOURCE_RETRY_MIN,
+            Some(StreamStatus::Paused) => {
+                let since = *self.paused_since.get_or_insert(now);
+                if now.duration_since(since) >= self.stream_retry_delay {
+                    self.stream_retry_delay = RESOURCE_RETRY_MIN;
+                }
             }
             Some(StreamStatus::Failed | StreamStatus::Stopped) => {
                 self.owned_links.clear();
@@ -307,6 +319,7 @@ impl CaptureState {
 
         if self.tap.config() != Some(&plan.stream) {
             self.owned_links.clear();
+            self.paused_since = None;
             if let Err(err) = self.tap.configure(plan.stream.clone()) {
                 error!("[capture] stream reconfiguration failed: {err}");
                 self.defer_stream_retry(now);
@@ -578,12 +591,8 @@ mod tests {
         let deadline = now + RESOURCE_RETRY_MIN;
         capture.stream_retry_at = Some(deadline);
         let initial = public.view();
-        capture.reconcile(
-            &graph,
-            &mut config,
-            &public,
-            deadline - Duration::from_nanos(1),
-        );
+        let early = deadline - Duration::from_nanos(1);
+        capture.reconcile(&graph, &mut config, &public, early);
         assert!(capture.dirty.get());
         assert!(capture.tap.config().is_none());
         assert!(Arc::ptr_eq(&initial, &public.view()));
@@ -594,16 +603,39 @@ mod tests {
         assert_eq!(capture.stream_retry_at, None);
         assert!(!Arc::ptr_eq(&initial, &public.view()));
 
-        for status in [StreamStatus::Paused, StreamStatus::Streaming] {
+        for (status, delay) in [
+            (StreamStatus::Paused, Duration::from_secs(8)),
+            (StreamStatus::Streaming, RESOURCE_RETRY_MIN),
+        ] {
             writer.borrow_mut().set_status(status);
             capture.dirty.set(true);
             capture.stream_retry_at = Some(deadline);
             capture.stream_retry_delay = Duration::from_secs(8);
             capture.reconcile(&graph, &mut config, &public, now);
-            assert_eq!(capture.stream_retry_delay, RESOURCE_RETRY_MIN);
+            assert_eq!(capture.stream_retry_delay, delay);
             assert_eq!(capture.stream_retry_at, Some(deadline));
             assert!(capture.dirty.get());
         }
+        // Staying accepted for longer than the backoff proves the retry.
+        writer.borrow_mut().set_status(StreamStatus::Paused);
+        capture.stream_retry_delay = Duration::from_secs(8);
+        for (elapsed, delay) in [(1, 8), (8, 8), (9, 1)] {
+            let at = now + Duration::from_secs(elapsed);
+            capture.reconcile(&graph, &mut config, &public, at);
+            assert_eq!(capture.stream_retry_delay, Duration::from_secs(delay));
+        }
+        // A replacement stream does not inherit the accepted time of the one it replaces, even
+        // when it is accepted before reconcile sees it start.
+        let mut stale = capture.tap.config().cloned().expect("configured tap");
+        stale.passive = !stale.passive;
+        capture.tap.configure(stale).expect("stale tap");
+        writer.borrow_mut().set_status(StreamStatus::Paused);
+        capture.dirty.set(true);
+        capture.reconcile(&graph, &mut config, &public, now + Duration::from_secs(10));
+        writer.borrow_mut().set_status(StreamStatus::Paused);
+        capture.stream_retry_delay = Duration::from_secs(8);
+        capture.reconcile(&graph, &mut config, &public, now + Duration::from_secs(11));
+        assert_eq!(capture.stream_retry_delay, Duration::from_secs(8));
         for status in [StreamStatus::Failed, StreamStatus::Stopped] {
             let published = public.view();
             capture.owned_links.retry_at.set(Some(now));
