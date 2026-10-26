@@ -10,6 +10,7 @@ use crate::domain::routing::CaptureConfig;
 use pipewire as pw;
 use pw::metadata::{Metadata, MetadataListener};
 use pw::properties::properties;
+use pw::proxy::ProxyT as _;
 use pw::registry::{GlobalObject, RegistryRc};
 use pw::spa::utils::dict::DictRef;
 use pw::types::ObjectType;
@@ -352,6 +353,7 @@ struct OwnedLinks {
     dirty: Rc<Cell<bool>>,
     retry_at: Rc<Cell<Option<Instant>>>,
     retry_delay: Rc<Cell<Duration>>,
+    established_since: Rc<Cell<Option<Instant>>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -364,6 +366,7 @@ enum OwnedLinkState {
 struct OwnedLink {
     state: Rc<Cell<OwnedLinkState>>,
     _listener: pw::link::LinkListener,
+    _removed: pw::proxy::ProxyListener,
     _proxy: pw::link::Link,
 }
 
@@ -376,6 +379,7 @@ impl OwnedLinks {
             dirty,
             retry_at: Rc::default(),
             retry_delay: Rc::new(Cell::new(RESOURCE_RETRY_MIN)),
+            established_since: Rc::default(),
         }
     }
 
@@ -384,6 +388,7 @@ impl OwnedLinks {
         self.desired.clear();
         self.retry_at.set(None);
         self.retry_delay.set(RESOURCE_RETRY_MIN);
+        self.established_since.set(None);
     }
 
     fn retry_due(&self, now: Instant) -> bool {
@@ -405,10 +410,13 @@ impl OwnedLinks {
                 .values()
                 .all(|link| link.state.get() == OwnedLinkState::Established)
         {
-            self.retry_at.set(None);
-            self.retry_delay.set(RESOURCE_RETRY_MIN);
-        } else if self.retry_at.get().is_some_and(|deadline| now < deadline) {
-            return;
+            let since = self.established_since.get().unwrap_or(now);
+            self.established_since.set(Some(since));
+        } else {
+            self.established_since.set(None);
+            if self.retry_at.get().is_some_and(|deadline| now < deadline) {
+                return;
+            }
         }
         self.retry_at.set(None);
         for spec in self.desired.iter().copied() {
@@ -430,36 +438,57 @@ impl OwnedLinks {
             {
                 Ok(link) => {
                     let state = Rc::new(Cell::new(OwnedLinkState::Pending));
-                    let listener_state = Rc::clone(&state);
-                    let dirty = Rc::clone(&self.dirty);
-                    let retry_at = Rc::clone(&self.retry_at);
-                    let retry_delay = Rc::clone(&self.retry_delay);
-                    let listener = link
-                        .add_listener_local()
-                        .info(move |info| {
-                            let message = match info.state() {
-                                pw::link::LinkState::Paused | pw::link::LinkState::Active => {
-                                    listener_state.set(OwnedLinkState::Established);
-                                    dirty.set(true);
-                                    return;
-                                }
-                                pw::link::LinkState::Error(message) => Some(message),
-                                pw::link::LinkState::Unlinked => None,
-                                _ => return,
-                            };
-                            listener_state.set(OwnedLinkState::Failed);
+                    let fail = {
+                        let (state, dirty) = (Rc::clone(&state), Rc::clone(&self.dirty));
+                        let (retry_at, retry_delay) =
+                            (Rc::clone(&self.retry_at), Rc::clone(&self.retry_delay));
+                        let established_since = Rc::clone(&self.established_since);
+                        Rc::new(move |reason: Option<&str>| {
+                            state.set(OwnedLinkState::Failed);
                             dirty.set(true);
-                            let report = defer_retry(&retry_at, &retry_delay, Instant::now());
-                            if let Some(message) = message
-                                && report
+                            let now = Instant::now();
+                            // Links someone keeps removing come back between removals; they
+                            // prove the retry only once they outlast the backoff.
+                            if established_since
+                                .take()
+                                .is_some_and(|since| now.duration_since(since) >= retry_delay.get())
                             {
-                                error!("[pipewire] link failed {spec:?}: {message}");
+                                retry_delay.set(RESOURCE_RETRY_MIN);
+                            }
+                            let retry = defer_retry(&retry_at, &retry_delay, now);
+                            match reason {
+                                Some(reason) if retry => {
+                                    error!("[pipewire] link failed {spec:?}: {reason}");
+                                }
+                                // Also what a captured stream's end does to its links.
+                                None => tracing::debug!("[pipewire] link removed {spec:?}"),
+                                Some(_) => {}
                             }
                         })
+                    };
+                    let (listener_state, dirty) = (Rc::clone(&state), Rc::clone(&self.dirty));
+                    let on_error = Rc::clone(&fail);
+                    let listener = link
+                        .add_listener_local()
+                        .info(move |info| match info.state() {
+                            pw::link::LinkState::Paused | pw::link::LinkState::Active => {
+                                listener_state.set(OwnedLinkState::Established);
+                                dirty.set(true);
+                            }
+                            pw::link::LinkState::Error(message) => on_error(Some(message)),
+                            _ => {}
+                        })
+                        .register();
+                    // A link removed by someone else sends no info event, only this.
+                    let removed = link
+                        .upcast_ref()
+                        .add_listener_local()
+                        .removed(move || fail(None))
                         .register();
                     entry.insert(OwnedLink {
                         state,
                         _listener: listener,
+                        _removed: removed,
                         _proxy: link,
                     });
                 }
