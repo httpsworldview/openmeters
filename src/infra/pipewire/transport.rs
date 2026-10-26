@@ -11,7 +11,7 @@ use rtrb::{Consumer, Producer, PushError, RingBuffer};
 use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::ops::Range;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering, fence};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tracing::info;
@@ -133,6 +133,10 @@ impl Shared {
 
     fn fault(&self) {
         self.fault_epoch.fetch_add(1, Ordering::SeqCst);
+        self.wake();
+    }
+
+    fn wake(&self) {
         if self.wake_ingestion() {
             self.notify();
         }
@@ -316,9 +320,7 @@ impl CaptureWriter {
         }
         format.generation = current.generation.saturating_add(1);
         *unpoison(self.shared.format.write()) = format;
-        if self.shared.wake_ingestion() {
-            self.shared.notify();
-        }
+        self.shared.wake();
         format
     }
 
@@ -554,6 +556,9 @@ impl CaptureWriter {
             false
         } else {
             self.overflowed = false;
+            // The reader may have checked the ring and slept while this callback was writing.
+            fence(Ordering::SeqCst);
+            self.shared.wake();
             true
         }
     }
@@ -694,6 +699,8 @@ impl AudioReader {
             return state == IngestState::Dormant as u8;
         }
         self.dormant = true;
+        // With the writer's fence after each push: it sees the sleep, or this sees its packet.
+        fence(Ordering::SeqCst);
         if self.shared.pending_signal.load(Ordering::SeqCst)
             || self.consumer.peek().is_ok()
             || self.fault_epoch != self.shared.fault_epoch.load(Ordering::SeqCst)
