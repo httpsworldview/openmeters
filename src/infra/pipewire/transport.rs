@@ -28,6 +28,8 @@ const PCM_FLUSH_SAMPLES: usize = BLOCK_SAMPLES * 4;
 const PACKET_FLUSH_INTERVAL: Duration = Duration::from_millis(50);
 // Minimum grace for packet continuity and inferred streaming silence.
 const IDLE_WATCHDOG: Duration = Duration::from_millis(100);
+// Device and system clocks drift apart; continuous packets follow the latter within this.
+const CLOCK_DRIFT_LIMIT: Duration = Duration::from_millis(10);
 
 fn packet_frame_limit(rate: u64) -> usize {
     (u128::from(rate) * PACKET_FLUSH_INTERVAL.as_nanos() / 1_000_000_000)
@@ -230,6 +232,8 @@ struct Packet {
     format: AudioFormat,
     epoch: u64,
     timeline: Range<u64>,
+    // Continues the previous packet, re-anchored to the system clock.
+    rebased: bool,
 }
 
 pub(super) struct CaptureWriter {
@@ -244,6 +248,7 @@ pub(super) struct CaptureWriter {
     pool_limit: usize,
     activity_epoch: u64,
     previous_timing: Range<u64>,
+    rebase: bool,
     disconnected: bool,
     overflowed: bool,
 }
@@ -482,13 +487,9 @@ impl CaptureWriter {
                 format,
                 epoch: self.activity_epoch,
                 timeline: start..start,
+                rebased: std::mem::take(&mut self.rebase),
             });
-        } else if pcm
-            && self
-                .pending
-                .as_ref()
-                .is_some_and(|packet| packet.samples.is_none())
-        {
+        } else if pcm && matches!(self.pending, Some(Packet { samples: None, .. })) {
             let Some(mut samples) = self.take_samples() else {
                 self.discard_pending();
                 return false;
@@ -584,10 +585,14 @@ impl CaptureWriter {
         let continuous = self.previous_timing.end != 0
             && now.saturating_sub(self.previous_timing.start) <= watchdog
             && self.previous_timing.end.abs_diff(now) <= watchdog;
-        let start = if continuous {
+        let clock_start = now.saturating_sub(duration);
+        let start = if continuous
+            && self.previous_timing.end.abs_diff(clock_start) <= nanos(CLOCK_DRIFT_LIMIT)
+        {
             self.previous_timing.end
         } else {
-            now.saturating_sub(duration)
+            self.rebase = continuous;
+            clock_start
         };
         self.previous_timing = now..start.saturating_add(duration);
         (start, self.previous_timing.end)
@@ -764,26 +769,22 @@ impl AudioReader {
             frames,
             format,
             timeline,
+            rebased,
             ..
         } = packet;
         self.switch(format, consume);
-        if std::mem::take(&mut self.align_next_packet) {
+        if std::mem::take(&mut self.align_next_packet) || rebased {
             self.cursor = timeline.start;
         }
-        let gap = (timeline.start > self.cursor)
-            .then(|| ns_frames(timeline.start - self.cursor, format.rate()));
-        let skip = if self.cursor > timeline.start {
-            ns_frames_ceil(
-                self.cursor.min(timeline.end) - timeline.start,
-                format.rate(),
-            )
-            .min(frames)
-        } else {
-            0
-        };
+        let gap = ns_frames(timeline.start.saturating_sub(self.cursor), format.rate());
+        let skip = ns_frames_ceil(
+            self.cursor.min(timeline.end).saturating_sub(timeline.start),
+            format.rate(),
+        )
+        .min(frames);
         self.cursor = self.cursor.max(timeline.end);
 
-        if let Some(gap) = gap.filter(|frames| *frames > 0) {
+        if gap > 0 {
             self.flush(consume);
             consume(CapturedSpan::Silence {
                 frames: gap,
@@ -870,6 +871,7 @@ fn channel_with_capacity(capacity: usize) -> (CaptureWriter, AudioReader) {
             pool_limit: 0,
             activity_epoch: 0,
             previous_timing: 0..0,
+            rebase: false,
             disconnected: false,
             overflowed: false,
         },
@@ -908,6 +910,7 @@ mod tests {
             format,
             epoch: 0,
             timeline: start..start + frames_ns(frames, format.rate()),
+            rebased: false,
         }
     }
 
