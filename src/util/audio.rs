@@ -70,7 +70,8 @@ pub fn fmt_freq(frequency: f32) -> String {
 }
 
 pub fn fmt_duration(seconds: f32) -> String {
-    if seconds < 60.0 {
+    // Anything that would print as 60.00s takes the minute form.
+    if seconds < 59.995 {
         return format!("{seconds:.2}s");
     }
     let seconds = seconds.round() as u64;
