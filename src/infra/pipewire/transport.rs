@@ -251,6 +251,7 @@ pub(super) struct CaptureWriter {
 impl CaptureWriter {
     pub(super) fn set_status(&mut self, status: StreamStatus) {
         if status != StreamStatus::Streaming {
+            self.drop_stale_pending();
             self.flush_pending();
         }
         self.shared.status.store(status as u8, Ordering::Release);
@@ -267,6 +268,7 @@ impl CaptureWriter {
     }
 
     pub(super) fn clear_format(&mut self) {
+        self.drop_stale_pending();
         self.flush_pending();
         self.format = None;
         self.clear_pool();
@@ -298,6 +300,7 @@ impl CaptureWriter {
         rate: u32,
         positions: [ChannelPosition; MAX_CAPTURE_CHANNELS],
     ) -> AudioFormat {
+        self.drop_stale_pending();
         self.flush_pending();
         let format = self.publish_format(channels, rate, positions);
         if self.format.replace(format) != Some(format) {
@@ -343,6 +346,7 @@ impl CaptureWriter {
                 self.push_frames(format, frames, true, |samples| samples.fill(0.0));
                 return;
             }
+            self.drop_stale_pending();
             wake |= signal && self.shared.wake_ingestion();
 
             let previous_timing = self.previous_timing.clone();
@@ -535,6 +539,16 @@ impl CaptureWriter {
             } else {
                 self.retired.push(samples);
             }
+        }
+    }
+
+    // A dormant reader has skipped the quiet audio still pending; queuing it later would put
+    // stale audio ahead of the signal that wakes the reader.
+    fn drop_stale_pending(&mut self) {
+        if self.shared.ingest() == IngestState::Dormant
+            && !self.shared.pending_signal.load(Ordering::SeqCst)
+        {
+            self.discard_pending();
         }
     }
 
