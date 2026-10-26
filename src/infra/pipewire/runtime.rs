@@ -177,7 +177,11 @@ fn run_session(
                     "PipeWire core error: object={id}, sequence={sequence}, result={result}, message={message}"
                 );
                 error!("[pipewire] {detail}");
-                if id == pw::core::PW_ID_CORE && fatal.borrow().is_none() {
+                // Requests that race a destroyed object report "unknown resource" on the core,
+                // harmlessly; any other core error, such as a lost connection, ends the session.
+                let race = std::io::Error::from_raw_os_error(result.wrapping_neg()).kind()
+                    == std::io::ErrorKind::NotFound;
+                if id == pw::core::PW_ID_CORE && !race && fatal.borrow().is_none() {
                     *fatal.borrow_mut() = Some(detail);
                 }
             })
