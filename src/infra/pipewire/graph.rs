@@ -135,8 +135,7 @@ impl Node {
         let name = arc_property(name);
         let description = arc_property(get("node.description")).or_else(|| name.clone());
         let application_name = arc_property(application_name);
-        let device = !bool_property(get("node.virtual"))
-            && application_name.is_none()
+        let device = application_name.is_none()
             && kind != NodeKind::Playback
             && (matches!(kind, NodeKind::Sink | NodeKind::Source)
                 || contains_ascii(media_class.unwrap_or_default(), "audio")
