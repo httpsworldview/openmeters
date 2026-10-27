@@ -63,6 +63,9 @@ channel_positions! {
     "RR" => RearRight => pw::spa::sys::SPA_AUDIO_CHANNEL_RR,
     "SL" => SideLeft => pw::spa::sys::SPA_AUDIO_CHANNEL_SL,
     "SR" => SideRight => pw::spa::sys::SPA_AUDIO_CHANNEL_SR,
+    "FLC" => FrontLeftCenter => pw::spa::sys::SPA_AUDIO_CHANNEL_FLC,
+    "FRC" => FrontRightCenter => pw::spa::sys::SPA_AUDIO_CHANNEL_FRC,
+    "RC" => RearCenter => pw::spa::sys::SPA_AUDIO_CHANNEL_RC,
     "MONO" => Mono => pw::spa::sys::SPA_AUDIO_CHANNEL_MONO,
 }
 

@@ -15,6 +15,9 @@ pub enum ChannelPosition {
     RearRight,
     SideLeft,
     SideRight,
+    FrontLeftCenter,
+    FrontRightCenter,
+    RearCenter,
     Mono,
     Aux(u8),
     #[default]
@@ -137,9 +140,9 @@ fn stereo_matrix(
     let mut matrix = [[0.0; 2]; MAX_AUDIO_CHANNELS];
     for (weights, position) in matrix.iter_mut().zip(positions).take(channels) {
         *weights = match position {
-            ChannelPosition::FrontLeft => [1.0, 0.0],
-            ChannelPosition::FrontRight => [0.0, 1.0],
-            ChannelPosition::FrontCenter => [surround; 2],
+            ChannelPosition::FrontLeft | ChannelPosition::FrontLeftCenter => [1.0, 0.0],
+            ChannelPosition::FrontRight | ChannelPosition::FrontRightCenter => [0.0, 1.0],
+            ChannelPosition::FrontCenter | ChannelPosition::RearCenter => [surround; 2],
             ChannelPosition::RearLeft | ChannelPosition::SideLeft => [surround, 0.0],
             ChannelPosition::RearRight | ChannelPosition::SideRight => [0.0, surround],
             ChannelPosition::Mono => [1.0; 2],

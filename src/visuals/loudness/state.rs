@@ -237,12 +237,14 @@ fn channel_side(
         position
     };
     match position {
-        ChannelPosition::FrontLeft | ChannelPosition::RearLeft | ChannelPosition::SideLeft => {
-            MeterSide::Left
-        }
-        ChannelPosition::FrontRight | ChannelPosition::RearRight | ChannelPosition::SideRight => {
-            MeterSide::Right
-        }
+        ChannelPosition::FrontLeft
+        | ChannelPosition::FrontLeftCenter
+        | ChannelPosition::RearLeft
+        | ChannelPosition::SideLeft => MeterSide::Left,
+        ChannelPosition::FrontRight
+        | ChannelPosition::FrontRightCenter
+        | ChannelPosition::RearRight
+        | ChannelPosition::SideRight => MeterSide::Right,
         _ => MeterSide::Both,
     }
 }

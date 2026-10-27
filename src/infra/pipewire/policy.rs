@@ -172,8 +172,12 @@ pub(super) fn desired_links(graph: &Graph, plan: &Plan, tap: &Node) -> Vec<LinkS
         }
         Channel::resolve_surrounds(&mut positions);
         for (output, channel) in ports.into_iter().zip(positions) {
+            // The tap's 7.1 layout lacks these, so fold them into its nearest speakers.
             let remixed = match channel {
                 Channel::Mono => [Some(Channel::FrontLeft), Some(Channel::FrontRight)],
+                Channel::RearCenter => [Some(Channel::RearLeft), Some(Channel::RearRight)],
+                Channel::FrontLeftCenter => [Some(Channel::FrontLeft), None],
+                Channel::FrontRightCenter => [Some(Channel::FrontRight), None],
                 channel => [Some(channel), None],
             };
             for target in remixed.into_iter().flatten().filter_map(target_for) {
@@ -201,8 +205,9 @@ mod tests {
     use super::*;
     use crate::domain::routing::StreamIdentity;
     use crate::dsp::ChannelPosition::{
-        Aux, FrontCenter as FC, FrontLeft as FL, FrontRight as FR, LowFrequency as LFE,
-        RearLeft as RL, RearRight as RR, SideLeft as SL, SideRight as SR, Unknown,
+        Aux, FrontCenter as FC, FrontLeft as FL, FrontLeftCenter as FLC, FrontRight as FR,
+        FrontRightCenter as FRC, LowFrequency as LFE, RearLeft as RL, RearRight as RR,
+        SideLeft as SL, SideRight as SR, Unknown,
     };
     use pipewire::spa::utils::Direction;
 
@@ -240,6 +245,10 @@ mod tests {
                 Aux(7),
             ],
             &[0, 1, 2, 3, 4, 5, 6, 7],
+        ),
+        (
+            &[FL, FR, FC, LFE, SL, SR, FLC, FRC],
+            &[0, 1, 2, 3, 6, 7, 0, 1],
         ),
         (&[Unknown; 6], &[0, 1, 2, 3, 6, 7]),
         (&[Unknown; 8], &[0, 1, 2, 3, 4, 5, 6, 7]),
