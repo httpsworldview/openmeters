@@ -128,21 +128,12 @@ impl Node {
     pub(super) fn from_global(global: &GlobalObject<&DictRef>) -> Self {
         let get = |key| global.props?.get(key);
         let name = get("node.name");
-        let media_name = get("media.name");
         let media_class = get("media.class");
         let application_name = get("application.name");
         let kind = classify(clean_property(media_class));
-        let identity = stream_identity(
-            media_class,
-            get("application.id"),
-            application_name,
-            media_name,
-            name,
-        );
+        let identity = stream_identity(media_class, application_name, name);
         let name = arc_property(name);
-        let description = arc_property(get("node.description"))
-            .or_else(|| arc_property(media_name))
-            .or_else(|| name.clone());
+        let description = arc_property(get("node.description")).or_else(|| name.clone());
         let application_name = arc_property(application_name);
         let device = !bool_property(get("node.virtual"))
             && application_name.is_none()
@@ -215,23 +206,17 @@ fn classify(media_class: Option<&str>) -> NodeKind {
 
 fn stream_identity(
     media_class: Option<&str>,
-    application_id: Option<&str>,
     application_name: Option<&str>,
-    media_name: Option<&str>,
     node_name: Option<&str>,
 ) -> Option<StreamIdentity> {
     let media_class = clean_property(media_class)?;
     let media_class = clean_property(Some(
         media_class.strip_prefix("Stream/").unwrap_or(media_class),
     ))?;
-    let (property, value) = [
-        ("application.id", application_id),
-        ("application.name", application_name),
-        ("media.name", media_name),
-        ("node.name", node_name),
-    ]
-    .into_iter()
-    .find_map(|(property, value)| clean_property(value).map(|value| (property, value)))?;
+    let (property, value) = match clean_property(application_name) {
+        Some(name) => ("application.name", name),
+        None => ("node.name", clean_property(node_name)?),
+    };
     Some(StreamIdentity(Arc::from(format!(
         "{media_class}:{property}:{value}"
     ))))
@@ -583,34 +568,14 @@ mod tests {
 
     #[test]
     fn identity_precedence_ignores_empty_properties() {
-        let values = ["id", "app", "media", "node"];
-        for (skip, expected) in [
-            "Output/Audio:application.id:id",
-            "Output/Audio:application.name:app",
-            "Output/Audio:media.name:media",
-            "Output/Audio:node.name:node",
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let mut fields = values.map(Some);
-            fields[..skip].fill(None);
-            let [id, app, media, node] = fields;
-            assert_eq!(
-                stream_identity(Some("Stream/Output/Audio"), id, app, media, node).unwrap(),
-                StreamIdentity(expected.into())
-            );
-        }
+        let identity = |app, node| stream_identity(Some("Stream/Output/Audio"), app, node);
         assert_eq!(
-            stream_identity(
-                Some("Stream/Output/Audio"),
-                Some(" "),
-                Some(" app "),
-                None,
-                None
-            )
-            .unwrap(),
+            identity(Some(" app "), Some("node")).unwrap(),
             StreamIdentity("Output/Audio:application.name:app".into())
+        );
+        assert_eq!(
+            identity(Some(" "), Some("node")).unwrap(),
+            StreamIdentity("Output/Audio:node.name:node".into())
         );
     }
 
