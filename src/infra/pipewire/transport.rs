@@ -40,9 +40,12 @@ fn packet_pool_limit(rate: u64, queue_capacity: usize) -> usize {
     ((rate as usize * 4).div_ceil(packet_frame_limit(rate) * 3)).min(queue_capacity) + 1
 }
 
-fn idle_watchdog_ns(rate: u64) -> u64 {
+// Long quanta deliver whole callbacks at once, so the grace spans the longer of a packet and
+// a callback's burst.
+fn idle_watchdog_ns(rate: u64, burst_ns: u64) -> u64 {
     nanos(IDLE_WATCHDOG).max(
         frames_ns(packet_frame_limit(rate) as u64, rate)
+            .max(burst_ns)
             .saturating_add(nanos(PACKET_FLUSH_INTERVAL)),
     )
 }
@@ -101,6 +104,7 @@ struct Shared {
     wake_sender: async_channel::Sender<()>,
     wake_receiver: async_channel::Receiver<()>,
     reconnects: AtomicU64,
+    callback_ns: AtomicU64,
 }
 
 impl Shared {
@@ -122,6 +126,7 @@ impl Shared {
             wake_sender,
             wake_receiver,
             reconnects: AtomicU64::new(0),
+            callback_ns: AtomicU64::new(0),
         }
     }
 
@@ -581,7 +586,8 @@ impl CaptureWriter {
     fn timing(&mut self, frames: u64, format: AudioFormat) -> (u64, u64) {
         let now = self.shared.now_ns();
         let duration = frames_ns(frames, format.rate()).max(1);
-        let watchdog = idle_watchdog_ns(format.rate());
+        self.shared.callback_ns.store(duration, Ordering::Relaxed);
+        let watchdog = idle_watchdog_ns(format.rate(), duration);
         let continuous = self.previous_timing.end != 0
             && now.saturating_sub(self.previous_timing.start) <= watchdog
             && self.previous_timing.end.abs_diff(now) <= watchdog;
@@ -670,7 +676,8 @@ impl AudioReader {
             self.align_next_packet = true;
         }
         let target = now_ns.saturating_sub(if streaming {
-            idle_watchdog_ns(format.rate())
+            let callback = self.shared.callback_ns.load(Ordering::Relaxed);
+            idle_watchdog_ns(format.rate(), callback)
         } else {
             0
         });
