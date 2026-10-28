@@ -17,8 +17,10 @@ use std::{
 use tracing::warn;
 
 fn config_dir() -> PathBuf {
+    // XDG: an empty or relative value is invalid and means unset.
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
+        .filter(|dir| dir.is_absolute())
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
         .unwrap_or_else(|| PathBuf::from("."))
         .join("openmeters")
