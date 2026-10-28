@@ -28,6 +28,7 @@ fn write_json_atomic(path: &Path, json: &str) -> io::Result<()> {
     fs::create_dir_all(parent)?;
     let mut temp = tempfile::NamedTempFile::new_in(parent)?;
     temp.write_all(json.as_bytes())?;
+    temp.as_file().sync_all()?;
     temp.persist(path).map(|_| ()).map_err(|err| err.error)
 }
 
