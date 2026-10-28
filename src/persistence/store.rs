@@ -7,6 +7,7 @@ use super::{
 };
 use std::{
     cell::{Ref, RefCell},
+    collections::HashMap,
     fs, io,
     path::{Path, PathBuf},
     rc::Rc,
@@ -111,48 +112,43 @@ const PERSIST_DEBOUNCE: Duration = Duration::from_millis(500);
 
 static SAVER: Mutex<Option<(mpsc::Sender<PersistRequest>, JoinHandle<()>)>> = Mutex::new(None);
 
-fn schedule_persist(mut path: PathBuf, mut settings: UiSettings) {
+fn schedule_persist(path: PathBuf, settings: UiSettings) {
     let mut saver = crate::util::unpoison(SAVER.lock());
-    if let Some((tx, _)) = saver.as_ref() {
-        match tx.send((path, settings)) {
-            Ok(()) => return,
-            Err(mpsc::SendError(failed)) => (path, settings) = failed,
+    if saver.is_none() {
+        let (tx, rx) = mpsc::channel();
+        match std::thread::Builder::new()
+            .name("openmeters-settings-saver".into())
+            .spawn(move || settings_saver_loop(rx))
+        {
+            Ok(join) => *saver = Some((tx, join)),
+            Err(err) => return tracing::error!("[settings] failed to spawn saver thread: {err}"),
         }
     }
-
-    if let Some((tx, join)) = saver.take() {
-        drop(tx);
-        let _ = join.join();
-    }
-
-    let (tx, rx) = mpsc::channel::<PersistRequest>();
-    tx.send((path, settings)).expect("new saver receiver");
-    match std::thread::Builder::new()
-        .name("openmeters-settings-saver".into())
-        .spawn(move || settings_saver_loop(rx))
-    {
-        Ok(join) => *saver = Some((tx, join)),
-        Err(err) => tracing::error!("[settings] failed to spawn saver thread: {err}"),
+    if let Some((tx, _)) = saver.as_ref() {
+        let _ = tx.send((path, settings));
     }
 }
 
+// Debounces per destination, so a request for one file never displaces another's.
 fn settings_saver_loop(rx: mpsc::Receiver<PersistRequest>) {
-    let mut last_written = String::new();
-    while let Ok((mut dest, mut data)) = rx.recv() {
-        while let Ok(next) = rx.recv_timeout(PERSIST_DEBOUNCE) {
-            (dest, data) = next;
+    let mut written = HashMap::new();
+    while let Ok(first) = rx.recv() {
+        let mut pending = HashMap::from([first]);
+        while let Ok((dest, data)) = rx.recv_timeout(PERSIST_DEBOUNCE) {
+            pending.insert(dest, data);
         }
-
-        let Ok(json) = serde_json::to_string_pretty(&data) else {
-            tracing::warn!("[settings] serialization failed");
-            continue;
-        };
-        if last_written == json {
-            continue;
-        }
-        match super::write_json_atomic(&dest, &json) {
-            Ok(()) => last_written = json,
-            Err(err) => tracing::warn!("[settings] failed to write settings: {err}"),
+        for (dest, data) in pending {
+            let Ok(json) = serde_json::to_string_pretty(&data) else {
+                tracing::warn!("[settings] serialization failed");
+                continue;
+            };
+            if written.get(&dest) == Some(&json) {
+                continue;
+            }
+            match super::write_json_atomic(&dest, &json) {
+                Ok(()) => drop(written.insert(dest, json)),
+                Err(err) => tracing::warn!("[settings] failed to write settings: {err}"),
+            }
         }
     }
 }
