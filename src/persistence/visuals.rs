@@ -266,7 +266,7 @@ macro_rules! visual_settings {
         impl $name {
             fn from_value_lossy(value: Value, scope: &str) -> Self {
                 lossy::settings::<Self>(value, scope, |map, out| {
-                    lossy::fields!(map, out, scope; $($field,)* palette);
+                    lossy::fields!(map, out, scope; $($field),*);
                 })
             }
             pub(crate) fn normalize(&mut self) {

@@ -57,11 +57,9 @@ impl SettingsManager {
         };
         let theme_store = ThemeStore::new(dir);
         let theme_name = data.theme.as_deref().unwrap_or(BUILTIN_THEME);
-        if let Some(theme_file) = theme_store.load_or_warn(theme_name)
-            && let Some(bg) = theme_file.background
-        {
-            data.background_color = Some(bg);
-        }
+        data.background_color = theme_store
+            .load_or_warn(theme_name)
+            .and_then(|theme| theme.background);
         Self {
             path,
             data,

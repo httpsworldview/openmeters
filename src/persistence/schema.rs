@@ -106,7 +106,7 @@ impl UiSettings {
                 });
             }
             lossy::fields!(map, out, "settings";
-                visual_frame_rate, background_color, decorations, capture_mode, last_device_name,
+                visual_frame_rate, decorations, capture_mode, last_device_name,
                 disabled_streams, theme
             );
         })
