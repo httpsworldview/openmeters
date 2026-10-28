@@ -15,6 +15,15 @@ use std::{
 };
 
 fn write_json_atomic(path: &Path, json: &str) -> io::Result<()> {
+    // Write through symlinks, even dangling ones, so linked dotfiles stay linked.
+    let mut path = path.to_owned();
+    for _ in 0..40 {
+        let Ok(target) = fs::read_link(&path) else {
+            break;
+        };
+        path = path.parent().unwrap_or_else(|| Path::new(".")).join(target);
+    }
+    let path = &path;
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent)?;
     let mut temp = tempfile::NamedTempFile::new_in(parent)?;
