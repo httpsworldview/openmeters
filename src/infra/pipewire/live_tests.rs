@@ -720,10 +720,8 @@ fn live_capture_preserves_graph_invariants() {
         });
     }
 
-    let mut disabled = HashSet::new();
-    disabled.insert(identity);
     assert!(control.configure(CaptureConfig {
-        disabled_streams: disabled,
+        disabled_streams: HashSet::from([identity]),
         ..Default::default()
     }));
     server.wait_audio("application disable", &mut audio, |graph| {

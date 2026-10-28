@@ -84,12 +84,6 @@ impl TapStream {
     }
 }
 
-impl Drop for TapStream {
-    fn drop(&mut self) {
-        self.writer.borrow_mut().set_status(StreamStatus::Stopped);
-    }
-}
-
 struct Session {
     _listener: pw::stream::StreamListener<Rc<RefCell<CaptureWriter>>>,
     stream: pw::stream::StreamRc,
@@ -154,10 +148,7 @@ impl Session {
         let format = format_pod(&config.layout)?;
         let mut params =
             [Pod::from_bytes(&format).ok_or_else(|| io::Error::other("invalid format pod"))?];
-        let mut flags = pw::stream::StreamFlags::MAP_BUFFERS;
-        if config.target.is_some() {
-            flags |= pw::stream::StreamFlags::AUTOCONNECT | pw::stream::StreamFlags::DONT_RECONNECT;
-        }
+        let flags = pw::stream::StreamFlags::MAP_BUFFERS;
         stream.connect(spa::utils::Direction::Input, None, flags, &mut params)?;
         stream.set_active(true)?;
         Ok(Self {

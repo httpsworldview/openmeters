@@ -94,7 +94,6 @@ pub(super) fn run(
     let mut retry_delay = SESSION_RETRY_MIN;
     let mut outage = false;
     loop {
-        writer.borrow_mut().set_status(StreamStatus::Starting);
         let Err(err) = run_session(&commands, &mut config, &writer, &public, socket.as_deref())
         else {
             break;

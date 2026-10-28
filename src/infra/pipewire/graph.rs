@@ -165,9 +165,7 @@ impl Node {
     }
 
     pub(super) fn target_object(&self) -> Option<String> {
-        self.serial
-            .map(|serial| serial.to_string())
-            .or_else(|| self.name.as_deref().map(str::to_owned))
+        self.serial.map(|serial| serial.to_string())
     }
 }
 
@@ -290,13 +288,8 @@ impl Graph {
     pub(super) fn upsert_port(&mut self, port: Port) {
         self.port_nodes.insert(port.global_id, port.node_id);
         let ports = self.ports.entry(port.node_id).or_default();
-        match ports
-            .iter()
-            .position(|candidate| candidate.global_id == port.global_id)
-        {
-            Some(index) => ports[index] = port,
-            None => ports.push(port),
-        }
+        ports.retain(|candidate| candidate.global_id != port.global_id);
+        ports.push(port);
     }
 
     pub(super) fn upsert_link(&mut self, id: u32, link: GraphLink) {
