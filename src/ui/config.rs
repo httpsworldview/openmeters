@@ -590,11 +590,12 @@ impl ConfigPage {
         }
 
         let settings = self.settings.borrow();
+        let stored = settings.theme_store().load(&name).unwrap_or_default();
         let theme_file = ThemeFile {
-            name: Some(name.clone()),
-            author: None,
+            name: stored.name.or_else(|| Some(name.clone())),
             background: settings.data.background_color,
             palettes: self.visual_manager.borrow().theme_palettes().collect(),
+            ..stored
         };
         if let Err(e) = settings.theme_store().save(&name, &theme_file) {
             tracing::warn!("[theme] failed to save theme {name:?}: {e}");
