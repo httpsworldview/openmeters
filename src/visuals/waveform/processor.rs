@@ -86,14 +86,34 @@ struct BandTracker {
     history: Option<RunningMeans<{ NUM_BANDS * DERIVED_CHANNELS }, 2>>,
 }
 
+// Spans at least one column so slow scrolling does not skip audio.
+fn color_window(config: WaveformConfig) -> usize {
+    window_len(BAND_COLOR_WINDOW_AT_44K1, config.sample_rate)
+        .max((config.sample_rate / config.scroll_speed).ceil() as usize)
+}
+
+fn history_windows(config: WaveformConfig) -> [usize; 2] {
+    [
+        color_window(config),
+        window_len(BAND_SLOW_WINDOW_AT_44K1, config.sample_rate),
+    ]
+}
+
 impl BandTracker {
-    fn new(sample_rate: f32, track_history: bool) -> Self {
-        let color_len = window_len(BAND_COLOR_WINDOW_AT_44K1, sample_rate);
+    fn new(config: WaveformConfig) -> Self {
         Self {
-            color: RunningMeans::new([color_len]),
-            history: track_history.then(|| {
-                RunningMeans::new([color_len, window_len(BAND_SLOW_WINDOW_AT_44K1, sample_rate)])
-            }),
+            color: RunningMeans::new([color_window(config)]),
+            history: config
+                .track_history
+                .then(|| RunningMeans::new(history_windows(config))),
+        }
+    }
+
+    // Keeps what is already averaged, so a scroll change does not restart the slow means.
+    fn resize(&mut self, config: WaveformConfig) {
+        self.color = self.color.resized([color_window(config)]);
+        if let Some(history) = &mut self.history {
+            *history = history.resized(history_windows(config));
         }
     }
 
@@ -159,7 +179,7 @@ impl WaveformProcessor {
         config.analyze_bands.then(|| {
             (
                 BandFilter::new(config.sample_rate, BAND_SPLITS_HZ),
-                BandTracker::new(config.sample_rate, config.track_history),
+                BandTracker::new(config),
             )
         })
     }
@@ -326,6 +346,7 @@ impl WaveformProcessor {
         let reset_analysis = self.config.analyze_bands != normalized.analyze_bands
             || self.config.track_history != normalized.track_history;
         let resize_pending = self.config.max_columns != normalized.max_columns;
+        let resize = color_window(self.config) != color_window(normalized);
         self.config = normalized;
         if resize_pending {
             self.fit_pending_capacity();
@@ -334,6 +355,8 @@ impl WaveformProcessor {
             self.reset_audio();
         } else if reset_analysis && self.band_analysis.is_some() {
             self.band_analysis = Self::band_analysis(self.config);
+        } else if resize && let Some((_, tracker)) = &mut self.band_analysis {
+            tracker.resize(self.config);
         }
     }
 }

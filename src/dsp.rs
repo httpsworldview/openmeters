@@ -292,6 +292,19 @@ impl<const VALUES: usize, const WINDOWS: usize> RunningMeans<VALUES, WINDOWS> {
         }
     }
 
+    // The same history under new windows; samples older than it read as silence.
+    pub fn resized(&self, capacities: [usize; WINDOWS]) -> Self {
+        let mut resized = Self::new(capacities);
+        let oldest_first = (self.head..self.len).chain(0..self.head);
+        for index in oldest_first.skip(self.len.saturating_sub(resized.len)) {
+            resized.push_nonnegative_finite_wide(match &self.ring {
+                Ring::Compact(buffer) => buffer[index].map(f64::from),
+                Ring::Wide(buffer) => buffer[index],
+            });
+        }
+        resized
+    }
+
     #[inline]
     pub fn push_nonnegative_finite(&mut self, values: [f32; VALUES]) {
         // The wide push would round-trip every sample through f64.
@@ -670,20 +683,24 @@ mod tests {
                 means.push_nonnegative_finite(values);
                 history.push_back(values);
                 history.pop_front();
-                for (window, capacity) in capacities.into_iter().enumerate() {
-                    let expected = history
-                        .iter()
-                        .rev()
-                        .take(capacity)
-                        .fold([0.0_f64; 3], |acc, values| {
-                            std::array::from_fn(|i| acc[i] + f64::from(values[i]))
-                        })
-                        .map(|sum| sum / capacity as f64);
-                    assert_eq!(
-                        means.mean(window),
-                        expected,
-                        "len={len}, step={step}, window={window}"
-                    );
+                let resizes = [len * 2, len / 3, 1, len].map(|capacity| capacity.max(1));
+                let resized = means.resized(resizes);
+                for (means, capacities) in [(&means, capacities), (&resized, resizes)] {
+                    for (window, capacity) in capacities.into_iter().enumerate() {
+                        let expected = history
+                            .iter()
+                            .rev()
+                            .take(capacity)
+                            .fold([0.0_f64; 3], |acc, values| {
+                                std::array::from_fn(|i| acc[i] + f64::from(values[i]))
+                            })
+                            .map(|sum| sum / capacity as f64);
+                        assert_eq!(
+                            means.mean(window),
+                            expected,
+                            "len={len}, step={step}, window={window}"
+                        );
+                    }
                 }
             }
         }
