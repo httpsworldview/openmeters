@@ -2,12 +2,13 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::palette::{ColorSetting, PaletteSettings};
+use super::{lossy, visuals::visual_map};
 use crate::domain::visuals::VisualKind;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 const THEMES_DIR: &str = "themes";
 const AUTO_THEME_BASE: &str = "default-custom";
@@ -32,8 +33,7 @@ impl std::fmt::Display for ThemeChoice {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(default)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct ThemeFile {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -81,7 +81,13 @@ impl ThemeStore {
             return Ok(ThemeFile::default());
         }
         let content = fs::read_to_string(self.theme_path(name))?;
-        Ok(serde_json::from_str(&content)?)
+        let value = serde_json::from_str(&content)?;
+        Ok(lossy::settings::<ThemeFile>(value, "theme", |map, out| {
+            lossy::fields!(map, out, "theme"; name, author, background);
+            visual_map(map, "palettes", &mut out.palettes, |_, value, scope| {
+                lossy::value(value, scope)
+            });
+        }))
     }
 
     pub fn load_or_warn(&self, name: &str) -> Option<ThemeFile> {

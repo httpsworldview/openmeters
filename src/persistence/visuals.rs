@@ -87,7 +87,7 @@ impl VisualSettings {
     }
 }
 
-fn visual_map<T>(
+pub(super) fn visual_map<T>(
     map: &mut Map<String, Value>,
     key: &str,
     out: &mut BTreeMap<VisualKind, T>,
