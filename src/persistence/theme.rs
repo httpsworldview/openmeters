@@ -109,7 +109,10 @@ impl ThemeStore {
                 "cannot modify built-in theme",
             ));
         }
-        let mut theme = self.load(name)?;
+        let mut theme = match self.load(name) {
+            Err(err) if err.kind() == io::ErrorKind::NotFound => ThemeFile::default(),
+            loaded => loaded?,
+        };
         mutate(&mut theme);
         self.save(name, &theme)
     }
@@ -199,14 +202,13 @@ mod tests {
 
     #[test]
     fn updates_require_a_readable_custom_theme() {
-        use io::ErrorKind::{InvalidData, NotFound, PermissionDenied, UnexpectedEof};
+        use io::ErrorKind::{InvalidData, PermissionDenied, UnexpectedEof};
 
         let dir = tempfile::tempdir().unwrap();
         let store = ThemeStore::new(dir.path());
         fs::create_dir_all(&store.dir).unwrap();
         for (name, content, kind) in [
             ("default", None, PermissionDenied),
-            ("missing", None, NotFound),
             ("empty", Some(b"".as_slice()), UnexpectedEof),
             ("json", Some(b"!"), InvalidData),
             ("utf8", Some(b"\xff"), InvalidData),
