@@ -156,13 +156,10 @@ pub struct SettingsHandle(Rc<RefCell<SettingsManager>>);
 
 impl SettingsHandle {
     pub fn load_or_default() -> Self {
-        Self(Rc::new(RefCell::new(SettingsManager::load_from_dir(
-            &config_dir(),
-        ))))
+        Self::load_from(&config_dir())
     }
 
-    #[cfg(test)]
-    pub(crate) fn for_test(dir: &Path) -> Self {
+    pub(crate) fn load_from(dir: &Path) -> Self {
         Self(Rc::new(RefCell::new(SettingsManager::load_from_dir(dir))))
     }
 
@@ -216,15 +213,8 @@ mod tests {
         manager.update_active_theme(|theme| theme.author = Some("OpenMeters".into()));
 
         assert_eq!(manager.active_theme(), "default-custom-2");
-        assert_eq!(
-            manager
-                .theme_store
-                .load("default-custom-2")
-                .unwrap()
-                .author
-                .as_deref(),
-            Some("OpenMeters")
-        );
+        let theme = manager.theme_store.load("default-custom-2").unwrap();
+        assert_eq!(theme.author.as_deref(), Some("OpenMeters"));
     }
 
     #[test]
@@ -241,8 +231,7 @@ mod tests {
             if let Some(original) = original {
                 fs::write(&path, original).unwrap();
             }
-            let manager = SettingsManager::load_from_dir(dir.path());
-            let handle = SettingsHandle(Rc::new(RefCell::new(manager)));
+            let handle = SettingsHandle::load_from(dir.path());
             let saved =
                 || serde_json::from_slice::<serde_json::Value>(&fs::read(&path).unwrap()).unwrap();
             let changed = handle.set(User, |s| &mut s.decorations, decorations);

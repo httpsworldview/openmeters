@@ -181,9 +181,6 @@ macro_rules! visual_configs {
             }
 
             fn from_value_lossy(kind: VisualKind, value: Value, scope: &str) -> Self {
-                if value.is_null() {
-                    return Self::default_for(kind);
-                }
                 match kind {
                     $(VisualKind::$variant => Self::$variant($settings::from_value_lossy(value, scope))),*
                 }.normalized()

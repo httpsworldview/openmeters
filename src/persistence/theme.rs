@@ -177,14 +177,8 @@ mod tests {
         fs::write(themes_dir.join("zebra.json"), "{}").unwrap();
         fs::write(themes_dir.join("alpha.json"), "{}").unwrap();
 
-        let names = store.list();
-        assert_eq!(
-            names
-                .iter()
-                .map(|choice| choice.name.as_str())
-                .collect::<Vec<_>>(),
-            ["default", "alpha", "zebra"]
-        );
+        let names = store.list().into_iter().map(|choice| choice.name);
+        assert_eq!(names.collect::<Vec<_>>(), ["default", "alpha", "zebra"]);
     }
 
     #[test]

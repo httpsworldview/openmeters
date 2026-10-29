@@ -248,7 +248,7 @@ mod tests {
             UiConfig {
                 capture: CaptureControl::for_test(),
                 audio: Rc::new(RefCell::new(Some(test_audio_reader()))),
-                settings_handle: SettingsHandle::for_test(dir.path()),
+                settings_handle: SettingsHandle::load_from(dir.path()),
             },
             true,
         );

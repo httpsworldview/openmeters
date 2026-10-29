@@ -287,7 +287,7 @@ mod tests {
     #[test]
     fn palette_drags_save_with_settings_and_only_when_changed() {
         let dir = tempfile::tempdir().unwrap();
-        let settings = SettingsHandle::for_test(dir.path());
+        let settings = SettingsHandle::load_from(dir.path());
         let manager = VisualManagerHandle::default();
         let mut pane = ActiveSettings::new(VisualKind::Waveform, &manager);
         let mut send =
@@ -323,7 +323,7 @@ mod tests {
     fn toggling_sections_and_typing_hex_neither_apply_nor_save() {
         use spectrum::Message;
         let dir = tempfile::tempdir().unwrap();
-        let settings = SettingsHandle::for_test(dir.path());
+        let settings = SettingsHandle::load_from(dir.path());
         let manager = VisualManagerHandle::default();
         let config = || manager.borrow().config(VisualKind::Spectrum);
         let before = config();

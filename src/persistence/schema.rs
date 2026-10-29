@@ -244,15 +244,13 @@ mod tests {
         assert_eq!(settings.visuals.order, vec![VisualKind::Spectrum]);
         assert_eq!(settings.visuals.width_basis.len(), 1);
         assert_eq!(settings.visuals.width_basis[&VisualKind::Spectrum], 320.0);
-        assert_eq!(settings.visuals.popouts.len(), 2);
-        assert_eq!(settings.visuals.popouts[&VisualKind::Spectrum].width, 640);
-        assert_eq!(settings.visuals.popouts[&VisualKind::Spectrum].height, 0);
-        assert!(settings.visuals.popouts[&VisualKind::Spectrum].popped_out);
-        assert_eq!(
-            settings.visuals.popouts[&VisualKind::Oscilloscope].width,
-            300
-        );
-        assert!(!settings.visuals.popouts[&VisualKind::Oscilloscope].popped_out);
+        let popouts = &settings.visuals.popouts;
+        assert_eq!(popouts.len(), 2);
+        assert_eq!(popouts[&VisualKind::Spectrum].width, 640);
+        assert_eq!(popouts[&VisualKind::Spectrum].height, 0);
+        assert!(popouts[&VisualKind::Spectrum].popped_out);
+        assert_eq!(popouts[&VisualKind::Oscilloscope].width, 300);
+        assert!(!popouts[&VisualKind::Oscilloscope].popped_out);
 
         let saved = serde_json::to_value(&settings.visuals).unwrap();
         assert_eq!(saved["modules"].as_object().unwrap().len(), 1);
