@@ -53,7 +53,6 @@ impl ChannelPosition {
         channels: usize,
         mut positions: [Self; MAX_AUDIO_CHANNELS],
     ) -> [Self; MAX_AUDIO_CHANNELS] {
-        let channels = channels.min(MAX_AUDIO_CHANNELS);
         positions[channels..].fill(Self::Unknown);
         for index in 0..channels {
             if positions[..index].contains(&positions[index]) {
@@ -549,12 +548,7 @@ mod tests {
             ),
             (8, &ChannelPosition::SURROUND[..]),
         ] {
-            let format = AudioFormat::new(
-                channels,
-                48_000,
-                1,
-                [ChannelPosition::Unknown; MAX_AUDIO_CHANNELS],
-            );
+            let format = AudioFormat::new(channels, 48_000, 1, [Unknown; MAX_AUDIO_CHANNELS]);
             assert_eq!(&format.positions[..channels], expected);
         }
 
@@ -565,15 +559,9 @@ mod tests {
 
         partial[..3].copy_from_slice(&[FrontLeft, FrontLeft, FrontRight]);
         let format = AudioFormat::new(3, 48_000, 1, partial);
-        assert_eq!(format.positions[0], FrontLeft);
-        assert_eq!(format.positions[2], FrontRight);
         assert_eq!(
-            format.positions[..3]
-                .iter()
-                .copied()
-                .collect::<std::collections::HashSet<_>>()
-                .len(),
-            3
+            &format.positions[..3],
+            &[FrontLeft, FrontCenter, FrontRight]
         );
     }
 
@@ -582,24 +570,14 @@ mod tests {
         use ChannelPosition::*;
 
         let samples = [1.0, 2.0, 3.0, 100.0, 4.0, 5.0, 6.0, 7.0];
-        let block = AudioBlock::with_positions(
-            &samples,
-            samples.len(),
-            48_000.0,
-            ChannelPosition::SURROUND,
-        );
+        let block = AudioBlock::with_positions(&samples, 8, 48_000.0, ChannelPosition::SURROUND);
         let mixed = block.stereo_frames().next().unwrap();
         let gain = std::f32::consts::FRAC_1_SQRT_2;
         assert_eq!(mixed, [1.0 + gain * 13.0, 2.0 + gain * 15.0]);
 
-        let mono = AudioBlock::with_positions(
-            &[0.25],
-            1,
-            48_000.0,
-            [
-                Mono, Unknown, Unknown, Unknown, Unknown, Unknown, Unknown, Unknown,
-            ],
-        );
+        let mut mono = [Unknown; MAX_AUDIO_CHANNELS];
+        mono[0] = Mono;
+        let mono = AudioBlock::with_positions(&[0.25], 1, 48_000.0, mono);
         assert_eq!(mono.stereo_matrix()[0], [1.0; 2]);
 
         let mut unsupported = [Unknown; MAX_AUDIO_CHANNELS];
@@ -612,22 +590,10 @@ mod tests {
 
     #[test]
     fn common_stereo_paths_match_general_fold() {
+        let nan = f32::from_bits(0x7fc0_1234);
         for (samples, channels) in [
-            (
-                &[0.0, -0.0, f32::from_bits(0x7fc0_1234), f32::INFINITY][..],
-                1,
-            ),
-            (
-                &[
-                    0.0,
-                    -0.0,
-                    0.25,
-                    -0.5,
-                    f32::from_bits(0x7fc0_1234),
-                    f32::INFINITY,
-                ][..],
-                2,
-            ),
+            (&[0.0, -0.0, nan, f32::INFINITY][..], 1),
+            (&[0.0, -0.0, 0.25, -0.5, nan, f32::INFINITY][..], 2),
         ] {
             let block = AudioBlock::new(samples, channels, 48_000.0);
             let matrix = block.stereo_matrix();
@@ -746,10 +712,7 @@ mod tests {
                 [f32::MAX, -f32::MAX],
                 [0.0, 0.25],
             ] {
-                let expected = [
-                    scalar[0].process([input[0]])[0],
-                    scalar[1].process([input[1]])[0],
-                ];
+                let expected = [0, 1].map(|i| scalar[i].process([input[i]])[0]);
                 let actual = stereo.process(input);
                 assert_eq!(actual.map(f32::to_bits), expected.map(f32::to_bits));
             }
