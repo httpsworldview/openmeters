@@ -267,7 +267,6 @@ pub struct RunningMeans<const VALUES: usize, const WINDOWS: usize> {
     partial: [f64; VALUES],
     len: usize,
     head: usize,
-    count: usize,
 }
 
 enum Ring<const VALUES: usize> {
@@ -279,12 +278,8 @@ impl<const VALUES: usize, const WINDOWS: usize> RunningMeans<VALUES, WINDOWS> {
     const BLOCK: usize = 16;
     const ZERO: [f64; VALUES] = [0.0; VALUES];
 
+    // Windows start full of silence, which is what precedes a fresh or reset timeline.
     pub fn new(capacities: [usize; WINDOWS]) -> Self {
-        Self::seeded(capacities, 0)
-    }
-
-    // Count leading silence without pushing individual zero samples.
-    pub fn seeded(capacities: [usize; WINDOWS], count: usize) -> Self {
         let capacities = capacities.map(|capacity| capacity.max(1));
         let len = capacities.iter().copied().max().unwrap_or(1);
         Self {
@@ -293,33 +288,24 @@ impl<const VALUES: usize, const WINDOWS: usize> RunningMeans<VALUES, WINDOWS> {
             capacities,
             partial: Self::ZERO,
             len,
-            head: count % len,
-            count: count.min(len),
+            head: 0,
         }
     }
 
     #[inline]
     pub fn push_nonnegative_finite(&mut self, values: [f32; VALUES]) {
+        // The wide push would round-trip every sample through f64.
+        let Ring::Compact(buffer) = &mut self.ring else {
+            return self.push_nonnegative_finite_wide(values.map(f64::from));
+        };
         debug_assert!(
             values
                 .iter()
                 .all(|value| value.is_finite() && *value >= 0.0)
         );
-        match &mut self.ring {
-            Ring::Compact(buffer) => {
-                let slot = &mut buffer[self.head];
-                *slot = values;
-                for (partial, &sample) in self.partial.iter_mut().zip(slot.iter()) {
-                    *partial += f64::from(sample);
-                }
-            }
-            Ring::Wide(buffer) => {
-                let wide = values.map(f64::from);
-                buffer[self.head] = wide;
-                for (partial, &sample) in self.partial.iter_mut().zip(&wide) {
-                    *partial += sample;
-                }
-            }
+        buffer[self.head] = values;
+        for (partial, &sample) in self.partial.iter_mut().zip(&values) {
+            *partial += f64::from(sample);
         }
         self.flush();
     }
@@ -379,12 +365,11 @@ impl<const VALUES: usize, const WINDOWS: usize> RunningMeans<VALUES, WINDOWS> {
         if self.head == self.len {
             self.head = 0;
         }
-        self.count = (self.count + 1).min(self.len);
     }
 
     #[inline]
     pub fn mean(&self, window: usize) -> [f64; VALUES] {
-        let count = self.count.min(self.capacities[window]).max(1);
+        let count = self.capacities[window];
         // Nonnegative samples make this a valid silence shortcut even when
         // the tree still holds the previous contents of the partial block.
         if self.blocks[1] == Self::ZERO && self.partial == Self::ZERO {
@@ -666,45 +651,39 @@ mod tests {
     fn windowed_means_match_direct_sums_across_ring_boundaries() {
         for len in [0_usize, 1, 2, 15, 16, 17, 31, 32, 33, 129] {
             let capacities = [len, len / 2, 1, len * 3 / 4];
-            for leading in [0, len / 2, len, len + 7] {
-                let mut means = RunningMeans::<3, 4>::seeded(capacities, leading);
-                let capacities = capacities.map(|capacity| capacity.max(1));
-                let len = len.max(1);
-                let mut history =
-                    std::collections::VecDeque::from(vec![[0.0_f32; 3]; leading.min(len)]);
-                for window in 0..4 {
-                    assert_eq!(means.mean(window), [0.0; 3]);
-                }
-                for step in 0..len * 4 + 33 {
-                    // Dyadic values keep sums exact, including independent silent lanes.
-                    let values = std::array::from_fn(|lane| {
-                        if step > len * 3 || (step + lane) % 7 < 3 {
-                            0.0
-                        } else {
-                            ((step * 37 + lane * 13) % 251) as f32 / 256.0
-                        }
-                    });
-                    means.push_nonnegative_finite(values);
-                    history.push_back(values);
-                    if history.len() > len {
-                        history.pop_front();
+            let mut means = RunningMeans::<3, 4>::new(capacities);
+            let capacities = capacities.map(|capacity| capacity.max(1));
+            let len = len.max(1);
+            let mut history = std::collections::VecDeque::from(vec![[0.0_f32; 3]; len]);
+            for window in 0..4 {
+                assert_eq!(means.mean(window), [0.0; 3]);
+            }
+            for step in 0..len * 4 + 33 {
+                // Dyadic values keep sums exact, including independent silent lanes.
+                let values = std::array::from_fn(|lane| {
+                    if step > len * 3 || (step + lane) % 7 < 3 {
+                        0.0
+                    } else {
+                        ((step * 37 + lane * 13) % 251) as f32 / 256.0
                     }
-                    for (window, capacity) in capacities.into_iter().enumerate() {
-                        let count = history.len().min(capacity);
-                        let expected = history
-                            .iter()
-                            .rev()
-                            .take(count)
-                            .fold([0.0_f64; 3], |acc, values| {
-                                std::array::from_fn(|i| acc[i] + f64::from(values[i]))
-                            })
-                            .map(|sum| sum / count as f64);
-                        assert_eq!(
-                            means.mean(window),
-                            expected,
-                            "len={len}, leading={leading}, step={step}, window={window}"
-                        );
-                    }
+                });
+                means.push_nonnegative_finite(values);
+                history.push_back(values);
+                history.pop_front();
+                for (window, capacity) in capacities.into_iter().enumerate() {
+                    let expected = history
+                        .iter()
+                        .rev()
+                        .take(capacity)
+                        .fold([0.0_f64; 3], |acc, values| {
+                            std::array::from_fn(|i| acc[i] + f64::from(values[i]))
+                        })
+                        .map(|sum| sum / capacity as f64);
+                    assert_eq!(
+                        means.mean(window),
+                        expected,
+                        "len={len}, step={step}, window={window}"
+                    );
                 }
             }
         }

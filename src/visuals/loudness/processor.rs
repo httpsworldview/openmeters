@@ -226,7 +226,7 @@ type ChannelState = (EnergyWindows, [f64; 4], TruePeakMeter);
 fn new_channel(sample_rate: f32) -> ChannelState {
     let capacities = DEFAULT_WINDOWS.map(|window| window_length(sample_rate, window));
     (
-        EnergyWindows::seeded(capacities, capacities[WIN_SHORT_TERM]),
+        EnergyWindows::new(capacities),
         [0.0; 4],
         TruePeakMeter::new(),
     )
@@ -455,30 +455,26 @@ mod tests {
 
     fn assert_energy_windows_match_direct_sums(
         capacities: [usize; 4],
-        leading: usize,
         powers: impl IntoIterator<Item = f64>,
         relative_tolerance: f64,
     ) {
-        let mut windows = EnergyWindows::seeded(capacities, leading);
+        let mut windows = EnergyWindows::new(capacities);
         let capacities = capacities.map(|capacity| capacity.max(1));
         let len = capacities.into_iter().max().unwrap();
-        let mut history = VecDeque::from(vec![0.0; leading.min(len)]);
+        let mut history = VecDeque::from(vec![0.0; len]);
         for window in 0..4 {
             assert_eq!(windows.mean(window)[0], 0.0);
         }
         for (i, power) in powers.into_iter().enumerate() {
             windows.push_nonnegative_finite_wide([power]);
             history.push_back(power);
-            if history.len() > len {
-                history.pop_front();
-            }
+            history.pop_front();
             for (window, &capacity) in capacities.iter().enumerate() {
-                let count = capacity.min(history.len());
-                let expected = history.iter().rev().take(count).sum::<f64>() / count as f64;
+                let expected = history.iter().rev().take(capacity).sum::<f64>() / capacity as f64;
                 let actual = windows.mean(window)[0];
                 assert!(
                     (actual - expected).abs() <= relative_tolerance * expected,
-                    "{capacities:?}, leading={leading}, sample={i}, window={window}: {actual:e} != {expected:e}"
+                    "{capacities:?}, sample={i}, window={window}: {actual:e} != {expected:e}"
                 );
             }
         }
@@ -488,19 +484,17 @@ mod tests {
     fn energy_windows_match_direct_sums_across_ring_boundaries() {
         for len in 0_usize..=256 {
             let capacities = [len, len / 2, 1, len * 3 / 4];
-            for leading in [0, 1, len / 2, len.saturating_sub(1), len, len + 7] {
-                // Dyadic inputs and their sums are exact, so no tolerance is needed.
-                let powers = (0..len * 3 + 33)
-                    .map(|i| {
-                        if i % (len + 1) < len / 2 {
-                            0.0
-                        } else {
-                            ((i * 991 + len * 17 + leading * 13) % 65536) as f64 / 65536.0
-                        }
-                    })
-                    .chain(std::iter::repeat_n(0.0, len + 1));
-                assert_energy_windows_match_direct_sums(capacities, leading, powers, 0.0);
-            }
+            // Dyadic inputs and their sums are exact, so no tolerance is needed.
+            let powers = (0..len * 3 + 33)
+                .map(|i| {
+                    if i % (len + 1) < len / 2 {
+                        0.0
+                    } else {
+                        ((i * 991 + len * 17) % 65536) as f64 / 65536.0
+                    }
+                })
+                .chain(std::iter::repeat_n(0.0, len + 1));
+            assert_energy_windows_match_direct_sums(capacities, powers, 0.0);
         }
     }
 
@@ -510,20 +504,18 @@ mod tests {
             1, 2, 3, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 129, 257, 513,
         ] {
             let capacities = [len, (len / 2).max(1), (len / 3).max(1), 1];
-            for leading in [0, 15, len - 1, len, len + 1] {
-                let powers = (0..len * 3 + 33)
-                    .map(|i| {
-                        if i % (len + 31) == 0 {
-                            f64::from(f32::MAX)
-                        } else {
-                            1.0
-                        }
-                    })
-                    .chain([1.0e100])
-                    .chain(std::iter::repeat_n(1.0e-100, len * 3 + 33))
-                    .chain(std::iter::repeat_n(0.0, len + 1));
-                assert_energy_windows_match_direct_sums(capacities, leading, powers, 1.0e-13);
-            }
+            let powers = (0..len * 3 + 33)
+                .map(|i| {
+                    if i % (len + 31) == 0 {
+                        f64::from(f32::MAX)
+                    } else {
+                        1.0
+                    }
+                })
+                .chain([1.0e100])
+                .chain(std::iter::repeat_n(1.0e-100, len * 3 + 33))
+                .chain(std::iter::repeat_n(0.0, len + 1));
+            assert_energy_windows_match_direct_sums(capacities, powers, 1.0e-13);
         }
     }
 
@@ -533,8 +525,8 @@ mod tests {
             8_000.0, 11_025.0, 22_050.0, 44_100.0, 48_000.0, 96_000.0, 192_000.0, 768_000.0,
         ] {
             let capacities = DEFAULT_WINDOWS.map(|secs| window_length(sample_rate, secs));
-            let len = capacities[WIN_SHORT_TERM];
-            let mut windows = EnergyWindows::seeded(capacities, len);
+            let len = capacities[0];
+            let mut windows = EnergyWindows::new(capacities);
             let mut prefix = Vec::with_capacity(len * 2 + 34);
             prefix.push(0.0);
             for i in 0..len * 2 + 33 {
