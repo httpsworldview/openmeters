@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Maika Namuo
 
 use crate::dsp::{AudioBlock, ChannelPosition, RunningMeans};
-use crate::util::audio::{DEFAULT_SAMPLE_RATE, flush_denormal_f64, sanitize_sample_rate};
+use crate::util::audio::{DEFAULT_SAMPLE_RATE, flush_denormal_f64, kaiser, sanitize_sample_rate};
 use std::{f64::consts::PI, sync::LazyLock};
 
 // BS.1770 LUFS offset.
@@ -77,20 +77,8 @@ const TRUE_PEAK_BUFFER_LEN: usize = TRUE_PEAK_BATCH_FRAMES * TRUE_PEAK_PHASES + 
 type TruePeakFir = [[f32; TRUE_PEAK_PHASES]; TRUE_PEAK_TAPS];
 const _: () = assert!(TRUE_PEAK_TAPS.is_multiple_of(2));
 
-fn bessel_i0(x: f64) -> f64 {
-    let mut term = 1.0;
-    let mut sum = 1.0;
-    for k in 1..40 {
-        term *= x * x / (4.0 * f64::from(k * k));
-        sum += term;
-    }
-    sum
-}
-
 // 8x Kaiser-windowed sinc; 24-input-sample delay.
 static TRUE_PEAK_FIR: LazyLock<TruePeakFir> = LazyLock::new(|| {
-    let beta = 8.6;
-    let window_scale = 1.0 / bessel_i0(beta);
     let radius = TRUE_PEAK_TAPS as f64 / 2.0;
     let mut coefficients: TruePeakFir = std::array::from_fn(|tap| {
         std::array::from_fn(|phase| {
@@ -99,9 +87,7 @@ static TRUE_PEAK_FIR: LazyLock<TruePeakFir> = LazyLock::new(|| {
             }
             let x = tap as f64 - radius + phase as f64 / TRUE_PEAK_PHASES as f64;
             let sinc = (PI * x).sin() / (PI * x);
-            let z = x / radius;
-            let window = bessel_i0(beta * (1.0 - z * z).max(0.0).sqrt()) * window_scale;
-            (sinc * window) as f32
+            (sinc * kaiser(8.6, x / radius)) as f32
         })
     });
     for phase in 0..TRUE_PEAK_PHASES {

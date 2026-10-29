@@ -54,6 +54,19 @@ pub(crate) fn window_coefficients(kind: WindowKind, len: usize) -> Arc<[f32]> {
         .clone()
 }
 
+// Kaiser window at `z` in [-1, 1].
+pub(crate) fn kaiser(beta: f64, z: f64) -> f64 {
+    let bessel_i0 = |x: f64| {
+        let (mut term, mut sum) = (1.0, 1.0);
+        for k in 1..40 {
+            term *= x * x / (4.0 * f64::from(k * k));
+            sum += term;
+        }
+        sum
+    };
+    bessel_i0(beta * (1.0 - z * z).max(0.0).sqrt()) / bessel_i0(beta)
+}
+
 // Wider sums reduce DC-removal error.
 pub(crate) fn mean_f32(samples: &[f32]) -> f32 {
     let (chunks, remainder) = samples.as_chunks::<4>();
