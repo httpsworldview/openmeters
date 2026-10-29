@@ -14,18 +14,10 @@ use std::time::Instant;
 
 const SILENCE_CHUNK_FRAMES: usize = 4_096;
 const DSP_BATCH_FRAMES_AT_48K: usize = 256;
-const MAX_DSP_INGEST_FRAMES_AT_48K: usize = 1_024;
 // Per-span limit; longer silence resets audio state.
 const MAX_SILENCE_SECONDS: u64 = 4;
 static SILENCE: [f32; SILENCE_CHUNK_FRAMES * MAX_CAPTURE_CHANNELS] =
     [0.0; SILENCE_CHUNK_FRAMES * MAX_CAPTURE_CHANNELS];
-
-fn scaled_samples(frames_at_48k: usize, format: AudioFormat) -> usize {
-    ((frames_at_48k as f64 * f64::from(format.sample_rate) / f64::from(DEFAULT_SAMPLE_RATE))
-        .round()
-        .max(1.0) as usize)
-        * format.channels
-}
 
 struct DspBatcher {
     samples: Vec<f32>,
@@ -45,7 +37,9 @@ impl DspBatcher {
             self.samples.clear();
         }
         self.format = Some(format);
-        let batch = scaled_samples(DSP_BATCH_FRAMES_AT_48K, format);
+        let frames = DSP_BATCH_FRAMES_AT_48K as f64 * f64::from(format.sample_rate)
+            / f64::from(DEFAULT_SAMPLE_RATE);
+        let batch = frames.round().max(1.0) as usize * format.channels;
         if !self.samples.is_empty() {
             let take = (batch - self.samples.len()).min(samples.len());
             self.samples.extend_from_slice(&samples[..take]);
@@ -56,26 +50,21 @@ impl DspBatcher {
             }
         }
         let ready = samples.len() / batch * batch;
-        for chunk in samples[..ready].chunks(scaled_samples(MAX_DSP_INGEST_FRAMES_AT_48K, format)) {
+        for chunk in samples[..ready].chunks(batch * 4) {
             manager.ingest_samples(chunk, format);
         }
         self.samples.extend_from_slice(&samples[ready..]);
     }
 
     fn push_silence(&mut self, manager: &mut VisualManager, frames: u64, format: AudioFormat) {
-        let limit = (MAX_SILENCE_SECONDS as f64 * f64::from(format.sample_rate))
-            .round()
-            .max(1.0) as u64;
-        if frames > limit {
+        if frames > MAX_SILENCE_SECONDS * format.rate() {
             self.reset(manager);
             return;
         }
         let capacity = SILENCE.len() / format.channels;
-        let mut remaining = frames;
-        while remaining > 0 {
-            let chunk = remaining.min(capacity as u64) as usize;
+        for start in (0..frames).step_by(capacity) {
+            let chunk = (frames - start).min(capacity as u64) as usize;
             self.push(manager, &SILENCE[..chunk * format.channels], format);
-            remaining -= chunk as u64;
         }
     }
 
@@ -121,9 +110,7 @@ impl MeterEngine {
         } = self;
         let mut manager = visuals.borrow_mut();
         audio.drain(now, |span| match span {
-            CapturedSpan::Pcm { samples, format } => {
-                batcher.push(&mut manager, samples, format);
-            }
+            CapturedSpan::Pcm { samples, format } => batcher.push(&mut manager, samples, format),
             CapturedSpan::Silence { frames, format } => {
                 batcher.push_silence(&mut manager, frames, format);
             }
@@ -149,21 +136,17 @@ impl MeterEngine {
     }
 
     pub fn set_active(&mut self, active: bool) {
-        if std::mem::replace(&mut self.active, active) == active {
-            return;
+        if crate::util::set_if_changed(&mut self.active, active) {
+            self.audio.set_active(active && !self.paused);
+            self.batcher.clear();
         }
-        self.audio.set_active(active && !self.paused);
-        self.batcher.clear();
     }
 
-    pub fn set_paused(&mut self, paused: bool, now: Instant) {
-        if std::mem::replace(&mut self.paused, paused) == paused {
-            return;
+    pub fn set_paused(&mut self, paused: bool) {
+        if crate::util::set_if_changed(&mut self.paused, paused) {
+            self.audio.set_active(self.active && !paused);
+            self.batcher.clear();
         }
-        if !self.audio.set_active(self.active && !paused) {
-            self.audio.discard(now);
-        }
-        self.batcher.clear();
     }
 }
 
@@ -194,9 +177,9 @@ mod tests {
         let visuals = std::rc::Rc::new(std::cell::RefCell::new(VisualManager::default()));
         let mut meter = MeterEngine::new(crate::infra::pipewire::test_audio_reader(), visuals);
         assert!(meter.audio.is_active());
-        meter.set_paused(true, Instant::now());
+        meter.set_paused(true);
         assert!(!meter.audio.is_active());
-        meter.set_paused(false, Instant::now());
+        meter.set_paused(false);
         assert!(meter.audio.is_active());
     }
 

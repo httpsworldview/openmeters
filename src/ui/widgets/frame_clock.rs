@@ -179,8 +179,8 @@ impl FrameCoordinator {
         self.restart(!active);
     }
 
-    pub(in crate::ui) fn set_paused(&mut self, paused: bool, now: Instant) {
-        self.meter.set_paused(paused, now);
+    pub(in crate::ui) fn set_paused(&mut self, paused: bool) {
+        self.meter.set_paused(paused);
         self.restart(paused);
     }
 

@@ -228,7 +228,7 @@ impl UiApp {
 
     fn set_rendering_paused(&mut self, paused: bool) {
         self.rendering_paused = paused;
-        self.frames.borrow_mut().set_paused(paused, Instant::now());
+        self.frames.borrow_mut().set_paused(paused);
     }
 
     fn toggle_config_window(&mut self) -> Task<Message> {
