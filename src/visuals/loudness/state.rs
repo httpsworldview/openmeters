@@ -16,10 +16,9 @@ use iced::advanced::text::Paragraph as _;
 use iced::advanced::{graphics::text::Paragraph, text};
 use iced::alignment::{Horizontal, Vertical};
 use iced::{Color, Point, Rectangle, Size};
-use std::time::{Duration, Instant};
 
 const GUIDE_LABELS: [&str; 6] = ["0", "-6", "-12", "-18", "-24", "-36"];
-const PEAK_HOLD: Duration = Duration::from_secs(2);
+const PEAK_HOLD_SECONDS: f32 = 2.0;
 const PEAK_DECAY_DB_PER_SEC: f32 = 60.0;
 const GUIDE_LABEL_HEIGHT: f32 = 12.0;
 const GUIDE_LABEL_GAP: f32 = 2.0;
@@ -34,28 +33,27 @@ const ZONE_COUNT: usize = 4;
 const DANGER_THRESHOLD_INDEX: usize = ZONE_COUNT - 2;
 const VISIBLE_METER_COUNT: usize = 3;
 
+// Held and decayed in audio seconds.
 #[derive(Debug, Clone, Copy)]
 struct PeakHold {
     db: f32,
-    decay_from: Instant,
+    hold: f32,
 }
 
 impl PeakHold {
-    fn new(db: f32, now: Instant) -> Self {
-        Self {
-            db,
-            decay_from: now,
-        }
-    }
+    const FLOOR: Self = Self {
+        db: DB_RANGE.0,
+        hold: 0.0,
+    };
 
-    fn update(&mut self, value: f32, now: Instant) {
+    fn update(&mut self, value: f32, elapsed: f32) {
         if value >= self.db {
             self.db = value;
-            self.decay_from = now + PEAK_HOLD;
-        } else if now > self.decay_from {
-            let decay_dt = now.duration_since(self.decay_from).as_secs_f32();
-            self.db = (self.db - PEAK_DECAY_DB_PER_SEC * decay_dt).max(value);
-            self.decay_from = now;
+            self.hold = PEAK_HOLD_SECONDS;
+        } else {
+            let decay = (elapsed - self.hold).max(0.0);
+            self.hold = (self.hold - elapsed).max(0.0);
+            self.db = (self.db - PEAK_DECAY_DB_PER_SEC * decay).max(value);
         }
     }
 }
@@ -76,7 +74,7 @@ impl Default for LoudnessState {
             snapshot: LoudnessSnapshot::with_floor(DB_RANGE.0, 2),
             settings: LoudnessSettings::default(),
             palette: palettes::loudness::COLORS,
-            peaks: [PeakHold::new(DB_RANGE.0, Instant::now()); VISIBLE_METER_COUNT],
+            peaks: [PeakHold::FLOOR; VISIBLE_METER_COUNT],
             guide_labels: GUIDE_LABELS.map(|label| {
                 let mut text = raw_text(label, 10.0, Size::new(LEFT_PADDING, GUIDE_LABEL_HEIGHT));
                 text.align_x = Horizontal::Right.into();
@@ -99,20 +97,21 @@ impl LoudnessState {
 
     pub fn reset_audio(&mut self) {
         self.snapshot = LoudnessSnapshot::with_floor(DB_RANGE.0, 2);
-        self.peaks = [PeakHold::new(DB_RANGE.0, Instant::now()); VISIBLE_METER_COUNT];
+        self.peaks = [PeakHold::FLOOR; VISIBLE_METER_COUNT];
         self.refresh_value_label();
         self.geometry.invalidate();
     }
 
     pub fn apply_snapshot(&mut self, snapshot: LoudnessSnapshot) {
         self.snapshot = snapshot;
-        self.update_peak_holds(Instant::now());
+        self.update_peak_holds();
         self.refresh_value_label();
         self.geometry.invalidate();
     }
 
     pub(in crate::visuals) fn is_quiescent(&self) -> bool {
         let settled = LoudnessSnapshot {
+            elapsed: self.snapshot.elapsed,
             positions: self.snapshot.positions,
             ..LoudnessSnapshot::with_floor(
                 self.snapshot.short_term_loudness,
@@ -124,7 +123,7 @@ impl LoudnessState {
 
     pub fn set_modes(&mut self, left: MeterMode, right: MeterMode) {
         if self.settings.left_mode != left || self.settings.right_mode != right {
-            self.peaks.fill(PeakHold::new(DB_RANGE.0, Instant::now()));
+            self.peaks.fill(PeakHold::FLOOR);
         }
         self.settings.left_mode = left;
         self.settings.right_mode = right;
@@ -211,10 +210,10 @@ impl LoudnessState {
         }
     }
 
-    fn update_peak_holds(&mut self, now: Instant) {
+    fn update_peak_holds(&mut self) {
         let meters = self.visible_meters();
         for (peak, (_, value)) in self.peaks.iter_mut().zip(meters) {
-            peak.update(value.clamp(DB_RANGE.0, DB_RANGE.1), now);
+            peak.update(value.clamp(DB_RANGE.0, DB_RANGE.1), self.snapshot.elapsed);
         }
     }
 }
@@ -409,6 +408,7 @@ mod tests {
     fn visible_bars_use_configured_modes_and_channel_aggregation() {
         let mut state = LoudnessState::default();
         state.apply_snapshot(LoudnessSnapshot {
+            elapsed: 0.0,
             short_term_loudness: -9.0,
             momentary_loudness: -7.5,
             rms_fast_db: [-15.0, -12.0, -20.0, -60.0, -6.0, -3.0, 0.0, 0.0],
@@ -477,6 +477,7 @@ mod tests {
     #[test]
     fn visible_bars_follow_fallback_channel_layouts() {
         let snapshot = |true_peak_db, channel_count| LoudnessSnapshot {
+            elapsed: 0.0,
             short_term_loudness: -9.0,
             momentary_loudness: -9.0,
             rms_fast_db: [DB_RANGE.0; MAX_CHANNELS],
@@ -507,13 +508,12 @@ mod tests {
 
     #[test]
     fn peak_hold_restarts_before_decaying() {
-        let start = Instant::now();
-        let mut peak = PeakHold::new(DB_RANGE.0, start);
-        peak.update(-1.0, start);
-        peak.update(-1.0, start + Duration::from_secs(1));
-        peak.update(-60.0, start + Duration::from_secs(3));
+        let mut peak = PeakHold::FLOOR;
+        peak.update(-1.0, 0.0);
+        peak.update(-1.0, 1.0);
+        peak.update(-60.0, 2.0);
         assert_eq!(peak.db, -1.0);
-        peak.update(-60.0, start + Duration::from_secs_f32(3.5));
+        peak.update(-60.0, 0.5);
         assert!((peak.db + 31.0).abs() < 0.01);
     }
 }

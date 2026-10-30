@@ -239,6 +239,7 @@ fn channel_weight(position: ChannelPosition) -> f64 {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct LoudnessSnapshot {
+    pub elapsed: f32,
     pub short_term_loudness: f32,
     pub momentary_loudness: f32,
     pub rms_fast_db: [f32; MAX_CHANNELS],
@@ -354,6 +355,7 @@ impl LoudnessProcessor {
             snapshot.true_peak_db[channel_index] = mean_square_to_db(peak * peak, 0.0);
         }
 
+        snapshot.elapsed = block.duration();
         snapshot.short_term_loudness = mean_square_to_db(weighted_short_term, LOUDNESS_OFFSET);
         snapshot.momentary_loudness = mean_square_to_db(weighted_momentary, LOUDNESS_OFFSET);
         snapshot.positions = block.positions;
