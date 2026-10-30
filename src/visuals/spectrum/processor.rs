@@ -209,15 +209,22 @@ impl SpectrumProcessor {
             return false;
         }
 
-        while (0..TRACE_COUNT)
-            .all(|trace| !active[trace] || self.pcm_buffers[trace].len() >= fft_size)
-        {
+        let traces = || (0..TRACE_COUNT).filter(|&trace| active[trace]);
+        // Without averaging only the newest window shows.
+        if self.config.averaging == AveragingMode::None && hop <= fft_size {
+            let ready =
+                traces().map(|trace| self.pcm_buffers[trace].len().saturating_sub(fft_size));
+            let skip = ready.min().unwrap_or(0) / hop * hop;
+            for trace in traces() {
+                let buf = &mut self.pcm_buffers[trace];
+                self.dc_histories[trace].extend(buf.drain(..skip));
+            }
+            hops += skip / hop;
+        }
+        while traces().all(|trace| self.pcm_buffers[trace].len() >= fft_size) {
             let mut drained = hop;
-            for (trace, &active) in active.iter().enumerate() {
-                if active {
-                    let count = self.process_trace_window(trace, dt_seconds, floor);
-                    drained = drained.min(count);
-                }
+            for trace in traces() {
+                drained = drained.min(self.process_trace_window(trace, dt_seconds, floor));
             }
             self.pending_skip_frames = self.pending_skip_frames.saturating_add(hop - drained);
             hops += 1;
