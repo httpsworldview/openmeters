@@ -214,7 +214,7 @@ impl SpectrumParams {
             }
 
             if let Some(secondary) = secondary {
-                let sec_y = y_at(sample_lerp(secondary, (t0 + t1) * 0.5));
+                let sec_y = y_at(sample_max(secondary, t0, t1));
                 let h = SECONDARY_LINE_THICKNESS.max(1.0) * 0.5;
                 verts.push(quad_instance(
                     x0,
@@ -272,12 +272,6 @@ fn sample_max(pts: &[[f32; 2]], t0: f32, t1: f32) -> f32 {
         sample_lerp_at(pts, lo, start).max(sample_lerp_at(pts, hi, hi_index)),
         f32::max,
     )
-}
-
-fn sample_lerp(pts: &[[f32; 2]], t: f32) -> f32 {
-    let t = t.clamp(0.0, 1.0);
-    let index = pts.partition_point(|p| p[0] < t);
-    sample_lerp_at(pts, t, index)
 }
 
 fn sample_lerp_at(pts: &[[f32; 2]], t: f32, index: usize) -> f32 {
