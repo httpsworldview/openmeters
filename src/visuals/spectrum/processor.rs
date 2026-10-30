@@ -335,7 +335,8 @@ impl SpectrumProcessor {
 
 #[derive(Default)]
 struct SpectrumLevelBuffers {
-    smoothed_power: Vec<f32>,
+    // An f32 average stalls short of its target once each step falls under half an ulp.
+    smoothed_power: Vec<f64>,
     state_floor: f32,
 }
 
@@ -349,7 +350,7 @@ impl SpectrumLevelBuffers {
     fn update_outputs(
         &mut self,
         mode: AveragingMode,
-        powers: &[f32],
+        powers: &mut [f32],
         outputs: &mut [Vec<f32>; WEIGHTING_COUNT],
         weighting_db: &[f32],
         dt_seconds: f32,
@@ -359,31 +360,34 @@ impl SpectrumLevelBuffers {
         debug_assert_eq!(weighting_db.len(), powers.len());
         // The first hop after a reset seeds the state.
         if self.smoothed_power.is_empty() && mode != AveragingMode::None {
-            self.smoothed_power.extend_from_slice(powers);
+            self.smoothed_power
+                .extend(powers.iter().map(|&power| f64::from(power)));
         }
-        let powers = match mode {
-            AveragingMode::None => powers,
+        let state_floor = f64::from(self.state_floor);
+        match mode {
+            AveragingMode::None => {}
             AveragingMode::Exponential { time_constant } => {
-                let weight = smoothing_weight(dt_seconds, time_constant);
-                for (avg, &power) in self.smoothed_power.iter_mut().zip(powers) {
-                    *avg += weight * (power - *avg);
-                    if *avg < self.state_floor && power < self.state_floor {
+                let weight = f64::from(smoothing_weight(dt_seconds, time_constant));
+                for (avg, power) in self.smoothed_power.iter_mut().zip(powers.iter_mut()) {
+                    let target = f64::from(*power);
+                    *avg += weight * (target - *avg);
+                    if *avg < state_floor && target < state_floor {
                         *avg = 0.0;
                     }
+                    *power = *avg as f32;
                 }
-                &self.smoothed_power
             }
             AveragingMode::PeakHold { decay_per_second } => {
-                let decay = db_to_power(-decay_per_second.max(0.0) * dt_seconds);
-                for (hold, &power) in self.smoothed_power.iter_mut().zip(powers) {
-                    *hold = (*hold * decay).max(power);
-                    if *hold < self.state_floor {
+                let decay = f64::from(db_to_power(-decay_per_second.max(0.0) * dt_seconds));
+                for (hold, power) in self.smoothed_power.iter_mut().zip(powers.iter_mut()) {
+                    *hold = (*hold * decay).max(f64::from(*power));
+                    if *hold < state_floor {
                         *hold = 0.0;
                     }
+                    *power = *hold as f32;
                 }
-                &self.smoothed_power
             }
-        };
+        }
         let [weighted_out, raw_out] = outputs;
         let bins = powers
             .iter()
@@ -752,14 +756,14 @@ mod tests {
             },
         ] {
             let mut buffers = SpectrumLevelBuffers {
-                smoothed_power: vec![db_to_power(-101.0), 0.0],
+                smoothed_power: vec![f64::from(db_to_power(-101.0)), 0.0],
                 state_floor: smoothing_state_floor(&[0.0, 1.2], -100.0),
             };
             let mut outputs = [vec![-100.0; 2], vec![-100.0; 2]];
             for _ in 0..20 {
                 buffers.update_outputs(
                     mode,
-                    &[0.0, db_to_power(-100.5)],
+                    &mut [0.0, db_to_power(-100.5)],
                     &mut outputs,
                     &[0.0, 1.2],
                     1.0,
