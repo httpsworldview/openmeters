@@ -200,10 +200,8 @@ impl LoudnessState {
             MeterMode::RmsFast | MeterMode::RmsSlow => "dB",
             MeterMode::TruePeak => "dBTP",
         };
-        let text = format!(
-            "{:.1} {unit}",
-            self.aggregate_channels(mode, MeterSide::Both)
-        );
+        let value = self.aggregate_channels(mode, MeterSide::Both);
+        let text = format!("{value:.1} {unit}");
         if self.value_label.0 != text {
             let paragraph = value_label(&text);
             self.value_label = (text, paragraph);
@@ -308,9 +306,6 @@ crate::visuals::visualization_widget!(Loudness, LoudnessState, |this, renderer, 
 
     renderer.draw_primitive(bounds, params);
 
-    let palette = theme.extended_palette();
-    let label_color = state.palette[PAL_GUIDE];
-
     if let Some(meters @ (meter_x, _, _)) = meter_bounds {
         let guide_bounds = Rectangle {
             width: meter_x - bounds.x,
@@ -325,7 +320,7 @@ crate::visuals::visualization_widget!(Loudness, LoudnessState, |this, renderer, 
                     rect.x + rect.width - 4.0 - size.width,
                     rect.y + (rect.height - size.height) * 0.5,
                 ),
-                label_color,
+                state.palette[PAL_GUIDE],
                 bounds,
             );
         }
@@ -345,7 +340,7 @@ crate::visuals::visualization_widget!(Loudness, LoudnessState, |this, renderer, 
                 label_rect.center_x() - label_size.width * 0.5,
                 label_rect.center_y() - label_size.height * 0.5,
             ),
-            palette.background.base.text,
+            theme.extended_palette().background.base.text,
             bounds,
         );
     }

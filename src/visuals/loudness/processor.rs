@@ -13,11 +13,6 @@ const DEFAULT_FLOOR_DB: f32 = -99.9;
 // K-weighted windows (seconds): short-term, momentary, fast RMS, slow RMS.
 const DEFAULT_WINDOWS: [f32; 4] = [3.0, 0.4, 0.3, 1.0];
 
-const WIN_SHORT_TERM: usize = 0;
-const WIN_MOMENTARY: usize = 1;
-const WIN_RMS_FAST: usize = 2;
-const WIN_RMS_SLOW: usize = 3;
-
 // Numerator, denominator, output gain.
 type KWeighting = ([f64; 5], [f64; 5], f64);
 
@@ -151,11 +146,8 @@ impl TruePeakMeter {
         let output: [f32; TRUE_PEAK_PHASES] =
             std::array::from_fn(|phase| sums.iter().map(|sum| sum[phase]).sum());
         self.points.extend_from_slice(&output);
-        self.peak = if sample.abs() > self.peak {
-            sample.abs()
-        } else {
-            self.peak
-        };
+        let level = sample.abs();
+        self.peak = if level > self.peak { level } else { self.peak };
         if self.points.len() == TRUE_PEAK_BUFFER_LEN {
             self.refine();
         }
@@ -181,21 +173,14 @@ impl TruePeakMeter {
                     reason = "min/max also bound NaN ratios after overflow"
                 )]
                 let offset = (delta * 0.5 / denominator).max(-0.5).min(0.5);
-                let value = b + offset * 0.5 * (delta - offset * curve);
-                let candidate = if value.abs() > c.abs() {
-                    value.abs()
-                } else {
-                    c.abs()
-                };
+                let value = (b + offset * 0.5 * (delta - offset * curve)).abs();
+                let candidate = if value > c.abs() { value } else { c.abs() };
                 *peak = if candidate > *peak { candidate } else { *peak };
             }
         }
-        self.peak = peaks.into_iter().fold(
-            self.peak,
-            |peak, value| {
-                if value > peak { value } else { peak }
-            },
-        );
+        for value in peaks {
+            self.peak = if value > self.peak { value } else { self.peak };
+        }
         // The untouched final two points bridge batches and audio blocks.
         self.points.copy_within(n.., 0);
         self.points.truncate(2);
@@ -290,21 +275,14 @@ impl LoudnessProcessor {
         self.channels.fill_with(|| None);
     }
 
-    fn ensure_state(&mut self, channels: usize, sample_rate: f32) {
-        let rate_changed = self.config.sample_rate != sample_rate;
-
-        if rate_changed {
-            self.config.sample_rate = sample_rate;
-            self.weighting = k_weighting_coefficients(f64::from(sample_rate));
-        }
-
-        if rate_changed || self.channels.len() != channels {
-            self.channels = (0..channels).map(|_| None).collect();
-        }
-    }
-
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> LoudnessSnapshot {
-        self.ensure_state(block.channels, block.sample_rate);
+        let sample_rate = block.sample_rate;
+        if self.config.sample_rate != sample_rate {
+            *self = Self::new(LoudnessConfig { sample_rate });
+        }
+        if self.channels.len() != block.channels {
+            self.channels = (0..block.channels).map(|_| None).collect();
+        }
 
         let weighting = &self.weighting;
         let firs = &*TRUE_PEAK_FIR;
@@ -343,10 +321,8 @@ impl LoudnessProcessor {
                 continue;
             };
             let weight = channel_weight(block.positions[channel_index]);
-            let [short_term] = windows.mean(WIN_SHORT_TERM);
-            let [momentary] = windows.mean(WIN_MOMENTARY);
-            let [rms_fast] = windows.mean(WIN_RMS_FAST);
-            let [rms_slow] = windows.mean(WIN_RMS_SLOW);
+            let [short_term, momentary, rms_fast, rms_slow] =
+                std::array::from_fn(|window| windows.mean(window)[0]);
             weighted_short_term += short_term * weight;
             weighted_momentary += momentary * weight;
             snapshot.rms_fast_db[channel_index] = mean_square_to_db(rms_fast, 0.0);
