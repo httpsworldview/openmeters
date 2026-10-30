@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::processor::{SpectrumSnapshot, SpectrumTraceSnapshot};
+use super::processor::{SpectrumSnapshot, SpectrumTraceSnapshot, a_weight};
 use super::render::{
     MIN_TRACE_POINTS, RAMP_SIZE, SpectrumCutoutParams, SpectrumParams, SpectrumPeakParams,
 };
 use crate::persistence::settings::SpectrumSettings;
 use crate::util::audio::musical::NoteInfo;
-use crate::util::audio::{Channel, DISPLAY_MIN_HZ, FrequencyScale, fmt_freq, smoothing_weight};
+use crate::util::audio::{
+    Channel, DISPLAY_MIN_HZ, FrequencyScale, WindowKind, fmt_freq, smoothing_weight,
+};
 use crate::util::color::{color_to_rgba, with_alpha};
 use crate::util::lerp;
 use crate::visuals::options::{SpectrumDisplayMode, SpectrumWeightingMode};
@@ -19,6 +21,7 @@ use iced::advanced::Renderer as _;
 use iced::advanced::graphics::text::Paragraph;
 use iced::advanced::text::{Paragraph as _, Renderer as _};
 use iced::{Color, Padding, Point, Rectangle, Size};
+use std::ops::Range;
 use std::sync::{Arc, LazyLock};
 
 const EPSILON: f32 = 1e-6;
@@ -157,14 +160,7 @@ impl SpectrumState {
         }
         let peak = primary_trace
             .filter(|_| style.show_peak_label)
-            .and_then(|trace| {
-                self.build_peak(
-                    snap,
-                    trace_db(&snap.traces[trace], style.weighting_mode),
-                    min_f,
-                    max_f,
-                )
-            });
+            .and_then(|trace| self.build_peak(snap, &snap.traces[trace], min_f, max_f));
         self.effective_range = Some((min_f, max_f));
         self.fade_peak(peak, snap.elapsed);
         self.geometry.invalidate();
@@ -289,27 +285,29 @@ impl SpectrumState {
     fn build_peak(
         &self,
         snap: &SpectrumSnapshot,
-        db: &[f32],
+        trace: &SpectrumTraceSnapshot,
         min_f: f32,
         max_f: f32,
     ) -> Option<PeakUpdate> {
         const MIN_NORMALIZED_LEVEL: f32 = 0.08;
         let bins = &snap.frequency_bins;
-        let bin = peak_bin(bins, db, min_f, max_f)?;
+        let db = trace_db(trace, self.style.weighting_mode);
+        let (bin, range) = peak_bin(bins, db, min_f, max_f)?;
         if db[bin] <= snap.floor_db {
             return None;
         }
-        let (f, m) = interpolated_peak(bins, db, bin);
+        // Weighting would skew the window's shape, so interpolate the raw trace and weight after.
+        let (f, m) = interpolated_peak(bins, &trace[1], bin, range, self.style.window);
+        let (m, unit) = match self.style.weighting_mode {
+            SpectrumWeightingMode::AWeighted => (m + a_weight(f), "dBFS(A)"),
+            SpectrumWeightingMode::Raw => (m, "dBFS"),
+        };
         let x = view_x(&self.style, (min_f, max_f), f);
         let y = ((m - self.style.floor_db) / (MAX_DB - self.style.floor_db).max(EPSILON))
             .clamp(0.0, 1.0);
         if y < MIN_NORMALIZED_LEVEL {
             return None;
         }
-        let unit = match self.style.weighting_mode {
-            SpectrumWeightingMode::AWeighted => "dBFS(A)",
-            SpectrumWeightingMode::Raw => "dBFS",
-        };
         let freq = fmt_freq(f);
         let text = match NoteInfo::from_frequency(f) {
             Some(ni) => [ni.fmt_note_cents(), format!("{freq}   {m:.1} {unit}")],
@@ -489,29 +487,56 @@ fn value_at(bins: &[f32], mags: &[f32], f: f32) -> f32 {
     )
 }
 
-fn peak_bin(bins: &[f32], db: &[f32], min_f: f32, max_f: f32) -> Option<usize> {
-    (bins.partition_point(|&f| f < min_f).max(1)
-        ..bins.partition_point(|&f| f <= max_f).min(bins.len() - 1))
+fn peak_bin(bins: &[f32], db: &[f32], min_f: f32, max_f: f32) -> Option<(usize, Range<usize>)> {
+    let range = bins.partition_point(|&f| f < min_f).max(1)
+        ..bins.partition_point(|&f| f <= max_f).min(bins.len() - 1);
+    let bin = (range.clone())
         .filter(|&i| db[i].is_finite())
-        .max_by(|&a, &b| db[a].total_cmp(&db[b]))
+        .max_by(|&a, &b| db[a].total_cmp(&db[b]))?;
+    Some((bin, range))
 }
 
-fn interpolated_peak(bins: &[f32], db: &[f32], bin: usize) -> (f32, f32) {
-    let bin_hz = bins[1] - bins[0];
-    let (center_freq, center) = (bins[bin], db[bin]);
-    let (left, right) = (db[bin - 1], db[bin + 1]);
-    let denom = left - 2.0 * center + right;
-    let offset = if left.is_finite() && right.is_finite() && denom < -EPSILON {
-        (0.5 * (left - right) / denom).clamp(-0.5, 0.5)
-    } else {
-        0.0
-    };
-    let level = if offset == 0.0 {
-        center
-    } else {
-        (center - 0.25 * (left - right) * offset).max(center)
-    };
-    ((center_freq + offset * bin_hz).max(0.0), level)
+// Exact for an isolated tone: inverts the louder neighbor's magnitude ratio through the
+// window's response, then removes the scalloping loss at the peak bin. Weighting can move a
+// tone's peak bin across its main lobe, so the raw peak is sought that far, within `range`.
+fn interpolated_peak(
+    bins: &[f32],
+    db: &[f32],
+    start: usize,
+    range: Range<usize>,
+    window: WindowKind,
+) -> (f32, f32) {
+    let reach = window.cosine_terms().len();
+    let first = range.start.max(start.saturating_sub(reach));
+    let last = (range.end - 1).min(start + reach);
+    let mut bin = start;
+    while bin > first && db[bin - 1] > db[bin] {
+        bin -= 1;
+    }
+    while bin < last && db[bin + 1] > db[bin] {
+        bin += 1;
+    }
+    // Still rising at the bound: no tone peaks near the displayed bin (a leakage skirt, or
+    // the edge of the view), so label that bin as drawn.
+    if (bin == first && db[bin - 1] > db[bin]) || (bin == last && db[bin + 1] > db[bin]) {
+        return (bins[start], db[start]);
+    }
+    let (left, center, right) = (db[bin - 1], db[bin], db[bin + 1]);
+    let ratio = 10.0_f64.powf(f64::from(left.max(right) - center) / 20.0);
+    let (mut lo, mut hi) = (0.0, 0.5);
+    for _ in 0..32 {
+        let mid = 0.5 * (lo + hi);
+        if window.response(mid - 1.0) < ratio * window.response(mid) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let offset = 0.5 * (lo + hi);
+    let level = f64::from(center) - 20.0 * window.response(offset).log10();
+    let side = if right > left { 1.0 } else { -1.0 };
+    let frequency = bins[bin] + side * offset as f32 * (bins[1] - bins[0]);
+    (frequency.max(0.0), level as f32)
 }
 
 #[cfg(test)]

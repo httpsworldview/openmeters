@@ -12,21 +12,39 @@ crate::macros::choice_enum!(pub enum WindowKind {
 });
 
 impl WindowKind {
-    pub(crate) fn coefficients(self, len: usize) -> Vec<f32> {
-        if len <= 1 {
-            return vec![1.0; len];
-        }
-        let coeffs: &[f64] = match self {
-            Self::Rectangular => return vec![1.0; len],
+    // Periodic window: sum of terms[k] * cos(2 pi k n / len).
+    pub(crate) const fn cosine_terms(self) -> &'static [f64] {
+        match self {
+            Self::Rectangular => &[1.0],
             Self::Hann => &[0.5, -0.5],
             Self::Hamming => &[25.0 / 46.0, -21.0 / 46.0],
             Self::Blackman => &[0.42, -0.5, 0.08],
             Self::BlackmanHarris => &[0.35875, -0.48829, 0.14128, -0.01168],
-        };
+        }
+    }
+
+    // |W(offset) / W(0)| for a tone `offset` bins away, in the large-length limit.
+    pub(crate) fn response(self, offset: f64) -> f64 {
+        let (c0, terms) = self.cosine_terms().split_first().unwrap();
+        let x = core::f64::consts::PI * offset;
+        let sinc = if x == 0.0 { 1.0 } else { x.sin() / x };
+        let d2 = offset * offset;
+        let shape: f64 = (1..)
+            .zip(terms)
+            .map(|(k, term)| term / c0 * d2 / (d2 - f64::from(k * k)))
+            .sum();
+        (sinc * (1.0 + shape)).abs()
+    }
+
+    pub(crate) fn coefficients(self, len: usize) -> Vec<f32> {
+        if len <= 1 {
+            return vec![1.0; len];
+        }
         let mut window = vec![0.0; len];
         for n in 0..=len / 2 {
             let phi = core::f64::consts::TAU * n as f64 / len as f64;
-            let value = coeffs
+            let value = self
+                .cosine_terms()
                 .iter()
                 .enumerate()
                 .fold(0.0, |sum, (k, &c)| c.mul_add((phi * k as f64).cos(), sum))

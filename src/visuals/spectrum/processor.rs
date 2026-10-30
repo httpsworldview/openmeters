@@ -414,7 +414,7 @@ fn reset_to_floor(buf: &mut Vec<f32>, bins: usize, floor: f32) {
     buf.resize(bins, floor);
 }
 
-fn a_weight(freq_hz: f32) -> f32 {
+pub(super) fn a_weight(freq_hz: f32) -> f32 {
     const C1: f64 = 20.598_997 * 20.598_997;
     const C2: f64 = 107.652_65 * 107.652_65;
     const C3: f64 = 737.862_23 * 737.862_23;
