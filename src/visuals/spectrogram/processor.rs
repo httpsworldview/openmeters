@@ -3,9 +3,8 @@
 
 use crate::dsp::AudioBlock;
 use crate::util::audio::{
-    Channel, DB_FLOOR, DEFAULT_SAMPLE_RATE, MAX_DSP_BUFFER_LEN, WindowKind,
-    compute_fft_bin_normalization, copy_dc_removed_windowed_from_deque, power_to_db,
-    sanitize_sample_rate,
+    Channel, DB_FLOOR, DEFAULT_SAMPLE_RATE, DcHistory, MAX_DSP_BUFFER_LEN, WindowKind,
+    compute_fft_bin_normalization, copy_dc_removed_windowed, power_to_db, sanitize_sample_rate,
 };
 use bytemuck::{Pod, Zeroable};
 use realfft::{RealFftPlanner, RealToComplex};
@@ -167,6 +166,7 @@ crate::macros::default_struct! {
         bin_norm: Vec<f32> = Vec::new(),
         reassigned_power_scale: f32 = 1.0,
         audio_buffer: VecDeque<f32> = VecDeque::new(),
+        classic_dc: DcHistory = DcHistory::default(),
         pending_skip_samples: usize = 0,
         audio_last_nonzero: Option<usize> = None,
         reset: bool = true,
@@ -188,6 +188,7 @@ impl SpectrogramProcessor {
 
     pub fn reset_audio(&mut self) {
         self.audio_buffer.clear();
+        self.classic_dc.clear();
         self.pending_skip_samples = 0;
         self.audio_last_nonzero = None;
         self.reset = true;
@@ -214,6 +215,7 @@ impl SpectrogramProcessor {
         self.bin_norm = compute_fft_bin_normalization(&self.window, self.fft_size);
         let (transforms, active_len) = if self.config.use_reassignment {
             let hilbert_len = Self::hilbert_len_for(window_size);
+            self.classic_dc = DcHistory::default();
             let mut planner = FftPlanner::new();
             let ffts = [
                 planner.plan_fft_forward(self.fft_size),
@@ -239,6 +241,7 @@ impl SpectrogramProcessor {
             (Transforms::Reassigned(ffts), hilbert_len)
         } else {
             self.reassign = ReassignmentBuffers::default();
+            self.classic_dc = DcHistory::new(window_size);
             self.reassigned_power_scale = 1.0;
             let fft = RealFftPlanner::new().plan_fft_forward(self.fft_size);
             self.real = vec![0.0; self.fft_size];
@@ -309,10 +312,13 @@ impl SpectrogramProcessor {
                     ))
                 }
                 Transforms::Classic(fft) => {
-                    copy_dc_removed_windowed_from_deque(
+                    let samples = &self.audio_buffer.make_contiguous()[..window_size];
+                    let dc = self.classic_dc.dc(samples);
+                    copy_dc_removed_windowed(
                         &mut self.real[..window_size],
-                        &self.audio_buffer,
+                        samples,
                         &self.window,
+                        dc,
                     );
                     self.real[window_size..].fill(0.0);
                     fft.process_with_scratch(&mut self.real, &mut self.complex, &mut self.scratch)
@@ -341,10 +347,7 @@ impl SpectrogramProcessor {
 
     fn drain_audio(&mut self, count: usize) {
         let count = count.min(self.audio_buffer.len());
-        if count == 0 {
-            return;
-        }
-        drop(self.audio_buffer.drain(..count));
+        self.classic_dc.extend(self.audio_buffer.drain(..count));
         self.audio_last_nonzero = self
             .audio_last_nonzero
             .and_then(|index| index.checked_sub(count));
@@ -357,15 +360,11 @@ impl SpectrogramProcessor {
     }
 
     fn push_audio(&mut self, block: &AudioBlock<'_>) {
-        let frames = block.frame_count();
-        let skip = self.pending_skip_samples.min(frames);
+        let skip = self.pending_skip_samples.min(block.frame_count());
         self.pending_skip_samples -= skip;
-        if skip == frames {
-            return;
-        }
-
-        self.audio_buffer.reserve(frames - skip);
-        for sample in block.projected_frames(self.config.source).skip(skip) {
+        let mut samples = block.projected_frames(self.config.source);
+        self.classic_dc.extend(samples.by_ref().take(skip));
+        for sample in samples {
             if sample != 0.0 {
                 self.audio_last_nonzero = Some(self.audio_buffer.len());
             }

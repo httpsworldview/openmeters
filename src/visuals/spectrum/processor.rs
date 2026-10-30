@@ -3,9 +3,9 @@
 
 use crate::dsp::AudioBlock;
 use crate::util::audio::{
-    Channel, DB_FLOOR, DEFAULT_SAMPLE_RATE, LN_TO_DB, MAX_DSP_BUFFER_LEN, WindowKind,
-    compute_fft_bin_normalization, copy_dc_removed_windowed_from_deque, db_to_power,
-    sanitize_negative_db, sanitize_sample_rate, smoothing_weight,
+    Channel, DB_FLOOR, DEFAULT_SAMPLE_RATE, DcHistory, LN_TO_DB, MAX_DSP_BUFFER_LEN, WindowKind,
+    compute_fft_bin_normalization, copy_dc_removed_windowed, db_to_power, sanitize_negative_db,
+    sanitize_sample_rate, smoothing_weight,
 };
 use realfft::{RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex32;
@@ -95,6 +95,7 @@ pub struct SpectrumProcessor {
     scratch_buffer: Vec<Complex32>,
     bin_normalization: Vec<f32>,
     pcm_buffers: [VecDeque<f32>; TRACE_COUNT],
+    dc_histories: [DcHistory; TRACE_COUNT],
     pending_skip_frames: usize,
     levels: [SpectrumLevelBuffers; TRACE_COUNT],
     a_weighting_db: Vec<f32>,
@@ -122,6 +123,7 @@ impl SpectrumProcessor {
             self.reset_level_buffers();
         }
         self.pcm_buffers.iter_mut().for_each(VecDeque::clear);
+        self.dc_histories.iter_mut().for_each(DcHistory::clear);
         self.pending_skip_frames = 0;
     }
 
@@ -147,6 +149,7 @@ impl SpectrumProcessor {
         self.scratch_buffer = fft.make_scratch_vec();
         self.fft = Some(fft);
         self.bin_normalization = compute_fft_bin_normalization(&self.window, fft_size);
+        self.dc_histories = std::array::from_fn(|_| DcHistory::new(fft_size));
         self.reset_buffers();
     }
 
@@ -228,11 +231,9 @@ impl SpectrumProcessor {
     }
 
     fn process_trace_window(&mut self, trace: usize, dt_seconds: f32, floor: f32) -> usize {
-        copy_dc_removed_windowed_from_deque(
-            &mut self.real_buffer,
-            &self.pcm_buffers[trace],
-            &self.window,
-        );
+        let samples = &self.pcm_buffers[trace].make_contiguous()[..self.window.len()];
+        let dc = self.dc_histories[trace].dc(samples);
+        copy_dc_removed_windowed(&mut self.real_buffer, samples, &self.window, dc);
         self.fft
             .as_ref()
             .expect("spectrum FFT")
@@ -267,7 +268,7 @@ impl SpectrumProcessor {
         );
         let buf = &mut self.pcm_buffers[trace];
         let count = self.config.hop_size.min(buf.len());
-        buf.drain(..count);
+        self.dc_histories[trace].extend(buf.drain(..count));
         count
     }
 
@@ -286,31 +287,17 @@ impl SpectrumProcessor {
     }
 
     fn push_sources(&mut self, block: &AudioBlock<'_>) {
-        let frames = block.frame_count();
-        let skip = self.pending_skip_frames.min(frames);
+        let skip = self.pending_skip_frames.min(block.frame_count());
         self.pending_skip_frames -= skip;
-        if skip == frames {
-            return;
-        }
-
-        let [primary_source, secondary_source] = self.sources();
-        let active = self.active_traces();
-        let [primary, secondary] = self.pcm_buffers.each_mut();
-        match active {
-            [true, true] => {
-                let remaining = frames - skip;
-                primary.reserve(remaining);
-                secondary.reserve(remaining);
-                for stereo in block.stereo_frames().skip(skip) {
-                    primary.push_back(primary_source.project(stereo));
-                    secondary.push_back(secondary_source.project(stereo));
-                }
+        let (sources, active) = (self.sources(), self.active_traces());
+        let traces = self.pcm_buffers.iter_mut().zip(&mut self.dc_histories);
+        for (((buffer, history), source), active) in traces.zip(sources).zip(active) {
+            if active {
+                // Skipped frames still belong to the stream the DC estimate spans.
+                let mut frames = block.projected_frames(source);
+                history.extend(frames.by_ref().take(skip));
+                buffer.extend(frames);
             }
-            [true, false] => primary.extend(block.projected_frames(primary_source).skip(skip)),
-            [false, true] => {
-                secondary.extend(block.projected_frames(secondary_source).skip(skip));
-            }
-            [false, false] => {}
         }
     }
 

@@ -70,15 +70,82 @@ pub(crate) fn mean_f32(samples: &[f32]) -> f32 {
     (sum / samples.len() as f64) as f32
 }
 
-pub fn copy_dc_removed_windowed_from_deque(dst: &mut [f32], src: &VecDeque<f32>, window: &[f32]) {
-    let len = dst.len();
-    let (head, tail) = src.as_slices();
-    let split = head.len().min(len);
-    dst[..split].copy_from_slice(&head[..split]);
-    dst[split..].copy_from_slice(&tail[..len - split]);
-    let mean = mean_f32(dst);
+// A window's own weighted mean zeroes its DC bin but also takes tones in its main lobe, so
+// callers with a longer view of the stream pass their own estimate.
+pub fn copy_dc_removed_windowed(dst: &mut [f32], src: &[f32], window: &[f32], dc: Option<f32>) {
+    for ((sample, &source), &weight) in dst.iter_mut().zip(src).zip(window) {
+        *sample = source * weight;
+    }
+    let mean = dc.unwrap_or_else(|| mean_f32(dst) / mean_f32(window));
     for (sample, &weight) in dst.iter_mut().zip(window) {
-        *sample = (*sample - mean) * weight;
+        *sample -= mean * weight;
+    }
+}
+
+// Eight running sums let the compiler vectorize a sum it may not reorder. Offsets from a sample
+// of the signal keep the mean of a constant signal exact.
+fn weighted_offsets(weights: &[f32], samples: &[f32], center: f32) -> f32 {
+    let (weights, weight_tail) = weights.as_chunks::<8>();
+    let (samples, sample_tail) = samples.as_chunks::<8>();
+    let mut sums = [0.0_f32; 8];
+    for (weights, samples) in weights.iter().zip(samples) {
+        sums = std::array::from_fn(|i| sums[i] + weights[i] * (samples[i] - center));
+    }
+    let tail = std::iter::zip(weight_tail, sample_tail).map(|(w, x)| w * (x - center));
+    sums.into_iter().chain(tail).sum()
+}
+
+pub(crate) fn normalized_blackman_harris(len: usize) -> Vec<f32> {
+    let weights = WindowKind::BlackmanHarris.coefficients(len);
+    let sum: f64 = weights.iter().map(|&weight| f64::from(weight)).sum();
+    weights
+        .iter()
+        .map(|&weight| (f64::from(weight) / sum) as f32)
+        .collect()
+}
+
+// Up to three windows of samples a spectrum has moved past. A Blackman-Harris mean over four
+// windows takes in only tones within a bin of DC.
+#[derive(Debug, Default)]
+pub struct DcHistory {
+    samples: VecDeque<f32>,
+    weights: Vec<f32>,
+}
+
+impl DcHistory {
+    pub fn new(window_len: usize) -> Self {
+        Self {
+            samples: VecDeque::new(),
+            weights: normalized_blackman_harris(4 * window_len),
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.samples.clear();
+    }
+
+    pub fn extend(&mut self, samples: impl IntoIterator<Item = f32>) {
+        self.samples.extend(samples);
+        let excess = self
+            .samples
+            .len()
+            .saturating_sub(self.weights.len() / 4 * 3);
+        self.samples.drain(..excess);
+    }
+
+    // None leaves the window's own mean: until the history is full, and in a silent window, so
+    // an earlier offset never shows there.
+    pub fn dc(&mut self, window: &[f32]) -> Option<f32> {
+        if window.iter().all(|&sample| sample == 0.0) {
+            return None;
+        }
+        let history = &*self.samples.make_contiguous();
+        let (past, current) = self.weights.split_at(history.len());
+        let center = *history.first()?;
+        (current.len() == window.len()).then(|| {
+            let past = weighted_offsets(past, history, center);
+            center + past + weighted_offsets(current, window, center)
+        })
     }
 }
 
@@ -100,9 +167,9 @@ mod tests {
 
     #[test]
     fn fft_window_math_is_precise_and_periodic() {
-        let samples = VecDeque::from(vec![0.1; 16_384]);
+        let samples = vec![0.1; 16_384];
         let mut output = vec![0.0; samples.len()];
-        copy_dc_removed_windowed_from_deque(&mut output, &samples, &vec![1.0; samples.len()]);
+        copy_dc_removed_windowed(&mut output, &samples, &vec![1.0; samples.len()], None);
         assert!(output.iter().all(|&sample| sample == 0.0));
         let hann = WindowKind::Hann.coefficients(8);
         assert_eq!(hann[1], hann[7]);
