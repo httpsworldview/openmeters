@@ -173,7 +173,8 @@ impl SpectrumProcessor {
         let floor = self.config.floor_db;
         self.snapshot.floor_db = floor;
         for db in self.snapshot.traces.iter_mut().flatten() {
-            reset_to_floor(db, bins, floor);
+            db.clear();
+            db.resize(bins, floor);
         }
         self.reset_smoothing();
     }
@@ -318,8 +319,6 @@ impl SpectrumProcessor {
         if self.fft.is_none() {
             return;
         }
-        let averaging_mode_changed =
-            std::mem::discriminant(&old.averaging) != std::mem::discriminant(&config.averaging);
         if old.fft_size != config.fft_size || old.window != config.window {
             self.rebuild_fft();
         } else if old.sample_rate != config.sample_rate
@@ -328,7 +327,9 @@ impl SpectrumProcessor {
             || old.secondary_source != config.secondary_source
         {
             self.reset_buffers();
-        } else if averaging_mode_changed {
+        } else if std::mem::discriminant(&old.averaging)
+            != std::mem::discriminant(&config.averaging)
+        {
             self.reset_level_buffers();
         } else if old.floor_db != config.floor_db {
             self.reset_smoothing();
@@ -409,11 +410,6 @@ impl SpectrumLevelBuffers {
     }
 }
 
-fn reset_to_floor(buf: &mut Vec<f32>, bins: usize, floor: f32) {
-    buf.clear();
-    buf.resize(bins, floor);
-}
-
 pub(super) fn a_weight(freq_hz: f32) -> f32 {
     const C1: f64 = 20.598_997 * 20.598_997;
     const C2: f64 = 107.652_65 * 107.652_65;
@@ -424,13 +420,10 @@ pub(super) fn a_weight(freq_hz: f32) -> f32 {
         return f32::NEG_INFINITY;
     }
 
-    let f = freq_hz as f64;
+    let f = f64::from(freq_hz);
     let f2 = f * f;
-    let numerator = C4 * f2 * f2;
     let denom = (f2 + C1) * ((f2 + C2) * (f2 + C3)).sqrt() * (f2 + C4);
-
-    let ra = numerator / denom;
-    (20.0 * ra.log10() + 2.0) as f32
+    (20.0 * (C4 * f2 * f2 / denom).log10() + 2.0) as f32
 }
 
 #[cfg(test)]

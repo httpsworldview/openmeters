@@ -96,10 +96,6 @@ impl SpectrumParams {
         let clip = ClipTransform::from_bounds(bounds);
 
         let has_primary = self.normalized_points.len() >= MIN_TRACE_POINTS;
-        if !has_primary && self.secondary_points.len() < MIN_TRACE_POINTS {
-            return;
-        }
-
         if has_primary && self.display_mode == SpectrumDisplayMode::Bar {
             self.build_bar_vertices(&mut scratch.instances, clip, bounds);
         } else {
@@ -140,36 +136,38 @@ impl SpectrumParams {
         vertices.reserve(segments(&self.normalized_points) * 2 + segments(&self.secondary_points));
         let baseline = bounds.y + bounds.height;
         let project = |out: &mut Vec<(f32, f32)>, normalized: &[[f32; 2]]| {
-            let visible = normalized.len() >= MIN_TRACE_POINTS;
-            if visible {
-                out.extend(
-                    normalized
-                        .iter()
-                        .map(|&p| normalized_to_cartesian(bounds, p)),
-                );
-                decimate_line(out, pixel_budget);
-            }
-            visible
-        };
-
-        let has_primary = project(points, &self.normalized_points);
-        if has_primary {
-            self.push_highlight_columns(vertices, clip, baseline, bounds.height, points);
-        }
-
-        if project(points2, &self.secondary_points) {
-            extend_aa_line_list(
-                vertices,
-                points2,
-                SECONDARY_LINE_THICKNESS,
-                self.secondary_line_color,
-                clip,
+            out.extend(
+                normalized
+                    .iter()
+                    .map(|&p| normalized_to_cartesian(bounds, p)),
             );
-        }
+            decimate_line(out, pixel_budget);
+        };
+        project(points, &self.normalized_points);
+        project(points2, &self.secondary_points);
 
-        if has_primary {
-            extend_aa_line_list(vertices, points, LINE_THICKNESS, self.line_color, clip);
+        for seg in points.windows(2) {
+            let c0 = self.ramp_color((baseline - seg[0].1) / bounds.height);
+            let c1 = self.ramp_color((baseline - seg[1].1) / bounds.height);
+            if c0[3] > 0.0 || c1[3] > 0.0 {
+                vertices.push(baseline_segment_instance(
+                    seg[0],
+                    seg[1],
+                    baseline,
+                    clip,
+                    [c0, c1],
+                    false,
+                ));
+            }
         }
+        extend_aa_line_list(
+            vertices,
+            points2,
+            SECONDARY_LINE_THICKNESS,
+            self.secondary_line_color,
+            clip,
+        );
+        extend_aa_line_list(vertices, points, LINE_THICKNESS, self.line_color, clip);
     }
 
     fn build_bar_vertices(
@@ -192,10 +190,7 @@ impl SpectrumParams {
 
         verts.reserve(bar_count * if secondary.is_some() { 2 } else { 1 });
         for i in 0..bar_count {
-            let (t0, t1) = (
-                i as f32 / bar_count as f32,
-                (i + 1) as f32 / bar_count as f32,
-            );
+            let [t0, t1] = [i, i + 1].map(|edge| edge as f32 / bar_count as f32);
             let amp = sample_max(&self.normalized_points, t0, t1);
             let x0 = bounds.x + i as f32 * unit + offset;
             let x1 = x0 + bar_w;
@@ -228,30 +223,6 @@ impl SpectrumParams {
         }
     }
 
-    fn push_highlight_columns(
-        &self,
-        vertices: &mut Vec<SdfInstance>,
-        clip: ClipTransform,
-        baseline: f32,
-        height: f32,
-        positions: &[(f32, f32)],
-    ) {
-        for seg in positions.windows(2) {
-            let c0 = self.ramp_color((baseline - seg[0].1) / height);
-            let c1 = self.ramp_color((baseline - seg[1].1) / height);
-            if c0[3] > 0.0 || c1[3] > 0.0 {
-                vertices.push(baseline_segment_instance(
-                    seg[0],
-                    seg[1],
-                    baseline,
-                    clip,
-                    [c0, c1],
-                    false,
-                ));
-            }
-        }
-    }
-
     fn ramp_color(&self, amp: f32) -> [f32; 4] {
         let (lo, hi, f) = ramp_segment(&self.stop_positions, &self.stop_spreads, amp);
         let [a, b] = [self.ramp[lo], self.ramp[hi]];
@@ -275,14 +246,10 @@ fn sample_max(pts: &[[f32; 2]], t0: f32, t1: f32) -> f32 {
 }
 
 fn sample_lerp_at(pts: &[[f32; 2]], t: f32, index: usize) -> f32 {
-    if index == 0 {
-        return pts[0][1];
+    if index == 0 || index >= pts.len() {
+        return pts[index.min(pts.len() - 1)][1];
     }
-    if index >= pts.len() {
-        return pts[pts.len() - 1][1];
-    }
-    let a = pts[index - 1];
-    let b = pts[index];
+    let [a, b] = [pts[index - 1], pts[index]];
     lerp(a[1], b[1], (t - a[0]) / (b[0] - a[0]).max(1e-6))
 }
 

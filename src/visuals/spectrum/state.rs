@@ -59,18 +59,6 @@ struct GridLayoutKey {
 }
 type SharedPoints = Arc<Vec<[f32; 2]>>;
 static EMPTY_POINTS: LazyLock<SharedPoints> = LazyLock::new(|| Arc::new(Vec::new()));
-fn rebuild_points(
-    points: &mut SharedPoints,
-    capacity: usize,
-    build: impl FnOnce(&mut Vec<[f32; 2]>),
-) {
-    if Arc::strong_count(points) != 1 || points.capacity() != capacity {
-        *points = Arc::new(Vec::with_capacity(capacity));
-    }
-    let points = Arc::get_mut(points).expect("unshared spectrum geometry");
-    points.clear();
-    build(points);
-}
 
 crate::macros::default_struct! {
     pub(crate) struct SpectrumState {
@@ -146,17 +134,20 @@ impl SpectrumState {
                 *points = Arc::clone(&EMPTY_POINTS);
                 continue;
             };
-            rebuild_points(points, self.x_cache.len(), |points| {
-                build_single_points_into(
-                    points,
-                    style,
-                    min_f,
-                    max_f,
-                    snap,
-                    trace_db(&snap.traces[trace], weighting),
-                    &self.x_cache,
-                );
-            });
+            if Arc::strong_count(points) != 1 || points.capacity() != self.x_cache.len() {
+                *points = Arc::new(Vec::with_capacity(self.x_cache.len()));
+            }
+            let points = Arc::get_mut(points).expect("unshared spectrum geometry");
+            points.clear();
+            build_single_points_into(
+                points,
+                style,
+                min_f,
+                max_f,
+                snap,
+                trace_db(&snap.traces[trace], weighting),
+                &self.x_cache,
+            );
         }
         let peak = primary_trace
             .filter(|_| style.show_peak_label)
@@ -354,11 +345,9 @@ impl SpectrumState {
     }
 
     fn peak(&self) -> Option<&PeakLabel> {
-        self.peak.as_ref().filter(|_| {
-            self.style.show_peak_label
-                && self.style.source != Channel::None
-                && self.points[0].len() >= MIN_TRACE_POINTS
-        })
+        self.peak
+            .as_ref()
+            .filter(|_| self.points[0].len() >= MIN_TRACE_POINTS)
     }
 
     pub(in crate::visuals) fn ignores_audio(&self) -> bool {
@@ -366,11 +355,10 @@ impl SpectrumState {
     }
 
     pub(in crate::visuals) fn is_quiescent(&self) -> bool {
-        let quiet = [self.style.source, self.style.secondary_source]
-            .into_iter()
-            .zip(&self.points)
-            .filter(|(source, _)| *source != Channel::None)
-            .all(|(_, points)| points.iter().all(|point| point[1] == 0.0));
+        let quiet = self
+            .points
+            .iter()
+            .all(|points| points.iter().all(|point| point[1] == 0.0));
         self.ignores_audio() || (self.effective_range.is_some() && self.peak.is_none() && quiet)
     }
 
@@ -474,11 +462,8 @@ crate::visuals::visualization_widget!(Spectrum, SpectrumState, |this, r, th, b| 
 
 fn value_at(bins: &[f32], mags: &[f32], f: f32) -> f32 {
     let i = bins.partition_point(|&bin| bin < f);
-    if i == 0 {
-        return mags[0];
-    }
-    if i >= bins.len() {
-        return mags[bins.len() - 1];
+    if i == 0 || i >= bins.len() {
+        return mags[i.min(bins.len() - 1)];
     }
     lerp(
         mags[i - 1],
@@ -700,14 +685,7 @@ mod tests {
         manager.ingest_samples(&vec![0.0; settings.fft_size], format);
         settings.floor_db = -140.0;
         manager.apply_config(VisualConfig::Spectrum(settings));
-        let state = state.borrow();
-        assert!(
-            state
-                .points
-                .iter()
-                .all(|points| points.iter().all(|point| point[1] == 0.0))
-        );
-        assert!(state.peak.is_none());
+        assert!(state.borrow().is_quiescent());
     }
 
     #[test]
@@ -715,12 +693,8 @@ mod tests {
         let mut state = SpectrumState::default();
         state.points[0] = Arc::new(vec![[0.0, 0.0], [1.0, 1.0]]);
         let bounds = Rectangle::new(Point::ORIGIN, Size::new(100.0, 50.0));
-        let dark = state
-            .visual_params(bounds, &iced::Theme::Dark, None)
-            .unwrap();
-        let light = state
-            .visual_params(bounds, &iced::Theme::Light, None)
-            .unwrap();
+        let [dark, light] = [iced::Theme::Dark, iced::Theme::Light]
+            .map(|theme| state.visual_params(bounds, &theme, None).unwrap());
         assert_eq!(dark.geometry.revision, light.geometry.revision);
         assert_ne!(dark.line_color, light.line_color);
         assert_ne!(dark.geometry_fingerprint(), light.geometry_fingerprint());
@@ -885,15 +859,12 @@ fn build_single_points_into(
 ) {
     let bins = &snap.frequency_bins;
     let inv_dr = (MAX_DB - style.floor_db).max(EPSILON).recip();
-    let y = |m: f32| {
-        if m <= snap.floor_db {
+    let mut push = |x, m: f32| {
+        let y = if m <= snap.floor_db {
             0.0
         } else {
             ((m - style.floor_db) * inv_dr).clamp(0.0, 1.0)
-        }
-    };
-    let mut push = |x, m| {
-        let y = y(m);
+        };
         if y.is_finite() {
             out.push([if style.reverse_frequency { 1.0 - x } else { x }, y]);
         }
@@ -1048,7 +1019,6 @@ fn draw_peak(
     peak_color: Color,
 ) {
     let theme_palette = th.extended_palette();
-    let [(title_pos, title_bounds), (detail_pos, detail_bounds)] = layout.text_layouts;
     fill_bordered_rect(
         r,
         layout.rect,
@@ -1060,16 +1030,11 @@ fn draw_peak(
         },
         true,
     );
-    r.fill_paragraph(
-        &peak.text[0],
-        title_pos,
+    let colors = [
         with_alpha(theme_palette.background.base.text, peak.opacity),
-        Rectangle::new(title_pos, title_bounds),
-    );
-    r.fill_paragraph(
-        &peak.text[1],
-        detail_pos,
         with_alpha(theme_palette.secondary.weak.text, 0.84 * peak.opacity),
-        Rectangle::new(detail_pos, detail_bounds),
-    );
+    ];
+    for ((text, (pos, size)), color) in peak.text.iter().zip(layout.text_layouts).zip(colors) {
+        r.fill_paragraph(text, pos, color, Rectangle::new(pos, size));
+    }
 }
