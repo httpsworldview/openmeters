@@ -5,7 +5,7 @@ use crate::dsp::AudioBlock;
 use crate::util::audio::{
     Channel, DB_FLOOR, DEFAULT_SAMPLE_RATE, LN_TO_DB, MAX_DSP_BUFFER_LEN, WindowKind,
     compute_fft_bin_normalization, copy_dc_removed_windowed_from_deque, db_to_power,
-    sanitize_negative_db, sanitize_sample_rate, smoothing_weight, window_coefficients,
+    sanitize_negative_db, sanitize_sample_rate, smoothing_weight,
 };
 use realfft::{RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex32;
@@ -89,7 +89,7 @@ pub struct SpectrumProcessor {
     snapshot: SpectrumSnapshot,
     planner: RealFftPlanner<f32>,
     fft: Option<Arc<dyn RealToComplex<f32>>>,
-    window: Arc<[f32]>,
+    window: Vec<f32>,
     real_buffer: Vec<f32>,
     spectrum_buffer: Vec<Complex32>,
     scratch_buffer: Vec<Complex32>,
@@ -141,7 +141,7 @@ impl SpectrumProcessor {
     fn rebuild_fft(&mut self) {
         let fft_size = self.config.fft_size;
         let fft = self.planner.plan_fft_forward(fft_size);
-        self.window = window_coefficients(self.config.window, fft_size);
+        self.window = self.config.window.coefficients(fft_size);
         self.real_buffer.resize(fft_size, 0.0);
         self.spectrum_buffer = fft.make_output_vec();
         self.scratch_buffer = fft.make_scratch_vec();

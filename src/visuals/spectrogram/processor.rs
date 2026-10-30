@@ -5,7 +5,7 @@ use crate::dsp::AudioBlock;
 use crate::util::audio::{
     Channel, DB_FLOOR, DEFAULT_SAMPLE_RATE, MAX_DSP_BUFFER_LEN, WindowKind,
     compute_fft_bin_normalization, copy_dc_removed_windowed_from_deque, power_to_db,
-    sanitize_sample_rate, window_coefficients,
+    sanitize_sample_rate,
 };
 use bytemuck::{Pod, Zeroable};
 use realfft::{RealFftPlanner, RealToComplex};
@@ -159,7 +159,7 @@ crate::macros::default_struct! {
         config: SpectrogramConfig = SpectrogramConfig::default(),
         transforms: Option<Transforms> = None,
         fft_size: usize = 0,
-        window: Arc<[f32]> = Arc::from([]),
+        window: Vec<f32> = Vec::new(),
         real: Vec<f32> = Vec::new(),
         complex: Vec<Complex32> = Vec::new(),
         scratch: Vec<Complex32> = Vec::new(),
@@ -210,7 +210,7 @@ impl SpectrogramProcessor {
     fn rebuild_fft(&mut self) {
         let window_size = self.config.fft_size;
         self.fft_size = window_size * self.config.zero_padding_factor;
-        self.window = window_coefficients(self.config.window, window_size);
+        self.window = self.config.window.coefficients(window_size);
         self.bin_norm = compute_fft_bin_normalization(&self.window, self.fft_size);
         let (transforms, active_len) = if self.config.use_reassignment {
             let hilbert_len = Self::hilbert_len_for(window_size);

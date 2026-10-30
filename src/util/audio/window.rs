@@ -1,24 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use std::{
-    collections::{HashMap, VecDeque},
-    sync::{Arc, LazyLock, RwLock},
-};
+use std::collections::VecDeque;
 
-crate::macros::choice_enum!(
-    #[derive(Hash)]
-    pub enum WindowKind {
-        Rectangular => "Rectangular",
-        Hann => "Hann",
-        Hamming => "Hamming",
-        Blackman => "Blackman",
-        BlackmanHarris => "Blackman-Harris",
-    }
-);
+crate::macros::choice_enum!(pub enum WindowKind {
+    Rectangular => "Rectangular",
+    Hann => "Hann",
+    Hamming => "Hamming",
+    Blackman => "Blackman",
+    BlackmanHarris => "Blackman-Harris",
+});
 
 impl WindowKind {
-    fn coefficients(self, len: usize) -> Vec<f32> {
+    pub(crate) fn coefficients(self, len: usize) -> Vec<f32> {
         if len <= 1 {
             return vec![1.0; len];
         }
@@ -42,16 +36,6 @@ impl WindowKind {
         }
         window
     }
-}
-
-type WindowCache = RwLock<HashMap<(WindowKind, usize), Arc<[f32]>>>;
-
-pub(crate) fn window_coefficients(kind: WindowKind, len: usize) -> Arc<[f32]> {
-    static CACHE: LazyLock<WindowCache> = LazyLock::new(Default::default);
-    crate::util::unpoison(CACHE.write())
-        .entry((kind, len))
-        .or_insert_with(|| Arc::from(kind.coefficients(len)))
-        .clone()
 }
 
 // Kaiser window at `z` in [-1, 1].
