@@ -507,7 +507,10 @@ mod tests {
         };
         assert_eq!(state.borrow().style.floor_db, config.floor_db);
         let defaults = settings_cfg::SpectrumSettings::default();
-        assert_eq!((config.fft_size, config.hop_size), (1, 1));
+        assert_eq!(
+            (config.fft_size, config.hop_size),
+            (defaults.fft_size, defaults.hop_size)
+        );
         assert_eq!(
             (config.floor_db, config.bar_gap),
             (defaults.floor_db, defaults.bar_gap)

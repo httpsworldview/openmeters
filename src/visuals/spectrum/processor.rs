@@ -57,7 +57,10 @@ crate::macros::default_struct! {
 impl SpectrumConfig {
     pub fn normalize(&mut self) {
         self.sample_rate = sanitize_sample_rate(self.sample_rate);
-        self.fft_size = self.fft_size.clamp(1, MAX_DSP_BUFFER_LEN);
+        self.fft_size = match self.fft_size {
+            0 => DEFAULT_SPECTRUM_FFT_SIZE,
+            size => size.min(MAX_DSP_BUFFER_LEN),
+        };
         if self.hop_size == 0 {
             self.hop_size = (self.fft_size / DEFAULT_SPECTRUM_HOP_DIVISOR).max(1);
         }
