@@ -18,7 +18,8 @@ const WIN_MOMENTARY: usize = 1;
 const WIN_RMS_FAST: usize = 2;
 const WIN_RMS_SLOW: usize = 3;
 
-type KWeighting = ([f64; 5], [f64; 5]);
+// Numerator, denominator, output gain.
+type KWeighting = ([f64; 5], [f64; 5], f64);
 
 fn k_weighting_coefficients(fs: f64) -> KWeighting {
     let (f0, g, q) = (
@@ -26,7 +27,8 @@ fn k_weighting_coefficients(fs: f64) -> KWeighting {
         3.999_843_853_973_347,
         0.707_175_236_955_419_6,
     );
-    let k = (PI * f0 / fs).tan();
+    // Past Nyquist the prewarp would turn unstable, so rates that low keep the filters below it.
+    let k = (PI * (f0 / fs).min(0.49)).tan();
     let vh = 10.0_f64.powf(g / 20.0);
     let vb = vh.powf(0.499_666_774_154_541_6);
     let a0 = 1.0 + k / q + k * k;
@@ -38,8 +40,13 @@ fn k_weighting_coefficients(fs: f64) -> KWeighting {
     let pa = [1.0, 2.0 * (k * k - 1.0) / a0, (1.0 - k / q + k * k) / a0];
 
     let (f0, q) = (38.135_470_876_024_44, 0.500_327_037_323_877_3);
-    let k = (PI * f0 / fs).tan();
-    let a0 = 1.0 + k / q + k * k;
+    let warp = |fs: f64| {
+        let k = (PI * (f0 / fs).min(0.49)).tan();
+        (k, 1.0 + k / q + k * k)
+    };
+    let (k, a0) = warp(fs);
+    // The 48 kHz table leaves this numerator unnormalized; Annex 1 keeps that response.
+    let gain = warp(48_000.0).1 / a0;
     let rb = [1.0, -2.0, 1.0];
     let ra = [1.0, 2.0 * (k * k - 1.0) / a0, (1.0 - k / q + k * k) / a0];
 
@@ -52,7 +59,8 @@ fn k_weighting_coefficients(fs: f64) -> KWeighting {
             p[2] * r[2],
         ]
     };
-    (conv(pb, rb), conv(pa, ra))
+    // An output gain leaves the 4th-order coefficients, and their precision near DC, alone.
+    (conv(pb, rb), conv(pa, ra), gain)
 }
 
 fn mean_square_to_db(mean_square: f64, offset: f64) -> f32 {
@@ -195,14 +203,14 @@ impl TruePeakMeter {
 }
 
 fn k_weighted(sample: f32, state: &mut [f64; 4], coefficients: &KWeighting) -> f64 {
-    let (b, a) = coefficients;
+    let (b, a, gain) = coefficients;
     let x = f64::from(sample);
     let y = b[0] * x + state[0];
     state[0] = b[1] * x + state[1] - a[1] * y;
     state[1] = b[2] * x + state[2] - a[2] * y;
     state[2] = b[3] * x + state[3] - a[3] * y;
     state[3] = b[4] * x - a[4] * y;
-    y
+    y * gain
 }
 
 type EnergyWindows = RunningMeans<1, 4>;
@@ -357,6 +365,7 @@ impl LoudnessProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::audio::sine_wave;
     use ebur128::{Channel as ReferenceChannel, EbuR128, Mode};
     use rustfft::{FftPlanner, num_complex::Complex64};
     use std::collections::{BTreeSet, VecDeque};
@@ -365,10 +374,6 @@ mod tests {
         use ReferenceChannel::*;
         [Left, Right, Center, Unused, Mp135, Mm135, Mp090, Mm090]
     };
-
-    fn sine_wave(rate: f32, secs: f32, freq: f32, amp: f32) -> Vec<f32> {
-        crate::util::audio::sine_wave(freq, rate, (rate * secs) as usize, amp)
-    }
 
     fn assert_loudness_matches_ebur128(
         block: AudioBlock<'_>,
@@ -620,6 +625,14 @@ mod tests {
                 }
             }
         }
+        // Annex 1: other rates keep the 48 kHz response; warping the shelf costs < 0.01 dB here.
+        for rate in [44_100.0, 96_000.0, 192_000.0] {
+            let tone = sine_wave(1_000.0, rate, (rate * 4.0) as usize, amplitude as f32);
+            let snapshot = LoudnessProcessor::new(LoudnessConfig { sample_rate: rate })
+                .process_block(&AudioBlock::new(&tone, 1, rate));
+            let error = f64::from(snapshot.rms_slow_db[0]) - rms_db;
+            assert!(error.abs() < 0.01, "{rate} Hz: {error:+.4} dB");
+        }
     }
 
     #[test]
@@ -628,7 +641,7 @@ mod tests {
             let samples: Vec<_> =
                 std::iter::repeat_n(0.0, (sample_rate * leading_secs) as usize * channels)
                     .chain(
-                        sine_wave(sample_rate, 4.0, 1_000.0, 0.5)
+                        sine_wave(1_000.0, sample_rate, (sample_rate * 4.0) as usize, 0.5)
                             .into_iter()
                             .flat_map(|sample| std::iter::repeat_n(sample, channels)),
                     )
@@ -641,10 +654,8 @@ mod tests {
         };
         assert_eq!(window_length(11_025.0, 0.3), 3_308);
         check_tone(48_000.0, 1.0, 4);
-        // Layout weights are covered separately; avoid a rate/layout cross-product here.
-        for sample_rate in [44_100.0, 48_000.0, 96_000.0] {
-            check_tone(sample_rate, 0.0, 2);
-        }
+        // libebur128 shares the 48 kHz table exactly but drifts from it at other rates.
+        check_tone(48_000.0, 0.0, 2);
 
         let sample_rate = 48_000.0;
         let rate = sample_rate as usize;
