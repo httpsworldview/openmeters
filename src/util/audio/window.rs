@@ -113,6 +113,10 @@ fn weighted_offsets(weights: &[f32], samples: &[f32], center: f32) -> f32 {
     sums.into_iter().chain(tail).sum()
 }
 
+pub(crate) fn weighted_mean(weights: &[f32], samples: &[f32]) -> f32 {
+    samples[0] + weighted_offsets(weights, samples, samples[0])
+}
+
 pub(crate) fn normalized_blackman_harris(len: usize) -> Vec<f32> {
     let weights = WindowKind::BlackmanHarris.coefficients(len);
     let sum: f64 = weights.iter().map(|&weight| f64::from(weight)).sum();

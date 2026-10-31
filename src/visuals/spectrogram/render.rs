@@ -1267,7 +1267,7 @@ mod tests {
     #[test]
     fn pages_and_tags_fit_the_history_budget() {
         use super::super::processor::history_columns;
-        for bins in 1..=(crate::util::audio::MAX_DSP_BUFFER_LEN / 2 + 1) as u32 {
+        for bins in 1..=crate::util::audio::MAX_DSP_BUFFER_LEN as u32 {
             let capacity = history_columns(ColumnKind::Reassigned, bins, u32::MAX as usize) as u32;
             let shift = capacity.next_power_of_two().trailing_zeros();
             let mask = capacity.next_power_of_two() - 1;

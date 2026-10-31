@@ -82,6 +82,7 @@ crate::macros::default_struct! {
         ring_capacity: u32 = 0,
         write_slot: u32 = 0,
         col_count: u32 = 0,
+        points_per_column: u32 = 0,
         slot_counts: Arc<[u32]> = Arc::from([]),
         pending: VecDeque<SpectrogramColumn> = VecDeque::new(),
         pending_copy: Option<RingCopyPlan> = None,
@@ -91,14 +92,15 @@ crate::macros::default_struct! {
 
 impl SpectrogramHistory {
     fn apply_update(&mut self, snap: SpectrogramUpdate) {
-        let ppc = snap.fft_size / 2 + 1;
+        let points = snap.points_per_column as u32;
         let new_kind = snap.new_columns[0].kind();
-        let capacity = history_columns(new_kind, ppc as u32, snap.history_length) as u32;
+        let capacity = history_columns(new_kind, points, snap.history_length) as u32;
 
         if snap.reset {
             *self = Self {
                 col_kind: new_kind,
                 ring_capacity: capacity,
+                points_per_column: points,
                 slot_counts: if new_kind == ColumnKind::Reassigned {
                     vec![0; capacity as usize].into()
                 } else {
@@ -186,12 +188,10 @@ crate::macros::default_struct! {
         key: u64 = crate::visuals::next_key(),
         pub(in crate::visuals) settings: SpectrogramSettings = SpectrogramSettings::default(),
         sample_rate: f32 = SpectrogramConfig::default().sample_rate,
-        fft_size: usize = {
-            let cfg = SpectrogramConfig::default();
-            cfg.fft_size * cfg.zero_padding_factor
-        },
+        bin_hz: f32 = 0.0,
         hop_size: usize = SpectrogramConfig::default().hop_size,
         reassigned_power_scale: f32 = 1.0,
+        edge_delay: usize = 0,
         zoom: f32 = 1.0,
         pan: f32 = 0.5,
         pub(in crate::visuals) view_width: u32 = 0,
@@ -220,16 +220,19 @@ impl SpectrogramState {
 
     pub fn apply_snapshot(&mut self, snap: SpectrogramUpdate) {
         self.sample_rate = snap.sample_rate;
-        self.fft_size = snap.fft_size;
+        self.bin_hz = snap.sample_rate / snap.fft_size as f32;
         self.hop_size = snap.hop_size;
         self.reassigned_power_scale = snap.reassigned_power_scale;
+        self.edge_delay = snap.edge_delay;
         self.history.apply_update(snap);
     }
 
     pub(in crate::visuals) fn is_quiescent(&self) -> bool {
-        let points = (self.fft_size / 2 + 1) as u32;
-        let capacity =
-            history_columns(self.history.col_kind, points, self.view_width as usize) as u32;
+        let capacity = history_columns(
+            self.history.col_kind,
+            self.history.points_per_column,
+            self.view_width as usize,
+        ) as u32;
         self.view_width > 0
             && self.history.ring_capacity == capacity
             && self.history.col_count == capacity
@@ -248,14 +251,13 @@ impl SpectrogramState {
         let copy_plan = history.pending_copy.take();
         let slot_counts = Arc::clone(&history.slot_counts);
         let to_rgba = |c: Color| rgba_with_alpha(color_to_rgba(c), c.a * SPECTROGRAM_OPACITY);
-        let bin_hz = self.sample_rate / self.fft_size as f32;
         let (freq_min, freq_max) = display_axis(self.sample_rate);
 
         Some(SpectrogramParams {
             key: self.key,
             bounds,
             ring_capacity: history.ring_capacity,
-            points_per_column: (self.fft_size / 2 + 1) as u32,
+            points_per_column: history.points_per_column,
             col_count: history.col_count,
             write_slot: history.write_slot,
             pending_uploads: std::mem::take(&mut history.pending),
@@ -264,7 +266,7 @@ impl SpectrogramState {
             col_kind: history.col_kind,
             freq_min,
             freq_max,
-            bin_hz,
+            bin_hz: self.bin_hz,
             reassigned_power_scale: self.reassigned_power_scale,
             freq_scale: self.settings.frequency_scale,
             palette: self.palette.map(to_rgba),
@@ -323,7 +325,7 @@ impl SpectrogramState {
         if age >= self.history.col_count as f32 {
             return None;
         }
-        let secs = age * (self.hop_size as f32 / self.sample_rate);
+        let secs = (age * self.hop_size as f32 + self.edge_delay as f32) / self.sample_rate;
         secs.is_finite().then_some(secs)
     }
 }
@@ -786,11 +788,13 @@ mod tests {
             };
         SpectrogramUpdate {
             fft_size: (points_per_column - 1) * 2,
+            points_per_column,
             hop_size: 1,
             sample_rate: 48_000.0,
             history_length,
             reset,
             reassigned_power_scale,
+            edge_delay: 0,
             new_columns,
         }
     }

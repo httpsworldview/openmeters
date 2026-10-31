@@ -14,7 +14,7 @@ pub use self::{
 };
 pub(crate) use self::{
     level::{flush_denormal_f32, flush_denormal_f64},
-    window::{kaiser, mean_f32},
+    window::{kaiser, mean_f32, normalized_blackman_harris, weighted_mean},
 };
 
 pub const DEFAULT_SAMPLE_RATE: f32 = 48_000.0;
