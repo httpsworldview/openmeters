@@ -268,10 +268,13 @@ impl Entry {
         }
     }
 
+    // Disabled visuals hold no audio, nor the GPU history tied to it.
     fn set_enabled(&mut self, enabled: bool) {
-        if !std::mem::replace(&mut self.slot.enabled, enabled) && enabled {
+        if std::mem::replace(&mut self.slot.enabled, enabled) != enabled {
             self.module.reset_audio();
-            self.module.prepare();
+            if enabled {
+                self.module.prepare();
+            }
         }
     }
 }

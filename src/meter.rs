@@ -233,7 +233,7 @@ mod tests {
             assert_eq!(snapshot(), before);
             manager.set_enabled(VisualKind::Loudness, false);
             manager.ingest_samples(&vec![0.0; 4 * 48_000], format);
-            assert_eq!(snapshot(), before);
+            assert_eq!(snapshot(), reset);
             if bulk {
                 manager.apply_visual_settings(&Default::default());
             } else {
