@@ -306,6 +306,8 @@ impl SpectrogramState {
 }
 
 const MIN_ZOOM: f32 = 1.0;
+// Past this, f32 view coordinates collapse the visible range.
+const MAX_ZOOM: f32 = 1024.0;
 const ZOOM_STEP: f32 = 1.15;
 
 #[derive(Default)]
@@ -326,7 +328,7 @@ impl SpectrogramState {
         let old_h = 0.5 / self.zoom;
         let old_min = (self.pan - old_h).clamp(0.0, 1.0);
         let cursor_uv = old_min + y_norm * 2.0 * old_h;
-        self.zoom = (self.zoom * factor).clamp(MIN_ZOOM, f32::MAX);
+        self.zoom = (self.zoom * factor).clamp(MIN_ZOOM, MAX_ZOOM);
         let new_h = 0.5 / self.zoom;
         self.pan = (cursor_uv - new_h * (2.0 * y_norm - 1.0)).clamp(new_h, 1.0 - new_h);
     }
@@ -648,10 +650,13 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'_> {
             iced::Event::Keyboard(keyboard::Event::ModifiersChanged(m)) => st.modifiers = *m,
             iced::Event::Mouse(mouse::Event::WheelScrolled { delta }) if st.modifiers.control() => {
                 if let Some(pos) = cursor.position().filter(|p| b.contains(*p)) {
-                    let freq_norm = this.state.borrow().freq_axis_norm(pos, b).unwrap_or(0.5);
-                    this.state
-                        .borrow_mut()
-                        .zoom_at(freq_norm, ZOOM_STEP.powf(scroll_delta_lines(*delta)));
+                    let mut state = this.state.borrow_mut();
+                    let freq_norm = state.freq_axis_norm(pos, b).unwrap_or(0.5);
+                    state.zoom_at(freq_norm, ZOOM_STEP.powf(scroll_delta_lines(*delta)));
+                    // Re-anchor a drag in progress, or its next move would undo the zoom.
+                    if let Some((_, origin, start_pan)) = &mut st.drag {
+                        (*origin, *start_pan) = (state.turn().to_frame(b, pos).y, state.pan);
+                    }
                     shell.request_redraw();
                     shell.capture_event();
                 }
