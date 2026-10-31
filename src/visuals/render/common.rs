@@ -486,26 +486,6 @@ pub(in crate::visuals) fn create_buffer(
     })
 }
 
-#[derive(Default)]
-pub struct CacheTracker {
-    frame: u64,
-}
-
-impl CacheTracker {
-    // in advance calls
-    const RETAIN: u64 = 256;
-    const INTERVAL: u64 = 64;
-
-    pub fn advance(&mut self) -> (u64, Option<u64>) {
-        self.frame = self.frame.wrapping_add(1).max(1);
-        let threshold = self
-            .frame
-            .is_multiple_of(Self::INTERVAL)
-            .then_some(self.frame.saturating_sub(Self::RETAIN));
-        (self.frame, threshold)
-    }
-}
-
 pub fn create_shader_module(
     device: &wgpu::Device,
     label: &'static str,
@@ -623,25 +603,19 @@ struct CachedInstance {
 pub struct SdfPipeline<const REPLACE: bool = false> {
     pub(in crate::visuals) pipeline: wgpu::RenderPipeline,
     instances: HashMap<u64, CachedInstance>,
-    cache: CacheTracker,
+    frame: u64,
     pub(in crate::visuals) scratch: GeometryScratch,
 }
 
 impl<const REPLACE: bool> SdfPipeline<REPLACE> {
     pub fn prepare_required(&mut self, key: u64, fingerprint: Option<GeometryFingerprint>) -> bool {
-        let (frame, threshold) = self.cache.advance();
-        let current = match fingerprint.and_then(|_| self.instances.get_mut(&key)) {
+        match fingerprint.and_then(|_| self.instances.get_mut(&key)) {
             Some(entry) if entry.fingerprint == fingerprint => {
-                entry.last_used = frame;
-                true
+                entry.last_used = self.frame;
+                false
             }
-            _ => false,
-        };
-        if let Some(threshold) = threshold {
-            self.instances
-                .retain(|_, entry| entry.last_used >= threshold);
+            _ => true,
         }
-        !current
     }
 
     pub fn prepare_scratch(
@@ -658,15 +632,14 @@ impl<const REPLACE: bool> SdfPipeline<REPLACE> {
         let target = required.max(1).next_power_of_two();
         let usage = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
         let allocate = || create_buffer(device, label, target, usage);
-        let frame = self.cache.frame;
         let entry = self.instances.entry(key).or_insert_with(|| CachedInstance {
             buffer: allocate(),
             vertex_count: 0,
             fingerprint,
-            last_used: frame,
+            last_used: self.frame,
         });
         entry.fingerprint = fingerprint;
-        entry.last_used = frame;
+        entry.last_used = self.frame;
         let capacity = entry.buffer.size();
         if target > capacity || (required > 0 && capacity > target.saturating_mul(4)) {
             entry.buffer = allocate();
@@ -717,8 +690,19 @@ impl<const REPLACE: bool> iced_wgpu::primitive::Pipeline for SdfPipeline<REPLACE
         Self {
             pipeline,
             instances: HashMap::new(),
-            cache: CacheTracker::default(),
+            frame: 0,
             scratch: GeometryScratch::default(),
+        }
+    }
+
+    // Runs after every draw, so caches of visuals that stopped drawing are freed too.
+    fn trim(&mut self) {
+        const RETAIN_DRAWS: u64 = 256;
+        const PRUNE_INTERVAL: u64 = 64;
+        self.frame = self.frame.wrapping_add(1).max(1);
+        if self.frame.is_multiple_of(PRUNE_INTERVAL) {
+            let oldest = self.frame.saturating_sub(RETAIN_DRAWS);
+            self.instances.retain(|_, entry| entry.last_used >= oldest);
         }
     }
 }
