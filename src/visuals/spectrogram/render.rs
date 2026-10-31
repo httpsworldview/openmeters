@@ -8,12 +8,12 @@ use iced_wgpu::primitive::{self, Primitive};
 use std::borrow::Cow;
 use std::collections::{HashMap, VecDeque};
 use std::ops::Range;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use wgpu::util::DeviceExt as _;
 
 use crate::visuals::render::common::{
-    CacheTracker, QuarterTurn, RenderPipelineSpec, begin_pass, create_buffer,
-    create_render_pipeline, create_shader_module,
+    QuarterTurn, RenderPipelineSpec, begin_pass, create_buffer, create_render_pipeline,
+    create_shader_module,
 };
 
 use super::processor::{ColumnKind, SpectrogramColumn, SpectrogramPoint, col_byte_stride};
@@ -86,7 +86,6 @@ impl Primitive for SpectrogramParams {
         vp: &Viewport,
     ) {
         let scale_factor = vp.scale_factor();
-        let (frame, prune) = pipeline.cache.advance();
         let bgls = &pipeline.bgls;
         let res = pipeline
             .instances
@@ -95,7 +94,7 @@ impl Primitive for SpectrogramParams {
         if res.ring.layout.kind != self.col_kind {
             *res = Resources::new(device, bgls, self);
         }
-        res.last_used = frame;
+        res.history = Arc::downgrade(&self.pending);
         let pending = std::mem::take(&mut *crate::util::unpoison(self.pending.lock()));
         res.resize_ring(device, queue, bgls, self, &pending);
         res.resize_accum(device, &bgls[0], self, scale_factor);
@@ -112,11 +111,6 @@ impl Primitive for SpectrogramParams {
         if uniforms != res.uniform_cache {
             queue.write_buffer(&res.uniform_buf, 0, bytemuck::bytes_of(&uniforms));
             res.uniform_cache = uniforms;
-        }
-        if let Some(threshold) = prune {
-            pipeline
-                .instances
-                .retain(|_, instance| instance.last_used >= threshold);
         }
     }
 
@@ -298,7 +292,6 @@ pub struct Pipeline {
     quads: wgpu::Buffer,
     bgls: Bgls,
     instances: HashMap<u64, Resources>,
-    cache: CacheTracker,
 }
 
 impl primitive::Pipeline for Pipeline {
@@ -412,8 +405,14 @@ impl primitive::Pipeline for Pipeline {
             quads,
             bgls,
             instances: HashMap::new(),
-            cache: CacheTracker::default(),
         }
+    }
+
+    // The GPU ring is the only copy of uploaded columns, so it lives as long as its history,
+    // even while its window does not present; disabling the spectrogram drops it.
+    fn trim(&mut self) {
+        self.instances
+            .retain(|_, instance| instance.history.strong_count() > 0);
     }
 }
 
@@ -737,7 +736,7 @@ struct AccumTarget {
 }
 
 struct Resources {
-    last_used: u64,
+    history: Weak<Mutex<PendingColumns>>,
     uniform_buf: wgpu::Buffer,
     uniform_cache: Uniforms,
     ring: ColumnRing,
@@ -761,7 +760,7 @@ impl Resources {
         let ring = create_ring(device, bgls, &uniform_buf, p, layout);
 
         Self {
-            last_used: 0,
+            history: Arc::downgrade(&p.pending),
             uniform_buf,
             uniform_cache: Uniforms::zeroed(),
             ring,
