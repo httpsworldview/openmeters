@@ -40,8 +40,14 @@ const WRAP_BIT: u32 = 1 << 31;
 // whole draws with no one-point remainder.
 const QUAD_BATCH: u32 = (1 << 14) + 1;
 
-// Old GPU slot -> new slot; u32::MAX discards.
-pub type RingCopyPlan = Vec<u32>;
+// Work not yet on the GPU. Shared with the state and drained by prepare, so a frame that is
+// drawn but never prepared loses nothing: its work joins the next one, and copy plans compose.
+#[derive(Debug, Default)]
+pub struct PendingColumns {
+    pub uploads: VecDeque<SpectrogramColumn>,
+    // Old GPU slot -> new slot; u32::MAX discards.
+    pub copy_plan: Option<Vec<u32>>,
+}
 
 #[derive(Debug)]
 pub struct SpectrogramParams {
@@ -51,8 +57,7 @@ pub struct SpectrogramParams {
     pub points_per_column: u32,
     pub col_count: u32,
     pub write_slot: u32,
-    pub pending_uploads: VecDeque<SpectrogramColumn>,
-    pub copy_plan: Option<RingCopyPlan>,
+    pub pending: Arc<Mutex<PendingColumns>>,
     pub slot_counts: Arc<[u32]>,
     pub(super) col_kind: ColumnKind,
     pub freq_min: f32,
@@ -91,14 +96,15 @@ impl Primitive for SpectrogramParams {
             *res = Resources::new(device, bgls, self);
         }
         res.last_used = frame;
-        res.resize_ring(device, queue, bgls, self);
+        let pending = std::mem::take(&mut *crate::util::unpoison(self.pending.lock()));
+        res.resize_ring(device, queue, bgls, self, &pending);
         res.resize_accum(device, &bgls[0], self, scale_factor);
-        res.upload_pending(queue, self);
+        res.upload_pending(queue, self, &pending.uploads);
         let mut uniforms = Uniforms::from_params(self, vp.logical_size().into(), scale_factor);
         uniforms.page_slot_mask = (res.ring.layout.page_columns as u32).next_power_of_two() - 1;
         let (old, hl) = (&res.uniform_cache, uniforms.history_length);
-        let columns = self.pending_uploads.len() as u32;
-        let appended = self.copy_plan.is_none()
+        let columns = pending.uploads.len() as u32;
+        let appended = pending.copy_plan.is_none()
             && uniforms.accumulation_key() == old.accumulation_key()
             && uniforms.col_count == (old.col_count + columns).min(hl)
             && uniforms.newest_col == (old.newest_col + columns) % hl;
@@ -454,37 +460,24 @@ fn point_page_columns(
     }
 }
 
-fn page_maxima(slot_counts: &[u32]) -> impl Iterator<Item = u32> + '_ {
-    slot_counts
+fn ring_layout(p: &SpectrogramParams, was_paged: bool, binding: u64) -> RingLayout {
+    let maxima: Vec<_> = p
+        .slot_counts
         .chunks(PAGE_COLUMNS)
         .map(|counts| counts.iter().copied().max().unwrap_or(0))
-}
-
-fn pending_pages(p: &SpectrogramParams, columns: usize) -> impl Iterator<Item = usize> + '_ {
-    let first = (p.write_slot + p.ring_capacity - p.pending_uploads.len() as u32) % p.ring_capacity;
-    (0..p.pending_uploads.len()).filter_map(move |offset| {
-        let slot = (first as usize + offset) % p.ring_capacity as usize;
-        (offset == 0 || slot.is_multiple_of(columns)).then_some(slot / columns)
-    })
-}
-
-fn ring_layout(p: &SpectrogramParams, maxima: &[u32], was_paged: bool, binding: u64) -> RingLayout {
+        .collect();
     RingLayout {
         kind: p.col_kind,
         stride: col_byte_stride(p.col_kind, p.points_per_column),
         slots: u64::from(p.ring_capacity),
         page_columns: point_page_columns(
-            maxima,
+            &maxima,
             p.slot_counts.len(),
             p.points_per_column,
             was_paged,
             binding,
         ),
     }
-}
-
-fn can_reuse_ring(current: RingLayout, requested: RingLayout, copy_pending: bool) -> bool {
-    current == requested && !copy_pending
 }
 
 enum RingUpdate<'a> {
@@ -499,58 +492,36 @@ enum RingUpdate<'a> {
 impl RingLayout {
     fn plan_update<'a>(
         self,
-        p: &'a SpectrogramParams,
+        p: &SpectrogramParams,
+        pending: &'a PendingColumns,
         previous_count: u32,
-        maxima: &mut Vec<u32>,
         binding: u64,
     ) -> RingUpdate<'a> {
+        let stride = col_byte_stride(p.col_kind, p.points_per_column);
         let same_shape = (self.kind, self.stride, self.slots)
-            == (
-                p.col_kind,
-                col_byte_stride(p.col_kind, p.points_per_column),
-                u64::from(p.ring_capacity),
-            );
+            == (p.col_kind, stride, u64::from(p.ring_capacity));
         let reset = p.col_count < previous_count;
         if same_shape
-            && p.copy_plan.is_none()
+            && pending.copy_plan.is_none()
             && (p.col_kind == ColumnKind::Classic
-                || (p.pending_uploads.is_empty() && p.col_count == previous_count))
+                || (pending.uploads.is_empty() && p.col_count == previous_count))
         {
             return RingUpdate::Unchanged;
         }
-        if !same_shape || p.copy_plan.is_some() || reset {
-            maxima.clear();
-            maxima.extend(page_maxima(&p.slot_counts));
-        } else {
-            let mut changed = false;
-            for index in pending_pages(p, PAGE_COLUMNS) {
-                let maximum = p.slot_counts[index * PAGE_COLUMNS..]
-                    .iter()
-                    .take(PAGE_COLUMNS)
-                    .copied()
-                    .max()
-                    .unwrap_or(0);
-                changed |= maxima[index] != maximum;
-                maxima[index] = maximum;
-            }
-            if !changed {
-                return RingUpdate::Unchanged;
-            }
-        }
-        let layout = ring_layout(p, maxima, self.page_columns < self.slots as usize, binding);
-        let copies = match &p.copy_plan {
+        let layout = ring_layout(p, self.page_columns < self.slots as usize, binding);
+        let copies = match &pending.copy_plan {
             Some(copies) => Some(Cow::Borrowed(copies.as_slice())),
             None if self.page_columns != layout.page_columns
                 && same_shape
                 && !reset
-                && p.pending_uploads.len() < p.col_count as usize =>
+                && pending.uploads.len() < p.col_count as usize =>
             {
                 Some(Cow::Owned((0..p.ring_capacity).collect()))
             }
             None => None,
         }
         .filter(|copies| copies.iter().any(|&dst| dst < p.ring_capacity));
-        if can_reuse_ring(self, layout, copies.is_some()) && !reset {
+        if self == layout && copies.is_none() && !reset {
             RingUpdate::ResizePages
         } else {
             RingUpdate::Replace { layout, copies }
@@ -772,7 +743,6 @@ struct Resources {
     ring: ColumnRing,
     accum: Option<AccumTarget>,
     classic_upload_scratch: Vec<u16>,
-    page_maxima: Vec<u32>,
     // Per slot splat x extent in columns, and the farthest right edge among them.
     spans: Vec<[f32; 2]>,
     reach: f32,
@@ -786,15 +756,9 @@ impl Resources {
             std::mem::size_of::<Uniforms>() as u64,
             wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         );
-        let page_maxima: Vec<_> = page_maxima(&p.slot_counts).collect();
         let binding = u64::from(device.limits().max_storage_buffer_binding_size);
-        let ring = create_ring(
-            device,
-            bgls,
-            &uniform_buf,
-            p,
-            ring_layout(p, &page_maxima, false, binding),
-        );
+        let layout = ring_layout(p, false, binding);
+        let ring = create_ring(device, bgls, &uniform_buf, p, layout);
 
         Self {
             last_used: 0,
@@ -803,7 +767,6 @@ impl Resources {
             ring,
             accum: None,
             classic_upload_scratch: Vec::new(),
-            page_maxima,
             spans: vec![NO_SPAN; p.ring_capacity as usize],
             reach: f32::NEG_INFINITY,
         }
@@ -935,16 +898,13 @@ impl Resources {
         queue: &wgpu::Queue,
         bgls: &Bgls,
         p: &SpectrogramParams,
+        pending: &PendingColumns,
     ) {
         let binding = u64::from(device.limits().max_storage_buffer_binding_size);
-        match self.ring.layout.plan_update(
-            p,
-            self.uniform_cache.col_count,
-            &mut self.page_maxima,
-            binding,
-        ) {
+        let previous = self.uniform_cache.col_count;
+        match self.ring.layout.plan_update(p, pending, previous, binding) {
             RingUpdate::Unchanged => {}
-            RingUpdate::ResizePages => self.resize_point_pages(device, queue, &bgls[2], p),
+            RingUpdate::ResizePages => self.resize_point_pages(device, queue, &bgls[2], p, pending),
             RingUpdate::Replace { layout, copies } => {
                 // Spans may not survive the replace, and scrolls need them to clear evicted
                 // splats.
@@ -996,13 +956,20 @@ impl Resources {
         queue: &wgpu::Queue,
         bgl: &wgpu::BindGroupLayout,
         p: &SpectrogramParams,
+        pending: &PendingColumns,
     ) {
         let RingStorage::Reassigned { pages } = &mut self.ring.storage else {
             return;
         };
         let columns = self.ring.layout.page_columns;
+        let uploads = pending.uploads.len();
+        let first = (p.write_slot + p.ring_capacity - uploads as u32) % p.ring_capacity;
+        let pending_pages = (0..uploads).filter_map(|offset| {
+            let slot = (first as usize + offset) % p.ring_capacity as usize;
+            (offset == 0 || slot.is_multiple_of(columns)).then_some(slot / columns)
+        });
         let mut encoder = None;
-        for index in pending_pages(p, columns) {
+        for index in pending_pages {
             let page = &mut pages[index];
             let start = index * columns;
             let counts = &p.slot_counts[start..(start + columns).min(p.slot_counts.len())];
@@ -1085,14 +1052,18 @@ impl Resources {
         });
     }
 
-    fn upload_pending(&mut self, queue: &wgpu::Queue, p: &SpectrogramParams) {
+    fn upload_pending(
+        &mut self,
+        queue: &wgpu::Queue,
+        p: &SpectrogramParams,
+        uploads: &VecDeque<SpectrogramColumn>,
+    ) {
         if p.col_kind == ColumnKind::Classic {
             self.classic_upload_scratch
                 .resize((self.ring.layout.stride / 2) as usize, 0);
         }
-        let first =
-            (p.write_slot + p.ring_capacity - p.pending_uploads.len() as u32) % p.ring_capacity;
-        for (index, column) in p.pending_uploads.iter().enumerate() {
+        let first = (p.write_slot + p.ring_capacity - uploads.len() as u32) % p.ring_capacity;
+        for (index, column) in uploads.iter().enumerate() {
             let slot = (first + index as u32) % p.ring_capacity;
             if let SpectrogramColumn::Reassigned(points) = column {
                 let times = points.iter().map(|point| point.time_offset);
@@ -1353,27 +1324,5 @@ mod tests {
             quad_draws(&[4, 4, 0, 2, 4, 4, 5, 4, 5], u32::MAX).collect::<Vec<_>>(),
             [(0..2, 0..4), (3..4, 0..2), (4..6, 0..4), (6..9, 0..5)]
         );
-    }
-
-    #[test]
-    fn equal_byte_capacity_does_not_reuse_a_different_ring_layout() {
-        let current = RingLayout {
-            kind: ColumnKind::Classic,
-            stride: col_byte_stride(ColumnKind::Classic, 513),
-            slots: 513,
-            page_columns: 1,
-        };
-        let requested = RingLayout {
-            kind: ColumnKind::Classic,
-            stride: col_byte_stride(ColumnKind::Classic, 1025),
-            slots: 257,
-            page_columns: 1,
-        };
-
-        assert_eq!(
-            current.stride * current.slots,
-            requested.stride * requested.slots
-        );
-        assert!(!can_reuse_ring(current, requested, false));
     }
 }

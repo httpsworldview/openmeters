@@ -4,12 +4,13 @@
 use super::processor::{
     ColumnKind, SpectrogramColumn, SpectrogramConfig, SpectrogramUpdate, history_columns,
 };
-use super::render::{RingCopyPlan, SPECTROGRAM_PALETTE_SIZE, SpectrogramParams};
+use super::render::{PendingColumns, SPECTROGRAM_PALETTE_SIZE, SpectrogramParams};
 use crate::persistence::settings::SpectrogramSettings;
 use crate::util::{
     audio::musical::{MusicalNote, NoteInfo},
     audio::{DISPLAY_MIN_HZ, FrequencyScale, fmt_duration, fmt_freq},
     color::{color_to_rgba, lerp_color, rgba_with_alpha, with_alpha},
+    unpoison,
 };
 use crate::visuals::options::PianoRollOverlay;
 use crate::visuals::palettes;
@@ -23,8 +24,7 @@ use iced::advanced::{Layout, Renderer as _, Widget, mouse};
 use iced::{Color, Element, Length, Point, Rectangle, Size, Vector, keyboard};
 use iced_wgpu::primitive::Renderer as _;
 use std::cell::RefCell;
-use std::collections::VecDeque;
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, Mutex};
 
 const SPECTROGRAM_OPACITY: f32 = 0.95;
 const TOOLTIP_SIZE: f32 = 14.0;
@@ -84,8 +84,7 @@ crate::macros::default_struct! {
         col_count: u32 = 0,
         points_per_column: u32 = 0,
         slot_counts: Arc<[u32]> = Arc::from([]),
-        pending: VecDeque<SpectrogramColumn> = VecDeque::new(),
-        pending_copy: Option<RingCopyPlan> = None,
+        pending: Arc<Mutex<PendingColumns>> = Arc::default(),
         quiescent_columns: u32 = 0,
     }
 }
@@ -108,13 +107,29 @@ impl SpectrogramHistory {
                 },
                 ..Default::default()
             };
-        } else if capacity != self.ring_capacity {
-            self.ensure_pending_copy();
+        }
+        let mut pending = unpoison(self.pending.lock());
+        if capacity != self.ring_capacity {
+            if pending.copy_plan.is_none() && self.col_count as usize > pending.uploads.len() {
+                pending.copy_plan = Some((0..self.col_count).collect());
+            }
             let keep = self.col_count.min(capacity);
             if self.col_count >= self.ring_capacity.min(capacity) {
-                let oldest_kept =
-                    (self.write_slot + self.ring_capacity - keep) % self.ring_capacity.max(1);
-                self.remap_retained(oldest_kept, keep);
+                let old_cap = self.ring_capacity;
+                let start = (self.write_slot + old_cap - keep) % old_cap.max(1);
+                if self.col_kind == ColumnKind::Reassigned {
+                    Arc::make_mut(&mut self.slot_counts).rotate_left(start as usize);
+                }
+                let discard = pending.uploads.len().saturating_sub(keep as usize);
+                pending.uploads.drain(..discard);
+                for dst in pending.copy_plan.iter_mut().flatten() {
+                    if *dst < old_cap {
+                        *dst = (*dst + old_cap - start) % old_cap;
+                    }
+                    if *dst >= keep {
+                        *dst = u32::MAX;
+                    }
+                }
                 self.write_slot = keep % capacity;
             }
             self.col_count = keep;
@@ -136,46 +151,12 @@ impl SpectrogramHistory {
             if let SpectrogramColumn::Reassigned(points) = &column {
                 Arc::make_mut(&mut self.slot_counts)[slot as usize] = points.len() as u32;
             }
-            if self.pending.len() as u32 >= self.ring_capacity {
-                self.pending.pop_front();
+            if pending.uploads.len() as u32 >= self.ring_capacity {
+                pending.uploads.pop_front();
             }
-            self.pending.push_back(column);
+            pending.uploads.push_back(column);
             self.write_slot = (self.write_slot + 1) % self.ring_capacity;
             self.col_count = (self.col_count + 1).min(self.ring_capacity);
-        }
-    }
-
-    fn ensure_pending_copy(&mut self) {
-        if self.pending_copy.is_none() && self.col_count as usize > self.pending.len() {
-            self.pending_copy = Some((0..self.col_count).collect());
-        }
-    }
-
-    fn remap_retained(&mut self, start: u32, keep: u32) {
-        let old_cap = self.ring_capacity;
-        let remap = |slot: &mut u32| {
-            if *slot < old_cap {
-                *slot = (*slot + old_cap - start) % old_cap;
-            }
-            *slot < keep
-        };
-        if self.col_kind == ColumnKind::Reassigned {
-            let (before, after) = self.slot_counts.split_at(start as usize);
-            self.slot_counts = after
-                .iter()
-                .chain(before)
-                .copied()
-                .take(keep as usize)
-                .collect();
-        }
-        let discard = self.pending.len().saturating_sub(keep as usize);
-        self.pending.drain(..discard);
-        if let Some(copies) = &mut self.pending_copy {
-            for dst in copies {
-                if !remap(dst) {
-                    *dst = u32::MAX;
-                }
-            }
         }
     }
 }
@@ -240,29 +221,23 @@ impl SpectrogramState {
     }
 
     pub fn visual_params(
-        &mut self,
+        &self,
         bounds: Rectangle,
         uv_y_range: [f32; 2],
     ) -> Option<SpectrogramParams> {
-        let history = &mut self.history;
-        if history.col_count == 0 {
-            return None;
-        }
-        let copy_plan = history.pending_copy.take();
-        let slot_counts = Arc::clone(&history.slot_counts);
+        let history = &self.history;
         let to_rgba = |c: Color| rgba_with_alpha(color_to_rgba(c), c.a * SPECTROGRAM_OPACITY);
         let (freq_min, freq_max) = display_axis(self.sample_rate);
 
-        Some(SpectrogramParams {
+        (history.col_count > 0).then(|| SpectrogramParams {
             key: self.key,
             bounds,
             ring_capacity: history.ring_capacity,
             points_per_column: history.points_per_column,
             col_count: history.col_count,
             write_slot: history.write_slot,
-            pending_uploads: std::mem::take(&mut history.pending),
-            copy_plan,
-            slot_counts,
+            pending: Arc::clone(&history.pending),
+            slot_counts: Arc::clone(&history.slot_counts),
             col_kind: history.col_kind,
             freq_min,
             freq_max,
@@ -820,17 +795,17 @@ mod tests {
         })
     }
 
-    fn visual_params(state: &mut SpectrogramState) -> SpectrogramParams {
-        state
-            .visual_params(
-                Rectangle::new(Point::new(0.0, 0.0), Size::new(10.0, 10.0)),
-                [0.0, 1.0],
-            )
-            .expect("expected spectrogram params")
+    // Drains the pending work, as prepare does.
+    fn visual_params(state: &mut SpectrogramState) -> (SpectrogramParams, PendingColumns) {
+        let params = state
+            .visual_params(Rectangle::with_size(Size::new(10.0, 10.0)), [0.0, 1.0])
+            .expect("expected spectrogram params");
+        let pending = std::mem::take(&mut *unpoison(params.pending.lock()));
+        (params, pending)
     }
 
-    fn upload_slots(params: &SpectrogramParams) -> Vec<u32> {
-        let count = params.pending_uploads.len() as u32;
+    fn upload_slots((params, pending): &(SpectrogramParams, PendingColumns)) -> Vec<u32> {
+        let count = pending.uploads.len() as u32;
         (0..count)
             .map(|offset| {
                 (params.write_slot + params.ring_capacity - count + offset) % params.ring_capacity
@@ -868,24 +843,26 @@ mod tests {
         assert_eq!(upload_slots(&visual_params(&mut state)), vec![0, 1]);
 
         state.apply_snapshot(classic_update(6, false, &[6.0]));
-        let params = visual_params(&mut state);
+        let frame = visual_params(&mut state);
+        let (params, pending) = &frame;
         assert_eq!(
             (params.ring_capacity, params.col_count, params.write_slot),
             (6, 5, 5)
         );
         assert!(params.slot_counts.is_empty());
-        assert_eq!(upload_slots(&params), vec![4]);
-        assert_eq!(params.copy_plan, Some(vec![2, 3, 0, 1]));
+        assert_eq!(upload_slots(&frame), vec![4]);
+        assert_eq!(pending.copy_plan, Some(vec![2, 3, 0, 1]));
 
         let mut state = seeded_ring();
         state.apply_snapshot(classic_update(2, false, &[4.0]));
-        let params = visual_params(&mut state);
+        let frame = visual_params(&mut state);
+        let (params, pending) = &frame;
         assert_eq!(
             (params.ring_capacity, params.col_count, params.write_slot),
             (2, 2, 1)
         );
-        assert_eq!(upload_slots(&params), vec![0]);
-        assert_eq!(params.copy_plan, Some(vec![u32::MAX, u32::MAX, 0, 1]));
+        assert_eq!(upload_slots(&frame), vec![0]);
+        assert_eq!(pending.copy_plan, Some(vec![u32::MAX, u32::MAX, 0, 1]));
     }
 
     #[test]
@@ -893,13 +870,13 @@ mod tests {
         let mut state = SpectrogramState::default();
         state.apply_snapshot(reassigned_update(4, true, &[0, 2, 1]));
 
-        let params = visual_params(&mut state);
+        let (params, pending) = visual_params(&mut state);
 
         assert_eq!(params.reassigned_power_scale, 0.25);
         assert_eq!(&params.slot_counts[..4], &[0, 2, 1, 0]);
         assert_eq!(
-            params
-                .pending_uploads
+            pending
+                .uploads
                 .iter()
                 .map(|upload| match upload {
                     SpectrogramColumn::Reassigned(points) => points.len(),
@@ -909,7 +886,7 @@ mod tests {
             vec![0, 2, 1]
         );
 
-        let mut retained = VecDeque::from([0, 2, 1]);
+        let mut retained = std::collections::VecDeque::from([0, 2, 1]);
         for (capacity, incoming) in [(2, 3), (6, 4), (4, 5), (4, 0), (8, 7), (1, 2)] {
             // Keep updates pending across resizes, while an older snapshot is still shared.
             state.apply_snapshot(reassigned_update(capacity, false, &[incoming]));
