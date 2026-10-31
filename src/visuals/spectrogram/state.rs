@@ -44,12 +44,8 @@ const PIANO_MIDI_HI: i32 = 119; // B8
 const PIANO_KEY_COUNT: usize = (PIANO_MIDI_HI - PIANO_MIDI_LO + 1) as usize;
 
 static PIANO_KEY_SCALES: LazyLock<[[[f32; 2]; PIANO_KEY_COUNT]; 3]> = LazyLock::new(|| {
-    [
-        FrequencyScale::Linear,
-        FrequencyScale::Logarithmic,
-        FrequencyScale::Erb,
-    ]
-    .map(|scale| {
+    std::array::from_fn(|index| {
+        let scale = FrequencyScale::ALL[index];
         let semi = (0.5_f32 / 12.0).exp2();
         let (inv_s, whole, inv_w) = (1.0 / semi, semi * semi, 1.0 / (semi * semi));
         std::array::from_fn(|i| {
@@ -192,7 +188,6 @@ impl SpectrogramState {
 
     pub fn update_view_settings(&mut self, settings: &SpectrogramSettings) {
         self.settings = settings.clone();
-        self.settings.normalize();
     }
 
     pub fn reset_audio(&mut self) {
@@ -270,10 +265,6 @@ impl SpectrogramState {
         QuarterTurn::new(self.settings.rotation)
     }
 
-    fn freq_axis_is_horizontal(&self) -> bool {
-        self.turn().swaps_axes()
-    }
-
     // Cursor offset in the unturned frame and the frame size; matches shader unrotate.
     fn frame_cursor(&self, cursor: Point, bounds: Rectangle) -> Option<(Vector, Size)> {
         let turn = self.turn();
@@ -292,16 +283,10 @@ impl SpectrogramState {
 
     // 1 column = 1 logical pixel on the time axis, matching the shader.
     fn time_ago_at_cursor(&self, cursor: Point, bounds: Rectangle) -> Option<f32> {
-        if self.history.col_count == 0 {
-            return None;
-        }
         let (offset, size) = self.frame_cursor(cursor, bounds)?;
         let age = size.width - offset.x;
-        if age >= self.history.col_count as f32 {
-            return None;
-        }
-        let secs = (age * self.hop_size as f32 + self.edge_delay as f32) / self.sample_rate;
-        secs.is_finite().then_some(secs)
+        (age < self.history.col_count as f32)
+            .then(|| (age * self.hop_size as f32 + self.edge_delay as f32) / self.sample_rate)
     }
 }
 
@@ -473,7 +458,7 @@ impl Spectrogram<'_> {
         let Some(freq) = state.frequency_at_cursor(cursor, bounds, uv_range) else {
             return;
         };
-        let horizontal = state.freq_axis_is_horizontal();
+        let horizontal = state.turn().swaps_axes();
         let time_ago = state.time_ago_at_cursor(cursor, bounds);
         drop(state);
 
@@ -525,7 +510,7 @@ impl Spectrogram<'_> {
             return bounds;
         }
         let state = self.state.borrow();
-        let horizontal = state.freq_axis_is_horizontal();
+        let horizontal = state.turn().swaps_axes();
         let (freq_org, freq_ext, time_org, time_ext) = if horizontal {
             (bounds.x, bounds.width, bounds.y, bounds.height)
         } else {

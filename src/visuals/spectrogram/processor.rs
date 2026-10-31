@@ -365,12 +365,8 @@ impl SpectrogramProcessor {
                         self.complex
                             .iter()
                             .zip(&self.bin_norm)
-                            .map(|(complex, &normalization)| {
-                                pack_classic_db(power_to_db(
-                                    (complex.re * complex.re + complex.im * complex.im)
-                                        * normalization,
-                                    DB_FLOOR,
-                                ))
+                            .map(|(bin, &norm)| {
+                                pack_classic_db(power_to_db(bin.norm_sqr() * norm, DB_FLOOR))
                             })
                             .collect(),
                     )
@@ -511,7 +507,6 @@ impl SpectrogramProcessor {
     pub fn update_config(&mut self, mut cfg: SpectrogramConfig) {
         cfg.normalize();
         let prev = self.config;
-        let prepared = self.transforms.is_some();
         self.config = cfg;
 
         let rate_changed = prev.sample_rate != cfg.sample_rate;
@@ -521,7 +516,7 @@ impl SpectrogramProcessor {
             || prev.use_reassignment != cfg.use_reassignment
             || rate_changed;
 
-        if rebuild && prepared {
+        if rebuild && self.transforms.is_some() {
             self.rebuild_fft();
         }
         if rate_changed || prev.source != cfg.source {

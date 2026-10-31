@@ -129,16 +129,12 @@ impl Primitive for SpectrogramParams {
                 let Some(accum) = r.accum.as_ref() else {
                     return;
                 };
-                if !self
-                    .slot_counts
-                    .iter()
-                    .take(r.uniform_cache.live_columns() as usize)
-                    .any(|&count| count > 0)
-                {
+                let counts = &self.slot_counts;
+                let live = r.uniform_cache.live_columns() as usize;
+                if counts.iter().take(live).all(|&count| count == 0) {
                     return;
                 }
                 let state = &mut *accum.state.lock().unwrap();
-                let counts = &self.slot_counts;
                 match std::mem::replace(&mut state.pending, Pending::Idle) {
                     Pending::Idle => {}
                     Pending::Redraw => r.accumulate(pipeline, encoder, accum, None, counts),
@@ -150,12 +146,8 @@ impl Primitive for SpectrogramParams {
                 state.phase = r.uniform_cache.scroll_phase;
                 (1, &accum.bg)
             }
-            RingStorage::Classic { bg, .. } => {
-                if self.points_per_column < 2 {
-                    return;
-                }
-                (2, bg)
-            }
+            RingStorage::Classic { .. } if self.points_per_column < 2 => return,
+            RingStorage::Classic { bg, .. } => (2, bg),
         };
         let mut pass = begin_pass(
             encoder,
@@ -797,7 +789,10 @@ impl Resources {
         };
         if matches!(s.pending, Pending::Redraw) {
             // Uploads only extend the reach; a redraw is the time to tighten it.
-            self.reach = reach(spans);
+            self.reach = spans
+                .iter()
+                .map(|span| span[1])
+                .fold(f32::NEG_INFINITY, f32::max);
         }
         (u.ring_origin, u.scroll_phase) = match &s.pending {
             Pending::Idle => (s.origin, s.phase),
@@ -1063,12 +1058,9 @@ impl Resources {
             let slot = (first + index as u32) % p.ring_capacity;
             if let SpectrogramColumn::Reassigned(points) = column {
                 let times = points.iter().map(|point| point.time_offset);
-                let (lo, hi) = times.fold(NO_SPAN.into(), |(lo, hi): (f32, f32), t| {
-                    (lo.min(t), hi.max(t))
-                });
-                let span = [lo - 0.5, hi + 0.5];
-                self.spans[slot as usize] = span;
-                self.reach = self.reach.max(span[1]);
+                let [lo, hi] = times.fold(NO_SPAN, |[lo, hi], t| [lo.min(t), hi.max(t)]);
+                self.spans[slot as usize] = [lo - 0.5, hi + 0.5];
+                self.reach = self.reach.max(hi + 0.5);
             }
             let slot = slot as usize;
             match (&mut self.ring.storage, column) {
@@ -1169,13 +1161,6 @@ fn plan_scroll(
         phase,
         pieces,
     })
-}
-
-fn reach(spans: &[[f32; 2]]) -> f32 {
-    spans
-        .iter()
-        .map(|span| span[1])
-        .fold(f32::NEG_INFINITY, f32::max)
 }
 
 fn create_ring(
