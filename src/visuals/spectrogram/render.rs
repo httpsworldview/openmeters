@@ -1018,21 +1018,18 @@ impl Resources {
         // Room to scroll that many columns past the newest splats, which overhang the view by
         // up to half a column, and the phase.
         let margin = ((RING_MARGIN_COLUMNS + 0.5) * scale_factor).ceil() as u32 + 2;
-        let size = [width + margin, height];
-        if self
-            .accum
-            .as_ref()
-            .is_some_and(|a| [a.tex.width(), a.tex.height()] == size)
-        {
+        let max = device.limits().max_texture_dimension_2d;
+        let size = wgpu::Extent3d {
+            width: (width + margin).min(max),
+            height: height.min(max),
+            depth_or_array_layers: 1,
+        };
+        if self.accum.as_ref().is_some_and(|a| a.tex.size() == size) {
             return;
         }
         let tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Spectrogram power accumulation texture"),
-            size: wgpu::Extent3d {
-                width: size[0],
-                height: size[1],
-                depth_or_array_layers: 1,
-            },
+            size,
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
