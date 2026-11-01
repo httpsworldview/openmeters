@@ -403,11 +403,11 @@ impl StableTrigger {
         let before = len / 2;
         let after = len - before;
         let right = trace.len().checked_sub(frames.max(after))?;
-        if right < before {
+        let search = (period * Self::SEARCH_PERIODS).round() as usize;
+        // A clipped search after a reset would teach the template an arbitrary phase.
+        if right < before + search {
             return None;
         }
-
-        let search = ((period * Self::SEARCH_PERIODS).round() as usize).min(right - before);
         let left = right - search;
         let window = &trace[left - before..right + after];
         self.retune_reference(len, period);
