@@ -114,12 +114,13 @@ impl WaveformState {
         let now = Instant::now();
         let (last, offset) = self.scroll.get();
         let elapsed = now.saturating_duration_since(last);
-        let scroll_offset = if elapsed <= SCROLL_CLOCK_TIMEOUT
-            && now.saturating_duration_since(self.snapshot_at.get()) <= SCROLL_CLOCK_TIMEOUT
-        {
+        let stopped = now.saturating_duration_since(self.snapshot_at.get()) > SCROLL_CLOCK_TIMEOUT;
+        let speed = crate::util::finite_positive(self.settings.scroll_speed).unwrap_or(0.0);
+        // Once audio stops (paused or stalled), redraws keep the image where it was drawn.
+        let scroll_offset = if stopped {
             offset
-                + elapsed.as_secs_f32()
-                    * crate::util::finite_positive(self.settings.scroll_speed).unwrap_or(0.0)
+        } else if elapsed <= SCROLL_CLOCK_TIMEOUT {
+            offset + elapsed.as_secs_f32() * speed
         } else {
             self.preview.progress
         }
