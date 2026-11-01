@@ -806,9 +806,14 @@ fn zero_crossing_capture(samples: &[f32], frames: usize, search_range: usize) ->
     let right = find_rising_zero_crossing(samples, (end.saturating_sub(search_range)..=end).rev())
         .unwrap_or((end, 0.0));
     let right_index = right.0 + right.1.ceil() as usize;
-    let left_lo = right_index.saturating_sub(frames);
+    // Compare fractional crossings, with half a sample of slack, so whole periods do not flicker.
+    let target = right.0 as f32 + right.1 - frames as f32 - 0.5;
+    let left_lo = target.max(0.0) as usize;
     let left_hi = (left_lo + search_range).min(right_index.saturating_sub(2));
-    let left = find_rising_zero_crossing(samples, left_lo..=left_hi).unwrap_or((left_lo, 0.0));
+    let left = find_rising_zero_crossing(samples, left_lo..=left_hi)
+        .filter(|&(index, frac)| index as f32 + frac >= target)
+        .or_else(|| find_rising_zero_crossing(samples, left_lo + 1..=left_hi))
+        .unwrap_or((left_lo, 0.0));
     Capture {
         span: ((right.0 - left.0) as f32 + right.1 - left.1).max(1.0),
         start: left.0,
