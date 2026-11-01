@@ -468,28 +468,42 @@ impl StableTrigger {
             }
             scores[offset]
         };
-        let stride = ((period / 16.0).round() as usize).clamp(1, 128);
-        let mut best = (0, f32::NEG_INFINITY);
-        for offset in (0..=search).rev().step_by(stride).chain([0]) {
+        let stride = ((period / 16.0).round() as usize).max(1);
+        let (mut best, mut peak) = ((0, f32::NEG_INFINITY), None);
+        for offset in (1..=search).rev().step_by(stride).chain([0]) {
             let score = score_at(offset);
             if score > best.1 {
                 best = (offset, score);
             }
-        }
-        let mut step = stride;
-        while step > 1 {
-            let next = (step / 4).max(1);
-            for offset in (best.0.saturating_sub(step)..=(best.0 + step).min(search))
-                .rev()
-                .step_by(next)
+            if (1..search).contains(&offset)
+                && score >= score_at(offset + stride)
+                && score >= score_at(offset.saturating_sub(stride))
+                && peak.is_none_or(|(_, peak)| score > peak)
             {
-                let score = score_at(offset);
-                if score > best.1 {
-                    best = (offset, score);
-                }
+                peak = Some((offset, score));
             }
-            step = next;
         }
+        // A coarse maximum on an edge is often the slope of a peak outside the window,
+        // so the best interior coarse peak is refined as well.
+        let mut refine = |mut best: (usize, f32)| {
+            let mut step = stride;
+            while step > 1 {
+                let next = (step / 4).max(1);
+                for offset in (best.0.saturating_sub(step)..=(best.0 + step).min(search))
+                    .rev()
+                    .step_by(next)
+                {
+                    let score = score_at(offset);
+                    if score > best.1 {
+                        best = (offset, score);
+                    }
+                }
+                step = next;
+            }
+            best
+        };
+        let best = refine(best);
+        let best = peak.map(refine).filter(|p| p.1 > best.1).unwrap_or(best);
 
         let frac_offset = if best.0 > 0 && best.0 < search {
             let (prev, next) = (score_at(best.0 - 1), score_at(best.0 + 1));
