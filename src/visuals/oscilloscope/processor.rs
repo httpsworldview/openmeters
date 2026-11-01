@@ -414,7 +414,12 @@ impl StableTrigger {
         self.prepare_template(period);
         let (offset, mut frac_offset) = self.find_best(window, search, period);
         if fresh {
-            self.write_candidate(&window[offset..offset + len], period);
+            // Learn at the fractional alignment, or the template creeps by rounding.
+            let start = offset as f32 + frac_offset;
+            self.candidate.clear();
+            self.candidate
+                .extend((0..len).map(|i| sample_linear_zero(window, start + i as f32)));
+            self.write_candidate(period);
             self.update_reference(period, elapsed);
         }
 
@@ -522,14 +527,13 @@ impl StableTrigger {
         self.reference_period += weight * (period - self.reference_period);
     }
 
-    fn write_candidate(&mut self, segment: &[f32], period: f32) {
-        let mean = mean_f32(segment);
-        self.candidate.resize(segment.len(), 0.0);
+    // Normalizes the raw segment held in `candidate`.
+    fn write_candidate(&mut self, period: f32) {
+        let mean = mean_f32(&self.candidate);
         let mut peak = 0.0_f32;
-        for (dst, &sample) in self.candidate.iter_mut().zip(segment) {
-            let sample = sample - mean;
+        for sample in &mut self.candidate {
+            *sample -= mean;
             peak = peak.max(sample.abs());
-            *dst = sample;
         }
         let scale = 1.0 / peak.max(f32::EPSILON);
         let std = period * Self::BUFFER_FALLOFF_PERIODS;
@@ -1103,8 +1107,8 @@ mod tests {
         };
         trigger.prepare_template(period);
         let edge_template = trigger.candidate.clone();
-        let segment: Vec<_> = (0..17).map(|i| (i as f32 * 0.7).sin()).collect();
-        trigger.write_candidate(&segment, period);
+        trigger.candidate = (0..17).map(|i| (i as f32 * 0.7).sin()).collect();
+        trigger.write_candidate(period);
         assert_ne!(trigger.candidate, edge_template);
 
         trigger.prepare_template(period);
@@ -1127,8 +1131,11 @@ mod tests {
 
     #[test]
     fn stable_candidate_removes_dc_and_normalizes() {
-        let mut trigger = StableTrigger::default();
-        trigger.write_candidate(&[1.001, 0.999, 1.001, 0.999], 1000.0);
+        let mut trigger = StableTrigger {
+            candidate: vec![1.001, 0.999, 1.001, 0.999],
+            ..Default::default()
+        };
+        trigger.write_candidate(1000.0);
         for (candidate, expected) in trigger.candidate.iter().zip([1.0, -1.0, 1.0, -1.0]) {
             assert!(
                 (candidate - expected).abs() < 1.0e-3,
