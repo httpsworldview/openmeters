@@ -73,6 +73,7 @@ pub struct StereometerProcessor {
     history_channels: usize,
     band_splitter: BandSplitter,
     correlators: [Correlator; BAND_COUNT + 1],
+    silent_frames: usize,
 }
 
 impl StereometerProcessor {
@@ -83,6 +84,7 @@ impl StereometerProcessor {
             history_channels: 0,
             band_splitter: BandSplitter::new(config.sample_rate, BAND_SPLITS_HZ),
             correlators: Default::default(),
+            silent_frames: 0,
             config,
         }
     }
@@ -95,6 +97,7 @@ impl StereometerProcessor {
         self.histories.iter_mut().for_each(VecDeque::clear);
         self.band_splitter.clear();
         self.correlators = Default::default();
+        self.silent_frames = 0;
     }
 
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<StereometerSnapshot> {
@@ -141,6 +144,18 @@ impl StereometerProcessor {
                 .for_each(Correlator::flush_denormals);
             self.band_splitter.flush_denormals();
         }
+        let trailing = block
+            .stereo_frames()
+            .rev()
+            .take_while(|frame| *frame == [0.0; 2])
+            .count();
+        self.silent_frames = if trailing == block.frame_count() {
+            self.silent_frames + trailing
+        } else {
+            trailing
+        };
+        // A window of only digital silence holds no signal: its correlation is undefined.
+        let silent = self.silent_frames as f32 >= window * sample_rate;
 
         let frames = (self.config.sample_rate * self.config.segment_duration)
             .round()
@@ -195,7 +210,7 @@ impl StereometerProcessor {
                     .collect()
             }),
             correlations: std::array::from_fn(|band| {
-                if band == FULL_BAND || analyze_bands {
+                if !silent && (band == FULL_BAND || analyze_bands) {
                     self.correlators[band].value()
                 } else {
                     0.0
