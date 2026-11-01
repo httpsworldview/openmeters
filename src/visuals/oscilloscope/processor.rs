@@ -284,18 +284,6 @@ fn sample_linear_zero(data: &[f32], pos: f32) -> f32 {
     }
 }
 
-fn retune_reference(reference: &[f32], old_period: f32, new_period: f32, len: usize) -> Vec<f32> {
-    let ratio = new_period / old_period;
-    let old_center = reference.len().saturating_sub(1) as f32 * 0.5;
-    let new_center = len.saturating_sub(1) as f32 * 0.5;
-    (0..len)
-        .map(|i| {
-            let pos = old_center + (i as f32 - new_center) / ratio;
-            sample_linear_zero(reference, pos)
-        })
-        .collect()
-}
-
 #[derive(Debug, Clone, Copy)]
 struct Capture {
     span: f32,
@@ -442,11 +430,8 @@ impl StableTrigger {
         for i in 0..len.div_ceil(2) {
             let mirror = len - 1 - i;
             let weight = gaussian(len, i, width);
-            self.candidate[i] = -weight;
-            self.candidate[mirror] = weight;
-        }
-        for (candidate, &reference) in self.candidate.iter_mut().zip(&self.reference) {
-            *candidate += reference;
+            self.candidate[i] = self.reference[i] - weight;
+            self.candidate[mirror] = self.reference[mirror] + weight;
         }
     }
 
@@ -519,7 +504,15 @@ impl StableTrigger {
             self.reference.resize(len, 0.0);
             self.reference_period = period;
         } else if self.reference.len() != len {
-            self.reference = retune_reference(&self.reference, self.reference_period, period, len);
+            let ratio = period / self.reference_period;
+            let old_center = (self.reference.len() - 1) as f32 * 0.5;
+            let new_center = len.saturating_sub(1) as f32 * 0.5;
+            self.reference = (0..len)
+                .map(|i| {
+                    let pos = old_center + (i as f32 - new_center) / ratio;
+                    sample_linear_zero(&self.reference, pos)
+                })
+                .collect();
             self.reference_period = period;
         }
     }
@@ -555,11 +548,9 @@ impl StableTrigger {
         for i in 0..len.div_ceil(2) {
             let mirror = len - 1 - i;
             let weight = gaussian(len, i, std);
-            self.candidate[i] *= scale;
-            self.candidate[i] *= weight;
+            self.candidate[i] = self.candidate[i] * scale * weight;
             if mirror != i {
-                self.candidate[mirror] *= scale;
-                self.candidate[mirror] *= weight;
+                self.candidate[mirror] = self.candidate[mirror] * scale * weight;
             }
         }
     }
@@ -616,11 +607,6 @@ impl OscilloscopeProcessor {
         self.config
     }
 
-    pub fn reset_audio(&mut self) {
-        self.clear_history();
-        self.samples = Vec::new();
-    }
-
     #[cfg(test)]
     fn last_cycle_rate(&self) -> Option<f32> {
         let period = self.triggers.iter().find_map(|trigger| trigger.period)?;
@@ -640,7 +626,7 @@ impl OscilloscopeProcessor {
             .history_channels
             .is_some_and(|channels| channels != channel_count)
         {
-            self.clear_history();
+            self.reset_audio();
         }
         self.history_channels = Some(channel_count);
 
@@ -728,7 +714,7 @@ impl OscilloscopeProcessor {
         self.emit_snapshot(&captures, elapsed)
     }
 
-    fn clear_history(&mut self) {
+    pub fn reset_audio(&mut self) {
         self.epoch = self.epoch.wrapping_add(1);
         self.history_channels = None;
         self.buffers.iter_mut().for_each(VecDeque::clear);
@@ -792,13 +778,7 @@ fn stable_history_frames(max_period: usize, cycles: usize, sample_rate: f32) -> 
         .saturating_sub(1)
         / max_period;
     let cycles = cycles.clamp(1, max_cycles);
-    let max_tail = max_period.saturating_mul(cycles).saturating_add(1);
-    (
-        fixed_frames
-            .saturating_add(max_tail)
-            .min(MAX_DSP_BUFFER_LEN),
-        cycles,
-    )
+    (fixed_frames + max_period * cycles + 1, cycles)
 }
 
 fn zero_crossing_capture(samples: &[f32], frames: usize, search_range: usize) -> Capture {
@@ -832,6 +812,7 @@ fn downsample_trace(output: &mut Vec<f32>, data: &[f32], capture: Capture, targe
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::audio::sine_wave;
     use std::ops::Range;
 
     const RATE: f32 = 48_000.0;
@@ -853,6 +834,14 @@ mod tests {
 
     fn sine_samples(freq: f32, rate: f32, frames: usize) -> Vec<f32> {
         periodic_samples(freq, rate, frames, |cycles| (TAU * cycles).sin())
+    }
+
+    fn saw(cycles: f32) -> f32 {
+        2.0 * cycles.fract() - 1.0
+    }
+
+    fn square(cycles: f32) -> f32 {
+        if cycles.fract() < 0.5 { 1.0 } else { -1.0 }
     }
 
     fn noise_samples(frames: usize) -> Vec<f32> {
@@ -913,19 +902,6 @@ mod tests {
             .collect()
     }
 
-    fn delayed_sine(freq: f32, silence: usize, signal_blocks: usize) -> Vec<f32> {
-        let onset = silence * BLOCK;
-        (0..BLOCK * (silence + signal_blocks))
-            .map(|n| {
-                if n >= onset {
-                    (TAU * freq * (n - onset) as f32 / RATE).sin()
-                } else {
-                    0.0
-                }
-            })
-            .collect()
-    }
-
     fn two_channel_correlation(snap: &OscilloscopeSnapshot) -> f32 {
         assert_eq!(snap.channels, 2);
         let n = snap.samples_per_channel;
@@ -934,25 +910,6 @@ mod tests {
         let dot: f32 = a.iter().zip(b).map(|(a, b)| a * b).sum();
         let energy = |samples: &[f32]| samples.iter().map(|sample| sample * sample).sum::<f32>();
         dot / (energy(a) * energy(b)).sqrt()
-    }
-
-    fn inverted_stereo_capture(config: OscilloscopeConfig) -> (f32, f32) {
-        let mut processor = OscilloscopeProcessor::new(config);
-        let mono = sine_samples(440.0, RATE, BLOCK * 20);
-        let stereo: Vec<f32> = mono.iter().flat_map(|&s| [s, -s]).collect();
-        let mut snap = None;
-        for block in 0..20 {
-            let offset = block * BLOCK * 2;
-            snap = processor.process_block(&AudioBlock::new(
-                &stereo[offset..offset + BLOCK * 2],
-                2,
-                RATE,
-            ));
-        }
-        (
-            processor.last_cycle_rate().expect("trigger should lock"),
-            two_channel_correlation(&snap.expect("snapshot")),
-        )
     }
 
     fn phase_delta(samples: f32, period: f32) -> f32 {
@@ -1013,21 +970,8 @@ mod tests {
         }
 
         for (freq, samples) in [
-            (
-                110.0,
-                periodic_samples(110.0, RATE, long, |c| 2.0 * c.fract() - 1.0),
-            ),
-            (
-                440.0,
-                periodic_samples(
-                    440.0,
-                    RATE,
-                    long,
-                    |c| {
-                        if c.fract() < 0.5 { 1.0 } else { -1.0 }
-                    },
-                ),
-            ),
+            (110.0, periodic_samples(110.0, RATE, long, saw)),
+            (440.0, periodic_samples(440.0, RATE, long, square)),
             (
                 440.0,
                 periodic_samples(440.0, RATE, long, |c| {
@@ -1076,16 +1020,8 @@ mod tests {
                     (0.6 + 0.4 * (TAU * c / 37.0).sin()) * (TAU * c).sin() + 0.25
                 }),
             ),
-            (
-                "saw",
-                periodic_samples(440.0, RATE, frames, |c| 2.0 * c.fract() - 1.0),
-            ),
-            (
-                "square",
-                periodic_samples(440.0, RATE, frames, |c| {
-                    if c.fract() < 0.5 { 1.0 } else { -1.0 }
-                }),
-            ),
+            ("saw", periodic_samples(440.0, RATE, frames, saw)),
+            ("square", periodic_samples(440.0, RATE, frames, square)),
         ] {
             let jitter = stable_phase_jitter(&signal, 440.0, 20..60);
             assert!(jitter < 3.0, "{name} jitter was {jitter:.3} samples");
@@ -1194,12 +1130,10 @@ mod tests {
     #[test]
     fn zero_crossing_finds_edges_after_channel_projection() {
         let mono = sine_samples(440.0, RATE, 4800);
-        let mut projected = Vec::new();
         let inverted: Vec<f32> = mono.iter().flat_map(|&s| [s, -s]).collect();
         let block = AudioBlock::new(&inverted, 2, RATE);
         for (channel, should_cross) in [(Channel::Mid, false), (Channel::Left, true)] {
-            projected.clear();
-            projected.extend(block.projected_frames(channel));
+            let projected: Vec<_> = block.projected_frames(channel).collect();
             assert_eq!(
                 find_rising_zero_crossing(&projected, 0..=4799).is_some(),
                 should_cross
@@ -1217,14 +1151,10 @@ mod tests {
             ..Default::default()
         };
         let mut processor = OscilloscopeProcessor::new(config);
-        let mono = sine_samples(
-            440.0,
-            config.sample_rate,
-            (config.sample_rate * 0.1) as usize,
-        );
+        let mono = sine_samples(440.0, RATE, (RATE * 0.1) as usize);
         let samples: Vec<_> = mono.into_iter().flat_map(|s| [s, s]).collect();
         let snap = processor
-            .process_block(&AudioBlock::new(&samples, 2, config.sample_rate))
+            .process_block(&AudioBlock::new(&samples, 2, RATE))
             .expect("expected snapshot");
 
         assert_eq!(snap.channels, 2);
@@ -1278,14 +1208,21 @@ mod tests {
 
     #[test]
     fn fixed_trigger_source_preserves_visible_channel_phase() {
-        let config = OscilloscopeConfig {
+        let mut processor = OscilloscopeProcessor::new(OscilloscopeConfig {
             trigger_source: Channel::Left,
             channel_1: Channel::Left,
             channel_2: Channel::Right,
             ..stable_config()
-        };
-        let (detected, corr) = inverted_stereo_capture(config);
+        });
+        let mono = sine_samples(440.0, RATE, BLOCK * 20);
+        let stereo: Vec<f32> = mono.iter().flat_map(|&s| [s, -s]).collect();
+        let mut snap = None;
+        for chunk in stereo.chunks(BLOCK * 2) {
+            snap = processor.process_block(&AudioBlock::new(chunk, 2, RATE));
+        }
+        let detected = processor.last_cycle_rate().expect("trigger should lock");
         assert!((detected - 440.0).abs() < 20.0, "detected {detected}");
+        let corr = two_channel_correlation(&snap.expect("snapshot"));
         assert!(
             corr < -0.9,
             "linked trigger should preserve inverted stereo phase, got {corr}"
@@ -1330,7 +1267,8 @@ mod tests {
 
         let mut processor = OscilloscopeProcessor::new(stable_config());
         let (silence, signal_blocks) = (10, 20);
-        let signal = delayed_sine(440.0, silence, signal_blocks);
+        let mut signal = vec![0.0; silence * BLOCK];
+        signal.extend(sine_wave(440.0, RATE, signal_blocks * BLOCK, 1.0));
         feed_blocks(&mut processor, &signal, 0..silence);
         assert!(
             processor.last_cycle_rate().is_none(),
