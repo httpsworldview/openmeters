@@ -14,13 +14,14 @@ use std::{collections::VecDeque, sync::Arc};
 pub const DEFAULT_STABLE_CYCLES: usize = 2;
 pub(in crate::visuals::oscilloscope) const TRACE_COUNT: usize = 2;
 
-fn parabolic_refine(y_prev: f32, y_curr: f32, y_next: f32, tau: usize) -> f32 {
+// Vertex of the parabola through three samples: (offset from the middle, height).
+fn parabolic_vertex(y_prev: f32, y_curr: f32, y_next: f32) -> (f32, f32) {
     let denom = (y_prev - y_curr) + (y_next - y_curr);
     if denom == 0.0 {
-        return tau as f32;
+        return (0.0, y_curr);
     }
     let delta = 0.5 * (y_prev - y_next) / denom;
-    (tau as f32 + delta).max(1.0)
+    (delta, y_curr - 0.25 * (y_prev - y_next) * delta)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -134,20 +135,16 @@ impl PeriodEstimator {
                 && nsdf[*tau] >= nsdf[*tau - 1]
                 && nsdf[*tau] >= nsdf[*tau + 1]
         };
+        // Short periods fall between lags, so compare interpolated peak heights.
+        let vertex = |tau: usize| parabolic_vertex(nsdf[tau - 1], nsdf[tau], nsdf[tau + 1]);
         let best = (first_tau..max_period)
             .filter(is_candidate)
-            .max_by(|&a, &b| nsdf[a].total_cmp(&nsdf[b]))?;
-        let cutoff = nsdf[best] * Self::PEAK_CUTOFF;
+            .max_by(|&a, &b| vertex(a).1.total_cmp(&vertex(b).1))?;
+        let cutoff = vertex(best).1 * Self::PEAK_CUTOFF;
         let peak = (first_tau..=best)
-            .find(|tau| is_candidate(tau) && nsdf[*tau] >= cutoff)
+            .find(|&tau| is_candidate(&tau) && vertex(tau).1 >= cutoff)
             .unwrap_or(best);
-
-        Some(parabolic_refine(
-            nsdf[peak - 1],
-            nsdf[peak],
-            nsdf[peak + 1],
-            peak,
-        ))
+        Some(peak as f32 + vertex(peak).0)
     }
 
     fn compute_periodicity(&mut self, samples: &[f32], mean: f32, max_lag: usize) {
@@ -491,7 +488,7 @@ impl StableTrigger {
 
         let frac_offset = if best.0 > 0 && best.0 < search {
             let (prev, next) = (score_at(best.0 - 1), score_at(best.0 + 1));
-            (parabolic_refine(prev, best.1, next, best.0) - best.0 as f32).clamp(-0.5, 0.5)
+            parabolic_vertex(prev, best.1, next).0.clamp(-0.5, 0.5)
         } else {
             0.0
         };
@@ -973,10 +970,7 @@ mod tests {
 
     #[test]
     fn period_estimation() {
-        assert_eq!(
-            parabolic_refine(-1.5625e-8, -0.0625e-8, -0.5625e-8, 10),
-            10.25
-        );
+        assert_eq!(parabolic_vertex(-1.5625e-8, -0.0625e-8, -0.5625e-8).0, 0.25);
         let mut estimator = PeriodEstimator::default();
         let long = (RATE * 0.1) as usize;
         for (freq, frames, max_error) in [
