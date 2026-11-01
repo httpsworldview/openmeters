@@ -16,32 +16,18 @@ use std::time::{Duration, Instant};
 const INITIAL_VIEW_COLUMNS: usize = 512;
 const SCROLL_CLOCK_TIMEOUT: Duration = Duration::from_millis(100);
 
-pub(crate) struct WaveformState {
-    data: Arc<Mutex<VecDeque<WaveFrame>>>,
-    preview: WaveformPreview,
-    scroll: Cell<(Instant, f32)>,
-    snapshot_at: Cell<Instant>,
-    view_columns: Cell<usize>,
-    quiescent_columns: usize,
-    pub(in crate::visuals) palette: [Color; NUM_BANDS],
-    pub(in crate::visuals) settings: WaveformSettings,
-    keys: [u64; 2],
-}
-
-impl Default for WaveformState {
-    fn default() -> Self {
-        let now = Instant::now();
-        Self {
-            data: Arc::new(Mutex::new(VecDeque::with_capacity(INITIAL_VIEW_COLUMNS))),
-            preview: WaveformPreview::default(),
-            scroll: Cell::new((now, 0.0)),
-            snapshot_at: Cell::new(now),
-            view_columns: Cell::new(INITIAL_VIEW_COLUMNS),
-            quiescent_columns: 0,
-            palette: palettes::waveform::COLORS,
-            settings: WaveformSettings::default(),
-            keys: std::array::from_fn(|_| crate::visuals::next_key()),
-        }
+crate::macros::default_struct! {
+    pub(crate) struct WaveformState {
+        data: Arc<Mutex<VecDeque<WaveFrame>>> =
+            Arc::new(Mutex::new(VecDeque::with_capacity(INITIAL_VIEW_COLUMNS))),
+        preview: WaveformPreview = WaveformPreview::default(),
+        scroll: Cell<(Instant, f32)> = Cell::new((Instant::now(), 0.0)),
+        snapshot_at: Cell<Instant> = Cell::new(Instant::now()),
+        view_columns: Cell<usize> = Cell::new(INITIAL_VIEW_COLUMNS),
+        quiescent_columns: usize = 0,
+        pub(in crate::visuals) palette: [Color; NUM_BANDS] = palettes::waveform::COLORS,
+        pub(in crate::visuals) settings: WaveformSettings = WaveformSettings::default(),
+        keys: [u64; 2] = std::array::from_fn(|_| crate::visuals::next_key()),
     }
 }
 
@@ -72,10 +58,16 @@ impl WaveformState {
             return;
         }
         let max_columns = self.view_columns.get();
-        let mut data = unpoison(self.data.lock());
-        Self::configure_ring(&mut data, max_columns, update.reset);
+        let data = &mut *unpoison(self.data.lock());
         if update.reset {
+            data.clear();
             self.quiescent_columns = 0;
+        }
+        data.drain(..data.len().saturating_sub(max_columns));
+        if data.capacity() < max_columns {
+            data.reserve(max_columns.saturating_sub(data.len()));
+        } else if data.capacity() > max_columns.saturating_mul(2) {
+            data.shrink_to(max_columns);
         }
         for &columns in update.columns {
             self.quiescent_columns = if columns == WaveFrame::default() {
@@ -155,18 +147,6 @@ impl WaveformState {
                 key: self.keys[ch],
             })
         })
-    }
-
-    fn configure_ring(data: &mut VecDeque<WaveFrame>, max_columns: usize, reset: bool) {
-        if reset {
-            data.clear();
-        }
-        data.drain(..data.len().saturating_sub(max_columns));
-        if data.capacity() < max_columns {
-            data.reserve(max_columns.saturating_sub(data.len()));
-        } else if data.capacity() > max_columns.saturating_mul(2) {
-            data.shrink_to(max_columns);
-        }
     }
 }
 

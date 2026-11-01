@@ -46,14 +46,8 @@ impl WaveformParams {
             WaveformColorMode::Loudness => {
                 let peak = column.min.abs().max(column.max.abs());
                 let db = power_to_db(peak * peak, DB_FLOOR);
-                sample_rgba_gradient(
-                    &self.palette,
-                    if db.is_finite() {
-                        (db - LOUDNESS_QUIET_DB) / -LOUDNESS_QUIET_DB
-                    } else {
-                        0.0
-                    },
-                )
+                let t = crate::util::finite_or((db - LOUDNESS_QUIET_DB) / -LOUDNESS_QUIET_DB, 0.0);
+                sample_rgba_gradient(&self.palette, t)
             }
             WaveformColorMode::Static => self.palette[0],
         }
@@ -74,12 +68,9 @@ impl WaveformParams {
             return [0.0; 4];
         }
         let inv_brightness = brightness.recip();
-        [
-            (out[0] * inv_brightness).clamp(0.0, 1.0),
-            (out[1] * inv_brightness).clamp(0.0, 1.0),
-            (out[2] * inv_brightness).clamp(0.0, 1.0),
-            (out[3] / total).clamp(0.0, 1.0),
-        ]
+        let mut color = out.map(|channel| (channel * inv_brightness).clamp(0.0, 1.0));
+        color[3] = (out[3] / total).clamp(0.0, 1.0);
+        color
     }
 }
 
@@ -124,11 +115,7 @@ impl WaveformParams {
         let vertices = &mut scratch.instances;
         vertices.reserve(columns + 1 + usize::from(history.is_some()) * NUM_BANDS * columns * 2);
 
-        let scroll_offset = if preview_columns.is_some() {
-            self.preview.progress * col_width
-        } else {
-            0.0
-        };
+        let scroll_offset = preview_columns.map_or(0.0, |_| self.preview.progress * col_width);
 
         let column_x = |i: usize| -> f32 {
             let dist_steps = (columns - 1 - i) as f32;
