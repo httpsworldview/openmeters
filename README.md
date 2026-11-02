@@ -213,7 +213,7 @@ Fedora, and tarball artifacts.
 
 ## Configuration
 
-On first launch, all six visuals are enabled Application settings are
+On first launch, all six visuals are enabled. Application settings are
 saved to `$XDG_CONFIG_HOME/openmeters/settings.json`, or to:
 
 ```text

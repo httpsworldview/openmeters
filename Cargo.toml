@@ -54,7 +54,7 @@ ebur128 = "0.1.10"
 iced_runtime = "0.14.0"
 
 [patch.crates-io]
-# I will be maintaining my own fork for the forseeable future as
+# I will be maintaining my own fork for the foreseeable future as
 # upstream has not had a commit in ~3 years.
 khronos-egl = { git = "https://github.com/httpsworldview/khronos-egl" }
 
