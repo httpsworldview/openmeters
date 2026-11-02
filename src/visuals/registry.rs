@@ -111,7 +111,6 @@ macro_rules! visuals {
             }
 
             fn prepare(&mut self) {
-                self.pending_audio = true;
                 $(self.processor.$prepare();)?
             }
 
@@ -360,12 +359,7 @@ impl VisualManager {
     }
     pub fn apply_visual_settings(&mut self, settings: &VisualSettings) {
         for entry in &mut self.entries {
-            if let Some(width) = settings
-                .width_basis
-                .get(&entry.slot.kind)
-                .copied()
-                .and_then(crate::util::finite_positive)
-            {
+            if let Some(&width) = settings.width_basis.get(&entry.slot.kind) {
                 entry.slot.width_basis = width;
             }
             let (config, enabled) = settings.module_config(entry.slot.kind);
@@ -518,21 +512,34 @@ mod tests {
             (config.floor_db, config.bar_gap),
             (defaults.floor_db, defaults.bar_gap)
         );
-        assert!(matches!(
-            config.averaging,
-            spectrum::processor::AveragingMode::None
-        ));
+        assert_eq!(config.averaging, spectrum::processor::AveragingMode::None);
     }
 
     #[test]
-    fn buffered_signal_prevents_false_quiescence() {
-        let mut manager = VisualManager::default();
-        manager.set_enabled(VisualKind::Spectrum, true);
-        let format = AudioFormat::new(1, 48_000, 1, ChannelPosition::fallback(1));
-        manager.ingest_samples(&[0.0; 16_384], format);
-        assert!(manager.is_quiescent());
-        manager.ingest_samples(&[0.25], format);
-        assert!(!manager.is_quiescent());
+    fn visuals_go_quiet_after_signal_and_wake_on_buffered_signal() {
+        let format = AudioFormat::new(2, 48_000, 1, ChannelPosition::fallback(2));
+        let tone = crate::util::audio::sine_wave(440.0, 48_000.0, 96_000, 0.5);
+        for &kind in VisualKind::ALL {
+            let mut manager = VisualManager::default();
+            manager.apply_visual_settings(&Default::default());
+            for &other in VisualKind::ALL {
+                manager.set_enabled(other, other == kind);
+            }
+            for entry in manager.snapshot() {
+                if let VisualContent::Spectrogram(state) = entry.content {
+                    state.borrow_mut().view_width = 400;
+                }
+            }
+            for chunk in tone
+                .chunks(512)
+                .chain(std::iter::repeat_n(&[0.0; 512][..], 2_000))
+            {
+                manager.ingest_samples(chunk, format);
+            }
+            assert!(manager.is_quiescent(), "{kind:?}");
+            manager.ingest_samples(&[0.25; 2], format);
+            assert!(!manager.is_quiescent(), "{kind:?}");
+        }
     }
 
     #[test]

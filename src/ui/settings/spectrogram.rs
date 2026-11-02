@@ -3,7 +3,7 @@
 
 use super::{
     FFT_OPTIONS, HOP_DIVISORS, QUARTER_TURNS, get_closest_hop_divisor, quarter_turn_label, set,
-    set_f32, settings_messages, settings_pane, settings_view, update_fft_size, update_hop_divisor,
+    settings_messages, settings_pane, settings_view, update_fft_size, update_hop_divisor,
 };
 use crate::persistence::settings::SpectrogramSettings;
 use crate::ui::widgets::{SliderRange, chip, pick, split, toggle};
@@ -23,8 +23,8 @@ settings_messages!(pane, settings, value {
     Source(Channel) => set(&mut settings.source, value);
     Scale(FrequencyScale) => set(&mut settings.frequency_scale, value);
     UseReassignment(bool) => set(&mut settings.use_reassignment, value);
-    FloorDb(f32) => set_f32(&mut settings.floor_db, value);
-    TiltDb(f32) => set_f32(&mut settings.tilt_db, value);
+    FloorDb(f32) => set(&mut settings.floor_db, value);
+    TiltDb(f32) => set(&mut settings.tilt_db, value);
     Rotation(f32) => set(&mut settings.rotation, value.round() as i8);
     ZeroPadding(usize) => set(&mut settings.zero_padding_factor, value);
     PianoRoll(PianoRollOverlay) => set(&mut settings.piano_roll_overlay, value);

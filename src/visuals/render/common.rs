@@ -453,19 +453,16 @@ fn decimate_finite_ordered_line_in_place(pts: &mut [(f32, f32)], max_points: usi
             }
             read += 1;
         }
-        let push = |pts: &mut [(f32, f32)], out: &mut usize, point| {
-            if *out == 0 || pts[*out - 1] != point {
-                pts[*out] = point;
-                *out += 1;
-            }
-        };
-        if pts[read - 1].0 - pts[start].0 <= 1.0 {
-            let (x, lo, hi) = ((pts[start].0 + pts[read - 1].0) * 0.5, pts[mn].1, pts[mx].1);
-            push(pts, &mut out, (x, lo));
-            push(pts, &mut out, (x, hi));
+        let pair = if pts[read - 1].0 - pts[start].0 <= 1.0 {
+            let x = (pts[start].0 + pts[read - 1].0) * 0.5;
+            [(x, pts[mn].1), (x, pts[mx].1)]
         } else {
-            for point in [pts[mn.min(mx)], pts[mn.max(mx)]] {
-                push(pts, &mut out, point);
+            [pts[mn.min(mx)], pts[mn.max(mx)]]
+        };
+        for point in pair {
+            if out == 0 || pts[out - 1] != point {
+                pts[out] = point;
+                out += 1;
             }
         }
     }

@@ -6,7 +6,7 @@ use super::render::{
     CORR_LABEL_GAP, CORR_LABEL_H, CORR_LABEL_W, CORR_TRAIL_STEP, FixedTrail, StereometerParams,
 };
 use crate::persistence::settings::StereometerSettings;
-use crate::util::{color::color_to_rgba, finite_or};
+use crate::util::color::color_to_rgba;
 use crate::visuals::{
     options::{CorrelationMeterMode, CorrelationMeterSide, StereometerMode},
     palettes::{self, stereometer::SIZE as PALETTE_SIZE},
@@ -37,12 +37,11 @@ crate::macros::default_struct! {
 
 impl StereometerState {
     pub fn update_view_settings(&mut self, s: &StereometerSettings) {
-        let dot_radius = finite_or(s.dot_radius, StereometerSettings::default().dot_radius);
         if self.settings.analyzes_bands() != s.analyzes_bands() {
             self.trails[1..].fill(FixedTrail::default());
         }
         self.settings = StereometerSettings {
-            dot_radius: dot_radius.clamp(0.5, 8.0),
+            dot_radius: s.dot_radius.clamp(0.5, 8.0),
             rotation: s.rotation.clamp(-4, 4),
             ..s.clone()
         };

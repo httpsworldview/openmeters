@@ -5,13 +5,12 @@ use crate::persistence::settings::{ChangeOrigin::User, SettingsHandle};
 use crate::ui::widgets::pane_grid::{self, Content as PaneContent, Pane};
 use crate::visuals::registry::{VisualKind, VisualManagerHandle, VisualSlotSnapshot};
 use iced::widget::{container, mouse_area, text};
-use iced::{Element, Length, Task};
+use iced::{Element, Length};
 
 #[derive(Debug, Clone)]
 pub enum VisualsMessage {
-    PaneDragged(pane_grid::DragEvent),
+    PaneMoved(Pane, usize),
     PaneResized(pane_grid::ResizeWidths),
-    PaneContextRequested(Pane),
     PaneHovered(Option<Pane>),
     SettingsRequested(VisualKind),
 }
@@ -36,31 +35,29 @@ impl VisualsPage {
         page
     }
 
-    pub fn update(&mut self, message: VisualsMessage) -> Task<VisualsMessage> {
+    pub fn update(&mut self, message: VisualsMessage) {
         match message {
             VisualsMessage::PaneResized(widths) => {
+                let mut manager = self.visual_manager.borrow_mut();
                 let bases: Vec<_> = widths
                     .into_iter()
                     .filter_map(|(pane, basis)| {
                         let basis = crate::util::finite_positive(basis)?;
                         let visual = self.panes.iter_mut().find(|visual| visual.kind == pane)?;
                         visual.width_basis = basis;
+                        manager.set_width_basis(visual.kind, basis);
                         Some((visual.kind, basis))
                     })
                     .collect();
                 if !bases.is_empty() {
-                    let mut manager = self.visual_manager.borrow_mut();
-                    for &(kind, basis) in &bases {
-                        manager.set_width_basis(kind, basis);
-                    }
                     self.settings
                         .update(User, |s| s.data.visuals.width_basis.extend(bases));
                 }
             }
-            VisualsMessage::PaneDragged(pane_grid::DragEvent::Moved { pane, target }) => {
-                if let [Some(from), Some(to)] = [pane, target]
-                    .map(|kind| self.panes.iter().position(|visual| visual.kind == kind))
+            VisualsMessage::PaneMoved(pane, to) => {
+                if let Some(from) = self.panes.iter().position(|visual| visual.kind == pane)
                     && from != to
+                    && to < self.panes.len()
                 {
                     let visual = self.panes.remove(from);
                     self.panes.insert(to, visual);
@@ -71,24 +68,14 @@ impl VisualsPage {
                     });
                 }
             }
-            VisualsMessage::PaneDragged(pane_grid::DragEvent::Dropped) => {}
-            VisualsMessage::PaneContextRequested(kind) => {
-                if self.panes.iter().any(|visual| visual.kind == kind) {
-                    return Task::done(VisualsMessage::SettingsRequested(kind));
-                }
-            }
             VisualsMessage::PaneHovered(pane) => self.hovered_pane = pane,
             VisualsMessage::SettingsRequested(_) => {}
         }
-        Task::none()
     }
 
     pub fn hovered_visual(&self) -> Option<VisualKind> {
-        let hovered = self.hovered_pane?;
-        self.panes
-            .iter()
-            .any(|visual| visual.kind == hovered)
-            .then_some(hovered)
+        self.hovered_pane
+            .filter(|&hovered| self.panes.iter().any(|visual| visual.kind == hovered))
     }
 
     pub fn view(&self, reorder_enabled: bool) -> Element<'_, VisualsMessage> {
@@ -98,24 +85,23 @@ impl VisualsPage {
                 .into();
         }
 
-        pane_grid::PaneGrid::new(
+        Element::new(pane_grid::PaneGrid::new(
             &self.panes,
             |visual| {
                 (
                     visual.kind,
                     PaneContent::new(
                         mouse_area(visual.content.render())
-                            .on_right_press(VisualsMessage::PaneContextRequested(visual.kind)),
+                            .on_right_press(VisualsMessage::SettingsRequested(visual.kind)),
                         visual.min_width,
                         visual.width_basis,
                     ),
                 )
             },
-            reorder_enabled.then_some(VisualsMessage::PaneDragged),
+            reorder_enabled.then_some(VisualsMessage::PaneMoved),
             VisualsMessage::PaneResized,
             VisualsMessage::PaneHovered,
-        )
-        .into()
+        ))
     }
 
     pub(in crate::ui) fn apply_snapshot_excluding(

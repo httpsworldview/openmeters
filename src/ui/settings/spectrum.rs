@@ -3,8 +3,7 @@
 
 use super::{
     FFT_OPTIONS, HOP_DIVISORS, QUARTER_TURNS, get_closest_hop_divisor, quarter_turn_label, set,
-    set_f32, set_usize, settings_messages, settings_pane, settings_view, update_fft_size,
-    update_hop_divisor,
+    settings_messages, settings_pane, settings_view, update_fft_size, update_hop_divisor,
 };
 use crate::persistence::settings::SpectrumSettings;
 use crate::ui::widgets::{SliderRange, chip, pick, split, toggle};
@@ -66,14 +65,14 @@ settings_messages!(pane, settings, value {
     SecondaryWeighting(WeightingMode) => set(&mut settings.secondary_weighting_mode, value);
     Averaging(AvgMode) => pane.update_avg(|average| set(&mut average.mode, value));
     AvgTimeConstant(f32) => {
-        pane.update_avg(|average| set_f32(&mut average.time_constant, value))
+        pane.update_avg(|average| set(&mut average.time_constant, value))
     };
-    PeakDecay(f32) => pane.update_avg(|average| set_f32(&mut average.peak_decay, value));
+    PeakDecay(f32) => pane.update_avg(|average| set(&mut average.peak_decay, value));
     ShowGrid(bool) => set(&mut settings.show_grid, value);
     ShowPeakLabel(bool) => set(&mut settings.show_peak_label, value);
-    FloorDb(f32) => set_f32(&mut settings.floor_db, value);
-    BarCount(f32) => set_usize(&mut settings.bar_count, value);
-    BarGap(f32) => set_f32(&mut settings.bar_gap, value);
+    FloorDb(f32) => set(&mut settings.floor_db, value);
+    BarCount(f32) => set(&mut settings.bar_count, value.round() as usize);
+    BarGap(f32) => set(&mut settings.bar_gap, value);
 });
 
 settings_view! {

@@ -53,12 +53,7 @@ impl Correlator {
         if denom <= 1e-12 {
             return 0.0;
         }
-        let value = cross / denom;
-        if value.is_finite() {
-            value.clamp(-1.0, 1.0) as f32
-        } else {
-            0.0
-        }
+        (cross / denom).clamp(-1.0, 1.0) as f32
     }
 
     fn flush_denormals(&mut self) {
@@ -132,18 +127,15 @@ impl StereometerProcessor {
                 {
                     correlator.update(left, right, alpha);
                     if self.config.emit_band_points {
-                        history.push_back((left, right));
+                        history.push_back((left * BAND_DISPLAY_GAIN, right * BAND_DISPLAY_GAIN));
                     }
                 }
             }
         }
-        self.correlators[FULL_BAND].flush_denormals();
-        if analyze_bands {
-            self.correlators[1..]
-                .iter_mut()
-                .for_each(Correlator::flush_denormals);
-            self.band_splitter.flush_denormals();
-        }
+        self.correlators
+            .iter_mut()
+            .for_each(Correlator::flush_denormals);
+        self.band_splitter.flush_denormals();
         let trailing = block
             .stereo_frames()
             .rev()
@@ -183,19 +175,8 @@ impl StereometerProcessor {
                     return Arc::default();
                 }
                 let data = history.make_contiguous();
-                let display = |&(left, right)| {
-                    if band == FULL_BAND {
-                        (left, right)
-                    } else {
-                        (left * BAND_DISPLAY_GAIN, right * BAND_DISPLAY_GAIN)
-                    }
-                };
                 if target == frames {
-                    return if band == FULL_BAND {
-                        Arc::from(&*data)
-                    } else {
-                        data.iter().map(display).collect()
-                    };
+                    return Arc::from(&*data);
                 }
                 let scale = (frames - 1) as f64 / (target - 1).max(1) as f64;
                 (0..target)
@@ -205,36 +186,30 @@ impl StereometerProcessor {
                         } else {
                             (i as f64 * scale).round() as usize
                         };
-                        display(&data[index])
+                        data[index]
                     })
                     .collect()
             }),
-            correlations: std::array::from_fn(|band| {
-                if !silent && (band == FULL_BAND || analyze_bands) {
-                    self.correlators[band].value()
-                } else {
-                    0.0
-                }
-            }),
+            // Band correlators hold zero moments, and read 0, while bands are not analyzed.
+            correlations: self
+                .correlators
+                .map(|correlator| if silent { 0.0 } else { correlator.value() }),
         })
     }
     pub fn update_config(&mut self, mut config: StereometerConfig) {
         config.analyze_bands |= config.emit_band_points;
-        let sample_rate_changed = self.config.sample_rate != config.sample_rate;
-        let band_analysis_changed = self.config.analyze_bands != config.analyze_bands;
-        self.config = config;
-
-        if sample_rate_changed {
-            *self = Self::new(self.config);
+        if self.config.sample_rate != config.sample_rate {
+            *self = Self::new(config);
             return;
         }
-        if band_analysis_changed {
+        if self.config.analyze_bands != config.analyze_bands {
             self.band_splitter = BandSplitter::new(config.sample_rate, BAND_SPLITS_HZ);
             self.correlators[1..].fill(Correlator::default());
         }
         if !config.emit_band_points {
             self.histories[1..].fill_with(VecDeque::new);
         }
+        self.config = config;
     }
 }
 

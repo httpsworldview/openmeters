@@ -201,25 +201,16 @@ impl Projection {
 }
 
 fn clip_segment_to_visible_unipolar_half(
-    mut a: (f32, f32),
-    mut b: (f32, f32),
+    a: (f32, f32),
+    b: (f32, f32),
 ) -> Option<((f32, f32), (f32, f32))> {
-    let a_outside = a.1 > 0.0;
-    let b_outside = b.1 > 0.0;
-
-    if a_outside && b_outside {
-        return None;
+    let boundary = || (lerp(a.0, b.0, a.1 / (a.1 - b.1)), 0.0);
+    match (a.1 > 0.0, b.1 > 0.0) {
+        (true, true) => None,
+        (true, false) => Some((boundary(), b)),
+        (false, true) => Some((a, boundary())),
+        (false, false) => Some((a, b)),
     }
-    if a_outside || b_outside {
-        let boundary_fraction = a.1 / (a.1 - b.1);
-        let boundary = (lerp(a.0, b.0, boundary_fraction), 0.0);
-        if a_outside {
-            a = boundary;
-        } else {
-            b = boundary;
-        }
-    }
-    Some((a, b))
 }
 
 fn projected_line(
@@ -268,12 +259,8 @@ impl StereometerParams {
             }
         }
 
-        let axes = if self.mode == StereometerMode::Lissajous {
-            &GRID_AXES[..1]
-        } else {
-            &GRID_AXES[..]
-        };
-        axes.iter().copied().for_each(|(a, b)| add_line(a, b));
+        let axes = 1 + usize::from(self.mode != StereometerMode::Lissajous);
+        GRID_AXES[..axes].iter().for_each(|&(a, b)| add_line(a, b));
     }
 
     pub(super) fn correlation_y(bounds: Rectangle, value: f32) -> f32 {
@@ -325,16 +312,14 @@ impl StereometerParams {
         clip: ClipTransform,
     ) {
         let [cr, cg, cb, ca] = self.palette[0];
-        let dot_r = self.dot_radius;
         let radial_scale = match projection.scale {
             StereometerScale::Linear => projection.fit,
             StereometerScale::Scaled => -1.0,
         };
-        let center_radius = [projection.cx, projection.cy, projection.radius];
         let dots = RadialDotTemplate::new(
-            center_radius,
+            [projection.cx, projection.cy, projection.radius],
             radial_scale,
-            dot_r,
+            self.dot_radius,
             clip,
             self.mode == StereometerMode::DotCloudBands,
         );
@@ -352,18 +337,11 @@ impl StereometerParams {
             StereometerMode::Lissajous => {
                 if points.len() >= 2 {
                     let last = (points.len() - 1) as f32;
+                    let color_at = |i: usize| [cr, cg, cb, ca * (i as f32 / last)];
                     out.extend(points.windows(2).enumerate().map(|(i, w)| {
                         let p0 = projection.project(w[0].0, w[0].1);
                         let p1 = projection.project(w[1].0, w[1].1);
-                        let (t0, t1) = (i as f32 / last, (i + 1) as f32 / last);
-                        line_instance(
-                            p0,
-                            p1,
-                            [cr, cg, cb, ca * t0],
-                            [cr, cg, cb, ca * t1],
-                            1.5,
-                            clip,
-                        )
+                        line_instance(p0, p1, color_at(i), color_at(i + 1), 1.5, clip)
                     }));
                 }
             }

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::{set, set_f32, settings_messages, settings_pane, settings_view};
+use super::{set, settings_messages, settings_pane, settings_view};
 use crate::persistence::settings::WaveformSettings;
 use crate::ui::widgets::{SliderRange, palette_editor::PaletteEditor, pick};
 use crate::util::audio::Channel;
@@ -27,8 +27,8 @@ fn configure_palette_for_mode(palette: &mut PaletteEditor, mode: WaveformColorMo
 }
 
 settings_messages!(pane, settings, value {
-    ScrollSpeed(f32) => set_f32(&mut settings.scroll_speed, value);
-    BandDbFloor(f32) => set_f32(&mut settings.band_db_floor, value);
+    ScrollSpeed(f32) => set(&mut settings.scroll_speed, value);
+    BandDbFloor(f32) => set(&mut settings.band_db_floor, value);
     Channel1(Channel) => set(&mut settings.channel_1, value);
     Channel2(Channel) => set(&mut settings.channel_2, value);
     ColorMode(WaveformColorMode) => {

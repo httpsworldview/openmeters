@@ -49,12 +49,16 @@ impl OscilloscopeState {
             && snapshot.samples_per_channel == self.snapshot.samples_per_channel
             && snapshot.slots[..snapshot.channels] == self.snapshot.slots[..self.snapshot.channels]
         {
-            for (current, incoming) in Arc::make_mut(&mut self.snapshot.samples)
+            for (current, &incoming) in Arc::make_mut(&mut self.snapshot.samples)
                 .iter_mut()
                 .zip(snapshot.samples.iter())
             {
                 *current += weight * (incoming - *current);
                 crate::util::audio::flush_denormal_f32(current);
+                // A trace fading into silence ends below half a pixel, so the visual can go quiet.
+                if incoming == 0.0 && current.abs() < 1.0e-3 {
+                    *current = 0.0;
+                }
             }
             return;
         }
@@ -69,9 +73,8 @@ impl OscilloscopeState {
     pub(in crate::visuals) fn is_quiescent(&self) -> bool {
         let channels = usize::from(self.settings.channel_1 != Channel::None)
             + usize::from(self.settings.channel_2 != Channel::None);
-        self.ignores_audio()
-            || (self.snapshot.channels == channels
-                && self.snapshot.samples.iter().all(|&sample| sample == 0.0))
+        self.snapshot.channels == channels
+            && self.snapshot.samples.iter().all(|&sample| sample == 0.0)
     }
 
     pub fn visual_params(&self, bounds: Rectangle) -> impl Iterator<Item = OscilloscopeParams> {

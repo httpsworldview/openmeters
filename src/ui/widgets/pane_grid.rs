@@ -32,15 +32,11 @@ struct Interaction {
     resizing: Option<ResizeState>,
     cursor_over: Option<Pane>,
     modifiers: keyboard::Modifiers,
+    // The page forgets its hovered pane when the panes change, so the next move must report it.
+    panes: Vec<Pane>,
 }
 
 pub type ResizeWidths = Vec<(Pane, f32)>;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DragEvent {
-    Moved { pane: Pane, target: Pane },
-    Dropped,
-}
 
 pub struct Content<'a, Message> {
     body: Element<'a, Message>,
@@ -60,7 +56,8 @@ impl<'a, Message> Content<'a, Message> {
 
 pub struct PaneGrid<'a, Message> {
     entries: Vec<(Pane, Content<'a, Message>)>,
-    on_drag: Option<fn(DragEvent) -> Message>,
+    // Moves a pane to an index; repeats of one crossing in an event batch are then no-ops.
+    on_drag: Option<fn(Pane, usize) -> Message>,
     on_resize: fn(ResizeWidths) -> Message,
     on_hover: fn(Option<Pane>) -> Message,
 }
@@ -69,7 +66,7 @@ impl<'a, Message: 'a> PaneGrid<'a, Message> {
     pub fn new<T>(
         state: &'a [T],
         view: impl Fn(&'a T) -> (Pane, Content<'a, Message>),
-        on_drag: Option<fn(DragEvent) -> Message>,
+        on_drag: Option<fn(Pane, usize) -> Message>,
         on_resize: fn(ResizeWidths) -> Message,
         on_hover: fn(Option<Pane>) -> Message,
     ) -> Self {
@@ -128,6 +125,12 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer> for PaneGrid
     }
 
     fn diff(&self, tree: &mut Tree) {
+        let interaction = tree.state.downcast_mut::<Interaction>();
+        let panes = self.entries.iter().map(|&(pane, _)| pane);
+        if !interaction.panes.iter().copied().eq(panes.clone()) {
+            interaction.panes = panes.collect();
+            interaction.cursor_over = None;
+        }
         tree.diff_children_custom(
             &self.entries,
             |state, entry| state.diff(&entry.1.body),
@@ -274,17 +277,14 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer> for PaneGrid
         if child_interaction == mouse::Interaction::Grabbing {
             return child_interaction;
         }
-        if cursor
-            .position()
-            .is_some_and(|p| self.divider_at(layout, p).is_some())
-        {
+        let Some(position) = cursor.position() else {
+            return child_interaction;
+        };
+        if self.divider_at(layout, position).is_some() {
             return mouse::Interaction::ResizingHorizontally;
         }
-        if cursor
-            .position()
-            .and_then(|p| self.draggable_at(layout, p, interaction.modifiers.control()))
-            .is_some()
-        {
+        let control = interaction.modifiers.control();
+        if self.draggable_at(layout, position, control).is_some() {
             return mouse::Interaction::Grab;
         }
         child_interaction
@@ -361,13 +361,11 @@ impl<'a, Message: 'a> PaneGrid<'a, Message> {
         cursor: mouse::Cursor,
         shell: &mut Shell<'_, Message>,
     ) -> bool {
-        use mouse::Button;
-
         if matches!(event, mouse::Event::CursorLeft) {
             let dragging = interaction.dragging.take();
             self.hover(interaction, None, shell);
             if dragging.is_some() {
-                self.publish_drop(shell);
+                shell.request_redraw();
                 shell.capture_event();
             }
             return dragging.is_some();
@@ -393,18 +391,15 @@ impl<'a, Message: 'a> PaneGrid<'a, Message> {
                             let crossed = (n.0 > idx && position.x > b.x + b.width / 2.0)
                                 || (n.0 < idx && position.x < b.x + b.width / 2.0);
                             if crossed && let Some(on_drag) = &self.on_drag {
-                                shell.publish(on_drag(DragEvent::Moved {
-                                    pane,
-                                    target: self.entries[n.0].0,
-                                }));
+                                shell.publish(on_drag(pane, n.0));
                             }
                         }
                     }
                     interaction.dragging = Some((pane, origin, position.x));
                 }
-                mouse::Event::ButtonReleased(Button::Left) => {
+                mouse::Event::ButtonReleased(mouse::Button::Left) => {
                     interaction.dragging = None;
-                    self.publish_drop(shell);
+                    shell.request_redraw();
                 }
                 _ => {}
             }
@@ -412,7 +407,7 @@ impl<'a, Message: 'a> PaneGrid<'a, Message> {
             return true;
         }
 
-        if let mouse::Event::ButtonPressed(Button::Left) = event
+        if let mouse::Event::ButtonPressed(mouse::Button::Left) = event
             && let Some(position) = cursor.position()
         {
             if let Some(divider) = self.divider_at(layout, position) {
@@ -435,16 +430,11 @@ impl<'a, Message: 'a> PaneGrid<'a, Message> {
             {
                 interaction.dragging = Some((pane, position, position.x));
                 shell.capture_event();
+                shell.request_redraw();
                 return true;
             }
         }
         false
-    }
-
-    fn publish_drop(&self, shell: &mut Shell<'_, Message>) {
-        if let Some(on_drag) = &self.on_drag {
-            shell.publish(on_drag(DragEvent::Dropped));
-        }
     }
 
     fn update_resize(
@@ -453,8 +443,6 @@ impl<'a, Message: 'a> PaneGrid<'a, Message> {
         event: &mouse::Event,
         shell: &mut Shell<'_, Message>,
     ) -> bool {
-        use mouse::Button;
-
         let Some(mut resizing) = interaction.resizing.take() else {
             return false;
         };
@@ -474,7 +462,7 @@ impl<'a, Message: 'a> PaneGrid<'a, Message> {
                 }
                 interaction.resizing = Some(resizing);
             }
-            mouse::Event::ButtonReleased(Button::Left) => {
+            mouse::Event::ButtonReleased(mouse::Button::Left) => {
                 if !widths_equal(&resizing.current, &resizing.start) {
                     let widths = self
                         .entries
@@ -598,12 +586,6 @@ fn transfer_width(
         if amount <= EPS {
             break;
         }
-    }
-}
-
-impl<'a, Message: 'static> From<PaneGrid<'a, Message>> for Element<'a, Message> {
-    fn from(pane_grid: PaneGrid<'a, Message>) -> Self {
-        Element::new(pane_grid)
     }
 }
 

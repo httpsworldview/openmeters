@@ -132,19 +132,6 @@ fn save(
     });
 }
 
-// Compare bits to avoid spurious writes for identical NaN payloads.
-fn set_f32(target: &mut f32, value: f32) -> bool {
-    if target.to_bits() == value.to_bits() {
-        return false;
-    }
-    *target = value;
-    true
-}
-
-fn set_usize(target: &mut usize, value: f32) -> bool {
-    set(target, value.round() as usize)
-}
-
 fn get_closest_hop_divisor(fft_size: usize, hop_size: usize) -> usize {
     let ratio = fft_size as f32 / hop_size as f32;
     HOP_DIVISORS

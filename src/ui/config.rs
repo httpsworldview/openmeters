@@ -19,7 +19,7 @@ use crate::visuals::registry::{VisualKind, VisualManagerHandle, VisualSlotSnapsh
 use iced::alignment::Vertical;
 use iced::widget::text::IntoFragment;
 use iced::widget::{Column, Text, column, container, pick_list, row, text, text_input};
-use iced::{Element, Length};
+use iced::{Color, Element, Length};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -43,7 +43,7 @@ impl std::fmt::Display for DeviceOption {
     }
 }
 
-#[derive(Clone, Default, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 struct BarMonitorOption {
     monitor: Option<String>,
     disconnected: bool,
@@ -124,7 +124,7 @@ impl BarOutputs {
             && match selected {
                 None => match event {
                     Added => self.current != Some(id),
-                    Removed => self.current.is_none_or(|current| current == id),
+                    Removed => self.current.is_none(),
                     Updated => false,
                 },
                 Some(selected) => {
@@ -159,20 +159,14 @@ impl BarOutputs {
             monitor: selected.map(str::to_owned),
             disconnected,
         };
-        let mut options = vec![BarMonitorOption::default()];
-        options.extend(
-            self.names
-                .values()
-                .flatten()
-                .cloned()
-                .map(|monitor| BarMonitorOption {
-                    monitor: Some(monitor),
-                    disconnected: false,
-                }),
-        );
-        if disconnected {
-            options.push(selected.clone());
-        }
+        let options = std::iter::once(None)
+            .chain(self.names.values().flatten().cloned().map(Some))
+            .map(|monitor| BarMonitorOption {
+                monitor,
+                disconnected: false,
+            })
+            .chain(disconnected.then(|| selected.clone()))
+            .collect();
         (options, selected)
     }
 }
@@ -241,11 +235,7 @@ impl ConfigPage {
         settings: SettingsHandle,
         bar_supported: bool,
     ) -> Self {
-        let current_bg = settings
-            .borrow()
-            .data
-            .background_color
-            .map_or(theme::BG_BASE, Into::into);
+        let current_bg = background_or_base(settings.borrow().data.background_color);
         let theme_choices = settings.borrow().theme_store().list();
         let window_themes = theme::window_themes(current_bg);
         let mut bg_palette = PaletteEditor::new(theme::background::PALETTE);
@@ -385,16 +375,14 @@ impl ConfigPage {
 
     pub fn view(&self) -> Element<'_, ConfigMessage> {
         let snapshot = self.visual_manager.borrow().snapshot();
-        let mut content = column![
+        let content = column![
             self.render_capture_card(),
             self.render_visuals_card(&snapshot),
             self.render_global_card(),
+            self.bar_supported.then(|| self.render_bar_card()),
+            self.render_appearance_card(),
         ]
         .spacing(theme::SECTION_GAP);
-        if self.bar_supported {
-            content = content.push(self.render_bar_card());
-        }
-        content = content.push(self.render_appearance_card());
         self.scroll.vertical(content, ConfigMessage::Scrolled)
     }
 
@@ -559,15 +547,11 @@ impl ConfigPage {
             return false;
         };
         let palettes_changed = self.visual_manager.borrow_mut().apply_theme(&theme_file);
-        let bg = theme_file.background.map_or(theme::BG_BASE, Into::into);
+        let bg = background_or_base(theme_file.background);
         let settings_changed = {
             let settings = self.settings.borrow();
             settings.active_theme() != name
-                || settings
-                    .data
-                    .background_color
-                    .map_or(theme::BG_BASE, Into::into)
-                    != bg
+                || background_or_base(settings.data.background_color) != bg
         };
         if !settings_changed && !palettes_changed {
             return false;
@@ -733,6 +717,10 @@ impl ConfigPage {
             tracing::error!("[ui] PipeWire capture backend is unavailable");
         }
     }
+}
+
+fn background_or_base(color: Option<impl Into<Color>>) -> Color {
+    color.map_or(theme::BG_BASE, Into::into)
 }
 
 fn note<'a>(content: impl IntoFragment<'a>) -> Text<'a> {

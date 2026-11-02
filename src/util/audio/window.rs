@@ -79,12 +79,8 @@ pub(crate) fn mean_f32(samples: &[f32]) -> f32 {
         sums[2] += f64::from(c);
         sums[3] += f64::from(d);
     }
-    let sum = (sums[0] + sums[1])
-        + (sums[2] + sums[3])
-        + remainder
-            .iter()
-            .map(|&sample| f64::from(sample))
-            .sum::<f64>();
+    let tail: f64 = remainder.iter().map(|&sample| f64::from(sample)).sum();
+    let sum = (sums[0] + sums[1]) + (sums[2] + sums[3]) + tail;
     (sum / samples.len() as f64) as f32
 }
 

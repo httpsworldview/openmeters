@@ -9,12 +9,16 @@ use crate::ui::widgets::{fill, page, scroll_glow::ScrollEvent};
 use iced::event::{self, Event};
 use iced::keyboard::{self, Key};
 use iced::widget::text;
-use iced::{Element, Size, Task, mouse, window};
+use iced::{Element, Size, Task, mouse, touch, window};
 use iced_exwlshell::actions::IcedXdgWindowSettings;
 use iced_exwlshell::reexport::NewLayerShellSettings;
 use iced_exwlshell::shell::ShellEvent;
 use iced_exwlshell::to_layer_message;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+// A held key repeats well within this, so a later press is fresh even if focus took the
+// release before it.
+const KEY_REPEAT_GAP: Duration = Duration::from_secs(1);
 
 #[to_layer_message(multi)]
 #[derive(Debug, Clone)]
@@ -27,6 +31,10 @@ pub(super) enum Message {
     BarOutput(u32, Option<String>, BarOutputEvent),
     BarWindowOutput(window::Id, Option<u32>),
     ShellWindowClosed(window::Id),
+    // Key repeats can arrive as fresh presses (layer shell; X11 after a focus change), so a
+    // shortcut acts on its key's first press and ignores more until that key is released.
+    Shortcut(keyboard::key::Physical, Instant, Box<Message>),
+    ShortcutReleased(keyboard::key::Physical),
     ToggleConfig,
     TogglePause,
     PopOutOrDock(window::Id),
@@ -66,10 +74,12 @@ pub(super) fn shell_event(event: ShellEvent) -> Option<Message> {
 
 pub(super) fn bar_drag_events(evt: Event, _: event::Status, _: window::Id) -> Option<Message> {
     match evt {
-        Event::Mouse(mouse::Event::CursorMoved { position }) => {
+        Event::Mouse(mouse::Event::CursorMoved { position })
+        | Event::Touch(touch::Event::FingerMoved { position, .. }) => {
             Some(Message::BarResizeMove(position))
         }
-        Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
+        Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
+        | Event::Touch(touch::Event::FingerLifted { .. } | touch::Event::FingerLost { .. }) => {
             Some(Message::BarResizeEnd)
         }
         _ => None,
@@ -81,8 +91,17 @@ pub(super) fn app_event(
     status: event::Status,
     window_id: window::Id,
 ) -> Option<Message> {
-    let Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) = event else {
+    let Event::Keyboard(keyboard::Event::KeyPressed {
+        key,
+        modifiers,
+        physical_key,
+        ..
+    }) = event
+    else {
         return match event {
+            Event::Keyboard(keyboard::Event::KeyReleased { physical_key, .. }) => {
+                Some(Message::ShortcutReleased(physical_key))
+            }
             Event::Window(window::Event::Closed) => Some(Message::WindowClosed(window_id)),
             Event::Window(window::Event::Resized(size)) => {
                 Some(Message::WindowResized(window_id, size))
@@ -92,7 +111,7 @@ pub(super) fn app_event(
     };
     let (ctrl, shift, no_modifiers) =
         (modifiers.control(), modifiers.shift(), modifiers.is_empty());
-    match key {
+    let action = match key {
         Key::Character(ch) if ctrl && shift && ch.eq_ignore_ascii_case("h") => {
             Some(Message::ToggleConfig)
         }
@@ -105,11 +124,17 @@ pub(super) fn app_event(
             }
         }
         _ => None,
-    }
+    };
+    action.map(|action| Message::Shortcut(physical_key, Instant::now(), Box::new(action)))
 }
 
 pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
-    if !app.rendering_paused && !matches!(&msg, Message::Tick | Message::Watchdog(_)) {
+    // A shortcut wakes through the action it runs.
+    let quiet = matches!(
+        &msg,
+        Message::Tick | Message::Watchdog(_) | Message::Shortcut(..) | Message::ShortcutReleased(_)
+    );
+    if !app.rendering_paused && !quiet {
         app.frames.borrow_mut().wake();
     }
     match msg {
@@ -121,8 +146,18 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
         Message::Visuals(VisualsMessage::SettingsRequested(kind)) => {
             return app.open_settings_window(kind);
         }
-        Message::Visuals(visuals_msg) => {
-            return app.visuals_page.update(visuals_msg).map(Message::Visuals);
+        Message::Visuals(visuals_msg) => app.visuals_page.update(visuals_msg),
+        Message::Shortcut(key, at, action) => {
+            let previous = app.held_shortcut.replace((key, at));
+            let repeat = previous.is_some_and(|(held, last)| {
+                held == key && at.saturating_duration_since(last) < KEY_REPEAT_GAP
+            });
+            if !repeat {
+                return update(app, *action);
+            }
+        }
+        Message::ShortcutReleased(key) => {
+            app.held_shortcut = app.held_shortcut.filter(|&(held, _)| held != key);
         }
         Message::ToggleConfig => return app.toggle_config_window(),
         Message::TogglePause => app.set_rendering_paused(!app.rendering_paused),
@@ -182,14 +217,9 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
 fn apply_config_effect(app: &mut UiApp, effect: ConfigEffect) -> Task<Message> {
     match effect {
         ConfigEffect::VisualToggled { kind, enabled } => {
-            let active = app.visuals_active();
-            app.frames.borrow_mut().set_active(active);
-            let restore = if enabled {
-                app.restore_popout_window(kind)
-            } else {
-                Task::none()
-            };
-            return Task::batch([restore, app.sync_all_windows()]);
+            app.frames.borrow_mut().set_active(app.visuals_active());
+            let restore = enabled.then(|| app.restore_popout_window(kind));
+            return Task::batch(restore.into_iter().chain([app.sync_all_windows()]));
         }
         ConfigEffect::FrameRateChanged(rate) => app.frames.borrow_mut().set_rate(rate),
         ConfigEffect::DecorationsChanged => return app.recreate_visual_windows(),
@@ -365,8 +395,41 @@ mod tests {
         assert_actions!(update(&mut app, ShellWindowClosed(restored)), []);
         assert_actions!(update(&mut app, BarWindowOutput(restored, Some(3))), []);
         assert_actions!(update(&mut app, Tick), []);
-        assert_actions!(update(&mut app, Quit), []);
-        assert_actions!(update(&mut app, Quit), [Exit]);
+        let key_event = |code, pressed| {
+            let event = Event::Keyboard(if pressed {
+                keyboard::Event::KeyPressed {
+                    key: Key::Character("q".into()),
+                    modified_key: Key::Character("q".into()),
+                    physical_key: keyboard::key::Physical::Code(code),
+                    location: keyboard::Location::Standard,
+                    modifiers: keyboard::Modifiers::empty(),
+                    text: None,
+                    repeat: false,
+                }
+            } else {
+                keyboard::Event::KeyReleased {
+                    key: Key::Character("q".into()),
+                    modified_key: Key::Character("q".into()),
+                    physical_key: keyboard::key::Physical::Code(code),
+                    location: keyboard::Location::Standard,
+                    modifiers: keyboard::Modifiers::empty(),
+                }
+            });
+            app_event(event, event::Status::Ignored, window::Id::unique()).unwrap()
+        };
+        let q = keyboard::key::Code::KeyQ;
+        assert_actions!(update(&mut app, key_event(q, true)), []);
+        // Repeats of the held key, and other keys' releases, are not the confirming keystroke.
+        assert_actions!(update(&mut app, key_event(q, true)), []);
+        let ctrl = key_event(keyboard::key::Code::ControlLeft, false);
+        assert_actions!(update(&mut app, ctrl), []);
+        assert_actions!(update(&mut app, key_event(q, false)), []);
+        assert_actions!(update(&mut app, key_event(q, true)), [Exit]);
+        // Focus can take a release elsewhere; a press after the repeat gap is still fresh.
+        let later = Instant::now() + KEY_REPEAT_GAP;
+        let quit = |at| Shortcut(keyboard::key::Physical::Code(q), at, Box::new(Quit));
+        assert_actions!(update(&mut app, quit(later)), [Exit]);
+        assert_actions!(update(&mut app, quit(later + KEY_REPEAT_GAP / 2)), []);
     }
 
     #[test]

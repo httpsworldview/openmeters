@@ -8,7 +8,7 @@ use std::{f64::consts::PI, sync::LazyLock};
 // BS.1770 LUFS offset.
 const LOUDNESS_OFFSET: f64 = -0.691;
 // Analysis floor, not the visible meter floor.
-const DEFAULT_FLOOR_DB: f32 = -99.9;
+pub(super) const DEFAULT_FLOOR_DB: f32 = -99.9;
 
 // K-weighted windows (seconds): short-term, momentary, fast RMS, slow RMS.
 const DEFAULT_WINDOWS: [f32; 4] = [3.0, 0.4, 0.3, 1.0];

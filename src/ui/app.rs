@@ -121,6 +121,7 @@ struct UiApp {
     // at most one popout exists for each VisualKind
     popout_windows: HashMap<window::Id, PopoutWindow>,
     exit_warning_until: Option<Instant>,
+    held_shortcut: Option<(iced::keyboard::key::Physical, Instant)>,
 }
 
 impl UiApp {
@@ -140,16 +141,13 @@ impl UiApp {
         if let Some(theme_file) = theme_file {
             manager.apply_theme(&theme_file);
         }
-        let visuals_active = manager.has_enabled();
         let visual_manager = Rc::new(RefCell::new(manager));
         let reader = audio
             .borrow_mut()
             .take()
             .expect("audio reader already taken");
         let mut meter_engine = MeterEngine::new(reader, visual_manager.clone());
-        if !visuals_active {
-            meter_engine.set_active(false);
-        }
+        meter_engine.set_active(visual_manager.borrow().has_enabled());
 
         let config_page = ConfigPage::new(
             capture,
@@ -180,6 +178,7 @@ impl UiApp {
             settings_scroll: ScrollGlow::default(),
             popout_windows: HashMap::default(),
             exit_warning_until: None,
+            held_shortcut: None,
         };
         let restore_popouts = app.restore_popout_windows();
         if !app.popout_windows.is_empty() {
@@ -195,14 +194,12 @@ impl UiApp {
         }
         if self.visuals_active() && !self.rendering_paused {
             let frames = self.frames.borrow();
-            subs.push(
+            subs.extend([
                 Subscription::run_with(frames.wake_handle(), audio_wake)
                     .map(|_| Message::AudioWake),
-            );
-            subs.push(
                 Subscription::run_with(frames.heartbeat_handle(), frame_watchdog)
                     .map(Message::Watchdog),
-            );
+            ]);
         }
         if self.config_window.is_some()
             || self.toast_until.is_some()
@@ -247,17 +244,9 @@ impl UiApp {
         if !matches!(self.main_window, MainWindow::Bar(Some(_))) {
             return;
         }
-        let bar = &self.settings_handle.borrow().data.bar;
-        if !bar.enabled {
-            return;
-        }
-        let height = clamp_bar_height(bar.height);
-        let start_y = match bar.alignment {
-            BarAlignment::Top => height as f32,
-            BarAlignment::Bottom => 0.0,
-        };
+        let height = clamp_bar_height(self.settings_handle.borrow().data.bar.height);
         self.bar_resize_state = Some(BarResizeState {
-            start_y,
+            start_y: None,
             start_height: height,
             pending_height: height,
         });
@@ -266,9 +255,10 @@ impl UiApp {
     fn handle_bar_resize(&mut self, position: iced::Point) {
         if let Some(state) = &mut self.bar_resize_state {
             let alignment = self.settings_handle.borrow().data.bar.alignment;
+            let start_y = *state.start_y.get_or_insert(position.y);
             let delta = match alignment {
-                BarAlignment::Top => position.y - state.start_y,
-                BarAlignment::Bottom => state.start_y - position.y,
+                BarAlignment::Top => position.y - start_y,
+                BarAlignment::Bottom => start_y - position.y,
             };
             state.pending_height =
                 clamp_bar_height((state.start_height as f32 + delta).round().max(1.0) as u32);
@@ -295,19 +285,11 @@ impl UiApp {
         window: window::Id,
         content: Element<'a, Message>,
     ) -> Element<'a, Message> {
-        if self.visuals_active() && !self.rendering_paused {
-            stack![
-                content,
-                frame_clock(
-                    Rc::clone(&self.frames),
-                    window,
-                    Some(window) == self.main_window.id(),
-                )
-            ]
-            .into()
-        } else {
-            content
-        }
+        let is_main = Some(window) == self.main_window.id();
+        let clock = (self.visuals_active() && !self.rendering_paused)
+            .then(|| frame_clock(Rc::clone(&self.frames), window, is_main));
+        // The optional layer comes last, so pausing or a toast keeps the content's widget state.
+        stack![content, clock].into()
     }
 
     fn visuals_with_toasts(&self) -> Element<'_, Message> {
@@ -323,28 +305,27 @@ impl UiApp {
             is_active(self.exit_warning_until).then_some("q again to exit"),
         ];
 
-        if !toast_msgs.iter().any(Option::is_some) {
-            return visuals_view;
-        }
-        let toast = container(
-            row(toast_msgs
-                .into_iter()
-                .flatten()
-                .map(|m| container(text(m).size(11)).padding([2, 6]).into()))
-            .spacing(12),
-        )
-        .padding([6, 10])
-        .style(theme::weak_container);
-        let overlay = fill(toast)
-            .padding(8)
-            .align_x(Horizontal::Center)
-            .align_y(Vertical::Bottom);
+        let overlay = toast_msgs.iter().any(Option::is_some).then(|| {
+            let toast = container(
+                row(toast_msgs
+                    .into_iter()
+                    .flatten()
+                    .map(|m| container(text(m).size(11)).padding([2, 6]).into()))
+                .spacing(12),
+            )
+            .padding([6, 10])
+            .style(theme::weak_container);
+            fill(toast)
+                .padding(8)
+                .align_x(Horizontal::Center)
+                .align_y(Vertical::Bottom)
+        });
         stack![visuals_view, overlay].into()
     }
 
     fn wrap_bar_resize<'a>(&'a self, content: Element<'a, Message>) -> Element<'a, Message> {
         let bar = &self.settings_handle.borrow().data.bar;
-        if !(self.main_window.is_bar() && bar.enabled) {
+        if !self.main_window.is_bar() {
             return content;
         }
         let handle = mouse_area(
@@ -353,6 +334,8 @@ impl UiApp {
                 .height(BAR_RESIZE_HANDLE_THICKNESS),
         )
         .on_press(Message::BarResizeStart)
+        // Drag events only flow once the press is handled, so a release batched with it ends here.
+        .on_release(Message::BarResizeEnd)
         .interaction(iced::mouse::Interaction::ResizingVertically);
         let handle_layer = fill(handle).align_y(match bar.alignment {
             BarAlignment::Top => Vertical::Bottom,

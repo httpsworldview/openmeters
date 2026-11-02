@@ -165,7 +165,8 @@ fn popout_window_settings(size: Size, popped_out: bool) -> PopoutWindowSettings 
 }
 
 pub(super) struct BarResizeState {
-    pub start_y: f32,
+    // Where the drag began, from its first move: the press carries no position.
+    pub start_y: Option<f32>,
     pub start_height: u32,
     pub pending_height: u32,
 }
@@ -378,13 +379,8 @@ impl UiApp {
             });
         }
         self.apply_visual_snapshot(&snapshot);
-        Task::batch(
-            close_settings_task.into_iter().chain(
-                stale_windows
-                    .into_iter()
-                    .map(|(id, _, _)| window::close(id)),
-            ),
-        )
+        let closes = stale_windows.into_iter().map(|(id, ..)| window::close(id));
+        Task::batch(close_settings_task.into_iter().chain(closes))
     }
 
     pub(super) fn title(&self, window_id: window::Id) -> String {

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::processor::LoudnessSnapshot;
+use super::processor::{DEFAULT_FLOOR_DB, LoudnessSnapshot};
 use super::render::{
     DB_RANGE, GUIDE_LEVELS, LEFT_PADDING, LoudnessParams, MeterFill, db_to_ratio,
     value_label_bounds,
@@ -71,7 +71,7 @@ pub(crate) struct LoudnessState {
 impl Default for LoudnessState {
     fn default() -> Self {
         let mut state = Self {
-            snapshot: LoudnessSnapshot::with_floor(DB_RANGE.0, 2),
+            snapshot: LoudnessSnapshot::with_floor(DEFAULT_FLOOR_DB, 2),
             settings: LoudnessSettings::default(),
             palette: palettes::loudness::COLORS,
             peaks: [PeakHold::FLOOR; VISIBLE_METER_COUNT],
@@ -96,7 +96,7 @@ impl LoudnessState {
     }
 
     pub fn reset_audio(&mut self) {
-        self.snapshot = LoudnessSnapshot::with_floor(DB_RANGE.0, 2);
+        self.snapshot = LoudnessSnapshot::with_floor(DEFAULT_FLOOR_DB, 2);
         self.peaks = [PeakHold::FLOOR; VISIBLE_METER_COUNT];
         self.refresh_value_label();
         self.geometry.invalidate();

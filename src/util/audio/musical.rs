@@ -61,13 +61,9 @@ pub struct NoteInfo {
 
 impl NoteInfo {
     pub fn from_frequency(freq_hz: f32) -> Option<Self> {
-        freq_to_midi(freq_hz).map(|midi| {
-            let rounded = midi.round() as i32;
-            let cents = ((midi - rounded as f32) * 100.0).round() as i32;
-            Self {
-                note: MusicalNote::from_midi(rounded),
-                cents,
-            }
+        freq_to_midi(freq_hz).map(|midi| Self {
+            note: MusicalNote::from_midi(midi.round() as i32),
+            cents: ((midi - midi.round()) * 100.0).round() as i32,
         })
     }
 

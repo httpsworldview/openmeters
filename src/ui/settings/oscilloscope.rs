@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::{set, set_f32, settings_messages, settings_pane, settings_view};
+use super::{set, settings_messages, settings_pane, settings_view};
 use crate::persistence::settings::OscilloscopeSettings;
 use crate::ui::widgets::{SliderRange, pick, toggle};
 use crate::util::audio::Channel;
@@ -45,8 +45,8 @@ impl fmt::Display for TriggerSourceChoice {
 }
 
 settings_messages!(pane, settings, value {
-    SegmentDuration(f32) => set_f32(&mut settings.segment_duration, value);
-    Persistence(f32) => set_f32(&mut settings.persistence_time_constant, value);
+    SegmentDuration(f32) => set(&mut settings.segment_duration, value);
+    Persistence(f32) => set(&mut settings.persistence_time_constant, value);
     Preset(TriggerPreset) => {
         let mode = match value {
             TriggerPreset::Stable => TriggerMode::Stable { num_cycles: pane.num_cycles },

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::{set, set_f32, set_usize, settings_messages, settings_pane, settings_view};
+use super::{set, settings_messages, settings_pane, settings_view};
 use crate::persistence::settings::StereometerSettings;
 use crate::ui::widgets::{SliderRange, chip, pick, split, toggle};
 use crate::visuals::options::{
@@ -17,10 +17,10 @@ const DOT_RANGE: SliderRange = SliderRange::new(0.5, 8.0, 0.1);
 settings_pane!(StereometerSettings);
 
 settings_messages!(pane, settings, value {
-    SegmentDuration(f32) => set_f32(&mut settings.segment_duration, value);
-    SampleCount(f32) => set_usize(&mut settings.target_sample_count, value);
-    CorrelationWindow(f32) => set_f32(&mut settings.correlation_window, value);
-    DotRadius(f32) => set_f32(&mut settings.dot_radius, value);
+    SegmentDuration(f32) => set(&mut settings.segment_duration, value);
+    SampleCount(f32) => set(&mut settings.target_sample_count, value.round() as usize);
+    CorrelationWindow(f32) => set(&mut settings.correlation_window, value);
+    DotRadius(f32) => set(&mut settings.dot_radius, value);
     Rotation(f32) => set(&mut settings.rotation, value.round() as i8);
     Flip(bool) => set(&mut settings.flip, value);
     Unipolar(bool) => set(&mut settings.unipolar, value);
@@ -46,43 +46,37 @@ settings_view! {
             dot_mode.then(|| pick("Scale", StereometerScale::ALL, settings.scale, Scale));
         );
 
-        let mut display = form!(
+        let display = form!(
             slider!(
                 "Rotation", settings.rotation as f32, ROTATION_RANGE,
                 Rotation, settings.rotation.to_string()
             );
+            dot_mode.then(|| split(
+                toggle("Flip", settings.flip, Flip),
+                toggle("Unipolar", settings.unipolar, Unipolar),
+            ));
+            (!dot_mode).then(|| toggle("Flip", settings.flip, Flip));
+            dot_mode.then(|| slider!(
+                "Dot size", settings.dot_radius, DOT_RANGE, DotRadius, "{:.1}px"
+            ));
         );
-        if dot_mode {
-            display = display
-                .push(split(
-                    toggle("Flip", settings.flip, Flip),
-                    toggle("Unipolar", settings.unipolar, Unipolar),
-                ))
-                .push(slider!(
-                    "Dot size", settings.dot_radius, DOT_RANGE, DotRadius, "{:.1}px"
-                ));
-        } else {
-            display = display.push(toggle("Flip", settings.flip, Flip));
-        }
 
-        let mut correlation = form!(
+        let metered = settings.correlation_meter != CorrelationMeterMode::Off;
+        let correlation = form!(
             pick(
                 "Meter", CorrelationMeterMode::ALL, settings.correlation_meter,
                 CorrelationMeter
             );
+            metered.then(|| pick(
+                "Side", CorrelationMeterSide::ALL, settings.correlation_meter_side,
+                CorrelationSide,
+            ));
+            metered.then(|| slider!(
+                "Window", settings.correlation_window, CORRELATION_RANGE,
+                CorrelationWindow,
+                format!("{:.0} ms", settings.correlation_window * 1000.0)
+            ));
         );
-        if settings.correlation_meter != CorrelationMeterMode::Off {
-            correlation = correlation
-                .push(pick(
-                    "Side", CorrelationMeterSide::ALL, settings.correlation_meter_side,
-                    CorrelationSide,
-                ))
-                .push(slider!(
-                    "Window", settings.correlation_window, CORRELATION_RANGE,
-                    CorrelationWindow,
-                    format!("{:.0} ms", settings.correlation_window * 1000.0)
-                ));
-        }
     }
     "Meter" => meter;
     "Display" => display;
