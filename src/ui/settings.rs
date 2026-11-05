@@ -14,9 +14,11 @@ use crate::persistence::settings::{
 use crate::ui::theme::Palette;
 use crate::ui::widgets::SliderRange;
 use crate::ui::widgets::palette_editor::{PaletteChange, PaletteEditor, PaletteEvent};
+use crate::util::audio::FftSize;
 use crate::util::set_if_changed as set;
 use crate::visuals::registry::{VisualKind, VisualManagerHandle};
 use iced::Element;
+use std::num::NonZeroUsize;
 
 const FFT_OPTIONS: [usize; 5] = [1024, 2048, 4096, 8192, 16384];
 const HOP_DIVISORS: [usize; 7] = [4, 6, 8, 16, 32, 64, 128];
@@ -145,17 +147,18 @@ fn get_closest_hop_divisor(fft_size: usize, hop_size: usize) -> usize {
 }
 
 // Preserve the nearest supported hop divisor.
-fn update_fft_size(fft_size: &mut usize, hop_size: &mut usize, new_size: usize) -> bool {
-    let hop_divisor = get_closest_hop_divisor(*fft_size, *hop_size);
-    if !set(fft_size, new_size) {
+fn update_fft_size(fft_size: &mut FftSize, hop_size: &mut NonZeroUsize, new_size: usize) -> bool {
+    let hop_divisor = get_closest_hop_divisor(fft_size.get(), hop_size.get());
+    if !fft_size.set(new_size) {
         return false;
     }
-    *hop_size = new_size / hop_divisor;
+    update_hop_divisor(*fft_size, hop_size, hop_divisor);
     true
 }
 
-fn update_hop_divisor(fft_size: usize, hop_size: &mut usize, divisor: usize) -> bool {
-    set(hop_size, (fft_size / divisor).max(1))
+fn update_hop_divisor(fft_size: FftSize, hop_size: &mut NonZeroUsize, divisor: usize) -> bool {
+    let hop = NonZeroUsize::new(fft_size.get() / divisor).unwrap_or(NonZeroUsize::MIN);
+    set(hop_size, hop)
 }
 
 macro_rules! settings_pane {
@@ -302,7 +305,7 @@ mod tests {
         send(Palette(EditHex(Some("#123".into()))));
         assert!(theme().is_none());
         send(ScrollSpeed(123.0));
-        assert!(iced::Color::from(theme().unwrap().stops[0]).a < 1.0);
+        assert!(theme().unwrap().stops().next().unwrap().a < 1.0);
         SettingsHandle::flush();
     }
 

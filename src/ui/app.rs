@@ -244,7 +244,7 @@ impl UiApp {
         if !matches!(self.main_window, MainWindow::Bar(Some(_))) {
             return;
         }
-        let height = clamp_bar_height(self.settings_handle.borrow().data.bar.height);
+        let height = self.settings_handle.borrow().data.bar.height;
         self.bar_resize_state = Some(BarResizeState {
             start_y: None,
             start_height: height,
@@ -261,7 +261,7 @@ impl UiApp {
                 BarAlignment::Bottom => start_y - position.y,
             };
             state.pending_height =
-                clamp_bar_height((state.start_height as f32 + delta).round().max(1.0) as u32);
+                clamp_bar_height((state.start_height.get() as f32 + delta).round() as u32);
         }
     }
 
@@ -342,7 +342,7 @@ impl UiApp {
             BarAlignment::Bottom => Vertical::Top,
         });
         let overlay = self.bar_resize_state.as_ref().map(|state| {
-            let (current, pending) = (state.start_height, state.pending_height);
+            let (current, pending) = (state.start_height.get(), state.pending_height.get());
             container(text(format!("{current}px -> {pending}px")).size(14))
                 .center(Length::Fill)
                 .style(theme::resize_overlay)

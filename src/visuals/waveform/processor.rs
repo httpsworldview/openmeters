@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::dsp::{AudioBlock, RunningMeans, ThreeBand};
+use crate::dsp::{AudioBlock, RunningMeans, SampleRate, ThreeBand};
 pub(super) use crate::util::audio::BAND_COUNT as NUM_BANDS;
-use crate::util::audio::{
-    BAND_SPLITS_HZ, Channel, DB_FLOOR, DEFAULT_SAMPLE_RATE, power_to_db, sanitize_sample_rate,
-};
+use crate::util::audio::{BAND_SPLITS_HZ, Channel, DB_FLOOR, power_to_db};
 
 // GUI bounds, in columns/second.
 pub const MIN_SCROLL_SPEED: f32 = 10.0;
@@ -28,26 +26,27 @@ pub(super) const WAVEFORM_SILENCE_AMPLITUDE: f32 = 1.584_893_1e-5;
 pub const MIN_BAND_DB_FLOOR: f32 = -96.0;
 pub const MAX_BAND_DB_FLOOR: f32 = -12.0;
 
+crate::macros::bounded! {
+    // Columns per second. The floor bounds the color window, which spans a column.
+    pub struct ScrollSpeed(f32) in 1.0..=f32::MAX;
+}
+
 crate::macros::default_struct! {
     #[derive(Debug, Clone, Copy)]
     pub struct WaveformConfig {
-        pub sample_rate: f32 = DEFAULT_SAMPLE_RATE,
-        pub scroll_speed: f32 = DEFAULT_SCROLL_SPEED,
+        pub sample_rate: SampleRate = SampleRate::DEFAULT,
+        pub scroll_speed: ScrollSpeed = ScrollSpeed::must(DEFAULT_SCROLL_SPEED),
         pub max_columns: usize = MAX_COLUMN_CAPACITY,
-        pub analyze_bands: bool = true,
-        pub track_history: bool = false,
+        pub bands: Bands = Bands::Colors,
     }
 }
 
-impl WaveformConfig {
-    fn normalized(mut self) -> Self {
-        self.sample_rate = sanitize_sample_rate(self.sample_rate);
-        self.scroll_speed = crate::util::finite_positive(self.scroll_speed)
-            .map_or(DEFAULT_SCROLL_SPEED, |speed| speed.max(1.0));
-        self.max_columns = self.max_columns.clamp(1, MAX_COLUMN_CAPACITY);
-        self.track_history &= self.analyze_bands;
-        self
-    }
+// What the split bands feed; each level includes the one before.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Bands {
+    Off,
+    Colors,
+    History,
 }
 
 crate::macros::default_struct! {
@@ -74,8 +73,8 @@ pub struct WaveformUpdate<'a> {
     pub preview: WaveformPreview,
 }
 
-fn window_len(samples_at_reference_rate: usize, sample_rate: f32) -> usize {
-    ((samples_at_reference_rate as f32 * sample_rate / REFERENCE_SAMPLE_RATE).round() as usize)
+fn window_len(samples_at_reference_rate: usize, sample_rate: SampleRate) -> usize {
+    ((samples_at_reference_rate as f32 * sample_rate.hz() / REFERENCE_SAMPLE_RATE).round() as usize)
         .max(1)
 }
 
@@ -89,7 +88,7 @@ struct BandTracker {
 // Spans at least one column so slow scrolling does not skip audio.
 fn color_window(config: WaveformConfig) -> usize {
     window_len(BAND_COLOR_WINDOW_AT_44K1, config.sample_rate)
-        .max((config.sample_rate / config.scroll_speed).ceil() as usize)
+        .max((config.sample_rate.hz() / config.scroll_speed.get()).ceil() as usize)
 }
 
 fn history_windows(config: WaveformConfig) -> [usize; 2] {
@@ -103,8 +102,7 @@ impl BandTracker {
     fn new(config: WaveformConfig) -> Self {
         Self {
             color: RunningMeans::new([color_window(config)]),
-            history: config
-                .track_history
+            history: (config.bands == Bands::History)
                 .then(|| RunningMeans::new(history_windows(config))),
         }
     }
@@ -146,7 +144,7 @@ crate::macros::default_struct! {
 impl WaveformProcessor {
     pub fn new(config: WaveformConfig) -> Self {
         Self {
-            config: config.normalized(),
+            config,
             ..Self::default()
         }
     }
@@ -156,7 +154,7 @@ impl WaveformProcessor {
     }
 
     pub(in crate::visuals) fn prepare(&mut self) {
-        if self.config.analyze_bands && self.band_analysis.is_none() {
+        if self.config.bands != Bands::Off && self.band_analysis.is_none() {
             self.band_analysis = Self::band_analysis(self.config);
         }
     }
@@ -173,7 +171,7 @@ impl WaveformProcessor {
     }
 
     fn band_analysis(config: WaveformConfig) -> Option<(BandFilter, BandTracker)> {
-        config.analyze_bands.then(|| {
+        (config.bands != Bands::Off).then(|| {
             (
                 BandFilter::new(config.sample_rate, BAND_SPLITS_HZ),
                 BandTracker::new(config),
@@ -226,8 +224,9 @@ impl WaveformProcessor {
     }
 
     fn ingest_samples(&mut self, block: &AudioBlock<'_>) {
-        let step =
-            (f64::from(self.config.scroll_speed) / f64::from(self.config.sample_rate)).min(1.0);
+        let step = (f64::from(self.config.scroll_speed.get())
+            / f64::from(self.config.sample_rate.get()))
+        .min(1.0);
         for stereo in block.stereo_frames() {
             let derived = WAVEFORM_CHANNELS.map(|channel| channel.project(stereo));
             let finite = derived.map(f32::is_finite);
@@ -315,12 +314,10 @@ impl WaveformProcessor {
     }
 
     pub fn update_config(&mut self, config: WaveformConfig) {
-        let normalized = config.normalized();
-        let rebuild = self.config.sample_rate != normalized.sample_rate;
-        let reset_analysis = self.config.analyze_bands != normalized.analyze_bands
-            || self.config.track_history != normalized.track_history;
-        let resize = color_window(self.config) != color_window(normalized);
-        self.config = normalized;
+        let rebuild = self.config.sample_rate != config.sample_rate;
+        let reset_analysis = self.config.bands != config.bands;
+        let resize = color_window(self.config) != color_window(config);
+        self.config = config;
         if rebuild {
             self.reset_audio();
         } else if reset_analysis && self.band_analysis.is_some() {
@@ -336,12 +333,13 @@ mod tests {
     use super::*;
     use crate::util::audio::sine_wave;
 
-    const RATE: f32 = 48_000.0;
+    const SAMPLE_RATE: SampleRate = SampleRate::DEFAULT;
+    const RATE: f32 = SAMPLE_RATE.hz();
 
     fn config(scroll_speed: f32, max_columns: usize) -> WaveformConfig {
         WaveformConfig {
-            sample_rate: RATE,
-            scroll_speed,
+            sample_rate: SAMPLE_RATE,
+            scroll_speed: ScrollSpeed::must(scroll_speed),
             max_columns,
             ..Default::default()
         }
@@ -352,7 +350,7 @@ mod tests {
         samples: &[f32],
         channels: usize,
     ) -> WaveformUpdate<'a> {
-        processor.process_block(&AudioBlock::new(samples, channels, RATE))
+        processor.process_block(&AudioBlock::fallback(samples, channels, SAMPLE_RATE))
     }
 
     fn extrema(update: &WaveformUpdate, channel: usize, col: usize) -> (f32, f32) {
@@ -372,7 +370,7 @@ mod tests {
             .flat_map(|(left, right)| [left, right])
             .collect();
         let config = WaveformConfig {
-            track_history: true,
+            bands: Bands::History,
             ..config(200.0, 512)
         };
         let mut processor = WaveformProcessor::new(config);
@@ -387,7 +385,7 @@ mod tests {
                 .chain(column.rms_db.into_iter().flatten())
         };
         for (channel, source) in WAVEFORM_CHANNELS.into_iter().enumerate() {
-            let mono: Vec<_> = AudioBlock::new(&samples, 2, RATE)
+            let mono: Vec<_> = AudioBlock::fallback(&samples, 2, SAMPLE_RATE)
                 .projected_frames(source)
                 .collect();
             let mut reference = WaveformProcessor::new(config);
@@ -479,7 +477,7 @@ mod tests {
         let _ = process(&mut processor, &[1.0; 32], 1);
 
         let mut updated = processor.config();
-        updated.analyze_bands = false;
+        updated.bands = Bands::Off;
         processor.update_config(updated);
         let latest = latest(&process(&mut processor, &[0.0], 1), 0);
 
@@ -510,7 +508,7 @@ mod tests {
     #[test]
     fn fast_rms_reacts_before_slow_rms() {
         let mut cfg = config(100.0, 512);
-        cfg.track_history = true;
+        cfg.bands = Bands::History;
         let mut processor = WaveformProcessor::new(cfg);
         let mut samples = vec![0.0; RATE as usize];
         samples.extend(vec![1.0; BAND_COLOR_WINDOW_AT_44K1]);
@@ -522,7 +520,7 @@ mod tests {
     #[test]
     fn rms_history_returns_to_floor_after_silence() {
         let mut cfg = config(300.0, 1024);
-        cfg.track_history = true;
+        cfg.bands = Bands::History;
         let mut processor = WaveformProcessor::new(cfg);
         let signal = sine_wave(80.0, RATE, RATE as usize, 1.0);
         let silence = vec![0.0; RATE as usize];
@@ -536,13 +534,17 @@ mod tests {
     #[test]
     fn fractional_timing_matches_requested_average_speed() {
         let mut processor = WaveformProcessor::new(WaveformConfig {
-            sample_rate: 1_000.0,
-            scroll_speed: 333.0,
+            sample_rate: SampleRate::must(1_000),
+            scroll_speed: ScrollSpeed::must(333.0),
             max_columns: 4_000,
             ..Default::default()
         });
         let samples = vec![0.0; 10_000];
-        let update = processor.process_block(&AudioBlock::new(&samples, 1, 1_000.0));
+        let update = processor.process_block(&AudioBlock::fallback(
+            &samples,
+            1,
+            processor.config().sample_rate,
+        ));
 
         assert!((update.columns.len() as isize - 3330).abs() <= 1);
         assert!(

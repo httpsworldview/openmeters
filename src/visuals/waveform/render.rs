@@ -6,7 +6,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use crate::util::{
-    audio::{DB_FLOOR, power_to_db, sanitize_negative_db},
+    audio::{DB_FLOOR, power_to_db},
     color::{rgba_with_alpha, sample_rgba_gradient},
 };
 use crate::visuals::options::{WaveformColorMode, WaveformHistoryMode};
@@ -15,8 +15,8 @@ use crate::visuals::render::common::{
 };
 use crate::visuals::render::common::{SdfPipeline, sdf_primitive};
 use crate::visuals::waveform::processor::{
-    DEFAULT_BAND_DB_FLOOR, MAX_COLUMN_CAPACITY, NUM_BANDS, WAVEFORM_SILENCE_AMPLITUDE, WaveColumn,
-    WaveFrame, WaveformPreview,
+    MAX_COLUMN_CAPACITY, NUM_BANDS, WAVEFORM_SILENCE_AMPLITUDE, WaveColumn, WaveFrame,
+    WaveformPreview,
 };
 
 const COLUMN_WIDTH_PIXELS: f32 = 1.0;
@@ -110,7 +110,7 @@ impl WaveformParams {
             WaveformHistoryMode::RmsSlow => Some(1),
         }
         .filter(|_| columns >= 2);
-        let floor = sanitize_negative_db(self.band_db_floor, DEFAULT_BAND_DB_FLOOR);
+        let floor = self.band_db_floor;
 
         let vertices = &mut scratch.instances;
         vertices.reserve(columns + 1 + usize::from(history.is_some()) * NUM_BANDS * columns * 2);

@@ -46,6 +46,59 @@ macro_rules! default_struct {
 
 pub(super) use default_struct;
 
+macro_rules! bounded {
+    ($($(#[$attr:meta])* $vis:vis struct $name:ident($ty:ty) in $range:expr;)+) => {$(
+        $(#[$attr])*
+        #[derive(Debug, Clone, Copy, PartialEq)]
+        $vis struct $name($ty);
+
+        impl $name {
+            pub const MIN: $ty = *($range).start();
+            pub const MAX: $ty = *($range).end();
+
+            pub const fn new(value: $ty) -> Option<Self> {
+                if Self::MIN <= value && value <= Self::MAX {
+                    Some(Self(value))
+                } else {
+                    None
+                }
+            }
+
+            pub const fn must(value: $ty) -> Self {
+                match Self::new(value) {
+                    Some(value) => value,
+                    None => panic!(concat!(stringify!($name), " out of range")),
+                }
+            }
+
+            pub const fn get(self) -> $ty {
+                self.0
+            }
+
+            #[allow(dead_code, reason = "not every bounded type takes UI input")]
+            pub fn set(&mut self, value: $ty) -> bool {
+                Self::new(value).is_some_and(|value| $crate::util::set_if_changed(self, value))
+            }
+        }
+
+        impl serde::Serialize for $name {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serde::Serialize::serialize(&self.0, serializer)
+            }
+        }
+
+        impl<'de> serde::Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                let value = <$ty as serde::Deserialize>::deserialize(deserializer)?;
+                Self::new(value)
+                    .ok_or_else(|| serde::de::Error::custom(format!("{value:?} is out of range")))
+            }
+        }
+    )+};
+}
+
+pub(super) use bounded;
+
 macro_rules! widget_method {
     (layout $size:expr, |$limits:ident| $resolved:expr) => {
         fn size(&self) -> iced::Size<iced::Length> {

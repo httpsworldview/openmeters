@@ -17,10 +17,10 @@ const DOT_RANGE: SliderRange = SliderRange::new(0.5, 8.0, 0.1);
 settings_pane!(StereometerSettings);
 
 settings_messages!(pane, settings, value {
-    SegmentDuration(f32) => set(&mut settings.segment_duration, value);
+    SegmentDuration(f32) => settings.segment_duration.set(value);
     SampleCount(f32) => set(&mut settings.target_sample_count, value.round() as usize);
-    CorrelationWindow(f32) => set(&mut settings.correlation_window, value);
-    DotRadius(f32) => set(&mut settings.dot_radius, value);
+    CorrelationWindow(f32) => settings.correlation_window.set(value);
+    DotRadius(f32) => settings.dot_radius.set(value);
     Rotation(f32) => set(&mut settings.rotation, value.round() as i8);
     Flip(bool) => set(&mut settings.flip, value);
     Unipolar(bool) => set(&mut settings.unipolar, value);
@@ -36,8 +36,8 @@ settings_view! {
         let meter = form!(
             pick("Mode", StereometerMode::ALL, settings.mode, Mode);
             slider!(
-                "Segment duration", settings.segment_duration, DURATION_RANGE,
-                SegmentDuration, format!("{:.1} ms", settings.segment_duration * 1000.0)
+                "Segment duration", settings.segment_duration.get(), DURATION_RANGE,
+                SegmentDuration, format!("{:.1} ms", settings.segment_duration.get() * 1000.0)
             );
             slider!(
                 "Sample count", settings.target_sample_count as f32, SAMPLE_COUNT_RANGE,
@@ -57,7 +57,7 @@ settings_view! {
             ));
             (!dot_mode).then(|| toggle("Flip", settings.flip, Flip));
             dot_mode.then(|| slider!(
-                "Dot size", settings.dot_radius, DOT_RANGE, DotRadius, "{:.1}px"
+                "Dot size", settings.dot_radius.get(), DOT_RANGE, DotRadius, "{:.1}px"
             ));
         );
 
@@ -72,9 +72,9 @@ settings_view! {
                 CorrelationSide,
             ));
             metered.then(|| slider!(
-                "Window", settings.correlation_window, CORRELATION_RANGE,
+                "Window", settings.correlation_window.get(), CORRELATION_RANGE,
                 CorrelationWindow,
-                format!("{:.0} ms", settings.correlation_window * 1000.0)
+                format!("{:.0} ms", settings.correlation_window.get() * 1000.0)
             ));
         );
     }

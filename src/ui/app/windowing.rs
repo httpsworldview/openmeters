@@ -4,7 +4,7 @@
 use super::message::{self, Message};
 use super::{ActiveSettings, UiApp};
 use crate::persistence::settings::{
-    BarAlignment,
+    BarAlignment, BarHeight,
     ChangeOrigin::{Automatic, User},
     MainWindowSettings, PopoutWindowSettings, UiSettings, clamp_bar_height,
 };
@@ -134,7 +134,7 @@ pub(super) fn open_main_window(
         if !has_bar_outputs {
             return (MainWindow::Bar(None), Task::none());
         }
-        let height = clamp_bar_height(bar.height);
+        let height = bar.height.get();
         let (id, task) = message::layershell_open(NewLayerShellSettings {
             size: LayerSize::fill_width(height),
             layer: Layer::Top,
@@ -167,8 +167,8 @@ fn popout_window_settings(size: Size, popped_out: bool) -> PopoutWindowSettings 
 pub(super) struct BarResizeState {
     // Where the drag began, from its first move: the press carries no position.
     pub start_y: Option<f32>,
-    pub start_height: u32,
-    pub pending_height: u32,
+    pub start_height: BarHeight,
+    pub pending_height: BarHeight,
 }
 
 pub(super) struct PopoutWindow {
@@ -434,7 +434,7 @@ impl UiApp {
             return Task::none();
         };
         let bar = &self.settings_handle.borrow().data.bar;
-        let height = clamp_bar_height(bar.height);
+        let height = bar.height.get();
         Task::batch([
             Task::done(Message::LayoutChange {
                 id,
@@ -469,12 +469,12 @@ impl UiApp {
         }
 
         if self.main_window.is_bar() {
-            let height = clamp_bar_height(new_size.height.round().max(1.0) as u32);
+            let height = clamp_bar_height(new_size.height.round() as u32);
             self.settings_handle
                 .set(Automatic, |settings| &mut settings.bar.height, height);
             return Task::done(Message::ExclusiveZoneChange {
                 id: window_id,
-                zone_size: height as i32,
+                zone_size: height.get() as i32,
             });
         }
 

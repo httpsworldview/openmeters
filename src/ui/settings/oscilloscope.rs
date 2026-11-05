@@ -45,8 +45,8 @@ impl fmt::Display for TriggerSourceChoice {
 }
 
 settings_messages!(pane, settings, value {
-    SegmentDuration(f32) => set(&mut settings.segment_duration, value);
-    Persistence(f32) => set(&mut settings.persistence_time_constant, value);
+    SegmentDuration(f32) => settings.segment_duration.set(value);
+    Persistence(f32) => settings.persistence_time_constant.set(value);
     Preset(TriggerPreset) => {
         let mode = match value {
             TriggerPreset::Stable => TriggerMode::Stable { num_cycles: pane.num_cycles },
@@ -89,8 +89,8 @@ settings_view! {
             );
             cycles;
             slider!(
-                duration_label, settings.segment_duration, DURATION_RANGE, SegmentDuration,
-                format!("{:.1} ms", settings.segment_duration * 1000.0)
+                duration_label, settings.segment_duration.get(), DURATION_RANGE, SegmentDuration,
+                format!("{:.1} ms", settings.segment_duration.get() * 1000.0)
             );
         );
     }
@@ -102,8 +102,8 @@ settings_view! {
     "Display" => form!(
         toggle("Stacked", settings.stacked, Stacked);
         slider!(
-            "Persistence", settings.persistence_time_constant, PERSISTENCE_RANGE, Persistence,
-            format!("{:.0} ms", settings.persistence_time_constant * 1000.0)
+            "Persistence", settings.persistence_time_constant.get(), PERSISTENCE_RANGE,
+            Persistence, format!("{:.0} ms", settings.persistence_time_constant.get() * 1000.0)
         );
     );
 }

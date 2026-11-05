@@ -294,8 +294,8 @@ impl SpectrumState {
             SpectrumWeightingMode::Raw => (m, "dBFS"),
         };
         let x = view_x(&self.style, (min_f, max_f), f);
-        let y = ((m - self.style.floor_db) / (MAX_DB - self.style.floor_db).max(EPSILON))
-            .clamp(0.0, 1.0);
+        let floor = self.style.floor_db.get();
+        let y = ((m - floor) / (MAX_DB - floor)).clamp(0.0, 1.0);
         if y < MIN_NORMALIZED_LEVEL {
             return None;
         }
@@ -401,7 +401,7 @@ impl SpectrumState {
             display_mode: style.display_mode,
             turn: self.turn(),
             bar_count: style.bar_count,
-            bar_gap: style.bar_gap,
+            bar_gap: style.bar_gap.get(),
             peak: self.peak().map(|peak| SpectrumPeakParams {
                 marker: peak.marker_pos,
                 marker_color: color_to_rgba(with_alpha(peak_color, peak.opacity * 0.95)),
@@ -535,7 +535,7 @@ mod tests {
         state.style.source = Channel::None;
         state.style.secondary_source = Channel::Left;
         state.apply_snapshot(&SpectrumSnapshot {
-            floor_db: state.style.floor_db,
+            floor_db: state.style.floor_db.get(),
             frequency_bins: vec![0.0, 20.0, 40.0],
             traces: [SpectrumTraceSnapshot::default(), trace],
             ..Default::default()
@@ -616,21 +616,22 @@ mod tests {
 
     #[test]
     fn view_changes_reach_cached_spectrum_without_new_audio() {
-        use crate::dsp::{AudioFormat, ChannelPosition};
+        use crate::dsp::AudioFormat;
         use crate::persistence::settings::VisualConfig;
+        use crate::util::audio::NegativeDb;
         use crate::visuals::registry::{VisualContent, VisualKind, VisualManager};
 
         let mut settings = SpectrumSettings {
             show_peak_label: true,
             ..Default::default()
         };
-        let original_floor = settings.floor_db;
+        let original_floor = settings.floor_db.get();
         let mut manager = VisualManager::default();
         manager.apply_config(VisualConfig::Spectrum(settings.clone()));
         manager.set_enabled(VisualKind::Spectrum, true);
-        let format = AudioFormat::new(1, 48_000, 1, ChannelPosition::fallback(1));
+        let format = AudioFormat::fallback(1, crate::dsp::SampleRate::DEFAULT);
         manager.ingest_samples(
-            &crate::util::audio::sine_wave(1_000.0, 48_000.0, settings.fft_size, 0.5),
+            &crate::util::audio::sine_wave(1_000.0, 48_000.0, settings.fft_size.get(), 0.5),
             format,
         );
         let state = manager
@@ -648,7 +649,7 @@ mod tests {
         for (floor, peak_visible) in [(-60.0, true), (-3.0, false), (-140.0, true), (-120.0, true)]
         {
             for (reverse, rotation) in [(false, 0), (true, 1), (false, 2), (true, -1)] {
-                settings.floor_db = floor;
+                settings.floor_db = NegativeDb::must(floor);
                 settings.reverse_frequency = reverse;
                 settings.rotation = rotation;
                 manager.apply_config(VisualConfig::Spectrum(settings.clone()));
@@ -682,8 +683,8 @@ mod tests {
             }
         }
 
-        manager.ingest_samples(&vec![0.0; settings.fft_size], format);
-        settings.floor_db = -140.0;
+        manager.ingest_samples(&vec![0.0; settings.fft_size.get()], format);
+        settings.floor_db = NegativeDb::must(-140.0);
         manager.apply_config(VisualConfig::Spectrum(settings));
         assert!(state.borrow().is_quiescent());
     }
@@ -858,12 +859,13 @@ fn build_single_points_into(
     x_cache: &[f32],
 ) {
     let bins = &snap.frequency_bins;
-    let inv_dr = (MAX_DB - style.floor_db).max(EPSILON).recip();
+    let floor = style.floor_db.get();
+    let inv_dr = (MAX_DB - floor).recip();
     let mut push = |x, m: f32| {
         let y = if m <= snap.floor_db {
             0.0
         } else {
-            ((m - style.floor_db) * inv_dr).clamp(0.0, 1.0)
+            ((m - floor) * inv_dr).clamp(0.0, 1.0)
         };
         if y.is_finite() {
             out.push([if style.reverse_frequency { 1.0 - x } else { x }, y]);

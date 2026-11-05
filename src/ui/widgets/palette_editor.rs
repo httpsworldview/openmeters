@@ -7,7 +7,7 @@ use crate::ui::widgets::scroll_glow::{ScrollEvent, ScrollGlow};
 use crate::ui::widgets::{action_button, clipped_text, split, value_label};
 use crate::util::color::{
     EPSILON, STOP_SPREAD_MAX, STOP_SPREAD_MIN, colors_equal, from_hsv, lerp_color, parse_hex_color,
-    ramp_segment, sanitize_stop_positions, sanitize_stop_spreads, to_hex, to_hsv, with_alpha,
+    ramp_segment, to_hex, to_hsv, with_alpha,
 };
 use crate::visuals::render::common::scroll_delta_lines;
 use iced::advanced::graphics::color;
@@ -120,20 +120,17 @@ impl PaletteEditor {
     }
 
     pub fn load(&mut self, stored: &PaletteSettings) {
-        let positions = stored.stop_positions.as_deref();
-        self.positions = sanitize_stop_positions(positions, self.palette.default_positions);
-        self.spreads = sanitize_stop_spreads(stored.stop_spreads.as_deref(), self.positions.len());
-        let stops: Vec<Color> = stored.stops.iter().copied().map(Into::into).collect();
-        self.set_colors(&stops);
+        self.positions = PaletteSettings::positions(Some(stored), self.palette.default_positions);
+        self.spreads = PaletteSettings::spreads(Some(stored), self.positions.len());
+        self.set_colors(&stored.stops().collect::<Vec<_>>());
     }
 
     /// The stored form, or `None` while everything is default.
     pub fn settings(&self) -> Option<PaletteSettings> {
         PaletteSettings::from_state(
+            &self.palette,
             self.palette.colors(),
-            self.palette.defaults,
             &self.positions,
-            self.palette.default_positions,
             &self.spreads,
         )
     }

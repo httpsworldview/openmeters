@@ -33,9 +33,9 @@ pub(super) fn field<T: DeserializeOwned>(
     scope: &str,
 ) {
     if let Some(value) = map.remove(key)
-        && let Err(err) = T::deserialize(value).map(|value| *out = value)
+        && let Some(value) = self::value(value, &format!("{scope}.{key}"))
     {
-        warn!("[settings] invalid {scope}.{key}: {err}");
+        *out = value;
     }
 }
 

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
+use super::DynError;
 use super::graph::Channel;
 use super::transport::{CaptureWriter, StreamStatus, pcm_chunk};
-use super::{DynError, MAX_CAPTURE_CHANNELS, MAX_CAPTURE_SAMPLE_RATE};
-use crate::util::audio::DEFAULT_SAMPLE_RATE;
+use crate::dsp::{AudioFormat, SampleRate};
 use pipewire as pw;
 use pw::properties::properties;
 use pw::spa;
@@ -100,7 +100,7 @@ impl Session {
             *pw::keys::NODE_NAME => format!("openmeters.tap.{}", std::process::id()),
             *pw::keys::NODE_DESCRIPTION => DESCRIPTION,
             *pw::keys::NODE_VIRTUAL => "true",
-            *pw::keys::NODE_LATENCY => format!("{LATENCY_FRAMES}/{}", DEFAULT_SAMPLE_RATE as u32),
+            *pw::keys::NODE_LATENCY => format!("{LATENCY_FRAMES}/{}", SampleRate::DEFAULT.get()),
             *pw::keys::NODE_ALWAYS_PROCESS => boolean(!config.passive && config.target.is_none()),
             *pw::keys::NODE_PASSIVE => if config.passive { "in" } else { "false" },
             *pw::keys::NODE_AUTOCONNECT => boolean(config.target.is_some()),
@@ -165,22 +165,25 @@ fn handle_format_change(writer: &RefCell<CaptureWriter>, param: Option<&Pod>) {
         return;
     };
     let mut info = spa::param::audio::AudioInfoRaw::new();
-    let valid = info.parse(param).is_ok()
-        && info.format() == NATIVE_F32
-        && (1..=MAX_CAPTURE_SAMPLE_RATE).contains(&info.rate())
-        && (1..=MAX_CAPTURE_CHANNELS as u32).contains(&info.channels());
-    if !valid {
+    let parsed = info.parse(param).is_ok() && info.format() == NATIVE_F32;
+    let negotiated = info.position();
+    let positions = std::array::from_fn(|index| Channel::from_spa_id(negotiated[index]));
+    let format = parsed
+        .then(|| SampleRate::new(info.rate()))
+        .flatten()
+        .and_then(|rate| AudioFormat::new(info.channels() as usize, rate, 0, positions));
+    let Some(format) = format else {
         writer.clear_format();
         writer.set_status(StreamStatus::Failed);
         error!("[capture] rejected negotiated format: {info:?}");
         return;
-    }
-    let negotiated = info.position();
-    let positions = std::array::from_fn(|index| Channel::from_spa_id(negotiated[index]));
-    let format = writer.set_format(info.channels() as usize, info.rate(), positions);
+    };
+    let format = writer.set_format(format);
     info!(
         "[capture] F32NE {} Hz, {} channel(s), generation {}",
-        format.sample_rate, format.channels, format.generation
+        format.sample_rate().get(),
+        format.channels(),
+        format.generation
     );
 }
 
@@ -201,7 +204,7 @@ fn process(stream: &pw::stream::Stream, writer: &mut CaptureWriter) {
     let Some(format) = writer.format else {
         return;
     };
-    let channels = format.channels;
+    let channels = format.channels();
     let frame_bytes = channels * size_of::<f32>();
     if stride != 0 && usize::try_from(stride).ok() != Some(frame_bytes) {
         writer.push_fault(size as u64 / frame_bytes as u64);

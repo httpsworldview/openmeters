@@ -18,14 +18,6 @@ pub fn flush_denormal_f64(value: &mut f64) {
     }
 }
 
-pub fn sanitize_negative_db(db: f32, default: f32) -> f32 {
-    if db.is_finite() && db < 0.0 {
-        db
-    } else {
-        default
-    }
-}
-
 pub fn power_to_db(power: f32, floor: f32) -> f32 {
     if power > 0.0 {
         (power.ln() * LN_TO_DB).max(floor)

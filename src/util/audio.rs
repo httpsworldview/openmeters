@@ -9,7 +9,7 @@ mod window;
 
 pub use self::{
     frequency::{DISPLAY_MIN_HZ, FrequencyScale},
-    level::{DB_FLOOR, LN_TO_DB, db_to_power, power_to_db, sanitize_negative_db},
+    level::{DB_FLOOR, LN_TO_DB, db_to_power, power_to_db},
     window::{DcHistory, WindowKind, compute_fft_bin_normalization, copy_dc_removed_windowed},
 };
 pub(crate) use self::{
@@ -17,12 +17,18 @@ pub(crate) use self::{
     window::{kaiser, mean_f32, normalized_blackman_harris, weighted_mean},
 };
 
-pub const DEFAULT_SAMPLE_RATE: f32 = 48_000.0;
-pub const MAX_SAMPLE_RATE: f32 = 768_000.0;
 // Caps configured FFT lengths and retained oscilloscope/stereometer frames.
 pub const MAX_DSP_BUFFER_LEN: usize = 1 << 20;
 pub const BAND_SPLITS_HZ: [f32; 2] = [200.0, 2000.0];
 pub const BAND_COUNT: usize = BAND_SPLITS_HZ.len() + 1;
+
+crate::macros::bounded! {
+    pub struct FftSize(usize) in 2..=MAX_DSP_BUFFER_LEN;
+    // dB floors. Renderers divide by the span up to 0 dB, which this keeps >= 1 dB.
+    pub struct NegativeDb(f32) in f32::MIN..=-1.0;
+    // Smoothing time constants. The cap keeps hand-edited settings responsive.
+    pub struct Seconds(f32) in 0.0..=10.0;
+}
 
 crate::macros::choice_enum!(pub enum Channel {
     Left => "Left",
@@ -42,12 +48,6 @@ impl Channel {
             Self::None => 0.0,
         }
     }
-}
-
-pub fn sanitize_sample_rate(sample_rate: f32) -> f32 {
-    crate::util::finite_positive(sample_rate)
-        .unwrap_or(DEFAULT_SAMPLE_RATE)
-        .clamp(1.0, MAX_SAMPLE_RATE)
 }
 
 pub fn smoothing_weight(elapsed: f32, time_constant: f32) -> f32 {

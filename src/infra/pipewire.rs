@@ -32,7 +32,6 @@ pub(crate) fn test_audio_reader() -> AudioReader {
 }
 
 pub(crate) const MAX_CAPTURE_CHANNELS: usize = crate::dsp::MAX_AUDIO_CHANNELS;
-const MAX_CAPTURE_SAMPLE_RATE: u32 = crate::util::audio::MAX_SAMPLE_RATE as u32;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ApplicationView {
@@ -174,7 +173,7 @@ mod tests {
         while !(reset && seeded) && Instant::now() < deadline {
             audio.drain(Instant::now(), |span| match span {
                 CapturedSpan::Reset => reset = true,
-                CapturedSpan::Silence { format, .. } => seeded |= format.channels == 8,
+                CapturedSpan::Silence { format, .. } => seeded |= format.channels() == 8,
                 CapturedSpan::Pcm { .. } => {}
             });
             std::thread::sleep(Duration::from_millis(1));

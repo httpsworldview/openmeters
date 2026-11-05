@@ -6,9 +6,8 @@
 //! Capture stays at its negotiated PipeWire quantum. DSP work is amortized into
 //! sample-rate-scaled batches so compositor cadence does not become DSP cadence.
 
-use crate::dsp::AudioFormat;
+use crate::dsp::{AudioFormat, SampleRate};
 use crate::infra::pipewire::{AudioReader, AudioWake, CapturedSpan, MAX_CAPTURE_CHANNELS};
-use crate::util::audio::DEFAULT_SAMPLE_RATE;
 use crate::visuals::registry::{VisualManager, VisualManagerHandle};
 use std::time::Instant;
 
@@ -37,9 +36,9 @@ impl DspBatcher {
             self.samples.clear();
         }
         self.format = Some(format);
-        let frames = DSP_BATCH_FRAMES_AT_48K as f64 * f64::from(format.sample_rate)
-            / f64::from(DEFAULT_SAMPLE_RATE);
-        let batch = frames.round().max(1.0) as usize * format.channels;
+        let frames = DSP_BATCH_FRAMES_AT_48K as f64 * f64::from(format.sample_rate().get())
+            / f64::from(SampleRate::DEFAULT.get());
+        let batch = frames.round().max(1.0) as usize * format.channels();
         if !self.samples.is_empty() {
             let take = (batch - self.samples.len()).min(samples.len());
             self.samples.extend_from_slice(&samples[..take]);
@@ -61,10 +60,10 @@ impl DspBatcher {
             self.reset(manager);
             return;
         }
-        let capacity = SILENCE.len() / format.channels;
+        let capacity = SILENCE.len() / format.channels();
         for start in (0..frames).step_by(capacity) {
             let chunk = (frames - start).min(capacity as u64) as usize;
-            self.push(manager, &SILENCE[..chunk * format.channels], format);
+            self.push(manager, &SILENCE[..chunk * format.channels()], format);
         }
     }
 
@@ -153,7 +152,7 @@ impl MeterEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dsp::{AudioBlock, ChannelPosition};
+    use crate::dsp::AudioBlock;
     use crate::util::audio::sine_wave;
     use crate::visuals::loudness::processor::{LoudnessProcessor, LoudnessSnapshot};
     use crate::visuals::registry::{VisualContent, VisualKind};
@@ -189,7 +188,8 @@ mod tests {
         let mut batcher = DspBatcher::new();
         let storage = (batcher.samples.as_ptr(), batcher.samples.capacity());
         for (rate, generation) in [(48_000, 1), (48_000, 2), (96_000, 3)] {
-            let format = AudioFormat::new(2, rate, generation, ChannelPosition::fallback(2));
+            let mut format = AudioFormat::fallback(2, SampleRate::must(rate));
+            format.generation = generation;
             let batch = rate as usize / 48_000 * 256 * 2;
             let samples: Vec<_> = sine_wave(1_000.0, rate as f32, batch, 0.5)
                 .into_iter()
@@ -203,11 +203,7 @@ mod tests {
                 batcher.push(&mut manager, &samples[start..end], format);
                 assert_eq!(
                     snapshot(),
-                    reference.process_block(&AudioBlock::new(
-                        &samples[end - batch..end],
-                        2,
-                        rate as f32,
-                    ))
+                    reference.process_block(&AudioBlock::new(&samples[end - batch..end], format))
                 );
             }
             assert!(batcher.samples.is_empty());
@@ -223,7 +219,7 @@ mod tests {
     fn reenabled_visuals_discard_audio_from_before_the_gap() {
         let (mut manager, snapshot) = loudness();
         let reset = snapshot();
-        let format = AudioFormat::new(1, 48_000, 1, ChannelPosition::fallback(1));
+        let format = AudioFormat::fallback(1, SampleRate::DEFAULT);
         let signal = sine_wave(1_000.0, 48_000.0, 48_000, 0.5);
         for bulk in [false, true] {
             manager.ingest_samples(&signal, format);
@@ -240,7 +236,7 @@ mod tests {
                 manager.set_enabled(VisualKind::Loudness, true);
             }
             assert_eq!(snapshot(), reset, "bulk={bulk}");
-            let silence = AudioBlock::new(&[0.0; 256], 1, 48_000.0);
+            let silence = AudioBlock::new(&[0.0; 256], format);
             manager.ingest_samples(silence.samples, format);
             let mut reference = LoudnessProcessor::new(Default::default());
             assert_eq!(snapshot(), reference.process_block(&silence));
@@ -251,7 +247,7 @@ mod tests {
     fn silence_preserves_loudness_history_before_the_hard_reset() {
         let (mut manager, snapshot) = loudness();
         let mut batcher = DspBatcher::new();
-        let format = AudioFormat::new(1, 48_000, 1, ChannelPosition::fallback(1));
+        let format = AudioFormat::fallback(1, SampleRate::DEFAULT);
         let signal = sine_wave(1_000.0, 48_000.0, 256, 0.5);
         let reset_level = snapshot().short_term_loudness;
         for frames in [48_000, 144_001, 192_000, 192_001] {
@@ -259,7 +255,7 @@ mod tests {
             batcher.push(&mut manager, &signal, format);
             assert!(snapshot().short_term_loudness > reset_level);
             let mut reference = LoudnessProcessor::new(Default::default());
-            reference.process_block(&AudioBlock::new(&signal, 1, 48_000.0));
+            reference.process_block(&AudioBlock::new(&signal, format));
             batcher.push(&mut manager, &[0.0], format);
             batcher.push_silence(&mut manager, frames, format);
             let expected = if frames > 192_000 {
@@ -269,8 +265,7 @@ mod tests {
                 reference
                     .process_block(&AudioBlock::new(
                         &vec![0.0; (frames as usize + 1) / 256 * 256],
-                        1,
-                        48_000.0,
+                        format,
                     ))
                     .short_term_loudness
             };

@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::dsp::{AudioBlock, ThreeBand};
+use crate::dsp::{AudioBlock, SampleRate, ThreeBand};
+use crate::util::Finite;
 pub(super) use crate::util::audio::BAND_COUNT;
 use crate::util::audio::{
-    BAND_SPLITS_HZ, DEFAULT_SAMPLE_RATE, MAX_DSP_BUFFER_LEN, flush_denormal_f64, smoothing_weight,
+    BAND_SPLITS_HZ, MAX_DSP_BUFFER_LEN, Seconds, flush_denormal_f64, smoothing_weight,
 };
 use std::{collections::VecDeque, sync::Arc};
 
@@ -16,12 +17,25 @@ const MAX_SNAPSHOT_POINTS: usize = 16_384;
 crate::macros::default_struct! {
     #[derive(Debug, Clone, Copy)]
     pub struct StereometerConfig {
-        pub sample_rate: f32 = DEFAULT_SAMPLE_RATE,
-        pub segment_duration: f32 = 0.02,
+        pub sample_rate: SampleRate = SampleRate::DEFAULT,
+        pub segment_duration: Finite = Finite::must(0.02),
         pub target_sample_count: usize = 2_000,
-        pub correlation_window: f32 = 0.3,
-        pub analyze_bands: bool = false,
-        pub emit_band_points: bool = false,
+        pub correlation_window: Seconds = Seconds::must(0.3),
+        pub bands: Bands = Bands::Off,
+    }
+}
+
+// What the split bands feed; each level includes the one before.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Bands {
+    Off,
+    Correlations,
+    Points,
+}
+
+impl Bands {
+    pub fn analyzed(self) -> bool {
+        self != Self::Off
     }
 }
 
@@ -72,8 +86,7 @@ pub struct StereometerProcessor {
 }
 
 impl StereometerProcessor {
-    pub fn new(mut config: StereometerConfig) -> Self {
-        config.analyze_bands |= config.emit_band_points;
+    pub fn new(config: StereometerConfig) -> Self {
         Self {
             histories: Default::default(),
             history_channels: 0,
@@ -109,16 +122,16 @@ impl StereometerProcessor {
             self.history_channels = channel_count;
         }
 
-        let analyze_bands = self.config.analyze_bands;
-        let frame = sample_rate.recip();
+        let mode = self.config.bands;
+        let frame = sample_rate.hz().recip();
         // A zero window would pin correlation to +/-1.
-        let window = self.config.correlation_window.max(frame);
+        let window = self.config.correlation_window.get().max(frame);
         let alpha = f64::from(smoothing_weight(frame, window));
         for [left, right] in block.stereo_frames() {
             self.histories[FULL_BAND].push_back((left, right));
             self.correlators[FULL_BAND].update(left, right, alpha);
 
-            if analyze_bands {
+            if mode.analyzed() {
                 let bands = self.band_splitter.process([left, right]);
                 for ((correlator, history), [left, right]) in self.correlators[1..]
                     .iter_mut()
@@ -126,7 +139,7 @@ impl StereometerProcessor {
                     .zip(bands)
                 {
                     correlator.update(left, right, alpha);
-                    if self.config.emit_band_points {
+                    if mode == Bands::Points {
                         history.push_back((left * BAND_DISPLAY_GAIN, right * BAND_DISPLAY_GAIN));
                     }
                 }
@@ -147,13 +160,13 @@ impl StereometerProcessor {
             trailing
         };
         // A window of only digital silence holds no signal: its correlation is undefined.
-        let silent = self.silent_frames as f32 >= window * sample_rate;
+        let silent = self.silent_frames as f32 >= window * sample_rate.hz();
 
-        let frames = (self.config.sample_rate * self.config.segment_duration)
+        let frames = (sample_rate.hz() * self.config.segment_duration.get())
             .round()
             .max(1.0)
             .min(MAX_DSP_BUFFER_LEN as f32) as usize;
-        let history_count = 1 + BAND_COUNT * usize::from(self.config.emit_band_points);
+        let history_count = 1 + BAND_COUNT * usize::from(self.config.bands == Bands::Points);
         for history in &mut self.histories[..history_count] {
             history.drain(..history.len().saturating_sub(frames));
         }
@@ -196,17 +209,16 @@ impl StereometerProcessor {
                 .map(|correlator| if silent { 0.0 } else { correlator.value() }),
         })
     }
-    pub fn update_config(&mut self, mut config: StereometerConfig) {
-        config.analyze_bands |= config.emit_band_points;
+    pub fn update_config(&mut self, config: StereometerConfig) {
         if self.config.sample_rate != config.sample_rate {
             *self = Self::new(config);
             return;
         }
-        if self.config.analyze_bands != config.analyze_bands {
+        if self.config.bands.analyzed() != config.bands.analyzed() {
             self.band_splitter = BandSplitter::new(config.sample_rate, BAND_SPLITS_HZ);
             self.correlators[1..].fill(Correlator::default());
         }
-        if !config.emit_band_points {
+        if config.bands != Bands::Points {
             self.histories[1..].fill_with(VecDeque::new);
         }
         self.config = config;
@@ -216,6 +228,8 @@ impl StereometerProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const RATE: SampleRate = SampleRate::must(4);
 
     fn correlation(pairs: &[(f32, f32)]) -> f32 {
         let mut meter = Correlator::default();
@@ -232,9 +246,9 @@ mod tests {
     #[test]
     fn snapshot_downsampling_and_mode_transition_preserve_stereo_pairs() {
         let mut processor = StereometerProcessor::new(StereometerConfig {
-            segment_duration: 1.0,
+            segment_duration: Finite::must(1.0),
             target_sample_count: 2,
-            correlation_window: 1.0,
+            correlation_window: Seconds::must(1.0),
             ..Default::default()
         });
         let samples = [1.0, -1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0];
@@ -253,7 +267,7 @@ mod tests {
             });
             for block in [samples.as_slice(), &samples[..2]] {
                 let snapshot = processor
-                    .process_block(&AudioBlock::new(block, 2, 4.0))
+                    .process_block(&AudioBlock::fallback(block, 2, RATE))
                     .unwrap();
                 if block.len() == samples.len() {
                     assert_eq!(&*snapshot.points[FULL_BAND], expected);
@@ -262,35 +276,35 @@ mod tests {
                 }
             }
         }
-        for emit_band_points in [false, true] {
+        for bands in [Bands::Off, Bands::Points] {
             processor.update_config(StereometerConfig {
-                emit_band_points,
+                bands,
                 ..processor.config()
             });
             let snapshot = processor
-                .process_block(&AudioBlock::new(&samples, 2, 4.0))
+                .process_block(&AudioBlock::fallback(&samples, 2, RATE))
                 .unwrap();
             assert_eq!(&*snapshot.points[FULL_BAND], &[(1.0, -1.0), (-1.0, 1.0)]);
             assert_close(snapshot.correlations[FULL_BAND], -1.0);
             assert!(
                 snapshot.points[1..]
                     .iter()
-                    .all(|points| points.len() == if emit_band_points { 2 } else { 0 })
+                    .all(|points| points.len() == if bands == Bands::Points { 2 } else { 0 })
             );
         }
         processor.update_config(StereometerConfig {
-            emit_band_points: false,
+            bands: Bands::Correlations,
             ..processor.config()
         });
         // A single new frame must retain the full-band history from before the mode change.
         let snapshot = processor
-            .process_block(&AudioBlock::new(&[1.0, -1.0], 2, 4.0))
+            .process_block(&AudioBlock::fallback(&[1.0, -1.0], 2, RATE))
             .unwrap();
         assert_eq!(&*snapshot.points[FULL_BAND], &[(-1.0, 1.0), (1.0, -1.0)]);
         assert_close(snapshot.correlations[FULL_BAND], -1.0);
         assert!(snapshot.points[1..].iter().all(|points| points.is_empty()));
         let snapshot = processor
-            .process_block(&AudioBlock::new(&[1.0; 4], 1, 4.0))
+            .process_block(&AudioBlock::fallback(&[1.0; 4], 1, RATE))
             .unwrap();
         assert_close(snapshot.correlations[FULL_BAND], 1.0);
     }
@@ -298,10 +312,10 @@ mod tests {
     #[test]
     fn band_points_match_lr4_response_and_correlations_follow_each_band() {
         let config = StereometerConfig {
-            sample_rate: 48_000.0,
-            segment_duration: 0.1,
+            sample_rate: SampleRate::DEFAULT,
+            segment_duration: Finite::must(0.1),
             target_sample_count: 4_800,
-            emit_band_points: true,
+            bands: Bands::Points,
             ..Default::default()
         };
         let tone = |frequency: f64, frame| {
@@ -315,7 +329,7 @@ mod tests {
                 })
                 .collect();
             let snapshot = StereometerProcessor::new(config)
-                .process_block(&AudioBlock::new(&samples, 2, 48_000.0))
+                .process_block(&AudioBlock::fallback(&samples, 2, SampleRate::DEFAULT))
                 .unwrap();
             // Bilinear LR4 amplitude: two cascaded Butterworth sections.
             let warp = |frequency: f64| (std::f64::consts::PI * frequency / 48_000.0).tan();
@@ -353,22 +367,21 @@ mod tests {
             })
             .collect();
         let mut processor = StereometerProcessor::new(StereometerConfig {
-            analyze_bands: true,
-            emit_band_points: false,
+            bands: Bands::Correlations,
             ..config
         });
-        for emit_band_points in [false, true, false] {
+        for bands in [Bands::Correlations, Bands::Points, Bands::Correlations] {
             processor.update_config(StereometerConfig {
-                emit_band_points,
+                bands,
                 ..processor.config()
             });
             let snapshot = processor
-                .process_block(&AudioBlock::new(&samples, 2, 48_000.0))
+                .process_block(&AudioBlock::fallback(&samples, 2, SampleRate::DEFAULT))
                 .unwrap();
             for (&actual, expected) in snapshot.correlations[1..].iter().zip([1.0, -1.0, 1.0]) {
                 assert!(
                     (actual - expected).abs() < 0.02,
-                    "emit_band_points={emit_band_points}, band correlation: {actual} vs {expected}"
+                    "{bands:?}, band correlation: {actual} vs {expected}"
                 );
             }
         }

@@ -164,9 +164,9 @@ crate::macros::default_struct! {
         pub(in crate::visuals) stop_spreads: [f32; SPECTROGRAM_PALETTE_SIZE] = [1.0; SPECTROGRAM_PALETTE_SIZE],
         key: u64 = crate::visuals::next_key(),
         pub(in crate::visuals) settings: SpectrogramSettings = SpectrogramSettings::default(),
-        sample_rate: f32 = SpectrogramConfig::default().sample_rate,
+        sample_rate: f32 = SpectrogramConfig::default().sample_rate.hz(),
         bin_hz: f32 = 0.0,
-        hop_size: usize = SpectrogramConfig::default().hop_size,
+        hop_size: usize = SpectrogramConfig::default().hop_size.get(),
         reassigned_power_scale: f32 = 1.0,
         edge_delay: usize = 0,
         zoom: f32 = 1.0,
@@ -195,8 +195,8 @@ impl SpectrogramState {
     }
 
     pub fn apply_snapshot(&mut self, snap: SpectrogramUpdate) {
-        self.sample_rate = snap.sample_rate;
-        self.bin_hz = snap.sample_rate / snap.fft_size as f32;
+        self.sample_rate = snap.sample_rate.hz();
+        self.bin_hz = self.sample_rate / snap.fft_size as f32;
         self.hop_size = snap.hop_size;
         self.reassigned_power_scale = snap.reassigned_power_scale;
         self.edge_delay = snap.edge_delay;
@@ -242,8 +242,8 @@ impl SpectrogramState {
             palette: self.palette.map(to_rgba),
             stop_positions: self.stop_positions,
             stop_spreads: self.stop_spreads,
-            floor_db: self.settings.floor_db,
-            tilt_db: self.settings.tilt_db,
+            floor_db: self.settings.floor_db.get(),
+            tilt_db: self.settings.tilt_db.get(),
             uv_y_range,
             turn: self.turn(),
         })
@@ -755,7 +755,7 @@ mod tests {
             fft_size: (points_per_column - 1) * 2,
             points_per_column,
             hop_size: 1,
-            sample_rate: 48_000.0,
+            sample_rate: crate::dsp::SampleRate::DEFAULT,
             history_length,
             reset,
             reassigned_power_scale,

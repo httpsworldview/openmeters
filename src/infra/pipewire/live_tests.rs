@@ -540,7 +540,7 @@ fn wait_for_mapped_signal(
             let CapturedSpan::Pcm { samples, format } = span else {
                 return;
             };
-            if format.channels != MAX_CAPTURE_CHANNELS || format.positions != positions {
+            if format.channels() != MAX_CAPTURE_CHANNELS || format.positions() != positions {
                 return;
             }
             let mut peaks = [0.0_f32; MAX_CAPTURE_CHANNELS];
@@ -603,7 +603,7 @@ fn live_backend_recovers_after_server_restart() {
         let mut configured = false;
         audio.drain(Instant::now(), |span| {
             if let CapturedSpan::Silence { format, .. } = span {
-                configured |= format.channels == 2;
+                configured |= format.channels() == 2;
             }
         });
         configured.then_some(())

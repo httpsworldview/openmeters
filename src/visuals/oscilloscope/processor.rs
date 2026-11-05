@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::dsp::AudioBlock;
-use crate::util::audio::{
-    Channel, DEFAULT_SAMPLE_RATE, MAX_DSP_BUFFER_LEN, mean_f32, smoothing_weight,
-};
-use crate::util::lerp;
+use crate::dsp::{AudioBlock, SampleRate};
+use crate::util::audio::{Channel, MAX_DSP_BUFFER_LEN, mean_f32, smoothing_weight};
+use crate::util::{Finite, lerp};
 use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex;
 use serde::{Deserialize, Serialize};
@@ -41,8 +39,8 @@ impl Default for TriggerMode {
 crate::macros::default_struct! {
     #[derive(Debug, Clone, Copy, PartialEq)]
     pub struct OscilloscopeConfig {
-        pub sample_rate: f32 = DEFAULT_SAMPLE_RATE,
-        pub segment_duration: f32 = 0.05,
+        pub sample_rate: SampleRate = SampleRate::DEFAULT,
+        pub segment_duration: Finite = Finite::must(0.05),
         pub trigger_mode: TriggerMode = TriggerMode::default(),
         pub trigger_source: Channel = Channel::None,
         pub channel_1: Channel = Channel::Mid,
@@ -610,7 +608,7 @@ impl OscilloscopeProcessor {
     #[cfg(test)]
     fn last_cycle_rate(&self) -> Option<f32> {
         let period = self.triggers.iter().find_map(|trigger| trigger.period)?;
-        Some(self.config.sample_rate / period)
+        Some(self.config.sample_rate.hz() / period)
     }
 
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<OscilloscopeSnapshot> {
@@ -635,25 +633,25 @@ impl OscilloscopeProcessor {
             return None;
         }
 
-        let base_frames = (self.config.sample_rate * self.config.segment_duration)
+        let sample_rate = self.config.sample_rate.hz();
+        let base_frames = (sample_rate * self.config.segment_duration.get())
             .round()
             .max(2.0)
             .min(MAX_DSP_BUFFER_LEN as f32) as usize;
-        let max_period = (self.config.sample_rate / PeriodEstimator::MIN_HZ).ceil() as usize;
+        let max_period = (sample_rate / PeriodEstimator::MIN_HZ).ceil() as usize;
         let probe_frames = max_period * 2;
         let mut mode = self.config.trigger_mode;
         let trigger_frames = match &mut mode {
             TriggerMode::ZeroCrossing => base_frames + max_period + 1,
             TriggerMode::Stable { num_cycles } => {
                 let (frames, bounded_cycles) =
-                    stable_history_frames(max_period, *num_cycles, self.config.sample_rate);
+                    stable_history_frames(max_period, *num_cycles, sample_rate);
                 *num_cycles = bounded_cycles;
                 frames
             }
         };
         let trigger_source = self.config.trigger_source;
         let history_frames = base_frames.max(trigger_frames).min(MAX_DSP_BUFFER_LEN);
-        let sample_rate = self.config.sample_rate;
         let elapsed = block.duration();
         let capture = |trace: &[f32], trigger: &mut StableTrigger| {
             (trace.len() >= base_frames).then(|| match mode {
@@ -815,14 +813,15 @@ mod tests {
     use crate::util::audio::sine_wave;
     use std::ops::Range;
 
-    const RATE: f32 = 48_000.0;
+    const SAMPLE_RATE: SampleRate = SampleRate::DEFAULT;
+    const RATE: f32 = SAMPLE_RATE.hz();
     const BLOCK: usize = 1024;
     const TAU: f32 = std::f32::consts::TAU;
 
     fn stable_config() -> OscilloscopeConfig {
         OscilloscopeConfig {
-            sample_rate: RATE,
-            segment_duration: 0.02,
+            sample_rate: SAMPLE_RATE,
+            segment_duration: Finite::must(0.02),
             trigger_mode: TriggerMode::Stable { num_cycles: 2 },
             ..Default::default()
         }
@@ -866,7 +865,11 @@ mod tests {
         let start = blocks.start;
         for block in blocks {
             let offset = block * BLOCK;
-            processor.process_block(&AudioBlock::new(&signal[offset..offset + BLOCK], 1, RATE));
+            processor.process_block(&AudioBlock::fallback(
+                &signal[offset..offset + BLOCK],
+                1,
+                SAMPLE_RATE,
+            ));
             if predicate(processor) {
                 return Some(block - start);
             }
@@ -918,7 +921,7 @@ mod tests {
 
     fn stable_phase_jitter(signal: &[f32], freq: f32, measured: Range<usize>) -> f32 {
         let mut trigger = StableTrigger::default();
-        let base_frames = (RATE * stable_config().segment_duration).round() as usize;
+        let base_frames = (RATE * stable_config().segment_duration.get()).round() as usize;
         let max_period = (RATE / PeriodEstimator::MIN_HZ).ceil() as usize;
         let probe_frames = max_period * 2;
         let (history_frames, _) = stable_history_frames(max_period, 2, RATE);
@@ -1131,7 +1134,7 @@ mod tests {
     fn zero_crossing_finds_edges_after_channel_projection() {
         let mono = sine_samples(440.0, RATE, 4800);
         let inverted: Vec<f32> = mono.iter().flat_map(|&s| [s, -s]).collect();
-        let block = AudioBlock::new(&inverted, 2, RATE);
+        let block = AudioBlock::fallback(&inverted, 2, SAMPLE_RATE);
         for (channel, should_cross) in [(Channel::Mid, false), (Channel::Left, true)] {
             let projected: Vec<_> = block.projected_frames(channel).collect();
             assert_eq!(
@@ -1144,7 +1147,7 @@ mod tests {
     #[test]
     fn zero_crossing_both_edges_near_zero() {
         let config = OscilloscopeConfig {
-            segment_duration: 0.01,
+            segment_duration: Finite::must(0.01),
             trigger_mode: TriggerMode::ZeroCrossing,
             channel_1: Channel::Left,
             channel_2: Channel::Right,
@@ -1154,7 +1157,7 @@ mod tests {
         let mono = sine_samples(440.0, RATE, (RATE * 0.1) as usize);
         let samples: Vec<_> = mono.into_iter().flat_map(|s| [s, s]).collect();
         let snap = processor
-            .process_block(&AudioBlock::new(&samples, 2, RATE))
+            .process_block(&AudioBlock::fallback(&samples, 2, SAMPLE_RATE))
             .expect("expected snapshot");
 
         assert_eq!(snap.channels, 2);
@@ -1173,7 +1176,7 @@ mod tests {
         assert!(processor.last_cycle_rate().is_some());
 
         let silence = vec![0.0; BLOCK * 2];
-        processor.process_block(&AudioBlock::new(&silence, 2, RATE));
+        processor.process_block(&AudioBlock::fallback(&silence, 2, SAMPLE_RATE));
 
         assert_eq!(processor.buffers[0].len(), silence.len() / 2);
         assert!(processor.last_cycle_rate().is_none());
@@ -1188,7 +1191,11 @@ mod tests {
         let releases = [BLOCK / 4, BLOCK].map(|block| {
             let mut processor = OscilloscopeProcessor::new(stable_config());
             let release = (block..=signal.len()).step_by(block).find(|&end| {
-                processor.process_block(&AudioBlock::new(&signal[end - block..end], 1, RATE));
+                processor.process_block(&AudioBlock::fallback(
+                    &signal[end - block..end],
+                    1,
+                    SAMPLE_RATE,
+                ));
                 let locked = processor.last_cycle_rate().is_some();
                 let brief = [noise_start, noise_start + BLOCK].contains(&end);
                 assert!(
@@ -1218,7 +1225,7 @@ mod tests {
         let stereo: Vec<f32> = mono.iter().flat_map(|&s| [s, -s]).collect();
         let mut snap = None;
         for chunk in stereo.chunks(BLOCK * 2) {
-            snap = processor.process_block(&AudioBlock::new(chunk, 2, RATE));
+            snap = processor.process_block(&AudioBlock::fallback(chunk, 2, SAMPLE_RATE));
         }
         let detected = processor.last_cycle_rate().expect("trigger should lock");
         assert!((detected - 440.0).abs() < 20.0, "detected {detected}");

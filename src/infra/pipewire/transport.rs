@@ -1,12 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::{MAX_CAPTURE_CHANNELS, MAX_CAPTURE_SAMPLE_RATE};
-use crate::dsp::{AudioFormat, ChannelPosition};
-use crate::util::{
-    audio::{DEFAULT_SAMPLE_RATE, flush_denormal_f32},
-    unpoison,
-};
+use super::MAX_CAPTURE_CHANNELS;
+use crate::dsp::{AudioFormat, ChannelPosition, SampleRate};
+use crate::util::{audio::flush_denormal_f32, unpoison};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 use std::hash::{Hash, Hasher};
 use std::io::Read;
@@ -22,7 +19,7 @@ const BLOCK_SAMPLES: usize = BLOCK_FRAMES * MAX_CAPTURE_CHANNELS;
 // Front-packet age from its end; current activity epoch only.
 const MAX_BACKLOG: Duration = Duration::from_secs(1);
 // 4/3 s of full packets at maximum rate.
-const RING_BLOCKS: usize = (MAX_CAPTURE_SAMPLE_RATE as usize * 4).div_ceil(BLOCK_FRAMES * 3);
+const RING_BLOCKS: usize = (SampleRate::MAX as usize * 4).div_ceil(BLOCK_FRAMES * 3);
 const PCM_FLUSH_SAMPLES: usize = BLOCK_SAMPLES * 4;
 // Packet-duration target, not a flush timer.
 const PACKET_FLUSH_INTERVAL: Duration = Duration::from_millis(50);
@@ -113,12 +110,7 @@ impl Shared {
         Self {
             epoch: Instant::now(),
             status: AtomicU8::new(StreamStatus::Starting as u8),
-            format: RwLock::new(AudioFormat::new(
-                2,
-                DEFAULT_SAMPLE_RATE as u32,
-                0,
-                [ChannelPosition::Unknown; MAX_CAPTURE_CHANNELS],
-            )),
+            format: RwLock::new(AudioFormat::fallback(2, SampleRate::DEFAULT)),
             fault_epoch: AtomicU64::new(0),
             activity_epoch: AtomicU64::new(0),
             ingest: AtomicU8::new(IngestState::Active as u8),
@@ -199,7 +191,7 @@ pub(super) fn pcm_chunk(
     size: u32,
     frame_bytes: usize,
 ) -> Option<[Range<usize>; 2]> {
-    if max == 0 || frame_bytes == 0 {
+    if max == 0 {
         return None;
     }
     let len = (size as usize).min(max) / frame_bytes * frame_bytes;
@@ -304,15 +296,10 @@ impl CaptureWriter {
         self.set_status(StreamStatus::Failed);
     }
 
-    pub(super) fn set_format(
-        &mut self,
-        channels: usize,
-        rate: u32,
-        positions: [ChannelPosition; MAX_CAPTURE_CHANNELS],
-    ) -> AudioFormat {
+    pub(super) fn set_format(&mut self, format: AudioFormat) -> AudioFormat {
         self.drop_stale_pending();
         self.flush_pending();
-        let format = self.publish_format(channels, rate, positions);
+        let format = self.publish_format(format);
         if self.format.replace(format) != Some(format) {
             self.configure_pool(format);
         }
@@ -320,14 +307,9 @@ impl CaptureWriter {
         format
     }
 
-    fn publish_format(
-        &self,
-        channels: usize,
-        rate: u32,
-        positions: [ChannelPosition; MAX_CAPTURE_CHANNELS],
-    ) -> AudioFormat {
+    fn publish_format(&self, mut format: AudioFormat) -> AudioFormat {
         let current = self.shared.format();
-        let mut format = AudioFormat::new(channels, rate, current.generation, positions);
+        format.generation = current.generation;
         if current.generation != 0 && format == current {
             return current;
         }
@@ -339,7 +321,9 @@ impl CaptureWriter {
 
     pub(super) fn publish_layout(&self, layout: &[ChannelPosition]) {
         let positions = std::array::from_fn(|index| layout.get(index).copied().unwrap_or_default());
-        self.publish_format(layout.len(), DEFAULT_SAMPLE_RATE as u32, positions);
+        let format = AudioFormat::new(layout.len(), SampleRate::DEFAULT, 0, positions)
+            .expect("capture layouts have 1..=8 channels");
+        self.publish_format(format);
     }
 
     pub(super) fn mark_reconnect(&self) {
@@ -421,8 +405,8 @@ impl CaptureWriter {
             let packet = self.pending.as_mut().expect("pending packet");
             let count = (frames - offset).min(packet_frames - packet.frames);
             if let Some(samples) = &mut packet.samples {
-                let from = packet.frames as usize * format.channels;
-                let to = (packet.frames + count) as usize * format.channels;
+                let from = packet.frames as usize * format.channels();
+                let to = (packet.frames + count) as usize * format.channels();
                 write(&mut samples[from..to]);
             }
             offset += count;
@@ -500,7 +484,7 @@ impl CaptureWriter {
                 return false;
             };
             let packet = self.pending.as_mut().expect("pending packet");
-            samples[..packet.frames as usize * format.channels].fill(0.0);
+            samples[..packet.frames as usize * format.channels()].fill(0.0);
             packet.samples = Some(samples);
         }
         true
@@ -509,7 +493,7 @@ impl CaptureWriter {
     fn configure_pool(&mut self, format: AudioFormat) {
         self.clear_pool();
         self.retired.reserve(self.producer.buffer().capacity() + 1);
-        self.pool_samples = format.channels * packet_frame_limit(format.rate());
+        self.pool_samples = format.channels() * packet_frame_limit(format.rate());
         self.pool_limit = packet_pool_limit(format.rate(), self.producer.buffer().capacity());
         self.pool.reserve(self.pool_limit);
         self.pool
@@ -800,9 +784,9 @@ impl AudioReader {
         }
         if let Some(samples) = samples {
             if skip < frames {
-                let from = skip as usize * format.channels;
+                let from = skip as usize * format.channels();
                 self.scratch
-                    .extend_from_slice(&samples[from..frames as usize * format.channels]);
+                    .extend_from_slice(&samples[from..frames as usize * format.channels()]);
             }
             let _ = self.recycler.push(samples);
         } else if skip < frames {
@@ -903,13 +887,13 @@ mod tests {
 
     fn mono(capacity: usize, rate: u32) -> (CaptureWriter, AudioReader, AudioFormat) {
         let (mut writer, mut reader) = channel_with_capacity(capacity);
-        let format = writer.set_format(1, rate, ChannelPosition::fallback(1));
+        let format = writer.set_format(AudioFormat::fallback(1, SampleRate::must(rate)));
         reader.format = format;
         (writer, reader, format)
     }
 
     fn packet(format: AudioFormat, start: u64, samples: &[f32]) -> Packet {
-        let frames = samples.len() as u64 / format.channels as u64;
+        let frames = samples.len() as u64 / format.channels() as u64;
         let start = frames_ns(start, format.rate());
         Packet {
             samples: Some(samples.into()),
@@ -928,8 +912,8 @@ mod tests {
         let mut emitted = false;
         reader.drain(start, |_| emitted = true);
         assert!(!emitted);
-        let positions = ChannelPosition::fallback(2);
-        let hint = writer.publish_format(2, DEFAULT_SAMPLE_RATE as u32, positions);
+        let stereo = |rate| AudioFormat::fallback(2, SampleRate::must(rate));
+        let hint = writer.publish_format(stereo(48_000));
         let mut seeded = 0;
         reader.drain(start + Duration::from_millis(10), |span| {
             if let CapturedSpan::Silence { frames, .. } = span {
@@ -937,10 +921,10 @@ mod tests {
             }
         });
         assert_eq!(seeded, 480);
-        assert_eq!(writer.format.map(|format| format.channels), None);
-        assert_eq!(writer.set_format(2, 48_000, positions), hint);
+        assert_eq!(writer.format.map(|format| format.channels()), None);
+        assert_eq!(writer.set_format(stereo(48_000)), hint);
         assert_ne!(
-            writer.set_format(2, 96_000, positions).generation,
+            writer.set_format(stereo(96_000)).generation,
             hint.generation
         );
 
@@ -1050,7 +1034,7 @@ mod tests {
         writer.disconnect();
         writer.disconnect();
         assert_eq!(writer.shared.fault_epoch.load(Ordering::Relaxed), 1);
-        writer.set_format(1, 48_000, ChannelPosition::fallback(1));
+        writer.set_format(AudioFormat::fallback(1, SampleRate::DEFAULT));
         writer.disconnect();
         assert_eq!(writer.shared.fault_epoch.load(Ordering::Relaxed), 2);
     }

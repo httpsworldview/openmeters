@@ -41,7 +41,8 @@ impl OscilloscopeState {
 
     pub fn apply_snapshot(&mut self, snapshot: OscilloscopeSnapshot) {
         self.geometry.invalidate();
-        let weight = smoothing_weight(snapshot.elapsed, self.settings.persistence_time_constant);
+        let time_constant = self.settings.persistence_time_constant.get();
+        let weight = smoothing_weight(snapshot.elapsed, time_constant);
         if weight < 1.0
             && !self.snapshot.samples.is_empty()
             && snapshot.epoch == self.snapshot.epoch

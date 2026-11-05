@@ -4,6 +4,7 @@
 use super::palette::{ColorSetting, PaletteSettings};
 use super::{lossy, visuals::visual_map};
 use crate::domain::visuals::VisualKind;
+use crate::visuals::palettes::Palette;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::{fs, io};
@@ -84,8 +85,8 @@ impl ThemeStore {
         let value = serde_json::from_str(&content)?;
         Ok(lossy::settings::<ThemeFile>(value, "theme", |map, out| {
             lossy::fields!(map, out, "theme"; name, author, background);
-            visual_map(map, "palettes", &mut out.palettes, |_, value, scope| {
-                lossy::value(value, scope)
+            visual_map(map, "palettes", &mut out.palettes, |kind, value, scope| {
+                PaletteSettings::decode(value, &Palette::for_kind(kind), scope)
             });
         }))
     }
@@ -145,10 +146,13 @@ mod tests {
             name: Some("Test".into()),
             palettes: BTreeMap::from([(
                 VisualKind::Spectrum,
-                PaletteSettings {
-                    stops: vec![Color::WHITE.into(), Color::BLACK.into()],
-                    ..Default::default()
-                },
+                PaletteSettings::from_state(
+                    &Palette::for_kind(VisualKind::Spectrum),
+                    &[Color::WHITE, Color::BLACK],
+                    &[],
+                    &[],
+                )
+                .unwrap(),
             )]),
             ..Default::default()
         };

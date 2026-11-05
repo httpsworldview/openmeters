@@ -4,7 +4,7 @@
 use crate::domain::routing::{CaptureMode, StreamIdentity};
 use crate::infra::pipewire::{CaptureControl, CaptureView};
 use crate::persistence::settings::{
-    BAR_MAX_HEIGHT, BAR_MIN_HEIGHT, BUILTIN_THEME, BarAlignment,
+    BUILTIN_THEME, BarAlignment, BarHeight,
     ChangeOrigin::{Automatic, User},
     SettingsHandle, ThemeChoice, ThemeFile, VisualFrameRate, canonical_theme_name,
     clamp_bar_height,
@@ -347,7 +347,8 @@ impl ConfigPage {
                     .then_some(ConfigEffect::BarChanged(BarChange::Layout));
             }
             ConfigMessage::BarHeightChanged(value) => {
-                self.settings.update(User, |s| s.data.bar.height = value);
+                self.settings
+                    .update(User, |s| s.data.bar.height = clamp_bar_height(value));
                 return Some(ConfigEffect::BarChanged(BarChange::Layout));
             }
             ConfigMessage::BarMonitorChanged(value) => {
@@ -625,7 +626,7 @@ impl ConfigPage {
         let bar = &self.settings.borrow().data.bar;
         let mut content = form!(toggle("Enabled", bar.enabled, BarModeToggled););
         if bar.enabled {
-            let height = clamp_bar_height(bar.height);
+            let height = bar.height.get();
             let (monitors, selected) = self.bar_outputs.choices(bar.monitor.as_deref());
             let current = self
                 .bar_outputs
@@ -641,7 +642,7 @@ impl ConfigPage {
                 BarMonitorChanged(choice.monitor)
             });
             let alignment = pick("Alignment", BarAlignment::ALL, bar.alignment, Alignment);
-            let height_range = SliderRange::new(BAR_MIN_HEIGHT as f32, BAR_MAX_HEIGHT as f32, 1.0);
+            let height_range = SliderRange::new(BarHeight::MIN as f32, BarHeight::MAX as f32, 1.0);
             let height_slider = slider!(
                 "Height",
                 height as f32,

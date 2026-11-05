@@ -107,7 +107,7 @@ impl WaveformState {
         let (last, offset) = self.scroll.get();
         let elapsed = now.saturating_duration_since(last);
         let stopped = now.saturating_duration_since(self.snapshot_at.get()) > SCROLL_CLOCK_TIMEOUT;
-        let speed = crate::util::finite_positive(self.settings.scroll_speed).unwrap_or(0.0);
+        let speed = self.settings.scroll_speed.get();
         // Once audio stops (paused or stalled), redraws keep the image where it was drawn.
         let scroll_offset = if stopped {
             offset
@@ -142,7 +142,7 @@ impl WaveformState {
                 },
                 color_mode: self.settings.color_mode,
                 history_mode: self.settings.history_mode,
-                band_db_floor: self.settings.band_db_floor,
+                band_db_floor: self.settings.band_db_floor.get(),
                 palette: self.palette.map(color_to_rgba),
                 key: self.keys[ch],
             })

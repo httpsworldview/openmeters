@@ -3,6 +3,10 @@
 pub mod audio;
 pub mod color;
 
+crate::macros::bounded! {
+    pub struct Finite(f32) in f32::MIN..=f32::MAX;
+}
+
 pub fn finite_or(value: f32, default: f32) -> f32 {
     if value.is_finite() { value } else { default }
 }

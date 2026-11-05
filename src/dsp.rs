@@ -1,9 +1,23 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::util::audio::{Channel, flush_denormal_f64, sanitize_sample_rate};
+use crate::util::audio::{Channel, flush_denormal_f64};
 
 pub const MAX_AUDIO_CHANNELS: usize = 8;
+
+crate::macros::bounded! {
+    #[derive(Eq)]
+    pub struct SampleRate(u32) in 1..=768_000;
+}
+
+impl SampleRate {
+    pub const DEFAULT: Self = Self::must(48_000);
+
+    // Exact: every supported rate is below 2^24.
+    pub const fn hz(self) -> f32 {
+        self.get() as f32
+    }
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
 pub enum ChannelPosition {
@@ -93,39 +107,56 @@ impl ChannelPosition {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AudioFormat {
-    pub channels: usize,
-    pub sample_rate: f32,
+    channels: usize,
+    sample_rate: SampleRate,
     pub generation: u64,
-    pub positions: [ChannelPosition; MAX_AUDIO_CHANNELS],
+    positions: [ChannelPosition; MAX_AUDIO_CHANNELS],
 }
 
 impl AudioFormat {
     pub(crate) fn new(
         channels: usize,
-        sample_rate: u32,
+        sample_rate: SampleRate,
         generation: u64,
         positions: [ChannelPosition; MAX_AUDIO_CHANNELS],
-    ) -> Self {
-        let channels = channels.clamp(1, MAX_AUDIO_CHANNELS);
-        Self {
+    ) -> Option<Self> {
+        (1..=MAX_AUDIO_CHANNELS).contains(&channels).then(|| Self {
             channels,
-            sample_rate: sample_rate.max(1) as f32,
+            sample_rate,
             generation,
             positions: ChannelPosition::normalize(channels, positions),
-        }
+        })
+    }
+
+    pub(crate) fn fallback(channels: usize, sample_rate: SampleRate) -> Self {
+        let positions = ChannelPosition::fallback(channels);
+        Self::new(channels, sample_rate, 0, positions).expect("supported channel count")
+    }
+
+    pub fn channels(self) -> usize {
+        self.channels
+    }
+
+    pub fn sample_rate(self) -> SampleRate {
+        self.sample_rate
+    }
+
+    #[cfg(test)]
+    pub fn positions(self) -> [ChannelPosition; MAX_AUDIO_CHANNELS] {
+        self.positions
     }
 
     pub(crate) fn rate(self) -> u64 {
-        self.sample_rate.round() as u64
+        u64::from(self.sample_rate.get())
     }
 }
 
 pub struct AudioBlock<'a> {
     pub samples: &'a [f32],
     pub channels: usize,
-    pub sample_rate: f32,
+    pub sample_rate: SampleRate,
     pub positions: [ChannelPosition; MAX_AUDIO_CHANNELS],
     stereo: [[f32; 2]; MAX_AUDIO_CHANNELS],
     pub(crate) stereo_channels: usize,
@@ -175,22 +206,12 @@ fn stereo_matrix(
 
 impl<'a> AudioBlock<'a> {
     #[cfg(test)]
-    pub fn new(samples: &'a [f32], channels: usize, sample_rate: f32) -> Self {
-        Self::with_positions(
-            samples,
-            channels,
-            sample_rate,
-            ChannelPosition::fallback(channels),
-        )
+    pub fn fallback(samples: &'a [f32], channels: usize, sample_rate: SampleRate) -> Self {
+        Self::new(samples, AudioFormat::fallback(channels, sample_rate))
     }
 
-    pub fn with_positions(
-        samples: &'a [f32],
-        channels: usize,
-        sample_rate: f32,
-        mut positions: [ChannelPosition; MAX_AUDIO_CHANNELS],
-    ) -> Self {
-        let channels = channels.clamp(1, MAX_AUDIO_CHANNELS);
+    pub fn new(samples: &'a [f32], format: AudioFormat) -> Self {
+        let (channels, mut positions) = (format.channels, format.positions);
         ChannelPosition::resolve_surrounds(&mut positions[..channels]);
         let stereo_channels = (2..channels.min(samples.len()))
             .rfind(|&channel| {
@@ -203,7 +224,7 @@ impl<'a> AudioBlock<'a> {
         Self {
             samples,
             channels,
-            sample_rate: sanitize_sample_rate(sample_rate),
+            sample_rate: format.sample_rate,
             positions,
             stereo: stereo_matrix(channels, positions),
             stereo_channels,
@@ -219,7 +240,7 @@ impl<'a> AudioBlock<'a> {
     }
 
     pub fn duration(&self) -> f32 {
-        self.frame_count() as f32 / self.sample_rate
+        self.frame_count() as f32 / self.sample_rate.hz()
     }
 
     pub fn stereo_frames(
@@ -490,9 +511,9 @@ pub struct ThreeBand<const CHANNELS: usize, const STAGES: usize, const CASCADE_H
 impl<const CHANNELS: usize, const STAGES: usize, const CASCADE_HIGH: bool>
     ThreeBand<CHANNELS, STAGES, CASCADE_HIGH>
 {
-    pub fn new(sample_rate: f32, [low, high]: [f32; 2]) -> Self {
-        let [low, above_low] = Biquad::low_high(sample_rate, low);
-        let [mid, high] = Biquad::low_high(sample_rate, high);
+    pub fn new(sample_rate: SampleRate, [low, high]: [f32; 2]) -> Self {
+        let [low, above_low] = Biquad::low_high(sample_rate.hz(), low);
+        let [mid, high] = Biquad::low_high(sample_rate.hz(), high);
         Self {
             filters: [low, above_low, mid, high].map(|filter| [filter; STAGES]),
         }
@@ -528,6 +549,8 @@ impl<const CHANNELS: usize, const STAGES: usize, const CASCADE_HIGH: bool>
 mod tests {
     use super::*;
 
+    const RATE: SampleRate = SampleRate::DEFAULT;
+
     #[test]
     fn channel_layouts_fill_unknown_and_duplicate_positions_without_collisions() {
         use ChannelPosition::*;
@@ -548,17 +571,17 @@ mod tests {
             ),
             (8, &ChannelPosition::SURROUND[..]),
         ] {
-            let format = AudioFormat::new(channels, 48_000, 1, [Unknown; MAX_AUDIO_CHANNELS]);
-            assert_eq!(&format.positions[..channels], expected);
+            let format = AudioFormat::new(channels, RATE, 1, [Unknown; MAX_AUDIO_CHANNELS]);
+            assert_eq!(&format.unwrap().positions[..channels], expected);
         }
 
         let mut partial = [Unknown; MAX_AUDIO_CHANNELS];
         partial[..2].copy_from_slice(&[FrontRight, Unknown]);
-        let format = AudioFormat::new(2, 48_000, 1, partial);
+        let format = AudioFormat::new(2, RATE, 1, partial).unwrap();
         assert_eq!(&format.positions[..2], &[FrontRight, FrontLeft]);
 
         partial[..3].copy_from_slice(&[FrontLeft, FrontLeft, FrontRight]);
-        let format = AudioFormat::new(3, 48_000, 1, partial);
+        let format = AudioFormat::new(3, RATE, 1, partial).unwrap();
         assert_eq!(
             &format.positions[..3],
             &[FrontLeft, FrontCenter, FrontRight]
@@ -570,20 +593,22 @@ mod tests {
         use ChannelPosition::*;
 
         let samples = [1.0, 2.0, 3.0, 100.0, 4.0, 5.0, 6.0, 7.0];
-        let block = AudioBlock::with_positions(&samples, 8, 48_000.0, ChannelPosition::SURROUND);
+        let surround = AudioFormat::new(8, RATE, 0, ChannelPosition::SURROUND).unwrap();
+        let block = AudioBlock::new(&samples, surround);
         let mixed = block.stereo_frames().next().unwrap();
         let gain = std::f32::consts::FRAC_1_SQRT_2;
         assert_eq!(mixed, [1.0 + gain * 13.0, 2.0 + gain * 15.0]);
 
         let mut mono = [Unknown; MAX_AUDIO_CHANNELS];
         mono[0] = Mono;
-        let mono = AudioBlock::with_positions(&[0.25], 1, 48_000.0, mono);
+        let mono = AudioBlock::new(&[0.25], AudioFormat::new(1, RATE, 0, mono).unwrap());
         assert_eq!(mono.stereo_matrix()[0], [1.0; 2]);
 
         let mut unsupported = [Unknown; MAX_AUDIO_CHANNELS];
         unsupported[..2].copy_from_slice(&[LowFrequency, Aux(0)]);
+        let unsupported = AudioFormat::new(2, RATE, 0, unsupported).unwrap();
         assert_eq!(
-            AudioBlock::with_positions(&[], 8, 48_000.0, unsupported).stereo_matrix(),
+            AudioBlock::new(&[], unsupported).stereo_matrix(),
             &[[1.0, 0.0], [0.0, 1.0]]
         );
     }
@@ -595,7 +620,7 @@ mod tests {
             (&[0.0, -0.0, nan, f32::INFINITY][..], 1),
             (&[0.0, -0.0, 0.25, -0.5, nan, f32::INFINITY][..], 2),
         ] {
-            let block = AudioBlock::new(samples, channels, 48_000.0);
+            let block = AudioBlock::fallback(samples, channels, RATE);
             let matrix = block.stereo_matrix();
             let expected = samples.chunks_exact(channels).map(|frame| {
                 frame

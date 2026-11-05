@@ -23,8 +23,8 @@ settings_messages!(pane, settings, value {
     Source(Channel) => set(&mut settings.source, value);
     Scale(FrequencyScale) => set(&mut settings.frequency_scale, value);
     UseReassignment(bool) => set(&mut settings.use_reassignment, value);
-    FloorDb(f32) => set(&mut settings.floor_db, value);
-    TiltDb(f32) => set(&mut settings.tilt_db, value);
+    FloorDb(f32) => settings.floor_db.set(value);
+    TiltDb(f32) => settings.tilt_db.set(value);
     Rotation(f32) => set(&mut settings.rotation, value.round() as i8);
     ZeroPadding(usize) => set(&mut settings.zero_padding_factor, value);
     PianoRoll(PianoRollOverlay) => set(&mut settings.piano_roll_overlay, value);
@@ -32,8 +32,8 @@ settings_messages!(pane, settings, value {
 
 settings_view! {
     pane as settings {
-        let hop_divisor = get_closest_hop_divisor(settings.fft_size, settings.hop_size);
-        let tilt_db = settings.tilt_db;
+        let hop_divisor = get_closest_hop_divisor(settings.fft_size.get(), settings.hop_size.get());
+        let tilt_db = settings.tilt_db.get();
         let tilt = if tilt_db == 0.0 { "Off".to_string() } else { format!("{tilt_db:+.1} dB/oct") };
     }
     "Display" => form!(
@@ -43,7 +43,7 @@ settings_view! {
             "Piano roll overlay", PianoRollOverlay::ALL,
             settings.piano_roll_overlay, PianoRoll
         );
-        slider!("Floor", settings.floor_db, FLOOR_RANGE, FloorDb, "{:.0} dB");
+        slider!("Floor", settings.floor_db.get(), FLOOR_RANGE, FloorDb, "{:.0} dB");
         slider!("Spectral tilt", tilt_db, TILT_RANGE, TiltDb, tilt);
         slider!(
             "Rotation", settings.rotation as f32, QUARTER_TURNS, Rotation,
@@ -51,12 +51,12 @@ settings_view! {
         );
     );
     "Analysis" [[
-        Some(chip(format!("FFT {}", settings.fft_size))),
+        Some(chip(format!("FFT {}", settings.fft_size.get()))),
         Some(chip(settings.window.label())),
         settings.use_reassignment.then(|| chip("Reassign")),
     ].into_iter().flatten()] => split(
         form!(
-            pick("FFT size", &FFT_OPTIONS[..], settings.fft_size, FftSize);
+            pick("FFT size", &FFT_OPTIONS[..], settings.fft_size.get(), FftSize);
             pick("Hop divisor", &HOP_DIVISORS[..], hop_divisor, HopDivisor);
             pick("Window", WindowKind::ALL, settings.window, Window);
         ),

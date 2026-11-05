@@ -223,8 +223,9 @@ saved to `$XDG_CONFIG_HOME/openmeters/settings.json`, or to:
 when `XDG_CONFIG_HOME` is unset.
 
 `settings.json` is intentionally editable. GUI ranges are not hard
-limits, but visuals normalize some invalid entries. Unsupported keys
-or structurally invalid values are logged and ignored.
+limits, but visuals limit some values when drawn. Unsupported keys,
+structurally invalid values, and values outside a setting's supported
+range are logged and replaced with their defaults.
 
 Invalid JSON syntax is ignored and default settings are used for that
 run. Your configuration file will not be overwritten unless you

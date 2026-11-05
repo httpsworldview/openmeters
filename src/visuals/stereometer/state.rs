@@ -37,11 +37,10 @@ crate::macros::default_struct! {
 
 impl StereometerState {
     pub fn update_view_settings(&mut self, s: &StereometerSettings) {
-        if self.settings.analyzes_bands() != s.analyzes_bands() {
+        if self.settings.bands().analyzed() != s.bands().analyzed() {
             self.trails[1..].fill(FixedTrail::default());
         }
         self.settings = StereometerSettings {
-            dot_radius: s.dot_radius.clamp(0.5, 8.0),
             rotation: s.rotation.clamp(-4, 4),
             ..s.clone()
         };
@@ -85,7 +84,7 @@ impl StereometerState {
         self.sync_band_colors();
         let clock = self.trail_clock + snap.elapsed / CORR_TRAIL_STEP;
         self.trail_clock = clock.fract();
-        let bands = 1 + BAND_COUNT * usize::from(self.settings.analyzes_bands());
+        let bands = 1 + BAND_COUNT * usize::from(self.settings.bands().analyzed());
         for (trail, &value) in self.trails[..bands].iter_mut().zip(&snap.correlations) {
             trail.advance(value, clock as usize);
         }
@@ -123,7 +122,7 @@ impl StereometerState {
             palette: self.palette.map(color_to_rgba),
             mode: s.mode,
             scale: s.scale,
-            dot_radius: s.dot_radius,
+            dot_radius: s.dot_radius.get().clamp(0.5, 8.0),
             rotation: s.rotation,
             flip: s.flip,
             unipolar: s.unipolar && s.mode != StereometerMode::Lissajous,

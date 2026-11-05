@@ -27,8 +27,8 @@ fn configure_palette_for_mode(palette: &mut PaletteEditor, mode: WaveformColorMo
 }
 
 settings_messages!(pane, settings, value {
-    ScrollSpeed(f32) => set(&mut settings.scroll_speed, value);
-    BandDbFloor(f32) => set(&mut settings.band_db_floor, value);
+    ScrollSpeed(f32) => settings.scroll_speed.set(value);
+    BandDbFloor(f32) => settings.band_db_floor.set(value);
     Channel1(Channel) => set(&mut settings.channel_1, value);
     Channel2(Channel) => set(&mut settings.channel_2, value);
     ColorMode(WaveformColorMode) => {
@@ -48,11 +48,11 @@ settings_view! {
         pick("Channel 2", Channel::ALL, settings.channel_2, Channel2);
     );
     "Display" => form!(
-        slider!("Scroll speed", settings.scroll_speed, SPEED_RANGE, ScrollSpeed, "{:.0} px/s");
+        slider!("Scroll speed", settings.scroll_speed.get(), SPEED_RANGE, ScrollSpeed, "{:.0} px/s");
         pick("Color mode", WaveformColorMode::ALL, settings.color_mode, ColorMode);
         pick("History", WaveformHistoryMode::ALL, settings.history_mode, HistoryMode);
         (settings.history_mode != WaveformHistoryMode::Off).then(|| slider!(
-            "History floor", settings.band_db_floor, FLOOR_RANGE, BandDbFloor, "{:.0} dB"
+            "History floor", settings.band_db_floor.get(), FLOOR_RANGE, BandDbFloor, "{:.0} dB"
         ));
     );
 }

@@ -7,7 +7,8 @@ use super::{
 };
 use crate::persistence::settings::SpectrumSettings;
 use crate::ui::widgets::{SliderRange, chip, pick, split, toggle};
-use crate::util::audio::{Channel, FrequencyScale};
+use crate::util::Finite;
+use crate::util::audio::{Channel, FrequencyScale, Seconds};
 use crate::visuals::options::{SpectrumDisplayMode, SpectrumWeightingMode as WeightingMode};
 use crate::visuals::spectrum::processor::{
     AveragingMode, DEFAULT_SPECTRUM_PEAK_DECAY, DEFAULT_SPECTRUM_TIME_CONSTANT,
@@ -39,8 +40,8 @@ crate::macros::choice_enum!(pub(in crate::ui) enum FrequencyDirection {
 
 struct AveragingControls {
     mode: AvgMode,
-    time_constant: f32,
-    peak_decay: f32,
+    time_constant: Seconds,
+    peak_decay: Finite,
 }
 
 settings_pane!(
@@ -65,14 +66,14 @@ settings_messages!(pane, settings, value {
     SecondaryWeighting(WeightingMode) => set(&mut settings.secondary_weighting_mode, value);
     Averaging(AvgMode) => pane.update_avg(|average| set(&mut average.mode, value));
     AvgTimeConstant(f32) => {
-        pane.update_avg(|average| set(&mut average.time_constant, value))
+        pane.update_avg(|average| average.time_constant.set(value))
     };
-    PeakDecay(f32) => pane.update_avg(|average| set(&mut average.peak_decay, value));
+    PeakDecay(f32) => pane.update_avg(|average| average.peak_decay.set(value));
     ShowGrid(bool) => set(&mut settings.show_grid, value);
     ShowPeakLabel(bool) => set(&mut settings.show_peak_label, value);
-    FloorDb(f32) => set(&mut settings.floor_db, value);
+    FloorDb(f32) => settings.floor_db.set(value);
     BarCount(f32) => set(&mut settings.bar_count, value.round() as usize);
-    BarGap(f32) => set(&mut settings.bar_gap, value);
+    BarGap(f32) => settings.bar_gap.set(value);
 });
 
 settings_view! {
@@ -81,7 +82,7 @@ settings_view! {
         let primary = settings.source != Channel::None;
         let secondary = settings.secondary_source != Channel::None;
         let bars = settings.display_mode == SpectrumDisplayMode::Bar;
-        let hop_divisor = get_closest_hop_divisor(settings.fft_size, settings.hop_size);
+        let hop_divisor = get_closest_hop_divisor(settings.fft_size.get(), settings.hop_size.get());
         let direction = if settings.reverse_frequency { HighToLow } else { LowToHigh };
 
         let sources = split(
@@ -101,11 +102,11 @@ settings_view! {
         );
         let averaging = match pane.averaging.mode {
             AvgMode::Exponential => Some(slider!(
-                "Time constant", pane.averaging.time_constant, TIME_CONSTANT_R, AvgTimeConstant,
-                format!("{:.0} ms", pane.averaging.time_constant * 1000.0)
+                "Time constant", pane.averaging.time_constant.get(), TIME_CONSTANT_R, AvgTimeConstant,
+                format!("{:.0} ms", pane.averaging.time_constant.get() * 1000.0)
             )),
             AvgMode::PeakHold => Some(slider!(
-                "Peak decay", pane.averaging.peak_decay, DECAY_R, PeakDecay, "{:.1} dB/s"
+                "Peak decay", pane.averaging.peak_decay.get(), DECAY_R, PeakDecay, "{:.1} dB/s"
             )),
             AvgMode::None => None,
         };
@@ -116,11 +117,11 @@ settings_view! {
             );
             pick("Averaging", AvgMode::ALL, pane.averaging.mode, Averaging);
             averaging;
-            slider!("Noise floor", settings.floor_db, FLOOR_R, FloorDb, "{:.0} dB");
+            slider!("Noise floor", settings.floor_db.get(), FLOOR_R, FloorDb, "{:.0} dB");
         );
 
         let analysis = split(
-            pick("FFT size", &FFT_OPTIONS[..], settings.fft_size, FftSize),
+            pick("FFT size", &FFT_OPTIONS[..], settings.fft_size.get(), FftSize),
             pick("Hop divisor", &HOP_DIVISORS[..], hop_divisor, HopDivisor),
         );
         let details = form!(
@@ -138,8 +139,8 @@ settings_view! {
                 settings.bar_count.to_string()
             ));
             bars.then(|| slider!(
-                "Bar gap", settings.bar_gap, GAP_R, BarGap,
-                format!("{:.0}%", settings.bar_gap * 100.0)
+                "Bar gap", settings.bar_gap.get(), GAP_R, BarGap,
+                format!("{:.0}%", settings.bar_gap.get() * 100.0)
             ));
         );
         let details_summary = [
@@ -153,7 +154,7 @@ settings_view! {
     "Sources" => sources;
     "View" => view;
     "Analysis" [[
-        chip(format!("FFT {}", settings.fft_size)),
+        chip(format!("FFT {}", settings.fft_size.get())),
         chip(format!("Hop 1/{hop_divisor}")),
     ]] => analysis;
     "Details" [details_summary.into_iter().flatten().map(chip)] => details;

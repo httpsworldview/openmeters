@@ -3,10 +3,8 @@
 
 use super::{lossy, palette::PaletteSettings};
 use crate::domain::visuals::VisualKind;
-use crate::util::{
-    audio::{Channel, FrequencyScale, WindowKind, sanitize_negative_db},
-    finite_or,
-};
+use crate::util::Finite;
+use crate::util::audio::{Channel, FftSize, FrequencyScale, NegativeDb, Seconds, WindowKind};
 use crate::visuals::options::{
     CorrelationMeterMode, CorrelationMeterSide, MeterMode, PianoRollOverlay, SpectrumDisplayMode,
     SpectrumWeightingMode, StereometerMode, StereometerScale, WaveformColorMode,
@@ -16,12 +14,15 @@ use crate::visuals::{
     oscilloscope::processor::{OscilloscopeConfig, TriggerMode},
     spectrogram::processor::SpectrogramConfig,
     spectrum::processor::{AveragingMode, SpectrumConfig},
-    stereometer::processor::StereometerConfig,
-    waveform::processor::{DEFAULT_BAND_DB_FLOOR, WaveformConfig},
+    stereometer::processor::{Bands as StereometerBands, StereometerConfig},
+    waveform::processor::{
+        Bands as WaveformBands, DEFAULT_BAND_DB_FLOOR, ScrollSpeed, WaveformConfig,
+    },
 };
 use serde::Serialize;
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
+use std::num::NonZeroUsize;
 use tracing::warn;
 
 crate::macros::default_struct! {
@@ -83,7 +84,7 @@ impl VisualSettings {
         self.modules
             .entry(kind)
             .or_insert_with(|| ModuleSettings::new(kind))
-            .config = config.normalized();
+            .config = config;
     }
 }
 
@@ -183,7 +184,7 @@ macro_rules! visual_configs {
             fn from_value_lossy(kind: VisualKind, value: Value, scope: &str) -> Self {
                 match kind {
                     $(VisualKind::$variant => Self::$variant($settings::from_value_lossy(value, scope))),*
-                }.normalized()
+                }
             }
 
             pub(crate) fn palette(&self) -> Option<&PaletteSettings> {
@@ -194,10 +195,6 @@ macro_rules! visual_configs {
                 match self { $(Self::$variant(settings) => &mut settings.palette),* }
             }
 
-            pub(crate) fn normalized(mut self) -> Self {
-                match &mut self { $(Self::$variant(settings) => settings.normalize()),* }
-                self
-            }
         }
     };
 }
@@ -211,47 +208,22 @@ visual_configs! {
     Stereometer(StereometerSettings),
 }
 
-// Bounds hand-edited settings so new input keeps showing.
-const MAX_TIME_CONSTANT: f32 = 10.0;
-
-fn time_constant_or(value: f32, default: f32) -> f32 {
-    finite_or(value, default).clamp(0.0, MAX_TIME_CONSTANT)
-}
-
-fn averaging_or(value: AveragingMode, default: AveragingMode) -> AveragingMode {
-    match value {
-        AveragingMode::None => value,
-        AveragingMode::Exponential { time_constant } if time_constant.is_finite() => {
-            AveragingMode::Exponential {
-                time_constant: time_constant.clamp(0.0, MAX_TIME_CONSTANT),
-            }
-        }
-        AveragingMode::PeakHold { decay_per_second } if decay_per_second.is_finite() => value,
-        _ => default,
-    }
-}
-
-// Quarter-turn controls offer -1..=2; other turn counts wrap into it.
-fn wrap_quarter_turns(value: i8, _: i8) -> i8 {
-    (value.rem_euclid(4) + 1) % 4 - 1
-}
-
 macro_rules! visual_settings {
     ($name:ident from $config_ty:ty {
-        $($field:ident: $ty:ty $(=> $normalize:path)?),* $(,)?
+        $($field:ident: $ty:ty),* $(,)?
     } $(extra {
-        $($extra:ident: $extra_ty:ty = $default:expr $(=> $extra_normalize:path)?),* $(,)?
+        $($extra:ident: $extra_ty:ty = $default:expr),* $(,)?
     })?) => {
         visual_settings!($name {
-            $($field: $ty = <$config_ty>::default().$field $(=> $normalize)?,)*
-            $($($extra: $extra_ty = $default $(=> $extra_normalize)?,)*)?
+            $($field: $ty = <$config_ty>::default().$field,)*
+            $($($extra: $extra_ty = $default,)*)?
         });
         impl $name {
             pub fn apply_to(&self, cfg: &mut $config_ty) { $(cfg.$field = self.$field;)* }
             pub fn sync_from_config(&mut self, cfg: &$config_ty) { $(self.$field = cfg.$field;)* }
         }
     };
-    ($name:ident { $($field:ident: $ty:ty = $default:expr $(=> $normalize:path)?),* $(,)? }) => {
+    ($name:ident { $($field:ident: $ty:ty = $default:expr),* $(,)? }) => {
         $crate::macros::default_struct! {
             #[derive(Debug, Clone, PartialEq, Serialize)]
             pub struct $name {
@@ -266,62 +238,69 @@ macro_rules! visual_settings {
                     lossy::fields!(map, out, scope; $($field),*);
                 })
             }
-            pub(crate) fn normalize(&mut self) {
-                $($(self.$field = $normalize(self.$field, $default);)?)*
-            }
         }
     };
 }
 
 visual_settings!(OscilloscopeSettings from OscilloscopeConfig {
-    segment_duration: f32 => finite_or, trigger_mode: TriggerMode, trigger_source: Channel,
+    segment_duration: Finite, trigger_mode: TriggerMode, trigger_source: Channel,
     channel_1: Channel, channel_2: Channel,
 } extra {
-    persistence_time_constant: f32 = 0.0 => time_constant_or,
+    persistence_time_constant: Seconds = Seconds::must(0.0),
     stacked: bool = false,
 });
 
 visual_settings!(WaveformSettings from WaveformConfig {
-    scroll_speed: f32 => finite_or,
+    scroll_speed: ScrollSpeed,
 } extra {
-    band_db_floor: f32 = DEFAULT_BAND_DB_FLOOR => finite_or,
+    band_db_floor: NegativeDb = NegativeDb::must(DEFAULT_BAND_DB_FLOOR),
     channel_1: Channel = Channel::Mid,
     channel_2: Channel = Channel::None,
     color_mode: WaveformColorMode = WaveformColorMode::default(),
     history_mode: WaveformHistoryMode = WaveformHistoryMode::default(),
 });
 
+impl WaveformSettings {
+    pub(crate) fn bands(&self) -> WaveformBands {
+        if self.history_mode != WaveformHistoryMode::Off {
+            WaveformBands::History
+        } else if self.color_mode == WaveformColorMode::Frequency {
+            WaveformBands::Colors
+        } else {
+            WaveformBands::Off
+        }
+    }
+}
+
 visual_settings!(SpectrumSettings from SpectrumConfig {
-    fft_size: usize, hop_size: usize, window: WindowKind,
-    averaging: AveragingMode => averaging_or,
-    source: Channel, secondary_source: Channel, floor_db: f32 => sanitize_negative_db,
+    fft_size: FftSize, hop_size: NonZeroUsize, window: WindowKind, averaging: AveragingMode,
+    source: Channel, secondary_source: Channel, floor_db: NegativeDb,
 } extra {
     frequency_scale: FrequencyScale = FrequencyScale::Logarithmic,
-    reverse_frequency: bool = false, rotation: i8 = 0 => wrap_quarter_turns, show_grid: bool = true,
+    reverse_frequency: bool = false, rotation: i8 = 0, show_grid: bool = true,
     show_peak_label: bool = false,
     display_mode: SpectrumDisplayMode = SpectrumDisplayMode::default(),
     weighting_mode: SpectrumWeightingMode = SpectrumWeightingMode::default(),
     secondary_weighting_mode: SpectrumWeightingMode = SpectrumWeightingMode::default(),
     bar_count: usize = 64,
-    bar_gap: f32 = 0.16 => finite_or,
+    bar_gap: Finite = Finite::must(0.16),
 });
 
 visual_settings!(SpectrogramSettings from SpectrogramConfig {
-    fft_size: usize, hop_size: usize, window: WindowKind, use_reassignment: bool,
+    fft_size: FftSize, hop_size: NonZeroUsize, window: WindowKind, use_reassignment: bool,
     zero_padding_factor: usize, source: Channel,
 } extra {
     frequency_scale: FrequencyScale = FrequencyScale::default(),
-    floor_db: f32 = -120.0 => sanitize_negative_db,
-    tilt_db: f32 = 4.5 => finite_or,
+    floor_db: NegativeDb = NegativeDb::must(-120.0),
+    tilt_db: Finite = Finite::must(4.5),
     piano_roll_overlay: PianoRollOverlay = PianoRollOverlay::default(),
-    rotation: i8 = 0 => wrap_quarter_turns,
+    rotation: i8 = 0,
 });
 
 visual_settings!(StereometerSettings from StereometerConfig {
-    segment_duration: f32 => finite_or, target_sample_count: usize,
-    correlation_window: f32 => time_constant_or,
+    segment_duration: Finite, target_sample_count: usize, correlation_window: Seconds,
 } extra {
-    dot_radius: f32 = 1.0 => finite_or, mode: StereometerMode = StereometerMode::default(),
+    dot_radius: Finite = Finite::must(1.0), mode: StereometerMode = StereometerMode::default(),
     scale: StereometerScale = StereometerScale::default(), rotation: i8 = -1, flip: bool = true,
     unipolar: bool = true,
     correlation_meter: CorrelationMeterMode = CorrelationMeterMode::default(),
@@ -329,9 +308,14 @@ visual_settings!(StereometerSettings from StereometerConfig {
 });
 
 impl StereometerSettings {
-    pub(crate) fn analyzes_bands(&self) -> bool {
-        self.mode == StereometerMode::DotCloudBands
-            || self.correlation_meter == CorrelationMeterMode::MultiBand
+    pub(crate) fn bands(&self) -> StereometerBands {
+        if self.mode == StereometerMode::DotCloudBands {
+            StereometerBands::Points
+        } else if self.correlation_meter == CorrelationMeterMode::MultiBand {
+            StereometerBands::Correlations
+        } else {
+            StereometerBands::Off
+        }
     }
 }
 
@@ -361,11 +345,13 @@ mod tests {
         settings.set_enabled(VisualKind::Spectrum, false);
         settings.set_enabled(VisualKind::Loudness, true);
         settings.set_config(VisualConfig::Waveform(WaveformSettings {
-            scroll_speed: 72.0,
-            palette: Some(PaletteSettings {
-                stops: vec![iced::Color::WHITE.into()],
-                ..Default::default()
-            }),
+            scroll_speed: ScrollSpeed::must(72.0),
+            palette: PaletteSettings::from_state(
+                &crate::visuals::palettes::Palette::for_kind(VisualKind::Waveform),
+                &[iced::Color::WHITE],
+                &[],
+                &[],
+            ),
             ..Default::default()
         }));
         let saved = serde_json::to_value(&settings).unwrap();
@@ -374,7 +360,7 @@ mod tests {
         assert_eq!(modules["spectrum"]["config"]["fft_size"], 2048);
         assert_eq!(
             modules["spectrum"]["config"]["floor_db"],
-            SpectrumSettings::default().floor_db
+            SpectrumSettings::default().floor_db.get()
         );
         assert!(modules["spectrum"]["config"].get("future_option").is_none());
         assert_eq!(modules["spectrogram"]["config"]["source"], "side");
@@ -387,13 +373,7 @@ mod tests {
         let loaded = VisualSettings::from_value_lossy(saved.clone());
         assert_eq!(serde_json::to_value(loaded).unwrap(), saved);
 
-        for (rotation, expected) in [
-            (json!(-1), -1),
-            (json!(-2), 2),
-            (json!(3), -1),
-            (json!(1.5), 0),
-            (json!(300), 0),
-        ] {
+        for (rotation, expected) in [(json!(-2), -2), (json!(1.5), 0), (json!(300), 0)] {
             let settings = VisualSettings::from_value_lossy(json!({"modules": {
                 "spectrum": {"enabled": true, "config": {"rotation": rotation, "fft_size": 2048}}
             }}));
@@ -401,7 +381,7 @@ mod tests {
             else {
                 panic!("expected spectrum settings");
             };
-            assert_eq!((config.rotation, config.fft_size), (expected, 2048));
+            assert_eq!((config.rotation, config.fft_size.get()), (expected, 2048));
         }
     }
 }

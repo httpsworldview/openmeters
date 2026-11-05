@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::dsp::{AudioBlock, ChannelPosition, RunningMeans};
-use crate::util::audio::{DEFAULT_SAMPLE_RATE, flush_denormal_f64, kaiser, sanitize_sample_rate};
+use crate::dsp::{AudioBlock, ChannelPosition, RunningMeans, SampleRate};
+use crate::util::audio::{flush_denormal_f64, kaiser};
 use std::{f64::consts::PI, sync::LazyLock};
 
 // BS.1770 LUFS offset.
@@ -69,8 +69,8 @@ fn mean_square_to_db(mean_square: f64, offset: f64) -> f32 {
     }
 }
 
-fn window_length(sample_rate: f32, window_secs: f32) -> usize {
-    (sample_rate * window_secs).round().max(1.0) as usize
+fn window_length(sample_rate: SampleRate, window_secs: f32) -> usize {
+    (sample_rate.hz() * window_secs).round().max(1.0) as usize
 }
 
 const TRUE_PEAK_TAPS: usize = 48;
@@ -202,7 +202,7 @@ type EnergyWindows = RunningMeans<1, 4>;
 type ChannelState = (EnergyWindows, [f64; 4], TruePeakMeter);
 
 #[cold]
-fn new_channel(sample_rate: f32) -> ChannelState {
+fn new_channel(sample_rate: SampleRate) -> ChannelState {
     let capacities = DEFAULT_WINDOWS.map(|window| window_length(sample_rate, window));
     (
         EnergyWindows::new(capacities),
@@ -251,7 +251,7 @@ impl LoudnessSnapshot {
 crate::macros::default_struct! {
     #[derive(Debug, Clone, Copy)]
     pub struct LoudnessConfig {
-        pub sample_rate: f32 = DEFAULT_SAMPLE_RATE,
+        pub sample_rate: SampleRate = SampleRate::DEFAULT,
     }
 }
 
@@ -263,9 +263,8 @@ pub struct LoudnessProcessor {
 
 impl LoudnessProcessor {
     pub fn new(config: LoudnessConfig) -> Self {
-        let sample_rate = f64::from(sanitize_sample_rate(config.sample_rate));
         Self {
-            weighting: k_weighting_coefficients(sample_rate),
+            weighting: k_weighting_coefficients(f64::from(config.sample_rate.hz())),
             channels: Vec::new(),
             config,
         }
@@ -343,6 +342,7 @@ impl LoudnessProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dsp::AudioFormat;
     use crate::util::audio::sine_wave;
     use ebur128::{Channel as ReferenceChannel, EbuR128, Mode};
     use rustfft::{FftPlanner, num_complex::Complex64};
@@ -352,18 +352,21 @@ mod tests {
         use ReferenceChannel::*;
         [Left, Right, Center, Unused, Mp135, Mm135, Mp090, Mm090]
     };
+    const RATE: SampleRate = SampleRate::DEFAULT;
 
     fn assert_loudness_matches_ebur128(
-        block: AudioBlock<'_>,
+        samples: &[f32],
+        format: AudioFormat,
         channel_map: Option<&[ReferenceChannel]>,
         transitions: &[f32],
     ) {
+        let block = AudioBlock::new(samples, format);
         let config = LoudnessConfig {
             sample_rate: block.sample_rate,
         };
         let mut processor = LoudnessProcessor::new(config);
-        let mut reference =
-            EbuR128::new(block.channels as u32, block.sample_rate as u32, Mode::S).unwrap();
+        let rate = block.sample_rate.get();
+        let mut reference = EbuR128::new(block.channels as u32, rate, Mode::S).unwrap();
         if let Some(channel_map) = channel_map {
             reference.set_channel_map(channel_map).unwrap();
         }
@@ -372,7 +375,7 @@ mod tests {
             .iter()
             .flat_map(|&start| {
                 [0.0, 0.1, 0.4, 1.0, 3.0]
-                    .map(|delay| ((start + delay) * block.sample_rate).round() as usize)
+                    .map(|delay| ((start + delay) * block.sample_rate.hz()).round() as usize)
             })
             .flat_map(|frame| [frame.saturating_sub(1), frame, frame + 1])
             .chain([1, 18, 273, block.frame_count()])
@@ -385,12 +388,7 @@ mod tests {
             while frame < checkpoint {
                 let end = (frame + chunks.next().unwrap()).min(checkpoint);
                 let chunk = &block.samples[frame * block.channels..end * block.channels];
-                snapshot = processor.process_block(&AudioBlock::with_positions(
-                    chunk,
-                    block.channels,
-                    block.sample_rate,
-                    block.positions,
-                ));
+                snapshot = processor.process_block(&AudioBlock::new(chunk, format));
                 reference.add_frames_f32(chunk).unwrap();
                 frame = end;
             }
@@ -409,8 +407,7 @@ mod tests {
                 let expected = expected.max(f64::from(DEFAULT_FLOOR_DB));
                 assert!(
                     (f64::from(actual) - expected).abs() < 1.0e-4,
-                    "{} Hz, {:?}, frame={frame}, {metric}: {actual:.9} vs {expected:.9} LUFS",
-                    block.sample_rate,
+                    "{rate} Hz, {:?}, frame={frame}, {metric}: {actual:.9} vs {expected:.9} LUFS",
                     &block.positions[..block.channels],
                 );
             }
@@ -490,9 +487,10 @@ mod tests {
 
     #[test]
     fn energy_windows_match_reference_at_audio_sample_rates() {
-        for sample_rate in [
-            8_000.0, 11_025.0, 22_050.0, 44_100.0, 48_000.0, 96_000.0, 192_000.0, 768_000.0,
+        for rate in [
+            8_000, 11_025, 22_050, 44_100, 48_000, 96_000, 192_000, 768_000,
         ] {
+            let sample_rate = SampleRate::must(rate);
             let capacities = DEFAULT_WINDOWS.map(|secs| window_length(sample_rate, secs));
             let len = capacities[0];
             let mut windows = EnergyWindows::new(capacities);
@@ -515,7 +513,7 @@ mod tests {
                         assert_eq!(
                             windows.mean(window)[0],
                             expected,
-                            "{sample_rate} Hz, frame={frame}, window={window}"
+                            "{rate} Hz, frame={frame}, window={window}"
                         );
                     }
                 }
@@ -579,7 +577,7 @@ mod tests {
                 .flat_map(|sample| gains.iter().map(move |gain| sample * gain))
                 .collect();
             let snapshot = LoudnessProcessor::new(LoudnessConfig::default())
-                .process_block(&AudioBlock::new(&samples, gains.len(), 48_000.0));
+                .process_block(&AudioBlock::fallback(&samples, gains.len(), RATE));
             let weighted_gain: f64 = gains
                 .iter()
                 .zip(weights)
@@ -604,10 +602,16 @@ mod tests {
             }
         }
         // Annex 1: other rates keep the 48 kHz response; warping the shelf costs < 0.01 dB here.
-        for rate in [44_100.0, 96_000.0, 192_000.0] {
-            let tone = sine_wave(1_000.0, rate, (rate * 4.0) as usize, amplitude as f32);
-            let snapshot = LoudnessProcessor::new(LoudnessConfig { sample_rate: rate })
-                .process_block(&AudioBlock::new(&tone, 1, rate));
+        for rate in [44_100, 96_000, 192_000] {
+            let sample_rate = SampleRate::must(rate);
+            let tone = sine_wave(
+                1_000.0,
+                sample_rate.hz(),
+                rate as usize * 4,
+                amplitude as f32,
+            );
+            let snapshot = LoudnessProcessor::new(LoudnessConfig { sample_rate })
+                .process_block(&AudioBlock::fallback(&tone, 1, sample_rate));
             let error = f64::from(snapshot.rms_slow_db[0]) - rms_db;
             assert!(error.abs() < 0.01, "{rate} Hz: {error:+.4} dB");
         }
@@ -615,28 +619,25 @@ mod tests {
 
     #[test]
     fn loudness_matches_ebur128_across_startup_layouts_and_rates() {
-        let check_tone = |sample_rate, leading_secs, channels| {
+        let check_tone = |leading_secs, channels| {
+            let rate = RATE.hz();
             let samples: Vec<_> =
-                std::iter::repeat_n(0.0, (sample_rate * leading_secs) as usize * channels)
+                std::iter::repeat_n(0.0, (rate * leading_secs) as usize * channels)
                     .chain(
-                        sine_wave(1_000.0, sample_rate, (sample_rate * 4.0) as usize, 0.5)
+                        sine_wave(1_000.0, rate, (rate * 4.0) as usize, 0.5)
                             .into_iter()
                             .flat_map(|sample| std::iter::repeat_n(sample, channels)),
                     )
                     .collect();
-            assert_loudness_matches_ebur128(
-                AudioBlock::new(&samples, channels, sample_rate),
-                None,
-                &[leading_secs],
-            );
+            let format = AudioFormat::fallback(channels, RATE);
+            assert_loudness_matches_ebur128(&samples, format, None, &[leading_secs]);
         };
-        assert_eq!(window_length(11_025.0, 0.3), 3_308);
-        check_tone(48_000.0, 1.0, 4);
+        assert_eq!(window_length(SampleRate::must(11_025), 0.3), 3_308);
+        check_tone(1.0, 4);
         // libebur128 shares the 48 kHz table exactly but drifts from it at other rates.
-        check_tone(48_000.0, 0.0, 2);
+        check_tone(0.0, 2);
 
-        let sample_rate = 48_000.0;
-        let rate = sample_rate as usize;
+        let rate = RATE.get() as usize;
         let gains = [0.0625, 0.03125, 0.015625, 0.5, 0.125, -0.0625, 0.25, -0.125];
         let frequencies = [83.0, 137.0, 701.0, 37.0, 997.0, 1_523.0, 503.0, 7_901.0];
         let signal: Vec<[f32; 8]> = (0..rate * 6 + rate * 2 / 5)
@@ -662,13 +663,10 @@ mod tests {
                 .iter()
                 .flat_map(|frame| order.map(|channel| frame[channel]))
                 .collect();
+            let positions = order.map(|channel| ChannelPosition::SURROUND[channel]);
             assert_loudness_matches_ebur128(
-                AudioBlock::with_positions(
-                    &samples,
-                    8,
-                    sample_rate,
-                    order.map(|channel| ChannelPosition::SURROUND[channel]),
-                ),
+                &samples,
+                AudioFormat::new(8, RATE, 0, positions).unwrap(),
                 Some(&order.map(|channel| SEVEN_ONE_REFERENCE[channel])),
                 &[0.0, 0.25, 1.0, 2.0, 3.0, 6.0],
             );
@@ -696,7 +694,8 @@ mod tests {
                             .get(index)
                             .map_or(ChannelPosition::SideLeft, |entry| entry.0)
                     });
-                    let block = AudioBlock::with_positions(&[], channels, 48_000.0, positions);
+                    let format = AudioFormat::new(channels, RATE, 0, positions).unwrap();
+                    let block = AudioBlock::new(&[], format);
                     for (position, &(_, expected)) in block.positions.iter().zip(&layout) {
                         assert_eq!(channel_weight(*position), *expected, "{layout:?}");
                     }
@@ -869,21 +868,23 @@ mod tests {
 
     #[test]
     fn true_peak_matches_analytic_phase_tones_at_standard_rates() {
-        for sample_rate in [44_100.0, 48_000.0, 96_000.0, 192_000.0] {
+        for rate in [44_100, 48_000, 96_000, 192_000] {
+            let sample_rate = SampleRate::must(rate);
+            let mono = AudioFormat::fallback(1, sample_rate);
             for divisor in [3.0, 4.0, 6.0, 8.0, 12.0, 16.0] {
                 for phase in [0.0, PI / 32.0, PI / 8.0, PI / 4.0] {
                     let samples: Vec<_> = (-128..1024)
                         .map(|i| (2.0 * PI * f64::from(i) / divisor + phase).sin() as f32 * 1.41)
                         .collect();
                     let mut processor = LoudnessProcessor::new(LoudnessConfig { sample_rate });
-                    processor.process_block(&AudioBlock::new(&samples[..128], 1, sample_rate));
+                    processor.process_block(&AudioBlock::new(&samples[..128], mono));
                     let peak = processor
-                        .process_block(&AudioBlock::new(&samples[128..], 1, sample_rate))
+                        .process_block(&AudioBlock::new(&samples[128..], mono))
                         .true_peak_db[0];
                     let expected = 20.0 * 1.41_f64.log10();
                     assert!(
                         (f64::from(peak) - expected).abs() < 0.005,
-                        "{sample_rate} Hz, divisor={divisor}, phase={phase}: {peak} vs {expected} dBTP"
+                        "{rate} Hz, divisor={divisor}, phase={phase}: {peak} vs {expected} dBTP"
                     );
                 }
             }
@@ -892,16 +893,18 @@ mod tests {
 
     #[test]
     fn true_peak_preserves_channels_and_tails_across_blocks_and_resets() {
-        for sample_rate in [44_100.0, 48_000.0, 96_000.0, 192_000.0] {
+        for rate in [44_100, 48_000, 96_000, 192_000] {
+            let sample_rate = SampleRate::must(rate);
+            let wide = AudioFormat::fallback(MAX_CHANNELS, sample_rate);
             let gains = [2.0_f32, 0.0, -1.5, 1.0, 0.5, -0.125, 0.25, -0.75];
             let silence = [0.0; TRUE_PEAK_TAPS * 2 * MAX_CHANNELS];
             let mut processor = LoudnessProcessor::new(LoudnessConfig { sample_rate });
             // Put the two impulses in separate blocks, then measure only their delayed tail.
             for samples in [&gains[..], &[], &gains[..]] {
-                processor.process_block(&AudioBlock::new(samples, MAX_CHANNELS, sample_rate));
+                processor.process_block(&AudioBlock::new(samples, wide));
             }
             let peak = processor
-                .process_block(&AudioBlock::new(&silence, MAX_CHANNELS, sample_rate))
+                .process_block(&AudioBlock::new(&silence, wide))
                 .true_peak_db;
             for (channel, (&peak, gain)) in peak.iter().zip(gains).enumerate() {
                 // sinc(t) + sinc(t - 1) peaks at 4/pi, including on the LFE channel.
@@ -909,34 +912,30 @@ mod tests {
                     .max(f64::from(DEFAULT_FLOOR_DB));
                 assert!(
                     (f64::from(peak) - expected).abs() < 0.02,
-                    "{sample_rate} Hz, channel={channel}: {peak} vs {expected} dBTP"
+                    "{rate} Hz, channel={channel}: {peak} vs {expected} dBTP"
                 );
             }
             assert_eq!(peak[1], DEFAULT_FLOOR_DB);
 
             assert_eq!(
                 processor
-                    .process_block(&AudioBlock::new(&silence, MAX_CHANNELS, sample_rate))
+                    .process_block(&AudioBlock::new(&silence, wide))
                     .true_peak_db,
                 [DEFAULT_FLOOR_DB; MAX_CHANNELS]
             );
             for change in 0..3 {
-                processor.process_block(&AudioBlock::new(
-                    &[1.0; MAX_CHANNELS],
-                    MAX_CHANNELS,
-                    sample_rate,
-                ));
-                let (channels, rate) = match change {
+                processor.process_block(&AudioBlock::new(&[1.0; MAX_CHANNELS], wide));
+                let format = match change {
                     0 => {
                         processor.reset_audio();
-                        (MAX_CHANNELS, sample_rate)
+                        wide
                     }
-                    1 => (MAX_CHANNELS, sample_rate + 1.0),
-                    _ => (1, sample_rate),
+                    1 => AudioFormat::fallback(MAX_CHANNELS, SampleRate::must(rate + 1)),
+                    _ => AudioFormat::fallback(1, sample_rate),
                 };
                 assert_eq!(
                     processor
-                        .process_block(&AudioBlock::new(&silence, channels, rate))
+                        .process_block(&AudioBlock::new(&silence, format))
                         .true_peak_db,
                     [DEFAULT_FLOOR_DB; MAX_CHANNELS]
                 );

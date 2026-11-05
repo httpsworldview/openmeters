@@ -8,12 +8,14 @@ use std::{collections::BTreeSet, sync::Arc, time::Duration};
 const MAIN_WINDOW_DEFAULT_WIDTH: u32 = 1200;
 const MAIN_WINDOW_DEFAULT_HEIGHT: u32 = 520;
 
-pub const BAR_MIN_HEIGHT: u32 = 24;
-pub const BAR_MAX_HEIGHT: u32 = 800;
 pub const BAR_DEFAULT_HEIGHT: u32 = 100;
 
-pub fn clamp_bar_height(height: u32) -> u32 {
-    height.clamp(BAR_MIN_HEIGHT, BAR_MAX_HEIGHT)
+crate::macros::bounded! {
+    pub struct BarHeight(u32) in 24..=800;
+}
+
+pub fn clamp_bar_height(height: u32) -> BarHeight {
+    BarHeight::must(height.clamp(BarHeight::MIN, BarHeight::MAX))
 }
 
 crate::macros::choice_enum!(#[derive(Default)] pub enum BarAlignment { Top => "Top", #[default] Bottom => "Bottom" });
@@ -49,7 +51,7 @@ crate::macros::default_struct! {
     pub struct BarSettings {
         pub enabled: bool = true,
         pub alignment: BarAlignment = BarAlignment::default(),
-        pub height: u32 = BAR_DEFAULT_HEIGHT,
+        pub height: BarHeight = BarHeight::must(BAR_DEFAULT_HEIGHT),
         #[serde(skip_serializing_if = "Option::is_none")]
         pub monitor: Option<String> = None,
     }
@@ -195,7 +197,7 @@ mod tests {
             "bar": {
                 "enabled": false,
                 "alignment": "top",
-                "height": null,
+                "height": 5000,
                 "monitor": "HDMI-A-1",
             },
             "visuals": {
@@ -204,6 +206,7 @@ mod tests {
                         "enabled": true,
                         "config": {
                             "fft_size": 2048,
+                            "hop_size": 0,
                             "floor_db": "quiet",
                             "show_grid": false,
                             "bar_gap": 1e100,
@@ -236,7 +239,7 @@ mod tests {
         assert_eq!(settings.main_window.height, MAIN_WINDOW_DEFAULT_HEIGHT);
         assert!(!settings.bar.enabled);
         assert_eq!(settings.bar.alignment, BarAlignment::Top);
-        assert_eq!(settings.bar.height, BAR_DEFAULT_HEIGHT);
+        assert_eq!(settings.bar.height.get(), BAR_DEFAULT_HEIGHT);
         assert_eq!(settings.bar.monitor.as_deref(), Some("HDMI-A-1"));
         let empty_monitor = UiSettings::from_json_lossy(r#"{"bar":{"monitor":""}}"#).unwrap();
         assert!(empty_monitor.bar.monitor.is_none());
@@ -260,9 +263,14 @@ mod tests {
             panic!("expected spectrum settings");
         };
         assert_eq!(
-            (spectrum.fft_size, spectrum.floor_db, spectrum.show_grid),
+            (
+                spectrum.fft_size.get(),
+                spectrum.floor_db,
+                spectrum.show_grid
+            ),
             (2048, SpectrumSettings::default().floor_db, false)
         );
+        assert_eq!(spectrum.hop_size, SpectrumSettings::default().hop_size);
         assert_eq!(spectrum.bar_gap, SpectrumSettings::default().bar_gap);
         assert!(matches!(spectrum.averaging, AveragingMode::None));
     }

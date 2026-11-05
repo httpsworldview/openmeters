@@ -1,45 +1,28 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::{
-    loudness,
-    options::{StereometerMode, WaveformColorMode, WaveformHistoryMode},
-    oscilloscope, palettes, spectrogram, spectrum, stereometer, waveform,
-};
+use super::{loudness, oscilloscope, palettes, spectrogram, spectrum, stereometer, waveform};
 pub use crate::domain::visuals::VisualKind;
 use crate::{
     dsp::{AudioBlock, AudioFormat},
     persistence::settings::{PaletteSettings, ThemeFile, VisualConfig, VisualSettings},
-    util::color::{sanitize_stop_positions, sanitize_stop_spreads},
 };
-use iced::{Color, Element};
+use iced::Element;
 use std::{cell::RefCell, rc::Rc};
 
 type Shared<T> = Rc<RefCell<T>>;
 
-// Empty: defaults. Otherwise truncate or repeat the last stop.
-fn resolve_palette<const N: usize>(
-    custom: Option<&PaletteSettings>,
-    default: &[Color; N],
-) -> [Color; N] {
-    let Some((last, stops)) = custom.and_then(|palette| palette.stops.split_last()) else {
-        return *default;
-    };
-    std::array::from_fn(|index| (*stops.get(index).unwrap_or(last)).into())
-}
-
 macro_rules! visuals {
     (@export_palette $module:ident, $state:ident, $positions:ident, $spreads:ident) => {
         PaletteSettings::from_state(
+            &palettes::$module::PALETTE,
             &$state.palette,
-            &palettes::$module::COLORS,
             &$state.$positions,
-            &palettes::$module::DEFAULT_POSITIONS,
             &$state.$spreads,
         )
     };
     (@export_palette $module:ident, $state:ident) => {
-        PaletteSettings::if_differs_from(&$state.palette, &palettes::$module::COLORS)
+        PaletteSettings::from_state(&palettes::$module::PALETTE, &$state.palette, &[], &[])
     };
     ($($variant:ident($default_width_basis:expr, $min_w:expr) =>
        $module:ident :: $processor:ident, $state:ident.$state_settings:ident;
@@ -147,16 +130,11 @@ macro_rules! visuals {
 
             fn apply_palette(&mut self, palette: Option<&PaletteSettings>) {
                 let mut state = self.state.borrow_mut();
-                state.set_palette(&resolve_palette(palette, &palettes::$module::COLORS));
+                state.set_palette(&PaletteSettings::colors(palette, &palettes::$module::COLORS));
                 $(
-                    state.$positions.copy_from_slice(&sanitize_stop_positions(
-                        palette.and_then(|palette| palette.stop_positions.as_deref()),
-                        &palettes::$module::DEFAULT_POSITIONS,
-                    ));
-                    state.$spreads.copy_from_slice(&sanitize_stop_spreads(
-                        palette.and_then(|palette| palette.stop_spreads.as_deref()),
-                        palettes::$module::DEFAULT_POSITIONS.len(),
-                    ));
+                    let ramp = &palettes::$module::DEFAULT_POSITIONS;
+                    state.$positions.copy_from_slice(&PaletteSettings::positions(palette, ramp));
+                    state.$spreads.copy_from_slice(&PaletteSettings::spreads(palette, ramp.len()));
                 )?
             }
         })*
@@ -206,8 +184,7 @@ visuals! {
             }
         };
         config(cfg) {
-            cfg.track_history = set.history_mode != WaveformHistoryMode::Off;
-            cfg.analyze_bands = set.color_mode == WaveformColorMode::Frequency || cfg.track_history;
+            cfg.bands = set.bands();
         };
         apply(p, s, set) {
             s.borrow_mut().update_view_settings(set);
@@ -224,8 +201,7 @@ visuals! {
     Stereometer(150.0, 100.0) =>
         stereometer::StereometerProcessor, StereometerState.settings;
         config(cfg) {
-            cfg.emit_band_points = set.mode == StereometerMode::DotCloudBands;
-            cfg.analyze_bands = set.analyzes_bands();
+            cfg.bands = set.bands();
         };
         apply(p, s, set) {
             s.borrow_mut().update_view_settings(set);
@@ -261,7 +237,7 @@ struct Entry {
 }
 impl Entry {
     fn apply_config(&mut self, config: VisualConfig) {
-        self.module.apply(&config.normalized());
+        self.module.apply(&config);
         if self.slot.enabled {
             self.module.prepare();
         }
@@ -393,12 +369,7 @@ impl VisualManager {
         }
         self.format_generation = Some(format.generation);
         let signal = samples.iter().any(|&sample| sample != 0.0);
-        let block = AudioBlock::with_positions(
-            samples,
-            format.channels,
-            format.sample_rate,
-            format.positions,
-        );
+        let block = AudioBlock::new(samples, format);
         for entry in &mut self.entries {
             if entry.slot.enabled {
                 entry.module.ingest(&block, signal);
@@ -412,7 +383,9 @@ pub(crate) type VisualManagerHandle = Shared<VisualManager>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{dsp::ChannelPosition, persistence::settings as settings_cfg};
+    use crate::persistence::settings as settings_cfg;
+    use crate::visuals::options::WaveformHistoryMode;
+    use iced::Color;
 
     #[test]
     fn typed_updates_follow_the_variant_after_reordering_and_keep_enablement() {
@@ -429,22 +402,22 @@ mod tests {
             }),
             VisualConfig::Oscilloscope(OscilloscopeSettings {
                 stacked: true,
-                persistence_time_constant: 0.25,
+                persistence_time_constant: crate::util::audio::Seconds::must(0.25),
                 ..Default::default()
             }),
             VisualConfig::Waveform(WaveformSettings {
-                scroll_speed: 72.0,
+                scroll_speed: waveform::processor::ScrollSpeed::must(72.0),
                 history_mode: WaveformHistoryMode::RmsFast,
                 ..Default::default()
             }),
             VisualConfig::Spectrogram(SpectrogramSettings {
-                fft_size: 2048,
+                fft_size: crate::util::audio::FftSize::must(2048),
                 source: crate::util::audio::Channel::Right,
                 rotation: -1,
                 ..Default::default()
             }),
             VisualConfig::Spectrum(SpectrumSettings {
-                fft_size: 4096,
+                fft_size: crate::util::audio::FftSize::must(4096),
                 show_grid: false,
                 ..Default::default()
             }),
@@ -458,18 +431,13 @@ mod tests {
             let kind = config.kind();
             let palette = palettes::Palette::for_kind(kind);
             let ramp = palette.default_positions.len();
-            *config.palette_mut() = Some(PaletteSettings {
-                stops: vec![
-                    Color::from_rgba(0.12345, 0.34567, 0.56789, 0.78901).into();
-                    palette.defaults.len()
-                ],
-                stop_positions: (ramp > 2).then(|| {
-                    (1..ramp - 1)
-                        .map(|i| i as f32 / (ramp - 1) as f32)
-                        .collect()
-                }),
-                stop_spreads: (ramp > 0).then(|| vec![2.0; ramp]),
-            });
+            let positions: Vec<_> = (0..ramp).map(|i| i as f32 / (ramp - 1) as f32).collect();
+            *config.palette_mut() = PaletteSettings::from_state(
+                &palette,
+                &vec![Color::from_rgba(0.12345, 0.34567, 0.56789, 0.78901); palette.defaults.len()],
+                &positions,
+                &vec![2.0; ramp],
+            );
             manager.apply_config(config.clone());
             assert_eq!(manager.config(kind), config);
         }
@@ -483,41 +451,8 @@ mod tests {
     }
 
     #[test]
-    fn typed_updates_validate_inputs_before_processing() {
-        let mut manager = VisualManager::default();
-        manager.apply_config(VisualConfig::Spectrum(settings_cfg::SpectrumSettings {
-            fft_size: 0,
-            hop_size: 0,
-            floor_db: 1.0,
-            bar_gap: f32::NAN,
-            averaging: spectrum::processor::AveragingMode::PeakHold {
-                decay_per_second: f32::INFINITY,
-            },
-            ..Default::default()
-        }));
-        let VisualConfig::Spectrum(config) = manager.config(VisualKind::Spectrum) else {
-            panic!("expected spectrum settings");
-        };
-        let entry = &manager.entries[manager.position(VisualKind::Spectrum)];
-        let VisualContent::Spectrum(state) = &entry.slot.content else {
-            panic!("expected spectrum state");
-        };
-        assert_eq!(state.borrow().style.floor_db, config.floor_db);
-        let defaults = settings_cfg::SpectrumSettings::default();
-        assert_eq!(
-            (config.fft_size, config.hop_size),
-            (defaults.fft_size, defaults.hop_size)
-        );
-        assert_eq!(
-            (config.floor_db, config.bar_gap),
-            (defaults.floor_db, defaults.bar_gap)
-        );
-        assert_eq!(config.averaging, spectrum::processor::AveragingMode::None);
-    }
-
-    #[test]
     fn visuals_go_quiet_after_signal_and_wake_on_buffered_signal() {
-        let format = AudioFormat::new(2, 48_000, 1, ChannelPosition::fallback(2));
+        let format = AudioFormat::fallback(2, crate::dsp::SampleRate::DEFAULT);
         let tone = crate::util::audio::sine_wave(440.0, 48_000.0, 96_000, 0.5);
         for &kind in VisualKind::ALL {
             let mut manager = VisualManager::default();
@@ -539,26 +474,6 @@ mod tests {
             assert!(manager.is_quiescent(), "{kind:?}");
             manager.ingest_samples(&[0.25; 2], format);
             assert!(!manager.is_quiescent(), "{kind:?}");
-        }
-    }
-
-    #[test]
-    fn palettes_fit_the_visual_stop_count() {
-        let stops = [1, 2, 3, 4, 5].map(|value| Color::from_rgb8(value, value, value));
-        let defaults = [Color::BLACK; 4];
-
-        assert_eq!(resolve_palette(None, &defaults), defaults);
-        for (len, expected) in [
-            (0, defaults),
-            (1, [stops[0]; 4]),
-            (2, [stops[0], stops[1], stops[1], stops[1]]),
-            (5, [stops[0], stops[1], stops[2], stops[3]]),
-        ] {
-            let palette = PaletteSettings {
-                stops: stops[..len].iter().copied().map(Into::into).collect(),
-                ..Default::default()
-            };
-            assert_eq!(resolve_palette(Some(&palette), &defaults), expected);
         }
     }
 }
