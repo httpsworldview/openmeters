@@ -507,8 +507,10 @@ struct RegistryContext {
     registry: RegistryRc,
     graph: Rc<RefCell<Graph>>,
     dirty: Rc<Cell<bool>>,
-    links: Rc<RefCell<HashMap<u32, (pw::link::Link, pw::link::LinkListener)>>>,
-    metadata: Rc<RefCell<HashMap<u32, (Metadata, MetadataListener)>>>,
+    // dropping a removed global's proxy frees it. keep this order to
+    // prevent UAF
+    links: Rc<RefCell<HashMap<u32, (pw::link::LinkListener, pw::link::Link)>>>,
+    metadata: Rc<RefCell<HashMap<u32, (MetadataListener, Metadata)>>>,
 }
 
 impl RegistryContext {
@@ -563,7 +565,7 @@ impl RegistryContext {
                 dirty.set(true);
             })
             .register();
-        self.links.borrow_mut().insert(id, (proxy, listener));
+        self.links.borrow_mut().insert(id, (listener, proxy));
     }
 
     fn add_metadata(&self, global: &GlobalObject<&DictRef>) {
@@ -592,7 +594,7 @@ impl RegistryContext {
                 0
             })
             .register();
-        self.metadata.borrow_mut().insert(id, (proxy, listener));
+        self.metadata.borrow_mut().insert(id, (listener, proxy));
     }
 }
 
