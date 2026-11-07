@@ -25,6 +25,7 @@ realfft = "3.5"
 tracing = "0.1.44"
 wayland-client = "0.31.15"
 tempfile = "3.27.0"
+rustix = { version = "1.1.6", features = ["fs"] }
 
   [dependencies.serde]
   version = "1.0.229"

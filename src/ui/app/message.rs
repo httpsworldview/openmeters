@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::{TOAST_DISPLAY_DURATION, UiApp, windowing::AppWindow};
-use crate::ui::config::{BarOutputChange, BarOutputEvent, ConfigEffect, ConfigMessage};
+use crate::ui::config::{BarOutputChange, BarOutputEvent, ConfigMessage};
 use crate::ui::settings::SettingsMessage;
 use crate::ui::visuals::VisualsMessage;
 use crate::ui::widgets::{fill, page, scroll_glow::ScrollEvent};
@@ -26,6 +26,7 @@ pub(super) enum Message {
     Config(ConfigMessage),
     Visuals(VisualsMessage),
     Tick,
+    SettingsFilesChanged,
     Watchdog(u64),
     AudioWake,
     BarOutput(u32, Option<String>, BarOutputEvent),
@@ -137,12 +138,16 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
     if !app.rendering_paused && !quiet {
         app.frames.borrow_mut().wake();
     }
+    let task = handle(app, msg);
+    match app.apply_settings_changes() {
+        Some(applied) => Task::batch([task, applied]),
+        None => task,
+    }
+}
+
+fn handle(app: &mut UiApp, msg: Message) -> Task<Message> {
     match msg {
-        Message::Config(config_msg) => {
-            if let Some(effect) = app.config_page.update(config_msg) {
-                return apply_config_effect(app, effect);
-            }
-        }
+        Message::Config(config_msg) => app.config_page.update(config_msg),
         Message::Visuals(VisualsMessage::SettingsRequested(kind)) => {
             return app.open_settings_window(kind);
         }
@@ -161,10 +166,10 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
         }
         Message::ToggleConfig => return app.toggle_config_window(),
         Message::TogglePause => app.set_rendering_paused(!app.rendering_paused),
-        Message::PopOutOrDock(window_id) => return app.handle_popout_or_dock(window_id),
+        Message::PopOutOrDock(window_id) => app.pop_out_or_dock(window_id),
         Message::BarResizeStart => app.begin_bar_resize(),
         Message::BarResizeMove(pos) => app.handle_bar_resize(pos),
-        Message::BarResizeEnd => return app.finish_bar_resize(),
+        Message::BarResizeEnd => app.finish_bar_resize(),
         Message::Quit => {
             if app.exit_warning_until.is_some_and(|d| Instant::now() < d) {
                 return app.quit();
@@ -172,6 +177,10 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
             app.exit_warning_until = Some(Instant::now() + TOAST_DISPLAY_DURATION);
         }
         Message::Tick => app.tick(),
+        Message::SettingsFilesChanged => {
+            app.settings_handle.reload();
+            app.config_page.refresh_theme_choices();
+        }
         Message::Watchdog(generation) => {
             app.frames.borrow_mut().watchdog(generation, Instant::now())
         }
@@ -204,32 +213,11 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
                 && *wid == window_id
             {
                 panel.handle(settings_msg, &app.visual_manager, &app.settings_handle);
-                app.config_page.refresh_theme_choices_if_needed();
             }
         }
         Message::SettingsScrolled(event) => app.settings_scroll.update(event),
         Message::WindowResized(id, size) => return app.handle_window_resize(id, size),
         _ => {}
-    }
-    Task::none()
-}
-
-fn apply_config_effect(app: &mut UiApp, effect: ConfigEffect) -> Task<Message> {
-    match effect {
-        ConfigEffect::VisualToggled { kind, enabled } => {
-            app.frames.borrow_mut().set_active(app.visuals_active());
-            let restore = enabled.then(|| app.restore_popout_window(kind));
-            return Task::batch(restore.into_iter().chain([app.sync_all_windows()]));
-        }
-        ConfigEffect::FrameRateChanged(rate) => app.frames.borrow_mut().set_rate(rate),
-        ConfigEffect::DecorationsChanged => return app.recreate_visual_windows(),
-        ConfigEffect::BarChanged(change) => return app.handle_bar_config_change(change),
-        ConfigEffect::ThemeChanged => {
-            // The theme replaced every palette, unfinished edits included.
-            if let Some((_, panel)) = app.settings_window.as_mut() {
-                *panel = super::ActiveSettings::new(panel.kind(), &app.visual_manager);
-            }
-        }
     }
     Task::none()
 }
@@ -262,11 +250,13 @@ mod tests {
     use crate::persistence::settings::{BarAlignment, SettingsHandle};
     use crate::ui::app::UiConfig;
     use crate::ui::app::windowing::{MainWindow, bar_anchor};
-    use crate::ui::config::BarChange;
+    use crate::visuals::registry::VisualKind;
     use BarOutputEvent::{Added, Removed};
     use iced::futures::{StreamExt, executor::block_on};
     use iced::window::Action::Close;
-    use iced_exwlshell::reexport::{KeyboardInteractivity, Layer, LayerSize, OutputOption};
+    use iced_exwlshell::reexport::{
+        KeyboardInteractivity, Layer, LayerSize, OutputOption, PixelSize,
+    };
     use iced_runtime::Action::{Exit, Output, Window};
     use iced_runtime::{Action, task};
     use std::{cell::RefCell, rc::Rc};
@@ -439,28 +429,46 @@ mod tests {
         // The mode setting has changed, but the previous normal window still exists.
         let old = window::Id::unique();
         app.main_window = MainWindow::Window(old);
-        assert_actions!(app.handle_bar_config_change(BarChange::Mode), [Window(Close(id))] if *id == old);
+        let settings = app.settings_handle.borrow().data.clone();
+        let rebuilt = app.sync_main_window(&settings, &settings);
+        assert_actions!(rebuilt, [Window(Close(id))] if *id == old);
         assert_actions!(update(&mut app, WindowClosed(old)), []);
-        assert_actions!(app.handle_bar_config_change(BarChange::Layout), []);
-        assert_actions!(app.recreate_visual_windows(), []);
+        assert_actions!(app.sync_main_window(&settings, &settings), []);
+        assert_actions!(app.sync_visual_windows(&settings, &settings), []);
         assert_actions!(update(&mut app, BarResizeStart), []);
         assert!(app.bar_resize_state.is_none());
         let id = base(update(&mut app, ToggleConfig));
         assert_actions!(update(&mut app, WindowClosed(id)), []);
         assert!(app.config_window.is_none());
-        layer(output(&mut app, 1, None, Added), None, OutputOption::Active);
+        let bar = layer(output(&mut app, 1, None, Added), None, OutputOption::Active);
+        // A compositor resize is recorded, and not sent back by later changes.
+        let resized = update(&mut app, WindowResized(bar, Size::new(1920.0, 120.0)));
+        assert_actions!(
+            resized,
+            [Output(ExclusiveZoneChange { zone_size: 120, .. })]
+        );
+        assert_eq!(app.settings_handle.borrow().data.bar.height.get(), 120);
+        let decorations = Config(ConfigMessage::DecorationsToggled(true));
+        assert_actions!(update(&mut app, decorations), []);
     }
 
     #[test]
-    fn background_drags_save_on_release_or_window_close() {
+    fn background_drags_save_on_release_or_window_close_and_follow_external_edits() {
         use crate::ui::widgets::palette_editor::{HsvEdit::SatVal, PaletteEvent::*};
-        let (_dir, mut app, _) = app(r#"{"bar":{"enabled":false}}"#);
+        let (dir, mut app, initial) = app(r#"{"bar":{"enabled":false}}"#);
+        let main = base(initial);
         let saved = |app: &UiApp| {
-            let settings = app.settings_handle.borrow();
-            let theme = settings.theme_store().load(settings.active_theme());
-            theme.unwrap().background.map(iced::Color::from)
+            let background = app.settings_handle.borrow().theme().background;
+            background.map(iced::Color::from)
         };
         let bg = |app: &mut UiApp, event| update(app, Config(ConfigMessage::BgPalette(event)));
+        let edit_theme = |app: &UiApp, edit: &dyn Fn(&mut serde_json::Value)| {
+            let name = app.settings_handle.borrow().active_theme().to_owned();
+            let path = dir.path().join(format!("themes/{name}.json"));
+            let mut theme = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            edit(&mut theme);
+            std::fs::write(path, theme.to_string()).unwrap();
+        };
         let id = base(update(&mut app, ToggleConfig));
         assert_actions!(bg(&mut app, Select(Some(0))), []);
         for value in [0.5, 0.25] {
@@ -472,14 +480,150 @@ mod tests {
         assert!(released.is_some());
         assert_actions!(bg(&mut app, Adjust(SatVal(0.0, 0.75))), []);
         assert_eq!(saved(&app), released);
+        // Reloading the app's own write keeps the unsaved drag.
+        assert_actions!(update(&mut app, SettingsFilesChanged), []);
         assert_actions!(update(&mut app, WindowClosed(id)), []);
         let closed = saved(&app);
         assert_ne!(closed, released);
+        // Outside edits that keep the saved background keep the finer color shown.
+        let shown = app.theme(main).palette().background;
+        edit_theme(&app, &|theme| theme["author"] = "Elsewhere".into());
+        assert_actions!(update(&mut app, SettingsFilesChanged), []);
+        assert_eq!(app.theme(main).palette().background, shown);
+        edit_theme(&app, &|theme| theme["background"] = "#123456".into());
+        assert_actions!(update(&mut app, SettingsFilesChanged), []);
+        assert_eq!(Some(app.theme(main).palette().background), saved(&app));
+        assert_ne!(saved(&app), closed);
+        let closed = saved(&app);
         assert_actions!(bg(&mut app, Adjust(SatVal(0.0, 0.5))), []);
         assert_actions!(update(&mut app, Quit), []);
         assert_actions!(update(&mut app, Quit), [Exit]);
         assert_ne!(saved(&app), closed);
-        SettingsHandle::flush();
+    }
+
+    #[test]
+    fn outside_settings_edits_reach_the_running_app() {
+        let (dir, mut app, initial) = app(r#"{"bar":{"enabled":false}}"#);
+        let main = base(initial);
+        let path = dir.path().join("settings.json");
+        let handle = app.settings_handle.clone();
+        let edit_file = |edit: &dyn Fn(&mut serde_json::Value)| {
+            handle.flush();
+            let mut value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            edit(&mut value);
+            let written = value.to_string();
+            std::fs::write(&path, &written).unwrap();
+            written
+        };
+        let spectrum = |app: &UiApp| {
+            let snapshot = app.visual_manager.borrow().snapshot();
+            snapshot
+                .iter()
+                .any(|slot| slot.kind == VisualKind::Spectrum && slot.enabled)
+        };
+
+        edit_file(&|value| {
+            value["visuals"]["popouts"]["spectrum"] =
+                serde_json::json!({"width": 300, "height": 200});
+        });
+        let opened = actions(update(&mut app, SettingsFilesChanged));
+        let [Output(NewBaseWindow { id, settings })] = opened.as_slice() else {
+            panic!("expected one base window: {opened:?}");
+        };
+        assert_eq!(settings.size, Some(PixelSize::px(300, 200)));
+        let popout = *id;
+
+        edit_file(&|value| value["decorations"] = true.into());
+        let actions = actions(update(&mut app, SettingsFilesChanged));
+        let closed = |id| {
+            actions
+                .iter()
+                .any(|action| matches!(action, Window(Close(c)) if *c == id))
+        };
+        let opened = actions
+            .iter()
+            .filter(|action| matches!(action, Output(NewBaseWindow { .. })));
+        assert!(
+            closed(main) && closed(popout) && opened.count() == 2,
+            "{actions:?}"
+        );
+
+        assert!(spectrum(&app));
+        let written = edit_file(&|value| {
+            value["visuals"]["modules"]["spectrum"]["enabled"] = false.into();
+        });
+        let [(&popout, _)] = Vec::from_iter(&app.popout_windows)[..] else {
+            panic!("expected one popout");
+        };
+        assert_actions!(update(&mut app, SettingsFilesChanged), [Window(Close(id))] if *id == popout);
+        assert!(!spectrum(&app));
+        assert!(
+            app.settings_handle
+                .borrow()
+                .data
+                .visuals
+                .popped_out(VisualKind::Spectrum)
+        );
+        handle.flush();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), written);
+    }
+
+    #[test]
+    fn hidden_visuals_keep_their_place_in_the_settings_order() {
+        use VisualKind::*;
+        let mut settings = serde_json::json!({
+            "bar": {"enabled": false},
+            "visuals": {"popouts": {"spectrum": {}}},
+        });
+        let (dir, mut app, _) = app(&settings.to_string());
+        let [&popout] = Vec::from_iter(app.popout_windows.keys())[..] else {
+            panic!("expected one popout");
+        };
+        let order = [
+            Waveform,
+            Spectrum,
+            Spectrogram,
+            Oscilloscope,
+            Stereometer,
+            Loudness,
+        ];
+        settings["visuals"]["order"] = serde_json::to_value(order).unwrap();
+        std::fs::write(dir.path().join("settings.json"), settings.to_string()).unwrap();
+        assert_actions!(update(&mut app, SettingsFilesChanged), []);
+        let move_pane = Visuals(VisualsMessage::PaneMoved(Loudness, 0));
+        assert_actions!(update(&mut app, move_pane), []);
+        assert_actions!(update(&mut app, PopOutOrDock(popout)), [Window(Close(id))] if *id == popout);
+        let order = [
+            Loudness,
+            Spectrum,
+            Waveform,
+            Spectrogram,
+            Oscilloscope,
+            Stereometer,
+        ];
+        assert_eq!(app.settings_handle.borrow().data.visuals.order, order);
+        assert_eq!(app.visual_manager.borrow().order(), order);
+    }
+
+    #[test]
+    fn one_outside_edit_of_mode_and_decorations_rebuilds_the_main_window_once() {
+        let (dir, mut app, initial) = app("{}");
+        assert_actions!(initial, []);
+        let bar = layer(output(&mut app, 1, None, Added), None, OutputOption::Active);
+        let edited = r#"{"bar":{"enabled":false},"decorations":true}"#;
+        std::fs::write(dir.path().join("settings.json"), edited).unwrap();
+        let actions = actions(update(&mut app, SettingsFilesChanged));
+        let opened = actions.iter().filter(|action| match action {
+            Output(NewBaseWindow { settings, .. }) => !settings.client_side_decorations,
+            _ => false,
+        });
+        let closed = actions
+            .iter()
+            .filter(|action| matches!(action, Window(Close(id)) if *id == bar));
+        assert!(
+            actions.len() == 2 && opened.count() == 1 && closed.count() == 1,
+            "{actions:?}"
+        );
     }
 
     #[test]
@@ -490,7 +634,8 @@ mod tests {
 
         // Switching out of bar mode must work even when its surface is absent.
         app.main_window = MainWindow::Bar(None);
-        let new_id = base(app.handle_bar_config_change(BarChange::Mode));
+        let settings = app.settings_handle.borrow().data.clone();
+        let new_id = base(app.sync_main_window(&settings, &settings));
         assert_ne!(new_id, id);
         assert_actions!(update(&mut app, WindowClosed(id)), []);
         assert_actions!(update(&mut app, WindowClosed(new_id)), [Exit]);

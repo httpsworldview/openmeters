@@ -32,6 +32,7 @@ fn main() -> ExitCode {
     info!("OpenMeters starting up");
 
     let settings_handle = SettingsHandle::load_or_default();
+    settings_handle.watch_files();
     let capture_config = settings_handle.borrow().data.capture_config();
     let (mut backend, capture, audio) = match AudioBackend::start(capture_config) {
         Ok(backend) => backend,
@@ -43,7 +44,7 @@ fn main() -> ExitCode {
     let ui_config = UiConfig {
         capture,
         audio: Rc::new(RefCell::new(Some(audio))),
-        settings_handle,
+        settings_handle: settings_handle.clone(),
     };
     let exit_code = match ui::run(ui_config) {
         Ok(()) => ExitCode::SUCCESS,
@@ -52,7 +53,7 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     };
-    SettingsHandle::flush();
+    settings_handle.flush();
     backend.shutdown();
     exit_code
 }

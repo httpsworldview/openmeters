@@ -19,7 +19,7 @@ impl TryFrom<String> for ColorSetting {
     type Error = &'static str;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
-        parse_hex_color(&value).map(Self)
+        parse_hex_color(&value).map(Self::from)
     }
 }
 
@@ -29,9 +29,11 @@ impl From<ColorSetting> for String {
     }
 }
 
+// Files store 8-bit channels; holding only those keeps themes equal to their files.
 impl From<Color> for ColorSetting {
     fn from(color: Color) -> Self {
-        Self(color)
+        let [r, g, b, a] = color.into_rgba8();
+        Self(Color::from_rgba8(r, g, b, f32::from(a) / 255.0))
     }
 }
 impl From<ColorSetting> for Color {

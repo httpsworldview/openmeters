@@ -48,6 +48,7 @@ open an issue or pull request.
   - Editable JSON settings with lossy loading for unknown or invalid
     fields.
   - User themes.
+  - Hot-reload for configurations and themes.
 
 ### Visuals
 
@@ -227,13 +228,15 @@ limits, but visuals limit some values when drawn. Unsupported keys,
 structurally invalid values, and values outside a setting's supported
 range are logged and replaced with their defaults.
 
-Invalid JSON syntax is ignored and default settings are used for that
-run. Your configuration file will not be overwritten unless you
-explicitly change settings in the GUI.
+Invalid JSON syntax is ignored: default settings are used on startup,
+and current settings are kept while running. Your configuration file
+will not be overwritten unless you explicitly change settings in the
+GUI. Window sizes edited while OpenMeters runs apply the next time
+that window opens, except bar height, which applies immediately.
 
 If a bug causes OpenMeters to misbehave, you can reset application
-settings by deleting `settings.json`. Please consider reporting the
-bug if you run into this.
+settings by deleting `settings.json` while OpenMeters is closed.
+Please consider reporting the bug if you run into this.
 
 ### Theming
 
@@ -244,6 +247,11 @@ location as above.
 You can create and switch between themes in the **Appearance** section
 of the configuration page. Feel free to share custom themes by sharing
 the corresponding JSON files.
+
+Changes to themes are immediately reflected in the running
+application. Theme files follow the same rules as `settings.json`,
+except that editing colors never overwrites a theme file with invalid
+JSON syntax; only saving a theme under its name does.
 
 ## Frequently Asked Questions
 

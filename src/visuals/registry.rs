@@ -13,19 +13,8 @@ use std::{cell::RefCell, rc::Rc};
 type Shared<T> = Rc<RefCell<T>>;
 
 macro_rules! visuals {
-    (@export_palette $module:ident, $state:ident, $positions:ident, $spreads:ident) => {
-        PaletteSettings::from_state(
-            &palettes::$module::PALETTE,
-            &$state.palette,
-            &$state.$positions,
-            &$state.$spreads,
-        )
-    };
-    (@export_palette $module:ident, $state:ident) => {
-        PaletteSettings::from_state(&palettes::$module::PALETTE, &$state.palette, &[], &[])
-    };
     ($($variant:ident($default_width_basis:expr, $min_w:expr) =>
-       $module:ident :: $processor:ident, $state:ident.$state_settings:ident;
+       $module:ident :: $processor:ident, $state:ident;
        $(palette_ramp($positions:ident, $spreads:ident);)?
        $(prepare($prepare:ident);)?
        $(ignores_audio($ignores:ident);)?
@@ -44,6 +33,14 @@ macro_rules! visuals {
                 match self {
                     $(Self::$variant(s) => $module::state::widget(s)),*
                 }
+            }
+        }
+
+        const DEFAULT_ORDER: &[VisualKind] = &[$(VisualKind::$variant),*];
+
+        fn default_width_basis(kind: VisualKind) -> f32 {
+            match kind {
+                $(VisualKind::$variant => $default_width_basis,)*
             }
         }
 
@@ -110,22 +107,6 @@ macro_rules! visuals {
                 })?
                 $apply_body
                 self.pending_audio = true;
-                self.apply_palette($aset.palette.as_ref());
-            }
-
-            fn export(&self) -> VisualConfig {
-                let mut out = self.state.borrow().$state_settings.clone();
-                $({
-                    let $cfg = self.processor.config();
-                    out.sync_from_config(&$cfg);
-                })?
-                out.palette = self.export_palette();
-                VisualConfig::$variant(out)
-            }
-
-            fn export_palette(&self) -> Option<PaletteSettings> {
-                let st = self.state.borrow();
-                visuals!(@export_palette $module, st $(, $positions, $spreads)?)
             }
 
             fn apply_palette(&mut self, palette: Option<&PaletteSettings>) {
@@ -143,7 +124,7 @@ macro_rules! visuals {
 
 visuals! {
     Spectrogram(320.0, 300.0) =>
-        spectrogram::SpectrogramProcessor, SpectrogramState.settings;
+        spectrogram::SpectrogramProcessor, SpectrogramState;
         palette_ramp(stop_positions, stop_spreads);
         prepare(prepare);
         buffered_signal(has_buffered_signal);
@@ -162,7 +143,7 @@ visuals! {
         };
 
     Spectrum(400.0, 100.0) =>
-        spectrum::SpectrumProcessor, SpectrumState.style;
+        spectrum::SpectrumProcessor, SpectrumState;
         palette_ramp(stop_positions, stop_spreads);
         prepare(prepare);
         ignores_audio(ignores_audio);
@@ -173,7 +154,7 @@ visuals! {
         };
 
     Waveform(220.0, 220.0) =>
-        waveform::WaveformProcessor, WaveformState.settings;
+        waveform::WaveformProcessor, WaveformState;
         prepare(prepare);
         pre_ingest(p, s) {
             let max_columns = s.borrow().view_columns();
@@ -191,7 +172,7 @@ visuals! {
         };
 
     Oscilloscope(150.0, 100.0) =>
-        oscilloscope::OscilloscopeProcessor, OscilloscopeState.settings;
+        oscilloscope::OscilloscopeProcessor, OscilloscopeState;
         ignores_audio(ignores_audio);
         config(cfg);
         apply(p, s, set) {
@@ -199,7 +180,7 @@ visuals! {
         };
 
     Stereometer(150.0, 100.0) =>
-        stereometer::StereometerProcessor, StereometerState.settings;
+        stereometer::StereometerProcessor, StereometerState;
         config(cfg) {
             cfg.bands = set.bands();
         };
@@ -208,7 +189,7 @@ visuals! {
         };
 
     Loudness(140.0, 140.0) =>
-        loudness::LoudnessProcessor, LoudnessState.settings;
+        loudness::LoudnessProcessor, LoudnessState;
         apply(_p, s, set) {
             s.borrow_mut().set_modes(set.left_mode, set.right_mode);
         };
@@ -226,8 +207,6 @@ trait VisualModule {
     fn is_quiescent(&self) -> bool;
     fn prepare(&mut self);
     fn apply(&mut self, config: &VisualConfig);
-    fn export(&self) -> VisualConfig;
-    fn export_palette(&self) -> Option<PaletteSettings>;
     fn apply_palette(&mut self, palette: Option<&PaletteSettings>);
 }
 
@@ -276,13 +255,6 @@ impl VisualManager {
             .position(|entry| entry.slot.kind == kind)
             .expect("visual kind missing from registry")
     }
-    pub fn move_to(&mut self, kind: VisualKind, target: usize) {
-        let current = self.position(kind);
-        if current != target {
-            let entry = self.entries.remove(current);
-            self.entries.insert(target, entry);
-        }
-    }
     pub fn snapshot(&self) -> Vec<VisualSlotSnapshot> {
         self.entries
             .iter()
@@ -292,32 +264,20 @@ impl VisualManager {
     pub fn order(&self) -> Vec<VisualKind> {
         self.entries.iter().map(|entry| entry.slot.kind).collect()
     }
-    pub fn config(&self, kind: VisualKind) -> VisualConfig {
-        self.entries[self.position(kind)].module.export()
-    }
-    pub fn theme_palettes(&self) -> impl Iterator<Item = (VisualKind, PaletteSettings)> + '_ {
-        self.entries.iter().filter_map(|entry| {
-            entry
-                .module
-                .export_palette()
-                .map(|palette| (entry.slot.kind, palette))
-        })
-    }
+    // Outside tests, settings drive visuals through `apply_visual_settings`.
+    #[cfg(test)]
     pub fn apply_config(&mut self, config: VisualConfig) {
         let index = self.position(config.kind());
         self.entries[index].apply_config(config);
     }
-    pub fn apply_palette(&mut self, kind: VisualKind, palette: Option<&PaletteSettings>) {
-        let index = self.position(kind);
-        self.entries[index].module.apply_palette(palette);
-    }
+    #[cfg(test)]
     pub fn set_enabled(&mut self, kind: VisualKind, enabled: bool) {
         let index = self.position(kind);
         self.entries[index].set_enabled(enabled);
     }
-    pub fn set_width_basis(&mut self, kind: VisualKind, width_basis: f32) {
+    pub fn apply_palette(&mut self, kind: VisualKind, palette: Option<&PaletteSettings>) {
         let index = self.position(kind);
-        self.entries[index].slot.width_basis = width_basis;
+        self.entries[index].module.apply_palette(palette);
     }
     pub fn has_enabled(&self) -> bool {
         self.entries.iter().any(|entry| entry.slot.enabled)
@@ -333,32 +293,41 @@ impl VisualManager {
             entry.module.reset_audio();
         }
     }
-    pub fn apply_visual_settings(&mut self, settings: &VisualSettings) {
+    /// Configs equal in `previous` are kept, since applying one restarts its processing.
+    pub fn apply_visual_settings(
+        &mut self,
+        settings: &VisualSettings,
+        previous: Option<&VisualSettings>,
+    ) {
         for entry in &mut self.entries {
-            if let Some(&width) = settings.width_basis.get(&entry.slot.kind) {
-                entry.slot.width_basis = width;
+            let kind = entry.slot.kind;
+            let config = settings.config(kind);
+            if previous.is_none_or(|previous| previous.config(kind) != config) {
+                entry.apply_config(config);
             }
-            let (config, enabled) = settings.module_config(entry.slot.kind);
-            entry.apply_config(config);
-            entry.set_enabled(enabled);
+            entry.set_enabled(settings.is_enabled(kind));
+            entry.slot.width_basis = (settings.width_basis.get(&kind).copied())
+                .unwrap_or_else(|| default_width_basis(kind));
         }
         self.reorder(&settings.order);
     }
-    pub fn reorder(&mut self, order: &[VisualKind]) {
-        for (position, kind) in order.iter().copied().take(self.entries.len()).enumerate() {
-            self.move_to(kind, position);
-        }
+    fn reorder(&mut self, order: &[VisualKind]) {
+        let rank = |kind| {
+            let position = |list: &[VisualKind]| list.iter().position(|&listed| listed == kind);
+            position(order).unwrap_or_else(|| {
+                order.len() + position(DEFAULT_ORDER).expect("visual kind missing from registry")
+            })
+        };
+        self.entries.sort_by_key(|entry| rank(entry.slot.kind));
     }
-    pub fn apply_theme(&mut self, theme: &ThemeFile) -> bool {
-        let mut changed = false;
+    /// Palettes equal in `previous` are kept, so a drag previewed elsewhere stays shown.
+    pub fn apply_palettes(&mut self, theme: &ThemeFile, previous: Option<&ThemeFile>) {
         for entry in &mut self.entries {
-            let previous = entry.module.export_palette();
-            entry
-                .module
-                .apply_palette(theme.palettes.get(&entry.slot.kind));
-            changed |= entry.module.export_palette() != previous;
+            let palette = theme.palettes.get(&entry.slot.kind);
+            if previous.is_none_or(|previous| previous.palettes.get(&entry.slot.kind) != palette) {
+                entry.module.apply_palette(palette);
+            }
         }
-        changed
     }
     pub fn ingest_samples(&mut self, samples: &[f32], format: AudioFormat) {
         if self
@@ -385,7 +354,6 @@ mod tests {
     use super::*;
     use crate::persistence::settings as settings_cfg;
     use crate::visuals::options::WaveformHistoryMode;
-    use iced::Color;
 
     #[test]
     fn typed_updates_follow_the_variant_after_reordering_and_keep_enablement() {
@@ -427,19 +395,8 @@ mod tests {
                 ..Default::default()
             }),
         ];
-        for mut config in configs {
-            let kind = config.kind();
-            let palette = palettes::Palette::for_kind(kind);
-            let ramp = palette.default_positions.len();
-            let positions: Vec<_> = (0..ramp).map(|i| i as f32 / (ramp - 1) as f32).collect();
-            *config.palette_mut() = PaletteSettings::from_state(
-                &palette,
-                &vec![Color::from_rgba(0.12345, 0.34567, 0.56789, 0.78901); palette.defaults.len()],
-                &positions,
-                &vec![2.0; ramp],
-            );
-            manager.apply_config(config.clone());
-            assert_eq!(manager.config(kind), config);
+        for config in configs {
+            manager.apply_config(config);
         }
         assert_eq!(manager.order(), order);
         assert!(
@@ -456,7 +413,7 @@ mod tests {
         let tone = crate::util::audio::sine_wave(440.0, 48_000.0, 96_000, 0.5);
         for &kind in VisualKind::ALL {
             let mut manager = VisualManager::default();
-            manager.apply_visual_settings(&Default::default());
+            manager.apply_visual_settings(&Default::default(), None);
             for &other in VisualKind::ALL {
                 manager.set_enabled(other, other == kind);
             }

@@ -32,7 +32,7 @@ struct Interaction {
     resizing: Option<ResizeState>,
     cursor_over: Option<Pane>,
     modifiers: keyboard::Modifiers,
-    // The page forgets its hovered pane when the panes change, so the next move must report it.
+    // Panes can change under a still cursor, so the next move reports the hover again.
     panes: Vec<Pane>,
 }
 
@@ -608,7 +608,7 @@ mod tests {
     #[test]
     fn default_window_has_room_for_loudness_labels() {
         let mut manager = crate::visuals::registry::VisualManager::default();
-        manager.apply_visual_settings(&Default::default());
+        manager.apply_visual_settings(&Default::default(), None);
         let mut panes = manager.snapshot();
         panes.retain(|slot| slot.enabled);
         let widths = solve_widths(

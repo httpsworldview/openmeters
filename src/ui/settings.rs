@@ -8,9 +8,7 @@ mod spectrum;
 mod stereometer;
 mod waveform;
 
-use crate::persistence::settings::{
-    BUILTIN_THEME, ChangeOrigin::User, PaletteSettings, SettingsHandle, VisualConfig,
-};
+use crate::persistence::settings::{PaletteSettings, SettingsHandle, VisualConfig};
 use crate::ui::theme::Palette;
 use crate::ui::widgets::SliderRange;
 use crate::ui::widgets::palette_editor::{PaletteChange, PaletteEditor, PaletteEvent};
@@ -36,16 +34,20 @@ macro_rules! settings_modules {
         pub(in crate::ui) enum ActiveSettings { $($variant($module::Pane),)+ }
 
         impl ActiveSettings {
-            pub(in crate::ui) fn new(kind: VisualKind, manager: &VisualManagerHandle) -> Self {
-                let config = manager.borrow().config(kind);
-                let palette = load_palette(&config);
-                match config {
-                    $(VisualConfig::$variant(settings) => Self::$variant($module::create(settings, palette)),)+
+            pub(in crate::ui) fn open(kind: VisualKind, settings: &SettingsHandle) -> Self {
+                let settings = settings.borrow();
+                let palette = load_palette(kind, settings.theme().palettes.get(&kind));
+                match settings.data.visuals.config(kind) {
+                    $(VisualConfig::$variant(config) => Self::$variant($module::create(config, palette)),)+
                 }
             }
 
             pub(in crate::ui) fn kind(&self) -> VisualKind {
                 match self { $(Self::$variant(_) => VisualKind::$variant,)+ }
+            }
+
+            pub(in crate::ui) fn config(&self) -> VisualConfig {
+                match self { $(Self::$variant(pane) => VisualConfig::$variant(pane.settings.clone()),)+ }
             }
 
             pub(in crate::ui) fn view(&self) -> Element<'_, SettingsMessage> {
@@ -76,15 +78,13 @@ macro_rules! settings_modules {
                 match (self, message) {
                     $((Self::$variant(pane), SettingsMessage::$variant(message)) => {
                         let (changed, change) = pane.handle(message);
-                        match change {
-                            Some(PaletteChange::Preview) => manager
-                                .borrow_mut()
-                                .apply_palette(VisualKind::$variant, pane.palette.settings().as_ref()),
-                            _ if changed || change.is_some() => {
-                                let config = VisualConfig::$variant(pane.settings.clone());
-                                save(manager, settings, config, pane.palette.settings(), change.is_some());
-                            }
-                            _ => {}
+                        if changed {
+                            let config = VisualConfig::$variant(pane.settings.clone());
+                            settings.edit(|s| s.visuals.set_config(config));
+                        }
+                        if let Some(change) = change {
+                            let palette = pane.palette.settings();
+                            show_palette(VisualKind::$variant, palette, change, manager, settings);
                         }
                     })+
                     _ => {}
@@ -103,35 +103,30 @@ settings_modules! {
     waveform => Waveform,
 }
 
-fn load_palette(config: &VisualConfig) -> PaletteEditor {
-    let mut editor = PaletteEditor::new(Palette::for_kind(config.kind()));
-    if let Some(stored) = config.palette() {
+fn load_palette(kind: VisualKind, stored: Option<&PaletteSettings>) -> PaletteEditor {
+    let mut editor = PaletteEditor::new(Palette::for_kind(kind));
+    if let Some(stored) = stored {
         editor.load(stored);
     }
     editor
 }
 
-fn save(
-    visual_manager: &VisualManagerHandle,
-    settings_handle: &SettingsHandle,
-    mut config: VisualConfig,
+fn show_palette(
+    kind: VisualKind,
     palette: Option<PaletteSettings>,
-    palette_saved: bool,
+    change: PaletteChange,
+    manager: &VisualManagerHandle,
+    settings: &SettingsHandle,
 ) {
-    let kind = config.kind();
-    *config.palette_mut() = palette.clone();
-    visual_manager.borrow_mut().apply_config(config.clone());
-    settings_handle.update(User, move |settings| {
-        settings.data.visuals.set_config(config);
-        if palette_saved && (palette.is_some() || settings.active_theme() != BUILTIN_THEME) {
-            settings.update_active_theme(|theme| {
-                match palette {
-                    Some(palette) => theme.palettes.insert(kind, palette),
-                    None => theme.palettes.remove(&kind),
-                };
-            });
-        }
-    });
+    manager.borrow_mut().apply_palette(kind, palette.as_ref());
+    if change == PaletteChange::Save {
+        settings.edit_theme(|theme| {
+            match &palette {
+                Some(palette) => theme.palettes.insert(kind, palette.clone()),
+                None => theme.palettes.remove(&kind),
+            };
+        });
+    }
 }
 
 fn get_closest_hop_divisor(fft_size: usize, hop_size: usize) -> usize {
@@ -271,6 +266,7 @@ use {settings_messages, settings_pane, settings_view};
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::persistence::settings::BUILTIN_THEME;
     use crate::ui::widgets::palette_editor::{HsvEdit::Alpha, PaletteEvent::*};
     use waveform::Message::{Palette, ScrollSpeed};
 
@@ -279,25 +275,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let settings = SettingsHandle::load_from(dir.path());
         let manager = VisualManagerHandle::default();
-        let mut pane = ActiveSettings::new(VisualKind::Waveform, &manager);
+        let mut pane = ActiveSettings::open(VisualKind::Waveform, &settings);
         let mut send =
             |message| pane.handle(SettingsMessage::Waveform(message), &manager, &settings);
-        let live = || {
-            manager
-                .borrow()
-                .config(VisualKind::Waveform)
-                .palette()
-                .cloned()
-        };
         let theme = || {
             let settings = settings.borrow();
-            let theme = settings.theme_store().load(settings.active_theme());
-            theme.unwrap().palettes.get(&VisualKind::Waveform).cloned()
+            let palette = settings.theme().palettes.get(&VisualKind::Waveform);
+            palette.cloned()
         };
         send(Palette(Select(Some(0))));
         for alpha in [0.5, 1.0] {
             send(Palette(Adjust(Alpha(alpha))));
-            assert_eq!(live().is_some(), alpha < 1.0);
         }
         send(Palette(Commit));
         assert_eq!(settings.borrow().active_theme(), BUILTIN_THEME);
@@ -306,7 +294,6 @@ mod tests {
         assert!(theme().is_none());
         send(ScrollSpeed(123.0));
         assert!(theme().unwrap().stops().next().unwrap().a < 1.0);
-        SettingsHandle::flush();
     }
 
     #[test]
@@ -315,9 +302,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let settings = SettingsHandle::load_from(dir.path());
         let manager = VisualManagerHandle::default();
-        let config = || manager.borrow().config(VisualKind::Spectrum);
+        let config = || {
+            let settings = settings.borrow();
+            let kind = VisualKind::Spectrum;
+            let palette = settings.theme().palettes.get(&kind).cloned();
+            (settings.data.visuals.config(kind), palette)
+        };
         let before = config();
-        let mut pane = ActiveSettings::new(VisualKind::Spectrum, &manager);
+        let mut pane = ActiveSettings::open(VisualKind::Spectrum, &settings);
         let toggles = ["Analysis", "Details", "Colors"]
             .into_iter()
             .flat_map(|title| [Message::Toggle(title), Message::Toggle(title)]);
@@ -326,7 +318,7 @@ mod tests {
             pane.handle(SettingsMessage::Spectrum(message), &manager, &settings);
         }
         assert_eq!(config(), before);
-        SettingsHandle::flush();
+        settings.flush();
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 }

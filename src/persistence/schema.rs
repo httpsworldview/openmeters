@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
-use super::{lossy, palette::ColorSetting, visuals::VisualSettings};
+use super::{document::Stored, lossy, theme::theme_name, visuals::VisualSettings};
 use crate::domain::routing::{CaptureConfig, CaptureMode, StreamIdentity};
 use serde::Serialize;
 use std::{collections::BTreeSet, sync::Arc, time::Duration};
@@ -47,7 +47,7 @@ crate::macros::default_struct! {
 }
 
 crate::macros::default_struct! {
-    #[derive(Debug, Clone, Serialize)]
+    #[derive(Debug, Clone, PartialEq, Serialize)]
     pub struct BarSettings {
         pub enabled: bool = true,
         pub alignment: BarAlignment = BarAlignment::default(),
@@ -57,12 +57,10 @@ crate::macros::default_struct! {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
 pub struct UiSettings {
     pub visuals: VisualSettings,
     pub visual_frame_rate: VisualFrameRate,
-    #[serde(skip_serializing)]
-    pub background_color: Option<ColorSetting>,
     pub decorations: bool,
     pub main_window: MainWindowSettings,
     pub bar: BarSettings,
@@ -86,10 +84,6 @@ impl UiSettings {
         }
     }
 
-    pub(super) fn from_json_lossy(raw: &str) -> Result<Self, serde_json::Error> {
-        serde_json::from_str(raw).map(Self::from_value_lossy)
-    }
-
     fn from_value_lossy(value: serde_json::Value) -> Self {
         lossy::settings::<Self>(value, "settings", |map, out| {
             if let Some(value) = map.remove("visuals") {
@@ -111,7 +105,14 @@ impl UiSettings {
                 visual_frame_rate, decorations, capture_mode, last_device_name,
                 disabled_streams, theme
             );
+            out.theme = out.theme.as_deref().and_then(theme_name);
         })
+    }
+}
+
+impl Stored for UiSettings {
+    fn from_json_lossy(raw: &[u8]) -> serde_json::Result<Self> {
+        serde_json::from_slice(raw).map(Self::from_value_lossy)
     }
 }
 
@@ -123,7 +124,9 @@ mod tests {
 
     #[test]
     fn visual_frame_rate_defaults_to_display_and_preserves_fixed_rates() {
-        let default = UiSettings::from_json_lossy("{}").unwrap().visual_frame_rate;
+        let default = UiSettings::from_json_lossy(b"{}")
+            .unwrap()
+            .visual_frame_rate;
         assert_eq!(default, VisualFrameRate::Display);
         assert_eq!(default.interval(), None);
         for (saved, expected, nanos) in [
@@ -181,7 +184,7 @@ mod tests {
     #[test]
     fn lossy_value_ignores_invalid_fields_at_their_scope() {
         assert_eq!(
-            serde_json::to_value(UiSettings::from_json_lossy("{}").unwrap()).unwrap(),
+            serde_json::to_value(UiSettings::from_json_lossy(b"{}").unwrap()).unwrap(),
             serde_json::to_value(UiSettings::default()).unwrap()
         );
 
@@ -232,7 +235,6 @@ mod tests {
         }));
 
         assert!(settings.decorations);
-        assert!(settings.background_color.is_none());
         assert_eq!(settings.visual_frame_rate, VisualFrameRate::Display);
         assert_eq!(settings.capture_mode, CaptureMode::default());
         assert_eq!(settings.main_window.width, 640);
@@ -241,7 +243,7 @@ mod tests {
         assert_eq!(settings.bar.alignment, BarAlignment::Top);
         assert_eq!(settings.bar.height.get(), BAR_DEFAULT_HEIGHT);
         assert_eq!(settings.bar.monitor.as_deref(), Some("HDMI-A-1"));
-        let empty_monitor = UiSettings::from_json_lossy(r#"{"bar":{"monitor":""}}"#).unwrap();
+        let empty_monitor = UiSettings::from_json_lossy(br#"{"bar":{"monitor":""}}"#).unwrap();
         assert!(empty_monitor.bar.monitor.is_none());
 
         assert_eq!(settings.visuals.order, vec![VisualKind::Spectrum]);
@@ -257,9 +259,8 @@ mod tests {
 
         let saved = serde_json::to_value(&settings.visuals).unwrap();
         assert_eq!(saved["modules"].as_object().unwrap().len(), 1);
-        let (config, enabled) = settings.visuals.module_config(VisualKind::Spectrum);
-        assert!(enabled);
-        let VisualConfig::Spectrum(spectrum) = config else {
+        assert!(settings.visuals.is_enabled(VisualKind::Spectrum));
+        let VisualConfig::Spectrum(spectrum) = settings.visuals.config(VisualKind::Spectrum) else {
             panic!("expected spectrum settings");
         };
         assert_eq!(

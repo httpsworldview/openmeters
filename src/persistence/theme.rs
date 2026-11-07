@@ -1,22 +1,25 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
+use super::document::Stored;
 use super::palette::{ColorSetting, PaletteSettings};
 use super::{lossy, visuals::visual_map};
 use crate::domain::visuals::VisualKind;
 use crate::visuals::palettes::Palette;
-use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
-use std::{fs, io};
-
 use serde::Serialize;
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 const THEMES_DIR: &str = "themes";
 const AUTO_THEME_BASE: &str = "default-custom";
 pub const BUILTIN_THEME: &str = "default";
 
-pub(crate) fn canonical_theme_name(name: &str) -> String {
-    name.replace(['/', '\\', '\0'], "")
+/// The theme file a name refers to, or `None` for the built-in theme.
+pub fn theme_name(name: &str) -> Option<String> {
+    let name = name.replace(['/', '\\', '\0'], "");
+    let name = name.trim();
+    (!name.is_empty() && name != BUILTIN_THEME).then(|| name.to_owned())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,7 +37,7 @@ impl std::fmt::Display for ThemeChoice {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
 pub struct ThemeFile {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -44,6 +47,19 @@ pub struct ThemeFile {
     pub background: Option<ColorSetting>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub palettes: BTreeMap<VisualKind, PaletteSettings>,
+}
+
+impl Stored for ThemeFile {
+    fn from_json_lossy(raw: &[u8]) -> serde_json::Result<Self> {
+        serde_json::from_slice(raw).map(|value| {
+            lossy::settings::<Self>(value, "theme", |map, out| {
+                lossy::fields!(map, out, "theme"; name, author, background);
+                visual_map(map, "palettes", &mut out.palettes, |kind, value, scope| {
+                    PaletteSettings::decode(value, &Palette::for_kind(kind), scope)
+                });
+            })
+        })
+    }
 }
 
 pub struct ThemeStore {
@@ -57,6 +73,10 @@ impl ThemeStore {
         }
     }
 
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
     pub fn list(&self) -> Vec<ThemeChoice> {
         let mut choices = vec![ThemeChoice {
             name: BUILTIN_THEME.to_owned(),
@@ -66,7 +86,7 @@ impl ThemeStore {
                 let path = entry.path();
                 let stem = path.file_stem()?.to_str()?;
                 let json = path.extension().is_some_and(|e| e == "json");
-                (json && stem != BUILTIN_THEME).then(|| ThemeChoice {
+                (json && theme_name(stem).as_deref() == Some(stem)).then(|| ThemeChoice {
                     name: stem.to_owned(),
                 })
             }));
@@ -77,57 +97,20 @@ impl ThemeStore {
         choices
     }
 
-    pub fn load(&self, name: &str) -> io::Result<ThemeFile> {
-        if name == BUILTIN_THEME {
-            return Ok(ThemeFile::default());
-        }
-        let content = fs::read_to_string(self.theme_path(name))?;
-        let value = serde_json::from_str(&content)?;
-        Ok(lossy::settings::<ThemeFile>(value, "theme", |map, out| {
-            lossy::fields!(map, out, "theme"; name, author, background);
-            visual_map(map, "palettes", &mut out.palettes, |kind, value, scope| {
-                PaletteSettings::decode(value, &Palette::for_kind(kind), scope)
-            });
-        }))
-    }
-
-    pub fn load_or_warn(&self, name: &str) -> Option<ThemeFile> {
-        self.load(name)
-            .inspect_err(|e| tracing::warn!("[theme] failed to load {name:?}: {e}"))
-            .ok()
-    }
-
-    pub fn save(&self, name: &str, theme: &ThemeFile) -> io::Result<()> {
-        let path = self.theme_path(name);
-        let json = serde_json::to_string_pretty(theme)?;
-        super::write_json_atomic(&path, &json)
-    }
-
-    pub fn update(&self, name: &str, mutate: impl FnOnce(&mut ThemeFile)) -> io::Result<()> {
-        if name == BUILTIN_THEME {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "cannot modify built-in theme",
-            ));
-        }
-        let mut theme = match self.load(name) {
-            Err(err) if err.kind() == io::ErrorKind::NotFound => ThemeFile::default(),
-            loaded => loaded?,
-        };
-        mutate(&mut theme);
-        self.save(name, &theme)
+    pub(super) fn path(&self, name: &str) -> PathBuf {
+        debug_assert_eq!(
+            theme_name(name).as_deref(),
+            Some(name),
+            "unchecked theme name"
+        );
+        self.dir.join(format!("{name}.json"))
     }
 
     pub(super) fn next_auto_name(&self) -> String {
         std::iter::once(AUTO_THEME_BASE.to_owned())
             .chain((2_u64..).map(|i| format!("{AUTO_THEME_BASE}-{i}")))
-            .find(|name| !self.theme_path(name).exists())
+            .find(|name| fs::symlink_metadata(self.path(name)).is_err())
             .expect("auto theme names are unbounded")
-    }
-
-    fn theme_path(&self, name: &str) -> PathBuf {
-        let safe = canonical_theme_name(name);
-        self.dir.join(format!("{safe}.json"))
     }
 }
 
@@ -135,13 +118,9 @@ impl ThemeStore {
 mod tests {
     use super::*;
     use iced::Color;
-    use std::fs;
 
     #[test]
-    fn roundtrip_partial_theme() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = ThemeStore::new(dir.path());
-
+    fn partial_themes_survive_saving() {
         let theme = ThemeFile {
             name: Some("Test".into()),
             palettes: BTreeMap::from([(
@@ -156,71 +135,37 @@ mod tests {
             )]),
             ..Default::default()
         };
-
-        store.save("test", &theme).unwrap();
-        let loaded = store.load("test").unwrap();
-        assert_eq!(loaded.name.as_deref(), Some("Test"));
-        assert!(loaded.palettes.contains_key(&VisualKind::Spectrum));
-        assert!(!loaded.palettes.contains_key(&VisualKind::Oscilloscope));
-
-        store
-            .update("test", |theme| theme.author = Some("Author".into()))
-            .unwrap();
-        let updated = store.load("test").unwrap();
-        assert_eq!(updated.name, loaded.name);
-        assert_eq!(updated.palettes, loaded.palettes);
-        assert_eq!(updated.author.as_deref(), Some("Author"));
+        let saved = serde_json::to_vec_pretty(&theme).unwrap();
+        assert_eq!(ThemeFile::from_json_lossy(&saved).unwrap(), theme);
     }
 
     #[test]
-    fn list_sorted_with_default_first() {
+    fn list_sorted_with_default_first_and_only_checked_names() {
         let dir = tempfile::tempdir().unwrap();
         let store = ThemeStore::new(dir.path());
-        let themes_dir = dir.path().join(THEMES_DIR);
-        fs::create_dir_all(&themes_dir).unwrap();
-        fs::write(themes_dir.join("zebra.json"), "{}").unwrap();
-        fs::write(themes_dir.join("alpha.json"), "{}").unwrap();
+        fs::create_dir_all(&store.dir).unwrap();
+        for file in [
+            "zebra.json",
+            "alpha.json",
+            " padded.json",
+            "default.json",
+            ".json",
+        ] {
+            fs::write(store.dir.join(file), "{}").unwrap();
+        }
 
         let names = store.list().into_iter().map(|choice| choice.name);
         assert_eq!(names.collect::<Vec<_>>(), ["default", "alpha", "zebra"]);
     }
 
     #[test]
-    fn canonical_names_match_saved_file_stems() -> io::Result<()> {
-        let dir = tempfile::tempdir()?;
-        let store = ThemeStore::new(dir.path());
-        let raw = " custom/theme\\name\0 ";
-        let name = canonical_theme_name(raw);
-
-        assert_eq!(name, " customthemename ");
-        store.save(raw, &ThemeFile::default())?;
-        assert!(store.list().iter().any(|choice| choice.name == name));
-        Ok(())
-    }
-
-    #[test]
-    fn updates_require_a_readable_custom_theme() {
-        use io::ErrorKind::{InvalidData, PermissionDenied, UnexpectedEof};
-
-        let dir = tempfile::tempdir().unwrap();
-        let store = ThemeStore::new(dir.path());
-        fs::create_dir_all(&store.dir).unwrap();
-        for (name, content, kind) in [
-            ("default", None, PermissionDenied),
-            ("empty", Some(b"".as_slice()), UnexpectedEof),
-            ("json", Some(b"!"), InvalidData),
-            ("utf8", Some(b"\xff"), InvalidData),
-        ] {
-            let path = store.theme_path(name);
-            if let Some(content) = content {
-                fs::write(&path, content).unwrap();
-            }
-            let err = store
-                .update(name, |_| panic!("unreadable theme"))
-                .unwrap_err();
-            assert_eq!(err.kind(), kind);
-            assert_eq!(path.exists(), content.is_some());
-            assert_eq!(fs::read(path).ok().as_deref(), content);
+    fn names_are_stripped_then_trimmed_and_never_built_in() {
+        assert_eq!(
+            theme_name(" custom/theme\\name\0 ").as_deref(),
+            Some("customthemename")
+        );
+        for built_in in ["", " ", "/", "default", "default/", " default "] {
+            assert_eq!(theme_name(built_in), None, "{built_in:?}");
         }
     }
 }

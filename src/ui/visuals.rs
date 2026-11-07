@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::persistence::settings::{ChangeOrigin::User, SettingsHandle};
+use crate::persistence::settings::SettingsHandle;
 use crate::ui::widgets::pane_grid::{self, Content as PaneContent, Pane};
 use crate::visuals::registry::{VisualKind, VisualManagerHandle, VisualSlotSnapshot};
 use iced::widget::{container, mouse_area, text};
@@ -38,35 +38,32 @@ impl VisualsPage {
     pub fn update(&mut self, message: VisualsMessage) {
         match message {
             VisualsMessage::PaneResized(widths) => {
-                let mut manager = self.visual_manager.borrow_mut();
-                let bases: Vec<_> = widths
-                    .into_iter()
-                    .filter_map(|(pane, basis)| {
-                        let basis = crate::util::finite_positive(basis)?;
-                        let visual = self.panes.iter_mut().find(|visual| visual.kind == pane)?;
-                        visual.width_basis = basis;
-                        manager.set_width_basis(visual.kind, basis);
-                        Some((visual.kind, basis))
-                    })
-                    .collect();
-                if !bases.is_empty() {
-                    self.settings
-                        .update(User, |s| s.data.visuals.width_basis.extend(bases));
-                }
+                let bases = widths.into_iter().filter_map(|(pane, basis)| {
+                    let shown = self.panes.iter().any(|visual| visual.kind == pane);
+                    shown.then_some((pane, crate::util::finite_positive(basis)?))
+                });
+                let bases: Vec<_> = bases.collect();
+                self.settings.edit(|s| s.visuals.width_basis.extend(bases));
             }
             VisualsMessage::PaneMoved(pane, to) => {
-                if let Some(from) = self.panes.iter().position(|visual| visual.kind == pane)
-                    && from != to
-                    && to < self.panes.len()
-                {
-                    let visual = self.panes.remove(from);
-                    self.panes.insert(to, visual);
-                    let order: Vec<_> = self.panes.iter().map(|visual| visual.kind).collect();
-                    self.visual_manager.borrow_mut().reorder(&order);
-                    self.settings.update(User, |s| {
-                        s.data.visuals.order = self.visual_manager.borrow().order();
-                    });
+                let mut shown: Vec<_> = self.panes.iter().map(|visual| visual.kind).collect();
+                let Some(from) = shown.iter().position(|&kind| kind == pane) else {
+                    return;
+                };
+                if from == to || to >= shown.len() {
+                    return;
                 }
+                let mut order = self.visual_manager.borrow().order();
+                let slots: Vec<_> = (0..order.len())
+                    .filter(|&slot| shown.contains(&order[slot]))
+                    .collect();
+                let moved = shown.remove(from);
+                shown.insert(to, moved);
+                // Shown visuals trade slots; hidden ones keep theirs.
+                for (slot, kind) in slots.into_iter().zip(shown) {
+                    order[slot] = kind;
+                }
+                self.settings.edit(|s| s.visuals.order = order);
             }
             VisualsMessage::PaneHovered(pane) => self.hovered_pane = pane,
             VisualsMessage::SettingsRequested(_) => {}
@@ -109,20 +106,9 @@ impl VisualsPage {
         snapshot: &[VisualSlotSnapshot],
         exclude: impl Fn(VisualKind) -> bool,
     ) {
-        let slots = || {
-            snapshot
-                .iter()
-                .filter(|slot| slot.enabled && !exclude(slot.kind))
-        };
-        if self
-            .panes
+        let shown = snapshot
             .iter()
-            .map(|pane| pane.kind)
-            .eq(slots().map(|slot| slot.kind))
-        {
-            return;
-        }
-        self.panes = slots().cloned().collect();
-        self.hovered_pane = None;
+            .filter(|slot| slot.enabled && !exclude(slot.kind));
+        self.panes = shown.cloned().collect();
     }
 }

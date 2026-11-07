@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::{lossy, palette::PaletteSettings};
+use super::lossy;
 use crate::domain::visuals::VisualKind;
 use crate::util::Finite;
 use crate::util::audio::{Channel, FftSize, FrequencyScale, NegativeDb, Seconds, WindowKind};
@@ -36,7 +36,7 @@ crate::macros::default_struct! {
 }
 
 crate::macros::default_struct! {
-    #[derive(Debug, Clone, Serialize)]
+    #[derive(Debug, Clone, PartialEq, Serialize)]
     pub struct VisualSettings {
         modules: BTreeMap<VisualKind, ModuleSettings> = VisualKind::ALL.iter().map(|&kind| {
             (kind, ModuleSettings { enabled: true, ..ModuleSettings::new(kind) })
@@ -66,10 +66,25 @@ impl VisualSettings {
         })
     }
 
-    pub(crate) fn module_config(&self, kind: VisualKind) -> (VisualConfig, bool) {
-        let module = self.modules.get(&kind).cloned();
-        let module = module.unwrap_or_else(|| ModuleSettings::new(kind));
-        (module.config, module.enabled)
+    pub(crate) fn config(&self, kind: VisualKind) -> VisualConfig {
+        self.modules.get(&kind).map_or_else(
+            || VisualConfig::default_for(kind),
+            |module| module.config.clone(),
+        )
+    }
+
+    pub(crate) fn is_enabled(&self, kind: VisualKind) -> bool {
+        self.modules.get(&kind).is_some_and(|module| module.enabled)
+    }
+
+    pub(crate) fn popped_out(&self, kind: VisualKind) -> bool {
+        self.popouts
+            .get(&kind)
+            .is_some_and(|popout| popout.popped_out)
+    }
+
+    pub(crate) fn popout_mut(&mut self, kind: VisualKind) -> &mut PopoutWindowSettings {
+        self.popouts.entry(kind).or_default()
     }
 
     pub(crate) fn set_enabled(&mut self, kind: VisualKind, enabled: bool) {
@@ -138,7 +153,7 @@ fn popout_window(_: VisualKind, value: Value, scope: &str) -> Option<PopoutWindo
     Some(out)
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 struct ModuleSettings {
     enabled: bool,
     config: VisualConfig,
@@ -187,14 +202,6 @@ macro_rules! visual_configs {
                 }
             }
 
-            pub(crate) fn palette(&self) -> Option<&PaletteSettings> {
-                match self { $(Self::$variant(settings) => settings.palette.as_ref()),* }
-            }
-
-            pub(crate) fn palette_mut(&mut self) -> &mut Option<PaletteSettings> {
-                match self { $(Self::$variant(settings) => &mut settings.palette),* }
-            }
-
         }
     };
 }
@@ -220,7 +227,6 @@ macro_rules! visual_settings {
         });
         impl $name {
             pub fn apply_to(&self, cfg: &mut $config_ty) { $(cfg.$field = self.$field;)* }
-            pub fn sync_from_config(&mut self, cfg: &$config_ty) { $(self.$field = cfg.$field;)* }
         }
     };
     ($name:ident { $($field:ident: $ty:ty = $default:expr),* $(,)? }) => {
@@ -228,8 +234,6 @@ macro_rules! visual_settings {
             #[derive(Debug, Clone, PartialEq, Serialize)]
             pub struct $name {
                 $(pub $field: $ty = $default,)*
-                #[serde(skip_serializing)]
-                pub palette: Option<PaletteSettings> = None,
             }
         }
         impl $name {
@@ -339,19 +343,14 @@ mod tests {
             "spectrogram": {"enabled": true, "config": {"source": "side"}}
         }}));
         assert_eq!(
-            settings.module_config(VisualKind::Waveform),
-            (VisualConfig::Waveform(WaveformSettings::default()), true)
+            settings.config(VisualKind::Waveform),
+            VisualConfig::Waveform(WaveformSettings::default())
         );
+        assert!(settings.is_enabled(VisualKind::Waveform));
         settings.set_enabled(VisualKind::Spectrum, false);
         settings.set_enabled(VisualKind::Loudness, true);
         settings.set_config(VisualConfig::Waveform(WaveformSettings {
             scroll_speed: ScrollSpeed::must(72.0),
-            palette: PaletteSettings::from_state(
-                &crate::visuals::palettes::Palette::for_kind(VisualKind::Waveform),
-                &[iced::Color::WHITE],
-                &[],
-                &[],
-            ),
             ..Default::default()
         }));
         let saved = serde_json::to_value(&settings).unwrap();
@@ -366,7 +365,6 @@ mod tests {
         assert_eq!(modules["spectrogram"]["config"]["source"], "side");
         assert_eq!(modules["waveform"]["enabled"], true);
         assert_eq!(modules["waveform"]["config"]["scroll_speed"], 72.0);
-        assert!(modules["waveform"]["config"].get("palette").is_none());
         assert_eq!(modules["loudness"]["enabled"], true);
         assert_eq!(modules["loudness"]["config"]["left_mode"], "true_peak");
         assert_eq!(modules["spectrum"]["config"]["rotation"], 0);
@@ -377,8 +375,7 @@ mod tests {
             let settings = VisualSettings::from_value_lossy(json!({"modules": {
                 "spectrum": {"enabled": true, "config": {"rotation": rotation, "fft_size": 2048}}
             }}));
-            let (VisualConfig::Spectrum(config), _) = settings.module_config(VisualKind::Spectrum)
-            else {
+            let VisualConfig::Spectrum(config) = settings.config(VisualKind::Spectrum) else {
                 panic!("expected spectrum settings");
             };
             assert_eq!((config.rotation, config.fft_size.get()), (expected, 2048));

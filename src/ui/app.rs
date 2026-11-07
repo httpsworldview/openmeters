@@ -2,12 +2,13 @@
 // Copyright (C) 2026 Maika Namuo
 
 mod message;
+mod sync;
 mod windowing;
 
 use crate::infra::pipewire::{AudioReader, CaptureControl, audio_wake};
 use crate::meter::MeterEngine;
 use crate::persistence::settings::{
-    BarAlignment, ChangeOrigin::User, SettingsHandle, clamp_bar_height,
+    BarAlignment, SettingsHandle, clamp_bar_height, settings_changes,
 };
 use crate::ui::config::ConfigPage;
 use crate::ui::settings::ActiveSettings;
@@ -132,15 +133,9 @@ impl UiApp {
             settings_handle,
         } = config;
         let settings = settings_handle.borrow().data.clone();
-        let theme_file = {
-            let guard = settings_handle.borrow();
-            guard.theme_store().load_or_warn(guard.active_theme())
-        };
         let mut manager = VisualManager::default();
-        manager.apply_visual_settings(&settings.visuals);
-        if let Some(theme_file) = theme_file {
-            manager.apply_theme(&theme_file);
-        }
+        manager.apply_visual_settings(&settings.visuals, None);
+        manager.apply_palettes(settings_handle.borrow().theme(), None);
         let visual_manager = Rc::new(RefCell::new(manager));
         let reader = audio
             .borrow_mut()
@@ -180,15 +175,17 @@ impl UiApp {
             exit_warning_until: None,
             held_shortcut: None,
         };
-        let restore_popouts = app.restore_popout_windows();
-        if !app.popout_windows.is_empty() {
-            app.sync_visuals_page();
-        }
+        let restore_popouts = app.sync_visual_windows(&settings, &settings);
         (app, Task::batch([open_task, restore_popouts]))
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        let mut subs = vec![event::listen_with(app_event)];
+        let watcher = self.settings_handle.watcher();
+        let mut subs = vec![
+            event::listen_with(app_event),
+            Subscription::run_with(watcher, settings_changes)
+                .map(|()| Message::SettingsFilesChanged),
+        ];
         if self.bar_resize_state.is_some() {
             subs.push(event::listen_with(message::bar_drag_events));
         }
@@ -265,15 +262,11 @@ impl UiApp {
         }
     }
 
-    fn finish_bar_resize(&mut self) -> Task<Message> {
-        self.bar_resize_state
-            .take()
-            .filter(|s| s.pending_height != s.start_height)
-            .map_or_else(Task::none, |s| {
-                self.settings_handle
-                    .update(User, |settings| settings.data.bar.height = s.pending_height);
-                self.apply_bar_layout()
-            })
+    fn finish_bar_resize(&mut self) {
+        if let Some(state) = self.bar_resize_state.take() {
+            self.settings_handle
+                .edit(|s| s.bar.height = state.pending_height);
+        }
     }
 
     fn main_window_view(&self, window_id: window::Id) -> Element<'_, Message> {

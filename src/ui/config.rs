@@ -4,10 +4,8 @@
 use crate::domain::routing::{CaptureMode, StreamIdentity};
 use crate::infra::pipewire::{CaptureControl, CaptureView};
 use crate::persistence::settings::{
-    BUILTIN_THEME, BarAlignment, BarHeight,
-    ChangeOrigin::{Automatic, User},
-    SettingsHandle, ThemeChoice, ThemeFile, VisualFrameRate, canonical_theme_name,
-    clamp_bar_height,
+    BUILTIN_THEME, BarAlignment, BarHeight, SettingsHandle, ThemeChoice, VisualFrameRate,
+    clamp_bar_height, theme_name,
 };
 use crate::ui::theme;
 use crate::ui::widgets::palette_editor::{PaletteChange, PaletteEditor, PaletteEvent};
@@ -197,20 +195,6 @@ pub enum ConfigMessage {
     Scrolled(ScrollEvent),
 }
 
-pub(in crate::ui) enum BarChange {
-    Mode,
-    Layout,
-    Monitor,
-}
-
-pub(in crate::ui) enum ConfigEffect {
-    VisualToggled { kind: VisualKind, enabled: bool },
-    FrameRateChanged(VisualFrameRate),
-    DecorationsChanged,
-    BarChanged(BarChange),
-    ThemeChanged,
-}
-
 pub struct ConfigPage {
     capture: CaptureControl,
     capture_view: Option<Arc<CaptureView>>,
@@ -220,7 +204,6 @@ pub struct ConfigPage {
     bar_outputs: BarOutputs,
     registry_alive: bool,
     disclosure: Disclosure,
-    device_choices: Vec<DeviceOption>,
     bg_palette: PaletteEditor,
     scroll: ScrollGlow,
     theme_choices: Vec<ThemeChoice>,
@@ -235,13 +218,8 @@ impl ConfigPage {
         settings: SettingsHandle,
         bar_supported: bool,
     ) -> Self {
-        let current_bg = background_or_base(settings.borrow().data.background_color);
-        let theme_choices = settings.borrow().theme_store().list();
-        let window_themes = theme::window_themes(current_bg);
-        let mut bg_palette = PaletteEditor::new(theme::background::PALETTE);
-        bg_palette.set_colors(&[current_bg]);
-
-        Self {
+        let theme_choices = settings.borrow().themes();
+        let mut page = Self {
             capture,
             capture_view: None,
             visual_manager,
@@ -250,13 +228,14 @@ impl ConfigPage {
             bar_outputs: BarOutputs::default(),
             registry_alive: true,
             disclosure: Disclosure::default(),
-            device_choices: Vec::new(),
-            bg_palette,
+            bg_palette: PaletteEditor::new(theme::background::PALETTE),
             scroll: ScrollGlow::default(),
             theme_choices,
             save_theme_name: String::new(),
-            window_themes,
-        }
+            window_themes: theme::window_themes(theme::BG_BASE),
+        };
+        page.show_background();
+        page
     }
 
     /// The page outlives its window, so closing it commits unfinished edits.
@@ -268,7 +247,6 @@ impl ConfigPage {
         self.registry_alive = self.capture.is_alive();
         if !self.registry_alive {
             self.capture_view = None;
-            self.device_choices.clear();
             return;
         }
         let view = self.capture.view();
@@ -277,101 +255,65 @@ impl ConfigPage {
             .as_ref()
             .is_none_or(|current| !Arc::ptr_eq(current, &view))
         {
-            self.apply_capture_view(&view);
+            if let Some(selected) = &view.selected_device {
+                let selected = Some(Arc::clone(selected));
+                self.settings
+                    .observe(|s| s.last_device_name.clone_from(&selected));
+            }
             self.capture_view = Some(view);
         }
     }
 
-    pub(in crate::ui) fn update(&mut self, message: ConfigMessage) -> Option<ConfigEffect> {
+    pub(in crate::ui) fn update(&mut self, message: ConfigMessage) {
+        let settings = &self.settings;
         match message {
-            ConfigMessage::ToggleChanged { identity, enabled } => {
-                self.settings.update(User, |settings| {
-                    if enabled {
-                        settings.data.disabled_streams.remove(&identity);
-                    } else {
-                        settings.data.disabled_streams.insert(identity);
-                    }
-                });
-                self.dispatch_capture_config();
-            }
+            ConfigMessage::ToggleChanged { identity, enabled } => settings.edit(|s| {
+                if enabled {
+                    s.disabled_streams.remove(&identity);
+                } else {
+                    s.disabled_streams.insert(identity);
+                }
+            }),
             ConfigMessage::ToggleSection(title) => self.disclosure.toggle(title),
             ConfigMessage::VisualToggled { kind, enabled } => {
-                self.visual_manager.borrow_mut().set_enabled(kind, enabled);
-                self.settings.update(User, |s| {
-                    s.data.visuals.set_enabled(kind, enabled);
-                });
-                return Some(ConfigEffect::VisualToggled { kind, enabled });
+                settings.edit(|s| s.visuals.set_enabled(kind, enabled));
             }
-            ConfigMessage::CaptureModeChanged(mode) => {
-                if self.settings.set(User, |s| &mut s.capture_mode, mode) {
-                    self.dispatch_capture_config();
-                }
-            }
+            ConfigMessage::CaptureModeChanged(mode) => settings.edit(|s| s.capture_mode = mode),
             ConfigMessage::CaptureDeviceChanged(token) => {
-                if self.settings.set(User, |s| &mut s.last_device_name, token) {
-                    self.dispatch_capture_config();
-                }
+                settings.edit(|s| s.last_device_name = token);
             }
             ConfigMessage::BgPalette(event) => {
-                let change = self.bg_palette.update(event)?;
+                let Some(change) = self.bg_palette.update(event) else {
+                    return;
+                };
                 let color = self.bg_palette.colors()[0];
                 self.window_themes = theme::window_themes(color);
                 if change == PaletteChange::Save {
-                    self.settings.update(User, |s| {
-                        s.data.background_color = Some(color.into());
-                        s.update_active_theme(|theme| theme.background = Some(color.into()));
-                    });
-                    self.refresh_theme_choices_if_needed();
+                    // Stored only while it differs from the default.
+                    let background = self.bg_palette.settings().map(|_| color.into());
+                    settings.edit_theme(|theme| theme.background = background);
                 }
             }
             ConfigMessage::VisualFrameRateChanged(rate) => {
-                return self
-                    .settings
-                    .set(User, |s| &mut s.visual_frame_rate, rate)
-                    .then_some(ConfigEffect::FrameRateChanged(rate));
+                settings.edit(|s| s.visual_frame_rate = rate);
             }
-            ConfigMessage::DecorationsToggled(value) => {
-                self.settings.update(User, |s| s.data.decorations = value);
-                return Some(ConfigEffect::DecorationsChanged);
-            }
-            ConfigMessage::BarModeToggled(value) => {
-                return self
-                    .settings
-                    .set(User, |s| &mut s.bar.enabled, value)
-                    .then_some(ConfigEffect::BarChanged(BarChange::Mode));
-            }
+            ConfigMessage::DecorationsToggled(value) => settings.edit(|s| s.decorations = value),
+            ConfigMessage::BarModeToggled(value) => settings.edit(|s| s.bar.enabled = value),
             ConfigMessage::BarAlignmentChanged(value) => {
-                return self
-                    .settings
-                    .set(User, |s| &mut s.bar.alignment, value)
-                    .then_some(ConfigEffect::BarChanged(BarChange::Layout));
+                settings.edit(|s| s.bar.alignment = value);
             }
             ConfigMessage::BarHeightChanged(value) => {
-                self.settings
-                    .update(User, |s| s.data.bar.height = clamp_bar_height(value));
-                return Some(ConfigEffect::BarChanged(BarChange::Layout));
+                settings.edit(|s| s.bar.height = clamp_bar_height(value));
             }
-            ConfigMessage::BarMonitorChanged(value) => {
-                return self
-                    .settings
-                    .set(User, |s| &mut s.bar.monitor, value)
-                    .then_some(ConfigEffect::BarChanged(BarChange::Monitor));
-            }
-            ConfigMessage::ThemeChanged(name) => {
-                return self
-                    .apply_theme(&name)
-                    .then_some(ConfigEffect::ThemeChanged);
-            }
+            ConfigMessage::BarMonitorChanged(value) => settings.edit(|s| s.bar.monitor = value),
+            ConfigMessage::ThemeChanged(name) => settings.edit(|s| s.theme = theme_name(&name)),
             ConfigMessage::SaveTheme(name) => {
-                if let Some(saved_name) = self.save_current_as_theme(&name) {
-                    self.settings.set(User, |s| &mut s.theme, Some(saved_name));
-                }
+                settings.save_theme_as(&name);
                 self.save_theme_name.clear();
             }
             ConfigMessage::ThemeNameInput(val) => self.save_theme_name = val,
             ConfigMessage::Scrolled(event) => self.scroll.update(event),
         }
-        None
     }
 
     pub fn view(&self) -> Element<'_, ConfigMessage> {
@@ -461,22 +403,20 @@ impl ConfigPage {
             return column![note(REGISTRY_UNAVAILABLE_MESSAGE)];
         }
 
-        let settings = self.settings.borrow();
-        let selected_token = settings
-            .data
-            .last_device_name
-            .as_deref()
-            .filter(|token| !token.is_empty());
-        let selected = self
-            .device_choices
+        let choices = self.device_choices();
+        let selected_token = self.settings.borrow().data.last_device_name.clone();
+        let selected_token = selected_token.as_deref().filter(|token| !token.is_empty());
+        let selected = choices
             .iter()
-            .find(|opt| opt.selection.as_deref() == selected_token);
-        let mut picker = pick_list(self.device_choices.as_slice(), selected, |opt| {
+            .find(|opt| opt.selection.as_deref() == selected_token)
+            .cloned();
+        let available = choices.len() > 1;
+        let mut picker = pick_list(choices, selected, |opt| {
             ConfigMessage::CaptureDeviceChanged(opt.selection)
         })
         .text_size(theme::BODY_TEXT_SIZE)
         .width(Length::Fill);
-        if self.device_choices.len() <= 1 {
+        if !available {
             picker = picker.placeholder("No devices available");
         }
 
@@ -489,10 +429,12 @@ impl ConfigPage {
 
     fn render_appearance_card(&self) -> container::Container<'_, ConfigMessage> {
         let active = self.settings.borrow().active_theme().to_owned();
-        let selected = self.theme_choices.iter().find(|c| c.name == active);
-        let is_builtin = selected.is_some_and(|c| c.name == BUILTIN_THEME);
+        let is_builtin = active == BUILTIN_THEME;
+        let selected = ThemeChoice {
+            name: active.clone(),
+        };
 
-        let picker = pick_list(self.theme_choices.as_slice(), selected, |choice| {
+        let picker = pick_list(self.theme_choices.as_slice(), Some(selected), |choice| {
             ConfigMessage::ThemeChanged(choice.name)
         })
         .text_size(theme::BODY_TEXT_SIZE)
@@ -508,11 +450,9 @@ impl ConfigPage {
             .on_input(ConfigMessage::ThemeNameInput)
             .size(theme::BODY_TEXT_SIZE)
             .width(Length::Fill);
-        let trimmed = self.save_theme_name.trim();
         let save_as_btn = action_button(
             "Save as",
-            (!trimmed.is_empty() && trimmed != BUILTIN_THEME)
-                .then(|| ConfigMessage::SaveTheme(trimmed.to_owned())),
+            theme_name(&self.save_theme_name).map(ConfigMessage::SaveTheme),
         )
         .padding([4, 8]);
 
@@ -543,59 +483,15 @@ impl ConfigPage {
         )
     }
 
-    fn apply_theme(&mut self, name: &str) -> bool {
-        let Some(theme_file) = self.settings.borrow().theme_store().load_or_warn(name) else {
-            return false;
-        };
-        let palettes_changed = self.visual_manager.borrow_mut().apply_theme(&theme_file);
-        let bg = background_or_base(theme_file.background);
-        let settings_changed = {
-            let settings = self.settings.borrow();
-            settings.active_theme() != name
-                || background_or_base(settings.data.background_color) != bg
-        };
-        if !settings_changed && !palettes_changed {
-            return false;
-        }
-        self.bg_palette.set_colors(&[bg]);
-        let theme_val = (name != BUILTIN_THEME).then(|| name.to_owned());
-        self.settings.update(User, |s| {
-            s.data.background_color = Some(bg.into());
-            s.data.theme = theme_val;
-        });
-        self.window_themes = theme::window_themes(bg);
-        true
+    pub(in crate::ui) fn show_background(&mut self) {
+        let background = self.settings.borrow().theme().background;
+        let background = background.map_or(theme::BG_BASE, Color::from);
+        self.bg_palette.set_colors(&[background]);
+        self.window_themes = theme::window_themes(background);
     }
 
-    fn save_current_as_theme(&mut self, name: &str) -> Option<String> {
-        let name = canonical_theme_name(name);
-        if name.is_empty() || name == BUILTIN_THEME {
-            tracing::warn!("[theme] invalid theme name {name:?}");
-            return None;
-        }
-
-        let settings = self.settings.borrow();
-        let stored = settings.theme_store().load(&name).unwrap_or_default();
-        let theme_file = ThemeFile {
-            name: stored.name.or_else(|| Some(name.clone())),
-            background: settings.data.background_color,
-            palettes: self.visual_manager.borrow().theme_palettes().collect(),
-            ..stored
-        };
-        if let Err(e) = settings.theme_store().save(&name, &theme_file) {
-            tracing::warn!("[theme] failed to save theme {name:?}: {e}");
-            return None;
-        }
-        self.theme_choices = settings.theme_store().list();
-        Some(name)
-    }
-
-    pub(in crate::ui) fn refresh_theme_choices_if_needed(&mut self) {
-        let settings = self.settings.borrow();
-        let active = settings.active_theme();
-        if !self.theme_choices.iter().any(|c| c.name == active) {
-            self.theme_choices = settings.theme_store().list();
-        }
+    pub(in crate::ui) fn refresh_theme_choices(&mut self) {
+        self.theme_choices = self.settings.borrow().themes();
     }
 
     pub(in crate::ui) fn has_bar_outputs(&self) -> bool {
@@ -681,14 +577,10 @@ impl ConfigPage {
         )
     }
 
-    fn apply_capture_view(&mut self, view: &CaptureView) {
-        if let Some(selected) = &view.selected_device {
-            self.settings.set(
-                Automatic,
-                |s| &mut s.last_device_name,
-                Some(Arc::clone(selected)),
-            );
-        }
+    fn device_choices(&self) -> Vec<DeviceOption> {
+        let Some(view) = &self.capture_view else {
+            return Vec::new();
+        };
         let mut choices = vec![DeviceOption {
             label: Arc::from(format!("Default sink - {}", view.default_sink)),
             selection: None,
@@ -707,10 +599,10 @@ impl ConfigPage {
                 selection: Some(Arc::clone(token)),
             });
         }
-        self.device_choices = choices;
+        choices
     }
 
-    fn dispatch_capture_config(&self) {
+    pub(in crate::ui) fn dispatch_capture_config(&self) {
         if !self
             .capture
             .configure(self.settings.borrow().data.capture_config())
@@ -718,10 +610,6 @@ impl ConfigPage {
             tracing::error!("[ui] PipeWire capture backend is unavailable");
         }
     }
-}
-
-fn background_or_base(color: Option<impl Into<Color>>) -> Color {
-    color.map_or(theme::BG_BASE, Into::into)
 }
 
 fn note<'a>(content: impl IntoFragment<'a>) -> Text<'a> {
