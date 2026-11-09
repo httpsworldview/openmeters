@@ -112,7 +112,9 @@ impl UiSettings {
 
 impl Stored for UiSettings {
     fn from_json_lossy(raw: &[u8]) -> serde_json::Result<Self> {
-        serde_json::from_slice(raw).map(Self::from_value_lossy)
+        serde_json::from_slice(raw)
+            .map(serde_json::Value::Object)
+            .map(Self::from_value_lossy)
     }
 }
 

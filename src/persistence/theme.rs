@@ -51,8 +51,8 @@ pub struct ThemeFile {
 
 impl Stored for ThemeFile {
     fn from_json_lossy(raw: &[u8]) -> serde_json::Result<Self> {
-        serde_json::from_slice(raw).map(|value| {
-            lossy::settings::<Self>(value, "theme", |map, out| {
+        serde_json::from_slice(raw).map(|object| {
+            lossy::settings::<Self>(serde_json::Value::Object(object), "theme", |map, out| {
                 lossy::fields!(map, out, "theme"; name, author, background);
                 visual_map(map, "palettes", &mut out.palettes, |kind, value, scope| {
                     PaletteSettings::decode(value, &Palette::for_kind(kind), scope)
