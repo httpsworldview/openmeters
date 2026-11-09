@@ -404,11 +404,14 @@ impl SpectrumState {
             bar_gap: style.bar_gap.get(),
             peak: self.peak().map(|peak| SpectrumPeakParams {
                 marker: peak.marker_pos,
-                marker_color: color_to_rgba(with_alpha(peak_color, peak.opacity * 0.95)),
+                marker_color: color_to_rgba(with_alpha(
+                    peak_color,
+                    peak_color.a * peak.opacity * 0.95,
+                )),
                 leader_anchor: peak_layout.map(|layout| layout.leader_anchor),
                 leader_color: color_to_rgba(with_alpha(
                     peak_color,
-                    peak.opacity * AUXILIARY_LINE_ALPHA,
+                    peak_color.a * peak.opacity * AUXILIARY_LINE_ALPHA,
                 )),
             }),
         })
@@ -1026,7 +1029,7 @@ fn draw_peak(
         layout.rect,
         with_alpha(theme_palette.background.strong.color, 0.90 * peak.opacity),
         iced::Border {
-            color: with_alpha(peak_color, 0.50 * peak.opacity),
+            color: with_alpha(peak_color, peak_color.a * 0.50 * peak.opacity),
             width: 1.0,
             radius: 2.0.into(),
         },
