@@ -321,7 +321,9 @@ impl CaptureWriter {
 
     pub(super) fn publish_layout(&self, layout: &[ChannelPosition]) {
         let positions = std::array::from_fn(|index| layout.get(index).copied().unwrap_or_default());
-        let format = AudioFormat::new(layout.len(), SampleRate::DEFAULT, 0, positions)
+        // Negotiation sets the rate; until then the last one avoids a spurious format change.
+        let rate = self.shared.format().sample_rate();
+        let format = AudioFormat::new(layout.len(), rate, 0, positions)
             .expect("capture layouts have 1..=8 channels");
         self.publish_format(format);
     }
