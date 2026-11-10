@@ -1,6 +1,6 @@
 # OpenMeters
 
-![Demo GIF](https://github.com/user-attachments/assets/e7b15cd0-eb12-4e99-b036-79b11e04bb46)
+![Demo GIF](https://github.com/user-attachments/assets/36fda58f-fe6c-4617-9a7a-ce413c1e925e)
 
 Fast and professional audio metering for Linux.
 
