@@ -5,13 +5,13 @@
 // Adapted from iced_widget v0.13.4 pane_grid.
 // See docs/licenses/iced_widget_pane_grid.md for the MIT notice.
 
-use iced::advanced::renderer::Quad;
 use iced::advanced::widget::{self, tree::Tree};
 use iced::advanced::{Layout, Renderer as _, Shell, Widget, layout, mouse};
-use iced::{Background, Element, Event, Length, Point, Rectangle, Size, keyboard};
+use iced::{Element, Event, Length, Point, Rectangle, Size, keyboard};
 
 use crate::domain::visuals::VisualKind;
 use crate::util::color::with_alpha;
+use crate::visuals::render::common::{fill_bordered_rect, fill_rect};
 
 pub type Pane = VisualKind;
 
@@ -311,36 +311,18 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer> for PaneGrid
                 );
             });
             if interaction.dragging.is_some_and(|(p, _, _)| p == *pane) {
-                renderer.fill_quad(
-                    Quad {
-                        bounds: child_layout.bounds(),
-                        border: iced::Border {
-                            width: 2.0,
-                            color: with_alpha(accent(), 0.9),
-                            ..Default::default()
-                        },
-                        snap: true,
-                        ..Default::default()
-                    },
-                    Background::Color(with_alpha(accent(), 0.4)),
-                );
+                let border = iced::border::color(with_alpha(accent(), 0.9)).width(2);
+                let fill = with_alpha(accent(), 0.4);
+                fill_bordered_rect(renderer, child_layout.bounds(), fill, border, true);
             }
         }
         if let Some(r) = &interaction.resizing
             && let Some(child) = layout.children().nth(r.divider)
         {
             let b = layout.bounds();
-            renderer.fill_quad(
-                Quad {
-                    bounds: Rectangle::new(
-                        Point::new(child.bounds().x + child.bounds().width - 1.0, b.y),
-                        Size::new(2.0, b.height),
-                    ),
-                    snap: true,
-                    ..Default::default()
-                },
-                Background::Color(with_alpha(accent(), 0.75)),
-            );
+            let x = child.bounds().x + child.bounds().width - 1.0;
+            let divider = Rectangle::new(Point::new(x, b.y), Size::new(2.0, b.height));
+            fill_rect(renderer, divider, with_alpha(accent(), 0.75));
         }
     });
 }

@@ -92,7 +92,7 @@ impl OscilloscopeState {
                 channels: if stacked { 0..channels } else { lane..lane + 1 },
                 samples_per_channel: self.snapshot.samples_per_channel,
                 slots: self.snapshot.slots,
-                samples: self.snapshot.samples.clone(),
+                samples: Arc::clone(&self.snapshot.samples),
                 colors: self.palette.map(color_to_rgba),
             })
         })

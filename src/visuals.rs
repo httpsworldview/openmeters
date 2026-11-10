@@ -48,10 +48,10 @@ macro_rules! visualization_widget {
 pub(in crate::visuals) use visualization_widget;
 
 macro_rules! palette_setter {
-    ($size:expr $(=> $geometry:ident)?) => {
+    ($size:expr $(=> $($geometry:ident),+)?) => {
         pub fn set_palette(&mut self, palette: &[iced::Color; $size]) {
             self.palette = *palette;
-            $(self.$geometry.invalidate();)?
+            $($(self.$geometry.invalidate();)+)?
         }
     };
 }

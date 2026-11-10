@@ -88,7 +88,6 @@ pub struct StereometerParams {
     pub grid: crate::visuals::GeometryKey,
     pub bounds: Rectangle,
     pub points: [Arc<[(f32, f32)]>; BAND_COUNT + 1],
-    pub band_colors: [Arc<[[f32; 4]]>; BAND_COUNT],
     pub palette: [[f32; 4]; PALETTE_SIZE],
     pub mode: StereometerMode,
     pub scale: StereometerScale,
@@ -213,6 +212,12 @@ fn clip_segment_to_visible_unipolar_half(
     }
 }
 
+// Each point with its opacity; the newest is the most opaque.
+fn fading(points: &[(f32, f32)], alpha: f32) -> impl Iterator<Item = (f32, f32, f32)> + '_ {
+    let count = points.len() as f32;
+    (points.iter().zip(1..)).map(move |(&(l, r), age)| (l, r, alpha * age as f32 / count))
+}
+
 fn projected_line(
     out: &mut Vec<SdfInstance>,
     projection: Projection,
@@ -328,11 +333,7 @@ impl StereometerParams {
         let points = &self.points[FULL_BAND];
         match self.mode {
             StereometerMode::DotCloud => {
-                let count = points.len() as f32;
-                out.extend(points.iter().enumerate().map(|(i, &(l, r))| {
-                    let alpha = ca * (i + 1) as f32 / count;
-                    dot(l, r, [cr, cg, cb, alpha])
-                }));
+                out.extend(fading(points, ca).map(|(l, r, alpha)| dot(l, r, [cr, cg, cb, alpha])));
             }
             StereometerMode::Lissajous => {
                 if points.len() >= 2 {
@@ -346,12 +347,10 @@ impl StereometerParams {
                 }
             }
             StereometerMode::DotCloudBands => {
-                for (pts, colors) in self.points[1..].iter().zip(&self.band_colors) {
-                    out.extend(
-                        pts.iter()
-                            .zip(colors.iter())
-                            .map(|(&(l, r), &color)| dot(l, r, color)),
-                    );
+                for (points, [r, g, b, a]) in self.points[1..].iter().zip(&self.palette[5..]) {
+                    out.extend(fading(points, *a).map(|(left, right, factor)| {
+                        dot(left, right, [r * factor, g * factor, b * factor, 0.0])
+                    }));
                 }
             }
         }

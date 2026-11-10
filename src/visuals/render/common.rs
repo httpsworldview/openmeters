@@ -133,11 +133,11 @@ pub(in crate::visuals) fn text<C>(content: C, px: f32, bounds: Size) -> IcedText
     }
 }
 
-pub(in crate::visuals) fn fill_rect(r: &mut Renderer, bounds: Rectangle, color: Color) {
+pub(crate) fn fill_rect(r: &mut Renderer, bounds: Rectangle, color: Color) {
     fill_bordered_rect(r, bounds, color, Border::default(), true);
 }
 
-pub(in crate::visuals) fn fill_bordered_rect(
+pub(crate) fn fill_bordered_rect(
     r: &mut Renderer,
     bounds: Rectangle,
     color: Color,
@@ -400,6 +400,11 @@ impl GeometryScratch {
     }
 }
 
+// Two points per pixel column keep each column's extrema.
+pub(in crate::visuals) fn line_point_budget(width: f32) -> usize {
+    (width.ceil().max(1.0) as usize).saturating_mul(2)
+}
+
 pub fn decimate_line(pts: &mut Vec<(f32, f32)>, max_points: usize) {
     debug_assert!(
         pts.iter()
@@ -479,17 +484,6 @@ pub(in crate::visuals) fn create_buffer(
         size,
         usage,
         mapped_at_creation: false,
-    })
-}
-
-pub fn create_shader_module(
-    device: &wgpu::Device,
-    label: &'static str,
-    source: &'static str,
-) -> wgpu::ShaderModule {
-    device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some(label),
-        source: wgpu::ShaderSource::Wgsl(source.into()),
     })
 }
 
@@ -659,7 +653,7 @@ impl<const REPLACE: bool> iced_wgpu::primitive::Pipeline for SdfPipeline<REPLACE
         const ATTRS: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
             0 => Float32x2, 1 => Float32x2, 2 => Float32x4, 3 => Float32x4, 4 => Float32x4
         ];
-        let shader = create_shader_module(device, LABEL, include_str!("shaders/sdf.wgsl"));
+        let shader = device.create_shader_module(wgpu::include_wgsl!("shaders/sdf.wgsl"));
         let pipeline = create_render_pipeline(
             device,
             format,

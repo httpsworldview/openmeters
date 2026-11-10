@@ -88,8 +88,13 @@ pub fn with_alpha(color: Color, alpha: f32) -> Color {
     }
 }
 
-pub fn rgba_with_alpha(color: [f32; 4], alpha: f32) -> [f32; 4] {
-    [color[0], color[1], color[2], alpha.clamp(0.0, 1.0)]
+pub fn rgba_scale_alpha(color: [f32; 4], factor: f32) -> [f32; 4] {
+    [
+        color[0],
+        color[1],
+        color[2],
+        (color[3] * factor).clamp(0.0, 1.0),
+    ]
 }
 
 pub fn sample_rgba_gradient(palette: &[[f32; 4]], t: f32) -> [f32; 4] {

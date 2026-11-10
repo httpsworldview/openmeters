@@ -6,10 +6,10 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use super::processor::TRACE_COUNT;
-use crate::util::color::rgba_with_alpha;
+use crate::util::color::rgba_scale_alpha;
 use crate::visuals::render::common::{
     ClipTransform, GeometryScratch, amplitude_y, bounds_fingerprint, decimate_line,
-    extend_filled_line,
+    extend_filled_line, line_point_budget,
 };
 use crate::visuals::render::common::{SdfPipeline, sdf_primitive};
 
@@ -37,7 +37,6 @@ impl OscilloscopeParams {
         let trace = bounds.shrink(iced::padding::vertical(EDGE_INSET.min(bounds.height * 0.5)));
         let baseline = amplitude_y(trace, 0.0);
         let step = bounds.width.max(1.0) / (samples_per_channel - 1) as f32;
-        let pixel_width = bounds.width.ceil().max(1.0) as usize;
 
         let vertices = &mut scratch.instances;
         let positions = &mut scratch.points;
@@ -60,7 +59,7 @@ impl OscilloscopeParams {
                         )
                     }),
             );
-            decimate_line(positions, pixel_width * 2);
+            decimate_line(positions, line_point_budget(bounds.width));
 
             extend_filled_line(
                 vertices,
@@ -69,8 +68,8 @@ impl OscilloscopeParams {
                 STROKE_WIDTH,
                 color,
                 [
-                    rgba_with_alpha(color, color[3] * FILL_ALPHA),
-                    rgba_with_alpha(color, 0.0),
+                    rgba_scale_alpha(color, FILL_ALPHA),
+                    rgba_scale_alpha(color, 0.0),
                 ],
                 clip,
             );

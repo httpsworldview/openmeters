@@ -9,7 +9,7 @@ use crate::persistence::settings::SpectrogramSettings;
 use crate::util::{
     audio::musical::{MusicalNote, NoteInfo},
     audio::{DISPLAY_MIN_HZ, FrequencyScale, fmt_duration, fmt_freq},
-    color::{color_to_rgba, lerp_color, rgba_with_alpha, with_alpha},
+    color::{color_to_rgba, lerp_color, rgba_scale_alpha, with_alpha},
     unpoison,
 };
 use crate::visuals::options::PianoRollOverlay;
@@ -221,7 +221,7 @@ impl SpectrogramState {
         uv_y_range: [f32; 2],
     ) -> Option<SpectrogramParams> {
         let history = &self.history;
-        let to_rgba = |c: Color| rgba_with_alpha(color_to_rgba(c), c.a * SPECTROGRAM_OPACITY);
+        let to_rgba = |c: Color| rgba_scale_alpha(color_to_rgba(c), SPECTROGRAM_OPACITY);
         let (freq_min, freq_max) = display_axis(self.sample_rate);
 
         (history.col_count > 0).then(|| SpectrogramParams {
@@ -314,8 +314,13 @@ impl SpectrogramState {
         let old_min = (self.pan - old_h).clamp(0.0, 1.0);
         let cursor_uv = old_min + y_norm * 2.0 * old_h;
         self.zoom = (self.zoom * factor).clamp(MIN_ZOOM, MAX_ZOOM);
-        let new_h = 0.5 / self.zoom;
-        self.pan = (cursor_uv - new_h * (2.0 * y_norm - 1.0)).clamp(new_h, 1.0 - new_h);
+        self.set_pan(cursor_uv - 0.5 / self.zoom * (2.0 * y_norm - 1.0));
+    }
+
+    // Keeps the zoomed view inside the full range.
+    fn set_pan(&mut self, pan: f32) {
+        let h = 0.5 / self.zoom;
+        self.pan = pan.clamp(h, 1.0 - h);
     }
 }
 
@@ -327,21 +332,15 @@ fn place_tooltip(bounds: Rectangle, cursor: Point, sz: Size, horizontal: bool) -
     let max_x = (bounds.x + bounds.width - sz.width).max(bounds.x);
     let max_y = (bounds.y + bounds.height - sz.height).max(bounds.y);
     let (x, y) = if horizontal {
-        let x = (cursor.x - sz.width * 0.5).clamp(bounds.x, max_x);
-        let y = if cursor.y - TOOLTIP_OFFSET - sz.height >= bounds.y {
-            cursor.y - TOOLTIP_OFFSET - sz.height
-        } else {
-            (cursor.y + TOOLTIP_OFFSET).min(max_y)
-        };
-        (x, y)
+        let above = cursor.y - TOOLTIP_OFFSET - sz.height;
+        let below = cursor.y + TOOLTIP_OFFSET;
+        let y = if above >= bounds.y { above } else { below };
+        (cursor.x - sz.width * 0.5, y)
     } else {
-        let x = if cursor.x + TOOLTIP_OFFSET + sz.width <= bounds.x + bounds.width {
-            cursor.x + TOOLTIP_OFFSET
-        } else {
-            (cursor.x - TOOLTIP_OFFSET - sz.width).max(bounds.x)
-        };
-        let y = (cursor.y - sz.height * 0.5).clamp(bounds.y, max_y);
-        (x, y)
+        let right = cursor.x + TOOLTIP_OFFSET;
+        let left = cursor.x - TOOLTIP_OFFSET - sz.width;
+        let fits = right + sz.width <= bounds.x + bounds.width;
+        (if fits { right } else { left }, cursor.y - sz.height * 0.5)
     };
     Rectangle::new(
         Point::new(x.clamp(bounds.x, max_x), y.clamp(bounds.y, max_y)),
@@ -584,10 +583,7 @@ impl Spectrogram<'_> {
                 if note.midi_number % 12 == 0 && key_len >= PIANO_LABEL_SIZE {
                     let label = &state.piano_labels[(note.octave() - 1) as usize];
                     let size = label.min_bounds();
-                    let position = Point::new(
-                        key_rect.x + (key_rect.width - size.width) * 0.5,
-                        key_rect.y + (key_rect.height - size.height) * 0.5,
-                    );
+                    let position = key_rect.anchor(size, iced::Center, iced::Center);
                     let label_rect = Rectangle::new(position, size);
                     if label_rect.is_within(&key_rect) {
                         renderer.fill_paragraph(label, position, black, label_rect);
@@ -619,11 +615,10 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'_> {
                 }
                 if let Some((_, origin, start_pan)) = st.drag {
                     let mut state = this.state.borrow_mut();
-                    let h = 0.5 / state.zoom;
                     let turn = state.turn();
                     let current = turn.to_frame(b, *position).y;
-                    state.pan = (start_pan + (current - origin) / turn.frame(b).height / state.zoom)
-                        .clamp(h, 1.0 - h);
+                    let zoom = state.zoom;
+                    state.set_pan(start_pan + (current - origin) / turn.frame(b).height / zoom);
                 }
             }
             iced::Event::Mouse(mouse::Event::CursorLeft) => {
@@ -794,13 +789,8 @@ mod tests {
         (params, pending)
     }
 
-    fn upload_slots((params, pending): &(SpectrogramParams, PendingColumns)) -> Vec<u32> {
-        let count = pending.uploads.len() as u32;
-        (0..count)
-            .map(|offset| {
-                (params.write_slot + params.ring_capacity - count + offset) % params.ring_capacity
-            })
-            .collect()
+    fn upload_slots((params, pending): &(SpectrogramParams, PendingColumns)) -> Vec<usize> {
+        params.newest_slots(pending.uploads.len()).collect()
     }
 
     fn seeded_ring() -> SpectrogramState {

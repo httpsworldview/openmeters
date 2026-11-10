@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::util::{
     audio::{DB_FLOOR, power_to_db},
-    color::{rgba_with_alpha, sample_rgba_gradient},
+    color::{rgba_scale_alpha, sample_rgba_gradient},
 };
 use crate::visuals::options::{WaveformColorMode, WaveformHistoryMode};
 use crate::visuals::render::common::{
@@ -145,7 +145,7 @@ impl WaveformParams {
             let baseline = self.bounds.y + band_height;
             let pts = &mut scratch.points;
             for (band, &color) in self.palette.iter().enumerate() {
-                let fill_color = rgba_with_alpha(color, color[3] * BAND_FILL_ALPHA);
+                let fill_color = rgba_scale_alpha(color, BAND_FILL_ALPHA);
 
                 pts.clear();
                 pts.reserve(columns + 1);

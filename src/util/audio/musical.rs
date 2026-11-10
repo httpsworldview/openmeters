@@ -53,7 +53,6 @@ impl std::fmt::Display for MusicalNote {
     }
 }
 
-// Nearest note and cents deviation for a frequency.
 pub struct NoteInfo {
     pub note: MusicalNote,
     pub cents: i32,

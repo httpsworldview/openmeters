@@ -4,20 +4,21 @@
 use iced::Rectangle;
 use std::sync::Arc;
 
-use crate::util::color::{ramp_segment, rgba_with_alpha};
+use crate::util::color::{ramp_segment, rgba_scale_alpha};
 use crate::util::lerp;
 use crate::visuals::options::SpectrumDisplayMode;
 use crate::visuals::palettes::spectrum::DEFAULT_POSITIONS;
 use crate::visuals::render::common::{
     ClipTransform, GeometryFingerprint, GeometryScratch, QuarterTurn, SdfInstance, SdfPipeline,
     baseline_segment_instance, decimate_line, dot_instance, extend_aa_line_list,
-    gradient_quad_instance, line_instance, pack_f32_pair, quad_instance, replace_quad_instance,
-    sdf_primitive, turn_instances,
+    gradient_quad_instance, line_instance, line_point_budget, pack_f32_pair, quad_instance,
+    replace_quad_instance, sdf_primitive, turn_instances,
 };
 
 pub(super) const MIN_TRACE_POINTS: usize = 2;
 pub(super) const RAMP_SIZE: usize = DEFAULT_POSITIONS.len();
 const MIN_BAR_COUNT: usize = 4;
+pub const MAX_BAR_GAP: f32 = 0.8;
 const LINE_THICKNESS: f32 = 1.0;
 const SECONDARY_LINE_THICKNESS: f32 = 0.75;
 
@@ -34,14 +35,13 @@ pub struct SpectrumCutoutParams {
     pub bounds: Rectangle,
     pub rectangles: Arc<Vec<Rectangle>>,
     pub geometry: crate::visuals::GeometryKey,
-    pub revision: u64,
     pub background: [f32; 4],
 }
 
 impl SpectrumCutoutParams {
     fn geometry_fingerprint(&self) -> GeometryFingerprint {
         [
-            self.revision,
+            self.geometry.revision,
             pack_f32_pair(self.bounds.width, self.bounds.height),
             pack_f32_pair(self.background[0], self.background[1]),
             pack_f32_pair(self.background[2], self.background[3]),
@@ -125,7 +125,7 @@ impl SpectrumParams {
         clip: ClipTransform,
         bounds: Rectangle,
     ) {
-        let pixel_budget = bounds.width.ceil().max(1.0) as usize * 2;
+        let pixel_budget = line_point_budget(bounds.width);
         let GeometryScratch {
             instances: vertices,
             points,
@@ -176,11 +176,11 @@ impl SpectrumParams {
         clip: ClipTransform,
         bounds: Rectangle,
     ) {
-        let pixel_budget = (bounds.width.ceil().max(1.0) as usize).saturating_mul(2);
+        let pixel_budget = line_point_budget(bounds.width);
         let bar_count = self
             .bar_count
             .clamp(MIN_BAR_COUNT, pixel_budget.max(MIN_BAR_COUNT));
-        let gap = self.bar_gap.clamp(0.0, 0.8);
+        let gap = self.bar_gap.clamp(0.0, MAX_BAR_GAP);
         let unit = bounds.width / bar_count as f32;
         let (bar_w, offset) = (unit * (1.0 - gap), unit * gap * 0.5);
         let baseline = bounds.y + bounds.height;
@@ -203,8 +203,8 @@ impl SpectrumParams {
                     x1,
                     baseline,
                     clip,
-                    rgba_with_alpha(color, color[3] * 0.82),
-                    rgba_with_alpha(color, color[3] * 0.22),
+                    rgba_scale_alpha(color, 0.82),
+                    rgba_scale_alpha(color, 0.22),
                 ));
             }
 
@@ -253,6 +253,21 @@ fn sample_lerp_at(pts: &[[f32; 2]], t: f32, index: usize) -> f32 {
     lerp(a[1], b[1], (t - a[0]) / (b[0] - a[0]).max(1e-6))
 }
 
+sdf_primitive!(
+    SpectrumParams,
+    SdfPipeline,
+    "Spectrum",
+    |self| self.geometry.id,
+    Some(self.geometry_fingerprint())
+);
+sdf_primitive!(
+    SpectrumCutoutParams,
+    SdfPipeline<true>,
+    "Spectrum label cutouts",
+    |self| self.geometry.id,
+    Some(self.geometry_fingerprint())
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -272,18 +287,3 @@ mod tests {
         }
     }
 }
-
-sdf_primitive!(
-    SpectrumParams,
-    SdfPipeline,
-    "Spectrum",
-    |self| self.geometry.id,
-    Some(self.geometry_fingerprint())
-);
-sdf_primitive!(
-    SpectrumCutoutParams,
-    SdfPipeline<true>,
-    "Spectrum label cutouts",
-    |self| self.geometry.id,
-    Some(self.geometry_fingerprint())
-);

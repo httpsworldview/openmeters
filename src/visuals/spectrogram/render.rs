@@ -13,7 +13,6 @@ use wgpu::util::DeviceExt as _;
 
 use crate::visuals::render::common::{
     QuarterTurn, RenderPipelineSpec, begin_pass, create_buffer, create_render_pipeline,
-    create_shader_module,
 };
 
 use super::processor::{ColumnKind, SpectrogramColumn, SpectrogramPoint, col_byte_stride};
@@ -74,6 +73,15 @@ pub struct SpectrogramParams {
     pub turn: QuarterTurn,
 }
 
+impl SpectrogramParams {
+    // Ring slots of the newest `count` columns, oldest first.
+    pub(super) fn newest_slots(&self, count: usize) -> impl Iterator<Item = usize> + use<> {
+        let capacity = self.ring_capacity;
+        let first = (self.write_slot + capacity - count as u32) % capacity;
+        (0..count as u32).map(move |offset| ((first + offset) % capacity) as usize)
+    }
+}
+
 impl Primitive for SpectrogramParams {
     type Pipeline = Pipeline;
 
@@ -108,9 +116,8 @@ impl Primitive for SpectrogramParams {
             && uniforms.col_count == (old.col_count + columns).min(hl)
             && uniforms.newest_col == (old.newest_col + columns) % hl;
         res.plan(&mut uniforms, appended.then_some(columns));
-        if uniforms != res.uniform_cache {
+        if crate::util::set_if_changed(&mut res.uniform_cache, uniforms) {
             queue.write_buffer(&res.uniform_buf, 0, bytemuck::bytes_of(&uniforms));
-            res.uniform_cache = uniforms;
         }
     }
 
@@ -246,7 +253,7 @@ impl Uniforms {
             } else {
                 p.points_per_column
             },
-            history_length: p.ring_capacity,
+            history_length: hl,
             col_count: p.col_count,
             rotation: u32::from(p.turn.turns()),
             ring_origin: 0,
@@ -288,11 +295,8 @@ pub struct Pipeline {
 
 impl primitive::Pipeline for Pipeline {
     fn new(device: &wgpu::Device, _: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
-        let shader = create_shader_module(
-            device,
-            "Spectrogram shader",
-            include_str!("../render/shaders/spectrogram.wgsl"),
-        );
+        let shader =
+            device.create_shader_module(wgpu::include_wgsl!("../render/shaders/spectrogram.wgsl"));
         let entry = |binding, visibility, ty| wgpu::BindGroupLayoutEntry {
             binding,
             visibility,
@@ -578,6 +582,10 @@ struct PointPage {
 }
 
 impl PointPage {
+    fn column_bytes(&self) -> u64 {
+        col_byte_stride(ColumnKind::Reassigned, self.stride)
+    }
+
     // A page for columns of `counts` points, of `full` possible, holding at most `counts`;
     // None when none has points. Strides within 1/PAGE_SNAP of full snap to it: dense columns
     // vary just below full, so exact strides would keep growing, and each growth reallocates
@@ -620,7 +628,7 @@ impl PointPage {
         const POINT_BYTES: usize = size_of::<SpectrogramPoint>();
         let count = points.len().min(self.stride as usize);
         let len = count.max(self.stored[slot] as usize) * POINT_BYTES;
-        let offset = slot as u64 * col_byte_stride(ColumnKind::Reassigned, self.stride);
+        let offset = slot as u64 * self.column_bytes();
         let Some(size) = wgpu::BufferSize::new(len as u64) else {
             return;
         };
@@ -669,7 +677,7 @@ impl ColumnRing {
             }
             RingStorage::Reassigned { pages } => {
                 let page = pages[slot / self.layout.page_columns].as_ref()?;
-                let stride = col_byte_stride(ColumnKind::Reassigned, page.stride);
+                let stride = page.column_bytes();
                 Some((
                     &page.buf,
                     (slot % self.layout.page_columns) as u64 * stride,
@@ -956,10 +964,8 @@ impl Resources {
             return;
         };
         let columns = self.ring.layout.page_columns;
-        let uploads = pending.uploads.len();
-        let first = (p.write_slot + p.ring_capacity - uploads as u32) % p.ring_capacity;
-        let pending_pages = (0..uploads).filter_map(|offset| {
-            let slot = (first as usize + offset) % p.ring_capacity as usize;
+        let slots = p.newest_slots(pending.uploads.len()).enumerate();
+        let pending_pages = slots.filter_map(|(offset, slot)| {
             (offset == 0 || slot.is_multiple_of(columns)).then_some(slot / columns)
         });
         let mut encoder = None;
@@ -982,9 +988,9 @@ impl Resources {
                     if bytes > 0 {
                         encoder.copy_buffer_to_buffer(
                             &old.buf,
-                            slot as u64 * col_byte_stride(ColumnKind::Reassigned, old.stride),
+                            slot as u64 * old.column_bytes(),
                             &new.buf,
-                            slot as u64 * col_byte_stride(ColumnKind::Reassigned, new.stride),
+                            slot as u64 * new.column_bytes(),
                             bytes,
                         );
                     }
@@ -1053,16 +1059,13 @@ impl Resources {
             self.classic_upload_scratch
                 .resize((self.ring.layout.stride / 2) as usize, 0);
         }
-        let first = (p.write_slot + p.ring_capacity - uploads.len() as u32) % p.ring_capacity;
-        for (index, column) in uploads.iter().enumerate() {
-            let slot = (first + index as u32) % p.ring_capacity;
+        for (slot, column) in p.newest_slots(uploads.len()).zip(uploads) {
             if let SpectrogramColumn::Reassigned(points) = column {
                 let times = points.iter().map(|point| point.time_offset);
                 let [lo, hi] = times.fold(NO_SPAN, |[lo, hi], t| [lo.min(t), hi.max(t)]);
-                self.spans[slot as usize] = [lo - 0.5, hi + 0.5];
+                self.spans[slot] = [lo - 0.5, hi + 0.5];
                 self.reach = self.reach.max(hi + 0.5);
             }
-            let slot = slot as usize;
             match (&mut self.ring.storage, column) {
                 // Runs skip empty columns, so their slots need no zeroing.
                 (RingStorage::Reassigned { pages }, SpectrogramColumn::Reassigned(points))

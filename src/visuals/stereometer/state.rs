@@ -18,11 +18,13 @@ use iced::{Color, Point, Size};
 use std::sync::Arc;
 
 const CORR_LABEL_SIZE: f32 = 10.0;
+// Limits applied when drawing; the settings sliders span the same ranges.
+pub const MAX_ROTATION: i8 = 4;
+pub const DOT_RADIUS_RANGE: (f32, f32) = (0.5, 8.0);
 
 crate::macros::default_struct! {
     pub(crate) struct StereometerState {
         points: [Arc<[(f32, f32)]>; BAND_COUNT + 1] = Default::default(),
-        band_colors: [Arc<[[f32; 4]]>; BAND_COUNT] = Default::default(),
         trails: [FixedTrail; BAND_COUNT + 1] = Default::default(),
         trail_clock: f32 = 0.0,
         pub(in crate::visuals) palette: [Color; PALETTE_SIZE] = palettes::stereometer::COLORS,
@@ -41,36 +43,14 @@ impl StereometerState {
             self.trails[1..].fill(FixedTrail::default());
         }
         self.settings = StereometerSettings {
-            rotation: s.rotation.clamp(-4, 4),
+            rotation: s.rotation.clamp(-MAX_ROTATION, MAX_ROTATION),
             ..s.clone()
         };
         self.geometry.invalidate();
         self.grid.invalidate();
     }
 
-    pub fn set_palette(&mut self, palette: &[Color; PALETTE_SIZE]) {
-        self.palette = *palette;
-        self.band_colors = Default::default();
-        self.sync_band_colors();
-        self.geometry.invalidate();
-        self.grid.invalidate();
-    }
-
-    fn sync_band_colors(&mut self) {
-        for (band, colors) in self.band_colors.iter_mut().enumerate() {
-            let len = self.points[band + 1].len();
-            if colors.len() == len {
-                continue;
-            }
-            let [r, g, b, a] = color_to_rgba(self.palette[5 + band]);
-            *colors = (0..len)
-                .map(|i| {
-                    let factor = a * (i + 1) as f32 / len as f32;
-                    [r * factor, g * factor, b * factor, 0.0]
-                })
-                .collect();
-        }
-    }
+    crate::visuals::palette_setter!(PALETTE_SIZE => geometry, grid);
 
     pub fn reset_audio(&mut self) {
         self.points = Default::default();
@@ -81,7 +61,6 @@ impl StereometerState {
     pub fn apply_snapshot(&mut self, snap: StereometerSnapshot) {
         self.geometry.invalidate();
         self.points = snap.points;
-        self.sync_band_colors();
         let clock = self.trail_clock + snap.elapsed / CORR_TRAIL_STEP;
         self.trail_clock = clock.fract();
         let bands = 1 + BAND_COUNT * usize::from(self.settings.bands().analyzed());
@@ -118,11 +97,10 @@ impl StereometerState {
             grid: self.grid,
             bounds,
             points: self.points.clone(),
-            band_colors: self.band_colors.clone(),
             palette: self.palette.map(color_to_rgba),
             mode: s.mode,
             scale: s.scale,
-            dot_radius: s.dot_radius.get().clamp(0.5, 8.0),
+            dot_radius: (s.dot_radius.get()).clamp(DOT_RADIUS_RANGE.0, DOT_RADIUS_RANGE.1),
             rotation: s.rotation,
             flip: s.flip,
             unipolar: s.unipolar && s.mode != StereometerMode::Lissajous,

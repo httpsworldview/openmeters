@@ -43,9 +43,7 @@ impl WaveformState {
 
     pub fn apply_snapshot(&mut self, update: WaveformUpdate<'_>) {
         let now = Instant::now();
-        if update.reset
-            || now.saturating_duration_since(self.snapshot_at.get()) > SCROLL_CLOCK_TIMEOUT
-        {
+        if update.reset || self.stalled(now) {
             self.scroll.set((now, update.preview.progress));
         } else {
             let (last, offset) = self.scroll.get();
@@ -82,6 +80,11 @@ impl WaveformState {
         }
     }
 
+    // No snapshot has arrived for long enough that audio is paused or stalled.
+    fn stalled(&self, now: Instant) -> bool {
+        now.saturating_duration_since(self.snapshot_at.get()) > SCROLL_CLOCK_TIMEOUT
+    }
+
     pub(in crate::visuals) fn is_quiescent(&self) -> bool {
         let needed = self.view_columns.get();
         self.quiescent_columns >= needed
@@ -106,7 +109,7 @@ impl WaveformState {
         let now = Instant::now();
         let (last, offset) = self.scroll.get();
         let elapsed = now.saturating_duration_since(last);
-        let stopped = now.saturating_duration_since(self.snapshot_at.get()) > SCROLL_CLOCK_TIMEOUT;
+        let stopped = self.stalled(now);
         let speed = self.settings.scroll_speed.get();
         // Once audio stops (paused or stalled), redraws keep the image where it was drawn.
         let scroll_offset = if stopped {
