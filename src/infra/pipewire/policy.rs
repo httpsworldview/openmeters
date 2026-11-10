@@ -58,15 +58,15 @@ pub(super) fn plan(graph: &Graph, config: &CaptureConfig, tap_id: Option<u32>) -
                 .map_or_else(|| graph.default_sink(), |token| graph.find_device(token));
             if let Some(device) = device {
                 let ports = graph.output_ports(device);
-                let (layout, truncated) = if ports.is_empty() {
-                    (STEREO_LAYOUT.into(), 0)
+                let truncated = ports.len().saturating_sub(MAX_AUDIO_CHANNELS);
+                let layout = if ports.is_empty() {
+                    STEREO_LAYOUT.into()
                 } else {
-                    let truncated = ports.len().saturating_sub(MAX_AUDIO_CHANNELS);
-                    (port_layout(&ports), truncated)
+                    port_layout(&ports)
                 };
-                let target = matches!(device.kind, NodeKind::Sink | NodeKind::Source)
-                    .then(|| device.target_object())
-                    .flatten();
+                let target = device
+                    .serial
+                    .filter(|_| matches!(device.kind, NodeKind::Sink | NodeKind::Source));
                 let (passive, sources) = if target.is_some() {
                     (device.kind == NodeKind::Sink, Vec::new())
                 } else {

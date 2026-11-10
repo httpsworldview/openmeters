@@ -25,7 +25,7 @@ const NATIVE_F32: spa::param::audio::AudioFormat =
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct StreamConfig {
     pub layout: Vec<ChannelPosition>,
-    pub target: Option<String>,
+    pub target: Option<u64>,
     pub passive: bool,
 }
 
@@ -104,8 +104,8 @@ impl Session {
             *pw::keys::NODE_AUTOCONNECT => boolean(config.target.is_some()),
             *pw::keys::APP_NAME => "OpenMeters",
         };
-        if let Some(target) = &config.target {
-            props.insert(*pw::keys::TARGET_OBJECT, target.clone());
+        if let Some(target) = config.target {
+            props.insert(*pw::keys::TARGET_OBJECT, target.to_string());
             props.insert(*pw::keys::NODE_DONT_RECONNECT, "true");
             props.insert("node.dont-fallback", "true");
             props.insert("node.dont-move", "true");

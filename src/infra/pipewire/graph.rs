@@ -7,8 +7,12 @@ use crate::dsp::{ChannelPosition, MAX_AUDIO_CHANNELS};
 use pipewire as pw;
 use pw::registry::GlobalObject;
 use pw::spa::utils::{Direction, dict::DictRef};
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
+use std::str::FromStr;
 use std::sync::Arc;
+
+const NODE_TOKEN_PREFIX: &str = "node#";
 
 macro_rules! channel_positions {
     ($($name:literal => $variant:ident => $id:path),* $(,)?) => {
@@ -18,15 +22,11 @@ macro_rules! channel_positions {
                 [$(($name, Self::$variant)),*]
                     .into_iter()
                     .find_map(|(name, channel)| value.eq_ignore_ascii_case(name).then_some(channel))
-                    .or_else(|| {
-                        value
-                            .get(..3)
-                            .filter(|prefix| prefix.eq_ignore_ascii_case("AUX"))
-                            .and_then(|_| value.get(3..))
-                            .and_then(|number| number.parse::<u8>().ok())
-                            .filter(|number| *number < MAX_AUDIO_CHANNELS as u8)
-                            .map(Self::Aux)
-                    })
+                    .or_else(|| parse_after(value, "AUX").and_then(Self::aux))
+            }
+
+            fn aux(index: u8) -> Option<Self> {
+                (usize::from(index) < MAX_AUDIO_CHANNELS).then_some(Self::Aux(index))
             }
 
             pub(super) const fn spa_id(self) -> u32 {
@@ -40,12 +40,10 @@ macro_rules! channel_positions {
             pub(super) fn from_spa_id(id: u32) -> Self {
                 match id {
                     $($id => Self::$variant,)*
-                    id if (pw::spa::sys::SPA_AUDIO_CHANNEL_AUX0
-                        ..pw::spa::sys::SPA_AUDIO_CHANNEL_AUX0 + MAX_AUDIO_CHANNELS as u32)
-                        .contains(&id) => {
-                            Self::Aux((id - pw::spa::sys::SPA_AUDIO_CHANNEL_AUX0) as u8)
-                        },
-                    _ => Self::Unknown,
+                    id => id
+                        .checked_sub(pw::spa::sys::SPA_AUDIO_CHANNEL_AUX0)
+                        .and_then(|index| Self::aux(u8::try_from(index).ok()?))
+                        .unwrap_or(Self::Unknown),
                 }
             }
         }
@@ -87,14 +85,13 @@ pub(super) struct Port {
 
 impl Port {
     pub(super) fn from_global(global: &GlobalObject<&DictRef>) -> Option<Self> {
-        let get = |key| global.props?.get(key);
         Some(Self {
             global_id: global.id,
-            local_id: get("port.id")?.parse().ok()?,
-            node_id: get("node.id")?.parse().ok()?,
-            channel: get("audio.channel").and_then(ChannelPosition::parse),
-            direction: direction(get("port.direction")),
-            monitor: bool_property(get("port.monitor")),
+            local_id: property(global, "port.id")?.parse().ok()?,
+            node_id: property(global, "node.id")?.parse().ok()?,
+            channel: property(global, "audio.channel").and_then(ChannelPosition::parse),
+            direction: direction(property(global, "port.direction")),
+            monitor: bool_property(property(global, "port.monitor")),
         })
     }
 }
@@ -124,14 +121,14 @@ pub(super) struct Node {
 
 impl Node {
     pub(super) fn from_global(global: &GlobalObject<&DictRef>) -> Self {
-        let get = |key| global.props?.get(key);
-        let name = get("node.name");
-        let media_class = get("media.class");
-        let application_name = get("application.name");
+        let name = property(global, "node.name");
+        let media_class = property(global, "media.class");
+        let application_name = property(global, "application.name");
         let kind = classify(clean_property(media_class));
         let identity = stream_identity(media_class, application_name, name);
         let name = arc_property(name);
-        let description = arc_property(get("node.description")).or_else(|| name.clone());
+        let description =
+            arc_property(property(global, "node.description")).or_else(|| name.clone());
         let application_name = arc_property(application_name);
         let device = application_name.is_none()
             && kind != NodeKind::Playback
@@ -143,12 +140,14 @@ impl Node {
                     .any(|name| contains_ascii(name, "monitor")));
         Self {
             id: global.id,
-            serial: clean_property(get("object.serial")).and_then(|value| value.parse().ok()),
+            serial: clean_property(property(global, "object.serial"))
+                .and_then(|value| value.parse().ok()),
             name,
             description,
             kind,
             device,
-            client_id: clean_property(get("client.id")).and_then(|value| value.parse().ok()),
+            client_id: clean_property(property(global, "client.id"))
+                .and_then(|value| value.parse().ok()),
             identity,
             application_name,
         }
@@ -159,12 +158,26 @@ impl Node {
             .as_ref()
             .or(self.description.as_ref())
             .cloned()
-            .unwrap_or_else(|| Arc::from(format!("node#{}", self.id)))
+            .unwrap_or_else(|| Arc::from(format!("{NODE_TOKEN_PREFIX}{}", self.id)))
     }
 
-    pub(super) fn target_object(&self) -> Option<String> {
-        self.serial.map(|serial| serial.to_string())
+    pub(super) fn application(&self) -> Option<ApplicationView> {
+        let identity = self.identity.as_ref()?;
+        (self.kind == NodeKind::Playback).then(|| ApplicationView {
+            identity: identity.clone(),
+            label: self
+                .application_name
+                .as_ref()
+                .or(self.description.as_ref())
+                .unwrap_or(&identity.0)
+                .clone(),
+            active: false,
+        })
     }
+}
+
+pub(super) fn property<'a>(global: &GlobalObject<&'a DictRef>, key: &str) -> Option<&'a str> {
+    global.props?.get(key)
 }
 
 fn clean_property(value: Option<&str>) -> Option<&str> {
@@ -233,8 +246,7 @@ struct Target {
 #[derive(Default)]
 pub(super) struct Graph {
     nodes: HashMap<u32, Node>,
-    ports: HashMap<u32, Vec<Port>>,
-    port_nodes: HashMap<u32, u32>,
+    ports: HashMap<u32, Port>,
     links: HashMap<u32, GraphLink>,
     clients: HashSet<u32>,
     remembered_apps: HashMap<u32, HashMap<StreamIdentity, ApplicationView>>,
@@ -261,10 +273,8 @@ impl Graph {
     fn ports_in(&self, node: u32, direction: Direction, prefer_monitor: bool) -> Vec<&Port> {
         let mut ports: Vec<_> = self
             .ports
-            .get(&node)
-            .into_iter()
-            .flatten()
-            .filter(|port| port.direction == Some(direction))
+            .values()
+            .filter(|port| port.node_id == node && port.direction == Some(direction))
             .collect();
         if ports.iter().any(|port| port.monitor == prefer_monitor) {
             ports.retain(|port| port.monitor == prefer_monitor);
@@ -284,10 +294,7 @@ impl Graph {
     }
 
     pub(super) fn upsert_port(&mut self, port: Port) {
-        self.port_nodes.insert(port.global_id, port.node_id);
-        let ports = self.ports.entry(port.node_id).or_default();
-        ports.retain(|candidate| candidate.global_id != port.global_id);
-        ports.push(port);
+        self.ports.insert(port.global_id, port);
     }
 
     pub(super) fn upsert_link(&mut self, id: u32, link: GraphLink) {
@@ -296,24 +303,16 @@ impl Graph {
 
     pub(super) fn remove_global(&mut self, id: u32) {
         let _ = self.default_sink.take_if(|target| target.metadata_id == id);
-        if let Some(node_id) = self.port_nodes.remove(&id) {
-            if self.ports.get_mut(&node_id).is_some_and(|ports| {
-                ports.retain(|port| port.global_id != id);
-                ports.is_empty()
-            }) {
-                self.ports.remove(&node_id);
-            }
+        if self.ports.remove(&id).is_some() {
             return;
         }
         if let Some(node) = self.nodes.remove(&id) {
-            self.ports.remove(&id);
-            self.port_nodes.retain(|_, node_id| *node_id != id);
+            self.ports.retain(|_, port| port.node_id != id);
             self.links
                 .retain(|_, link| link.output_node != id && link.input_node != id);
             if let Some(target) = &mut self.default_sink
                 && target.node_id == Some(id)
             {
-                target.node_id = None;
                 target.name.get_or_insert_with(|| node.token());
             }
             self.reconcile_targets();
@@ -357,28 +356,18 @@ impl Graph {
     }
 
     pub(super) fn default_sink(&self) -> Option<&Node> {
-        self.default_sink
-            .as_ref()
-            .and_then(|target| target.node_id)
-            .and_then(|id| self.nodes.get(&id))
+        self.nodes.get(&self.default_sink.as_ref()?.node_id?)
     }
 
     pub(super) fn find_device(&self, token: &str) -> Option<&Node> {
         let candidates = || self.nodes.values().filter(|node| node.device);
-        let token_id = node_token_id(token);
+        let named = |name: Option<&str>| name.is_some_and(|name| name.eq_ignore_ascii_case(token));
+        let token_id = parse_after(token, NODE_TOKEN_PREFIX);
         candidates()
-            .find(|node| {
-                node.name
-                    .as_deref()
-                    .is_some_and(|name| name.eq_ignore_ascii_case(token))
-            })
+            .find(|node| named(node.name.as_deref()))
             .or_else(|| {
-                candidates().find(|node| {
-                    node.description
-                        .as_deref()
-                        .is_some_and(|name| name.eq_ignore_ascii_case(token))
-                        || token_id == Some(node.id)
-                })
+                candidates()
+                    .find(|node| named(node.description.as_deref()) || token_id == Some(node.id))
             })
     }
 
@@ -400,29 +389,21 @@ impl Graph {
             .filter_map(|client| self.remembered_apps.get(client))
             .flat_map(HashMap::values)
             .cloned();
-        let live = self
-            .nodes
-            .values()
-            .filter(|node| node.kind == NodeKind::Playback)
-            .filter_map(|node| {
-                let identity = node.identity.clone()?;
-                Some(ApplicationView {
-                    label: application_label(node, &identity),
-                    identity,
-                    active: self
-                        .external_routes(node.id, tap_id)
-                        .any(|link| link.active),
-                })
-            });
+        let live = self.nodes.values().filter_map(|node| {
+            let application = node.application()?;
+            Some(ApplicationView {
+                active: self
+                    .external_routes(node.id, tap_id)
+                    .any(|link| link.active),
+                ..application
+            })
+        });
         for application in remembered.chain(live) {
             merge_application(&mut applications, application);
         }
         let mut applications: Vec<_> = applications.into_values().collect();
-        applications.sort_by_cached_key(|application| {
-            (
-                application.label.to_ascii_lowercase(),
-                application.identity.clone(),
-            )
+        applications.sort_by(|a, b| {
+            caseless_cmp(&a.label, &b.label).then_with(|| a.identity.cmp(&b.identity))
         });
 
         let mut devices: Vec<_> = self
@@ -431,7 +412,7 @@ impl Graph {
             .filter(|node| node.device)
             .map(Node::token)
             .collect();
-        devices.sort_by_cached_key(|token| token.to_ascii_lowercase());
+        devices.sort_by(|a, b| caseless_cmp(a, b));
         devices.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
 
         let default_sink = self
@@ -450,18 +431,9 @@ impl Graph {
     }
 
     fn remember_application(&mut self, node: &Node) {
-        if node.kind != NodeKind::Playback {
-            return;
+        if let Some((client, application)) = node.client_id.zip(node.application()) {
+            merge_application(self.remembered_apps.entry(client).or_default(), application);
         }
-        let Some((client, identity)) = node.client_id.zip(node.identity.clone()) else {
-            return;
-        };
-        let application = ApplicationView {
-            label: application_label(node, &identity),
-            identity,
-            active: false,
-        };
-        merge_application(self.remembered_apps.entry(client).or_default(), application);
     }
 
     fn reconcile_targets(&mut self) {
@@ -498,29 +470,21 @@ fn merge_application(
         .or_insert(application);
 }
 
+fn caseless_cmp(a: &str, b: &str) -> Ordering {
+    let lower = |byte: u8| byte.to_ascii_lowercase();
+    a.bytes().map(lower).cmp(b.bytes().map(lower))
+}
+
 fn label_precedes(candidate: &str, current: &str) -> bool {
-    candidate
-        .bytes()
-        .map(|byte| byte.to_ascii_lowercase())
-        .cmp(current.bytes().map(|byte| byte.to_ascii_lowercase()))
+    caseless_cmp(candidate, current)
         .then_with(|| candidate.cmp(current))
         .is_lt()
 }
 
-fn application_label(node: &Node, identity: &StreamIdentity) -> Arc<str> {
-    node.application_name
-        .as_ref()
-        .or(node.description.as_ref())
-        .cloned()
-        .unwrap_or_else(|| Arc::clone(&identity.0))
-}
-
-fn node_token_id(token: &str) -> Option<u32> {
-    token
-        .get(..5)
-        .filter(|prefix| prefix.eq_ignore_ascii_case("node#"))
-        .and_then(|_| token.get(5..))
-        .and_then(|id| id.parse().ok())
+fn parse_after<T: FromStr>(value: &str, prefix: &str) -> Option<T> {
+    let (head, tail) = value.split_at_checked(prefix.len())?;
+    let tail = head.eq_ignore_ascii_case(prefix).then_some(tail)?;
+    tail.parse().ok()
 }
 
 fn metadata_name(type_hint: Option<&str>, value: &str) -> Option<String> {

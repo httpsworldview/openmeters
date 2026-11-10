@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::graph::{Graph, GraphLink, Node, Port};
+use super::graph::{Graph, GraphLink, Node, Port, property};
 use super::policy::{self, LinkSpec};
 use super::stream::TapStream;
 use super::transport::{CaptureWriter, StreamStatus};
@@ -68,18 +68,49 @@ fn take_retry_delay(delay: &mut Duration, maximum: Duration) -> Duration {
     current
 }
 
-fn retry_deadline(now: Instant, delay: &mut Duration) -> Instant {
-    now + take_retry_delay(delay, RESOURCE_RETRY_MAX)
+#[derive(Clone, Copy)]
+struct Backoff {
+    retry_at: Option<Instant>,
+    delay: Duration,
+    up_since: Option<Instant>,
 }
 
-fn defer_retry(at: &Cell<Option<Instant>>, delay: &Cell<Duration>, now: Instant) -> bool {
-    if at.get().is_some_and(|deadline| deadline > now) {
-        return false;
+impl Backoff {
+    const IDLE: Self = Self {
+        retry_at: None,
+        delay: RESOURCE_RETRY_MIN,
+        up_since: None,
+    };
+
+    fn pending(&self, now: Instant) -> bool {
+        self.retry_at.is_some_and(|deadline| now < deadline)
     }
-    let mut current = delay.get();
-    at.set(Some(retry_deadline(now, &mut current)));
-    delay.set(current);
-    true
+
+    fn defer(&mut self, now: Instant) {
+        self.retry_at = Some(now + take_retry_delay(&mut self.delay, RESOURCE_RETRY_MAX));
+    }
+
+    fn defer_if_idle(&mut self, now: Instant) -> bool {
+        !self.pending(now) && {
+            self.defer(now);
+            true
+        }
+    }
+
+    fn restart(&mut self) {
+        self.retry_at = None;
+        self.delay = RESOURCE_RETRY_MIN;
+    }
+
+    // Staying up at least as long as the current delay proves the retry.
+    fn settle(&mut self, now: Instant) {
+        if self
+            .up_since
+            .is_some_and(|since| now.duration_since(since) >= self.delay)
+        {
+            self.delay = RESOURCE_RETRY_MIN;
+        }
+    }
 }
 
 pub(super) fn run(
@@ -238,9 +269,7 @@ struct CaptureState {
     owned_links: OwnedLinks,
     tap: TapStream,
     dirty: Rc<Cell<bool>>,
-    stream_retry_at: Option<Instant>,
-    stream_retry_delay: Duration,
-    paused_since: Option<Instant>,
+    stream_backoff: Backoff,
     reported_truncation: usize,
 }
 
@@ -254,23 +283,20 @@ impl CaptureState {
             tap: TapStream::new(core.clone(), writer, Rc::clone(&dirty)),
             owned_links: OwnedLinks::new(core, Rc::clone(&dirty)),
             dirty,
-            stream_retry_at: None,
-            stream_retry_delay: RESOURCE_RETRY_MIN,
-            paused_since: None,
+            stream_backoff: Backoff::IDLE,
             reported_truncation: 0,
         }
     }
 
     fn configuration_changed(&mut self) {
         self.dirty.set(true);
-        self.stream_retry_at = None;
-        self.stream_retry_delay = RESOURCE_RETRY_MIN;
+        self.stream_backoff.restart();
     }
 
     fn defer_stream_retry(&mut self, now: Instant) {
         self.tap.clear_failed();
         self.dirty.set(true);
-        self.stream_retry_at = Some(retry_deadline(now, &mut self.stream_retry_delay));
+        self.stream_backoff.defer(now);
     }
 
     fn reconcile(
@@ -282,17 +308,15 @@ impl CaptureState {
     ) {
         let status = self.tap.status();
         if status != Some(StreamStatus::Paused) {
-            self.paused_since = None;
+            self.stream_backoff.up_since = None;
         }
         match status {
             // Paused only means the server accepted the node; the session manager may still
             // reject its target, so it proves the retry only once it outlasts the backoff.
-            Some(StreamStatus::Streaming) => self.stream_retry_delay = RESOURCE_RETRY_MIN,
+            Some(StreamStatus::Streaming) => self.stream_backoff.delay = RESOURCE_RETRY_MIN,
             Some(StreamStatus::Paused) => {
-                let since = *self.paused_since.get_or_insert(now);
-                if now.duration_since(since) >= self.stream_retry_delay {
-                    self.stream_retry_delay = RESOURCE_RETRY_MIN;
-                }
+                self.stream_backoff.up_since.get_or_insert(now);
+                self.stream_backoff.settle(now);
             }
             Some(StreamStatus::Failed | StreamStatus::Stopped) => {
                 self.owned_links.clear();
@@ -304,7 +328,7 @@ impl CaptureState {
         if !self.dirty.get() && !self.owned_links.retry_due(now) {
             return;
         }
-        if self.stream_retry_at.is_some_and(|deadline| now < deadline) {
+        if self.stream_backoff.pending(now) {
             return;
         }
         self.dirty.set(false);
@@ -319,13 +343,13 @@ impl CaptureState {
 
         if self.tap.config() != Some(&plan.stream) {
             self.owned_links.clear();
-            self.paused_since = None;
+            self.stream_backoff.up_since = None;
             if let Err(err) = self.tap.configure(plan.stream.clone()) {
                 error!("[capture] stream reconfiguration failed: {err}");
                 self.defer_stream_retry(now);
                 return;
             }
-            self.stream_retry_at = None;
+            self.stream_backoff.retry_at = None;
         }
 
         let graph = graph.borrow();
@@ -350,9 +374,7 @@ struct OwnedLinks {
     links: HashMap<LinkSpec, OwnedLink>,
     desired: Vec<LinkSpec>,
     dirty: Rc<Cell<bool>>,
-    retry_at: Rc<Cell<Option<Instant>>>,
-    retry_delay: Rc<Cell<Duration>>,
-    established_since: Rc<Cell<Option<Instant>>>,
+    backoff: Rc<Cell<Backoff>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -376,48 +398,48 @@ impl OwnedLinks {
             links: HashMap::new(),
             desired: Vec::new(),
             dirty,
-            retry_at: Rc::default(),
-            retry_delay: Rc::new(Cell::new(RESOURCE_RETRY_MIN)),
-            established_since: Rc::default(),
+            backoff: Rc::new(Cell::new(Backoff::IDLE)),
         }
     }
 
     fn clear(&mut self) {
         self.links.clear();
         self.desired.clear();
-        self.retry_at.set(None);
-        self.retry_delay.set(RESOURCE_RETRY_MIN);
-        self.established_since.set(None);
+        self.backoff.set(Backoff::IDLE);
     }
 
     fn retry_due(&self, now: Instant) -> bool {
-        self.retry_at.get().is_some_and(|deadline| now >= deadline)
+        let retry_at = self.backoff.get().retry_at;
+        retry_at.is_some_and(|deadline| now >= deadline)
     }
 
     fn apply(&mut self, desired: Vec<LinkSpec>, now: Instant) {
         if self.desired != desired {
             self.desired = desired;
-            self.retry_at.set(None);
-            self.retry_delay.set(RESOURCE_RETRY_MIN);
+            let mut retry = self.backoff.get();
+            retry.restart();
+            self.backoff.set(retry);
         }
         self.links.retain(|spec, link| {
             self.desired.binary_search(spec).is_ok() && link.state.get() != OwnedLinkState::Failed
         });
+        let mut retry = self.backoff.get();
         if self.links.len() == self.desired.len()
             && self
                 .links
                 .values()
                 .all(|link| link.state.get() == OwnedLinkState::Established)
         {
-            let since = self.established_since.get().unwrap_or(now);
-            self.established_since.set(Some(since));
+            retry.up_since.get_or_insert(now);
         } else {
-            self.established_since.set(None);
-            if self.retry_at.get().is_some_and(|deadline| now < deadline) {
+            retry.up_since = None;
+            if retry.pending(now) {
+                self.backoff.set(retry);
                 return;
             }
         }
-        self.retry_at.set(None);
+        retry.retry_at = None;
+        self.backoff.set(retry);
         for spec in self.desired.iter().copied() {
             let Entry::Vacant(entry) = self.links.entry(spec) else {
                 continue;
@@ -439,28 +461,24 @@ impl OwnedLinks {
                     let state = Rc::new(Cell::new(OwnedLinkState::Pending));
                     let fail = {
                         let (state, dirty) = (Rc::clone(&state), Rc::clone(&self.dirty));
-                        let (retry_at, retry_delay) =
-                            (Rc::clone(&self.retry_at), Rc::clone(&self.retry_delay));
-                        let established_since = Rc::clone(&self.established_since);
+                        let backoff = Rc::clone(&self.backoff);
                         Rc::new(move |reason: Option<&str>| {
                             state.set(OwnedLinkState::Failed);
                             dirty.set(true);
                             let now = Instant::now();
+                            let mut retry = backoff.get();
                             // Links someone keeps removing come back between removals; they
                             // prove the retry only once they outlast the backoff.
-                            if established_since
-                                .take()
-                                .is_some_and(|since| now.duration_since(since) >= retry_delay.get())
-                            {
-                                retry_delay.set(RESOURCE_RETRY_MIN);
-                            }
-                            let retry = defer_retry(&retry_at, &retry_delay, now);
+                            retry.settle(now);
+                            retry.up_since = None;
+                            let deferred = retry.defer_if_idle(now);
+                            backoff.set(retry);
                             match reason {
-                                Some(reason) if retry => {
+                                Some(reason) if deferred => {
                                     error!("[pipewire] link failed {spec:?}: {reason}");
                                 }
                                 // Also what a captured stream's end does to its links.
-                                None => tracing::debug!("[pipewire] link removed {spec:?}"),
+                                None => debug!("[pipewire] link removed {spec:?}"),
                                 Some(_) => {}
                             }
                         })
@@ -493,7 +511,9 @@ impl OwnedLinks {
                 }
                 Err(err) => {
                     self.dirty.set(true);
-                    if defer_retry(&self.retry_at, &self.retry_delay, now) {
+                    let mut retry = self.backoff.get();
+                    if retry.defer_if_idle(now) {
+                        self.backoff.set(retry);
                         error!("[pipewire] could not create link {spec:?}: {err}");
                     }
                 }
@@ -570,10 +590,7 @@ impl RegistryContext {
 
     fn add_metadata(&self, global: &GlobalObject<&DictRef>) {
         let id = global.id;
-        let is_default = global
-            .props
-            .as_ref()
-            .and_then(|props| props.get("metadata.name"))
+        let is_default = property(global, "metadata.name")
             .is_some_and(|name| name.eq_ignore_ascii_case(DEFAULT_METADATA));
         if !is_default || self.metadata.borrow().contains_key(&id) {
             return;
@@ -619,7 +636,7 @@ mod tests {
         let public = PublicState::default();
         let now = Instant::now();
         let deadline = now + RESOURCE_RETRY_MIN;
-        capture.stream_retry_at = Some(deadline);
+        capture.stream_backoff.retry_at = Some(deadline);
         let initial = public.view();
         let early = deadline - Duration::from_nanos(1);
         capture.reconcile(&graph, &mut config, &public, early);
@@ -630,7 +647,7 @@ mod tests {
         assert!(capture.tap.config().is_some());
         // Synchronous stream callbacks leave fresh work for the next iteration.
         assert!(capture.dirty.get());
-        assert_eq!(capture.stream_retry_at, None);
+        assert_eq!(capture.stream_backoff.retry_at, None);
         assert!(!Arc::ptr_eq(&initial, &public.view()));
 
         for (status, delay) in [
@@ -639,20 +656,20 @@ mod tests {
         ] {
             writer.borrow_mut().set_status(status);
             capture.dirty.set(true);
-            capture.stream_retry_at = Some(deadline);
-            capture.stream_retry_delay = Duration::from_secs(8);
+            capture.stream_backoff.retry_at = Some(deadline);
+            capture.stream_backoff.delay = Duration::from_secs(8);
             capture.reconcile(&graph, &mut config, &public, now);
-            assert_eq!(capture.stream_retry_delay, delay);
-            assert_eq!(capture.stream_retry_at, Some(deadline));
+            assert_eq!(capture.stream_backoff.delay, delay);
+            assert_eq!(capture.stream_backoff.retry_at, Some(deadline));
             assert!(capture.dirty.get());
         }
         // Staying accepted for longer than the backoff proves the retry.
         writer.borrow_mut().set_status(StreamStatus::Paused);
-        capture.stream_retry_delay = Duration::from_secs(8);
+        capture.stream_backoff.delay = Duration::from_secs(8);
         for (elapsed, delay) in [(1, 8), (8, 8), (9, 1)] {
             let at = now + Duration::from_secs(elapsed);
             capture.reconcile(&graph, &mut config, &public, at);
-            assert_eq!(capture.stream_retry_delay, Duration::from_secs(delay));
+            assert_eq!(capture.stream_backoff.delay, Duration::from_secs(delay));
         }
         // A replacement stream does not inherit the accepted time of the one it replaces, even
         // when it is accepted before reconcile sees it start.
@@ -663,31 +680,40 @@ mod tests {
         capture.dirty.set(true);
         capture.reconcile(&graph, &mut config, &public, now + Duration::from_secs(10));
         writer.borrow_mut().set_status(StreamStatus::Paused);
-        capture.stream_retry_delay = Duration::from_secs(8);
+        capture.stream_backoff.delay = Duration::from_secs(8);
         capture.reconcile(&graph, &mut config, &public, now + Duration::from_secs(11));
-        assert_eq!(capture.stream_retry_delay, Duration::from_secs(8));
+        assert_eq!(capture.stream_backoff.delay, Duration::from_secs(8));
         for status in [StreamStatus::Failed, StreamStatus::Stopped] {
             let published = public.view();
-            capture.owned_links.retry_at.set(Some(now));
-            capture.owned_links.retry_delay.set(Duration::from_secs(8));
-            capture.stream_retry_delay = Duration::from_secs(8);
+            capture.owned_links.backoff.update(|backoff| Backoff {
+                retry_at: Some(now),
+                delay: Duration::from_secs(8),
+                ..backoff
+            });
+            capture.stream_backoff.delay = Duration::from_secs(8);
             capture.dirty.set(false);
             writer.borrow_mut().set_status(status);
             capture.reconcile(&graph, &mut config, &public, now);
             assert!(capture.tap.config().is_none());
-            assert_eq!(capture.owned_links.retry_at.get(), None);
-            assert_eq!(capture.owned_links.retry_delay.get(), RESOURCE_RETRY_MIN);
-            assert_eq!(capture.stream_retry_at, Some(now + Duration::from_secs(8)));
-            assert_eq!(capture.stream_retry_delay, Duration::from_secs(16));
+            assert_eq!(capture.owned_links.backoff.get().retry_at, None);
+            assert_eq!(capture.owned_links.backoff.get().delay, RESOURCE_RETRY_MIN);
+            assert_eq!(
+                capture.stream_backoff.retry_at,
+                Some(now + Duration::from_secs(8))
+            );
+            assert_eq!(capture.stream_backoff.delay, Duration::from_secs(16));
             capture.reconcile(&graph, &mut config, &public, now + Duration::from_secs(1));
-            assert_eq!(capture.stream_retry_at, Some(now + Duration::from_secs(8)));
-            assert_eq!(capture.stream_retry_delay, Duration::from_secs(16));
+            assert_eq!(
+                capture.stream_backoff.retry_at,
+                Some(now + Duration::from_secs(8))
+            );
+            assert_eq!(capture.stream_backoff.delay, Duration::from_secs(16));
             assert!(capture.dirty.get());
             assert!(Arc::ptr_eq(&published, &public.view()));
             capture.dirty.set(false);
             capture.configuration_changed();
-            assert_eq!(capture.stream_retry_at, None);
-            assert_eq!(capture.stream_retry_delay, RESOURCE_RETRY_MIN);
+            assert_eq!(capture.stream_backoff.retry_at, None);
+            assert_eq!(capture.stream_backoff.delay, RESOURCE_RETRY_MIN);
             assert!(capture.dirty.get());
             capture.reconcile(&graph, &mut config, &public, now);
             assert!(capture.tap.config().is_some());
@@ -700,11 +726,14 @@ mod tests {
             ..Default::default()
         });
         let published = public.view();
-        capture.owned_links.retry_at.set(Some(deadline));
+        capture.owned_links.backoff.update(|backoff| Backoff {
+            retry_at: Some(deadline),
+            ..backoff
+        });
         capture.reconcile(&graph, &mut config, &public, now);
         assert!(Arc::ptr_eq(&published, &public.view()));
         capture.reconcile(&graph, &mut config, &public, deadline);
         assert!(!Arc::ptr_eq(&published, &public.view()));
-        assert_eq!(capture.owned_links.retry_at.get(), None);
+        assert_eq!(capture.owned_links.backoff.get().retry_at, None);
     }
 }
