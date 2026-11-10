@@ -18,7 +18,7 @@ const BLOCK_SAMPLES: usize = BLOCK_FRAMES * MAX_AUDIO_CHANNELS;
 // Front-packet age from its end; current activity epoch only.
 const MAX_BACKLOG: Duration = Duration::from_secs(1);
 // 4/3 s of full packets at maximum rate.
-const RING_BLOCKS: usize = (SampleRate::MAX as usize * 4).div_ceil(BLOCK_FRAMES * 3);
+const RING_BLOCKS: usize = backlog_packets(SampleRate::MAX as usize, BLOCK_FRAMES);
 const PCM_FLUSH_SAMPLES: usize = BLOCK_SAMPLES * 4;
 // Packet-duration target, not a flush timer.
 const PACKET_FLUSH_INTERVAL: Duration = Duration::from_millis(50);
@@ -27,13 +27,17 @@ const IDLE_WATCHDOG: Duration = Duration::from_millis(100);
 // Device and system clocks drift apart; continuous packets follow the latter within this.
 const CLOCK_DRIFT_LIMIT: Duration = Duration::from_millis(10);
 
+// Packets spanning 4/3 s.
+const fn backlog_packets(rate: usize, packet_frames: usize) -> usize {
+    (rate * 4).div_ceil(packet_frames * 3)
+}
+
 fn packet_frame_limit(rate: u64) -> usize {
-    (u128::from(rate) * PACKET_FLUSH_INTERVAL.as_nanos() / 1_000_000_000)
-        .clamp(1, BLOCK_FRAMES as u128) as usize
+    ns_frames(nanos(PACKET_FLUSH_INTERVAL), rate).clamp(1, BLOCK_FRAMES as u64) as usize
 }
 
 fn packet_pool_limit(rate: u64, queue_capacity: usize) -> usize {
-    ((rate as usize * 4).div_ceil(packet_frame_limit(rate) * 3)).min(queue_capacity) + 1
+    backlog_packets(rate as usize, packet_frame_limit(rate)).min(queue_capacity) + 1
 }
 
 // Long quanta deliver whole callbacks at once, so the grace spans the longer of a packet and
@@ -59,7 +63,6 @@ pub enum CapturedSpan<'a> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u8)]
 pub(super) enum StreamStatus {
     Starting,
     Paused,
@@ -91,7 +94,7 @@ enum IngestState {
 
 struct Shared {
     epoch: Instant,
-    status: AtomicU8,
+    streaming: AtomicBool,
     format: RwLock<AudioFormat>,
     fault_epoch: AtomicU64,
     activity_epoch: AtomicU64,
@@ -108,7 +111,7 @@ impl Shared {
         let (wake_sender, wake_receiver) = async_channel::bounded(1);
         Self {
             epoch: Instant::now(),
-            status: AtomicU8::new(StreamStatus::Starting as u8),
+            streaming: AtomicBool::new(false),
             format: RwLock::new(AudioFormat::fallback(2, SampleRate::DEFAULT)),
             fault_epoch: AtomicU64::new(0),
             activity_epoch: AtomicU64::new(0),
@@ -121,8 +124,12 @@ impl Shared {
         }
     }
 
+    fn ns_at(&self, at: Instant) -> u64 {
+        nanos(at.saturating_duration_since(self.epoch))
+    }
+
     fn now_ns(&self) -> u64 {
-        nanos(self.epoch.elapsed())
+        self.ns_at(Instant::now())
     }
 
     fn format(&self) -> AudioFormat {
@@ -184,22 +191,33 @@ fn scale(value: u64, numerator: u64, denominator: u64) -> u64 {
         as u64
 }
 
+pub(super) struct PcmChunk {
+    head: Range<usize>,
+    tail: Range<usize>,
+    pub(super) frames: u64,
+}
+
 pub(super) fn pcm_chunk(
     max: usize,
     offset: u32,
     size: u32,
     frame_bytes: usize,
-) -> Option<[Range<usize>; 2]> {
+) -> Option<PcmChunk> {
     if max == 0 {
         return None;
     }
-    let len = (size as usize).min(max) / frame_bytes * frame_bytes;
-    if len == 0 {
+    let frames = (size as usize).min(max) / frame_bytes;
+    if frames == 0 {
         return None;
     }
+    let len = frames * frame_bytes;
     let start = offset as usize % max;
     let first = len.min(max - start);
-    Some([start..start + first, 0..len - first])
+    Some(PcmChunk {
+        head: start..start + first,
+        tail: 0..len - first,
+        frames: frames as u64,
+    })
 }
 
 // Producer IIR tails can settle on subnormals, which *MIGHT* stall
@@ -212,8 +230,8 @@ fn sanitize_pcm(mut sample: f32) -> f32 {
     sample
 }
 
-fn pcm_has_signal(bytes: &[u8], chunk: &[Range<usize>; 2]) -> bool {
-    let mut source = Read::chain(&bytes[chunk[0].clone()], &bytes[chunk[1].clone()]);
+fn pcm_has_signal(bytes: &[u8], chunk: &PcmChunk) -> bool {
+    let mut source = Read::chain(&bytes[chunk.head.clone()], &bytes[chunk.tail.clone()]);
     let mut raw = [0; 4];
     std::iter::from_fn(|| {
         source.read_exact(&mut raw).ok()?;
@@ -236,6 +254,7 @@ pub(super) struct CaptureWriter {
     producer: Producer<Packet>,
     recycled: Consumer<Box<[f32]>>,
     shared: Arc<Shared>,
+    status: StreamStatus,
     pub(super) format: Option<AudioFormat>,
     pending: Option<Packet>,
     pool: Vec<Box<[f32]>>,
@@ -251,21 +270,17 @@ pub(super) struct CaptureWriter {
 
 impl CaptureWriter {
     pub(super) fn set_status(&mut self, status: StreamStatus) {
-        if status != StreamStatus::Streaming {
+        let streaming = status == StreamStatus::Streaming;
+        if !streaming {
             self.drop_stale_pending();
             self.flush_pending();
         }
-        self.shared.status.store(status as u8, Ordering::Release);
+        self.status = status;
+        self.shared.streaming.store(streaming, Ordering::Release);
     }
 
     pub(super) fn status(&self) -> StreamStatus {
-        match self.shared.status.load(Ordering::Acquire) {
-            value if value == StreamStatus::Paused as u8 => StreamStatus::Paused,
-            value if value == StreamStatus::Streaming as u8 => StreamStatus::Streaming,
-            value if value == StreamStatus::Failed as u8 => StreamStatus::Failed,
-            value if value == StreamStatus::Stopped as u8 => StreamStatus::Stopped,
-            _ => StreamStatus::Starting,
-        }
+        self.status
     }
 
     pub(super) fn clear_format(&mut self) {
@@ -286,8 +301,7 @@ impl CaptureWriter {
 
     pub(super) fn disconnect(&mut self) {
         self.discard_pending();
-        self.clear_pool();
-        self.format = None;
+        self.clear_format();
         if !self.disconnected {
             self.shared.fault();
             self.disconnected = true;
@@ -331,22 +345,22 @@ impl CaptureWriter {
         self.shared.reconnects.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub(super) fn push_pcm(&mut self, bytes: &[u8], chunk: &[Range<usize>; 2], frames: u64) {
+    pub(super) fn push_pcm(&mut self, bytes: &[u8], chunk: &PcmChunk) {
         let Some(format) = self.format else { return };
         let mut wake = false;
         loop {
             let dormant = self.shared.ingest() == IngestState::Dormant;
             let mut signal = dormant && pcm_has_signal(bytes, chunk);
             if dormant && !signal {
-                self.push_frames(format, frames, true, |samples| samples.fill(0.0));
+                self.push_frames(format, chunk.frames, true, |samples| samples.fill(0.0));
                 return;
             }
             self.drop_stale_pending();
             wake |= signal && self.shared.wake_ingestion();
 
             let previous_timing = self.previous_timing.clone();
-            let mut source = Read::chain(&bytes[chunk[0].clone()], &bytes[chunk[1].clone()]);
-            let accepted = self.push_frames(format, frames, true, |samples| {
+            let mut source = Read::chain(&bytes[chunk.head.clone()], &bytes[chunk.tail.clone()]);
+            let accepted = self.push_frames(format, chunk.frames, true, |samples| {
                 source
                     .read_exact(bytemuck::cast_slice_mut(samples))
                     .expect("valid PCM bounds");
@@ -390,11 +404,11 @@ impl CaptureWriter {
         pcm: bool,
         mut write: impl FnMut(&mut [f32]),
     ) -> bool {
-        if !self.accepting() {
-            self.timing(frames, format);
+        let accepting = self.accepting();
+        let (start, end) = self.timing(frames, format);
+        if !accepting {
             return false;
         }
-        let (start, end) = self.timing(frames, format);
         let packet_frames = packet_frame_limit(format.rate()) as u64;
         let mut offset = 0;
         while offset < frames {
@@ -622,7 +636,7 @@ impl AudioReader {
         if self.shared.ingest() != IngestState::Active {
             return;
         }
-        let now_ns = nanos(now.saturating_duration_since(self.shared.epoch));
+        let now_ns = self.shared.ns_at(now);
         if std::mem::take(&mut self.dormant)
             && self.fault_epoch == self.shared.fault_epoch.load(Ordering::Acquire)
             && self.format == self.shared.format()
@@ -656,7 +670,7 @@ impl AudioReader {
         }
 
         let format = self.shared.format();
-        let streaming = self.shared.status.load(Ordering::Acquire) == StreamStatus::Streaming as u8;
+        let streaming = self.shared.streaming.load(Ordering::Acquire);
         if !streaming {
             self.align_next_packet = true;
         }
@@ -695,7 +709,7 @@ impl AudioReader {
         if self.shared.ingest.swap(next as u8, Ordering::AcqRel) == next as u8 {
             return false;
         }
-        self.discard(Instant::now());
+        self.discard();
         true
     }
 
@@ -727,9 +741,9 @@ impl AudioReader {
         AudioWake(Arc::clone(&self.shared))
     }
 
-    pub fn discard(&mut self, now: Instant) {
+    pub(super) fn discard(&mut self) {
         self.shared.activity_epoch.fetch_add(1, Ordering::AcqRel);
-        self.reset_timeline(nanos(now.saturating_duration_since(self.shared.epoch)));
+        self.reset_timeline(self.shared.now_ns());
     }
 
     #[cfg(test)]
@@ -751,9 +765,7 @@ impl AudioReader {
 
     fn accept(&mut self, packet: Packet, consume: &mut impl FnMut(CapturedSpan<'_>)) {
         if packet.epoch != self.shared.activity_epoch.load(Ordering::Acquire) {
-            if let Some(samples) = packet.samples {
-                let _ = self.recycler.push(samples);
-            }
+            self.recycle(packet.samples);
             return;
         }
         let Packet {
@@ -789,7 +801,7 @@ impl AudioReader {
                 self.scratch
                     .extend_from_slice(&samples[from..frames as usize * format.channels()]);
             }
-            let _ = self.recycler.push(samples);
+            self.recycle(Some(samples));
         } else if skip < frames {
             self.flush(consume);
             consume(CapturedSpan::Silence {
@@ -817,11 +829,13 @@ impl AudioReader {
         self.scratch.clear();
     }
 
+    fn recycle(&mut self, samples: Option<Box<[f32]>>) {
+        let _ = samples.map(|samples| self.recycler.push(samples));
+    }
+
     fn reset_timeline(&mut self, cursor: u64) {
         while let Ok(packet) = self.consumer.pop() {
-            if let Some(samples) = packet.samples {
-                let _ = self.recycler.push(samples);
-            }
+            self.recycle(packet.samples);
         }
         self.scratch.clear();
         self.cursor = cursor;
@@ -855,6 +869,7 @@ fn channel_with_capacity(capacity: usize) -> (CaptureWriter, AudioReader) {
             producer,
             recycled,
             shared: Arc::clone(&shared),
+            status: StreamStatus::Starting,
             format: None,
             pending: None,
             pool: Vec::new(),
@@ -955,7 +970,7 @@ mod tests {
         let mut bytes = bytemuck::cast_slice(&[1.0_f32, f32::NAN, 2.0, 1.0e-40, -1.0e-30]).to_vec();
         bytes.rotate_right(3);
         let chunk = pcm_chunk(bytes.len(), 3, bytes.len() as u32, size_of::<f32>()).unwrap();
-        writer.push_pcm(&bytes, &chunk, 5);
+        writer.push_pcm(&bytes, &chunk);
         assert!(writer.flush_pending());
         let samples = reader.consumer.pop().unwrap().samples.unwrap();
         assert_eq!(&samples[..5], &[1.0, 0.0, 2.0, 0.0, 0.0]);
@@ -970,7 +985,7 @@ mod tests {
             if exhaust_pool {
                 writer.pool.clear();
             }
-            writer.push_pcm(bytes, &chunk, 1);
+            writer.push_pcm(bytes, &chunk);
             assert!(writer.flush_pending());
             let end = writer.previous_timing.end;
             let now = writer.shared.epoch + Duration::from_nanos(end + 1) + MAX_BACKLOG;
@@ -994,7 +1009,7 @@ mod tests {
         for quiet in [0.0_f32, 1.0e-40] {
             let quiet = quiet.to_ne_bytes();
             let chunk = pcm_chunk(quiet.len(), 0, quiet.len() as u32, quiet.len()).unwrap();
-            writer.push_pcm(&quiet, &chunk, 1);
+            writer.push_pcm(&quiet, &chunk);
             assert!(!reader.is_active());
             assert!(audio_wake(&wake).try_recv().is_err());
         }
@@ -1002,7 +1017,7 @@ mod tests {
         let mut signal = 0.25_f32.to_ne_bytes();
         signal.rotate_right(1);
         let chunk = pcm_chunk(signal.len(), 1, signal.len() as u32, signal.len()).unwrap();
-        writer.push_pcm(&signal, &chunk, 1);
+        writer.push_pcm(&signal, &chunk);
         assert!(reader.is_active());
         assert_eq!(audio_wake(&wake).try_recv(), Ok(()));
         let mut captured = false;
@@ -1014,7 +1029,7 @@ mod tests {
         assert!(captured);
 
         let (mut writer, mut reader, _) = mono(4, 48_000);
-        writer.push_pcm(&signal, &chunk, 1);
+        writer.push_pcm(&signal, &chunk);
         assert!(!reader.sleep_until_signal());
 
         let (mut writer, mut reader, _) = mono(4, 48_000);

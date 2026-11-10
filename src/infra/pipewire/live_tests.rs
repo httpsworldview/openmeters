@@ -74,7 +74,8 @@ fn checked_output(command: &mut Command, description: &str) -> std::process::Out
         .unwrap_or_else(|err| panic!("failed to run {description}: {err}"));
     assert!(
         output.status.success(),
-        "{description} failed: {}",
+        "{description} failed ({}): {}",
+        output.status,
         String::from_utf8_lossy(&output.stderr)
     );
     output
@@ -129,6 +130,14 @@ impl GraphDump {
                     && json_u64(object, "/info/input-node-id") == Some(u64::from(input_node))
             })
             .count()
+    }
+
+    // A stereo source linked to both its target and the tap.
+    fn fan_out(&self, source: &str, target: &str, tap: u32) -> Option<(u32, u32)> {
+        let source = self.node_id(source)?;
+        let target = self.node_id(target)?;
+        (self.link_count(source, target) == 2 && self.link_count(source, tap) == 2)
+            .then_some((source, target))
     }
 
     fn port(&self, node: u32, direction: &str, channel: &str) -> Option<u32> {
@@ -221,6 +230,14 @@ impl IsolatedPipeWire {
         command
     }
 
+    // A one-shot client tool. A wedged server would leave it waiting forever, so it is
+    // stopped after a few seconds and fails instead.
+    fn tool(&self, program: &str) -> Command {
+        let mut command = self.client_command("timeout");
+        command.args(["-k", "1", "5", program]);
+        command
+    }
+
     fn restart(&mut self) {
         assert!(self.pipewire.is_none() && self.wireplumber.is_none());
         self.pipewire = Some(Process::daemon(self.command("pipewire"), "pipewire"));
@@ -254,7 +271,7 @@ impl IsolatedPipeWire {
     }
 
     fn server_available(&self) -> bool {
-        self.client_command("pw-dump")
+        self.tool("pw-dump")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
@@ -262,7 +279,7 @@ impl IsolatedPipeWire {
     }
 
     fn dump(&self) -> GraphDump {
-        let output = checked_output(&mut self.client_command("pw-dump"), "pw-dump");
+        let output = checked_output(&mut self.tool("pw-dump"), "pw-dump");
         // Older pw-dump can emit removal batches alongside the snapshot.
         let mut objects = HashMap::new();
         for batch in serde_json::Deserializer::from_slice(&output.stdout).into_iter::<Vec<Value>>()
@@ -292,7 +309,7 @@ impl IsolatedPipeWire {
         mut check: impl FnMut(&GraphDump) -> Option<T>,
     ) -> T {
         wait_for(description, || {
-            audio.discard(Instant::now());
+            audio.discard();
             check(&self.dump())
         })
     }
@@ -305,31 +322,31 @@ impl IsolatedPipeWire {
 
     fn create_node(&self, name: &str, props: &str) -> LingeringNode {
         checked_output(
-            self.client_command("pw-cli")
-                .args(["create-node", "adapter", props]),
+            self.tool("pw-cli").args(["create-node", "adapter", props]),
             "create test node",
         );
         let id = self.wait_dump(&format!("test node {name}"), |graph| graph.node_id(name));
         LingeringNode {
             id,
-            cleanup: self.client_command("pw-cli"),
+            cleanup: self.tool("pw-cli"),
         }
     }
 
-    fn test_source(
-        &self,
-        name: &str,
-        media_class: &str,
-        channels: usize,
-        channel_map: &str,
-    ) -> LingeringNode {
+    // A stereo tone fed into the capture side of the `application` loopback.
+    fn test_source(&self, name: &str, application: &str, targets: [&str; 2]) -> LingeringNode {
+        let capture = self.wait_dump(&format!("capture node of {application}"), |graph| {
+            graph.node_id(&format!("{application}.capture"))
+        });
         // Pull tones on the dummy clock; PipeWire 1.0's audiotestsrc driver can stall.
-        self.create_node(
+        let signal = self.create_node(
             name,
             &format!(
-                "{{ factory.name = audiotestsrc node.name = \"{name}\" media.class = \"{media_class}\" application.name = \"OpenMeters Live Signal\" application.id = \"org.openmeters.LiveSignal.{name}\" object.linger = true node.group = pipewire.dummy audio.channels = {channels} audio.position = {channel_map} node.param.Props = {{ live = false wave = 0 volume = 0.25 }} }}"
+                "{{ factory.name = audiotestsrc node.name = \"{name}\" media.class = \"Audio/Source\" application.name = \"OpenMeters Live Signal\" application.id = \"org.openmeters.LiveSignal.{name}\" object.linger = true node.group = pipewire.dummy audio.channels = 2 audio.position = [ FL, FR ] node.param.Props = {{ live = false wave = 0 volume = 0.25 }} }}"
             ),
-        )
+        );
+        let channels = [("FL", targets[0]), ("FR", targets[1])];
+        self.link_nodes(signal.id, capture, &channels, false);
+        signal
     }
 
     fn passive_sink(&self, name: &str) -> LingeringNode {
@@ -360,7 +377,7 @@ impl IsolatedPipeWire {
                 .collect::<Option<Vec<_>>>()
         });
         for (output, input) in ports {
-            let mut command = self.client_command("pw-link");
+            let mut command = self.tool("pw-link");
             if passive {
                 command.arg("--passive");
             }
@@ -411,18 +428,8 @@ impl ApplicationFixture {
             &capture_props,
             &playback_props,
         );
-        server.wait_for_node(&target);
         let source = application_source(server, name, Some(&target), channels, channel_map);
-        let capture = server.wait_dump("application capture node", |graph| {
-            graph.node_id(&format!("{name}.capture"))
-        });
-        let signal = server.test_source(&format!("{name}.signal"), "Audio/Source", 2, "[ FL, FR ]");
-        server.link_nodes(
-            signal.id,
-            capture,
-            &[("FL", signal_targets[0]), ("FR", signal_targets[1])],
-            false,
-        );
+        let signal = server.test_source(&format!("{name}.signal"), name, signal_targets);
         Self {
             _source: source,
             _signal: signal,
@@ -444,6 +451,7 @@ fn application_source(
     let route = target.map_or_else(
         || "node.autoconnect = false".to_owned(),
         |target| {
+            server.wait_for_node(target);
             format!(
                 "node.autoconnect = true target.object = \"{target}\" node.dont-fallback = true node.dont-move = true"
             )
@@ -490,14 +498,9 @@ fn wide_device(server: &IsolatedPipeWire, name: &str) -> (Process, Process, Ling
         &capture_props,
         &playback_props,
     );
-    server.wait_for_node(&input);
     let source_name = format!("{name}.signal");
     let source = application_source(server, &source_name, Some(&input), 10, channel_map);
-    let capture = server.wait_dump("device signal capture node", |graph| {
-        graph.node_id(&format!("{source_name}.capture"))
-    });
-    let signal = server.test_source(&format!("{name}.tone"), "Audio/Source", 2, "[ FL, FR ]");
-    server.link_nodes(signal.id, capture, &[("FL", "FL"), ("FR", "FR")], false);
+    let signal = server.test_source(&format!("{name}.tone"), &source_name, ["FL", "FR"]);
     (loopback, source, signal)
 }
 
@@ -512,6 +515,14 @@ fn property_is(node: &Value, property: &str, expected: &str) -> bool {
                     .as_u64()
                     .is_some_and(|value| expected.parse() == Ok(value))
         })
+}
+
+fn device_config(device: &str) -> CaptureConfig {
+    CaptureConfig {
+        mode: CaptureMode::Device,
+        device: Some(device.into()),
+        ..Default::default()
+    }
 }
 
 fn wait_for<T>(description: &str, mut check: impl FnMut() -> Option<T>) -> T {
@@ -568,7 +579,7 @@ fn live_backend_recovers_after_server_restart() {
     let (mut backend, control, mut audio) =
         AudioBackend::start_with_socket(CaptureConfig::default(), Some(server.remote.clone()))
             .expect("start backend");
-    let tap_name = format!("openmeters.tap.{}", std::process::id());
+    let tap_name = stream::tap_name();
     let initial_tap = server.wait_dump("initial backend session", |graph| graph.node_id(&tap_name));
 
     let fixture_name = format!("openmeters-live-recovery-{}", std::process::id());
@@ -576,12 +587,9 @@ fn live_backend_recovers_after_server_restart() {
     let target_name = format!("{fixture_name}.sink");
     let fixture = ApplicationFixture::active(&server, &fixture_name);
     server.wait_dump("initial recovery capture links", |graph| {
-        let source = graph.node_id(&playback_name)?;
-        let target = graph.node_id(&target_name)?;
-        (graph.link_count(source, target) == 2 && graph.link_count(source, initial_tap) == 2)
-            .then_some(())
+        graph.fan_out(&playback_name, &target_name, initial_tap)
     });
-    audio.discard(Instant::now());
+    audio.discard();
     wait_for_mapped_signal(
         "initial recovery PCM",
         &mut audio,
@@ -592,11 +600,7 @@ fn live_backend_recovers_after_server_restart() {
     server.stop();
     wait_for("backend outage", || (!control.is_alive()).then_some(()));
     drop(fixture);
-    assert!(control.configure(CaptureConfig {
-        mode: CaptureMode::Device,
-        device: Some("openmeters-definitely-missing".into()),
-        ..Default::default()
-    }));
+    assert!(control.configure(device_config("openmeters-definitely-missing")));
 
     server.restart();
     wait_for("configuration received during outage", || {
@@ -612,13 +616,9 @@ fn live_backend_recovers_after_server_restart() {
 
     let recovered = ApplicationFixture::active(&server, &fixture_name);
     let (source, target) = server.wait_dump("recovered capture links", |graph| {
-        let recovered_tap = graph.node_id(&tap_name)?;
-        let source = graph.node_id(&playback_name)?;
-        let target = graph.node_id(&target_name)?;
-        (graph.link_count(source, target) == 2 && graph.link_count(source, recovered_tap) == 2)
-            .then_some((source, target))
+        graph.fan_out(&playback_name, &target_name, graph.node_id(&tap_name)?)
     });
-    audio.discard(Instant::now());
+    audio.discard();
     wait_for_mapped_signal(
         "recovered application PCM",
         &mut audio,
@@ -640,7 +640,7 @@ fn live_capture_preserves_graph_invariants() {
     let (mut backend, control, mut audio) =
         AudioBackend::start_with_socket(CaptureConfig::default(), Some(server.remote.clone()))
             .expect("start backend");
-    let tap_name = format!("openmeters.tap.{}", std::process::id());
+    let tap_name = stream::tap_name();
     let tap_id = server.wait_audio("capture tap", &mut audio, |graph| graph.node_id(&tap_name));
     let graph = server.dump();
     assert!(
@@ -660,11 +660,9 @@ fn live_capture_preserves_graph_invariants() {
     let mut active = ApplicationFixture::active(&server, &active_name);
     let (source_id, target_id, identity) =
         server.wait_audio("active application fan-out", &mut audio, |graph| {
-            let source = graph.node_id(&playback_name)?;
-            let target = graph.node_id(&target_name)?;
+            let (source, target) = graph.fan_out(&playback_name, &target_name, tap_id)?;
             let identity = control.view().applications.first()?.identity.clone();
-            (graph.link_count(source, target) == 2 && graph.link_count(source, tap_id) == 2)
-                .then_some((source, target, identity))
+            Some((source, target, identity))
         });
     let graph = server.dump();
     let tap = graph.node(&tap_name).expect("tap node");
@@ -679,6 +677,14 @@ fn live_capture_preserves_graph_invariants() {
         &[0, 1],
     );
 
+    // The tap keeps its node, the full bus and the stereo application.
+    let stable_mix = |graph: &GraphDump| {
+        let tap = graph.node(&tap_name)?;
+        (json_u64(tap, "/id") == Some(u64::from(tap_id))
+            && graph.link_count(source_id, tap_id) == 2
+            && json_u64(tap, "/info/params/Format/0/channels") == Some(MAX_AUDIO_CHANNELS as u64))
+        .then_some(())
+    };
     for (channels, channel_map, active_channels) in [
         (6, "[ RL, RR, FL, FR, FC, LFE ]", [0, 1, 6, 7]),
         (8, "[ RL, RR, FL, FR, FC, LFE, SL, SR ]", [0, 1, 4, 5]),
@@ -693,14 +699,8 @@ fn live_capture_preserves_graph_invariants() {
             ["RL", "RR"],
         );
         server.wait_audio("surround application mix", &mut audio, |graph| {
-            let tap = graph.node(&tap_name)?;
             let source = graph.node_id(&surround_playback)?;
-            (json_u64(tap, "/id") == Some(u64::from(tap_id))
-                && graph.link_count(source, tap_id) == channels
-                && graph.link_count(source_id, tap_id) == 2
-                && json_u64(tap, "/info/params/Format/0/channels")
-                    == Some(MAX_AUDIO_CHANNELS as u64))
-            .then_some(())
+            stable_mix(graph).filter(|_| graph.link_count(source, tap_id) == channels)
         });
         wait_for_mapped_signal(
             "captured surround application mix",
@@ -710,13 +710,7 @@ fn live_capture_preserves_graph_invariants() {
         );
         drop(surround);
         server.wait_audio("stable application mix", &mut audio, |graph| {
-            let tap = graph.node(&tap_name)?;
-            (json_u64(tap, "/id") == Some(u64::from(tap_id))
-                && graph.node(&surround_playback).is_none()
-                && graph.link_count(source_id, tap_id) == 2
-                && json_u64(tap, "/info/params/Format/0/channels")
-                    == Some(MAX_AUDIO_CHANNELS as u64))
-            .then_some(())
+            stable_mix(graph).filter(|_| graph.node(&surround_playback).is_none())
         });
     }
 
@@ -798,11 +792,7 @@ fn live_capture_preserves_graph_invariants() {
         let target = json_u64(graph.node(&device_node)?, "/info/props/object.serial")?.to_string();
         Some((token, target))
     });
-    assert!(control.configure(CaptureConfig {
-        mode: CaptureMode::Device,
-        device: Some(token.into()),
-        ..Default::default()
-    }));
+    assert!(control.configure(device_config(&token)));
     server.wait_audio("wide device target", &mut audio, |graph| {
         let tap = graph.node(&tap_name)?;
         (property_is(tap, "target.object", &target)
@@ -811,11 +801,7 @@ fn live_capture_preserves_graph_invariants() {
     });
     wait_for_mapped_signal("captured device PCM", &mut audio, WIDE_POSITIONS, &[0, 1]);
 
-    assert!(control.configure(CaptureConfig {
-        mode: CaptureMode::Device,
-        device: Some("openmeters-definitely-missing".into()),
-        ..Default::default()
-    }));
+    assert!(control.configure(device_config("openmeters-definitely-missing")));
     server.wait_audio("missing device idle fallback", &mut audio, |graph| {
         let tap = graph.node(&tap_name)?;
         (tap.pointer("/info/props/target.object").is_none()

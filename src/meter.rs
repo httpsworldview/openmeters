@@ -7,7 +7,7 @@
 //! sample-rate-scaled batches so compositor cadence does not become DSP cadence.
 
 use crate::dsp::{AudioFormat, MAX_AUDIO_CHANNELS, SampleRate};
-use crate::infra::pipewire::{AudioReader, AudioWake, CapturedSpan};
+use crate::infra::pipewire::{AudioReader, CapturedSpan};
 use crate::visuals::registry::{VisualManager, VisualManagerHandle};
 use std::time::Instant;
 
@@ -97,8 +97,12 @@ impl MeterEngine {
         }
     }
 
+    fn running(&self) -> bool {
+        self.active && !self.paused
+    }
+
     pub fn advance(&mut self, now: Instant, allow_quiescence: bool) -> bool {
-        if !self.active || self.paused {
+        if !self.running() {
             return false;
         }
         let Self {
@@ -123,29 +127,28 @@ impl MeterEngine {
     }
 
     pub fn wake(&mut self) -> bool {
-        let active = self.active && !self.paused;
-        if active && self.audio.set_active(true) {
+        let running = self.running();
+        if running && self.audio.set_active(true) {
             self.batcher.clear();
         }
-        active
-    }
-
-    pub fn wake_handle(&self) -> AudioWake {
-        self.audio.wake_handle()
+        running
     }
 
     pub fn set_active(&mut self, active: bool) {
         if crate::util::set_if_changed(&mut self.active, active) {
-            self.audio.set_active(active && !self.paused);
-            self.batcher.clear();
+            self.sync_capture();
         }
     }
 
     pub fn set_paused(&mut self, paused: bool) {
         if crate::util::set_if_changed(&mut self.paused, paused) {
-            self.audio.set_active(self.active && !paused);
-            self.batcher.clear();
+            self.sync_capture();
         }
+    }
+
+    fn sync_capture(&mut self) {
+        self.audio.set_active(self.running());
+        self.batcher.clear();
     }
 }
 

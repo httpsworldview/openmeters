@@ -5,7 +5,7 @@ mod message;
 mod sync;
 mod windowing;
 
-use crate::infra::pipewire::{AudioReader, CaptureControl, audio_wake};
+use crate::infra::pipewire::{AudioReader, AudioWake, CaptureControl, audio_wake};
 use crate::meter::MeterEngine;
 use crate::persistence::settings::{
     BarAlignment, SettingsHandle, clamp_bar_height, settings_changes,
@@ -110,6 +110,7 @@ struct UiApp {
     visuals_page: VisualsPage,
     visual_manager: VisualManagerHandle,
     frames: Rc<RefCell<FrameCoordinator>>,
+    audio_wake: AudioWake,
     settings_handle: SettingsHandle,
     config_window: Option<window::Id>,
     bar_resize_state: Option<BarResizeState>,
@@ -141,16 +142,17 @@ impl UiApp {
             .borrow_mut()
             .take()
             .expect("audio reader already taken");
-        let mut meter_engine = MeterEngine::new(reader, visual_manager.clone());
+        let audio_wake = reader.wake_handle();
+        let mut meter_engine = MeterEngine::new(reader, Rc::clone(&visual_manager));
         meter_engine.set_active(visual_manager.borrow().has_enabled());
 
         let config_page = ConfigPage::new(
             capture,
-            visual_manager.clone(),
+            Rc::clone(&visual_manager),
             settings_handle.clone(),
             use_layershell,
         );
-        let visuals_page = VisualsPage::new(visual_manager.clone(), settings_handle.clone());
+        let visuals_page = VisualsPage::new(Rc::clone(&visual_manager), settings_handle.clone());
         let (main_window, open_task) =
             open_main_window(&settings, use_layershell, config_page.has_bar_outputs());
         let frames = Rc::new(RefCell::new(FrameCoordinator::new(
@@ -162,6 +164,7 @@ impl UiApp {
             visuals_page,
             visual_manager,
             frames,
+            audio_wake,
             settings_handle,
             config_window: None,
             bar_resize_state: None,
@@ -190,12 +193,11 @@ impl UiApp {
             subs.push(event::listen_with(message::bar_drag_events));
         }
         if self.visuals_active() && !self.rendering_paused {
-            let frames = self.frames.borrow();
+            let heartbeat = self.frames.borrow().heartbeat_handle();
             subs.extend([
-                Subscription::run_with(frames.wake_handle(), audio_wake)
+                Subscription::run_with(self.audio_wake.clone(), audio_wake)
                     .map(|_| Message::AudioWake),
-                Subscription::run_with(frames.heartbeat_handle(), frame_watchdog)
-                    .map(Message::Watchdog),
+                Subscription::run_with(heartbeat, frame_watchdog).map(Message::Watchdog),
             ]);
         }
         if self.config_window.is_some()

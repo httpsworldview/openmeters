@@ -109,7 +109,7 @@ You also need native development packages for PipeWire/SPA 0.3.77 or
 newer, Wayland/X11, xkbcommon, fontconfig/freetype, libclang,
 pkg-config, and Vulkan. The ignored live capture tests additionally
 need `pipewire`, `pw-cli`, `pw-link`, `pw-loopback`, `pw-dump`, and
-`wireplumber` executables.
+`wireplumber` executables, plus coreutils' `timeout`.
 
 ## Getting started
 

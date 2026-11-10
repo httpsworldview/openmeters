@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::infra::pipewire::AudioWake;
 use crate::meter::MeterEngine;
 use crate::persistence::settings::VisualFrameRate;
 use iced::advanced::Widget;
@@ -52,6 +51,10 @@ impl FrameHeartbeat {
 
     fn generation(&self) -> u64 {
         self.0.load(Ordering::Relaxed)
+    }
+
+    fn suspended(&self) -> bool {
+        self.generation() & 1 != 0
     }
 }
 
@@ -119,7 +122,7 @@ impl FrameCoordinator {
 
     fn frame(&mut self, window: window::Id, is_main: bool, now: Instant) -> RedrawRequest {
         self.heartbeat.mark();
-        if self.heartbeat.generation() & 1 != 0 {
+        if self.heartbeat.suspended() {
             return RedrawRequest::Wait;
         }
         let Some(interval) = self.rate.interval() else {
@@ -147,12 +150,8 @@ impl FrameCoordinator {
         self.heartbeat.clone()
     }
 
-    pub(in crate::ui) fn wake_handle(&self) -> AudioWake {
-        self.meter.wake_handle()
-    }
-
     pub(in crate::ui) fn wake(&mut self) {
-        if self.heartbeat.generation() & 1 != 0 && self.meter.wake() {
+        if self.heartbeat.suspended() && self.meter.wake() {
             self.restart(false);
         }
     }

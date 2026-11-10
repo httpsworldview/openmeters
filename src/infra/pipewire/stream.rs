@@ -16,11 +16,15 @@ use std::rc::Rc;
 use tracing::{error, info};
 
 const DESCRIPTION: &str = "OpenMeters Audio Tap";
-// Requested latency at DEFAULT_SAMPLE_RATE.
+// Requested latency at SampleRate::DEFAULT.
 const LATENCY_FRAMES: u32 = 256;
 const EMPTY: i32 = spa::sys::SPA_CHUNK_FLAG_EMPTY as i32;
 const NATIVE_F32: spa::param::audio::AudioFormat =
     spa::param::audio::AudioFormat(spa::sys::SPA_AUDIO_FORMAT_F32);
+
+pub(super) fn tap_name() -> String {
+    format!("openmeters.tap.{}", std::process::id())
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct StreamConfig {
@@ -95,7 +99,7 @@ impl Session {
             *pw::keys::MEDIA_TYPE => "Audio",
             *pw::keys::MEDIA_CATEGORY => "Capture",
             *pw::keys::MEDIA_ROLE => "Production",
-            *pw::keys::NODE_NAME => format!("openmeters.tap.{}", std::process::id()),
+            *pw::keys::NODE_NAME => tap_name(),
             *pw::keys::NODE_DESCRIPTION => DESCRIPTION,
             *pw::keys::NODE_VIRTUAL => "true",
             *pw::keys::NODE_LATENCY => format!("{LATENCY_FRAMES}/{}", SampleRate::DEFAULT.get()),
@@ -211,13 +215,12 @@ fn process(stream: &pw::stream::Stream, writer: &mut CaptureWriter) {
     let Some(chunk) = pcm_chunk(data.as_raw().maxsize as usize, offset, size, frame_bytes) else {
         return;
     };
-    let frames = ((chunk[0].len() + chunk[1].len()) / frame_bytes) as u64;
     match classify(flags, header) {
-        BufferKind::Silence => writer.push_silence(frames),
-        BufferKind::Fault => writer.push_fault(frames),
+        BufferKind::Silence => writer.push_silence(chunk.frames),
+        BufferKind::Fault => writer.push_fault(chunk.frames),
         BufferKind::Pcm => match data.data() {
-            Some(bytes) => writer.push_pcm(bytes, &chunk, frames),
-            None => writer.push_fault(frames),
+            Some(bytes) => writer.push_pcm(bytes, &chunk),
+            None => writer.push_fault(chunk.frames),
         },
     }
 }
