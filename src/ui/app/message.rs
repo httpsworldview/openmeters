@@ -4,7 +4,7 @@
 use super::{TOAST_DISPLAY_DURATION, UiApp, windowing::AppWindow};
 use crate::ui::config::{BarOutputChange, BarOutputEvent, ConfigMessage};
 use crate::ui::settings::SettingsMessage;
-use crate::ui::visuals::VisualsMessage;
+use crate::ui::visuals::{VisualsMessage, visual_area};
 use crate::ui::widgets::{fill, page, scroll_glow::ScrollEvent};
 use iced::event::{self, Event};
 use iced::keyboard::{self, Key};
@@ -135,7 +135,7 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
         &msg,
         Message::Tick | Message::Watchdog(_) | Message::Shortcut(..) | Message::ShortcutReleased(_)
     );
-    if !app.rendering_paused && !quiet {
+    if !quiet {
         app.frames.borrow_mut().wake();
     }
     let task = handle(app, msg);
@@ -237,7 +237,8 @@ pub(super) fn view(app: &UiApp, window_id: window::Id) -> Element<'_, Message> {
             .into()
         }
         AppWindow::Popout(popout) => {
-            app.with_frame_clock(window_id, popout.view().map(Message::Visuals))
+            let visual = Element::from(fill(visual_area(popout))).map(Message::Visuals);
+            app.with_frame_clock(window_id, visual)
         }
         AppWindow::Unknown => fill(text("")).into(),
     }
@@ -327,7 +328,7 @@ mod tests {
         name: Option<&str>,
         event: BarOutputEvent,
     ) -> Task<Message> {
-        update(app, Message::BarOutput(id, name.map(str::to_owned), event))
+        update(app, BarOutput(id, name.map(str::to_owned), event))
     }
 
     #[test]
@@ -519,7 +520,7 @@ mod tests {
             let snapshot = app.visual_manager.borrow().snapshot();
             snapshot
                 .iter()
-                .any(|slot| slot.kind == VisualKind::Spectrum && slot.enabled)
+                .any(|slot| slot.kind() == VisualKind::Spectrum && slot.enabled)
         };
 
         edit_file(&|value| {

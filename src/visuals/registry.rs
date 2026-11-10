@@ -6,6 +6,7 @@ pub use crate::domain::visuals::VisualKind;
 use crate::{
     dsp::{AudioBlock, AudioFormat},
     persistence::settings::{PaletteSettings, ThemeFile, VisualConfig, VisualSettings},
+    util::set_if_changed,
 };
 use iced::Element;
 use std::{cell::RefCell, rc::Rc};
@@ -13,6 +14,10 @@ use std::{cell::RefCell, rc::Rc};
 type Shared<T> = Rc<RefCell<T>>;
 
 macro_rules! visuals {
+    (@apply $state:ident, $settings:ident) => {
+        $state.borrow_mut().update_view_settings($settings);
+    };
+    (@apply $state:ident, $settings:ident, $body:block) => { $body };
     ($($variant:ident($default_width_basis:expr, $min_w:expr) =>
        $module:ident :: $processor:ident, $state:ident;
        $(palette_ramp($positions:ident, $spreads:ident);)?
@@ -22,7 +27,7 @@ macro_rules! visuals {
        $(buffered_signal($buffered_signal:ident);)?
        $(pre_ingest($pip:ident, $pis:ident) $pre_ingest_body:block;)?
        $(config($cfg:ident) $($configure:block)?;)?
-       apply($ap:ident, $as:ident, $aset:ident) $apply_body:block;
+       apply($ap:ident, $as:ident, $aset:ident) $($apply_body:block)?;
     )*) => {
         #[derive(Clone)]
         pub(crate) enum VisualContent {
@@ -30,6 +35,12 @@ macro_rules! visuals {
         }
 
         impl VisualContent {
+            pub(crate) fn kind(&self) -> VisualKind {
+                match self {
+                    $(Self::$variant(_) => VisualKind::$variant),*
+                }
+            }
+
             pub(crate) fn render<M: 'static>(&self) -> Element<'_, M> {
                 match self {
                     $(Self::$variant(s) => $module::state::widget(s)),*
@@ -50,11 +61,10 @@ macro_rules! visuals {
                 let state = Rc::new(RefCell::new($module::state::$state::default()));
                 Entry {
                     slot: VisualSlotSnapshot {
-                        kind: VisualKind::$variant,
                         enabled: false,
                         width_basis: $default_width_basis,
                         min_width: $min_w,
-                        content: VisualContent::$variant(state.clone()),
+                        content: VisualContent::$variant(Rc::clone(&state)),
                     },
                     module: Box::new(Visual {
                         processor: $module::processor::$processor::new(Default::default()),
@@ -111,7 +121,7 @@ macro_rules! visuals {
                     $($configure)?
                     $ap.update_config($cfg);
                 })?
-                $apply_body
+                visuals!(@apply $as, $aset $(, $apply_body)?);
                 self.pending_audio = true;
             }
 
@@ -135,18 +145,13 @@ visuals! {
         prepare(prepare);
         buffered_signal(has_buffered_signal);
         pre_ingest(p, s) {
-            let view_width = s.borrow().view_width;
-            let history_length = view_width as usize;
-            let mut cfg = p.config();
-            if view_width > 0 && cfg.history_length != history_length {
-                cfg.history_length = history_length;
+            let (mut cfg, width) = (p.config(), s.borrow().view_width as usize);
+            if width > 0 && set_if_changed(&mut cfg.history_length, width) {
                 p.update_config(cfg);
             }
         };
         config(cfg);
-        apply(p, s, set) {
-            s.borrow_mut().update_view_settings(set);
-        };
+        apply(p, s, set);
 
     Spectrum(400.0, 100.0) =>
         spectrum::SpectrumProcessor, SpectrumState;
@@ -163,36 +168,28 @@ visuals! {
         waveform::WaveformProcessor, WaveformState;
         prepare(prepare);
         pre_ingest(p, s) {
-            let max_columns = s.borrow().view_columns();
             let mut cfg = p.config();
-            if cfg.max_columns != max_columns {
-                cfg.max_columns = max_columns;
+            if set_if_changed(&mut cfg.max_columns, s.borrow().view_columns()) {
                 p.update_config(cfg);
             }
         };
         config(cfg) {
             cfg.bands = set.bands();
         };
-        apply(p, s, set) {
-            s.borrow_mut().update_view_settings(set);
-        };
+        apply(p, s, set);
 
     Oscilloscope(150.0, 100.0) =>
         oscilloscope::OscilloscopeProcessor, OscilloscopeState;
         ignores_audio(ignores_audio);
         config(cfg);
-        apply(p, s, set) {
-            s.borrow_mut().update_view_settings(set);
-        };
+        apply(p, s, set);
 
     Stereometer(150.0, 100.0) =>
         stereometer::StereometerProcessor, StereometerState;
         config(cfg) {
             cfg.bands = set.bands();
         };
-        apply(p, s, set) {
-            s.borrow_mut().update_view_settings(set);
-        };
+        apply(p, s, set);
 
     Loudness(140.0, 140.0) =>
         loudness::LoudnessProcessor, LoudnessState;
@@ -202,9 +199,7 @@ visuals! {
                 p.reset_measurement();
             }
         };
-        apply(_p, s, set) {
-            s.borrow_mut().set_modes(set.left_mode, set.right_mode);
-        };
+        apply(_p, s, set);
 }
 
 struct Visual<P, S> {
@@ -249,11 +244,16 @@ impl Entry {
 
 #[derive(Clone)]
 pub(crate) struct VisualSlotSnapshot {
-    pub kind: VisualKind,
     pub enabled: bool,
     pub width_basis: f32,
     pub min_width: f32,
     pub content: VisualContent,
+}
+
+impl VisualSlotSnapshot {
+    pub fn kind(&self) -> VisualKind {
+        self.content.kind()
+    }
 }
 
 crate::macros::default_struct! {
@@ -266,7 +266,7 @@ impl VisualManager {
     fn position(&self, kind: VisualKind) -> usize {
         self.entries
             .iter()
-            .position(|entry| entry.slot.kind == kind)
+            .position(|entry| entry.slot.kind() == kind)
             .expect("visual kind missing from registry")
     }
     pub fn snapshot(&self) -> Vec<VisualSlotSnapshot> {
@@ -276,7 +276,7 @@ impl VisualManager {
             .collect()
     }
     pub fn order(&self) -> Vec<VisualKind> {
-        self.entries.iter().map(|entry| entry.slot.kind).collect()
+        self.entries.iter().map(|entry| entry.slot.kind()).collect()
     }
     // Outside tests, settings drive visuals through `apply_visual_settings`.
     #[cfg(test)]
@@ -314,7 +314,7 @@ impl VisualManager {
         previous: Option<&VisualSettings>,
     ) {
         for entry in &mut self.entries {
-            let kind = entry.slot.kind;
+            let kind = entry.slot.kind();
             let config = settings.config(kind);
             if previous.is_none_or(|previous| previous.config(kind) != config) {
                 entry.apply_config(config);
@@ -332,13 +332,14 @@ impl VisualManager {
                 order.len() + position(DEFAULT_ORDER).expect("visual kind missing from registry")
             })
         };
-        self.entries.sort_by_key(|entry| rank(entry.slot.kind));
+        self.entries.sort_by_key(|entry| rank(entry.slot.kind()));
     }
     /// Palettes equal in `previous` are kept, so a drag previewed elsewhere stays shown.
     pub fn apply_palettes(&mut self, theme: &ThemeFile, previous: Option<&ThemeFile>) {
         for entry in &mut self.entries {
-            let palette = theme.palettes.get(&entry.slot.kind);
-            if previous.is_none_or(|previous| previous.palettes.get(&entry.slot.kind) != palette) {
+            let kind = entry.slot.kind();
+            let palette = theme.palettes.get(&kind);
+            if previous.is_none_or(|previous| previous.palettes.get(&kind) != palette) {
                 entry.module.apply_palette(palette);
             }
         }
@@ -417,7 +418,7 @@ mod tests {
             manager
                 .entries
                 .iter()
-                .all(|entry| entry.slot.enabled == (entry.slot.kind == VisualKind::Spectrum))
+                .all(|entry| entry.slot.enabled == (entry.slot.kind() == VisualKind::Spectrum))
         );
     }
 

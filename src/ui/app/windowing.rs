@@ -6,14 +6,13 @@ use super::{ActiveSettings, UiApp};
 use crate::persistence::settings::{
     BarAlignment, BarHeight, MainWindowSettings, PopoutWindowSettings, UiSettings, clamp_bar_height,
 };
-use crate::ui::visuals::VisualsMessage;
-use crate::ui::widgets::{fill, scroll_glow::ScrollGlow};
+use crate::ui::widgets::scroll_glow::ScrollGlow;
 use crate::visuals::registry::{VisualContent, VisualKind};
-use iced::widget::mouse_area;
-use iced::{Element, Size, Task, exit, window};
+use iced::{Size, Task, exit, window};
 use iced_exwlshell::reexport::{
     Anchor, KeyboardInteractivity, Layer, LayerSize, NewLayerShellSettings, OutputOption, PixelSize,
 };
+use std::collections::HashMap;
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
 use wayland_client::protocol::wl_registry;
 use wayland_client::{Connection, Dispatch, QueueHandle};
@@ -56,20 +55,13 @@ pub(super) fn bar_anchor(alignment: BarAlignment) -> Anchor {
     }
 }
 
-fn clamp_window_size(size: Size) -> Size {
-    Size::new(
-        size.width.max(WINDOW_MIN_SIZE.width),
-        size.height.max(WINDOW_MIN_SIZE.height),
-    )
-}
-
 fn persisted_window_size(size: Size) -> (u32, u32) {
-    let size = clamp_window_size(size);
+    let size = size.max(WINDOW_MIN_SIZE);
     (size.width.round() as u32, size.height.round() as u32)
 }
 
 fn main_window_size(settings: MainWindowSettings) -> Size {
-    clamp_window_size(Size::new(settings.width as f32, settings.height as f32))
+    Size::new(settings.width as f32, settings.height as f32).max(WINDOW_MIN_SIZE)
 }
 
 fn open_base_window(
@@ -154,10 +146,7 @@ pub(super) fn open_main_window(
 
 fn popout_window_size(settings: PopoutWindowSettings) -> Size {
     let dim = |saved: u32, default| if saved > 0 { saved as f32 } else { default };
-    clamp_window_size(Size::new(
-        dim(settings.width, 400.0),
-        dim(settings.height, 300.0),
-    ))
+    Size::new(dim(settings.width, 400.0), dim(settings.height, 300.0)).max(WINDOW_MIN_SIZE)
 }
 
 pub(super) struct BarResizeState {
@@ -167,25 +156,11 @@ pub(super) struct BarResizeState {
     pub pending_height: BarHeight,
 }
 
-pub(super) struct PopoutWindow {
-    pub kind: VisualKind,
-    pub content: VisualContent,
-}
-
-impl PopoutWindow {
-    pub fn view(&self) -> Element<'_, VisualsMessage> {
-        let msg = VisualsMessage::SettingsRequested(self.kind);
-        mouse_area(fill(self.content.render()))
-            .on_right_press(msg)
-            .into()
-    }
-}
-
 pub(super) enum AppWindow<'a> {
     Main,
     Config,
     Settings(&'a ActiveSettings),
-    Popout(&'a PopoutWindow),
+    Popout(&'a VisualContent),
     Unknown,
 }
 
@@ -222,16 +197,6 @@ impl UiApp {
             Some((old, _)) => Task::batch([window::close(old), open]),
             None => open,
         }
-    }
-
-    fn create_popout_window(&mut self, kind: VisualKind) -> Option<Task<Message>> {
-        let snapshot = self.visual_manager.borrow().snapshot();
-        let slot = snapshot.iter().find(|slot| slot.kind == kind)?;
-        let (id, open) = self.open_popout_base_window(kind);
-        let content = slot.content.clone();
-        self.popout_windows
-            .insert(id, PopoutWindow { kind, content });
-        Some(open)
     }
 
     fn open_popout_base_window(&self, kind: VisualKind) -> (window::Id, Task<Message>) {
@@ -276,7 +241,7 @@ impl UiApp {
         self.take_settings_if(|(window, _)| *window == id);
         if let Some(popout) = self.popout_windows.remove(&id) {
             self.settings_handle
-                .edit(|s| s.visuals.popout_mut(popout.kind).popped_out = false);
+                .edit(|s| s.visuals.popout_mut(popout.kind()).popped_out = false);
         }
         Task::none()
     }
@@ -291,21 +256,23 @@ impl UiApp {
         let restyle = old.decorations != new.decorations;
         let mut tasks: Vec<_> = self
             .popout_windows
-            .extract_if(|_, popout| restyle || !wanted(popout.kind))
+            .extract_if(|_, popout| restyle || !wanted(popout.kind()))
             .map(|(id, _)| window::close(id))
             .collect();
-        let order = self.visual_manager.borrow().order();
-        for kind in order {
-            if wanted(kind)
-                && !self
-                    .popout_windows
-                    .values()
-                    .any(|popout| popout.kind == kind)
-            {
-                tasks.extend(self.create_popout_window(kind));
+        let has_window = |windows: &HashMap<window::Id, VisualContent>, kind| {
+            windows.values().any(|popout| popout.kind() == kind)
+        };
+        let snapshot = self.visual_manager.borrow().snapshot();
+        for slot in &snapshot {
+            let kind = slot.kind();
+            if wanted(kind) && !has_window(&self.popout_windows, kind) {
+                let (id, open) = self.open_popout_base_window(kind);
+                self.popout_windows.insert(id, slot.content.clone());
+                tasks.push(open);
             }
         }
-        self.sync_visuals_page();
+        self.visuals_page
+            .apply_snapshot_excluding(&snapshot, |kind| has_window(&self.popout_windows, kind));
         Task::batch(tasks)
     }
 
@@ -313,7 +280,7 @@ impl UiApp {
         match self.window(window_id) {
             AppWindow::Config => "Configuration - OpenMeters".into(),
             AppWindow::Settings(panel) => format!("{} settings - OpenMeters", panel.kind().label()),
-            AppWindow::Popout(popout) => format!("{} - OpenMeters", popout.kind.label()),
+            AppWindow::Popout(popout) => format!("{} - OpenMeters", popout.kind().label()),
             AppWindow::Main | AppWindow::Unknown => "OpenMeters".into(),
         }
     }
@@ -330,7 +297,7 @@ impl UiApp {
 
     pub(super) fn pop_out_or_dock(&mut self, source_window: window::Id) {
         let (kind, popped_out) = match self.popout_windows.get(&source_window) {
-            Some(popout) => (popout.kind, false),
+            Some(popout) => (popout.kind(), false),
             None => match self.visuals_page.hovered_visual() {
                 Some(kind) => (kind, true),
                 None => return,
@@ -338,16 +305,6 @@ impl UiApp {
         };
         self.settings_handle
             .edit(|s| s.visuals.popout_mut(kind).popped_out = popped_out);
-    }
-
-    fn sync_visuals_page(&mut self) {
-        let snapshot = self.visual_manager.borrow().snapshot();
-        self.visuals_page
-            .apply_snapshot_excluding(&snapshot, |kind| {
-                self.popout_windows
-                    .values()
-                    .any(|window| window.kind == kind)
-            });
     }
 
     fn apply_bar_layout(&self) -> Task<Message> {
@@ -375,7 +332,7 @@ impl UiApp {
         new_size: Size,
     ) -> Task<Message> {
         if let Some(popout) = self.popout_windows.get(&window_id) {
-            let kind = popout.kind;
+            let kind = popout.kind();
             let (width, height) = persisted_window_size(new_size);
             self.settings_handle.observe(|s| {
                 let popout = s.visuals.popout_mut(kind);

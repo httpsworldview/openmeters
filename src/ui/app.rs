@@ -19,7 +19,7 @@ use crate::ui::widgets::{
     frame_clock::{FrameCoordinator, frame_clock, frame_watchdog},
     scroll_glow::ScrollGlow,
 };
-use crate::visuals::registry::{VisualManager, VisualManagerHandle};
+use crate::visuals::registry::{VisualContent, VisualManager, VisualManagerHandle};
 use iced::alignment::{Horizontal, Vertical};
 use iced::event;
 use iced::widget::{Space, container, mouse_area, row, stack, text};
@@ -33,7 +33,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 use windowing::{
-    APP_ID, BarResizeState, MainWindow, PopoutWindow, layershell_available, open_main_window,
+    APP_ID, BarResizeState, MainWindow, layershell_available, open_main_window,
     open_tool_base_window,
 };
 
@@ -121,7 +121,7 @@ struct UiApp {
     settings_window: Option<(window::Id, ActiveSettings)>,
     settings_scroll: ScrollGlow,
     // at most one popout exists for each VisualKind
-    popout_windows: HashMap<window::Id, PopoutWindow>,
+    popout_windows: HashMap<window::Id, VisualContent>,
     exit_warning_until: Option<Instant>,
     held_shortcut: Option<(iced::keyboard::key::Physical, Instant)>,
 }
@@ -192,7 +192,7 @@ impl UiApp {
         if self.bar_resize_state.is_some() {
             subs.push(event::listen_with(message::bar_drag_events));
         }
-        if self.visuals_active() && !self.rendering_paused {
+        if self.rendering() {
             let heartbeat = self.frames.borrow().heartbeat_handle();
             subs.extend([
                 Subscription::run_with(self.audio_wake.clone(), audio_wake)
@@ -211,6 +211,10 @@ impl UiApp {
 
     fn visuals_active(&self) -> bool {
         self.visual_manager.borrow().has_enabled()
+    }
+
+    fn rendering(&self) -> bool {
+        self.visuals_active() && !self.rendering_paused
     }
 
     fn tick(&mut self) {
@@ -281,8 +285,8 @@ impl UiApp {
         content: Element<'a, Message>,
     ) -> Element<'a, Message> {
         let is_main = Some(window) == self.main_window.id();
-        let clock = (self.visuals_active() && !self.rendering_paused)
-            .then(|| frame_clock(Rc::clone(&self.frames), window, is_main));
+        let clock =
+            (self.rendering()).then(|| frame_clock(Rc::clone(&self.frames), window, is_main));
         // The optional layer comes last, so pausing or a toast keeps the content's widget state.
         stack![content, clock].into()
     }

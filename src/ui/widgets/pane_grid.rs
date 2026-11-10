@@ -599,7 +599,7 @@ mod tests {
         );
         let loudness = panes
             .iter()
-            .position(|slot| slot.kind == Pane::Loudness)
+            .position(|slot| slot.kind() == Pane::Loudness)
             .unwrap();
         assert!(
             widths[loudness] >= crate::visuals::loudness::render::MIN_LABELED_WIDTH,

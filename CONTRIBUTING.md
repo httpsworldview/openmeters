@@ -209,7 +209,7 @@ When adding or changing a visual, also check the related wiring:
 - `src/visuals.rs` for module declarations and option enums.
 - `src/visuals/palettes.rs` for default palettes.
 - `src/visuals/registry.rs` for descriptors, settings application,
-  export, enablement, ordering, and sample delivery.
+  enablement, ordering, and sample delivery.
 - `src/persistence/visuals.rs` for serializable visual settings and
   lossy parsing.
 - `src/ui/settings/` for settings panels.

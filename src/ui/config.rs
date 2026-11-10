@@ -565,11 +565,11 @@ impl ConfigPage {
             ConfigMessage::ToggleSection,
             render_toggle_grid(snapshot, |slot| {
                 (
-                    slot.kind.label(),
+                    slot.kind().label(),
                     "",
                     slot.enabled,
                     ConfigMessage::VisualToggled {
-                        kind: slot.kind,
+                        kind: slot.kind(),
                         enabled: !slot.enabled,
                     },
                 )

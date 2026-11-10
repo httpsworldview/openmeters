@@ -15,7 +15,6 @@ use iced::advanced::text::{Paragraph as _, paragraph::Plain};
 use iced::advanced::{graphics::text::Paragraph, mouse, text};
 use iced::{Color, Point, Rectangle, Size};
 
-const GUIDE_LABELS: [&str; 6] = ["0", "-6", "-12", "-18", "-24", "-36"];
 const PEAK_HOLD_SECONDS: f32 = 2.0;
 const PEAK_DECAY_DB_PER_SEC: f32 = 60.0;
 const GUIDE_LABEL_HEIGHT: f32 = 12.0;
@@ -62,7 +61,7 @@ pub(crate) struct LoudnessState {
     pub(in crate::visuals) settings: LoudnessSettings,
     pub(in crate::visuals) palette: [Color; PALETTE_SIZE],
     peaks: [PeakHold; VISIBLE_METER_COUNT],
-    guide_labels: [Paragraph; GUIDE_LABELS.len()],
+    guide_labels: [Paragraph; GUIDE_LEVELS.len()],
     value_label: Plain<Paragraph>,
     range_label: Plain<Paragraph>,
     geometry: crate::visuals::GeometryKey,
@@ -78,9 +77,9 @@ impl Default for LoudnessState {
             settings: LoudnessSettings::default(),
             palette: palettes::loudness::COLORS,
             peaks: [PeakHold::FLOOR; VISIBLE_METER_COUNT],
-            guide_labels: GUIDE_LABELS.map(|label| {
+            guide_labels: GUIDE_LEVELS.map(|level| {
                 Paragraph::with_text(raw_text(
-                    label,
+                    level.to_string().as_str(),
                     10.0,
                     Size::new(LEFT_PADDING, GUIDE_LABEL_HEIGHT),
                 ))
@@ -91,7 +90,7 @@ impl Default for LoudnessState {
             last_click: None,
             reset_requested: false,
         };
-        state.refresh_value_label();
+        state.refresh();
         state
     }
 }
@@ -105,15 +104,13 @@ impl LoudnessState {
     pub fn reset_audio(&mut self) {
         self.snapshot = LoudnessSnapshot::with_floor(DEFAULT_FLOOR_DB, 2);
         self.peaks = [PeakHold::FLOOR; VISIBLE_METER_COUNT];
-        self.refresh_value_label();
-        self.geometry.invalidate();
+        self.refresh();
     }
 
     pub fn reset_measurement(&mut self) {
         self.reset_requested = true;
         self.programme = Programme::default();
-        self.refresh_value_label();
-        self.geometry.invalidate();
+        self.refresh();
     }
 
     fn update(&mut self, event: &iced::Event, cursor: mouse::Cursor, bounds: Rectangle) -> bool {
@@ -137,8 +134,7 @@ impl LoudnessState {
         self.snapshot = snapshot;
         self.programme = programme;
         self.update_peak_holds();
-        self.refresh_value_label();
-        self.geometry.invalidate();
+        self.refresh();
     }
 
     pub(in crate::visuals) fn is_quiescent(&self) -> bool {
@@ -153,14 +149,12 @@ impl LoudnessState {
         self.snapshot == settled && self.peaks.iter().all(|peak| peak.db <= DB_RANGE.0)
     }
 
-    pub fn set_modes(&mut self, left: MeterMode, right: MeterMode) {
-        if self.settings.left_mode != left || self.settings.right_mode != right {
+    pub fn update_view_settings(&mut self, settings: &LoudnessSettings) {
+        if self.settings != *settings {
             self.peaks.fill(PeakHold::FLOOR);
         }
-        self.settings.left_mode = left;
-        self.settings.right_mode = right;
-        self.refresh_value_label();
-        self.geometry.invalidate();
+        self.settings = settings.clone();
+        self.refresh();
     }
 
     crate::visuals::palette_setter!(PALETTE_SIZE => geometry);
@@ -235,7 +229,8 @@ impl LoudnessState {
         }
     }
 
-    fn refresh_value_label(&mut self) {
+    // Brings the labels and geometry up to date with what the state now shows.
+    fn refresh(&mut self) {
         let mode = self.settings.right_mode;
         let value = self.aggregate_channels(mode, MeterSide::Both);
         let text = format!("{value:.1} {}", scale(mode).0);
@@ -247,6 +242,7 @@ impl LoudnessState {
             None => "--".to_owned(),
         };
         (self.range_label).update(raw_text(&range, 10.0, Size::INFINITE));
+        self.geometry.invalidate();
     }
 
     fn update_peak_holds(&mut self) {
@@ -411,6 +407,13 @@ mod tests {
     use super::*;
     use crate::dsp::MAX_AUDIO_CHANNELS;
 
+    fn set_modes(state: &mut LoudnessState, left_mode: MeterMode, right_mode: MeterMode) {
+        state.update_view_settings(&LoudnessSettings {
+            left_mode,
+            right_mode,
+        });
+    }
+
     fn visible_bar_values(state: &LoudnessState) -> [f32; VISIBLE_METER_COUNT] {
         state
             .visual_params(Rectangle::new(Point::ORIGIN, Size::new(200.0, 100.0)))
@@ -481,20 +484,20 @@ mod tests {
 
         assert_eq!(visible_bar_values(&state), [-2.0, -2.0, -9.0]);
 
-        state.set_modes(MeterMode::RmsFast, MeterMode::LufsMomentary);
+        set_modes(&mut state, MeterMode::RmsFast, MeterMode::LufsMomentary);
         assert_eq!(visible_bar_values(&state), [-6.0, -3.0, -7.5]);
         assert_eq!(state.value_label.content(), "-7.5 LUFS");
 
-        state.set_modes(MeterMode::RmsSlow, MeterMode::RmsFast);
+        set_modes(&mut state, MeterMode::RmsSlow, MeterMode::RmsFast);
         assert_eq!(visible_bar_values(&state), [-6.0, -3.0, -3.0]);
         assert_eq!(state.value_label.content(), "-3.0 dB");
 
-        state.set_modes(MeterMode::LufsShortTerm, MeterMode::RmsSlow);
+        set_modes(&mut state, MeterMode::LufsShortTerm, MeterMode::RmsSlow);
         assert_eq!(visible_bar_values(&state), [-9.0, -9.0, -3.0]);
         assert_eq!(state.value_label.content(), "-3.0 dB");
         assert!(state.range_label.content().is_empty());
 
-        state.set_modes(MeterMode::RmsSlow, MeterMode::LufsIntegrated);
+        set_modes(&mut state, MeterMode::RmsSlow, MeterMode::LufsIntegrated);
         state.apply_snapshot((snapshot, programme));
         assert_eq!(visible_bar_values(&state), [-6.0, -3.0, -14.0]);
         fn labels(state: &LoudnessState) -> [&str; 2] {
@@ -520,7 +523,7 @@ mod tests {
         assert!(std::mem::take(&mut state.reset_requested));
         assert_eq!(visible_bar_values(&state)[2], DEFAULT_FLOOR_DB);
         assert_eq!(labels(&state), ["-99.9 LUFS", "--"]);
-        state.set_modes(MeterMode::RmsSlow, MeterMode::RmsSlow);
+        set_modes(&mut state, MeterMode::RmsSlow, MeterMode::RmsSlow);
         assert!(!click(&mut state, position) && !click(&mut state, position));
         assert!(!state.reset_requested);
     }
@@ -539,7 +542,7 @@ mod tests {
             [floor, 6.0, 6.0],
         ];
         let mut state = LoudnessState::default();
-        state.set_modes(MeterMode::TruePeak, MeterMode::TruePeak);
+        set_modes(&mut state, MeterMode::TruePeak, MeterMode::TruePeak);
         for order in [[0, 1, 2, 3, 4, 5, 6, 7], [7, 4, 2, 0, 6, 5, 1, 3]] {
             for (channel, &position) in order.iter().enumerate() {
                 let mut snapshot = LoudnessSnapshot::with_floor(floor, MAX_AUDIO_CHANNELS);
@@ -559,7 +562,7 @@ mod tests {
     #[test]
     fn true_peak_label_preserves_levels_below_the_bar_range() {
         let mut state = LoudnessState::default();
-        state.set_modes(MeterMode::TruePeak, MeterMode::TruePeak);
+        set_modes(&mut state, MeterMode::TruePeak, MeterMode::TruePeak);
         let mut snapshot = LoudnessSnapshot::with_floor(-99.9, 2);
         snapshot.true_peak_db[1] = -80.0;
         state.apply_snapshot((snapshot, Programme::default()));
@@ -579,7 +582,7 @@ mod tests {
             positions: [ChannelPosition::Unknown; MAX_AUDIO_CHANNELS],
         };
         let mut state = LoudnessState::default();
-        state.set_modes(MeterMode::TruePeak, MeterMode::TruePeak);
+        set_modes(&mut state, MeterMode::TruePeak, MeterMode::TruePeak);
 
         let mut mono = [DB_RANGE.0; MAX_AUDIO_CHANNELS];
         mono[0] = -12.0;

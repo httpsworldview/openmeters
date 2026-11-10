@@ -3,8 +3,10 @@
 
 use crate::persistence::settings::SettingsHandle;
 use crate::ui::widgets::pane_grid::{self, Content as PaneContent, Pane};
-use crate::visuals::registry::{VisualKind, VisualManagerHandle, VisualSlotSnapshot};
-use iced::widget::{container, mouse_area, text};
+use crate::visuals::registry::{
+    VisualContent, VisualKind, VisualManagerHandle, VisualSlotSnapshot,
+};
+use iced::widget::{MouseArea, container, mouse_area, text};
 use iced::{Element, Length};
 
 #[derive(Debug, Clone)]
@@ -13,6 +15,10 @@ pub enum VisualsMessage {
     PaneResized(pane_grid::ResizeWidths),
     PaneHovered(Option<Pane>),
     SettingsRequested(VisualKind),
+}
+
+pub(in crate::ui) fn visual_area(content: &VisualContent) -> MouseArea<'_, VisualsMessage> {
+    mouse_area(content.render()).on_right_press(VisualsMessage::SettingsRequested(content.kind()))
 }
 
 pub struct VisualsPage {
@@ -39,14 +45,14 @@ impl VisualsPage {
         match message {
             VisualsMessage::PaneResized(widths) => {
                 let bases = widths.into_iter().filter_map(|(pane, basis)| {
-                    let shown = self.panes.iter().any(|visual| visual.kind == pane);
+                    let shown = self.panes.iter().any(|visual| visual.kind() == pane);
                     shown.then_some((pane, crate::util::finite_positive(basis)?))
                 });
                 let bases: Vec<_> = bases.collect();
                 self.settings.edit(|s| s.visuals.width_basis.extend(bases));
             }
             VisualsMessage::PaneMoved(pane, to) => {
-                let mut shown: Vec<_> = self.panes.iter().map(|visual| visual.kind).collect();
+                let mut shown: Vec<_> = self.panes.iter().map(VisualSlotSnapshot::kind).collect();
                 let Some(from) = shown.iter().position(|&kind| kind == pane) else {
                     return;
                 };
@@ -72,7 +78,7 @@ impl VisualsPage {
 
     pub fn hovered_visual(&self) -> Option<VisualKind> {
         self.hovered_pane
-            .filter(|&hovered| self.panes.iter().any(|visual| visual.kind == hovered))
+            .filter(|&hovered| self.panes.iter().any(|visual| visual.kind() == hovered))
     }
 
     pub fn view(&self, reorder_enabled: bool) -> Element<'_, VisualsMessage> {
@@ -86,10 +92,9 @@ impl VisualsPage {
             &self.panes,
             |visual| {
                 (
-                    visual.kind,
+                    visual.kind(),
                     PaneContent::new(
-                        mouse_area(visual.content.render())
-                            .on_right_press(VisualsMessage::SettingsRequested(visual.kind)),
+                        visual_area(&visual.content),
                         visual.min_width,
                         visual.width_basis,
                     ),
@@ -108,7 +113,7 @@ impl VisualsPage {
     ) {
         let shown = snapshot
             .iter()
-            .filter(|slot| slot.enabled && !exclude(slot.kind));
+            .filter(|slot| slot.enabled && !exclude(slot.kind()));
         self.panes = shown.cloned().collect();
     }
 }
