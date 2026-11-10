@@ -197,7 +197,7 @@ struct Uniforms {
 }
 
 // Rust layout checks against expected WGSL values.
-const _: () = assert!(std::mem::size_of::<Uniforms>() == 224);
+const _: () = assert!(size_of::<Uniforms>() == 224);
 const _: () = assert!(std::mem::offset_of!(Uniforms, ring_origin) == 28);
 const _: () = assert!(std::mem::offset_of!(Uniforms, reassigned_power_scale) == 88);
 const _: () = assert!(std::mem::offset_of!(Uniforms, page_slot_mask) == 92);
@@ -617,7 +617,7 @@ impl PointPage {
     // Neighbouring bins often share a pixel, and blending into one pixel serializes, most on
     // short views.
     fn write(&mut self, queue: &wgpu::Queue, slot: usize, points: &[SpectrogramPoint]) {
-        const POINT_BYTES: usize = std::mem::size_of::<SpectrogramPoint>();
+        const POINT_BYTES: usize = size_of::<SpectrogramPoint>();
         let count = points.len().min(self.stride as usize);
         let len = count.max(self.stored[slot] as usize) * POINT_BYTES;
         let offset = slot as u64 * col_byte_stride(ColumnKind::Reassigned, self.stride);
@@ -744,7 +744,7 @@ impl Resources {
         let uniform_buf = create_buffer(
             device,
             "Spectrogram UB",
-            std::mem::size_of::<Uniforms>() as u64,
+            size_of::<Uniforms>() as u64,
             wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         );
         let binding = u64::from(device.limits().max_storage_buffer_binding_size);

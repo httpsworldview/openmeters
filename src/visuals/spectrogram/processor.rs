@@ -120,9 +120,7 @@ impl SpectrogramColumn {
 
 pub(super) fn col_byte_stride(kind: ColumnKind, points: u32) -> u64 {
     match kind {
-        ColumnKind::Reassigned => {
-            u64::from(points) * std::mem::size_of::<SpectrogramPoint>() as u64
-        }
+        ColumnKind::Reassigned => u64::from(points) * size_of::<SpectrogramPoint>() as u64,
         ColumnKind::Classic => u64::from(points).div_ceil(2) * 4,
     }
 }
@@ -814,7 +812,7 @@ mod tests {
     #[test]
     fn classic_retention_budget_uses_packed_column_width() {
         let points = (16_384 * 32 / 2 + 1) as u32;
-        let packed_stride = points.div_ceil(2) as usize * std::mem::size_of::<u32>();
+        let packed_stride = points.div_ceil(2) as usize * size_of::<u32>();
         assert_eq!(
             history_columns(ColumnKind::Classic, points, u32::MAX as usize),
             SPECTROGRAM_HISTORY_BYTE_BUDGET / packed_stride

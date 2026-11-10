@@ -2,9 +2,8 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::DynError;
-use super::graph::Channel;
 use super::transport::{CaptureWriter, StreamStatus, pcm_chunk};
-use crate::dsp::{AudioFormat, SampleRate};
+use crate::dsp::{AudioFormat, ChannelPosition, SampleRate};
 use pipewire as pw;
 use pw::properties::properties;
 use pw::spa;
@@ -13,7 +12,6 @@ use spa::buffer::meta::{MetaHeader, MetaHeaderFlags};
 use spa::pod::Pod;
 use std::cell::{Cell, RefCell};
 use std::io::{self, Cursor};
-use std::mem::size_of;
 use std::rc::Rc;
 use tracing::{error, info};
 
@@ -26,7 +24,7 @@ const NATIVE_F32: spa::param::audio::AudioFormat =
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct StreamConfig {
-    pub layout: Vec<Channel>,
+    pub layout: Vec<ChannelPosition>,
     pub target: Option<String>,
     pub passive: bool,
 }
@@ -167,7 +165,7 @@ fn handle_format_change(writer: &RefCell<CaptureWriter>, param: Option<&Pod>) {
     let mut info = spa::param::audio::AudioInfoRaw::new();
     let parsed = info.parse(param).is_ok() && info.format() == NATIVE_F32;
     let negotiated = info.position();
-    let positions = std::array::from_fn(|index| Channel::from_spa_id(negotiated[index]));
+    let positions = std::array::from_fn(|index| ChannelPosition::from_spa_id(negotiated[index]));
     let format = parsed
         .then(|| SampleRate::new(info.rate()))
         .flatten()
@@ -243,7 +241,7 @@ fn classify(chunk: ChunkFlags, header: MetaHeaderFlags) -> BufferKind {
     }
 }
 
-fn format_pod(layout: &[Channel]) -> Result<Vec<u8>, DynError> {
+fn format_pod(layout: &[ChannelPosition]) -> Result<Vec<u8>, DynError> {
     let mut info = spa::param::audio::AudioInfoRaw::new();
     info.set_format(NATIVE_F32);
     info.set_channels(layout.len() as u32);

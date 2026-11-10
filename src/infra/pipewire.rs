@@ -31,8 +31,6 @@ pub(crate) fn test_audio_reader() -> AudioReader {
     transport::channel().1
 }
 
-pub(crate) const MAX_CAPTURE_CHANNELS: usize = crate::dsp::MAX_AUDIO_CHANNELS;
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ApplicationView {
     pub identity: StreamIdentity,
@@ -176,7 +174,7 @@ mod tests {
                 CapturedSpan::Silence { format, .. } => seeded |= format.channels() == 8,
                 CapturedSpan::Pcm { .. } => {}
             });
-            std::thread::sleep(Duration::from_millis(1));
+            thread::sleep(Duration::from_millis(1));
         }
         assert!(reset && seeded);
         assert!(!control.is_alive());

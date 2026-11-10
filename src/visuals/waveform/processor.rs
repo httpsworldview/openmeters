@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Maika Namuo
 
 use crate::dsp::{AudioBlock, RunningMeans, SampleRate, ThreeBand};
-pub(super) use crate::util::audio::BAND_COUNT as NUM_BANDS;
+pub(super) use crate::util::audio::BAND_COUNT;
 use crate::util::audio::{BAND_SPLITS_HZ, Channel, DB_FLOOR, power_to_db};
 
 // GUI bounds, in columns/second.
@@ -20,7 +20,7 @@ const REFERENCE_SAMPLE_RATE: f32 = 44_100.0;
 const BAND_COLOR_WINDOW_AT_44K1: usize = 2048;
 const BAND_SLOW_WINDOW_AT_44K1: usize = 16_384;
 // Color weights only; RMS is unscaled.
-const BAND_COLOR_GAINS: [f32; NUM_BANDS] = [1.0, 0.7, 2.0];
+const BAND_COLOR_GAINS: [f32; BAND_COUNT] = [1.0, 0.7, 2.0];
 // Rendering cutoff: -96 dBFS amplitude, also used for color brightness.
 pub(super) const WAVEFORM_SILENCE_AMPLITUDE: f32 = 1.584_893_1e-5;
 pub const MIN_BAND_DB_FLOOR: f32 = -96.0;
@@ -54,8 +54,8 @@ crate::macros::default_struct! {
     pub struct WaveColumn {
         pub min: f32 = 0.0,
         pub max: f32 = 0.0,
-        pub color_bands: [f32; NUM_BANDS] = [0.0; NUM_BANDS],
-        pub rms_db: [[f32; NUM_BANDS]; 2] = [[DB_FLOOR; NUM_BANDS]; 2],
+        pub color_bands: [f32; BAND_COUNT] = [0.0; BAND_COUNT],
+        pub rms_db: [[f32; BAND_COUNT]; 2] = [[DB_FLOOR; BAND_COUNT]; 2],
     }
 }
 
@@ -81,8 +81,8 @@ fn window_len(samples_at_reference_rate: usize, sample_rate: SampleRate) -> usiz
 type BandFilter = ThreeBand<2, 1, false>;
 
 struct BandTracker {
-    color: RunningMeans<{ NUM_BANDS * DERIVED_CHANNELS }, 1>,
-    history: Option<RunningMeans<{ NUM_BANDS * DERIVED_CHANNELS }, 2>>,
+    color: RunningMeans<{ BAND_COUNT * DERIVED_CHANNELS }, 1>,
+    history: Option<RunningMeans<{ BAND_COUNT * DERIVED_CHANNELS }, 2>>,
 }
 
 // Spans at least one column so slow scrolling does not skip audio.
@@ -115,10 +115,10 @@ impl BandTracker {
         }
     }
 
-    fn process(&mut self, bands: [[f32; NUM_BANDS]; DERIVED_CHANNELS]) {
+    fn process(&mut self, bands: [[f32; BAND_COUNT]; DERIVED_CHANNELS]) {
         let bands = bands.as_flattened();
         self.color.push_nonnegative_finite(std::array::from_fn(|i| {
-            crate::util::finite_or(bands[i].abs() * BAND_COLOR_GAINS[i % NUM_BANDS], 0.0)
+            crate::util::finite_or(bands[i].abs() * BAND_COLOR_GAINS[i % BAND_COUNT], 0.0)
         }));
         if let Some(history) = &mut self.history {
             history.push_nonnegative_finite(std::array::from_fn(|i| {
@@ -192,7 +192,7 @@ impl WaveformProcessor {
         });
         if let Some((_, tracker)) = &self.band_analysis {
             let means = tracker.color.mean(0).map(|mean| mean.max(0.0) as f32);
-            for (column, bands) in columns.iter_mut().zip(means.as_chunks::<NUM_BANDS>().0) {
+            for (column, bands) in columns.iter_mut().zip(means.as_chunks::<BAND_COUNT>().0) {
                 column.color_bands = *bands;
             }
             if let Some(history) = &tracker.history {
@@ -200,7 +200,7 @@ impl WaveformProcessor {
                     let db = history
                         .mean(window)
                         .map(|mean| power_to_db(mean.max(0.0) as f32, DB_FLOOR));
-                    for (column, bands) in columns.iter_mut().zip(db.as_chunks::<NUM_BANDS>().0) {
+                    for (column, bands) in columns.iter_mut().zip(db.as_chunks::<BAND_COUNT>().0) {
                         column.rms_db[window] = *bands;
                     }
                 }
@@ -239,7 +239,7 @@ impl WaveformProcessor {
                     if finite[channel] {
                         bands.map(|band| WAVEFORM_CHANNELS[channel].project(band))
                     } else {
-                        [0.0; NUM_BANDS]
+                        [0.0; BAND_COUNT]
                     }
                 }));
             }
@@ -481,13 +481,13 @@ mod tests {
         processor.update_config(updated);
         let latest = latest(&process(&mut processor, &[0.0], 1), 0);
 
-        assert_eq!(latest.color_bands, [0.0; NUM_BANDS]);
-        assert_eq!(latest.rms_db, [[DB_FLOOR; NUM_BANDS]; 2]);
+        assert_eq!(latest.color_bands, [0.0; BAND_COUNT]);
+        assert_eq!(latest.rms_db, [[DB_FLOOR; BAND_COUNT]; 2]);
     }
 
     #[test]
     fn bands_follow_sine_frequency() {
-        fn latest_bands_for(freq: f32) -> [f32; NUM_BANDS] {
+        fn latest_bands_for(freq: f32) -> [f32; BAND_COUNT] {
             let mut processor = WaveformProcessor::new(config(200.0, 512));
             let samples = sine_wave(freq, RATE, RATE as usize, 0.8);
             latest(&process(&mut processor, &samples, 1), 0).color_bands
@@ -528,7 +528,7 @@ mod tests {
         let _ = process(&mut processor, &signal, 1);
         let latest = latest(&process(&mut processor, &silence, 1), 0);
 
-        assert_eq!(latest.rms_db, [[DB_FLOOR; NUM_BANDS]; 2]);
+        assert_eq!(latest.rms_db, [[DB_FLOOR; BAND_COUNT]; 2]);
     }
 
     #[test]

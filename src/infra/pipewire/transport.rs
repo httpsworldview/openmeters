@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::MAX_CAPTURE_CHANNELS;
-use crate::dsp::{AudioFormat, ChannelPosition, SampleRate};
+use crate::dsp::{AudioFormat, ChannelPosition, MAX_AUDIO_CHANNELS, SampleRate};
 use crate::util::{audio::flush_denormal_f32, unpoison};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 use std::hash::{Hash, Hasher};
@@ -15,7 +14,7 @@ use tracing::info;
 
 // Packet frame cap, independent of PipeWire's quantum.
 const BLOCK_FRAMES: usize = 256;
-const BLOCK_SAMPLES: usize = BLOCK_FRAMES * MAX_CAPTURE_CHANNELS;
+const BLOCK_SAMPLES: usize = BLOCK_FRAMES * MAX_AUDIO_CHANNELS;
 // Front-packet age from its end; current activity epoch only.
 const MAX_BACKLOG: Duration = Duration::from_secs(1);
 // 4/3 s of full packets at maximum rate.
@@ -885,7 +884,6 @@ fn channel_with_capacity(capacity: usize) -> (CaptureWriter, AudioReader) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::mem::size_of;
 
     fn mono(capacity: usize, rate: u32) -> (CaptureWriter, AudioReader, AudioFormat) {
         let (mut writer, mut reader) = channel_with_capacity(capacity);

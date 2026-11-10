@@ -1,16 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::{ApplicationView, CaptureView, MAX_CAPTURE_CHANNELS};
+use super::{ApplicationView, CaptureView};
 use crate::domain::routing::StreamIdentity;
-use crate::dsp::ChannelPosition;
+use crate::dsp::{ChannelPosition, MAX_AUDIO_CHANNELS};
 use pipewire as pw;
 use pw::registry::GlobalObject;
 use pw::spa::utils::{Direction, dict::DictRef};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-
-pub(super) type Channel = ChannelPosition;
 
 macro_rules! channel_positions {
     ($($name:literal => $variant:ident => $id:path),* $(,)?) => {
@@ -26,7 +24,7 @@ macro_rules! channel_positions {
                             .filter(|prefix| prefix.eq_ignore_ascii_case("AUX"))
                             .and_then(|_| value.get(3..))
                             .and_then(|number| number.parse::<u8>().ok())
-                            .filter(|number| *number < MAX_CAPTURE_CHANNELS as u8)
+                            .filter(|number| *number < MAX_AUDIO_CHANNELS as u8)
                             .map(Self::Aux)
                     })
             }
@@ -43,7 +41,7 @@ macro_rules! channel_positions {
                 match id {
                     $($id => Self::$variant,)*
                     id if (pw::spa::sys::SPA_AUDIO_CHANNEL_AUX0
-                        ..pw::spa::sys::SPA_AUDIO_CHANNEL_AUX0 + MAX_CAPTURE_CHANNELS as u32)
+                        ..pw::spa::sys::SPA_AUDIO_CHANNEL_AUX0 + MAX_AUDIO_CHANNELS as u32)
                         .contains(&id) => {
                             Self::Aux((id - pw::spa::sys::SPA_AUDIO_CHANNEL_AUX0) as u8)
                         },
@@ -82,7 +80,7 @@ pub(super) struct Port {
     pub global_id: u32,
     pub local_id: u32,
     pub node_id: u32,
-    pub channel: Option<Channel>,
+    pub channel: Option<ChannelPosition>,
     pub direction: Option<Direction>,
     pub monitor: bool,
 }
@@ -94,7 +92,7 @@ impl Port {
             global_id: global.id,
             local_id: get("port.id")?.parse().ok()?,
             node_id: get("node.id")?.parse().ok()?,
-            channel: get("audio.channel").and_then(Channel::parse),
+            channel: get("audio.channel").and_then(ChannelPosition::parse),
             direction: direction(get("port.direction")),
             monitor: bool_property(get("port.monitor")),
         })

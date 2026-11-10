@@ -6,8 +6,8 @@
 //! Capture stays at its negotiated PipeWire quantum. DSP work is amortized into
 //! sample-rate-scaled batches so compositor cadence does not become DSP cadence.
 
-use crate::dsp::{AudioFormat, SampleRate};
-use crate::infra::pipewire::{AudioReader, AudioWake, CapturedSpan, MAX_CAPTURE_CHANNELS};
+use crate::dsp::{AudioFormat, MAX_AUDIO_CHANNELS, SampleRate};
+use crate::infra::pipewire::{AudioReader, AudioWake, CapturedSpan};
 use crate::visuals::registry::{VisualManager, VisualManagerHandle};
 use std::time::Instant;
 
@@ -15,8 +15,8 @@ const SILENCE_CHUNK_FRAMES: usize = 4_096;
 const DSP_BATCH_FRAMES_AT_48K: usize = 256;
 // Per-span limit; longer silence resets audio state.
 const MAX_SILENCE_SECONDS: u64 = 4;
-static SILENCE: [f32; SILENCE_CHUNK_FRAMES * MAX_CAPTURE_CHANNELS] =
-    [0.0; SILENCE_CHUNK_FRAMES * MAX_CAPTURE_CHANNELS];
+static SILENCE: [f32; SILENCE_CHUNK_FRAMES * MAX_AUDIO_CHANNELS] =
+    [0.0; SILENCE_CHUNK_FRAMES * MAX_AUDIO_CHANNELS];
 
 struct DspBatcher {
     samples: Vec<f32>,
@@ -26,7 +26,7 @@ struct DspBatcher {
 impl DspBatcher {
     fn new() -> Self {
         Self {
-            samples: Vec::with_capacity(DSP_BATCH_FRAMES_AT_48K * MAX_CAPTURE_CHANNELS),
+            samples: Vec::with_capacity(DSP_BATCH_FRAMES_AT_48K * MAX_AUDIO_CHANNELS),
             format: None,
         }
     }

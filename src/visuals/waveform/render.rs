@@ -15,7 +15,7 @@ use crate::visuals::render::common::{
 };
 use crate::visuals::render::common::{SdfPipeline, sdf_primitive};
 use crate::visuals::waveform::processor::{
-    MAX_COLUMN_CAPACITY, NUM_BANDS, WAVEFORM_SILENCE_AMPLITUDE, WaveColumn, WaveFrame,
+    BAND_COUNT, MAX_COLUMN_CAPACITY, WAVEFORM_SILENCE_AMPLITUDE, WaveColumn, WaveFrame,
     WaveformPreview,
 };
 
@@ -35,7 +35,7 @@ pub struct WaveformParams {
     pub color_mode: WaveformColorMode,
     pub history_mode: WaveformHistoryMode,
     pub band_db_floor: f32,
-    pub palette: [[f32; 4]; NUM_BANDS],
+    pub palette: [[f32; 4]; BAND_COUNT],
     pub key: u64,
 }
 
@@ -53,7 +53,7 @@ impl WaveformParams {
         }
     }
 
-    fn band_mix_color(&self, bands: [f32; NUM_BANDS]) -> [f32; 4] {
+    fn band_mix_color(&self, bands: [f32; BAND_COUNT]) -> [f32; 4] {
         let mut out = [0.0; 4];
         let mut total = 0.0;
         for (&band, color) in bands.iter().zip(&self.palette) {
@@ -113,7 +113,7 @@ impl WaveformParams {
         let floor = self.band_db_floor;
 
         let vertices = &mut scratch.instances;
-        vertices.reserve(columns + 1 + usize::from(history.is_some()) * NUM_BANDS * columns * 2);
+        vertices.reserve(columns + 1 + usize::from(history.is_some()) * BAND_COUNT * columns * 2);
 
         let scroll_offset = preview_columns.map_or(0.0, |_| self.preview.progress * col_width);
 

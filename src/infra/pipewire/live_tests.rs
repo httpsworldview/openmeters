@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::domain::routing::{CaptureConfig, CaptureMode};
-use crate::dsp::ChannelPosition;
+use crate::dsp::{ChannelPosition, MAX_AUDIO_CHANNELS};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -462,7 +462,7 @@ fn application_source(
     )
 }
 
-const WIDE_POSITIONS: [ChannelPosition; MAX_CAPTURE_CHANNELS] = [
+const WIDE_POSITIONS: [ChannelPosition; MAX_AUDIO_CHANNELS] = [
     ChannelPosition::FrontRight,
     ChannelPosition::FrontLeft,
     ChannelPosition::FrontCenter,
@@ -524,14 +524,14 @@ fn wait_for<T>(description: &str, mut check: impl FnMut() -> Option<T>) -> T {
             Instant::now() < deadline,
             "timed out waiting for {description}"
         );
-        std::thread::sleep(Duration::from_millis(25));
+        thread::sleep(Duration::from_millis(25));
     }
 }
 
 fn wait_for_mapped_signal(
     description: &str,
     audio: &mut AudioReader,
-    positions: [ChannelPosition; MAX_CAPTURE_CHANNELS],
+    positions: [ChannelPosition; MAX_AUDIO_CHANNELS],
     active: &[usize],
 ) {
     wait_for(description, || {
@@ -540,11 +540,11 @@ fn wait_for_mapped_signal(
             let CapturedSpan::Pcm { samples, format } = span else {
                 return;
             };
-            if format.channels() != MAX_CAPTURE_CHANNELS || format.positions() != positions {
+            if format.channels() != MAX_AUDIO_CHANNELS || format.positions() != positions {
                 return;
             }
-            let mut peaks = [0.0_f32; MAX_CAPTURE_CHANNELS];
-            for frame in samples.as_chunks::<MAX_CAPTURE_CHANNELS>().0 {
+            let mut peaks = [0.0_f32; MAX_AUDIO_CHANNELS];
+            for frame in samples.as_chunks::<MAX_AUDIO_CHANNELS>().0 {
                 for (peak, sample) in peaks.iter_mut().zip(frame) {
                     *peak = peak.max(sample.abs());
                 }
@@ -650,7 +650,7 @@ fn live_capture_preserves_graph_invariants() {
             .is_none()
     );
     let reconnects = audio.reconnects();
-    std::thread::sleep(Duration::from_millis(6_250));
+    thread::sleep(Duration::from_millis(6_250));
     assert_eq!(server.dump().node_id(&tap_name), Some(tap_id));
     assert_eq!(audio.reconnects(), reconnects);
 
@@ -699,7 +699,7 @@ fn live_capture_preserves_graph_invariants() {
                 && graph.link_count(source, tap_id) == channels
                 && graph.link_count(source_id, tap_id) == 2
                 && json_u64(tap, "/info/params/Format/0/channels")
-                    == Some(MAX_CAPTURE_CHANNELS as u64))
+                    == Some(MAX_AUDIO_CHANNELS as u64))
             .then_some(())
         });
         wait_for_mapped_signal(
@@ -715,7 +715,7 @@ fn live_capture_preserves_graph_invariants() {
                 && graph.node(&surround_playback).is_none()
                 && graph.link_count(source_id, tap_id) == 2
                 && json_u64(tap, "/info/params/Format/0/channels")
-                    == Some(MAX_CAPTURE_CHANNELS as u64))
+                    == Some(MAX_AUDIO_CHANNELS as u64))
             .then_some(())
         });
     }
@@ -744,7 +744,7 @@ fn live_capture_preserves_graph_invariants() {
     let idle_id = server.wait_dump("unrouted application", |graph| {
         graph.node_id(&idle_playback)
     });
-    std::thread::sleep(Duration::from_millis(250));
+    thread::sleep(Duration::from_millis(250));
     let graph = server.dump();
     assert_eq!(graph.node_id(&tap_name), Some(tap_id));
     assert_eq!(graph.link_count(idle_id, tap_id), 0);
@@ -773,7 +773,7 @@ fn live_capture_preserves_graph_invariants() {
             && graph.inactive(&paused_target))
         .then_some(())
     });
-    std::thread::sleep(Duration::from_millis(20));
+    thread::sleep(Duration::from_millis(20));
     let mut idle_frames = 0;
     audio.drain(Instant::now(), |span| {
         if let CapturedSpan::Silence { frames, .. } = span {
@@ -806,7 +806,7 @@ fn live_capture_preserves_graph_invariants() {
     server.wait_audio("wide device target", &mut audio, |graph| {
         let tap = graph.node(&tap_name)?;
         (property_is(tap, "target.object", &target)
-            && json_u64(tap, "/info/params/Format/0/channels") == Some(MAX_CAPTURE_CHANNELS as u64))
+            && json_u64(tap, "/info/params/Format/0/channels") == Some(MAX_AUDIO_CHANNELS as u64))
         .then_some(())
     });
     wait_for_mapped_signal("captured device PCM", &mut audio, WIDE_POSITIONS, &[0, 1]);

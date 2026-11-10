@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::processor::{NUM_BANDS, WAVEFORM_CHANNELS, WaveFrame, WaveformPreview, WaveformUpdate};
+use super::processor::{BAND_COUNT, WAVEFORM_CHANNELS, WaveFrame, WaveformPreview, WaveformUpdate};
 use super::render::{WaveformParams, column_count};
 use crate::persistence::settings::WaveformSettings;
 use crate::util::{color::color_to_rgba, unpoison};
@@ -25,7 +25,7 @@ crate::macros::default_struct! {
         snapshot_at: Cell<Instant> = Cell::new(Instant::now()),
         view_columns: Cell<usize> = Cell::new(INITIAL_VIEW_COLUMNS),
         quiescent_columns: usize = 0,
-        pub(in crate::visuals) palette: [Color; NUM_BANDS] = palettes::waveform::COLORS,
+        pub(in crate::visuals) palette: [Color; BAND_COUNT] = palettes::waveform::COLORS,
         pub(in crate::visuals) settings: WaveformSettings = WaveformSettings::default(),
         keys: [u64; 2] = std::array::from_fn(|_| crate::visuals::next_key()),
     }
@@ -97,7 +97,7 @@ impl WaveformState {
         self.settings = settings.clone();
     }
 
-    crate::visuals::palette_setter!(NUM_BANDS);
+    crate::visuals::palette_setter!(BAND_COUNT);
 
     pub fn visual_params(
         &self,

@@ -409,7 +409,7 @@ crate::visuals::visualization_widget!(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::visuals::loudness::processor::MAX_CHANNELS;
+    use crate::dsp::MAX_AUDIO_CHANNELS;
 
     fn visible_bar_values(state: &LoudnessState) -> [f32; VISIBLE_METER_COUNT] {
         state
@@ -542,7 +542,7 @@ mod tests {
         state.set_modes(MeterMode::TruePeak, MeterMode::TruePeak);
         for order in [[0, 1, 2, 3, 4, 5, 6, 7], [7, 4, 2, 0, 6, 5, 1, 3]] {
             for (channel, &position) in order.iter().enumerate() {
-                let mut snapshot = LoudnessSnapshot::with_floor(floor, MAX_CHANNELS);
+                let mut snapshot = LoudnessSnapshot::with_floor(floor, MAX_AUDIO_CHANNELS);
                 snapshot.positions = order.map(|index| ChannelPosition::SURROUND[index]);
                 snapshot.true_peak_db[channel] = 6.0;
                 state.apply_snapshot((snapshot, Programme::default()));
@@ -572,27 +572,27 @@ mod tests {
             elapsed: 0.0,
             short_term_loudness: -9.0,
             momentary_loudness: -9.0,
-            rms_fast_db: [DB_RANGE.0; MAX_CHANNELS],
-            rms_slow_db: [DB_RANGE.0; MAX_CHANNELS],
+            rms_fast_db: [DB_RANGE.0; MAX_AUDIO_CHANNELS],
+            rms_slow_db: [DB_RANGE.0; MAX_AUDIO_CHANNELS],
             true_peak_db,
             channel_count,
-            positions: [ChannelPosition::Unknown; MAX_CHANNELS],
+            positions: [ChannelPosition::Unknown; MAX_AUDIO_CHANNELS],
         };
         let mut state = LoudnessState::default();
         state.set_modes(MeterMode::TruePeak, MeterMode::TruePeak);
 
-        let mut mono = [DB_RANGE.0; MAX_CHANNELS];
+        let mut mono = [DB_RANGE.0; MAX_AUDIO_CHANNELS];
         mono[0] = -12.0;
         state.apply_snapshot((snapshot(mono, 1), Programme::default()));
         assert_eq!(visible_bar_values(&state), [-12.0; 3]);
 
-        let mut quad = [DB_RANGE.0; MAX_CHANNELS];
+        let mut quad = [DB_RANGE.0; MAX_AUDIO_CHANNELS];
         quad[2] = -6.0;
         quad[3] = -3.0;
         state.apply_snapshot((snapshot(quad, 4), Programme::default()));
         assert_eq!(visible_bar_values(&state), [-6.0, -3.0, -3.0]);
 
-        let mut surround = [DB_RANGE.0; MAX_CHANNELS];
+        let mut surround = [DB_RANGE.0; MAX_AUDIO_CHANNELS];
         surround[3] = 6.0;
         state.apply_snapshot((snapshot(surround, 6), Programme::default()));
         assert_eq!(visible_bar_values(&state), [6.0; 3]);

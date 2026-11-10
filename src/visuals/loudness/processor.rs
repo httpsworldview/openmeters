@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::dsp::{AudioBlock, ChannelPosition, RunningMeans, SampleRate};
+use crate::dsp::{AudioBlock, ChannelPosition, MAX_AUDIO_CHANNELS, RunningMeans, SampleRate};
 use crate::util::audio::{flush_denormal_f64, kaiser};
 use std::{f64::consts::PI, sync::LazyLock};
 
@@ -223,8 +223,6 @@ fn new_channel(sample_rate: SampleRate) -> ChannelState {
     )
 }
 
-pub(super) const MAX_CHANNELS: usize = crate::dsp::MAX_AUDIO_CHANNELS;
-
 fn channel_weight(position: ChannelPosition) -> f64 {
     match position {
         ChannelPosition::LowFrequency => 0.0,
@@ -236,7 +234,7 @@ fn channel_weight(position: ChannelPosition) -> f64 {
 
 fn weighted_energy(
     channels: &[Option<ChannelState>],
-    positions: &[ChannelPosition; MAX_CHANNELS],
+    positions: &[ChannelPosition; MAX_AUDIO_CHANNELS],
     window: usize,
 ) -> f64 {
     channels
@@ -327,7 +325,7 @@ impl Measurement {
     fn hop(
         &mut self,
         channels: &[Option<ChannelState>],
-        positions: &[ChannelPosition; MAX_CHANNELS],
+        positions: &[ChannelPosition; MAX_AUDIO_CHANNELS],
     ) {
         self.hops += 1;
         self.programme.stable = self.hops >= STABLE_HOPS;
@@ -349,11 +347,11 @@ pub struct LoudnessSnapshot {
     pub elapsed: f32,
     pub short_term_loudness: f32,
     pub momentary_loudness: f32,
-    pub rms_fast_db: [f32; MAX_CHANNELS],
-    pub rms_slow_db: [f32; MAX_CHANNELS],
-    pub true_peak_db: [f32; MAX_CHANNELS],
+    pub rms_fast_db: [f32; MAX_AUDIO_CHANNELS],
+    pub rms_slow_db: [f32; MAX_AUDIO_CHANNELS],
+    pub true_peak_db: [f32; MAX_AUDIO_CHANNELS],
     pub channel_count: usize,
-    pub positions: [ChannelPosition; MAX_CHANNELS],
+    pub positions: [ChannelPosition; MAX_AUDIO_CHANNELS],
 }
 
 impl LoudnessSnapshot {
@@ -361,9 +359,9 @@ impl LoudnessSnapshot {
         Self {
             short_term_loudness: floor_db,
             momentary_loudness: floor_db,
-            rms_fast_db: [floor_db; MAX_CHANNELS],
-            rms_slow_db: [floor_db; MAX_CHANNELS],
-            true_peak_db: [floor_db; MAX_CHANNELS],
+            rms_fast_db: [floor_db; MAX_AUDIO_CHANNELS],
+            rms_slow_db: [floor_db; MAX_AUDIO_CHANNELS],
+            true_peak_db: [floor_db; MAX_AUDIO_CHANNELS],
             channel_count,
             ..Self::default()
         }
@@ -1149,9 +1147,9 @@ mod tests {
     fn true_peak_preserves_channels_and_tails_across_blocks_and_resets() {
         for rate in [44_100, 48_000, 96_000, 192_000] {
             let sample_rate = SampleRate::must(rate);
-            let wide = AudioFormat::fallback(MAX_CHANNELS, sample_rate);
+            let wide = AudioFormat::fallback(MAX_AUDIO_CHANNELS, sample_rate);
             let gains = [2.0_f32, 0.0, -1.5, 1.0, 0.5, -0.125, 0.25, -0.75];
-            let silence = [0.0; TRUE_PEAK_TAPS * 2 * MAX_CHANNELS];
+            let silence = [0.0; TRUE_PEAK_TAPS * 2 * MAX_AUDIO_CHANNELS];
             let mut processor = LoudnessProcessor::new(LoudnessConfig { sample_rate });
             // Put the two impulses in separate blocks, then measure only their delayed tail.
             for samples in [&gains[..], &[], &gains[..]] {
@@ -1177,16 +1175,16 @@ mod tests {
                     .process_block(&AudioBlock::new(&silence, wide))
                     .0
                     .true_peak_db,
-                [DEFAULT_FLOOR_DB; MAX_CHANNELS]
+                [DEFAULT_FLOOR_DB; MAX_AUDIO_CHANNELS]
             );
             for change in 0..3 {
-                processor.process_block(&AudioBlock::new(&[1.0; MAX_CHANNELS], wide));
+                processor.process_block(&AudioBlock::new(&[1.0; MAX_AUDIO_CHANNELS], wide));
                 let format = match change {
                     0 => {
                         processor.reset_audio();
                         wide
                     }
-                    1 => AudioFormat::fallback(MAX_CHANNELS, SampleRate::must(rate + 1)),
+                    1 => AudioFormat::fallback(MAX_AUDIO_CHANNELS, SampleRate::must(rate + 1)),
                     _ => AudioFormat::fallback(1, sample_rate),
                 };
                 assert_eq!(
@@ -1194,7 +1192,7 @@ mod tests {
                         .process_block(&AudioBlock::new(&silence, format))
                         .0
                         .true_peak_db,
-                    [DEFAULT_FLOOR_DB; MAX_CHANNELS]
+                    [DEFAULT_FLOOR_DB; MAX_AUDIO_CHANNELS]
                 );
             }
         }

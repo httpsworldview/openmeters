@@ -5,7 +5,6 @@ use bytemuck::{Pod, Zeroable};
 use iced::advanced::text::Text as IcedText;
 use iced::{Border, Color, Point, Rectangle, Renderer, Size};
 use std::collections::HashMap;
-use std::mem::size_of;
 
 pub(in crate::visuals) const SDF_VERTICES_PER_INSTANCE: u32 = 4;
 
