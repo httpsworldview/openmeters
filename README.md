@@ -1,11 +1,8 @@
 # OpenMeters
 
-![https://github.com/user-attachments/assets/52d0202e-f6e7-47aa-9952-e3a0be975f42](https://github.com/user-attachments/assets/e7b15cd0-eb12-4e99-b036-79b11e04bb46)
+![Demo GIF](https://github.com/user-attachments/assets/e7b15cd0-eb12-4e99-b036-79b11e04bb46)
 
-Professional, fast, and open-source audio meters for Linux.
-
-Capture any PipeWire application or device, inspect loudness,
-frequency, waveform, and stereo image in one comprehensive suite.
+Fast and professional audio metering for Linux.
 
 ## Quick links
 
@@ -128,8 +125,10 @@ yay -S openmeters      # stable
 yay -S openmeters-git  # development
 ```
 
-> [!NOTE]
-> The stable `openmeters` package is maintained by a third party.
+> [!NOTE] 
+> The stable `openmeters` AUR package is maintained by
+> [Zorbatron](https://aur.archlinux.org/account/Zorbatron) with my
+> permission. Massive thanks!
 
 ### Debian
 
@@ -192,7 +191,9 @@ an issue and I will try to help.
 #### Packaging
 
 See [`packaging/`](./packaging/) for instructions on building Debian,
-Fedora, and tarball artifacts.
+Fedora, and tarball artifacts. If you would like to package OpenMeters
+for your distribution and run into any problems, please feel free to
+reach out via E-Mail.
 
 ## Usage and key bindings
 
@@ -345,32 +346,50 @@ out.
 - **FFmpeg** (<https://ffmpeg.org/>)
 - **libebur128** (<https://github.com/jiixyj/libebur128>), the
   original C library for EBU R 128 loudness measurement.
+- **Brecht De Man's companion Python implementation** (see referenced
+  paper below) (<https://github.com/BrechtDeMan/loudness.py>)
 - **BBC's audiowaveform** (<https://github.com/bbc/audiowaveform>)
 - **librosa** (<https://librosa.org/>)
 
 ### Papers and Standards
 
-- ITU-R BS.1770-5, loudness and true peak measurement.
-- EBU Tech 3341, 'EBU Mode' loudness metering.
-- EBU Tech 3342, loudness range measurement.
-- IEC 61672-1, A-weighting reference curve.
+- [ITU-R
+  BS.1770-5](https://www.itu.int/dms_pubrec/itu-r/rec/bs/R-REC-BS.1770-5-202311-I!!PDF-E.pdf),
+  loudness and true peak measurement.
+- [EBU Tech 3341](https://tech.ebu.ch/docs/tech/tech3341.pdf), 'EBU
+  Mode' loudness metering.
+- [EBU Tech 3342](https://tech.ebu.ch/docs/tech/tech3342.pdf),
+  loudness range measurement.
+- [IEC 61672-1](https://webstore.iec.ch/en/publication/5708),
+  A-weighting reference curve.
 - Brecht De Man, "[Evaluation of Implementations of the EBU R128
   Loudness
   Measurement](https://aes2.org/publications/elibrary-page/?id=19790)",
   145th Audio Engineering Society Convention, paper 10064, October
   2018.
-- A. de Cheveigné and H. Kawahara, "YIN, a fundamental frequency
-  estimator for speech and music".
+- A. de Cheveigné and H. Kawahara, "[YIN, a fundamental frequency
+  estimator for speech and
+  music](https://web.archive.org/web/20201112014247/http://audition.ens.fr/adc/pdf/2002_JASA_YIN.pdf)",
+  Journal of the Acoustical Society of America, vol. 111, no. 4, April
+  2002.
   - Historically, the algorithm within this paper was implemented by
     our oscilloscope.
-- F. Auger and P. Flandrin, "Improving the readability of
+- F. Auger and P. Flandrin, "[Improving the readability of
   time-frequency and time-scale representations by the reassignment
-  method".
-- K. Kodera, R. Gendrin, and C. de Villedary, "Analysis of
-  time-varying signals with small BT values".
-- S. Fulop and K. Fitz, "Algorithms for computing the time-corrected
+  method](https://perso.ens-lyon.fr/patrick.flandrin/IEEE_SP1995.pdf)",
+  IEEE Transactions on Signal Processing, vol. 43, no. 5, May 1995.
+- K. Kodera, R. Gendrin, and C. de Villedary, "[Analysis of
+  time-varying signals with small BT
+  values](https://doi.org/10.1109/TASSP.1978.1163047)", IEEE
+  Transactions on Acoustics, Speech, and Signal Processing, vol. 26,
+  no. 1, February 1978.
+- S. Fulop and K. Fitz, "[Algorithms for computing the time-corrected
   instantaneous frequency (reassigned) spectrogram, with
-  applications".
+  applications](https://doi.org/10.1121/1.2133000)", Journal of the
+  Acoustical Society of America, vol. 119, no. 1, January 2006.
+- K. Fitz and S. Fulop, "[A Unified Theory of Time-Frequency
+  Reassignment](https://arxiv.org/pdf/0903.3080)", arXiv:0903.3080,
+  March 2009.
 
 ### Libraries
 
