@@ -81,10 +81,6 @@ fn mean_square_to_db(mean_square: f64, offset: f64) -> f32 {
     }
 }
 
-fn window_length(sample_rate: SampleRate, window_secs: f32) -> usize {
-    (sample_rate.hz() * window_secs).round().max(1.0) as usize
-}
-
 const TRUE_PEAK_TAPS: usize = 48;
 const TRUE_PEAK_PHASES: usize = 8;
 const TRUE_PEAK_BATCH_FRAMES: usize = 256;
@@ -215,7 +211,7 @@ type ChannelState = (EnergyWindows, [f64; 4], TruePeakMeter);
 
 #[cold]
 fn new_channel(sample_rate: SampleRate) -> ChannelState {
-    let capacities = DEFAULT_WINDOWS.map(|window| window_length(sample_rate, window));
+    let capacities = DEFAULT_WINDOWS.map(|window| sample_rate.frames(window));
     (
         EnergyWindows::new(capacities),
         [0.0; 4],
@@ -385,7 +381,7 @@ pub struct LoudnessProcessor {
 impl LoudnessProcessor {
     pub fn new(config: LoudnessConfig) -> Self {
         Self {
-            weighting: k_weighting_coefficients(f64::from(config.sample_rate.hz())),
+            weighting: k_weighting_coefficients(f64::from(config.sample_rate.get())),
             channels: Vec::new(),
             measurement: Measurement::default(),
             config,
@@ -404,7 +400,7 @@ impl LoudnessProcessor {
         let sample_rate = block.sample_rate;
         if self.config.sample_rate != sample_rate {
             self.config.sample_rate = sample_rate;
-            self.weighting = k_weighting_coefficients(f64::from(sample_rate.hz()));
+            self.weighting = k_weighting_coefficients(f64::from(sample_rate.get()));
             self.channels.clear();
         }
         if self.channels.len() != block.channels {
@@ -419,7 +415,7 @@ impl LoudnessProcessor {
                 .rposition(Option::is_some)
                 .map_or(0, |i| i + 1),
         );
-        let hop = window_length(sample_rate, HOP_SECS);
+        let hop = sample_rate.frames(HOP_SECS);
         for frame in block.samples.chunks_exact(block.channels) {
             for (channel, &sample) in self.channels[..active_channels].iter_mut().zip(frame) {
                 if channel.is_none() {
@@ -502,8 +498,8 @@ mod tests {
         if let Some(channel_map) = channel_map {
             reference.set_channel_map(channel_map).unwrap();
         }
-        let hop = window_length(block.sample_rate, HOP_SECS);
-        let short_term_length = window_length(block.sample_rate, DEFAULT_WINDOWS[SHORT_TERM]);
+        let hop = block.sample_rate.frames(HOP_SECS);
+        let short_term_length = block.sample_rate.frames(DEFAULT_WINDOWS[SHORT_TERM]);
         // Reference queries rescan entire windows; concentrate them at transitions and window expiry.
         let checkpoints: BTreeSet<_> = transitions
             .iter()
@@ -740,7 +736,7 @@ mod tests {
             8_000, 11_025, 22_050, 44_100, 48_000, 96_000, 192_000, 768_000,
         ] {
             let sample_rate = SampleRate::must(rate);
-            let capacities = DEFAULT_WINDOWS.map(|secs| window_length(sample_rate, secs));
+            let capacities = DEFAULT_WINDOWS.map(|secs| sample_rate.frames(secs));
             let len = capacities[0];
             let mut windows = EnergyWindows::new(capacities);
             let mut prefix = Vec::with_capacity(len * 2 + 34);
@@ -881,7 +877,7 @@ mod tests {
             let format = AudioFormat::fallback(channels, RATE);
             assert_loudness_matches_ebur128(&samples, format, None, &[leading_secs]);
         };
-        assert_eq!(window_length(SampleRate::must(11_025), 0.3), 3_308);
+        assert_eq!(SampleRate::must(11_025).frames(0.3), 3_308);
         check_tone(1.0, 4, 0.5);
         // libebur128 shares the 48 kHz table exactly but drifts from it at other rates.
         check_tone(0.0, 2, 0.5);
@@ -917,7 +913,7 @@ mod tests {
             let positions = order.map(|channel| ChannelPosition::SURROUND[channel]);
             assert_loudness_matches_ebur128(
                 &samples,
-                AudioFormat::new(8, RATE, 0, positions).unwrap(),
+                AudioFormat::new(8, RATE, positions).unwrap(),
                 Some(&order.map(|channel| SEVEN_ONE_REFERENCE[channel])),
                 &[0.0, 0.25, 1.0, 2.0, 3.0, 6.0],
             );
@@ -945,7 +941,7 @@ mod tests {
                             .get(index)
                             .map_or(ChannelPosition::SideLeft, |entry| entry.0)
                     });
-                    let format = AudioFormat::new(channels, RATE, 0, positions).unwrap();
+                    let format = AudioFormat::new(channels, RATE, positions).unwrap();
                     let block = AudioBlock::new(&[], format);
                     for (position, &(_, expected)) in block.positions.iter().zip(&layout) {
                         assert_eq!(channel_weight(*position), *expected, "{layout:?}");

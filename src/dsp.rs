@@ -17,6 +17,11 @@ impl SampleRate {
     pub const fn hz(self) -> f32 {
         self.get() as f32
     }
+
+    // Whole frames spanning `seconds`, at least one.
+    pub fn frames(self, seconds: f32) -> usize {
+        (self.hz() * seconds).round().max(1.0) as usize
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
@@ -119,20 +124,19 @@ impl AudioFormat {
     pub(crate) fn new(
         channels: usize,
         sample_rate: SampleRate,
-        generation: u64,
         positions: [ChannelPosition; MAX_AUDIO_CHANNELS],
     ) -> Option<Self> {
         (1..=MAX_AUDIO_CHANNELS).contains(&channels).then(|| Self {
             channels,
             sample_rate,
-            generation,
+            generation: 0,
             positions: ChannelPosition::normalize(channels, positions),
         })
     }
 
     pub(crate) fn fallback(channels: usize, sample_rate: SampleRate) -> Self {
         let positions = ChannelPosition::fallback(channels);
-        Self::new(channels, sample_rate, 0, positions).expect("supported channel count")
+        Self::new(channels, sample_rate, positions).expect("supported channel count")
     }
 
     pub fn channels(self) -> usize {
@@ -317,12 +321,17 @@ impl<const VALUES: usize, const WINDOWS: usize> RunningMeans<VALUES, WINDOWS> {
         let mut resized = Self::new(capacities);
         let oldest_first = (self.head..self.len).chain(0..self.head);
         for index in oldest_first.skip(self.len.saturating_sub(resized.len)) {
-            resized.push_nonnegative_finite_wide(match &self.ring {
-                Ring::Compact(buffer) => buffer[index].map(f64::from),
-                Ring::Wide(buffer) => buffer[index],
-            });
+            resized.push_nonnegative_finite_wide(self.slot(index));
         }
         resized
+    }
+
+    #[inline]
+    fn slot(&self, index: usize) -> [f64; VALUES] {
+        match &self.ring {
+            Ring::Compact(buffer) => buffer[index].map(f64::from),
+            Ring::Wide(buffer) => buffer[index],
+        }
     }
 
     #[inline]
@@ -416,10 +425,7 @@ impl<const VALUES: usize, const WINDOWS: usize> RunningMeans<VALUES, WINDOWS> {
             let first = range.start.next_multiple_of(Self::BLOCK).min(range.end);
             let last = (range.end / Self::BLOCK * Self::BLOCK).max(first);
             for index in (range.start..first).chain(last..range.end) {
-                let samples = match &self.ring {
-                    Ring::Compact(buffer) => buffer[index].map(f64::from),
-                    Ring::Wide(buffer) => buffer[index],
-                };
+                let samples = self.slot(index);
                 sum = std::array::from_fn(|i| sum[i] + samples[i]);
             }
             let mut left = self.blocks.len() / 2 + first / Self::BLOCK;
@@ -571,17 +577,17 @@ mod tests {
             ),
             (8, &ChannelPosition::SURROUND[..]),
         ] {
-            let format = AudioFormat::new(channels, RATE, 1, [Unknown; MAX_AUDIO_CHANNELS]);
+            let format = AudioFormat::new(channels, RATE, [Unknown; MAX_AUDIO_CHANNELS]);
             assert_eq!(&format.unwrap().positions[..channels], expected);
         }
 
         let mut partial = [Unknown; MAX_AUDIO_CHANNELS];
         partial[..2].copy_from_slice(&[FrontRight, Unknown]);
-        let format = AudioFormat::new(2, RATE, 1, partial).unwrap();
+        let format = AudioFormat::new(2, RATE, partial).unwrap();
         assert_eq!(&format.positions[..2], &[FrontRight, FrontLeft]);
 
         partial[..3].copy_from_slice(&[FrontLeft, FrontLeft, FrontRight]);
-        let format = AudioFormat::new(3, RATE, 1, partial).unwrap();
+        let format = AudioFormat::new(3, RATE, partial).unwrap();
         assert_eq!(
             &format.positions[..3],
             &[FrontLeft, FrontCenter, FrontRight]
@@ -593,7 +599,7 @@ mod tests {
         use ChannelPosition::*;
 
         let samples = [1.0, 2.0, 3.0, 100.0, 4.0, 5.0, 6.0, 7.0];
-        let surround = AudioFormat::new(8, RATE, 0, ChannelPosition::SURROUND).unwrap();
+        let surround = AudioFormat::new(8, RATE, ChannelPosition::SURROUND).unwrap();
         let block = AudioBlock::new(&samples, surround);
         let mixed = block.stereo_frames().next().unwrap();
         let gain = std::f32::consts::FRAC_1_SQRT_2;
@@ -601,12 +607,12 @@ mod tests {
 
         let mut mono = [Unknown; MAX_AUDIO_CHANNELS];
         mono[0] = Mono;
-        let mono = AudioBlock::new(&[0.25], AudioFormat::new(1, RATE, 0, mono).unwrap());
+        let mono = AudioBlock::new(&[0.25], AudioFormat::new(1, RATE, mono).unwrap());
         assert_eq!(mono.stereo_matrix()[0], [1.0; 2]);
 
         let mut unsupported = [Unknown; MAX_AUDIO_CHANNELS];
         unsupported[..2].copy_from_slice(&[LowFrequency, Aux(0)]);
-        let unsupported = AudioFormat::new(2, RATE, 0, unsupported).unwrap();
+        let unsupported = AudioFormat::new(2, RATE, unsupported).unwrap();
         assert_eq!(
             AudioBlock::new(&[], unsupported).stereo_matrix(),
             &[[1.0, 0.0], [0.0, 1.0]]

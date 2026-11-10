@@ -169,7 +169,7 @@ fn handle_format_change(writer: &RefCell<CaptureWriter>, param: Option<&Pod>) {
     let format = parsed
         .then(|| SampleRate::new(info.rate()))
         .flatten()
-        .and_then(|rate| AudioFormat::new(info.channels() as usize, rate, 0, positions));
+        .and_then(|rate| AudioFormat::new(info.channels() as usize, rate, positions));
     let Some(format) = format else {
         writer.clear_format();
         writer.set_status(StreamStatus::Failed);
