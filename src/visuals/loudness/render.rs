@@ -13,6 +13,7 @@ pub(super) const GUIDE_LEVELS: [f32; 6] = [0.0, -6.0, -12.0, -18.0, -24.0, -36.0
 
 pub(super) const LEFT_PADDING: f32 = 28.0;
 const VALUE_LABEL_SIZE: Size = Size::new(68.0, 20.0);
+const VALUE_LINE_HEIGHTS: &[f32] = &[VALUE_LABEL_SIZE.height, 14.0];
 const VALUE_LABEL_GAP: f32 = 4.0;
 const MIN_METER_AREA_WIDTH: f32 = 28.0;
 pub(crate) const MIN_LABELED_WIDTH: f32 =
@@ -33,37 +34,48 @@ pub struct MeterFill {
     pub peak: Option<(f32, [f32; 4])>,
 }
 
+pub type Wick = ([f32; 2], [f32; 4]);
+
 #[derive(Debug)]
 pub struct LoudnessParams {
     pub geometry: crate::visuals::GeometryKey,
     pub bounds: Rectangle,
     pub bg_color: [f32; 4],
     pub bars: [MeterFill; 3],
+    // One per bar group.
+    pub wicks: [Option<Wick>; 2],
     pub guide_color: [f32; 4],
 }
 
-pub(super) fn db_to_ratio(db: f32) -> f32 {
+fn db_y(bounds: Rectangle, db: f32) -> f32 {
     let (min_db, max_db) = DB_RANGE;
     let raw = ((db - min_db) / (max_db - min_db)).clamp(0.0, 1.0);
-    raw.powf(0.9)
+    bounds.y + bounds.height * (1.0 - raw.powf(0.9))
+}
+
+pub(super) fn label_top(bounds: Rectangle, db: f32, height: f32) -> f32 {
+    let max_top = (bounds.y + bounds.height - height).max(bounds.y);
+    (db_y(bounds, db) - height * 0.5).clamp(bounds.y, max_top)
 }
 
 pub(super) fn value_label_bounds(
     bounds: Rectangle,
     (meter_x, bar_width, stride): (f32, f32, f32),
     value: f32,
-) -> Option<Rectangle> {
-    let y = bounds.y + bounds.height * (1.0 - db_to_ratio(value));
-    let rect = Rectangle {
-        x: meter_x + stride + bar_width + VALUE_LABEL_GAP,
-        y: (y - VALUE_LABEL_SIZE.height * 0.5).clamp(
-            bounds.y,
-            (bounds.y + bounds.height - VALUE_LABEL_SIZE.height).max(bounds.y),
-        ),
-        width: VALUE_LABEL_SIZE.width,
-        height: VALUE_LABEL_SIZE.height,
+    range: bool,
+) -> Option<(Rectangle, &'static [f32])> {
+    let fit = |lines: usize| {
+        let heights = &VALUE_LINE_HEIGHTS[..lines];
+        let height = heights.iter().sum();
+        let rect = Rectangle {
+            x: meter_x + stride + bar_width + VALUE_LABEL_GAP,
+            y: label_top(bounds, value, height),
+            width: VALUE_LABEL_SIZE.width,
+            height,
+        };
+        rect.is_within(&bounds).then_some((rect, heights))
     };
-    rect.is_within(&bounds).then_some(rect)
+    fit(1 + usize::from(range)).or_else(|| fit(1))
 }
 
 impl LoudnessParams {
@@ -102,18 +114,18 @@ impl LoudnessParams {
         };
 
         let bounds = self.bounds;
-        let y0 = bounds.y;
-        let y1 = bounds.y + bounds.height;
-        let height = y1 - y0;
-        let y_of = |db| (y1 - height * db_to_ratio(db)).clamp(y0, y1);
+        let (y0, y1) = (bounds.y, bounds.y + bounds.height);
+        let y_of = |db| db_y(bounds, db);
         let hline =
             |x0, x1, y, width, color| line_instance((x0, y), (x1, y), color, color, width, clip);
         let bars = self.bar_groups();
         let bar_count = bars.len();
         let vertices = &mut scratch.instances;
-        vertices.reserve(bar_count * 2 + self.bars.len() * 5 + GUIDE_LEVELS.len());
+        vertices.reserve(bar_count * 3 + self.bars.len() * 5 + GUIDE_LEVELS.len());
+        // Wicks fill the middle half of the label gap, or of a tighter bar gap.
+        let space = VALUE_LABEL_GAP.min(stride - bar_width);
 
-        for (i, bar) in bars.into_iter().enumerate() {
+        for (i, (bar, wick)) in bars.into_iter().zip(self.wicks).enumerate() {
             let sub_bar_count = bar.len();
             let x0 = meter_x + i as f32 * stride;
             let x1 = x0 + bar_width;
@@ -154,6 +166,14 @@ impl LoudnessParams {
                 if let Some((db, color)) = fill.peak {
                     vertices.push(hline(sx0, sx1, y_of(db), PEAK_THICKNESS, color));
                 }
+            }
+
+            if let Some(([low, high], color)) = wick {
+                let (top, bottom) = (y_of(high), y_of(low));
+                // A zero range still shows.
+                let pad = ((space * 0.5 - (bottom - top)) * 0.5).max(0.0);
+                let (x0, x1) = (x1 + space * 0.25, x1 + space * 0.75);
+                vertices.push(quad_instance(x0, top - pad, x1, bottom + pad, clip, color));
             }
         }
 

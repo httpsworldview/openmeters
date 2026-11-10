@@ -154,10 +154,10 @@ mod tests {
     use super::*;
     use crate::dsp::AudioBlock;
     use crate::util::audio::sine_wave;
-    use crate::visuals::loudness::processor::{LoudnessProcessor, LoudnessSnapshot};
+    use crate::visuals::loudness::processor::{LoudnessProcessor, LoudnessSnapshot, Programme};
     use crate::visuals::registry::{VisualContent, VisualKind};
 
-    fn loudness() -> (VisualManager, impl Fn() -> LoudnessSnapshot) {
+    fn loudness() -> (VisualManager, impl Fn() -> (LoudnessSnapshot, Programme)) {
         let mut manager = VisualManager::default();
         manager.set_enabled(VisualKind::Loudness, true);
         let state = manager
@@ -224,7 +224,7 @@ mod tests {
         for bulk in [false, true] {
             manager.ingest_samples(&signal, format);
             let before = snapshot();
-            assert!(before.momentary_loudness > reset.momentary_loudness);
+            assert!(before.0.momentary_loudness > reset.0.momentary_loudness);
             manager.set_enabled(VisualKind::Loudness, true);
             assert_eq!(snapshot(), before);
             manager.set_enabled(VisualKind::Loudness, false);
@@ -248,18 +248,21 @@ mod tests {
         let (mut manager, snapshot) = loudness();
         let mut batcher = DspBatcher::new();
         let format = AudioFormat::fallback(1, SampleRate::DEFAULT);
-        let signal = sine_wave(1_000.0, 48_000.0, 256, 0.5);
-        let reset_level = snapshot().short_term_loudness;
+        let signal = sine_wave(1_000.0, 48_000.0, 256 * 80, 0.5);
+        let reset_level = snapshot().0.short_term_loudness;
         for frames in [48_000, 144_001, 192_000, 192_001] {
             batcher.reset(&mut manager);
             batcher.push(&mut manager, &signal, format);
-            assert!(snapshot().short_term_loudness > reset_level);
+            assert!(snapshot().0.short_term_loudness > reset_level);
+            let programme = snapshot().1;
+            assert!(programme.integrated.is_some());
             let mut reference = LoudnessProcessor::new(Default::default());
             reference.process_block(&AudioBlock::new(&signal, format));
             batcher.push(&mut manager, &[0.0], format);
             batcher.push_silence(&mut manager, frames, format);
             let expected = if frames > 192_000 {
                 assert!(batcher.samples.is_empty());
+                assert_eq!(snapshot().1, programme);
                 reset_level
             } else {
                 reference
@@ -267,9 +270,14 @@ mod tests {
                         &vec![0.0; (frames as usize + 1) / 256 * 256],
                         format,
                     ))
+                    .0
                     .short_term_loudness
             };
-            assert_eq!(snapshot().short_term_loudness, expected, "frames={frames}");
+            assert_eq!(
+                snapshot().0.short_term_loudness,
+                expected,
+                "frames={frames}"
+            );
             assert_eq!(batcher.format.is_none(), frames > 192_000);
         }
     }

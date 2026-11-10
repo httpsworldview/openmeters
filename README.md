@@ -54,6 +54,8 @@ open an issue or pull request.
 
 - **Loudness**
   - BS.1770-5 K-weighted short-term and momentary LUFS meter modes.
+  - BS.1770-5 integrated LUFS meter mode with EBU Tech 3342 loudness
+    range (LRA), dimmed for its first 60 s per EBU Tech 3341.
   - True Peak meter modes.
   - Fast and slow K-weighted RMS dB meter modes.
 - **Oscilloscope**
@@ -212,6 +214,12 @@ Fedora, and tarball artifacts.
 | `ctrl+scroll up/down` | Zoom the frequency axis. |
 | `middle click+drag` or `ctrl+left click+drag` | Pan the frequency axis while zoomed in. |
 
+### Loudness
+
+| Binding | Action |
+| --- | --- |
+| double click | Reset LUFS Integrated and its loudness range. |
+
 ## Configuration
 
 On first launch, all six visuals are enabled. Application settings are
@@ -343,6 +351,8 @@ out.
 ### Papers and Standards
 
 - ITU-R BS.1770-5, loudness and true peak measurement.
+- EBU Tech 3341, 'EBU Mode' loudness metering.
+- EBU Tech 3342, loudness range measurement.
 - IEC 61672-1, A-weighting reference curve.
 - Brecht De Man, "[Evaluation of Implementations of the EBU R128
   Loudness

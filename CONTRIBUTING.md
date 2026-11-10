@@ -32,8 +32,9 @@ the existing visuals, but in short:
    linear or power-law radial scaling. Multiband correlation uses the
    same crossover outputs.
 6. The loudness meter implements K-weighting relative to full
-   scale/LUFS momentary/short-term, True Peak, and RMS
-   fast/slow. Standards used include ITU-R BS.1770.
+   scale/LUFS momentary/short-term/integrated, loudness range, True
+   Peak, and RMS fast/slow. Standards used include ITU-R BS.1770 and
+   EBU Tech 3341/3342.
 
 The point of this section is not to discourage engagement with the
 project, but rather to emphasize the expected level at which

@@ -1,20 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::processor::{DEFAULT_FLOOR_DB, LoudnessSnapshot};
+use super::processor::{DEFAULT_FLOOR_DB, LoudnessSnapshot, Programme};
 use super::render::{
-    DB_RANGE, GUIDE_LEVELS, LEFT_PADDING, LoudnessParams, MeterFill, db_to_ratio,
-    value_label_bounds,
+    DB_RANGE, GUIDE_LEVELS, LEFT_PADDING, LoudnessParams, MeterFill, label_top, value_label_bounds,
 };
 use crate::dsp::ChannelPosition;
 use crate::persistence::settings::LoudnessSettings;
-use crate::util::color::color_to_rgba;
+use crate::util::color::{color_to_rgba, lerp_color};
 use crate::visuals::options::MeterMode;
 use crate::visuals::palettes::{self, loudness::SIZE as PALETTE_SIZE};
 use crate::visuals::render::common::{fill_rect, text as raw_text};
-use iced::advanced::text::Paragraph as _;
-use iced::advanced::{graphics::text::Paragraph, text};
-use iced::alignment::{Horizontal, Vertical};
+use iced::advanced::text::{Paragraph as _, paragraph::Plain};
+use iced::advanced::{graphics::text::Paragraph, mouse, text};
 use iced::{Color, Point, Rectangle, Size};
 
 const GUIDE_LABELS: [&str; 6] = ["0", "-6", "-12", "-18", "-24", "-36"];
@@ -60,29 +58,38 @@ impl PeakHold {
 
 pub(crate) struct LoudnessState {
     snapshot: LoudnessSnapshot,
+    programme: Programme,
     pub(in crate::visuals) settings: LoudnessSettings,
     pub(in crate::visuals) palette: [Color; PALETTE_SIZE],
     peaks: [PeakHold; VISIBLE_METER_COUNT],
     guide_labels: [Paragraph; GUIDE_LABELS.len()],
-    value_label: (String, Paragraph),
+    value_label: Plain<Paragraph>,
+    range_label: Plain<Paragraph>,
     geometry: crate::visuals::GeometryKey,
+    last_click: Option<mouse::Click>,
+    pub(in crate::visuals) reset_requested: bool,
 }
 
 impl Default for LoudnessState {
     fn default() -> Self {
         let mut state = Self {
             snapshot: LoudnessSnapshot::with_floor(DEFAULT_FLOOR_DB, 2),
+            programme: Programme::default(),
             settings: LoudnessSettings::default(),
             palette: palettes::loudness::COLORS,
             peaks: [PeakHold::FLOOR; VISIBLE_METER_COUNT],
             guide_labels: GUIDE_LABELS.map(|label| {
-                let mut text = raw_text(label, 10.0, Size::new(LEFT_PADDING, GUIDE_LABEL_HEIGHT));
-                text.align_x = Horizontal::Right.into();
-                text.align_y = Vertical::Center;
-                Paragraph::with_text(text)
+                Paragraph::with_text(raw_text(
+                    label,
+                    10.0,
+                    Size::new(LEFT_PADDING, GUIDE_LABEL_HEIGHT),
+                ))
             }),
-            value_label: (String::new(), Paragraph::default()),
+            value_label: Plain::default(),
+            range_label: Plain::default(),
             geometry: crate::visuals::GeometryKey::new(),
+            last_click: None,
+            reset_requested: false,
         };
         state.refresh_value_label();
         state
@@ -91,8 +98,8 @@ impl Default for LoudnessState {
 
 impl LoudnessState {
     #[cfg(test)]
-    pub(crate) fn snapshot(&self) -> LoudnessSnapshot {
-        self.snapshot
+    pub(crate) fn snapshot(&self) -> (LoudnessSnapshot, Programme) {
+        (self.snapshot, self.programme)
     }
 
     pub fn reset_audio(&mut self) {
@@ -102,8 +109,33 @@ impl LoudnessState {
         self.geometry.invalidate();
     }
 
-    pub fn apply_snapshot(&mut self, snapshot: LoudnessSnapshot) {
+    pub fn reset_measurement(&mut self) {
+        self.reset_requested = true;
+        self.programme = Programme::default();
+        self.refresh_value_label();
+        self.geometry.invalidate();
+    }
+
+    fn update(&mut self, event: &iced::Event, cursor: mouse::Cursor, bounds: Rectangle) -> bool {
+        let (iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)), Some(position)) =
+            (event, cursor.position_over(bounds))
+        else {
+            return false;
+        };
+        let click = mouse::Click::new(position, mouse::Button::Left, self.last_click);
+        self.last_click = Some(click);
+        let reset = click.kind() == mouse::click::Kind::Double
+            && [self.settings.left_mode, self.settings.right_mode]
+                .contains(&MeterMode::LufsIntegrated);
+        if reset {
+            self.reset_measurement();
+        }
+        reset
+    }
+
+    pub fn apply_snapshot(&mut self, (snapshot, programme): (LoudnessSnapshot, Programme)) {
         self.snapshot = snapshot;
+        self.programme = programme;
         self.update_peak_holds();
         self.refresh_value_label();
         self.geometry.invalidate();
@@ -133,38 +165,48 @@ impl LoudnessState {
 
     crate::visuals::palette_setter!(PALETTE_SIZE => geometry);
 
-    fn get_value(&self, mode: MeterMode, channel: usize) -> f32 {
-        match mode {
-            MeterMode::LufsShortTerm => self.snapshot.short_term_loudness,
-            MeterMode::LufsMomentary => self.snapshot.momentary_loudness,
-            MeterMode::RmsFast => self.snapshot.rms_fast_db[channel],
-            MeterMode::RmsSlow => self.snapshot.rms_slow_db[channel],
-            MeterMode::TruePeak => self.snapshot.true_peak_db[channel],
-        }
-    }
-
     fn visual_params(&self, bounds: Rectangle) -> LoudnessParams {
         let meters = self.visible_meters();
+        let range = (self.programme.range)
+            .map(|range| (range, color_to_rgba(self.dim(self.palette[PAL_GUIDE]))));
+        let wick = |mode| range.filter(|_| mode == MeterMode::LufsIntegrated);
         LoudnessParams {
             geometry: self.geometry,
             bounds,
             bg_color: color_to_rgba(self.palette[PAL_BACKGROUND]),
             bars: std::array::from_fn(|i| self.meter_fill(self.peaks[i].db, meters[i])),
+            wicks: [self.settings.left_mode, self.settings.right_mode].map(wick),
             guide_color: color_to_rgba(self.palette[PAL_GUIDE]),
         }
     }
 
-    fn aggregate_channels(&self, mode: MeterMode, wanted: MeterSide) -> f32 {
-        if matches!(mode, MeterMode::LufsShortTerm | MeterMode::LufsMomentary) {
-            return self.get_value(mode, 0);
+    fn dim(&self, color: Color) -> Color {
+        if self.programme.stable {
+            color
+        } else {
+            lerp_color(color, self.palette[PAL_BACKGROUND], 0.5)
         }
+    }
+
+    fn aggregate_channels(&self, mode: MeterMode, wanted: MeterSide) -> f32 {
+        // Programme loudness is one value; the other modes are per channel.
+        let levels = match mode {
+            MeterMode::LufsShortTerm => return self.snapshot.short_term_loudness,
+            MeterMode::LufsMomentary => return self.snapshot.momentary_loudness,
+            MeterMode::LufsIntegrated => {
+                return (self.programme.integrated).unwrap_or(DEFAULT_FLOOR_DB);
+            }
+            MeterMode::RmsFast => &self.snapshot.rms_fast_db,
+            MeterMode::RmsSlow => &self.snapshot.rms_slow_db,
+            MeterMode::TruePeak => &self.snapshot.true_peak_db,
+        };
         (0..self.snapshot.channel_count)
             .filter(|&ch| {
                 let side =
                     channel_side(self.snapshot.positions[ch], ch, self.snapshot.channel_count);
                 wanted == MeterSide::Both || side == MeterSide::Both || side == wanted
             })
-            .map(|ch| self.get_value(mode, ch))
+            .map(|ch| levels[ch])
             .reduce(f32::max)
             .unwrap_or(DB_RANGE.0)
     }
@@ -180,7 +222,7 @@ impl LoudnessState {
     }
 
     fn meter_fill(&self, peak_db: f32, (mode, db): (MeterMode, f32)) -> MeterFill {
-        let thresholds = zone_thresholds(mode);
+        let (_, thresholds) = scale(mode);
         let colors = &self.palette[PAL_LOW..];
         MeterFill {
             db,
@@ -195,23 +237,25 @@ impl LoudnessState {
 
     fn refresh_value_label(&mut self) {
         let mode = self.settings.right_mode;
-        let unit = match mode {
-            MeterMode::LufsShortTerm | MeterMode::LufsMomentary => "LUFS",
-            MeterMode::RmsFast | MeterMode::RmsSlow => "dB",
-            MeterMode::TruePeak => "dBTP",
-        };
         let value = self.aggregate_channels(mode, MeterSide::Both);
-        let text = format!("{value:.1} {unit}");
-        if self.value_label.0 != text {
-            let paragraph = value_label(&text);
-            self.value_label = (text, paragraph);
-        }
+        let text = format!("{value:.1} {}", scale(mode).0);
+        self.value_label.update(value_label(&text));
+
+        let range = match self.programme.range {
+            _ if mode != MeterMode::LufsIntegrated => String::new(),
+            Some([low, high]) => format!("{:.1} LU", high - low),
+            None => "--".to_owned(),
+        };
+        (self.range_label).update(raw_text(&range, 10.0, Size::INFINITE));
     }
 
     fn update_peak_holds(&mut self) {
         let meters = self.visible_meters();
-        for (peak, (_, value)) in self.peaks.iter_mut().zip(meters) {
-            peak.update(value.clamp(DB_RANGE.0, DB_RANGE.1), self.snapshot.elapsed);
+        for (peak, (mode, value)) in self.peaks.iter_mut().zip(meters) {
+            // Integrated loudness holds its level, so its peak would never settle.
+            if mode != MeterMode::LufsIntegrated {
+                peak.update(value.clamp(DB_RANGE.0, DB_RANGE.1), self.snapshot.elapsed);
+            }
         }
     }
 }
@@ -246,22 +290,25 @@ fn channel_side(
     }
 }
 
-fn zone_thresholds(mode: MeterMode) -> [f32; ZONE_COUNT] {
+// Unit and zone ceilings.
+fn scale(mode: MeterMode) -> (&'static str, [f32; ZONE_COUNT]) {
+    const DBFS: [f32; ZONE_COUNT] = [-12.0, -6.0, -1.0, DB_RANGE.1];
     match mode {
-        MeterMode::LufsShortTerm | MeterMode::LufsMomentary => [-24.0, -18.0, -9.0, DB_RANGE.1],
-        MeterMode::RmsFast | MeterMode::RmsSlow | MeterMode::TruePeak => {
-            [-12.0, -6.0, -1.0, DB_RANGE.1]
+        MeterMode::LufsShortTerm | MeterMode::LufsMomentary | MeterMode::LufsIntegrated => {
+            ("LUFS", [-24.0, -18.0, -9.0, DB_RANGE.1])
         }
+        MeterMode::RmsFast | MeterMode::RmsSlow => ("dB", DBFS),
+        MeterMode::TruePeak => ("dBTP", DBFS),
     }
 }
 
-fn value_label(label: &str) -> Paragraph {
+fn value_label(label: &str) -> text::Text<&str> {
     let mut text = raw_text(label, 12.0, Size::INFINITE);
     text.font = iced::Font {
         weight: iced::font::Weight::Bold,
         ..Default::default()
     };
-    Paragraph::with_text(text)
+    text
 }
 
 fn visible_guide_labels(
@@ -272,15 +319,12 @@ fn visible_guide_labels(
         return labels;
     }
 
-    let max_top = bounds.y + bounds.height - GUIDE_LABEL_HEIGHT;
     let mut len = 0;
     for &i in &GUIDE_LABEL_ORDER {
-        let db = GUIDE_LEVELS[i];
-        let y = bounds.y + bounds.height * (1.0 - db_to_ratio(db));
         let rect = Rectangle::new(
             Point::new(
                 bounds.x,
-                (y - GUIDE_LABEL_HEIGHT * 0.5).clamp(bounds.y, max_top),
+                label_top(bounds, GUIDE_LEVELS[i], GUIDE_LABEL_HEIGHT),
             ),
             Size::new(LEFT_PADDING, GUIDE_LABEL_HEIGHT),
         );
@@ -298,53 +342,69 @@ fn visible_guide_labels(
     labels
 }
 
-crate::visuals::visualization_widget!(Loudness, LoudnessState, |this, renderer, theme, bounds| {
-    let state = this.state.borrow();
-    let params = state.visual_params(bounds);
-    let meter_bounds = params.meter_bounds();
-    let value = params.bars[2].db;
+crate::visuals::visualization_widget!(
+    Loudness,
+    LoudnessState,
+    update,
+    |this, renderer, theme, bounds| {
+        let state = this.state.borrow();
+        let params = state.visual_params(bounds);
+        let meter_bounds = params.meter_bounds();
+        let value = params.bars[2].db;
 
-    renderer.draw_primitive(bounds, params);
+        renderer.draw_primitive(bounds, params);
 
-    if let Some(meters @ (meter_x, _, _)) = meter_bounds {
-        let guide_bounds = Rectangle {
-            width: meter_x - bounds.x,
-            ..bounds
-        };
-        for (i, rect) in visible_guide_labels(guide_bounds).into_iter().flatten() {
-            let size = state.guide_labels[i].min_bounds();
-            text::Renderer::fill_paragraph(
-                renderer,
-                &state.guide_labels[i],
-                Point::new(
-                    rect.x + rect.width - 4.0 - size.width,
-                    rect.y + (rect.height - size.height) * 0.5,
-                ),
-                state.palette[PAL_GUIDE],
-                bounds,
-            );
+        if let Some(meters @ (meter_x, _, _)) = meter_bounds {
+            let guide_bounds = Rectangle {
+                width: meter_x - bounds.x,
+                ..bounds
+            };
+            for (i, rect) in visible_guide_labels(guide_bounds).into_iter().flatten() {
+                let size = state.guide_labels[i].min_bounds();
+                text::Renderer::fill_paragraph(
+                    renderer,
+                    &state.guide_labels[i],
+                    Point::new(
+                        rect.x + rect.width - 4.0 - size.width,
+                        rect.y + (rect.height - size.height) * 0.5,
+                    ),
+                    state.palette[PAL_GUIDE],
+                    bounds,
+                );
+            }
+
+            let range = &state.range_label;
+            let Some((label_rect, heights)) =
+                value_label_bounds(bounds, meters, value, !range.content().is_empty())
+            else {
+                return;
+            };
+
+            fill_rect(renderer, label_rect, state.palette[PAL_BACKGROUND]);
+
+            let text_color = theme.extended_palette().background.base.text;
+            let lines = [
+                (&state.value_label, text_color),
+                (range, state.dim(text_color)),
+            ];
+            let mut top = label_rect.y;
+            for (height, (label, color)) in heights.iter().zip(lines) {
+                let size = label.min_bounds();
+                text::Renderer::fill_paragraph(
+                    renderer,
+                    label.raw(),
+                    Point::new(
+                        label_rect.center_x() - size.width * 0.5,
+                        top + (height - size.height) * 0.5,
+                    ),
+                    color,
+                    bounds,
+                );
+                top += height;
+            }
         }
-
-        let Some(label_rect) = value_label_bounds(bounds, meters, value) else {
-            return;
-        };
-
-        fill_rect(renderer, label_rect, state.palette[PAL_BACKGROUND]);
-
-        let label = &state.value_label.1;
-        let label_size = label.min_bounds();
-        text::Renderer::fill_paragraph(
-            renderer,
-            label,
-            Point::new(
-                label_rect.center_x() - label_size.width * 0.5,
-                label_rect.center_y() - label_size.height * 0.5,
-            ),
-            theme.extended_palette().background.base.text,
-            bounds,
-        );
     }
-});
+);
 
 #[cfg(test)]
 mod tests {
@@ -387,7 +447,7 @@ mod tests {
                     .flatten()
                     .all(|(_, r)| r.is_within(&guide_bounds))
             );
-            let value = value_label_bounds(bounds, meters, -12.0);
+            let value = value_label_bounds(bounds, meters, -12.0, true).map(|(rect, _)| rect);
             assert_eq!(value.is_some(), value_visible);
             assert!(value.is_none_or(|r| r.is_within(&bounds) && r.x >= x + stride + bar_width));
         }
@@ -402,7 +462,7 @@ mod tests {
     #[test]
     fn visible_bars_use_configured_modes_and_channel_aggregation() {
         let mut state = LoudnessState::default();
-        state.apply_snapshot(LoudnessSnapshot {
+        let snapshot = LoudnessSnapshot {
             elapsed: 0.0,
             short_term_loudness: -9.0,
             momentary_loudness: -7.5,
@@ -411,21 +471,58 @@ mod tests {
             true_peak_db: [-12.0, -18.0, -2.0, -60.0, -9.0, -6.0, 0.0, 0.0],
             channel_count: 6,
             positions: ChannelPosition::fallback(6),
-        });
+        };
+        let programme = Programme {
+            integrated: Some(-14.0),
+            range: Some([-20.0, -12.0]),
+            stable: false,
+        };
+        state.apply_snapshot((snapshot, programme));
 
         assert_eq!(visible_bar_values(&state), [-2.0, -2.0, -9.0]);
 
         state.set_modes(MeterMode::RmsFast, MeterMode::LufsMomentary);
         assert_eq!(visible_bar_values(&state), [-6.0, -3.0, -7.5]);
-        assert_eq!(state.value_label.0, "-7.5 LUFS");
+        assert_eq!(state.value_label.content(), "-7.5 LUFS");
 
         state.set_modes(MeterMode::RmsSlow, MeterMode::RmsFast);
         assert_eq!(visible_bar_values(&state), [-6.0, -3.0, -3.0]);
-        assert_eq!(state.value_label.0, "-3.0 dB");
+        assert_eq!(state.value_label.content(), "-3.0 dB");
 
         state.set_modes(MeterMode::LufsShortTerm, MeterMode::RmsSlow);
         assert_eq!(visible_bar_values(&state), [-9.0, -9.0, -3.0]);
-        assert_eq!(state.value_label.0, "-3.0 dB");
+        assert_eq!(state.value_label.content(), "-3.0 dB");
+        assert!(state.range_label.content().is_empty());
+
+        state.set_modes(MeterMode::RmsSlow, MeterMode::LufsIntegrated);
+        state.apply_snapshot((snapshot, programme));
+        assert_eq!(visible_bar_values(&state), [-6.0, -3.0, -14.0]);
+        fn labels(state: &LoudnessState) -> [&str; 2] {
+            [state.value_label.content(), state.range_label.content()]
+        }
+        assert_eq!(labels(&state), ["-14.0 LUFS", "8.0 LU"]);
+        let bounds = Rectangle::new(Point::ORIGIN, Size::new(200.0, 100.0));
+        let params = state.visual_params(bounds);
+        assert!(params.bars[0].peak.is_some() && params.bars[2].peak.is_none());
+        assert!(params.wicks[0].is_none());
+        let (range, color) = params.wicks[1].unwrap();
+        assert_eq!(range, [-20.0, -12.0]);
+        assert_ne!(color, color_to_rgba(state.palette[PAL_GUIDE]));
+
+        let click = |state: &mut LoudnessState, position| {
+            let press = iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
+            state.update(&press, mouse::Cursor::Available(position), bounds)
+        };
+        let outside = Point::new(-1.0, 10.0);
+        assert!(!click(&mut state, outside) && !click(&mut state, outside));
+        let position = Point::new(10.0, 10.0);
+        assert!(!click(&mut state, position) && click(&mut state, position));
+        assert!(std::mem::take(&mut state.reset_requested));
+        assert_eq!(visible_bar_values(&state)[2], DEFAULT_FLOOR_DB);
+        assert_eq!(labels(&state), ["-99.9 LUFS", "--"]);
+        state.set_modes(MeterMode::RmsSlow, MeterMode::RmsSlow);
+        assert!(!click(&mut state, position) && !click(&mut state, position));
+        assert!(!state.reset_requested);
     }
 
     #[test]
@@ -448,13 +545,13 @@ mod tests {
                 let mut snapshot = LoudnessSnapshot::with_floor(floor, MAX_CHANNELS);
                 snapshot.positions = order.map(|index| ChannelPosition::SURROUND[index]);
                 snapshot.true_peak_db[channel] = 6.0;
-                state.apply_snapshot(snapshot);
+                state.apply_snapshot((snapshot, Programme::default()));
                 assert_eq!(
                     visible_bar_values(&state),
                     expected[position],
                     "channel={channel}, order={order:?}"
                 );
-                assert_eq!(state.value_label.0, "6.0 dBTP");
+                assert_eq!(state.value_label.content(), "6.0 dBTP");
             }
         }
     }
@@ -465,8 +562,8 @@ mod tests {
         state.set_modes(MeterMode::TruePeak, MeterMode::TruePeak);
         let mut snapshot = LoudnessSnapshot::with_floor(-99.9, 2);
         snapshot.true_peak_db[1] = -80.0;
-        state.apply_snapshot(snapshot);
-        assert_eq!(state.value_label.0, "-80.0 dBTP");
+        state.apply_snapshot((snapshot, Programme::default()));
+        assert_eq!(state.value_label.content(), "-80.0 dBTP");
     }
 
     #[test]
@@ -486,18 +583,18 @@ mod tests {
 
         let mut mono = [DB_RANGE.0; MAX_CHANNELS];
         mono[0] = -12.0;
-        state.apply_snapshot(snapshot(mono, 1));
+        state.apply_snapshot((snapshot(mono, 1), Programme::default()));
         assert_eq!(visible_bar_values(&state), [-12.0; 3]);
 
         let mut quad = [DB_RANGE.0; MAX_CHANNELS];
         quad[2] = -6.0;
         quad[3] = -3.0;
-        state.apply_snapshot(snapshot(quad, 4));
+        state.apply_snapshot((snapshot(quad, 4), Programme::default()));
         assert_eq!(visible_bar_values(&state), [-6.0, -3.0, -3.0]);
 
         let mut surround = [DB_RANGE.0; MAX_CHANNELS];
         surround[3] = 6.0;
-        state.apply_snapshot(snapshot(surround, 6));
+        state.apply_snapshot((snapshot(surround, 6), Programme::default()));
         assert_eq!(visible_bar_values(&state), [6.0; 3]);
     }
 

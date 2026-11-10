@@ -12,6 +12,18 @@ pub(super) const DEFAULT_FLOOR_DB: f32 = -99.9;
 
 // K-weighted windows (seconds): short-term, momentary, fast RMS, slow RMS.
 const DEFAULT_WINDOWS: [f32; 4] = [3.0, 0.4, 0.3, 1.0];
+const SHORT_TERM: usize = 0;
+const MOMENTARY: usize = 1;
+const RMS_FAST: usize = 2;
+const RMS_SLOW: usize = 3;
+
+// Gating blocks overlap by 75 %; Tech 3342 samples short-term loudness at least as often.
+const HOP_SECS: f32 = 0.1;
+// Tech 3341: LRA is not yet stable for the first 60 s of a measurement.
+const STABLE_HOPS: u64 = 600;
+const ABSOLUTE_GATE_LUFS: f64 = -70.0;
+const HISTOGRAM_BINS: usize = 10_000;
+const HISTOGRAM_BINS_PER_LU: f64 = 100.0;
 
 // Numerator, denominator, output gain.
 type KWeighting = ([f64; 5], [f64; 5], f64);
@@ -222,6 +234,116 @@ fn channel_weight(position: ChannelPosition) -> f64 {
     }
 }
 
+fn weighted_energy(
+    channels: &[Option<ChannelState>],
+    positions: &[ChannelPosition; MAX_CHANNELS],
+    window: usize,
+) -> f64 {
+    channels
+        .iter()
+        .zip(positions)
+        .filter_map(|(channel, &position)| {
+            Some(channel.as_ref()?.0.mean(window)[0] * channel_weight(position))
+        })
+        .sum()
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Programme {
+    pub integrated: Option<f32>,
+    // 10th and 95th percentiles
+    pub range: Option<[f32; 2]>,
+    pub stable: bool,
+}
+
+type Bin = (u64, f64);
+
+fn total(bins: &[Bin]) -> Bin {
+    bins.iter().fold((0, 0.0), |(n, sum), &(count, energy)| {
+        (n + count, sum + energy)
+    })
+}
+
+fn bin_loudness((count, energy): Bin) -> Option<f32> {
+    (count > 0).then(|| mean_square_to_db(energy / count as f64, LOUDNESS_OFFSET))
+}
+
+struct Histogram(Box<[Bin]>);
+
+impl Default for Histogram {
+    fn default() -> Self {
+        Self(vec![(0, 0.0); HISTOGRAM_BINS].into())
+    }
+}
+
+impl Histogram {
+    fn insert(&mut self, energy: f64) -> bool {
+        let lufs = f64::from(mean_square_to_db(energy, LOUDNESS_OFFSET));
+        let bin = (lufs - ABSOLUTE_GATE_LUFS) * HISTOGRAM_BINS_PER_LU;
+        if bin <= 0.0 {
+            return false;
+        }
+        let (count, sum) = &mut self.0[(bin as usize).min(HISTOGRAM_BINS - 1)];
+        *count += 1;
+        *sum += energy;
+        true
+    }
+
+    fn gated(&self, ratio: f64) -> &[Bin] {
+        let (count, energy) = total(&self.0);
+        let gate = energy / count as f64 * ratio;
+        let first = self
+            .0
+            .iter()
+            .position(|&(count, energy)| energy > gate * count as f64);
+        &self.0[first.unwrap_or(HISTOGRAM_BINS)..]
+    }
+
+    fn range(&self) -> Option<[f32; 2]> {
+        let bins = self.gated(0.01);
+        let last = total(bins).0.checked_sub(1)?;
+        let level = |percent| {
+            let rank = (last * percent + 50) / 100;
+            let mut below = 0;
+            bin_loudness(*bins.iter().find(|bin| {
+                below += bin.0;
+                rank < below
+            })?)
+        };
+        Some([level(10)?, level(95)?])
+    }
+}
+
+#[derive(Default)]
+struct Measurement {
+    blocks: Histogram,
+    short_term: Histogram,
+    hops: u64,
+    since_hop: usize,
+    programme: Programme,
+}
+
+impl Measurement {
+    fn hop(
+        &mut self,
+        channels: &[Option<ChannelState>],
+        positions: &[ChannelPosition; MAX_CHANNELS],
+    ) {
+        self.hops += 1;
+        self.programme.stable = self.hops >= STABLE_HOPS;
+        let energy_of = |window: usize| {
+            let hops = (DEFAULT_WINDOWS[window] / HOP_SECS).round() as u64;
+            (self.hops >= hops).then(|| weighted_energy(channels, positions, window))
+        };
+        if energy_of(MOMENTARY).is_some_and(|energy| self.blocks.insert(energy)) {
+            self.programme.integrated = bin_loudness(total(self.blocks.gated(0.1)));
+        }
+        if energy_of(SHORT_TERM).is_some_and(|energy| self.short_term.insert(energy)) {
+            self.programme.range = self.short_term.range();
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct LoudnessSnapshot {
     pub elapsed: f32,
@@ -259,6 +381,7 @@ pub struct LoudnessProcessor {
     config: LoudnessConfig,
     channels: Vec<Option<ChannelState>>,
     weighting: KWeighting,
+    measurement: Measurement,
 }
 
 impl LoudnessProcessor {
@@ -266,6 +389,7 @@ impl LoudnessProcessor {
         Self {
             weighting: k_weighting_coefficients(f64::from(config.sample_rate.hz())),
             channels: Vec::new(),
+            measurement: Measurement::default(),
             config,
         }
     }
@@ -274,10 +398,16 @@ impl LoudnessProcessor {
         self.channels.fill_with(|| None);
     }
 
-    pub fn process_block(&mut self, block: &AudioBlock<'_>) -> LoudnessSnapshot {
+    pub fn reset_measurement(&mut self) {
+        self.measurement = Measurement::default();
+    }
+
+    pub fn process_block(&mut self, block: &AudioBlock<'_>) -> (LoudnessSnapshot, Programme) {
         let sample_rate = block.sample_rate;
         if self.config.sample_rate != sample_rate {
-            *self = Self::new(LoudnessConfig { sample_rate });
+            self.config.sample_rate = sample_rate;
+            self.weighting = k_weighting_coefficients(f64::from(sample_rate.hz()));
+            self.channels.clear();
         }
         if self.channels.len() != block.channels {
             self.channels = (0..block.channels).map(|_| None).collect();
@@ -291,19 +421,26 @@ impl LoudnessProcessor {
                 .rposition(Option::is_some)
                 .map_or(0, |i| i + 1),
         );
+        let hop = window_length(sample_rate, HOP_SECS);
         for frame in block.samples.chunks_exact(block.channels) {
             for (channel, &sample) in self.channels[..active_channels].iter_mut().zip(frame) {
                 if channel.is_none() {
                     if sample == 0.0 {
                         continue;
                     }
-                    *channel = Some(new_channel(self.config.sample_rate));
+                    *channel = Some(new_channel(sample_rate));
                 }
                 let (windows, filter, true_peak) = channel.as_mut().unwrap();
                 let filtered = k_weighted(sample, filter, weighting);
                 let power = filtered * filtered;
                 windows.push_nonnegative_finite_wide([if power.is_finite() { power } else { 0.0 }]);
                 true_peak.process(sample, firs);
+            }
+            let measurement = &mut self.measurement;
+            measurement.since_hop += 1;
+            if measurement.since_hop >= hop {
+                measurement.since_hop = 0;
+                measurement.hop(&self.channels, &block.positions);
             }
         }
         for (_, state, true_peak) in self.channels.iter_mut().flatten() {
@@ -312,30 +449,27 @@ impl LoudnessProcessor {
         }
 
         let mut snapshot = LoudnessSnapshot::with_floor(DEFAULT_FLOOR_DB, self.channels.len());
-        let mut weighted_short_term = 0.0;
-        let mut weighted_momentary = 0.0;
-
         for (channel_index, channel_state) in self.channels.iter_mut().enumerate() {
             let Some((windows, _, true_peak)) = channel_state else {
                 continue;
             };
-            let weight = channel_weight(block.positions[channel_index]);
-            let [short_term, momentary, rms_fast, rms_slow] =
-                std::array::from_fn(|window| windows.mean(window)[0]);
-            weighted_short_term += short_term * weight;
-            weighted_momentary += momentary * weight;
+            let [rms_fast, rms_slow] = [RMS_FAST, RMS_SLOW].map(|window| windows.mean(window)[0]);
             snapshot.rms_fast_db[channel_index] = mean_square_to_db(rms_fast, 0.0);
             snapshot.rms_slow_db[channel_index] = mean_square_to_db(rms_slow, 0.0);
             let peak = f64::from(std::mem::take(&mut true_peak.peak));
             snapshot.true_peak_db[channel_index] = mean_square_to_db(peak * peak, 0.0);
         }
 
+        let loudness = |window| {
+            let energy = weighted_energy(&self.channels, &block.positions, window);
+            mean_square_to_db(energy, LOUDNESS_OFFSET)
+        };
         snapshot.elapsed = block.duration();
-        snapshot.short_term_loudness = mean_square_to_db(weighted_short_term, LOUDNESS_OFFSET);
-        snapshot.momentary_loudness = mean_square_to_db(weighted_momentary, LOUDNESS_OFFSET);
+        snapshot.short_term_loudness = loudness(SHORT_TERM);
+        snapshot.momentary_loudness = loudness(MOMENTARY);
         snapshot.positions = block.positions;
 
-        snapshot
+        (snapshot, self.measurement.programme)
     }
 }
 
@@ -366,10 +500,12 @@ mod tests {
         };
         let mut processor = LoudnessProcessor::new(config);
         let rate = block.sample_rate.get();
-        let mut reference = EbuR128::new(block.channels as u32, rate, Mode::S).unwrap();
+        let mut reference = EbuR128::new(block.channels as u32, rate, Mode::S | Mode::I).unwrap();
         if let Some(channel_map) = channel_map {
             reference.set_channel_map(channel_map).unwrap();
         }
+        let hop = window_length(block.sample_rate, HOP_SECS);
+        let short_term_length = window_length(block.sample_rate, DEFAULT_WINDOWS[SHORT_TERM]);
         // Reference queries rescan entire windows; concentrate them at transitions and window expiry.
         let checkpoints: BTreeSet<_> = transitions
             .iter()
@@ -379,19 +515,25 @@ mod tests {
             })
             .flat_map(|frame| [frame.saturating_sub(1), frame, frame + 1])
             .chain([1, 18, 273, block.frame_count()])
+            .chain((hop..=block.frame_count()).step_by(hop))
             .filter(|&frame| frame > 0 && frame <= block.frame_count())
             .collect();
         let mut chunks = [1, 17, 255, 1_024, 4_093].into_iter().cycle();
         let mut frame = 0;
-        let mut snapshot = LoudnessSnapshot::default();
+        let (mut snapshot, mut programme) = Default::default();
+        let mut short_term = Vec::new();
         for checkpoint in checkpoints {
             while frame < checkpoint {
                 let end = (frame + chunks.next().unwrap()).min(checkpoint);
                 let chunk = &block.samples[frame * block.channels..end * block.channels];
-                snapshot = processor.process_block(&AudioBlock::new(chunk, format));
+                (snapshot, programme) = processor.process_block(&AudioBlock::new(chunk, format));
                 reference.add_frames_f32(chunk).unwrap();
                 frame = end;
             }
+            let context = format!(
+                "{rate} Hz, {:?}, frame={frame}",
+                &block.positions[..block.channels]
+            );
             for (metric, actual, expected) in [
                 (
                     "momentary",
@@ -407,16 +549,125 @@ mod tests {
                 let expected = expected.max(f64::from(DEFAULT_FLOOR_DB));
                 assert!(
                     (f64::from(actual) - expected).abs() < 1.0e-4,
-                    "{rate} Hz, {:?}, frame={frame}, {metric}: {actual:.9} vs {expected:.9} LUFS",
-                    &block.positions[..block.channels],
+                    "{context}, {metric}: {actual:.9} vs {expected:.9} LUFS"
+                );
+            }
+            if frame % hop == 0 && frame >= short_term_length {
+                short_term.push(reference.loudness_shortterm().unwrap());
+            }
+            let integrated = reference.loudness_global().unwrap();
+            let range = tech_3342_range(&short_term);
+            assert_eq!(
+                programme.integrated.is_some(),
+                integrated.is_finite(),
+                "{context}"
+            );
+            if let Some(actual) = programme.integrated {
+                let error = f64::from(actual) - integrated;
+                assert!(error.abs() < 1.0e-4, "{context}: I off by {error:e} LU");
+            }
+            assert_eq!(programme.range.is_some(), range.is_some(), "{context}");
+            for (actual, expected) in programme
+                .range
+                .into_iter()
+                .flatten()
+                .zip(range.into_iter().flatten())
+            {
+                let error = f64::from(actual) - expected;
+                assert!(
+                    error.abs() < 0.01 + 1.0e-4,
+                    "{context}: LRA percentile off by {error:e} LU"
                 );
             }
         }
-        let whole = LoudnessProcessor::new(config).process_block(&block);
+        let (whole, whole_programme) = LoudnessProcessor::new(config).process_block(&block);
         assert_eq!(snapshot.momentary_loudness, whole.momentary_loudness);
         assert_eq!(snapshot.short_term_loudness, whole.short_term_loudness);
         assert_eq!(snapshot.rms_fast_db, whole.rms_fast_db);
         assert_eq!(snapshot.rms_slow_db, whole.rms_slow_db);
+        assert_eq!(programme, whole_programme);
+    }
+
+    // EBU Tech 3342's MATLAB reference implementation
+    fn tech_3342_range(short_term_loudness: &[f64]) -> Option<[f64; 2]> {
+        let abs_gated: Vec<_> = (short_term_loudness.iter().copied())
+            .filter(|&loudness| loudness >= -70.0)
+            .collect();
+        let power = abs_gated
+            .iter()
+            .map(|l| 10.0_f64.powf(l / 10.0))
+            .sum::<f64>();
+        let integrated = 10.0 * (power / abs_gated.len() as f64).log10();
+        let mut rel_gated: Vec<_> = abs_gated
+            .into_iter()
+            .filter(|&loudness| loudness >= integrated - 20.0)
+            .collect();
+        rel_gated.sort_by(f64::total_cmp);
+        let n = rel_gated.len();
+        let percentile =
+            |p: f64| rel_gated[((n - 1) as f64 * p / 100.0 + 1.0).round() as usize - 1];
+        (n > 0).then(|| [percentile(10.0), percentile(95.0)])
+    }
+
+    #[test]
+    fn loudness_range_meets_ebu_tech_3342_cases() {
+        for (levels, expected) in [
+            (&[-20.0, -30.0][..], 10.0),
+            (&[-20.0, -15.0], 5.0),
+            (&[-40.0, -20.0], 20.0),
+            (&[-50.0, -35.0, -20.0, -35.0, -50.0], 15.0),
+        ] {
+            let samples: Vec<_> = (levels.iter())
+                .flat_map(|dbfs: &f32| {
+                    let amplitude = 10.0_f32.powf(dbfs / 20.0) * std::f32::consts::SQRT_2;
+                    sine_wave(1_000.0, RATE.hz(), 20 * RATE.get() as usize, amplitude)
+                })
+                .collect();
+            let [low, high] = LoudnessProcessor::new(LoudnessConfig::default())
+                .process_block(&AudioBlock::fallback(&samples, 1, RATE))
+                .1
+                .range
+                .unwrap();
+            let actual = high - low;
+            assert!((actual - expected).abs() <= 1.0, "{levels:?}: {actual} LU");
+        }
+    }
+
+    #[test]
+    fn programme_outlives_timeline_resets_until_its_own_reset() {
+        fn process(
+            processor: &mut LoudnessProcessor,
+            samples: &[f32],
+            format: AudioFormat,
+        ) -> Programme {
+            processor.process_block(&AudioBlock::new(samples, format)).1
+        }
+        let (hop, block, short_term) = (4_800, 19_200, 144_000);
+        let mono = AudioFormat::fallback(1, RATE);
+        let tone = sine_wave(1_000.0, RATE.hz(), short_term, 0.5);
+        let mut processor = LoudnessProcessor::new(LoudnessConfig::default());
+        let programme = process(&mut processor, &tone, mono);
+        assert!(programme.range.is_some() && !programme.stable);
+
+        processor.reset_audio();
+        let fast = AudioFormat::fallback(1, SampleRate::must(96_000));
+        // The gap leaves more than a 48 kHz hop pending, which the next block must still close.
+        let gap = vec![0.0; short_term + hop];
+        assert_eq!(process(&mut processor, &gap, fast), programme);
+        assert_ne!(process(&mut processor, &tone[..48_000], mono), programme);
+
+        processor.reset_measurement();
+        let restarted = process(&mut processor, &tone[..block - 1], mono);
+        assert_eq!(restarted, Programme::default());
+        assert_ne!(
+            process(&mut processor, &tone[block - 1..block], mono),
+            restarted
+        );
+
+        let silence = vec![0.0; STABLE_HOPS as usize * hop - block];
+        let (unstable, last) = silence.split_at(silence.len() - 1);
+        assert!(!process(&mut processor, unstable, mono).stable);
+        assert!(process(&mut processor, last, mono).stable);
     }
 
     fn assert_energy_windows_match_direct_sums(
@@ -576,7 +827,7 @@ mod tests {
                 .iter()
                 .flat_map(|sample| gains.iter().map(move |gain| sample * gain))
                 .collect();
-            let snapshot = LoudnessProcessor::new(LoudnessConfig::default())
+            let (snapshot, _) = LoudnessProcessor::new(LoudnessConfig::default())
                 .process_block(&AudioBlock::fallback(&samples, gains.len(), RATE));
             let weighted_gain: f64 = gains
                 .iter()
@@ -610,7 +861,7 @@ mod tests {
                 rate as usize * 4,
                 amplitude as f32,
             );
-            let snapshot = LoudnessProcessor::new(LoudnessConfig { sample_rate })
+            let (snapshot, _) = LoudnessProcessor::new(LoudnessConfig { sample_rate })
                 .process_block(&AudioBlock::fallback(&tone, 1, sample_rate));
             let error = f64::from(snapshot.rms_slow_db[0]) - rms_db;
             assert!(error.abs() < 0.01, "{rate} Hz: {error:+.4} dB");
@@ -619,12 +870,12 @@ mod tests {
 
     #[test]
     fn loudness_matches_ebur128_across_startup_layouts_and_rates() {
-        let check_tone = |leading_secs, channels| {
+        let check_tone = |leading_secs, channels, amplitude| {
             let rate = RATE.hz();
             let samples: Vec<_> =
                 std::iter::repeat_n(0.0, (rate * leading_secs) as usize * channels)
                     .chain(
-                        sine_wave(1_000.0, rate, (rate * 4.0) as usize, 0.5)
+                        sine_wave(1_000.0, rate, (rate * 4.0) as usize, amplitude)
                             .into_iter()
                             .flat_map(|sample| std::iter::repeat_n(sample, channels)),
                     )
@@ -633,9 +884,11 @@ mod tests {
             assert_loudness_matches_ebur128(&samples, format, None, &[leading_secs]);
         };
         assert_eq!(window_length(SampleRate::must(11_025), 0.3), 3_308);
-        check_tone(1.0, 4);
+        check_tone(1.0, 4, 0.5);
         // libebur128 shares the 48 kHz table exactly but drifts from it at other rates.
-        check_tone(0.0, 2);
+        check_tone(0.0, 2, 0.5);
+        // About -64 LUFS, so the absolute gate rather than the relative one drops the fade-in.
+        check_tone(1.0, 2, 0.000_6);
 
         let rate = RATE.get() as usize;
         let gains = [0.0625, 0.03125, 0.015625, 0.5, 0.125, -0.0625, 0.25, -0.125];
@@ -880,6 +1133,7 @@ mod tests {
                     processor.process_block(&AudioBlock::new(&samples[..128], mono));
                     let peak = processor
                         .process_block(&AudioBlock::new(&samples[128..], mono))
+                        .0
                         .true_peak_db[0];
                     let expected = 20.0 * 1.41_f64.log10();
                     assert!(
@@ -905,6 +1159,7 @@ mod tests {
             }
             let peak = processor
                 .process_block(&AudioBlock::new(&silence, wide))
+                .0
                 .true_peak_db;
             for (channel, (&peak, gain)) in peak.iter().zip(gains).enumerate() {
                 // sinc(t) + sinc(t - 1) peaks at 4/pi, including on the LFE channel.
@@ -920,6 +1175,7 @@ mod tests {
             assert_eq!(
                 processor
                     .process_block(&AudioBlock::new(&silence, wide))
+                    .0
                     .true_peak_db,
                 [DEFAULT_FLOOR_DB; MAX_CHANNELS]
             );
@@ -936,6 +1192,7 @@ mod tests {
                 assert_eq!(
                     processor
                         .process_block(&AudioBlock::new(&silence, format))
+                        .0
                         .true_peak_db,
                     [DEFAULT_FLOOR_DB; MAX_CHANNELS]
                 );

@@ -2,7 +2,10 @@
 // Copyright (C) 2026 Maika Namuo
 
 macro_rules! visualization_widget {
-    ($widget:ident, $state:ty, |$this:ident, $renderer:ident, $theme:ident, $bounds:ident| $draw:block) => {
+    (
+        $widget:ident, $state:ty, $($update:ident,)?
+        |$this:ident, $renderer:ident, $theme:ident, $bounds:ident| $draw:block
+    ) => {
         struct $widget<'a> {
             state: &'a std::cell::RefCell<$state>,
         }
@@ -12,6 +15,13 @@ macro_rules! visualization_widget {
                 iced::Size::new(iced::Length::Fill, iced::Length::Fill),
                 |limits| limits.resolve(iced::Length::Fill, iced::Length::Fill, iced::Size::ZERO)
             );
+
+            $($crate::macros::widget_method!(update M; this; _, event, layout, cursor, _, _, shell, _ => {
+                if this.state.borrow_mut().$update(event, cursor, layout.bounds()) {
+                    shell.request_redraw();
+                    shell.capture_event();
+                }
+            });)?
 
             $crate::macros::widget_method!(draw $this; _, $renderer, $theme, _, layout, _, _ => {
                 use iced_wgpu::primitive::Renderer as _;
@@ -98,6 +108,7 @@ pub mod options {
     crate::macros::choice_enum!(pub enum MeterMode {
         LufsShortTerm => "LUFS Short-term",
         LufsMomentary => "LUFS Momentary",
+        LufsIntegrated => "LUFS Integrated",
         RmsFast => "RMS Fast",
         RmsSlow => "RMS Slow",
         TruePeak => "True Peak",

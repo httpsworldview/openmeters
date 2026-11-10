@@ -17,6 +17,7 @@ macro_rules! visuals {
        $module:ident :: $processor:ident, $state:ident;
        $(palette_ramp($positions:ident, $spreads:ident);)?
        $(prepare($prepare:ident);)?
+       $(discard($discard:ident);)?
        $(ignores_audio($ignores:ident);)?
        $(buffered_signal($buffered_signal:ident);)?
        $(pre_ingest($pip:ident, $pis:ident) $pre_ingest_body:block;)?
@@ -83,6 +84,11 @@ macro_rules! visuals {
                 self.processor.reset_audio();
                 self.state.borrow_mut().reset_audio();
                 self.pending_audio = true;
+            }
+
+            fn discard_audio(&mut self) {
+                self.reset_audio();
+                $(self.state.borrow_mut().$discard();)?
             }
 
             fn is_quiescent(&self) -> bool {
@@ -190,6 +196,12 @@ visuals! {
 
     Loudness(140.0, 140.0) =>
         loudness::LoudnessProcessor, LoudnessState;
+        discard(reset_measurement);
+        pre_ingest(p, s) {
+            if std::mem::take(&mut s.borrow_mut().reset_requested) {
+                p.reset_measurement();
+            }
+        };
         apply(_p, s, set) {
             s.borrow_mut().set_modes(set.left_mode, set.right_mode);
         };
@@ -203,7 +215,9 @@ struct Visual<P, S> {
 
 trait VisualModule {
     fn ingest(&mut self, block: &AudioBlock<'_>, signal: bool);
+    // A timeline reset; measurements meant to outlive one survive it.
     fn reset_audio(&mut self);
+    fn discard_audio(&mut self);
     fn is_quiescent(&self) -> bool;
     fn prepare(&mut self);
     fn apply(&mut self, config: &VisualConfig);
@@ -225,7 +239,7 @@ impl Entry {
     // Disabled visuals hold no audio, nor the GPU history tied to it.
     fn set_enabled(&mut self, enabled: bool) {
         if std::mem::replace(&mut self.slot.enabled, enabled) != enabled {
-            self.module.reset_audio();
+            self.module.discard_audio();
             if enabled {
                 self.module.prepare();
             }
