@@ -131,7 +131,6 @@ impl BandTracker {
 crate::macros::default_struct! {
     pub struct WaveformProcessor {
         config: WaveformConfig = WaveformConfig::default(),
-        source_channels: usize = 2,
         band_analysis: Option<(BandFilter, BandTracker)> = None,
         column_phase: f64 = 0.0,
         current: [Option<(f32, f32, Option<f32>)>; DERIVED_CHANNELS] = [None; DERIVED_CHANNELS],
@@ -154,7 +153,7 @@ impl WaveformProcessor {
     }
 
     pub(in crate::visuals) fn prepare(&mut self) {
-        if self.config.bands != Bands::Off && self.band_analysis.is_none() {
+        if self.band_analysis.is_none() {
             self.band_analysis = Self::band_analysis(self.config);
         }
     }
@@ -290,11 +289,11 @@ impl WaveformProcessor {
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> WaveformUpdate<'_> {
         self.pending_columns.clear();
 
-        let (channels, sample_rate) = (block.channels, block.sample_rate);
-        if channels != self.source_channels || self.config.sample_rate != sample_rate {
-            self.source_channels = channels;
-            self.config.sample_rate = sample_rate;
-            self.reset_audio();
+        if self.config.sample_rate != block.sample_rate {
+            self.update_config(WaveformConfig {
+                sample_rate: block.sample_rate,
+                ..self.config
+            });
         }
 
         self.prepare();

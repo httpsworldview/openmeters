@@ -167,6 +167,92 @@ impl DcHistory {
     }
 }
 
+// Samples awaiting analysis, in stream order. Hops drain them into the DC history; a hop past the
+// buffered audio leaves a debt that later samples pay before any is buffered.
+#[derive(Default)]
+pub struct HopQueue {
+    samples: VecDeque<f32>,
+    dc: DcHistory,
+    debt: usize,
+    last_nonzero: Option<usize>,
+}
+
+impl HopQueue {
+    pub fn new(dc: DcHistory) -> Self {
+        Self {
+            dc,
+            ..Self::default()
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.samples.clear();
+        self.dc.clear();
+        self.debt = 0;
+        self.last_nonzero = None;
+    }
+
+    // Moves the queued samples to a new DC history, keeping only the newest `len` buffered.
+    pub fn retune(&mut self, dc: DcHistory, len: usize) {
+        self.dc = dc;
+        self.advance(self.samples.len().saturating_sub(len));
+        self.samples.shrink_to(len);
+        self.debt = 0;
+    }
+
+    pub fn clear_debt(&mut self) {
+        self.debt = 0;
+    }
+
+    #[cfg(test)]
+    pub fn debt(&self) -> usize {
+        self.debt
+    }
+
+    pub fn len(&self) -> usize {
+        self.samples.len()
+    }
+
+    pub fn has_signal(&self) -> bool {
+        self.last_nonzero.is_some()
+    }
+
+    pub fn push(&mut self, mut samples: impl ExactSizeIterator<Item = f32>) {
+        // Skipped frames still belong to the stream the DC estimate spans.
+        let skip = self.debt.min(samples.len());
+        self.debt -= skip;
+        self.dc.extend(samples.by_ref().take(skip));
+        let start = self.samples.len();
+        self.samples.extend(samples);
+        if let Some(index) = self
+            .samples
+            .range(start..)
+            .rposition(|&sample| sample != 0.0)
+        {
+            self.last_nonzero = Some(start + index);
+        }
+    }
+
+    pub fn advance(&mut self, count: usize) {
+        let drained = count.min(self.samples.len());
+        self.dc.extend(self.samples.drain(..drained));
+        self.last_nonzero = self
+            .last_nonzero
+            .and_then(|index| index.checked_sub(drained));
+        self.debt = self.debt.saturating_add(count - drained);
+    }
+
+    pub fn samples(&mut self) -> &[f32] {
+        self.samples.make_contiguous()
+    }
+
+    // The oldest `len` samples and the DC estimate for them.
+    pub fn window(&mut self, len: usize) -> (&[f32], Option<f32>) {
+        let samples = &self.samples.make_contiguous()[..len];
+        (samples, self.dc.dc(samples))
+    }
+}
+
 pub fn compute_fft_bin_normalization(window: &[f32], fft_size: usize) -> Vec<f32> {
     let bins = fft_size / 2 + 1;
     let sum: f64 = window.iter().map(|&weight| f64::from(weight)).sum();

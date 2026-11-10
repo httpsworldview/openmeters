@@ -4,13 +4,12 @@
 use crate::dsp::{AudioBlock, SampleRate};
 use crate::util::Finite;
 use crate::util::audio::{
-    Channel, DB_FLOOR, DcHistory, FftSize, LN_TO_DB, NegativeDb, Seconds, WindowKind,
+    Channel, DB_FLOOR, DcHistory, FftSize, HopQueue, LN_TO_DB, NegativeDb, Seconds, WindowKind,
     compute_fft_bin_normalization, copy_dc_removed_windowed, db_to_power, smoothing_weight,
 };
 use realfft::{RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex32;
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
@@ -78,16 +77,13 @@ fn default_time_constant() -> Seconds {
 pub struct SpectrumProcessor {
     config: SpectrumConfig,
     snapshot: SpectrumSnapshot,
-    planner: RealFftPlanner<f32>,
     fft: Option<Arc<dyn RealToComplex<f32>>>,
     window: Vec<f32>,
     real_buffer: Vec<f32>,
     spectrum_buffer: Vec<Complex32>,
     scratch_buffer: Vec<Complex32>,
     bin_normalization: Vec<f32>,
-    pcm_buffers: [VecDeque<f32>; TRACE_COUNT],
-    dc_histories: [DcHistory; TRACE_COUNT],
-    pending_skip_frames: usize,
+    queues: [HopQueue; TRACE_COUNT],
     levels: [SpectrumLevelBuffers; TRACE_COUNT],
     a_weighting_db: Vec<f32>,
 }
@@ -112,9 +108,7 @@ impl SpectrumProcessor {
         if self.fft.is_some() {
             self.reset_level_buffers();
         }
-        self.pcm_buffers.iter_mut().for_each(VecDeque::clear);
-        self.dc_histories.iter_mut().for_each(DcHistory::clear);
-        self.pending_skip_frames = 0;
+        self.queues.iter_mut().for_each(HopQueue::clear);
     }
 
     pub(in crate::visuals) fn prepare(&mut self) {
@@ -124,22 +118,19 @@ impl SpectrumProcessor {
     }
 
     pub(in crate::visuals) fn has_buffered_signal(&self) -> bool {
-        self.pcm_buffers
-            .iter()
-            .flatten()
-            .any(|&sample| sample != 0.0)
+        self.queues.iter().any(HopQueue::has_signal)
     }
 
     fn rebuild_fft(&mut self) {
         let fft_size = self.config.fft_size.get();
-        let fft = self.planner.plan_fft_forward(fft_size);
+        let fft = RealFftPlanner::new().plan_fft_forward(fft_size);
         self.window = self.config.window.coefficients(fft_size);
         self.real_buffer.resize(fft_size, 0.0);
         self.spectrum_buffer = fft.make_output_vec();
         self.scratch_buffer = fft.make_scratch_vec();
         self.fft = Some(fft);
         self.bin_normalization = compute_fft_bin_normalization(&self.window, fft_size);
-        self.dc_histories = std::array::from_fn(|_| DcHistory::new(fft_size));
+        self.queues = std::array::from_fn(|_| HopQueue::new(DcHistory::new(fft_size)));
         self.reset_buffers();
     }
 
@@ -204,21 +195,13 @@ impl SpectrumProcessor {
         let traces = || (0..TRACE_COUNT).filter(|&trace| active[trace]);
         // Without averaging only the newest window shows.
         if self.config.averaging == AveragingMode::None && hop <= fft_size {
-            let ready =
-                traces().map(|trace| self.pcm_buffers[trace].len().saturating_sub(fft_size));
+            let ready = traces().map(|trace| self.queues[trace].len().saturating_sub(fft_size));
             let skip = ready.min().unwrap_or(0) / hop * hop;
-            for trace in traces() {
-                let buf = &mut self.pcm_buffers[trace];
-                self.dc_histories[trace].extend(buf.drain(..skip));
-            }
+            traces().for_each(|trace| self.queues[trace].advance(skip));
             hops += skip / hop;
         }
-        while traces().all(|trace| self.pcm_buffers[trace].len() >= fft_size) {
-            let mut drained = hop;
-            for trace in traces() {
-                drained = drained.min(self.process_trace_window(trace, dt_seconds, floor));
-            }
-            self.pending_skip_frames = self.pending_skip_frames.saturating_add(hop - drained);
+        while traces().all(|trace| self.queues[trace].len() >= fft_size) {
+            traces().for_each(|trace| self.process_trace_window(trace, dt_seconds, floor));
             hops += 1;
         }
 
@@ -229,9 +212,8 @@ impl SpectrumProcessor {
         hops > 0
     }
 
-    fn process_trace_window(&mut self, trace: usize, dt_seconds: f32, floor: f32) -> usize {
-        let samples = &self.pcm_buffers[trace].make_contiguous()[..self.window.len()];
-        let dc = self.dc_histories[trace].dc(samples);
+    fn process_trace_window(&mut self, trace: usize, dt_seconds: f32, floor: f32) {
+        let (samples, dc) = self.queues[trace].window(self.window.len());
         copy_dc_removed_windowed(&mut self.real_buffer, samples, &self.window, dc);
         self.fft
             .as_ref()
@@ -265,18 +247,15 @@ impl SpectrumProcessor {
             dt_seconds,
             floor,
         );
-        let buf = &mut self.pcm_buffers[trace];
-        let count = self.config.hop_size.get().min(buf.len());
-        self.dc_histories[trace].extend(buf.drain(..count));
-        count
+        self.queues[trace].advance(self.config.hop_size.get());
     }
 
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<&SpectrumSnapshot> {
         if block.sample_rate != self.config.sample_rate {
-            self.config.sample_rate = block.sample_rate;
-            if self.fft.is_some() {
-                self.reset_buffers();
-            }
+            self.update_config(SpectrumConfig {
+                sample_rate: block.sample_rate,
+                ..self.config
+            });
         }
 
         self.prepare();
@@ -286,16 +265,10 @@ impl SpectrumProcessor {
     }
 
     fn push_sources(&mut self, block: &AudioBlock<'_>) {
-        let skip = self.pending_skip_frames.min(block.frame_count());
-        self.pending_skip_frames -= skip;
         let (sources, active) = (self.sources(), self.active_traces());
-        let traces = self.pcm_buffers.iter_mut().zip(&mut self.dc_histories);
-        for (((buffer, history), source), active) in traces.zip(sources).zip(active) {
+        for ((queue, source), active) in self.queues.iter_mut().zip(sources).zip(active) {
             if active {
-                // Skipped frames still belong to the stream the DC estimate spans.
-                let mut frames = block.projected_frames(source);
-                history.extend(frames.by_ref().take(skip));
-                buffer.extend(frames);
+                queue.push(block.projected_frames(source));
             }
         }
     }
@@ -429,7 +402,7 @@ mod tests {
         });
         processor.prepare();
         for resize in [false, true] {
-            processor.pcm_buffers[0].extend([0.25, -0.25]);
+            processor.queues[0].push([0.25, -0.25].into_iter());
             let previous = processor.snapshot.clone();
             let mut config = processor.config();
             if resize {
@@ -441,7 +414,7 @@ mod tests {
                 config.floor_db = NegativeDb::must(config.floor_db.get().next_down());
             }
             processor.update_config(config);
-            assert_eq!(processor.pcm_buffers[0].len(), if resize { 0 } else { 2 });
+            assert_eq!(processor.queues[0].len(), if resize { 0 } else { 2 });
             let bins = config.fft_size.get() / 2 + 1;
             if resize {
                 assert_eq!(processor.snapshot.floor_db, config.floor_db.get());

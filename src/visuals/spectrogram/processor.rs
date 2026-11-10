@@ -3,7 +3,7 @@
 
 use crate::dsp::{AudioBlock, SampleRate};
 use crate::util::audio::{
-    Channel, DB_FLOOR, DcHistory, FftSize, MAX_DSP_BUFFER_LEN, WindowKind,
+    Channel, DB_FLOOR, DcHistory, FftSize, HopQueue, MAX_DSP_BUFFER_LEN, WindowKind,
     compute_fft_bin_normalization, copy_dc_removed_windowed, kaiser, normalized_blackman_harris,
     power_to_db, weighted_mean,
 };
@@ -11,7 +11,6 @@ use bytemuck::{Pod, Zeroable};
 use realfft::{RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex32;
 use rustfft::{Fft, FftPlanner};
-use std::collections::VecDeque;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
@@ -162,10 +161,7 @@ crate::macros::default_struct! {
         bin_norm: Vec<f32> = Vec::new(),
         reassigned_power_scale: f32 = 1.0,
         edge_delay: usize = 0,
-        audio_buffer: VecDeque<f32> = VecDeque::new(),
-        classic_dc: DcHistory = DcHistory::default(),
-        pending_skip_samples: usize = 0,
-        audio_last_nonzero: Option<usize> = None,
+        audio: HopQueue = HopQueue::default(),
         reset: bool = true,
     }
 }
@@ -183,10 +179,7 @@ impl SpectrogramProcessor {
     }
 
     pub fn reset_audio(&mut self) {
-        self.audio_buffer.clear();
-        self.classic_dc.clear();
-        self.pending_skip_samples = 0;
-        self.audio_last_nonzero = None;
+        self.audio.clear();
         self.reset = true;
     }
 
@@ -197,7 +190,7 @@ impl SpectrogramProcessor {
     }
 
     pub(in crate::visuals) fn has_buffered_signal(&self) -> bool {
-        self.audio_last_nonzero.is_some()
+        self.audio.has_signal()
     }
 
     // (block length, kernel reach). The Hilbert kernel reaches half a window past each side of
@@ -223,9 +216,8 @@ impl SpectrogramProcessor {
         self.fft_size = window_size * padding;
         self.window = self.config.window.coefficients(window_size);
         self.bin_norm = compute_fft_bin_normalization(&self.window, self.fft_size);
-        let (transforms, active_len) = if self.config.use_reassignment {
+        let (transforms, active_len, dc_window) = if self.config.use_reassignment {
             let (hilbert_len, reach) = Self::hilbert_layout(window_size, self.config.sample_rate);
-            self.classic_dc = DcHistory::default();
             let mut planner = FftPlanner::new();
             let ffts = [
                 planner.plan_fft_forward(self.fft_size),
@@ -252,23 +244,21 @@ impl SpectrogramProcessor {
             self.real = Vec::new();
             self.complex = vec![Complex32::ZERO; hilbert_len];
             self.scratch = vec![Complex32::ZERO; scratch_len.unwrap_or(0)];
-            (Transforms::Reassigned(ffts), hilbert_len)
+            // Reassignment estimates DC over its own analytic block.
+            (Transforms::Reassigned(ffts), hilbert_len, None)
         } else {
             self.reassign = ReassignmentBuffers::default();
-            self.classic_dc = DcHistory::new(window_size);
             self.reassigned_power_scale = 1.0;
             self.edge_delay = window_size / 2;
             let fft = RealFftPlanner::new().plan_fft_forward(self.fft_size);
             self.real = vec![0.0; self.fft_size];
             self.complex = vec![Complex32::ZERO; self.fft_size / 2 + 1];
             self.scratch = vec![Complex32::ZERO; fft.get_scratch_len()];
-            (Transforms::Classic(fft), self.fft_size)
+            (Transforms::Classic(fft), self.fft_size, Some(window_size))
         };
         self.transforms = Some(transforms);
-        let buffered_len = active_len.saturating_mul(2);
-        self.drain_audio(self.audio_buffer.len().saturating_sub(buffered_len));
-        self.pending_skip_samples = 0;
-        self.audio_buffer.shrink_to(buffered_len);
+        let dc = dc_window.map(DcHistory::new).unwrap_or_default();
+        self.audio.retune(dc, active_len.saturating_mul(2));
     }
 
     fn process_ready_windows(&mut self) -> Vec<SpectrogramColumn> {
@@ -284,27 +274,26 @@ impl SpectrogramProcessor {
                 Transforms::Classic(_) => (ColumnKind::Classic, (window_size, 0)),
             };
 
-        let pending = self.audio_buffer.len();
-        let ready = pending
+        let ready = (self.audio.len())
             .checked_sub(read_len)
             .map_or(0, |extra| extra / hop_size + 1);
         let retained = history_columns(kind, points as u32, self.config.history_length);
         let skip = ready.saturating_sub(retained);
         let mut output = Vec::with_capacity(ready.min(retained));
-        self.advance_audio(skip.saturating_mul(hop_size));
+        self.audio.advance(skip.saturating_mul(hop_size));
         // Columns share one analytic block while their windows and the kernel's reach fit in it.
         let per_block = (read_len - window_size - 2 * lookahead) / hop_size + 1;
         let mut block_offset = None;
 
         for column in skip..ready {
-            let silent = self.audio_last_nonzero.is_none();
+            let silent = !self.audio.has_signal();
             let col = match self.transforms.as_ref().expect("spectrogram FFT prepared") {
                 Transforms::Reassigned(..) if silent => SpectrogramColumn::Reassigned(Vec::new()),
                 Transforms::Classic(_) if silent => {
                     SpectrogramColumn::Classic(vec![pack_classic_db(DB_FLOOR); points])
                 }
                 Transforms::Reassigned([analysis, hilbert_forward, hilbert_inverse]) => {
-                    let audio = &*self.audio_buffer.make_contiguous();
+                    let audio = self.audio.samples();
                     let offset = *block_offset.get_or_insert_with(|| {
                         let offset = (per_block.min(ready - column) - 1) * hop_size;
                         let block = &audio[offset..offset + read_len];
@@ -334,8 +323,7 @@ impl SpectrogramProcessor {
                     SpectrogramColumn::Reassigned(self.reassigned_points())
                 }
                 Transforms::Classic(fft) => {
-                    let samples = &self.audio_buffer.make_contiguous()[..window_size];
-                    let dc = self.classic_dc.dc(samples);
+                    let (samples, dc) = self.audio.window(window_size);
                     copy_dc_removed_windowed(
                         &mut self.real[..window_size],
                         samples,
@@ -358,36 +346,9 @@ impl SpectrogramProcessor {
             };
 
             output.push(col);
-            self.advance_audio(hop_size);
+            self.audio.advance(hop_size);
         }
         output
-    }
-
-    fn drain_audio(&mut self, count: usize) {
-        let count = count.min(self.audio_buffer.len());
-        self.classic_dc.extend(self.audio_buffer.drain(..count));
-        self.audio_last_nonzero = self
-            .audio_last_nonzero
-            .and_then(|index| index.checked_sub(count));
-    }
-
-    fn advance_audio(&mut self, count: usize) {
-        let missing = count.saturating_sub(self.audio_buffer.len());
-        self.drain_audio(count);
-        self.pending_skip_samples = self.pending_skip_samples.saturating_add(missing);
-    }
-
-    fn push_audio(&mut self, block: &AudioBlock<'_>) {
-        let skip = self.pending_skip_samples.min(block.frame_count());
-        self.pending_skip_samples -= skip;
-        let mut samples = block.projected_frames(self.config.source);
-        self.classic_dc.extend(samples.by_ref().take(skip));
-        for sample in samples {
-            if sample != 0.0 {
-                self.audio_last_nonzero = Some(self.audio_buffer.len());
-            }
-            self.audio_buffer.push_back(sample);
-        }
     }
 
     // Splats end at the live edge for every window, whose smoothed taps reach one sample past
@@ -421,7 +382,7 @@ impl SpectrogramProcessor {
             let base = spectrum[i];
             // keep power calculations in f32 for performance. I'm
             // willing to accept possible overflow with finite input.
-            let pow = base.re * base.re + base.im * base.im;
+            let pow = base.norm_sqr();
             // Tones appear once, at twice their amplitude, so the DC scale fits every bin.
             let scaled_power = pow * self.bin_norm[0];
             if scaled_power < ANALYSIS_FLOOR_POWER {
@@ -466,14 +427,14 @@ impl SpectrogramProcessor {
     }
 
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<SpectrogramUpdate> {
-        let sample_rate = block.sample_rate;
-        if self.config.sample_rate != sample_rate {
-            self.config.sample_rate = sample_rate;
-            self.rebuild_fft();
-            self.reset_audio();
+        if self.config.sample_rate != block.sample_rate {
+            self.update_config(SpectrogramConfig {
+                sample_rate: block.sample_rate,
+                ..self.config
+            });
         }
         self.prepare();
-        self.push_audio(block);
+        self.audio.push(block.projected_frames(self.config.source));
         let cols = self.process_ready_windows();
         (!cols.is_empty()).then(|| SpectrogramUpdate {
             fft_size: self.fft_size,
@@ -507,7 +468,7 @@ impl SpectrogramProcessor {
         }
         let hop_changed = prev.hop_size != cfg.hop_size;
         if hop_changed {
-            self.pending_skip_samples = 0;
+            self.audio.clear_debt();
         }
         self.reset |= rebuild || hop_changed;
     }
@@ -736,7 +697,7 @@ mod tests {
                 let mut config = cfg(64, hop_size, use_reassignment);
                 let mut processor = SpectrogramProcessor::new(config);
                 assert!(processor.process_block(&block).unwrap().reset);
-                assert!(processor.has_buffered_signal() || processor.pending_skip_samples > 0);
+                assert!(processor.has_buffered_signal() || processor.audio.debt() > 0);
 
                 config.history_length += 1;
                 processor.update_config(config);
@@ -744,8 +705,8 @@ mod tests {
 
                 config.source = Channel::Right;
                 processor.update_config(config);
-                assert!(processor.audio_buffer.is_empty());
-                assert_eq!(processor.pending_skip_samples, 0);
+                assert_eq!(processor.audio.len(), 0);
+                assert_eq!(processor.audio.debt(), 0);
                 assert!(!processor.has_buffered_signal());
 
                 let update = processor
@@ -825,15 +786,12 @@ mod tests {
         let mut p = SpectrogramProcessor::new(cfg(64, 16, false));
         p.prepare();
         let samples: Vec<_> = (0..200).map(|i| i as f32).collect();
-        p.push_audio(&AudioBlock::fallback(&samples, 1, SampleRate::DEFAULT));
+        p.audio.push(samples.iter().copied());
         let mut next = p.config();
         next.fft_size = FftSize::must(16);
         p.update_config(next);
 
-        assert_eq!(
-            p.audio_buffer.iter().copied().collect::<Vec<_>>(),
-            samples[168..]
-        );
+        assert_eq!(p.audio.samples(), &samples[168..]);
     }
 
     #[test]

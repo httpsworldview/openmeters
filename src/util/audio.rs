@@ -10,7 +10,9 @@ mod window;
 pub use self::{
     frequency::{DISPLAY_MIN_HZ, FrequencyScale},
     level::{DB_FLOOR, LN_TO_DB, db_to_power, power_to_db},
-    window::{DcHistory, WindowKind, compute_fft_bin_normalization, copy_dc_removed_windowed},
+    window::{
+        DcHistory, HopQueue, WindowKind, compute_fft_bin_normalization, copy_dc_removed_windowed,
+    },
 };
 pub(crate) use self::{
     level::{flush_denormal_f32, flush_denormal_f64},

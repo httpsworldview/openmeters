@@ -79,7 +79,6 @@ pub(super) const FULL_BAND: usize = 0;
 pub struct StereometerProcessor {
     config: StereometerConfig,
     histories: [VecDeque<(f32, f32)>; BAND_COUNT + 1],
-    history_channels: usize,
     band_splitter: BandSplitter,
     correlators: [Correlator; BAND_COUNT + 1],
     silent_frames: usize,
@@ -89,7 +88,6 @@ impl StereometerProcessor {
     pub fn new(config: StereometerConfig) -> Self {
         Self {
             histories: Default::default(),
-            history_channels: 0,
             band_splitter: BandSplitter::new(config.sample_rate, BAND_SPLITS_HZ),
             correlators: Default::default(),
             silent_frames: 0,
@@ -109,17 +107,12 @@ impl StereometerProcessor {
     }
 
     pub fn process_block(&mut self, block: &AudioBlock<'_>) -> Option<StereometerSnapshot> {
-        let channel_count = block.channels;
         let sample_rate = block.sample_rate;
         if self.config.sample_rate != sample_rate {
             self.update_config(StereometerConfig {
                 sample_rate,
                 ..self.config
             });
-        }
-        if self.history_channels != channel_count {
-            self.reset_audio();
-            self.history_channels = channel_count;
         }
 
         let mode = self.config.bands;
@@ -162,11 +155,10 @@ impl StereometerProcessor {
         // A window of only digital silence holds no signal: its correlation is undefined.
         let silent = self.silent_frames as f32 >= window * sample_rate.hz();
 
-        let frames = (sample_rate.hz() * self.config.segment_duration.get())
-            .round()
-            .max(1.0)
-            .min(MAX_DSP_BUFFER_LEN as f32) as usize;
-        let history_count = 1 + BAND_COUNT * usize::from(self.config.bands == Bands::Points);
+        let frames = sample_rate
+            .frames(self.config.segment_duration.get())
+            .min(MAX_DSP_BUFFER_LEN);
+        let history_count = 1 + BAND_COUNT * usize::from(mode == Bands::Points);
         for history in &mut self.histories[..history_count] {
             history.drain(..history.len().saturating_sub(frames));
         }
@@ -215,7 +207,7 @@ impl StereometerProcessor {
             return;
         }
         if self.config.bands.analyzed() != config.bands.analyzed() {
-            self.band_splitter = BandSplitter::new(config.sample_rate, BAND_SPLITS_HZ);
+            self.band_splitter.clear();
             self.correlators[1..].fill(Correlator::default());
         }
         if config.bands != Bands::Points {
@@ -303,6 +295,7 @@ mod tests {
         assert_eq!(&*snapshot.points[FULL_BAND], &[(-1.0, 1.0), (1.0, -1.0)]);
         assert_close(snapshot.correlations[FULL_BAND], -1.0);
         assert!(snapshot.points[1..].iter().all(|points| points.is_empty()));
+        processor.reset_audio();
         let snapshot = processor
             .process_block(&AudioBlock::fallback(&[1.0; 4], 1, RATE))
             .unwrap();

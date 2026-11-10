@@ -92,26 +92,12 @@ impl PeriodEstimator {
     const MAX_ANALYSIS_RATE: f32 = 128_000.0;
 
     fn estimate_period(&mut self, samples: &[f32], rate: f32) -> Option<f32> {
-        let (chunks, remainder) = samples.as_chunks::<4>();
-        let mut sums = [0.0_f64; 4];
-        let mut minima = [f32::INFINITY; 4];
-        let mut maxima = [f32::NEG_INFINITY; 4];
-        for &[a, b, c, d] in chunks {
-            for (lane, sample) in [a, b, c, d].into_iter().enumerate() {
-                sums[lane] += f64::from(sample);
-                minima[lane] = minima[lane].min(sample);
-                maxima[lane] = maxima[lane].max(sample);
-            }
-        }
-        for &sample in remainder {
-            sums[0] += f64::from(sample);
-            minima[0] = minima[0].min(sample);
-            maxima[0] = maxima[0].max(sample);
-        }
-        let sum = (sums[0] + sums[1]) + (sums[2] + sums[3]);
-        let min = minima.into_iter().fold(f32::INFINITY, f32::min);
-        let max = maxima.into_iter().fold(f32::NEG_INFINITY, f32::max);
-        let mean = (sum / samples.len() as f64) as f32;
+        let mean = mean_f32(samples);
+        let (min, max) = samples
+            .iter()
+            .fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &sample| {
+                (min.min(sample), max.max(sample))
+            });
         self.last_peak = (min - mean).abs().max((max - mean).abs());
         if self.last_peak < Self::MIN_SIGNAL_PEAK {
             return None;
@@ -588,7 +574,6 @@ pub struct OscilloscopeProcessor {
     config: OscilloscopeConfig,
     epoch: u64,
     samples: Vec<f32>,
-    history_channels: Option<usize>,
     buffers: [VecDeque<f32>; TRACE_COUNT + 1],
     triggers: [StableTrigger; TRACE_COUNT + 1],
 }
@@ -619,25 +604,15 @@ impl OscilloscopeProcessor {
             });
         }
 
-        let channel_count = block.channels;
-        if self
-            .history_channels
-            .is_some_and(|channels| channels != channel_count)
-        {
-            self.reset_audio();
-        }
-        self.history_channels = Some(channel_count);
-
         let trace_channels = [self.config.channel_1, self.config.channel_2];
         if trace_channels == [Channel::None; TRACE_COUNT] {
             return None;
         }
 
+        let base_frames = (self.config.sample_rate)
+            .frames(self.config.segment_duration.get())
+            .clamp(2, MAX_DSP_BUFFER_LEN);
         let sample_rate = self.config.sample_rate.hz();
-        let base_frames = (sample_rate * self.config.segment_duration.get())
-            .round()
-            .max(2.0)
-            .min(MAX_DSP_BUFFER_LEN as f32) as usize;
         let max_period = (sample_rate / PeriodEstimator::MIN_HZ).ceil() as usize;
         let probe_frames = max_period * 2;
         let mut mode = self.config.trigger_mode;
@@ -714,7 +689,6 @@ impl OscilloscopeProcessor {
 
     pub fn reset_audio(&mut self) {
         self.epoch = self.epoch.wrapping_add(1);
-        self.history_channels = None;
         self.buffers.iter_mut().for_each(VecDeque::clear);
         self.triggers.iter_mut().for_each(StableTrigger::unlock);
     }
@@ -1169,12 +1143,13 @@ mod tests {
     }
 
     #[test]
-    fn input_channel_count_change_resets_history_and_trigger_lock() {
+    fn reset_clears_history_and_trigger_lock() {
         let mut processor = OscilloscopeProcessor::new(stable_config());
         let signal = sine_samples(440.0, RATE, BLOCK * 20);
         feed_blocks(&mut processor, &signal, 0..20);
         assert!(processor.last_cycle_rate().is_some());
 
+        processor.reset_audio();
         let silence = vec![0.0; BLOCK * 2];
         processor.process_block(&AudioBlock::fallback(&silence, 2, SAMPLE_RATE));
 
