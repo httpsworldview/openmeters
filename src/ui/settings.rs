@@ -12,7 +12,7 @@ use crate::persistence::settings::{PaletteSettings, SettingsHandle, VisualConfig
 use crate::ui::theme::Palette;
 use crate::ui::widgets::SliderRange;
 use crate::ui::widgets::palette_editor::{PaletteChange, PaletteEditor, PaletteEvent};
-use crate::util::audio::FftSize;
+use crate::util::audio::{DB_FLOOR, FftSize, NegativeDb};
 use crate::util::set_if_changed as set;
 use crate::visuals::registry::{VisualKind, VisualManagerHandle};
 use iced::Element;
@@ -21,9 +21,27 @@ use std::num::NonZeroUsize;
 const FFT_OPTIONS: [usize; 5] = [1024, 2048, 4096, 8192, 16384];
 const HOP_DIVISORS: [usize; 7] = [4, 6, 8, 16, 32, 64, 128];
 const QUARTER_TURNS: SliderRange = SliderRange::new(-1.0, 2.0, 1.0);
+const DB_FLOOR_RANGE: SliderRange = SliderRange::new(DB_FLOOR, NegativeDb::MAX, 1.0);
 
 fn quarter_turn_label(rotation: i8) -> String {
     format!("{}\u{00b0}", i32::from(rotation) * 90)
+}
+
+fn quarter_turn_slider<'a, M: Clone + 'a>(
+    rotation: i8,
+    on_change: impl Fn(i8) -> M + 'a,
+) -> iced::widget::Column<'a, M> {
+    slider!(
+        "Rotation",
+        f32::from(rotation),
+        QUARTER_TURNS,
+        move |value| on_change(value.round() as i8),
+        quarter_turn_label(rotation)
+    )
+}
+
+fn fmt_ms(seconds: f32, decimals: usize) -> String {
+    format!("{:.decimals$} ms", seconds * 1000.0)
 }
 
 macro_rules! settings_modules {
@@ -162,7 +180,7 @@ macro_rules! settings_pane {
         $(, extra_from_settings($source:ident) {
             $($field:ident: $ty:ty = $init:expr),* $(,)?
         })?
-        $(, init_palette($editor:ident $(, $palette_source:ident)?) $init_body:block)?
+        $(, init_palette($editor:ident, $palette_source:ident) $init_body:block)?
         $(,)?
     ) => {
         pub(in crate::ui) struct Pane {
@@ -183,7 +201,7 @@ macro_rules! settings_pane {
             $(
                 let mut palette = palette;
                 let $editor = &mut palette;
-                $(let $palette_source = &loaded_settings;)?
+                let $palette_source = &loaded_settings;
                 $init_body
             )?
             Pane {

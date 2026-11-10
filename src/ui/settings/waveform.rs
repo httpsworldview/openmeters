@@ -6,16 +6,14 @@ use crate::persistence::settings::WaveformSettings;
 use crate::ui::widgets::{SliderRange, palette_editor::PaletteEditor, pick};
 use crate::util::audio::Channel;
 use crate::visuals::options::{WaveformColorMode, WaveformHistoryMode};
-use crate::visuals::waveform::processor::{
-    MAX_BAND_DB_FLOOR, MAX_SCROLL_SPEED, MIN_BAND_DB_FLOOR, MIN_SCROLL_SPEED,
-};
 
 settings_pane!(WaveformSettings, init_palette(palette, settings) {
     configure_palette_for_mode(palette, settings.color_mode);
 });
 
-const SPEED_RANGE: SliderRange = SliderRange::new(MIN_SCROLL_SPEED, MAX_SCROLL_SPEED, 1.0);
-const FLOOR_RANGE: SliderRange = SliderRange::new(MIN_BAND_DB_FLOOR, MAX_BAND_DB_FLOOR, 1.0);
+// Columns per second.
+const SPEED_RANGE: SliderRange = SliderRange::new(10.0, 1000.0, 1.0);
+const FLOOR_RANGE: SliderRange = SliderRange::new(-96.0, -12.0, 1.0);
 
 fn configure_palette_for_mode(palette: &mut PaletteEditor, mode: WaveformColorMode) {
     palette.set_only_first_visible(mode == WaveformColorMode::Static);

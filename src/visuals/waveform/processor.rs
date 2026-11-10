@@ -5,9 +5,6 @@ use crate::dsp::{AudioBlock, RunningMeans, SampleRate, ThreeBand};
 pub(super) use crate::util::audio::BAND_COUNT;
 use crate::util::audio::{BAND_SPLITS_HZ, Channel, DB_FLOOR, power_to_db};
 
-// GUI bounds, in columns/second.
-pub const MIN_SCROLL_SPEED: f32 = 10.0;
-pub const MAX_SCROLL_SPEED: f32 = 1000.0;
 pub const MAX_COLUMN_CAPACITY: usize = 8_192;
 
 const DEFAULT_SCROLL_SPEED: f32 = 200.0;
@@ -23,8 +20,6 @@ const BAND_SLOW_WINDOW_AT_44K1: usize = 16_384;
 const BAND_COLOR_GAINS: [f32; BAND_COUNT] = [1.0, 0.7, 2.0];
 // Rendering cutoff: -96 dBFS amplitude, also used for color brightness.
 pub(super) const WAVEFORM_SILENCE_AMPLITUDE: f32 = 1.584_893_1e-5;
-pub const MIN_BAND_DB_FLOOR: f32 = -96.0;
-pub const MAX_BAND_DB_FLOOR: f32 = -12.0;
 
 crate::macros::bounded! {
     // Columns per second. The floor bounds the color window, which spans a column.

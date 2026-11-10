@@ -79,7 +79,7 @@ struct BarOutputs {
 
 impl BarOutputs {
     fn name(&self, id: u32) -> Option<&str> {
-        self.names.get(&id).and_then(|name| name.as_deref())
+        self.names.get(&id)?.as_deref()
     }
 
     fn has_output(&self, name: &str) -> bool {
@@ -197,12 +197,12 @@ pub enum ConfigMessage {
 
 pub struct ConfigPage {
     capture: CaptureControl,
+    // None while PipeWire is unreachable. Refreshed before the page is shown.
     capture_view: Option<Arc<CaptureView>>,
     visual_manager: VisualManagerHandle,
     settings: SettingsHandle,
     bar_supported: bool,
     bar_outputs: BarOutputs,
-    registry_alive: bool,
     disclosure: Disclosure,
     bg_palette: PaletteEditor,
     scroll: ScrollGlow,
@@ -226,7 +226,6 @@ impl ConfigPage {
             settings,
             bar_supported,
             bar_outputs: BarOutputs::default(),
-            registry_alive: true,
             disclosure: Disclosure::default(),
             bg_palette: PaletteEditor::new(theme::background::PALETTE),
             scroll: ScrollGlow::default(),
@@ -244,8 +243,7 @@ impl ConfigPage {
     }
 
     pub(in crate::ui) fn refresh_registry(&mut self) {
-        self.registry_alive = self.capture.is_alive();
-        if !self.registry_alive {
+        if !self.capture.is_alive() {
             self.capture_view = None;
             return;
         }
@@ -352,14 +350,13 @@ impl ConfigPage {
             .iter()
             .filter(|application| disabled.contains(&application.identity))
             .count();
-        let registry = (self.registry_alive, self.capture_view.is_some());
-        let (empty_status, empty_message) = match registry {
-            (false, _) => ("unavailable", REGISTRY_UNAVAILABLE_MESSAGE),
-            (true, false) => ("waiting...", "Waiting for PipeWire registry..."),
-            (true, true) => (
+        let (empty_status, empty_message) = if self.capture_view.is_some() {
+            (
                 "none detected",
                 "No audio applications detected. Launch something to see it here.",
-            ),
+            )
+        } else {
+            ("unavailable", REGISTRY_UNAVAILABLE_MESSAGE)
         };
         let status = if applications.is_empty() {
             empty_status.to_owned()
@@ -399,16 +396,14 @@ impl ConfigPage {
     }
 
     fn render_device_section(&self) -> Column<'_, ConfigMessage> {
-        if !self.registry_alive {
+        let Some(view) = &self.capture_view else {
             return column![note(REGISTRY_UNAVAILABLE_MESSAGE)];
-        }
-
-        let choices = self.device_choices();
-        let selected_token = self.settings.borrow().data.last_device_name.clone();
-        let selected_token = selected_token.as_deref().filter(|token| !token.is_empty());
+        };
+        let choices = self.device_choices(view);
+        let selected_token = self.settings.borrow().data.capture_device().cloned();
         let selected = choices
             .iter()
-            .find(|opt| opt.selection.as_deref() == selected_token)
+            .find(|opt| opt.selection == selected_token)
             .cloned();
         let available = choices.len() > 1;
         let mut picker = pick_list(choices, selected, |opt| {
@@ -577,10 +572,7 @@ impl ConfigPage {
         )
     }
 
-    fn device_choices(&self) -> Vec<DeviceOption> {
-        let Some(view) = &self.capture_view else {
-            return Vec::new();
-        };
+    fn device_choices(&self, view: &CaptureView) -> Vec<DeviceOption> {
         let mut choices = vec![DeviceOption {
             label: Arc::from(format!("Default sink - {}", view.default_sink)),
             selection: None,
@@ -589,7 +581,7 @@ impl ConfigPage {
             label: Arc::clone(token),
             selection: Some(Arc::clone(token)),
         }));
-        if let Some(token) = self.settings.borrow().data.last_device_name.as_ref()
+        if let Some(token) = self.settings.borrow().data.capture_device()
             && !choices
                 .iter()
                 .any(|choice| choice.selection.as_ref() == Some(token))

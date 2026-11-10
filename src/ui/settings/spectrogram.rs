@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::{
-    FFT_OPTIONS, HOP_DIVISORS, QUARTER_TURNS, get_closest_hop_divisor, quarter_turn_label, set,
+    DB_FLOOR_RANGE, FFT_OPTIONS, HOP_DIVISORS, get_closest_hop_divisor, quarter_turn_slider, set,
     settings_messages, settings_pane, settings_view, update_fft_size, update_hop_divisor,
 };
 use crate::persistence::settings::SpectrogramSettings;
@@ -11,7 +11,6 @@ use crate::util::audio::{Channel, FrequencyScale, WindowKind};
 use crate::visuals::options::PianoRollOverlay;
 
 const ZERO_PAD_OPTIONS: [usize; 6] = [1, 2, 4, 8, 16, 32];
-const FLOOR_RANGE: SliderRange = SliderRange::new(-140.0, -1.0, 1.0);
 const TILT_RANGE: SliderRange = SliderRange::new(-6.0, 6.0, 0.5);
 
 settings_pane!(SpectrogramSettings);
@@ -25,7 +24,7 @@ settings_messages!(pane, settings, value {
     UseReassignment(bool) => set(&mut settings.use_reassignment, value);
     FloorDb(f32) => settings.floor_db.set(value);
     TiltDb(f32) => settings.tilt_db.set(value);
-    Rotation(f32) => set(&mut settings.rotation, value.round() as i8);
+    Rotation(i8) => set(&mut settings.rotation, value);
     ZeroPadding(usize) => set(&mut settings.zero_padding_factor, value);
     PianoRoll(PianoRollOverlay) => set(&mut settings.piano_roll_overlay, value);
 });
@@ -43,12 +42,9 @@ settings_view! {
             "Piano roll overlay", PianoRollOverlay::ALL,
             settings.piano_roll_overlay, PianoRoll
         );
-        slider!("Floor", settings.floor_db.get(), FLOOR_RANGE, FloorDb, "{:.0} dB");
+        slider!("Floor", settings.floor_db.get(), DB_FLOOR_RANGE, FloorDb, "{:.0} dB");
         slider!("Spectral tilt", tilt_db, TILT_RANGE, TiltDb, tilt);
-        slider!(
-            "Rotation", settings.rotation as f32, QUARTER_TURNS, Rotation,
-            quarter_turn_label(settings.rotation)
-        );
+        quarter_turn_slider(settings.rotation, Rotation);
     );
     "Analysis" [[
         Some(chip(format!("FFT {}", settings.fft_size.get()))),

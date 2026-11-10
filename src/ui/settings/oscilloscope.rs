@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::{set, settings_messages, settings_pane, settings_view};
+use super::{fmt_ms, set, settings_messages, settings_pane, settings_view};
 use crate::persistence::settings::OscilloscopeSettings;
 use crate::ui::widgets::{SliderRange, pick, toggle};
 use crate::util::audio::Channel;
@@ -24,16 +24,6 @@ const CYCLES_RANGE: SliderRange = SliderRange::new(1.0, 4.0, 1.0);
 
 #[derive(Clone, Copy, PartialEq)]
 struct TriggerSourceChoice(Channel);
-
-impl TriggerSourceChoice {
-    const ALL: &'static [Self] = &[
-        Self(Channel::None),
-        Self(Channel::Left),
-        Self(Channel::Right),
-        Self(Channel::Mid),
-        Self(Channel::Side),
-    ];
-}
 
 impl fmt::Display for TriggerSourceChoice {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -80,17 +70,18 @@ settings_view! {
                 )),
             ),
         };
+        let channels = Channel::ALL.iter().copied().filter(|&channel| channel != Channel::None);
+        let sources: Vec<_> = [Channel::None].into_iter().chain(channels).map(TriggerSourceChoice).collect();
         let trigger = form!(
             pick("Mode", TriggerPreset::ALL, preset, Preset);
             pick(
-                "Trigger source", TriggerSourceChoice::ALL,
-                TriggerSourceChoice(settings.trigger_source),
+                "Trigger source", sources, TriggerSourceChoice(settings.trigger_source),
                 |choice| TriggerSource(choice.0)
             );
             cycles;
             slider!(
                 duration_label, settings.segment_duration.get(), DURATION_RANGE, SegmentDuration,
-                format!("{:.1} ms", settings.segment_duration.get() * 1000.0)
+                fmt_ms(settings.segment_duration.get(), 1)
             );
         );
     }
@@ -103,7 +94,7 @@ settings_view! {
         toggle("Stacked", settings.stacked, Stacked);
         slider!(
             "Persistence", settings.persistence_time_constant.get(), PERSISTENCE_RANGE,
-            Persistence, format!("{:.0} ms", settings.persistence_time_constant.get() * 1000.0)
+            Persistence, fmt_ms(settings.persistence_time_constant.get(), 0)
         );
     );
 }

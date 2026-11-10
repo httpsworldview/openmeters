@@ -4,7 +4,7 @@
 use crate::dsp::{AudioBlock, SampleRate};
 use crate::util::Finite;
 use crate::util::audio::{
-    Channel, DB_FLOOR, DcHistory, FftSize, HopQueue, LN_TO_DB, NegativeDb, Seconds, WindowKind,
+    Channel, DcHistory, FftSize, HopQueue, LN_TO_DB, NegativeDb, Seconds, WindowKind,
     compute_fft_bin_normalization, copy_dc_removed_windowed, db_to_power, smoothing_weight,
 };
 use realfft::{RealFftPlanner, RealToComplex};
@@ -13,14 +13,7 @@ use serde::{Deserialize, Serialize};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
-// GUI ranges only.
-pub const MIN_SPECTRUM_TIME_CONSTANT: f32 = 0.0;
-pub const MAX_SPECTRUM_TIME_CONSTANT: f32 = 1.0;
-pub const MIN_SPECTRUM_PEAK_DECAY: f32 = 0.0;
-pub const MAX_SPECTRUM_PEAK_DECAY: f32 = 120.0;
-pub const MIN_SPECTRUM_DB_FLOOR: f32 = DB_FLOOR;
-pub const MAX_SPECTRUM_DB_FLOOR: f32 = -1.0;
-pub const DEFAULT_SPECTRUM_DB_FLOOR: f32 = -120.0;
+const DEFAULT_SPECTRUM_DB_FLOOR: f32 = -120.0;
 
 const DEFAULT_SPECTRUM_FFT_SIZE: usize = 16_384;
 const DEFAULT_SPECTRUM_HOP_SIZE: NonZeroUsize =
