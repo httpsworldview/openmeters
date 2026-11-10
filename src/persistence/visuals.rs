@@ -25,7 +25,7 @@ use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 use tracing::warn;
 
-crate::macros::default_struct! {
+lossy::settings_struct! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
     pub struct PopoutWindowSettings {
         pub width: u32 = 0,
@@ -51,18 +51,23 @@ crate::macros::default_struct! {
 
 impl VisualSettings {
     pub(super) fn from_value_lossy(value: Value) -> Self {
-        lossy::settings::<Self>(value, "visuals", |map, out| {
-            visual_map(
-                map,
-                "modules",
-                &mut out.modules,
-                ModuleSettings::from_value_lossy,
-            );
+        lossy::settings(value, "visuals", |map, out: &mut Self, scope| {
+            let modules = ModuleSettings::from_value_lossy;
+            visual_map(map, scope, "modules", &mut out.modules, modules);
             if let Some(value) = map.remove("order") {
                 out.order = visual_order(value);
             }
-            visual_map(map, "width_basis", &mut out.width_basis, width_basis);
-            visual_map(map, "popouts", &mut out.popouts, popout_window);
+            visual_map(map, scope, "width_basis", &mut out.width_basis, width_basis);
+            visual_map(
+                map,
+                scope,
+                "popouts",
+                &mut out.popouts,
+                |_, value, scope| {
+                    let popout = PopoutWindowSettings::default();
+                    lossy::read(value, scope, popout, PopoutWindowSettings::read_fields)
+                },
+            );
         })
     }
 
@@ -87,24 +92,23 @@ impl VisualSettings {
         self.popouts.entry(kind).or_default()
     }
 
+    fn module_mut(&mut self, kind: VisualKind) -> &mut ModuleSettings {
+        (self.modules.entry(kind)).or_insert_with(|| ModuleSettings::new(kind))
+    }
+
     pub(crate) fn set_enabled(&mut self, kind: VisualKind, enabled: bool) {
-        self.modules
-            .entry(kind)
-            .or_insert_with(|| ModuleSettings::new(kind))
-            .enabled = enabled;
+        self.module_mut(kind).enabled = enabled;
     }
 
     pub(crate) fn set_config(&mut self, config: VisualConfig) {
         let kind = config.kind();
-        self.modules
-            .entry(kind)
-            .or_insert_with(|| ModuleSettings::new(kind))
-            .config = config;
+        self.module_mut(kind).config = config;
     }
 }
 
 pub(super) fn visual_map<T>(
     map: &mut Map<String, Value>,
+    scope: &str,
     key: &str,
     out: &mut BTreeMap<VisualKind, T>,
     mut parse: impl FnMut(VisualKind, Value, &str) -> Option<T>,
@@ -112,7 +116,7 @@ pub(super) fn visual_map<T>(
     let Some(value) = map.remove(key) else {
         return;
     };
-    let scope = format!("visuals.{key}");
+    let scope = format!("{scope}.{key}");
     let Some(map) = lossy::object(value, &scope) else {
         return;
     };
@@ -145,14 +149,6 @@ fn width_basis(_: VisualKind, value: Value, scope: &str) -> Option<f32> {
     })
 }
 
-fn popout_window(_: VisualKind, value: Value, scope: &str) -> Option<PopoutWindowSettings> {
-    let mut map = lossy::object(value, scope)?;
-    let mut out = PopoutWindowSettings::default();
-    lossy::fields!(&mut map, &mut out, scope; width, height, popped_out);
-    lossy::unknown(scope, &map);
-    Some(out)
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize)]
 struct ModuleSettings {
     enabled: bool,
@@ -168,14 +164,13 @@ impl ModuleSettings {
     }
 
     fn from_value_lossy(kind: VisualKind, value: Value, scope: &str) -> Option<Self> {
-        let mut map = lossy::object(value, scope)?;
-        let mut out = Self::new(kind);
-        lossy::field(&mut map, "enabled", &mut out.enabled, scope);
-        if let Some(value) = map.remove("config") {
-            out.config = VisualConfig::from_value_lossy(kind, value, &format!("{scope}.config"));
-        }
-        lossy::unknown(scope, &map);
-        Some(out)
+        lossy::read(value, scope, Self::new(kind), |map, out, scope| {
+            lossy::field(map, "enabled", &mut out.enabled, scope);
+            if let Some(value) = map.remove("config") {
+                let scope = format!("{scope}.config");
+                out.config = VisualConfig::from_value_lossy(kind, value, &scope);
+            }
+        })
     }
 }
 
@@ -198,7 +193,9 @@ macro_rules! visual_configs {
 
             fn from_value_lossy(kind: VisualKind, value: Value, scope: &str) -> Self {
                 match kind {
-                    $(VisualKind::$variant => Self::$variant($settings::from_value_lossy(value, scope))),*
+                    $(VisualKind::$variant => {
+                        Self::$variant(lossy::settings(value, scope, $settings::read_fields))
+                    })*
                 }
             }
 
@@ -230,17 +227,10 @@ macro_rules! visual_settings {
         }
     };
     ($name:ident { $($field:ident: $ty:ty = $default:expr),* $(,)? }) => {
-        $crate::macros::default_struct! {
+        lossy::settings_struct! {
             #[derive(Debug, Clone, PartialEq, Serialize)]
             pub struct $name {
                 $(pub $field: $ty = $default,)*
-            }
-        }
-        impl $name {
-            fn from_value_lossy(value: Value, scope: &str) -> Self {
-                lossy::settings::<Self>(value, scope, |map, out| {
-                    lossy::fields!(map, out, scope; $($field),*);
-                })
             }
         }
     };

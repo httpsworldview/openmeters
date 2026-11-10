@@ -97,11 +97,11 @@ impl PaletteSettings {
         stored.stop_positions = stored
             .stop_positions
             .filter(|_| count > 2)
-            .map(|raw| sanitize_stop_positions(Some(&raw), ramp)[1..count - 1].to_vec());
+            .map(|raw| sanitize_stop_positions(&raw, ramp)[1..count - 1].to_vec());
         stored.stop_spreads = stored
             .stop_spreads
             .filter(|_| count > 0)
-            .map(|raw| sanitize_stop_spreads(Some(&raw), count));
+            .map(|raw| sanitize_stop_spreads(&raw, count));
         Self(stored)
     }
 

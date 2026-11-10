@@ -121,7 +121,7 @@ pub fn ramp_segment(positions: &[f32], spreads: &[f32], t: f32) -> (usize, usize
     (lo, hi, f)
 }
 
-pub fn sanitize_stop_positions(raw: Option<&[f32]>, defaults: &[f32]) -> Vec<f32> {
+pub fn sanitize_stop_positions(raw: &[f32], defaults: &[f32]) -> Vec<f32> {
     let count = defaults.len();
     if count < 2 {
         return vec![0.0; count];
@@ -130,7 +130,7 @@ pub fn sanitize_stop_positions(raw: Option<&[f32]>, defaults: &[f32]) -> Vec<f32
     let end = count - 1;
     let internals = count - 2;
 
-    if let Some(raw) = raw.filter(|r| r.len() == count || r.len() == internals) {
+    if raw.len() == count || raw.len() == internals {
         let start = usize::from(raw.len() == count);
         out[1..end].copy_from_slice(&raw[start..start + internals]);
     }
@@ -148,14 +148,13 @@ pub fn sanitize_stop_positions(raw: Option<&[f32]>, defaults: &[f32]) -> Vec<f32
     out
 }
 
-pub fn sanitize_stop_spreads(raw: Option<&[f32]>, count: usize) -> Vec<f32> {
-    match raw.filter(|raw| raw.len() == count) {
-        Some(raw) => raw
-            .iter()
-            .map(|&value| finite_or(value, 1.0).clamp(STOP_SPREAD_MIN, STOP_SPREAD_MAX))
-            .collect(),
-        None => vec![1.0; count],
+pub fn sanitize_stop_spreads(raw: &[f32], count: usize) -> Vec<f32> {
+    if raw.len() != count {
+        return vec![1.0; count];
     }
+    raw.iter()
+        .map(|&value| finite_or(value, 1.0).clamp(STOP_SPREAD_MIN, STOP_SPREAD_MAX))
+        .collect()
 }
 
 #[cfg(test)]

@@ -54,6 +54,20 @@ impl PendingWrite {
     }
 }
 
+pub mod settings {
+    pub use super::palette::PaletteSettings;
+    pub use super::schema::{
+        BarAlignment, BarHeight, MainWindowSettings, UiSettings, VisualFrameRate, clamp_bar_height,
+    };
+    pub use super::store::{SettingsHandle, Snapshot};
+    pub use super::theme::{BUILTIN_THEME, ThemeChoice, ThemeFile, theme_name};
+    pub use super::visuals::{
+        LoudnessSettings, OscilloscopeSettings, PopoutWindowSettings, SpectrogramSettings,
+        SpectrumSettings, StereometerSettings, VisualConfig, VisualSettings, WaveformSettings,
+    };
+    pub use super::watch::changes as settings_changes;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -89,18 +103,4 @@ mod tests {
         );
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     }
-}
-
-pub mod settings {
-    pub use super::palette::PaletteSettings;
-    pub use super::schema::{
-        BarAlignment, BarHeight, MainWindowSettings, UiSettings, VisualFrameRate, clamp_bar_height,
-    };
-    pub use super::store::{SettingsHandle, Snapshot};
-    pub use super::theme::{BUILTIN_THEME, ThemeChoice, ThemeFile, theme_name};
-    pub use super::visuals::{
-        LoudnessSettings, OscilloscopeSettings, PopoutWindowSettings, SpectrogramSettings,
-        SpectrumSettings, StereometerSettings, VisualConfig, VisualSettings, WaveformSettings,
-    };
-    pub use super::watch::changes as settings_changes;
 }

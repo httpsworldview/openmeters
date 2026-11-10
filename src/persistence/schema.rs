@@ -38,7 +38,7 @@ impl VisualFrameRate {
     }
 }
 
-crate::macros::default_struct! {
+lossy::settings_struct! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
     pub struct MainWindowSettings {
         pub width: u32 = MAIN_WINDOW_DEFAULT_WIDTH,
@@ -46,7 +46,7 @@ crate::macros::default_struct! {
     }
 }
 
-crate::macros::default_struct! {
+lossy::settings_struct! {
     #[derive(Debug, Clone, PartialEq, Serialize)]
     pub struct BarSettings {
         pub enabled: bool = true,
@@ -73,35 +73,33 @@ pub struct UiSettings {
 }
 
 impl UiSettings {
+    // The device to capture; an empty name selects none.
+    pub(crate) fn capture_device(&self) -> Option<&Arc<str>> {
+        (self.last_device_name.as_ref()).filter(|token| !token.is_empty())
+    }
+
     pub(crate) fn capture_config(&self) -> CaptureConfig {
         CaptureConfig {
             mode: self.capture_mode,
-            device: self
-                .last_device_name
-                .clone()
-                .filter(|token| !token.is_empty()),
-            disabled_streams: self.disabled_streams.iter().cloned().collect(),
+            device: self.capture_device().cloned(),
+            disabled_streams: self.disabled_streams.clone(),
         }
     }
 
     fn from_value_lossy(value: serde_json::Value) -> Self {
-        lossy::settings::<Self>(value, "settings", |map, out| {
+        lossy::settings(value, "settings", |map, out: &mut Self, scope| {
             if let Some(value) = map.remove("visuals") {
                 out.visuals = VisualSettings::from_value_lossy(value);
             }
             if let Some(value) = map.remove("main_window") {
                 out.main_window =
-                    lossy::settings::<MainWindowSettings>(value, "main_window", |map, out| {
-                        lossy::fields!(map, out, "main_window"; width, height);
-                    });
+                    lossy::settings(value, "main_window", MainWindowSettings::read_fields);
             }
             if let Some(value) = map.remove("bar") {
-                out.bar = lossy::settings::<BarSettings>(value, "bar", |map, out| {
-                    lossy::fields!(map, out, "bar"; enabled, alignment, height, monitor);
-                    out.monitor = out.monitor.take().filter(|name| !name.is_empty());
-                });
+                out.bar = lossy::settings(value, "bar", BarSettings::read_fields);
+                out.bar.monitor = out.bar.monitor.take().filter(|name| !name.is_empty());
             }
-            lossy::fields!(map, out, "settings";
+            lossy::fields!(map, out, scope;
                 visual_frame_rate, decorations, capture_mode, last_device_name,
                 disabled_streams, theme
             );

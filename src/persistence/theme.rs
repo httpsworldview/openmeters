@@ -22,6 +22,10 @@ pub fn theme_name(name: &str) -> Option<String> {
     (!name.is_empty() && name != BUILTIN_THEME).then(|| name.to_owned())
 }
 
+fn is_theme_name(name: &str) -> bool {
+    theme_name(name).as_deref() == Some(name)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThemeChoice {
     pub name: String,
@@ -52,9 +56,11 @@ pub struct ThemeFile {
 impl Stored for ThemeFile {
     fn from_json_lossy(raw: &[u8]) -> serde_json::Result<Self> {
         serde_json::from_slice(raw).map(|object| {
-            lossy::settings::<Self>(serde_json::Value::Object(object), "theme", |map, out| {
-                lossy::fields!(map, out, "theme"; name, author, background);
-                visual_map(map, "palettes", &mut out.palettes, |kind, value, scope| {
+            let value = serde_json::Value::Object(object);
+            lossy::settings(value, "theme", |map, out: &mut Self, scope| {
+                lossy::fields!(map, out, scope; name, author, background);
+                let palettes = &mut out.palettes;
+                visual_map(map, scope, "palettes", palettes, |kind, value, scope| {
                     PaletteSettings::decode(value, &Palette::for_kind(kind), scope)
                 });
             })
@@ -86,7 +92,7 @@ impl ThemeStore {
                 let path = entry.path();
                 let stem = path.file_stem()?.to_str()?;
                 let json = path.extension().is_some_and(|e| e == "json");
-                (json && theme_name(stem).as_deref() == Some(stem)).then(|| ThemeChoice {
+                (json && is_theme_name(stem)).then(|| ThemeChoice {
                     name: stem.to_owned(),
                 })
             }));
@@ -98,11 +104,7 @@ impl ThemeStore {
     }
 
     pub(super) fn path(&self, name: &str) -> PathBuf {
-        debug_assert_eq!(
-            theme_name(name).as_deref(),
-            Some(name),
-            "unchecked theme name"
-        );
+        debug_assert!(is_theme_name(name), "unchecked theme name: {name:?}");
         self.dir.join(format!("{name}.json"))
     }
 

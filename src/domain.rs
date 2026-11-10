@@ -3,7 +3,7 @@
 
 pub mod routing {
     use serde::{Deserialize, Serialize};
-    use std::{collections::HashSet, sync::Arc};
+    use std::{collections::BTreeSet, sync::Arc};
 
     /// Shared stream key for persisted capture policy.
     #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -16,7 +16,7 @@ pub mod routing {
     pub struct CaptureConfig {
         pub mode: CaptureMode,
         pub device: Option<Arc<str>>,
-        pub disabled_streams: HashSet<StreamIdentity>,
+        pub disabled_streams: BTreeSet<StreamIdentity>,
     }
 }
 

@@ -13,17 +13,25 @@ pub(super) fn object(value: Value, scope: &str) -> Option<Map<String, Value>> {
     Some(map)
 }
 
+// The object at `value` read over `out`, or None when it is not an object.
+pub(super) fn read<T>(
+    value: Value,
+    scope: &str,
+    mut out: T,
+    fields: impl FnOnce(&mut Map<String, Value>, &mut T, &str),
+) -> Option<T> {
+    let mut map = object(value, scope)?;
+    fields(&mut map, &mut out, scope);
+    unknown(scope, &map);
+    Some(out)
+}
+
 pub(super) fn settings<T: Default>(
     value: Value,
     scope: &str,
-    f: impl FnOnce(&mut Map<String, Value>, &mut T),
+    fields: impl FnOnce(&mut Map<String, Value>, &mut T, &str),
 ) -> T {
-    let mut out = T::default();
-    if let Some(mut map) = object(value, scope) {
-        f(&mut map, &mut out);
-        unknown(scope, &map);
-    }
-    out
+    read(value, scope, T::default(), fields).unwrap_or_default()
 }
 
 pub(super) fn field<T: DeserializeOwned>(
@@ -52,6 +60,34 @@ macro_rules! fields {
     }};
 }
 pub(super) use fields;
+
+// A struct with per-field defaults, and a reader over exactly those fields.
+macro_rules! settings_struct {
+    (
+        $(#[$attr:meta])*
+        $vis:vis struct $name:ident {
+            $($(#[$field_attr:meta])* $field_vis:vis $field:ident: $ty:ty = $default:expr),* $(,)?
+        }
+    ) => {
+        $crate::macros::default_struct! {
+            $(#[$attr])*
+            $vis struct $name {
+                $($(#[$field_attr])* $field_vis $field: $ty = $default,)*
+            }
+        }
+
+        impl $name {
+            pub(in $crate::persistence) fn read_fields(
+                map: &mut serde_json::Map<String, serde_json::Value>,
+                out: &mut Self,
+                scope: &str,
+            ) {
+                $crate::persistence::lossy::fields!(map, out, scope; $($field),*);
+            }
+        }
+    };
+}
+pub(super) use settings_struct;
 
 pub(super) fn unknown(scope: &str, map: &Map<String, Value>) {
     for key in map.keys() {

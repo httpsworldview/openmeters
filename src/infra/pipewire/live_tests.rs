@@ -2,11 +2,10 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::*;
-use crate::domain::routing::{CaptureConfig, CaptureMode};
+use crate::domain::routing::CaptureMode;
 use crate::dsp::{ChannelPosition, MAX_AUDIO_CHANNELS};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::collections::{BTreeSet, HashMap};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
@@ -715,7 +714,7 @@ fn live_capture_preserves_graph_invariants() {
     }
 
     assert!(control.configure(CaptureConfig {
-        disabled_streams: HashSet::from([identity]),
+        disabled_streams: BTreeSet::from([identity]),
         ..Default::default()
     }));
     server.wait_audio("application disable", &mut audio, |graph| {
