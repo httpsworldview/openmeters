@@ -123,13 +123,19 @@ impl BandTracker {
     }
 }
 
+#[derive(Clone, Copy, Default)]
+struct ChannelColumn {
+    extrema: Option<(f32, f32)>,
+    // Where the column before it ended, which joins the two.
+    carried: Option<f32>,
+}
+
 crate::macros::default_struct! {
     pub struct WaveformProcessor {
         config: WaveformConfig = WaveformConfig::default(),
         band_analysis: Option<(BandFilter, BandTracker)> = None,
         column_phase: f64 = 0.0,
-        current: [Option<(f32, f32, Option<f32>)>; DERIVED_CHANNELS] = [None; DERIVED_CHANNELS],
-        last_sample: [Option<f32>; DERIVED_CHANNELS] = [None; DERIVED_CHANNELS],
+        channels: [ChannelColumn; DERIVED_CHANNELS] = [ChannelColumn::default(); DERIVED_CHANNELS],
         pending_columns: Vec<WaveFrame> = Vec::new(),
         reset_pending: bool = true,
     }
@@ -155,9 +161,8 @@ impl WaveformProcessor {
 
     pub fn reset_audio(&mut self) {
         self.column_phase = 0.0;
-        self.last_sample = [None; DERIVED_CHANNELS];
+        self.channels = [ChannelColumn::default(); DERIVED_CHANNELS];
         self.pending_columns.clear();
-        self.current = [None; DERIVED_CHANNELS];
         if self.band_analysis.is_some() {
             self.band_analysis = Self::band_analysis(self.config);
         }
@@ -174,9 +179,9 @@ impl WaveformProcessor {
     }
 
     fn columns(&self) -> WaveFrame {
-        let mut columns = std::array::from_fn(|channel| {
-            let (min, max) = self.current[channel].map_or((0.0, 0.0), |(min, max, _)| {
-                self.last_sample[channel].map_or((min, max), |last| (min.min(last), max.max(last)))
+        let mut columns = self.channels.map(|channel| {
+            let (min, max) = channel.extrema.map_or((0.0, 0.0), |(min, max)| {
+                (channel.carried).map_or((min, max), |last| (min.min(last), max.max(last)))
             });
             WaveColumn {
                 min,
@@ -203,18 +208,16 @@ impl WaveformProcessor {
         columns
     }
 
-    fn emit_column(&mut self) {
+    fn emit_column(&mut self, newest: [f32; DERIVED_CHANNELS]) {
         let columns = self.columns();
-        for channel in 0..DERIVED_CHANNELS {
-            if let Some((_, _, Some(last))) = self.current[channel] {
-                self.last_sample[channel] = Some(last);
-            }
-        }
+        self.channels = newest.map(|sample| ChannelColumn {
+            extrema: None,
+            carried: Some(sample),
+        });
         self.pending_columns.push(columns);
         if self.pending_columns.len() >= self.config.max_columns * 2 {
             self.cap_pending_columns();
         }
-        self.current = [None; DERIVED_CHANNELS];
     }
 
     fn ingest_samples(&mut self, block: &AudioBlock<'_>) {
@@ -222,48 +225,29 @@ impl WaveformProcessor {
             / f64::from(self.config.sample_rate.get()))
         .min(1.0);
         for stereo in block.stereo_frames() {
-            let derived = WAVEFORM_CHANNELS.map(|channel| channel.project(stereo));
-            let finite = derived.map(f32::is_finite);
             if let Some((filter, tracker)) = &mut self.band_analysis {
-                let bands = filter.process([
-                    if finite[0] { derived[0] } else { 0.0 },
-                    if finite[1] { derived[1] } else { 0.0 },
-                ]);
-                tracker.process(std::array::from_fn(|channel| {
-                    if finite[channel] {
-                        bands.map(|band| WAVEFORM_CHANNELS[channel].project(band))
-                    } else {
-                        [0.0; BAND_COUNT]
-                    }
-                }));
+                let bands = filter.process(stereo);
+                tracker.process(
+                    WAVEFORM_CHANNELS.map(|channel| bands.map(|band| channel.project(band))),
+                );
             }
-            self.ingest_derived(derived, finite, step);
+            self.ingest_derived(
+                WAVEFORM_CHANNELS.map(|channel| channel.project(stereo)),
+                step,
+            );
         }
     }
 
-    fn ingest_derived(
-        &mut self,
-        derived: [f32; DERIVED_CHANNELS],
-        finite: [bool; DERIVED_CHANNELS],
-        step: f64,
-    ) {
-        for channel in 0..DERIVED_CHANNELS {
-            if finite[channel] {
-                let sample = derived[channel];
-                self.current[channel] = Some(match self.current[channel] {
-                    Some((min, max, _)) => (min.min(sample), max.max(sample), Some(sample)),
-                    None => (sample, sample, Some(sample)),
-                });
-            } else {
-                if let Some((_, _, last)) = &mut self.current[channel] {
-                    *last = None;
-                }
-                self.last_sample[channel] = None;
-            }
+    fn ingest_derived(&mut self, derived: [f32; DERIVED_CHANNELS], step: f64) {
+        for (channel, sample) in self.channels.iter_mut().zip(derived) {
+            channel.extrema = Some(match channel.extrema {
+                Some((min, max)) => (min.min(sample), max.max(sample)),
+                None => (sample, sample),
+            });
         }
         self.column_phase += step;
         if self.column_phase >= 1.0 {
-            self.emit_column();
+            self.emit_column(derived);
             self.column_phase -= 1.0;
         }
     }
@@ -429,27 +413,14 @@ mod tests {
     }
 
     #[test]
-    fn non_finite_samples_are_sanitized_and_break_column_continuity() {
+    fn extreme_samples_stay_finite() {
+        // Front left and center both feed the left side, so their sum overflows.
         let mut processor = WaveformProcessor::new(config(RATE, 8));
-        let update = process(&mut processor, &[0.0, f32::NAN, f32::INFINITY, 1.0], 1);
-
-        assert_eq!(update.columns.len(), 4);
-        assert_eq!(extrema(&update, 0, 3), (1.0, 1.0));
-        assert!(
-            update
-                .columns
-                .iter()
-                .flatten()
-                .all(|c| c.min.is_finite() && c.max.is_finite())
-        );
-        assert!(
-            update
-                .columns
-                .iter()
-                .flatten()
-                .flat_map(|c| c.color_bands)
-                .all(f32::is_finite)
-        );
+        let update = process(&mut processor, &[f32::MAX, 0.0, f32::MAX, 1.0, 0.0, 0.0], 3);
+        assert_eq!(extrema(&update, 0, 0), (f32::MAX, f32::MAX));
+        assert_eq!(extrema(&update, 0, 1), (1.0, f32::MAX));
+        let mut bands = update.columns.iter().flatten().flat_map(|c| c.color_bands);
+        assert!(bands.all(f32::is_finite));
 
         for (right, channel) in [(f32::MAX, 2), (-f32::MAX, 3)] {
             let mut processor = WaveformProcessor::new(config(RATE, 8));

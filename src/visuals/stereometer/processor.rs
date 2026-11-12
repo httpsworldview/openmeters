@@ -123,6 +123,11 @@ impl StereometerProcessor {
         for [left, right] in block.stereo_frames() {
             self.histories[FULL_BAND].push_back((left, right));
             self.correlators[FULL_BAND].update(left, right, alpha);
+            self.silent_frames = if [left, right] == [0.0; 2] {
+                self.silent_frames + 1
+            } else {
+                0
+            };
 
             if mode.analyzed() {
                 let bands = self.band_splitter.process([left, right]);
@@ -142,16 +147,6 @@ impl StereometerProcessor {
             .iter_mut()
             .for_each(Correlator::flush_denormals);
         self.band_splitter.flush_denormals();
-        let trailing = block
-            .stereo_frames()
-            .rev()
-            .take_while(|frame| *frame == [0.0; 2])
-            .count();
-        self.silent_frames = if trailing == block.frame_count() {
-            self.silent_frames + trailing
-        } else {
-            trailing
-        };
         // A window of only digital silence holds no signal: its correlation is undefined.
         let silent = self.silent_frames as f32 >= window * sample_rate.hz();
 
@@ -387,5 +382,19 @@ mod tests {
         assert_close(correlation(&[(1.0, 0.25), (-1.0, -0.25)]), 1.0);
         assert_close(correlation(&[(1., 0.), (0., 1.), (-1., 0.), (0., -1.)]), 0.);
         assert_close(correlation(&[(0.0, 0.0)]), 0.0);
+    }
+
+    #[test]
+    fn overflowing_downmix_leaves_correlation_finite() {
+        let mut processor = StereometerProcessor::new(StereometerConfig {
+            segment_duration: Finite::must(1.0),
+            ..Default::default()
+        });
+        // Front left and center both feed the left side, so their sum overflows.
+        let samples = [[f32::MAX, 0.0, f32::MAX], [0.5; 3], [0.5; 3], [0.5; 3]];
+        let snapshot = processor
+            .process_block(&AudioBlock::fallback(samples.as_flattened(), 3, RATE))
+            .unwrap();
+        assert!(snapshot.correlations[FULL_BAND].is_finite());
     }
 }
