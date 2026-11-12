@@ -8,14 +8,15 @@ use super::transport::{CaptureWriter, StreamStatus};
 use super::{Command, DynError, PublicState};
 use crate::domain::routing::CaptureConfig;
 use pipewire as pw;
-use pw::metadata::{Metadata, MetadataListener};
+use pw::metadata::Metadata;
 use pw::properties::properties;
-use pw::proxy::ProxyT as _;
+use pw::proxy::ProxyT;
 use pw::registry::{GlobalObject, RegistryRc};
 use pw::spa::utils::dict::DictRef;
 use pw::types::ObjectType;
+use std::any::Any;
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, hash_map::Entry};
+use std::collections::HashMap;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -40,6 +41,15 @@ enum Retry {
     Stop,
 }
 
+// A sender that is gone reads as a shutdown.
+fn queued(commands: &mpsc::Receiver<Command>) -> impl Iterator<Item = Command> {
+    std::iter::from_fn(|| match commands.try_recv() {
+        Ok(command) => Some(command),
+        Err(mpsc::TryRecvError::Disconnected) => Some(Command::Shutdown),
+        Err(mpsc::TryRecvError::Empty) => None,
+    })
+}
+
 fn wait_for_retry(
     commands: &mpsc::Receiver<Command>,
     config: &mut CaptureConfig,
@@ -50,16 +60,14 @@ fn wait_for_retry(
         Ok(Command::Shutdown) | Err(mpsc::RecvTimeoutError::Disconnected) => return Retry::Stop,
         Err(mpsc::RecvTimeoutError::Timeout) => return Retry::Timeout,
     };
-    loop {
-        match commands.try_recv() {
-            Ok(Command::Configure(newer)) => next = newer,
-            Ok(Command::Shutdown) | Err(mpsc::TryRecvError::Disconnected) => return Retry::Stop,
-            Err(mpsc::TryRecvError::Empty) => {
-                *config = next;
-                return Retry::Configured;
-            }
+    for command in queued(commands) {
+        match command {
+            Command::Configure(newer) => next = newer,
+            Command::Shutdown => return Retry::Stop,
         }
     }
+    *config = next;
+    Retry::Configured
 }
 
 fn take_retry_delay(delay: &mut Duration, maximum: Duration) -> Duration {
@@ -84,6 +92,10 @@ impl Backoff {
 
     fn pending(&self, now: Instant) -> bool {
         self.retry_at.is_some_and(|deadline| now < deadline)
+    }
+
+    fn due(&self, now: Instant) -> bool {
+        self.retry_at.is_some_and(|deadline| now >= deadline)
     }
 
     fn defer(&mut self, now: Instant) {
@@ -176,10 +188,11 @@ fn run_session(
 
     let registry_context = RegistryContext {
         registry: registry.clone(),
-        graph: Rc::clone(&graph),
-        dirty: Rc::clone(&dirty),
-        links: Rc::default(),
-        metadata: Rc::default(),
+        updates: GraphUpdates {
+            graph: Rc::clone(&graph),
+            dirty: Rc::clone(&dirty),
+        },
+        bound: Rc::default(),
     };
     let _registry_listener = {
         let added = registry_context.clone();
@@ -227,7 +240,6 @@ fn run_session(
         let result = mainloop
             .loop_()
             .iterate(pw::loop_::Timeout::Finite(ITERATION_TIMEOUT));
-        writer.borrow_mut().reclaim_buffers();
         if result < 0 {
             errors += 1;
             warn!("[pipewire] loop iteration failed (errno={})", -result);
@@ -243,16 +255,14 @@ fn run_session(
             return Err(std::io::Error::new(std::io::ErrorKind::ConnectionAborted, message).into());
         }
 
-        loop {
-            match commands.try_recv() {
-                Ok(Command::Configure(next)) => {
-                    if *config != next {
-                        *config = next;
-                        capture.configuration_changed();
-                    }
+        for command in queued(commands) {
+            match command {
+                Command::Configure(next) if *config != next => {
+                    *config = next;
+                    capture.configuration_changed();
                 }
-                Ok(Command::Shutdown) | Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
-                Err(mpsc::TryRecvError::Empty) => break,
+                Command::Configure(_) => {}
+                Command::Shutdown => return Ok(()),
             }
         }
         if !synced.get() {
@@ -325,7 +335,7 @@ impl CaptureState {
             _ => {}
         }
 
-        if !self.dirty.get() && !self.owned_links.retry_due(now) {
+        if !self.dirty.get() && !self.owned_links.backoff.get().due(now) {
             return;
         }
         if self.stream_backoff.pending(now) {
@@ -408,11 +418,6 @@ impl OwnedLinks {
         self.backoff.set(Backoff::IDLE);
     }
 
-    fn retry_due(&self, now: Instant) -> bool {
-        let retry_at = self.backoff.get().retry_at;
-        retry_at.is_some_and(|deadline| now >= deadline)
-    }
-
     fn apply(&mut self, desired: Vec<LinkSpec>, now: Instant) {
         if self.desired != desired {
             self.desired = desired;
@@ -441,73 +446,12 @@ impl OwnedLinks {
         retry.retry_at = None;
         self.backoff.set(retry);
         for spec in self.desired.iter().copied() {
-            let Entry::Vacant(entry) = self.links.entry(spec) else {
+            if self.links.contains_key(&spec) {
                 continue;
-            };
-            let props = properties! {
-                *pw::keys::LINK_OUTPUT_NODE => spec.output_node.to_string(),
-                *pw::keys::LINK_OUTPUT_PORT => spec.output_port.to_string(),
-                *pw::keys::LINK_INPUT_NODE => spec.input_node.to_string(),
-                *pw::keys::LINK_INPUT_PORT => spec.input_port.to_string(),
-                *pw::keys::MEDIA_TYPE => "Audio",
-                *pw::keys::MEDIA_CATEGORY => "Capture",
-                *pw::keys::MEDIA_ROLE => "Production",
-            };
-            match self
-                .core
-                .create_object::<pw::link::Link>(LINK_FACTORY, &props)
-            {
+            }
+            match self.create(spec) {
                 Ok(link) => {
-                    let state = Rc::new(Cell::new(OwnedLinkState::Pending));
-                    let fail = {
-                        let (state, dirty) = (Rc::clone(&state), Rc::clone(&self.dirty));
-                        let backoff = Rc::clone(&self.backoff);
-                        Rc::new(move |reason: Option<&str>| {
-                            state.set(OwnedLinkState::Failed);
-                            dirty.set(true);
-                            let now = Instant::now();
-                            let mut retry = backoff.get();
-                            // Links someone keeps removing come back between removals; they
-                            // prove the retry only once they outlast the backoff.
-                            retry.settle(now);
-                            retry.up_since = None;
-                            let deferred = retry.defer_if_idle(now);
-                            backoff.set(retry);
-                            match reason {
-                                Some(reason) if deferred => {
-                                    error!("[pipewire] link failed {spec:?}: {reason}");
-                                }
-                                // Also what a captured stream's end does to its links.
-                                None => debug!("[pipewire] link removed {spec:?}"),
-                                Some(_) => {}
-                            }
-                        })
-                    };
-                    let (listener_state, dirty) = (Rc::clone(&state), Rc::clone(&self.dirty));
-                    let on_error = Rc::clone(&fail);
-                    let listener = link
-                        .add_listener_local()
-                        .info(move |info| match info.state() {
-                            pw::link::LinkState::Paused | pw::link::LinkState::Active => {
-                                listener_state.set(OwnedLinkState::Established);
-                                dirty.set(true);
-                            }
-                            pw::link::LinkState::Error(message) => on_error(Some(message)),
-                            _ => {}
-                        })
-                        .register();
-                    // A link removed by someone else sends no info event, only this.
-                    let removed = link
-                        .upcast_ref()
-                        .add_listener_local()
-                        .removed(move || fail(None))
-                        .register();
-                    entry.insert(OwnedLink {
-                        state,
-                        _listener: listener,
-                        _removed: removed,
-                        _proxy: link,
-                    });
+                    self.links.insert(spec, link);
                 }
                 Err(err) => {
                     self.dirty.set(true);
@@ -520,34 +464,106 @@ impl OwnedLinks {
             }
         }
     }
+
+    fn create(&self, spec: LinkSpec) -> Result<OwnedLink, pw::Error> {
+        let props = properties! {
+            *pw::keys::LINK_OUTPUT_NODE => spec.output_node.to_string(),
+            *pw::keys::LINK_OUTPUT_PORT => spec.output_port.to_string(),
+            *pw::keys::LINK_INPUT_NODE => spec.input_node.to_string(),
+            *pw::keys::LINK_INPUT_PORT => spec.input_port.to_string(),
+            *pw::keys::MEDIA_TYPE => "Audio",
+            *pw::keys::MEDIA_CATEGORY => "Capture",
+            *pw::keys::MEDIA_ROLE => "Production",
+        };
+        let link = (self.core).create_object::<pw::link::Link>(LINK_FACTORY, &props)?;
+        let state = Rc::new(Cell::new(OwnedLinkState::Pending));
+        let fail = {
+            let (state, dirty) = (Rc::clone(&state), Rc::clone(&self.dirty));
+            let backoff = Rc::clone(&self.backoff);
+            Rc::new(move |reason: Option<&str>| {
+                state.set(OwnedLinkState::Failed);
+                dirty.set(true);
+                let now = Instant::now();
+                let mut retry = backoff.get();
+                // Links someone keeps removing come back between removals; they
+                // prove the retry only once they outlast the backoff.
+                retry.settle(now);
+                retry.up_since = None;
+                let deferred = retry.defer_if_idle(now);
+                backoff.set(retry);
+                match reason {
+                    Some(reason) if deferred => {
+                        error!("[pipewire] link failed {spec:?}: {reason}");
+                    }
+                    // Also what a captured stream's end does to its links.
+                    None => debug!("[pipewire] link removed {spec:?}"),
+                    Some(_) => {}
+                }
+            })
+        };
+        let (listener_state, dirty) = (Rc::clone(&state), Rc::clone(&self.dirty));
+        let on_error = Rc::clone(&fail);
+        let listener = link
+            .add_listener_local()
+            .info(move |info| match info.state() {
+                pw::link::LinkState::Paused | pw::link::LinkState::Active => {
+                    listener_state.set(OwnedLinkState::Established);
+                    dirty.set(true);
+                }
+                pw::link::LinkState::Error(message) => on_error(Some(message)),
+                _ => {}
+            })
+            .register();
+        // A link removed by someone else sends no info event, only this.
+        let removed = link
+            .upcast_ref()
+            .add_listener_local()
+            .removed(move || fail(None))
+            .register();
+        Ok(OwnedLink {
+            state,
+            _listener: listener,
+            _removed: removed,
+            _proxy: link,
+        })
+    }
+}
+
+#[derive(Clone)]
+struct GraphUpdates {
+    graph: Rc<RefCell<Graph>>,
+    dirty: Rc<Cell<bool>>,
+}
+
+impl GraphUpdates {
+    fn changed(&self, update: impl FnOnce(&mut Graph)) {
+        update(&mut self.graph.borrow_mut());
+        self.dirty.set(true);
+    }
 }
 
 #[derive(Clone)]
 struct RegistryContext {
     registry: RegistryRc,
-    graph: Rc<RefCell<Graph>>,
-    dirty: Rc<Cell<bool>>,
-    // dropping a removed global's proxy frees it. keep this order to
-    // prevent UAF
-    links: Rc<RefCell<HashMap<u32, (pw::link::LinkListener, pw::link::Link)>>>,
-    metadata: Rc<RefCell<HashMap<u32, (MetadataListener, Metadata)>>>,
+    updates: GraphUpdates,
+    // Each bound global's (listener, proxy). Dropping a removed global's proxy frees it, so
+    // the listener goes first to prevent UAF.
+    bound: Rc<RefCell<HashMap<u32, Box<dyn Any>>>>,
 }
 
 impl RegistryContext {
-    fn changed(&self, update: impl FnOnce(&mut Graph)) {
-        update(&mut self.graph.borrow_mut());
-        self.dirty.set(true);
-    }
-
     fn add(&self, global: &GlobalObject<&DictRef>) {
+        let updates = &self.updates;
         match global.type_ {
-            ObjectType::Node => self.changed(|graph| graph.upsert_node(Node::from_global(global))),
+            ObjectType::Node => {
+                updates.changed(|graph| graph.upsert_node(Node::from_global(global)));
+            }
             ObjectType::Port => {
                 if let Some(port) = Port::from_global(global) {
-                    self.changed(|graph| graph.upsert_port(port));
+                    updates.changed(|graph| graph.upsert_port(port));
                 }
             }
-            ObjectType::Client => self.changed(|graph| graph.add_client(global.id)),
+            ObjectType::Client => updates.changed(|graph| graph.add_client(global.id)),
             ObjectType::Link => self.add_link(global),
             ObjectType::Metadata => self.add_metadata(global),
             _ => {}
@@ -555,63 +571,63 @@ impl RegistryContext {
     }
 
     fn remove(&self, id: u32) {
-        self.changed(|graph| graph.remove_global(id));
-        self.links.borrow_mut().remove(&id);
-        self.metadata.borrow_mut().remove(&id);
+        self.updates.changed(|graph| graph.remove_global(id));
+        self.bound.borrow_mut().remove(&id);
+    }
+
+    fn bind<P: ProxyT + 'static, L: 'static>(
+        &self,
+        global: &GlobalObject<&DictRef>,
+        listen: impl FnOnce(&P, GraphUpdates) -> L,
+    ) {
+        if self.bound.borrow().contains_key(&global.id) {
+            return;
+        }
+        match self.registry.bind::<P, _>(global) {
+            Ok(proxy) => {
+                let listener = listen(&proxy, self.updates.clone());
+                let bound: Box<dyn Any> = Box::new((listener, proxy));
+                self.bound.borrow_mut().insert(global.id, bound);
+            }
+            Err(err) => warn!(
+                "[pipewire] failed to bind {} {}: {err}",
+                global.type_, global.id
+            ),
+        }
     }
 
     fn add_link(&self, global: &GlobalObject<&DictRef>) {
         let id = global.id;
-        if self.links.borrow().contains_key(&id) {
-            return;
-        }
-        let Ok(proxy) = self.registry.bind::<pw::link::Link, _>(global) else {
-            warn!("[pipewire] failed to bind link {id}");
-            return;
-        };
-        let graph = Rc::clone(&self.graph);
-        let dirty = Rc::clone(&self.dirty);
-        let listener = proxy
-            .add_listener_local()
-            .info(move |info| {
-                graph.borrow_mut().upsert_link(
-                    id,
-                    GraphLink {
+        self.bind(global, |link: &pw::link::Link, updates| {
+            link.add_listener_local()
+                .info(move |info| {
+                    let link = GraphLink {
                         output_node: info.output_node_id(),
                         input_node: info.input_node_id(),
                         active: matches!(info.state(), pw::link::LinkState::Active),
-                    },
-                );
-                dirty.set(true);
-            })
-            .register();
-        self.links.borrow_mut().insert(id, (listener, proxy));
+                    };
+                    updates.changed(|graph| graph.upsert_link(id, link));
+                })
+                .register()
+        });
     }
 
     fn add_metadata(&self, global: &GlobalObject<&DictRef>) {
         let id = global.id;
         let is_default = property(global, "metadata.name")
             .is_some_and(|name| name.eq_ignore_ascii_case(DEFAULT_METADATA));
-        if !is_default || self.metadata.borrow().contains_key(&id) {
+        if !is_default {
             return;
         }
-        let Ok(proxy) = self.registry.bind::<Metadata, _>(global) else {
-            warn!("[pipewire] failed to bind default metadata {id}");
-            return;
-        };
-        let graph = Rc::clone(&self.graph);
-        let dirty = Rc::clone(&self.dirty);
-        let listener = proxy
-            .add_listener_local()
-            .property(move |subject, key, type_hint, value| {
-                graph
-                    .borrow_mut()
-                    .metadata(id, subject, key, type_hint, value);
-                dirty.set(true);
-                0
-            })
-            .register();
-        self.metadata.borrow_mut().insert(id, (listener, proxy));
+        self.bind(global, |metadata: &Metadata, updates| {
+            metadata
+                .add_listener_local()
+                .property(move |subject, key, type_hint, value| {
+                    updates.changed(|graph| graph.metadata(id, subject, key, type_hint, value));
+                    0
+                })
+                .register()
+        });
     }
 }
 
@@ -634,6 +650,12 @@ mod tests {
         let graph = RefCell::new(Graph::default());
         let mut config = CaptureConfig::default();
         let public = PublicState::default();
+        // An empty graph's view equals the default one, so a marker shows what reconcile publishes.
+        let unpublished = || super::super::CaptureView {
+            default_sink: Some("unpublished".into()),
+            ..Default::default()
+        };
+        public.publish(unpublished());
         let now = Instant::now();
         let deadline = now + RESOURCE_RETRY_MIN;
         capture.stream_backoff.retry_at = Some(deadline);
@@ -721,10 +743,7 @@ mod tests {
 
         capture.reconcile(&graph, &mut config, &public, now);
         assert!(!capture.dirty.get());
-        public.publish(super::super::CaptureView {
-            default_sink: "unpublished".into(),
-            ..Default::default()
-        });
+        public.publish(unpublished());
         let published = public.view();
         capture.owned_links.backoff.update(|backoff| Backoff {
             retry_at: Some(deadline),

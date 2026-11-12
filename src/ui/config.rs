@@ -343,7 +343,7 @@ impl ConfigPage {
         let applications = self
             .capture_view
             .as_ref()
-            .map_or(&[][..], |view| view.applications.as_ref());
+            .map_or(&[][..], |view| view.applications.as_slice());
         let settings = self.settings.borrow();
         let disabled = &settings.data.disabled_streams;
         let disabled_count = applications
@@ -574,7 +574,10 @@ impl ConfigPage {
 
     fn device_choices(&self, view: &CaptureView) -> Vec<DeviceOption> {
         let mut choices = vec![DeviceOption {
-            label: Arc::from(format!("Default sink - {}", view.default_sink)),
+            label: Arc::from(format!(
+                "Default sink - {}",
+                view.default_sink.as_deref().unwrap_or("(none)")
+            )),
             selection: None,
         }];
         choices.extend(view.devices.iter().map(|token| DeviceOption {

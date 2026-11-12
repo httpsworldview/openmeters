@@ -351,7 +351,7 @@ impl Graph {
                 metadata_id,
                 subject,
                 node_id: (subject != 0).then_some(subject),
-                name: metadata_name(type_hint, value).map(Arc::from),
+                name: metadata_name(type_hint, value),
             });
         } else if self.default_sink.take_if(same_entry).is_none() {
             return;
@@ -422,11 +422,10 @@ impl Graph {
         let default_sink = self
             .default_sink()
             .map(Node::token)
-            .or_else(|| self.default_sink.as_ref()?.name.clone())
-            .unwrap_or_else(|| Arc::from("(none)"));
+            .or_else(|| self.default_sink.as_ref()?.name.clone());
         CaptureView {
-            applications: applications.into(),
-            devices: devices.into(),
+            applications,
+            devices,
             default_sink,
             selected_device: selected_device
                 .and_then(|token| self.find_device(token))
@@ -491,16 +490,16 @@ fn parse_after<T: FromStr>(value: &str, prefix: &str) -> Option<T> {
     tail.parse().ok()
 }
 
-fn metadata_name(type_hint: Option<&str>, value: &str) -> Option<String> {
+fn metadata_name(type_hint: Option<&str>, value: &str) -> Option<Arc<str>> {
     let value = value.trim();
     let json = type_hint.is_some_and(|hint| hint.eq_ignore_ascii_case("Spa:String:JSON"))
         || value.starts_with('{');
     if !json {
-        return (!value.is_empty()).then(|| value.to_owned());
+        return (!value.is_empty()).then(|| value.into());
     }
     match serde_json::from_str::<serde_json::Value>(value).ok()? {
-        serde_json::Value::Object(map) => map.get("name")?.as_str().map(str::to_owned),
-        serde_json::Value::String(value) => Some(value),
+        serde_json::Value::Object(map) => map.get("name")?.as_str().map(Arc::from),
+        serde_json::Value::String(value) => Some(value.into()),
         _ => None,
     }
 }
@@ -567,7 +566,10 @@ mod tests {
             Some(r#"{"name":"sink.current"}"#),
         );
         graph.metadata(1, 0, Some("default.audio.sink"), None, None);
-        assert_eq!(graph.view(None, None).default_sink.as_ref(), "sink.current");
+        assert_eq!(
+            graph.view(None, None).default_sink.as_deref(),
+            Some("sink.current")
+        );
 
         for id in [20, 21] {
             graph.upsert_node(Node {

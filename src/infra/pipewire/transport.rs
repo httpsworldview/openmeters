@@ -17,7 +17,6 @@ const BLOCK_FRAMES: usize = 256;
 const BLOCK_SAMPLES: usize = BLOCK_FRAMES * MAX_AUDIO_CHANNELS;
 // Front-packet age from its end; current activity epoch only.
 const MAX_BACKLOG: Duration = Duration::from_secs(1);
-// 4/3 s of full packets at maximum rate.
 const RING_BLOCKS: usize = backlog_packets(SampleRate::MAX as usize, BLOCK_FRAMES);
 const PCM_FLUSH_SAMPLES: usize = BLOCK_SAMPLES * 4;
 // Packet-duration target, not a flush timer.
@@ -160,10 +159,9 @@ impl Shared {
     }
 
     fn wake_ingestion(&self) -> bool {
-        self.ingest
-            .try_update(Ordering::SeqCst, Ordering::Relaxed, |state| {
-                (state == IngestState::Dormant as u8).then_some(IngestState::Active as u8)
-            })
+        let (dormant, active) = (IngestState::Dormant as u8, IngestState::Active as u8);
+        (self.ingest)
+            .compare_exchange(dormant, active, Ordering::SeqCst, Ordering::Relaxed)
             .is_ok()
     }
 }
@@ -250,17 +248,60 @@ struct Packet {
     rebased: bool,
 }
 
+// Packet sample buffers of one format, reused as the reader hands them back.
+struct SamplePool {
+    recycled: Consumer<Box<[f32]>>,
+    free: Vec<Box<[f32]>>,
+    samples: usize,
+    limit: usize,
+}
+
+impl SamplePool {
+    fn configure(&mut self, format: AudioFormat, queue_capacity: usize) {
+        self.clear();
+        self.samples = format.channels() * packet_frame_limit(format.rate());
+        self.limit = packet_pool_limit(format.rate(), queue_capacity);
+        self.free.reserve(self.limit);
+        self.free
+            .extend((0..self.limit).map(|_| vec![0.0; self.samples].into_boxed_slice()));
+    }
+
+    fn clear(&mut self) {
+        self.free.clear();
+        while self.recycled.pop().is_ok() {}
+        self.samples = 0;
+        self.limit = 0;
+    }
+
+    fn fits(&self, samples: &[f32]) -> bool {
+        samples.len() == self.samples && self.free.len() < self.limit
+    }
+
+    fn take(&mut self) -> Option<Box<[f32]>> {
+        while let Ok(samples) = self.recycled.pop() {
+            if self.fits(&samples) {
+                return Some(samples);
+            }
+        }
+        self.free.pop()
+    }
+
+    fn reclaim(&mut self, samples: Option<Box<[f32]>>) {
+        if let Some(samples) = samples
+            && self.fits(&samples)
+        {
+            self.free.push(samples);
+        }
+    }
+}
+
 pub(super) struct CaptureWriter {
     producer: Producer<Packet>,
-    recycled: Consumer<Box<[f32]>>,
     shared: Arc<Shared>,
     status: StreamStatus,
     pub(super) format: Option<AudioFormat>,
     pending: Option<Packet>,
-    pool: Vec<Box<[f32]>>,
-    retired: Vec<Box<[f32]>>,
-    pool_samples: usize,
-    pool_limit: usize,
+    pool: SamplePool,
     activity_epoch: u64,
     previous_timing: Range<u64>,
     rebase: bool,
@@ -287,16 +328,7 @@ impl CaptureWriter {
         self.drop_stale_pending();
         self.flush_pending();
         self.format = None;
-        self.clear_pool();
-    }
-
-    pub(super) fn reclaim_buffers(&mut self) {
-        self.retired.clear();
-        while let Ok(samples) = self.recycled.pop() {
-            if self.can_pool(&samples) {
-                self.pool.push(samples);
-            }
-        }
+        self.pool.clear();
     }
 
     pub(super) fn disconnect(&mut self) {
@@ -314,7 +346,8 @@ impl CaptureWriter {
         self.flush_pending();
         let format = self.publish_format(format);
         if self.format.replace(format) != Some(format) {
-            self.configure_pool(format);
+            self.pool
+                .configure(format, self.producer.buffer().capacity());
         }
         self.disconnected = false;
         format
@@ -410,11 +443,10 @@ impl CaptureWriter {
         let mut offset = 0;
         while offset < frames {
             let block_start = start + scale(end - start, offset, frames);
-            if !self.start_packet(pcm, format, block_start) {
+            let Some(packet) = self.start_packet(pcm, format, block_start) else {
                 self.overflow();
                 return true;
-            }
-            let packet = self.pending.as_mut().expect("pending packet");
+            };
             let count = (frames - offset).min(packet_frames - packet.frames);
             if let Some(samples) = &mut packet.samples {
                 let from = packet.frames as usize * format.channels();
@@ -468,80 +500,40 @@ impl CaptureWriter {
         }
     }
 
-    fn start_packet(&mut self, pcm: bool, format: AudioFormat, start: u64) -> bool {
+    // The packet continuing at `start`, holding samples when `pcm`. `None` once the queue or
+    // the pool is exhausted.
+    fn start_packet(&mut self, pcm: bool, format: AudioFormat, start: u64) -> Option<&mut Packet> {
         if self
             .pending
             .as_ref()
             .is_some_and(|packet| packet.format != format || packet.timeline.end != start)
             && !self.flush_pending()
         {
-            return false;
+            return None;
         }
-        if self.pending.is_none() {
-            let samples = if pcm { self.take_samples() } else { None };
-            if pcm && samples.is_none() {
-                return false;
+        match &mut self.pending {
+            Some(packet) if pcm && packet.samples.is_none() => {
+                let Some(mut samples) = self.pool.take() else {
+                    self.discard_pending();
+                    return None;
+                };
+                samples[..packet.frames as usize * format.channels()].fill(0.0);
+                packet.samples = Some(samples);
             }
-            self.pending = Some(Packet {
-                samples,
-                frames: 0,
-                format,
-                epoch: self.activity_epoch,
-                timeline: start..start,
-                rebased: std::mem::take(&mut self.rebase),
-            });
-        } else if pcm && matches!(self.pending, Some(Packet { samples: None, .. })) {
-            let Some(mut samples) = self.take_samples() else {
-                self.discard_pending();
-                return false;
-            };
-            let packet = self.pending.as_mut().expect("pending packet");
-            samples[..packet.frames as usize * format.channels()].fill(0.0);
-            packet.samples = Some(samples);
-        }
-        true
-    }
-
-    fn configure_pool(&mut self, format: AudioFormat) {
-        self.clear_pool();
-        self.retired.reserve(self.producer.buffer().capacity() + 1);
-        self.pool_samples = format.channels() * packet_frame_limit(format.rate());
-        self.pool_limit = packet_pool_limit(format.rate(), self.producer.buffer().capacity());
-        self.pool.reserve(self.pool_limit);
-        self.pool
-            .extend((0..self.pool_limit).map(|_| vec![0.0; self.pool_samples].into_boxed_slice()));
-    }
-
-    fn clear_pool(&mut self) {
-        self.pool.clear();
-        self.retired.clear();
-        while self.recycled.pop().is_ok() {}
-        self.pool_samples = 0;
-        self.pool_limit = 0;
-    }
-
-    fn can_pool(&self, samples: &[f32]) -> bool {
-        samples.len() == self.pool_samples && self.pool.len() < self.pool_limit
-    }
-
-    fn take_samples(&mut self) -> Option<Box<[f32]>> {
-        while let Ok(samples) = self.recycled.pop() {
-            if self.can_pool(&samples) {
-                return Some(samples);
-            }
-            self.retired.push(samples);
-        }
-        self.pool.pop()
-    }
-
-    fn reclaim_samples(&mut self, samples: Option<Box<[f32]>>) {
-        if let Some(samples) = samples {
-            if self.can_pool(&samples) {
-                self.pool.push(samples);
-            } else {
-                self.retired.push(samples);
+            Some(_) => {}
+            None => {
+                let samples = if pcm { Some(self.pool.take()?) } else { None };
+                self.pending = Some(Packet {
+                    samples,
+                    frames: 0,
+                    format,
+                    epoch: self.activity_epoch,
+                    timeline: start..start,
+                    rebased: std::mem::take(&mut self.rebase),
+                });
             }
         }
+        self.pending.as_mut()
     }
 
     // A dormant reader has skipped the quiet audio still pending; queuing it later would put
@@ -557,7 +549,7 @@ impl CaptureWriter {
     fn discard_pending(&mut self) {
         let samples = self.pending.take().and_then(|packet| packet.samples);
         self.shared.pending_signal.store(false, Ordering::SeqCst);
-        self.reclaim_samples(samples);
+        self.pool.reclaim(samples);
     }
 
     fn flush_pending(&mut self) -> bool {
@@ -567,7 +559,7 @@ impl CaptureWriter {
         let result = self.producer.push(packet);
         self.shared.pending_signal.store(false, Ordering::SeqCst);
         if let Err(PushError::Full(packet)) = result {
-            self.reclaim_samples(packet.samples);
+            self.pool.reclaim(packet.samples);
             self.overflow();
             false
         } else {
@@ -711,14 +703,14 @@ impl AudioReader {
     }
 
     pub fn sleep_until_signal(&mut self) -> bool {
-        if let Err(state) =
-            self.shared
-                .ingest
-                .try_update(Ordering::SeqCst, Ordering::Relaxed, |state| {
-                    (state == IngestState::Active as u8).then_some(IngestState::Dormant as u8)
-                })
-        {
-            return state == IngestState::Dormant as u8;
+        let (active, dormant) = (IngestState::Active as u8, IngestState::Dormant as u8);
+        if let Err(state) = (self.shared.ingest).compare_exchange(
+            active,
+            dormant,
+            Ordering::SeqCst,
+            Ordering::Relaxed,
+        ) {
+            return state == dormant;
         }
         self.dormant = true;
         // With the writer's fence after each push: it sees the sleep, or this sees its packet.
@@ -864,15 +856,16 @@ fn channel_with_capacity(capacity: usize) -> (CaptureWriter, AudioReader) {
     (
         CaptureWriter {
             producer,
-            recycled,
             shared: Arc::clone(&shared),
             status: StreamStatus::Starting,
             format: None,
             pending: None,
-            pool: Vec::new(),
-            retired: Vec::new(),
-            pool_samples: 0,
-            pool_limit: 0,
+            pool: SamplePool {
+                recycled,
+                free: Vec::new(),
+                samples: 0,
+                limit: 0,
+            },
             activity_epoch: 0,
             previous_timing: 0..0,
             rebase: false,
@@ -980,7 +973,7 @@ mod tests {
         for exhaust_pool in [true, false] {
             let (mut writer, mut reader, _) = mono(1, 48_000);
             if exhaust_pool {
-                writer.pool.clear();
+                writer.pool.free.clear();
             }
             writer.push_pcm(bytes, &chunk);
             assert!(writer.flush_pending());

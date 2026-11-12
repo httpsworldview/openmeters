@@ -40,9 +40,9 @@ pub struct ApplicationView {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CaptureView {
-    pub applications: Arc<[ApplicationView]>,
-    pub devices: Arc<[Arc<str>]>,
-    pub default_sink: Arc<str>,
+    pub applications: Vec<ApplicationView>,
+    pub devices: Vec<Arc<str>>,
+    pub default_sink: Option<Arc<str>>,
     pub selected_device: Option<Arc<str>>,
 }
 
@@ -156,7 +156,7 @@ impl Drop for AudioBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     #[test]
     fn unavailable_socket_faults_and_stops_cleanly() {
@@ -166,17 +166,15 @@ mod tests {
             Some(runtime.path().join("missing")),
         )
         .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(1);
         let (mut reset, mut seeded) = (false, false);
-        while !(reset && seeded) && Instant::now() < deadline {
+        live_tests::wait_for("the backend to fault and seed silence", || {
             audio.drain(Instant::now(), |span| match span {
                 CapturedSpan::Reset => reset = true,
                 CapturedSpan::Silence { format, .. } => seeded |= format.channels() == 8,
                 CapturedSpan::Pcm { .. } => {}
             });
-            thread::sleep(Duration::from_millis(1));
-        }
-        assert!(reset && seeded);
+            (reset && seeded).then_some(())
+        });
         assert!(!control.is_alive());
         backend.shutdown();
     }
@@ -188,7 +186,7 @@ mod tests {
         state.publish(CaptureView::default());
         assert!(Arc::ptr_eq(&initial, &state.view()));
         state.publish(CaptureView {
-            default_sink: "sink".into(),
+            default_sink: Some("sink".into()),
             ..Default::default()
         });
         let changed = state.view();

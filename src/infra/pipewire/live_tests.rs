@@ -524,7 +524,7 @@ fn device_config(device: &str) -> CaptureConfig {
     }
 }
 
-fn wait_for<T>(description: &str, mut check: impl FnMut() -> Option<T>) -> T {
+pub(super) fn wait_for<T>(description: &str, mut check: impl FnMut() -> Option<T>) -> T {
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         if let Some(value) = check() {
