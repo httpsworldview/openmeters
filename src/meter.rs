@@ -12,7 +12,7 @@ use crate::visuals::registry::{VisualManager, VisualManagerHandle};
 use std::time::Instant;
 
 const SILENCE_CHUNK_FRAMES: usize = 4_096;
-const DSP_BATCH_FRAMES_AT_48K: usize = 256;
+const DSP_BATCH_SECONDS: f32 = 256.0 / 48_000.0;
 // Per-span limit; longer silence resets audio state.
 const MAX_SILENCE_SECONDS: u64 = 4;
 static SILENCE: [f32; SILENCE_CHUNK_FRAMES * MAX_AUDIO_CHANNELS] =
@@ -26,7 +26,9 @@ struct DspBatcher {
 impl DspBatcher {
     fn new() -> Self {
         Self {
-            samples: Vec::with_capacity(DSP_BATCH_FRAMES_AT_48K * MAX_AUDIO_CHANNELS),
+            samples: Vec::with_capacity(
+                SampleRate::DEFAULT.frames(DSP_BATCH_SECONDS) * MAX_AUDIO_CHANNELS,
+            ),
             format: None,
         }
     }
@@ -36,9 +38,7 @@ impl DspBatcher {
             self.samples.clear();
         }
         self.format = Some(format);
-        let frames = DSP_BATCH_FRAMES_AT_48K as f64 * f64::from(format.sample_rate().get())
-            / f64::from(SampleRate::DEFAULT.get());
-        let batch = frames.round().max(1.0) as usize * format.channels();
+        let batch = format.sample_rate().frames(DSP_BATCH_SECONDS) * format.channels();
         if !self.samples.is_empty() {
             let take = (batch - self.samples.len()).min(samples.len());
             self.samples.extend_from_slice(&samples[..take]);

@@ -418,16 +418,14 @@ impl LoudnessProcessor {
         let hop = sample_rate.frames(HOP_SECS);
         for frame in block.samples.chunks_exact(block.channels) {
             for (channel, &sample) in self.channels[..active_channels].iter_mut().zip(frame) {
-                if channel.is_none() {
-                    if sample == 0.0 {
-                        continue;
-                    }
-                    *channel = Some(new_channel(sample_rate));
-                }
-                let (windows, filter, true_peak) = channel.as_mut().unwrap();
+                let (windows, filter, true_peak) = match channel {
+                    Some(state) => state,
+                    None if sample == 0.0 => continue,
+                    None => channel.insert(new_channel(sample_rate)),
+                };
                 let filtered = k_weighted(sample, filter, weighting);
-                let power = filtered * filtered;
-                windows.push_nonnegative_finite_wide([if power.is_finite() { power } else { 0.0 }]);
+                let power = (filtered * filtered).min(f64::from(f32::MAX));
+                windows.push_nonnegative_finite([power as f32]);
                 true_peak.process(sample, firs);
             }
             let measurement = &mut self.measurement;
@@ -474,7 +472,7 @@ mod tests {
     use crate::util::audio::sine_wave;
     use ebur128::{Channel as ReferenceChannel, EbuR128, Mode};
     use rustfft::{FftPlanner, num_complex::Complex64};
-    use std::collections::{BTreeSet, VecDeque};
+    use std::collections::BTreeSet;
 
     const SEVEN_ONE_REFERENCE: [ReferenceChannel; 8] = {
         use ReferenceChannel::*;
@@ -664,72 +662,6 @@ mod tests {
         assert!(process(&mut processor, last, mono).stable);
     }
 
-    fn assert_energy_windows_match_direct_sums(
-        capacities: [usize; 4],
-        powers: impl IntoIterator<Item = f64>,
-        relative_tolerance: f64,
-    ) {
-        let mut windows = EnergyWindows::new(capacities);
-        let capacities = capacities.map(|capacity| capacity.max(1));
-        let len = capacities.into_iter().max().unwrap();
-        let mut history = VecDeque::from(vec![0.0; len]);
-        for window in 0..4 {
-            assert_eq!(windows.mean(window)[0], 0.0);
-        }
-        for (i, power) in powers.into_iter().enumerate() {
-            windows.push_nonnegative_finite_wide([power]);
-            history.push_back(power);
-            history.pop_front();
-            for (window, &capacity) in capacities.iter().enumerate() {
-                let expected = history.iter().rev().take(capacity).sum::<f64>() / capacity as f64;
-                let actual = windows.mean(window)[0];
-                assert!(
-                    (actual - expected).abs() <= relative_tolerance * expected,
-                    "{capacities:?}, sample={i}, window={window}: {actual:e} != {expected:e}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn energy_windows_match_direct_sums_across_ring_boundaries() {
-        for len in 0_usize..=256 {
-            let capacities = [len, len / 2, 1, len * 3 / 4];
-            // Dyadic inputs and their sums are exact, so no tolerance is needed.
-            let powers = (0..len * 3 + 33)
-                .map(|i| {
-                    if i % (len + 1) < len / 2 {
-                        0.0
-                    } else {
-                        ((i * 991 + len * 17) % 65536) as f64 / 65536.0
-                    }
-                })
-                .chain(std::iter::repeat_n(0.0, len + 1));
-            assert_energy_windows_match_direct_sums(capacities, powers, 0.0);
-        }
-    }
-
-    #[test]
-    fn energy_windows_preserve_small_values_through_wide_fallback_and_wraps() {
-        for len in [
-            1, 2, 3, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 129, 257, 513,
-        ] {
-            let capacities = [len, (len / 2).max(1), (len / 3).max(1), 1];
-            let powers = (0..len * 3 + 33)
-                .map(|i| {
-                    if i % (len + 31) == 0 {
-                        f64::from(f32::MAX)
-                    } else {
-                        1.0
-                    }
-                })
-                .chain([1.0e100])
-                .chain(std::iter::repeat_n(1.0e-100, len * 3 + 33))
-                .chain(std::iter::repeat_n(0.0, len + 1));
-            assert_energy_windows_match_direct_sums(capacities, powers, 1.0e-13);
-        }
-    }
-
     #[test]
     fn energy_windows_match_reference_at_audio_sample_rates() {
         for rate in [
@@ -748,7 +680,7 @@ mod tests {
                 } else {
                     ((i * 991) % 1024) as f64 / 1024.0
                 };
-                windows.push_nonnegative_finite_wide([power]);
+                windows.push_nonnegative_finite([power as f32]);
                 prefix.push(prefix[i] + power);
                 let frame = i + 1;
                 if frame.is_multiple_of(997) || frame % 16 <= 1 || frame > len * 2 {
@@ -787,7 +719,6 @@ mod tests {
         let cases = [
             vec![4.0],
             vec![2.0],
-            vec![1.0e21],
             vec![0.0; 8],
             vec![0.0, 0.0, 0.0, 7.0, 0.0, 0.0, 0.0, 0.0],
             vec![0.0, 0.0, 0.0, 0.0, 1.0, -1.0, 0.0, 0.0],

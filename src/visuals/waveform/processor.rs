@@ -12,10 +12,8 @@ pub const DEFAULT_BAND_DB_FLOOR: f32 = -50.0;
 pub(super) const WAVEFORM_CHANNELS: [Channel; 4] =
     [Channel::Left, Channel::Right, Channel::Mid, Channel::Side];
 pub(super) const DERIVED_CHANNELS: usize = WAVEFORM_CHANNELS.len();
-const REFERENCE_SAMPLE_RATE: f32 = 44_100.0;
-// Rate-scaled to preserve duration.
-const BAND_COLOR_WINDOW_AT_44K1: usize = 2048;
-const BAND_SLOW_WINDOW_AT_44K1: usize = 16_384;
+const BAND_COLOR_WINDOW: f32 = 2048.0 / 44_100.0;
+const BAND_SLOW_WINDOW: f32 = 16_384.0 / 44_100.0;
 // Color weights only; RMS is unscaled.
 const BAND_COLOR_GAINS: [f32; BAND_COUNT] = [1.0, 0.7, 2.0];
 // Rendering cutoff: -96 dBFS amplitude, also used for color brightness.
@@ -68,11 +66,6 @@ pub struct WaveformUpdate<'a> {
     pub preview: WaveformPreview,
 }
 
-fn window_len(samples_at_reference_rate: usize, sample_rate: SampleRate) -> usize {
-    ((samples_at_reference_rate as f32 * sample_rate.hz() / REFERENCE_SAMPLE_RATE).round() as usize)
-        .max(1)
-}
-
 type BandFilter = ThreeBand<2, 1, false>;
 
 struct BandTracker {
@@ -82,14 +75,14 @@ struct BandTracker {
 
 // Spans at least one column so slow scrolling does not skip audio.
 fn color_window(config: WaveformConfig) -> usize {
-    window_len(BAND_COLOR_WINDOW_AT_44K1, config.sample_rate)
+    (config.sample_rate.frames(BAND_COLOR_WINDOW))
         .max((config.sample_rate.hz() / config.scroll_speed.get()).ceil() as usize)
 }
 
 fn history_windows(config: WaveformConfig) -> [usize; 2] {
     [
         color_window(config),
-        window_len(BAND_SLOW_WINDOW_AT_44K1, config.sample_rate),
+        config.sample_rate.frames(BAND_SLOW_WINDOW),
     ]
 }
 
@@ -476,7 +469,7 @@ mod tests {
         cfg.bands = Bands::History;
         let mut processor = WaveformProcessor::new(cfg);
         let mut samples = vec![0.0; RATE as usize];
-        samples.extend(vec![1.0; BAND_COLOR_WINDOW_AT_44K1]);
+        samples.extend(vec![1.0; SAMPLE_RATE.frames(BAND_COLOR_WINDOW)]);
         let latest = latest(&process(&mut processor, &samples, 1), 0);
 
         assert!(latest.rms_db[0][0] > latest.rms_db[1][0]);

@@ -317,17 +317,11 @@ impl<'a> AudioBlock<'a> {
 }
 
 pub struct RunningMeans<const VALUES: usize, const WINDOWS: usize> {
-    ring: Ring<VALUES>,
+    ring: Box<[[f32; VALUES]]>,
     capacities: [usize; WINDOWS],
     blocks: Box<[[f64; VALUES]]>,
     partial: [f64; VALUES],
-    len: usize,
     head: usize,
-}
-
-enum Ring<const VALUES: usize> {
-    Compact(Box<[[f32; VALUES]]>),
-    Wide(Box<[[f64; VALUES]]>),
 }
 
 impl<const VALUES: usize, const WINDOWS: usize> RunningMeans<VALUES, WINDOWS> {
@@ -339,11 +333,10 @@ impl<const VALUES: usize, const WINDOWS: usize> RunningMeans<VALUES, WINDOWS> {
         let capacities = capacities.map(|capacity| capacity.max(1));
         let len = capacities.iter().copied().max().unwrap_or(1);
         Self {
-            ring: Ring::Compact(vec![[0.0; VALUES]; len].into_boxed_slice()),
+            ring: vec![[0.0; VALUES]; len].into_boxed_slice(),
             blocks: vec![Self::ZERO; len.div_ceil(Self::BLOCK) * 2].into_boxed_slice(),
             capacities,
             partial: Self::ZERO,
-            len,
             head: 0,
         }
     }
@@ -351,33 +344,22 @@ impl<const VALUES: usize, const WINDOWS: usize> RunningMeans<VALUES, WINDOWS> {
     // The same history under new windows; samples older than it read as silence.
     pub fn resized(&self, capacities: [usize; WINDOWS]) -> Self {
         let mut resized = Self::new(capacities);
-        let oldest_first = (self.head..self.len).chain(0..self.head);
-        for index in oldest_first.skip(self.len.saturating_sub(resized.len)) {
-            resized.push_nonnegative_finite_wide(self.slot(index));
+        let (newest, oldest) = self.ring.split_at(self.head);
+        let kept = oldest.iter().chain(newest);
+        for &values in kept.skip(self.ring.len().saturating_sub(resized.ring.len())) {
+            resized.push_nonnegative_finite(values);
         }
         resized
     }
 
     #[inline]
-    fn slot(&self, index: usize) -> [f64; VALUES] {
-        match &self.ring {
-            Ring::Compact(buffer) => buffer[index].map(f64::from),
-            Ring::Wide(buffer) => buffer[index],
-        }
-    }
-
-    #[inline]
     pub fn push_nonnegative_finite(&mut self, values: [f32; VALUES]) {
-        // The wide push would round-trip every sample through f64.
-        let Ring::Compact(buffer) = &mut self.ring else {
-            return self.push_nonnegative_finite_wide(values.map(f64::from));
-        };
         debug_assert!(
             values
                 .iter()
                 .all(|value| value.is_finite() && *value >= 0.0)
         );
-        buffer[self.head] = values;
+        self.ring[self.head] = values;
         for (partial, &sample) in self.partial.iter_mut().zip(&values) {
             *partial += f64::from(sample);
         }
@@ -385,47 +367,9 @@ impl<const VALUES: usize, const WINDOWS: usize> RunningMeans<VALUES, WINDOWS> {
     }
 
     #[inline]
-    pub fn push_nonnegative_finite_wide(&mut self, values: [f64; VALUES]) {
-        debug_assert!(
-            values
-                .iter()
-                .all(|value| value.is_finite() && *value >= 0.0)
-        );
-        // Preserve compact history until a sample would overflow binary32.
-        if let Ring::Compact(_) = &self.ring
-            && values.iter().any(|&value| !(value as f32).is_finite())
-        {
-            self.widen();
-        }
-        match &mut self.ring {
-            Ring::Compact(buffer) => {
-                let slot = &mut buffer[self.head];
-                *slot = values.map(|value| value as f32);
-                for (partial, &sample) in self.partial.iter_mut().zip(slot.iter()) {
-                    *partial += f64::from(sample);
-                }
-            }
-            Ring::Wide(buffer) => {
-                buffer[self.head] = values;
-                for (partial, &sample) in self.partial.iter_mut().zip(&values) {
-                    *partial += sample;
-                }
-            }
-        }
-        self.flush();
-    }
-
-    #[cold]
-    fn widen(&mut self) {
-        if let Ring::Compact(buffer) = &self.ring {
-            self.ring = Ring::Wide(buffer.iter().map(|slot| slot.map(f64::from)).collect());
-        }
-    }
-
-    #[inline]
     fn flush(&mut self) {
         self.head += 1;
-        if self.head.is_multiple_of(Self::BLOCK) || self.head == self.len {
+        if self.head.is_multiple_of(Self::BLOCK) || self.head == self.ring.len() {
             let mut node = self.blocks.len() / 2 + (self.head - 1) / Self::BLOCK;
             self.blocks[node] = self.partial;
             self.partial = Self::ZERO;
@@ -436,7 +380,7 @@ impl<const VALUES: usize, const WINDOWS: usize> RunningMeans<VALUES, WINDOWS> {
                 self.blocks[node] = std::array::from_fn(|i| left[i] + right[i]);
             }
         }
-        if self.head == self.len {
+        if self.head == self.ring.len() {
             self.head = 0;
         }
     }
@@ -449,7 +393,7 @@ impl<const VALUES: usize, const WINDOWS: usize> RunningMeans<VALUES, WINDOWS> {
         if self.blocks[1] == Self::ZERO && self.partial == Self::ZERO {
             return Self::ZERO;
         }
-        let len = self.len;
+        let len = self.ring.len();
         let start = (self.head + len - count) % len;
         let end = start + count;
         let mut sum = Self::ZERO;
@@ -457,8 +401,8 @@ impl<const VALUES: usize, const WINDOWS: usize> RunningMeans<VALUES, WINDOWS> {
             let first = range.start.next_multiple_of(Self::BLOCK).min(range.end);
             let last = (range.end / Self::BLOCK * Self::BLOCK).max(first);
             for index in (range.start..first).chain(last..range.end) {
-                let samples = self.slot(index);
-                sum = std::array::from_fn(|i| sum[i] + samples[i]);
+                let samples = self.ring[index];
+                sum = std::array::from_fn(|i| sum[i] + f64::from(samples[i]));
             }
             let mut left = self.blocks.len() / 2 + first / Self::BLOCK;
             let mut right = self.blocks.len() / 2 + last / Self::BLOCK;
@@ -699,30 +643,6 @@ mod tests {
                         );
                     }
                 }
-            }
-        }
-    }
-
-    #[test]
-    fn windowed_means_preserve_all_lanes_when_promoting_to_wide() {
-        let mut means = RunningMeans::<3, 2>::new([33, 2]);
-        for _ in 0..33 {
-            means.push_nonnegative_finite([1.0, 2.0, 3.0]);
-        }
-        means.push_nonnegative_finite_wide([1.0, 2.0, 1.0e100]);
-        assert_eq!(means.mean(0), [1.0, 2.0, 1.0e100 / 33.0]);
-        assert_eq!(means.mean(1), [1.0, 2.0, 5.0e99]);
-        for _ in 0..33 {
-            means.push_nonnegative_finite([1.0, 2.0, 3.0]);
-        }
-        assert_eq!(means.mean(0), [1.0, 2.0, 3.0]);
-        for _ in 0..33 {
-            means.push_nonnegative_finite_wide([1.0e-100, 2.0e-100, 0.0]);
-        }
-        for window in 0..2 {
-            let expected = [1.0e-100, 2.0e-100, 0.0];
-            for (actual, expected) in means.mean(window).into_iter().zip(expected) {
-                assert!((actual - expected).abs() <= expected * 1.0e-14);
             }
         }
     }
