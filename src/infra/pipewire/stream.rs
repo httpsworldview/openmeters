@@ -3,7 +3,7 @@
 
 use super::DynError;
 use super::transport::{CaptureWriter, StreamStatus, pcm_chunk};
-use crate::dsp::{AudioFormat, ChannelPosition, SampleRate};
+use crate::dsp::{AudioFormat, ChannelLayout, ChannelPosition, SampleRate};
 use pipewire as pw;
 use pw::properties::properties;
 use pw::spa;
@@ -26,9 +26,9 @@ pub(super) fn tap_name() -> String {
     format!("openmeters.tap.{}", std::process::id())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct StreamConfig {
-    pub layout: Vec<ChannelPosition>,
+    pub layout: ChannelLayout,
     pub target: Option<u64>,
     pub passive: bool,
 }
@@ -58,7 +58,7 @@ impl TapStream {
         self.active = None;
         let mut writer = self.writer.borrow_mut();
         writer.clear_format();
-        writer.publish_layout(&config.layout);
+        writer.publish_layout(config.layout);
         writer.set_status(StreamStatus::Starting);
         drop(writer);
         let session = Session::new(self, &config)?;
@@ -147,7 +147,7 @@ impl Session {
             .process(|stream, writer| process(stream, &mut writer.borrow_mut()))
             .register()?;
 
-        let format = format_pod(&config.layout)?;
+        let format = format_pod(config.layout.positions())?;
         let mut params =
             [Pod::from_bytes(&format).ok_or_else(|| io::Error::other("invalid format pod"))?];
         let flags = pw::stream::StreamFlags::MAP_BUFFERS;

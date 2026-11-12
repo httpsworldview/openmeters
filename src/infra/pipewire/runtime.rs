@@ -344,7 +344,7 @@ impl CaptureState {
         if self.tap.config() != Some(&plan.stream) {
             self.owned_links.clear();
             self.stream_backoff.up_since = None;
-            if let Err(err) = self.tap.configure(plan.stream.clone()) {
+            if let Err(err) = self.tap.configure(plan.stream) {
                 error!("[capture] stream reconfiguration failed: {err}");
                 self.defer_stream_retry(now);
                 return;
@@ -673,7 +673,7 @@ mod tests {
         }
         // A replacement stream does not inherit the accepted time of the one it replaces, even
         // when it is accepted before reconcile sees it start.
-        let mut stale = capture.tap.config().cloned().expect("configured tap");
+        let mut stale = capture.tap.config().copied().expect("configured tap");
         stale.passive = !stale.passive;
         capture.tap.configure(stale).expect("stale tap");
         writer.borrow_mut().set_status(StreamStatus::Paused);

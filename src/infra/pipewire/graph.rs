@@ -78,7 +78,7 @@ pub(super) struct Port {
     pub global_id: u32,
     pub local_id: u32,
     pub node_id: u32,
-    pub channel: Option<ChannelPosition>,
+    pub channel: ChannelPosition,
     pub direction: Option<Direction>,
     pub monitor: bool,
 }
@@ -87,9 +87,11 @@ impl Port {
     pub(super) fn from_global(global: &GlobalObject<&DictRef>) -> Option<Self> {
         Some(Self {
             global_id: global.id,
-            local_id: property(global, "port.id")?.parse().ok()?,
-            node_id: property(global, "node.id")?.parse().ok()?,
-            channel: property(global, "audio.channel").and_then(ChannelPosition::parse),
+            local_id: parsed_property(global, "port.id")?,
+            node_id: parsed_property(global, "node.id")?,
+            channel: property(global, "audio.channel")
+                .and_then(ChannelPosition::parse)
+                .unwrap_or_default(),
             direction: direction(property(global, "port.direction")),
             monitor: bool_property(property(global, "port.monitor")),
         })
@@ -140,14 +142,12 @@ impl Node {
                     .any(|name| contains_ascii(name, "monitor")));
         Self {
             id: global.id,
-            serial: clean_property(property(global, "object.serial"))
-                .and_then(|value| value.parse().ok()),
+            serial: parsed_property(global, "object.serial"),
             name,
             description,
             kind,
             device,
-            client_id: clean_property(property(global, "client.id"))
-                .and_then(|value| value.parse().ok()),
+            client_id: parsed_property(global, "client.id"),
             identity,
             application_name,
         }
@@ -182,6 +182,10 @@ pub(super) fn property<'a>(global: &GlobalObject<&'a DictRef>, key: &str) -> Opt
 
 fn clean_property(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn parsed_property<T: FromStr>(global: &GlobalObject<&DictRef>, key: &str) -> Option<T> {
+    clean_property(property(global, key))?.parse().ok()
 }
 
 fn arc_property(value: Option<&str>) -> Option<Arc<str>> {

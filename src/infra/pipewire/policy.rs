@@ -4,11 +4,8 @@
 use super::graph::{Graph, Node, NodeKind, Port};
 use super::stream::StreamConfig;
 use crate::domain::routing::{CaptureConfig, CaptureMode};
-use crate::dsp::{ChannelPosition, MAX_AUDIO_CHANNELS};
+use crate::dsp::{ChannelLayout, ChannelPosition, MAX_AUDIO_CHANNELS};
 use std::collections::HashSet;
-
-const STEREO_LAYOUT: [ChannelPosition; 2] =
-    [ChannelPosition::FrontLeft, ChannelPosition::FrontRight];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) struct LinkSpec {
@@ -44,7 +41,7 @@ pub(super) fn plan(graph: &Graph, config: &CaptureConfig, tap_id: Option<u32>) -
                 .map(|ports| ports.saturating_sub(MAX_AUDIO_CHANNELS))
                 .sum();
             (
-                ChannelPosition::SURROUND.into(),
+                ChannelLayout::SURROUND,
                 None,
                 true,
                 sources.into_iter().map(|node| node.id).collect(),
@@ -59,11 +56,7 @@ pub(super) fn plan(graph: &Graph, config: &CaptureConfig, tap_id: Option<u32>) -
             if let Some(device) = device {
                 let ports = graph.output_ports(device);
                 let truncated = ports.len().saturating_sub(MAX_AUDIO_CHANNELS);
-                let layout = if ports.is_empty() {
-                    STEREO_LAYOUT.into()
-                } else {
-                    port_layout(&ports)
-                };
+                let layout = port_layout(&ports).unwrap_or(ChannelLayout::STEREO);
                 let target = device
                     .serial
                     .filter(|_| matches!(device.kind, NodeKind::Sink | NodeKind::Source));
@@ -74,7 +67,7 @@ pub(super) fn plan(graph: &Graph, config: &CaptureConfig, tap_id: Option<u32>) -
                 };
                 (layout, target, passive, sources, truncated)
             } else {
-                (STEREO_LAYOUT.into(), None, true, Vec::new(), 0)
+                (ChannelLayout::STEREO, None, true, Vec::new(), 0)
             }
         }
     };
@@ -89,13 +82,12 @@ pub(super) fn plan(graph: &Graph, config: &CaptureConfig, tap_id: Option<u32>) -
     }
 }
 
-fn port_layout(ports: &[&Port]) -> Vec<ChannelPosition> {
-    let channels = ports.len().min(MAX_AUDIO_CHANNELS);
+fn port_layout(ports: &[&Port]) -> Option<ChannelLayout> {
     let mut positions = [ChannelPosition::Unknown; MAX_AUDIO_CHANNELS];
     for (position, port) in positions.iter_mut().zip(ports) {
-        *position = port.channel.unwrap_or_default();
+        *position = port.channel;
     }
-    ChannelPosition::normalize(channels, positions)[..channels].to_vec()
+    ChannelLayout::new(ports.len().min(MAX_AUDIO_CHANNELS), positions)
 }
 
 pub(super) fn desired_links(graph: &Graph, plan: &Plan, tap: &Node) -> Vec<LinkSpec> {
@@ -104,16 +96,15 @@ pub(super) fn desired_links(graph: &Graph, plan: &Plan, tap: &Node) -> Vec<LinkS
     }
     let tap_ports = graph.input_ports(tap);
     let mut claimed = HashSet::new();
-    let Some(targets) = plan
-        .stream
-        .layout
+    let tap_layout = plan.stream.layout.positions();
+    let Some(targets) = tap_layout
         .iter()
         .enumerate()
         .map(|(ordinal, channel)| {
             tap_ports
                 .iter()
                 .copied()
-                .find(|port| port.channel == Some(*channel) && claimed.insert(port.global_id))
+                .find(|port| port.channel == *channel && claimed.insert(port.global_id))
                 .or_else(|| {
                     tap_ports
                         .get(ordinal)
@@ -133,8 +124,7 @@ pub(super) fn desired_links(graph: &Graph, plan: &Plan, tap: &Node) -> Vec<LinkS
     };
 
     let target_for = |channel: ChannelPosition| {
-        plan.stream
-            .layout
+        tap_layout
             .iter()
             .position(|candidate| *candidate == channel)
             .map(|index| targets[index])
@@ -143,9 +133,11 @@ pub(super) fn desired_links(graph: &Graph, plan: &Plan, tap: &Node) -> Vec<LinkS
     let mut links = Vec::new();
     for source in plan.sources.iter().filter_map(|id| graph.node(*id)) {
         let ports = graph.output_ports(source);
-        let mut positions = port_layout(&ports);
+        let Some(layout) = port_layout(&ports) else {
+            continue;
+        };
         // Preserve exact port identities before inferring AUX speaker roles.
-        if positions == plan.stream.layout {
+        if layout == plan.stream.layout {
             links.extend(
                 ports
                     .into_iter()
@@ -154,6 +146,9 @@ pub(super) fn desired_links(graph: &Graph, plan: &Plan, tap: &Node) -> Vec<LinkS
             );
             continue;
         }
+        let mut positions = [ChannelPosition::Unknown; MAX_AUDIO_CHANNELS];
+        let positions = &mut positions[..layout.positions().len()];
+        positions.copy_from_slice(layout.positions());
         let aux_channels = positions
             .iter()
             .filter_map(|channel| match channel {
@@ -163,7 +158,7 @@ pub(super) fn desired_links(graph: &Graph, plan: &Plan, tap: &Node) -> Vec<LinkS
             .max()
             .unwrap_or(0);
         let aux_layout = ChannelPosition::fallback(aux_channels);
-        for channel in &mut positions {
+        for channel in &mut *positions {
             if let ChannelPosition::Aux(index) = *channel {
                 *channel = match aux_layout.get(index as usize).copied() {
                     Some(ChannelPosition::Mono) => ChannelPosition::FrontLeft,
@@ -171,8 +166,8 @@ pub(super) fn desired_links(graph: &Graph, plan: &Plan, tap: &Node) -> Vec<LinkS
                 };
             }
         }
-        ChannelPosition::resolve_surrounds(&mut positions);
-        for (output, channel) in ports.into_iter().zip(positions) {
+        ChannelPosition::resolve_surrounds(positions);
+        for (output, &channel) in ports.into_iter().zip(&*positions) {
             // The tap's 7.1 layout lacks these, so fold them into its nearest speakers.
             let remixed = match channel {
                 ChannelPosition::Mono => [
@@ -281,7 +276,7 @@ mod tests {
                 global_id: id * 100 + index as u32,
                 local_id: index as u32,
                 node_id: id,
-                channel: Some(channel),
+                channel,
                 direction: Some(direction),
                 ..Default::default()
             });
@@ -323,7 +318,7 @@ mod tests {
             expected.extend(expected_links(id, destinations.iter().map(|port| 7 - port)));
         }
         let plan = plan(&graph, &CaptureConfig::default(), Some(TAP));
-        assert_eq!(plan.stream.layout, ChannelPosition::SURROUND);
+        assert_eq!(plan.stream.layout, ChannelLayout::SURROUND);
         expected.sort_unstable();
         assert_eq!(
             desired_links(&graph, &plan, graph.node(TAP).unwrap()),
@@ -356,7 +351,7 @@ mod tests {
                 },
                 Some(TAP),
             );
-            assert_eq!(plan.stream.layout, layout);
+            assert_eq!(plan.stream.layout.positions(), layout);
             assert_eq!(plan.sources, [1]);
             assert_eq!(
                 desired_links(&graph, &plan, graph.node(TAP).unwrap()),

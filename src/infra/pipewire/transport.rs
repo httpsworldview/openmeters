@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::dsp::{AudioFormat, ChannelPosition, MAX_AUDIO_CHANNELS, SampleRate};
+use crate::dsp::{AudioFormat, ChannelLayout, MAX_AUDIO_CHANNELS, SampleRate};
 use crate::util::{audio::flush_denormal_f32, unpoison};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 use std::hash::{Hash, Hasher};
@@ -332,13 +332,10 @@ impl CaptureWriter {
         format
     }
 
-    pub(super) fn publish_layout(&self, layout: &[ChannelPosition]) {
-        let positions = std::array::from_fn(|index| layout.get(index).copied().unwrap_or_default());
+    pub(super) fn publish_layout(&self, layout: ChannelLayout) {
         // Negotiation sets the rate; until then the last one avoids a spurious format change.
         let rate = self.shared.format().sample_rate();
-        let format = AudioFormat::new(layout.len(), rate, positions)
-            .expect("capture layouts have 1..=8 channels");
-        self.publish_format(format);
+        self.publish_format(AudioFormat::with_layout(layout, rate));
     }
 
     pub(super) fn mark_reconnect(&self) {

@@ -114,7 +114,7 @@ impl AudioBackend {
     ) -> io::Result<(Self, CaptureControl, AudioReader)> {
         let (writer, audio) = transport::channel();
         let initial = policy::plan(&Default::default(), &config, None);
-        writer.publish_layout(&initial.stream.layout);
+        writer.publish_layout(initial.stream.layout);
         let (commands, receiver) = mpsc::channel();
         let public = Arc::new(PublicState::default());
         let control = CaptureControl {

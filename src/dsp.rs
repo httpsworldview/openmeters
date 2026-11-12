@@ -112,12 +112,46 @@ impl ChannelPosition {
     }
 }
 
+/// One to `MAX_AUDIO_CHANNELS` channels, each at a distinct known position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChannelLayout {
+    channels: usize,
+    // Unknown past the last channel.
+    positions: [ChannelPosition; MAX_AUDIO_CHANNELS],
+}
+
+impl ChannelLayout {
+    pub const STEREO: Self = {
+        let mut positions = [ChannelPosition::Unknown; MAX_AUDIO_CHANNELS];
+        positions[0] = ChannelPosition::FrontLeft;
+        positions[1] = ChannelPosition::FrontRight;
+        Self {
+            channels: 2,
+            positions,
+        }
+    };
+    pub const SURROUND: Self = Self {
+        channels: MAX_AUDIO_CHANNELS,
+        positions: ChannelPosition::SURROUND,
+    };
+
+    pub fn new(channels: usize, positions: [ChannelPosition; MAX_AUDIO_CHANNELS]) -> Option<Self> {
+        (1..=MAX_AUDIO_CHANNELS).contains(&channels).then(|| Self {
+            channels,
+            positions: ChannelPosition::normalize(channels, positions),
+        })
+    }
+
+    pub fn positions(&self) -> &[ChannelPosition] {
+        &self.positions[..self.channels]
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AudioFormat {
-    channels: usize,
+    layout: ChannelLayout,
     sample_rate: SampleRate,
     pub generation: u64,
-    positions: [ChannelPosition; MAX_AUDIO_CHANNELS],
 }
 
 impl AudioFormat {
@@ -126,12 +160,15 @@ impl AudioFormat {
         sample_rate: SampleRate,
         positions: [ChannelPosition; MAX_AUDIO_CHANNELS],
     ) -> Option<Self> {
-        (1..=MAX_AUDIO_CHANNELS).contains(&channels).then(|| Self {
-            channels,
+        ChannelLayout::new(channels, positions).map(|layout| Self::with_layout(layout, sample_rate))
+    }
+
+    pub fn with_layout(layout: ChannelLayout, sample_rate: SampleRate) -> Self {
+        Self {
+            layout,
             sample_rate,
             generation: 0,
-            positions: ChannelPosition::normalize(channels, positions),
-        })
+        }
     }
 
     pub(crate) fn fallback(channels: usize, sample_rate: SampleRate) -> Self {
@@ -140,7 +177,7 @@ impl AudioFormat {
     }
 
     pub fn channels(self) -> usize {
-        self.channels
+        self.layout.channels
     }
 
     pub fn sample_rate(self) -> SampleRate {
@@ -149,7 +186,7 @@ impl AudioFormat {
 
     #[cfg(test)]
     pub fn positions(self) -> [ChannelPosition; MAX_AUDIO_CHANNELS] {
-        self.positions
+        self.layout.positions
     }
 
     pub(crate) fn rate(self) -> u64 {
@@ -215,7 +252,10 @@ impl<'a> AudioBlock<'a> {
     }
 
     pub fn new(samples: &'a [f32], format: AudioFormat) -> Self {
-        let (channels, mut positions) = (format.channels, format.positions);
+        let ChannelLayout {
+            channels,
+            mut positions,
+        } = format.layout;
         ChannelPosition::resolve_surrounds(&mut positions[..channels]);
         let stereo_channels = (2..channels.min(samples.len()))
             .rfind(|&channel| {
@@ -577,21 +617,18 @@ mod tests {
             ),
             (8, &ChannelPosition::SURROUND[..]),
         ] {
-            let format = AudioFormat::new(channels, RATE, [Unknown; MAX_AUDIO_CHANNELS]);
-            assert_eq!(&format.unwrap().positions[..channels], expected);
+            let layout = ChannelLayout::new(channels, [Unknown; MAX_AUDIO_CHANNELS]);
+            assert_eq!(layout.unwrap().positions(), expected);
         }
 
         let mut partial = [Unknown; MAX_AUDIO_CHANNELS];
         partial[..2].copy_from_slice(&[FrontRight, Unknown]);
-        let format = AudioFormat::new(2, RATE, partial).unwrap();
-        assert_eq!(&format.positions[..2], &[FrontRight, FrontLeft]);
+        let layout = ChannelLayout::new(2, partial).unwrap();
+        assert_eq!(layout.positions(), [FrontRight, FrontLeft]);
 
         partial[..3].copy_from_slice(&[FrontLeft, FrontLeft, FrontRight]);
-        let format = AudioFormat::new(3, RATE, partial).unwrap();
-        assert_eq!(
-            &format.positions[..3],
-            &[FrontLeft, FrontCenter, FrontRight]
-        );
+        let layout = ChannelLayout::new(3, partial).unwrap();
+        assert_eq!(layout.positions(), [FrontLeft, FrontCenter, FrontRight]);
     }
 
     #[test]
