@@ -39,7 +39,7 @@ impl OscilloscopeState {
 
     crate::visuals::palette_setter!(TRACE_COUNT => geometry);
 
-    pub fn apply_snapshot(&mut self, snapshot: OscilloscopeSnapshot) {
+    pub fn apply_snapshot(&mut self, mut snapshot: OscilloscopeSnapshot) {
         self.geometry.invalidate();
         let time_constant = self.settings.persistence_time_constant.get();
         let weight = smoothing_weight(snapshot.elapsed, time_constant);
@@ -50,18 +50,19 @@ impl OscilloscopeState {
             && snapshot.samples_per_channel == self.snapshot.samples_per_channel
             && snapshot.slots[..snapshot.channels] == self.snapshot.slots[..self.snapshot.channels]
         {
-            for (current, &incoming) in Arc::make_mut(&mut self.snapshot.samples)
+            // Blended in the incoming buffer: the shown one is shared with the last frame drawn.
+            for (current, &previous) in Arc::make_mut(&mut snapshot.samples)
                 .iter_mut()
-                .zip(snapshot.samples.iter())
+                .zip(self.snapshot.samples.iter())
             {
-                *current += weight * (incoming - *current);
+                let incoming = *current;
+                *current = previous + weight * (incoming - previous);
                 crate::util::audio::flush_denormal_f32(current);
                 // A trace fading into silence ends below half a pixel, so the visual can go quiet.
                 if incoming == 0.0 && current.abs() < 1.0e-3 {
                     *current = 0.0;
                 }
             }
-            return;
         }
 
         self.snapshot = snapshot;

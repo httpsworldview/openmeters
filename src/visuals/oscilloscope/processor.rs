@@ -73,12 +73,16 @@ impl PeriodFft {
     }
 }
 
+#[derive(Debug, PartialEq)]
+enum Miss {
+    Quiet,
+    Aperiodic,
+}
+
 #[derive(Default)]
 struct PeriodEstimator {
     periodicity: Vec<f32>,
     energy_prefix: Vec<f64>,
-    window_stats: Vec<[f64; 2]>,
-    last_peak: f32,
     fft: Option<PeriodFft>,
 }
 
@@ -91,27 +95,28 @@ impl PeriodEstimator {
     const PEAK_CUTOFF: f32 = 0.93;
     const MAX_ANALYSIS_RATE: f32 = 128_000.0;
 
-    fn estimate_period(&mut self, samples: &[f32], rate: f32) -> Option<f32> {
+    fn estimate_period(&mut self, samples: &[f32], rate: f32) -> Result<f32, Miss> {
         let mean = mean_f32(samples);
         let (min, max) = samples
             .iter()
             .fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), &sample| {
                 (min.min(sample), max.max(sample))
             });
-        self.last_peak = (min - mean).abs().max((max - mean).abs());
-        if self.last_peak < Self::MIN_SIGNAL_PEAK {
-            return None;
+        if (min - mean).abs().max((max - mean).abs()) < Self::MIN_SIGNAL_PEAK {
+            return Err(Miss::Quiet);
         }
 
         let min_period = (rate / Self::MAX_HZ).round().max(2.0) as usize;
         let max_period = (((rate / Self::MIN_HZ).ceil() as usize) + 1).min(samples.len() / 2 + 1);
         if max_period <= min_period + 1 {
-            return None;
+            return Err(Miss::Aperiodic);
         }
         self.compute_periodicity(samples, mean, max_period);
 
         let nsdf = &self.periodicity[..=max_period];
-        let zero_crossing = (1..=max_period).find(|&tau| nsdf[tau] <= 0.0)?;
+        let zero_crossing = (1..=max_period)
+            .find(|&tau| nsdf[tau] <= 0.0)
+            .ok_or(Miss::Aperiodic)?;
         let first_tau = min_period.max(zero_crossing);
 
         let is_candidate = |tau: &usize| {
@@ -123,12 +128,13 @@ impl PeriodEstimator {
         let vertex = |tau: usize| parabolic_vertex(nsdf[tau - 1], nsdf[tau], nsdf[tau + 1]);
         let best = (first_tau..max_period)
             .filter(is_candidate)
-            .max_by(|&a, &b| vertex(a).1.total_cmp(&vertex(b).1))?;
+            .max_by(|&a, &b| vertex(a).1.total_cmp(&vertex(b).1))
+            .ok_or(Miss::Aperiodic)?;
         let cutoff = vertex(best).1 * Self::PEAK_CUTOFF;
         let peak = (first_tau..=best)
             .find(|&tau| is_candidate(&tau) && vertex(tau).1 >= cutoff)
             .unwrap_or(best);
-        Some(peak as f32 + vertex(peak).0)
+        Ok(peak as f32 + vertex(peak).0)
     }
 
     fn compute_periodicity(&mut self, samples: &[f32], mean: f32, max_lag: usize) {
@@ -284,6 +290,8 @@ struct StableTrigger {
     reference_period: f32,
     work: Vec<f32>,
     candidate: Vec<f32>,
+    scores: Vec<f32>,
+    window_stats: Vec<[f64; 2]>,
 }
 
 impl StableTrigger {
@@ -328,11 +336,11 @@ impl StableTrigger {
             .estimate_period(probe, sample_rate / factor as f32)
             .map(|period| period * factor as f32);
 
-        if self.estimator.last_peak < PeriodEstimator::MIN_SIGNAL_PEAK {
+        if detected == Err(Miss::Quiet) {
             self.unlock();
         }
 
-        self.stabilize(detected, elapsed)
+        self.stabilize(detected.ok(), elapsed)
             .and_then(|(period, fresh)| {
                 self.locate(trace, period, fresh, cycles, sample_rate, elapsed)
             })
@@ -422,11 +430,7 @@ impl StableTrigger {
     fn find_best(&mut self, data: &[f32], search: usize, period: f32) -> (usize, f32) {
         let template = &self.candidate;
         let stats = correlation_stats(template);
-        let PeriodEstimator {
-            periodicity: scores,
-            window_stats,
-            ..
-        } = &mut self.estimator;
+        let (scores, window_stats) = (&mut self.scores, &mut self.window_stats);
         scores.clear();
         scores.resize(search + 1, f32::NEG_INFINITY);
         sliding_stats(data, template.len(), search + 1, window_stats);
@@ -491,12 +495,12 @@ impl StableTrigger {
             let ratio = period / self.reference_period;
             let old_center = (self.reference.len() - 1) as f32 * 0.5;
             let new_center = len.saturating_sub(1) as f32 * 0.5;
-            self.reference = (0..len)
-                .map(|i| {
-                    let pos = old_center + (i as f32 - new_center) / ratio;
-                    sample_linear_zero(&self.reference, pos)
-                })
-                .collect();
+            self.work.clear();
+            self.work.extend((0..len).map(|i| {
+                let pos = old_center + (i as f32 - new_center) / ratio;
+                sample_linear_zero(&self.reference, pos)
+            }));
+            std::mem::swap(&mut self.reference, &mut self.work);
             self.reference_period = period;
         }
     }
@@ -646,24 +650,13 @@ impl OscilloscopeProcessor {
             .position(|&channel| channel == trigger_source);
         let separate_source = matching_trace.map_or(trigger_source, |_| Channel::None);
         let [channel_1, channel_2] = trace_channels;
-        let channels = [channel_1, channel_2, separate_source];
-        let incoming = block.frame_count();
-        for (buffer, &channel) in self.buffers.iter_mut().zip(&channels) {
+        for (buffer, channel) in
+            (self.buffers.iter_mut()).zip([channel_1, channel_2, separate_source])
+        {
             if channel != Channel::None {
-                buffer.reserve(incoming);
+                buffer.extend(block.projected_frames(channel));
+                buffer.drain(..buffer.len().saturating_sub(history_frames));
             }
-        }
-
-        for stereo in block.stereo_frames() {
-            for (buffer, &channel) in self.buffers.iter_mut().zip(&channels) {
-                if channel != Channel::None {
-                    buffer.push_back(channel.project(stereo));
-                }
-            }
-        }
-        for (buffer, &channel) in self.buffers.iter_mut().zip(&channels) {
-            let keep = history_frames * usize::from(channel != Channel::None);
-            buffer.drain(..buffer.len().saturating_sub(keep));
         }
 
         let linked_capture = if trigger_source == Channel::None {
@@ -784,7 +777,7 @@ fn downsample_trace(output: &mut Vec<f32>, data: &[f32], capture: Capture, targe
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::util::audio::sine_wave;
+    use crate::util::audio::{sine_wave, white_noise};
     use std::ops::Range;
 
     const SAMPLE_RATE: SampleRate = SampleRate::DEFAULT;
@@ -805,25 +798,12 @@ mod tests {
         (0..frames).map(|n| f(freq * n as f32 / rate)).collect()
     }
 
-    fn sine_samples(freq: f32, rate: f32, frames: usize) -> Vec<f32> {
-        periodic_samples(freq, rate, frames, |cycles| (TAU * cycles).sin())
-    }
-
     fn saw(cycles: f32) -> f32 {
         2.0 * cycles.fract() - 1.0
     }
 
     fn square(cycles: f32) -> f32 {
         if cycles.fract() < 0.5 { 1.0 } else { -1.0 }
-    }
-
-    fn noise_samples(frames: usize) -> Vec<f32> {
-        (0..frames)
-            .scan(1_u32, |seed, _| {
-                *seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                Some((*seed as f32 / u32::MAX as f32) * 2.0 - 1.0)
-            })
-            .collect()
     }
 
     fn feed_blocks(processor: &mut OscilloscopeProcessor, signal: &[f32], blocks: Range<usize>) {
@@ -937,7 +917,7 @@ mod tests {
             (1000.0, 256, 0.03),
         ] {
             let period = estimator
-                .estimate_period(&sine_samples(freq, RATE, frames), RATE)
+                .estimate_period(&sine_wave(freq, RATE, frames, 1.0), RATE)
                 .expect("period");
             let detected = RATE / period;
             let error = (detected - freq).abs() / freq;
@@ -961,15 +941,12 @@ mod tests {
             assert!((detected - freq).abs() / freq < 0.03);
         }
 
-        assert!(
-            estimator
-                .estimate_period(&noise_samples(long), RATE)
-                .is_none()
-        );
+        let noise = estimator.estimate_period(&white_noise(long), RATE);
+        assert_eq!(noise, Err(Miss::Aperiodic));
         let high_rate = 768_000.0;
         let mut trigger = StableTrigger::default();
         trigger.capture(
-            &sine_samples(20.0, high_rate, 76_800),
+            &sine_wave(20.0, high_rate, 76_800, 1.0),
             high_rate,
             76_800,
             960,
@@ -978,19 +955,18 @@ mod tests {
         );
         let detected = high_rate / trigger.period.unwrap();
         assert!((detected - 20.0).abs() < 0.001, "detected {detected}");
-        assert!(
-            estimator
-                .estimate_period(&vec![-0.904_308; 76_800], high_rate)
-                .is_none()
-        );
-        assert_eq!(estimator.last_peak, 0.0);
+        // The mean of a constant is exact, so no rounding passes for signal.
+        let constant = vec![-0.904_308; 76_800];
+        assert_eq!(mean_f32(&constant), constant[0]);
+        let quiet = estimator.estimate_period(&constant, high_rate);
+        assert_eq!(quiet, Err(Miss::Quiet));
     }
 
     #[test]
     fn stable_trigger_limits_phase_jitter() {
         let frames = BLOCK * 60;
         for (name, signal) in [
-            ("sine", sine_samples(440.0, RATE, frames)),
+            ("sine", sine_wave(440.0, RATE, frames, 1.0)),
             (
                 "biased_am",
                 periodic_samples(440.0, RATE, frames, |c| {
@@ -1106,7 +1082,7 @@ mod tests {
 
     #[test]
     fn zero_crossing_finds_edges_after_channel_projection() {
-        let mono = sine_samples(440.0, RATE, 4800);
+        let mono = sine_wave(440.0, RATE, 4800, 1.0);
         let inverted: Vec<f32> = mono.iter().flat_map(|&s| [s, -s]).collect();
         let block = AudioBlock::fallback(&inverted, 2, SAMPLE_RATE);
         for (channel, should_cross) in [(Channel::Mid, false), (Channel::Left, true)] {
@@ -1128,7 +1104,7 @@ mod tests {
             ..Default::default()
         };
         let mut processor = OscilloscopeProcessor::new(config);
-        let mono = sine_samples(440.0, RATE, (RATE * 0.1) as usize);
+        let mono = sine_wave(440.0, RATE, (RATE * 0.1) as usize, 1.0);
         let samples: Vec<_> = mono.into_iter().flat_map(|s| [s, s]).collect();
         let snap = processor
             .process_block(&AudioBlock::fallback(&samples, 2, SAMPLE_RATE))
@@ -1145,7 +1121,7 @@ mod tests {
     #[test]
     fn reset_clears_history_and_trigger_lock() {
         let mut processor = OscilloscopeProcessor::new(stable_config());
-        let signal = sine_samples(440.0, RATE, BLOCK * 20);
+        let signal = sine_wave(440.0, RATE, BLOCK * 20, 1.0);
         feed_blocks(&mut processor, &signal, 0..20);
         assert!(processor.last_cycle_rate().is_some());
 
@@ -1159,9 +1135,9 @@ mod tests {
 
     #[test]
     fn stable_lock_has_bounded_aperiodic_holdover() {
-        let mut signal = sine_samples(440.0, RATE, BLOCK * 20);
+        let mut signal = sine_wave(440.0, RATE, BLOCK * 20, 1.0);
         let noise_start = signal.len();
-        signal.extend(noise_samples(BLOCK * 20));
+        signal.extend(white_noise(BLOCK * 20));
 
         let releases = [BLOCK / 4, BLOCK].map(|block| {
             let mut processor = OscilloscopeProcessor::new(stable_config());
@@ -1196,7 +1172,7 @@ mod tests {
             channel_2: Channel::Right,
             ..stable_config()
         });
-        let mono = sine_samples(440.0, RATE, BLOCK * 20);
+        let mono = sine_wave(440.0, RATE, BLOCK * 20, 1.0);
         let stereo: Vec<f32> = mono.iter().flat_map(|&s| [s, -s]).collect();
         let mut snap = None;
         for chunk in stereo.chunks(BLOCK * 2) {
@@ -1214,7 +1190,7 @@ mod tests {
     #[test]
     fn lock_acquisition_and_cycle_rate_transitions() {
         let mut processor = OscilloscopeProcessor::new(stable_config());
-        let signal = sine_samples(440.0, RATE, BLOCK * 20);
+        let signal = sine_wave(440.0, RATE, BLOCK * 20, 1.0);
         assert_lock_within(
             &mut processor,
             &signal,
