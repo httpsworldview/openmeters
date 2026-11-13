@@ -4,14 +4,11 @@
 use crate::dsp::{AudioBlock, SampleRate};
 use crate::util::Finite;
 use crate::util::audio::{
-    Channel, DcHistory, FftSize, HopQueue, LN_TO_DB, NegativeDb, Seconds, WindowKind,
-    compute_fft_bin_normalization, copy_dc_removed_windowed, db_to_power, smoothing_weight,
+    Channel, DcHistory, FftSize, HopQueue, LN_TO_DB, NegativeDb, Seconds, WindowKind, WindowedFft,
+    db_to_power, smoothing_weight,
 };
-use realfft::{RealFftPlanner, RealToComplex};
-use rustfft::num_complex::Complex32;
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroUsize;
-use std::sync::Arc;
 
 const DEFAULT_SPECTRUM_DB_FLOOR: f32 = -120.0;
 
@@ -70,12 +67,7 @@ fn default_time_constant() -> Seconds {
 pub struct SpectrumProcessor {
     config: SpectrumConfig,
     snapshot: SpectrumSnapshot,
-    fft: Option<Arc<dyn RealToComplex<f32>>>,
-    window: Vec<f32>,
-    real_buffer: Vec<f32>,
-    spectrum_buffer: Vec<Complex32>,
-    scratch_buffer: Vec<Complex32>,
-    bin_normalization: Vec<f32>,
+    fft: Option<WindowedFft>,
     queues: [HopQueue; TRACE_COUNT],
     levels: [SpectrumLevelBuffers; TRACE_COUNT],
     a_weighting_db: Vec<f32>,
@@ -104,7 +96,7 @@ impl SpectrumProcessor {
         self.queues.iter_mut().for_each(HopQueue::clear);
     }
 
-    pub(in crate::visuals) fn prepare(&mut self) {
+    fn prepare(&mut self) {
         if self.fft.is_none() {
             self.rebuild_fft();
         }
@@ -116,13 +108,7 @@ impl SpectrumProcessor {
 
     fn rebuild_fft(&mut self) {
         let fft_size = self.config.fft_size.get();
-        let fft = RealFftPlanner::new().plan_fft_forward(fft_size);
-        self.window = self.config.window.coefficients(fft_size);
-        self.real_buffer.resize(fft_size, 0.0);
-        self.spectrum_buffer = fft.make_output_vec();
-        self.scratch_buffer = fft.make_scratch_vec();
-        self.fft = Some(fft);
-        self.bin_normalization = compute_fft_bin_normalization(&self.window, fft_size);
+        self.fft = Some(WindowedFft::new(self.config.window, fft_size, fft_size));
         self.queues = std::array::from_fn(|_| HopQueue::new(DcHistory::new(fft_size)));
         self.reset_buffers();
     }
@@ -206,36 +192,11 @@ impl SpectrumProcessor {
     }
 
     fn process_trace_window(&mut self, trace: usize, dt_seconds: f32, floor: f32) {
-        let (samples, dc) = self.queues[trace].window(self.window.len());
-        copy_dc_removed_windowed(&mut self.real_buffer, samples, &self.window, dc);
-        self.fft
-            .as_ref()
-            .expect("spectrum FFT")
-            .process_with_scratch(
-                &mut self.real_buffer,
-                &mut self.spectrum_buffer,
-                &mut self.scratch_buffer,
-            )
-            .expect("internally sized spectrum FFT buffers");
-
-        let level = &mut self.levels[trace];
-        let snapshot = &mut self.snapshot.traces[trace];
-        let powers = &mut self.real_buffer[..self.spectrum_buffer.len()];
-        for ((power, complex), norm) in powers
-            .iter_mut()
-            .zip(&self.spectrum_buffer)
-            .zip(&self.bin_normalization)
-        {
-            let re = f64::from(complex.re);
-            let im = f64::from(complex.im);
-            let normalized = (re * re + im * im) * f64::from(*norm);
-            // Saturate overflow and invalid FFT bins before they can poison smoothing.
-            *power = normalized.min(f64::from(f32::MAX)) as f32;
-        }
-        level.update_outputs(
+        let fft = self.fft.as_mut().expect("spectrum FFT prepared");
+        self.levels[trace].update_outputs(
             self.config.averaging,
-            powers,
-            snapshot,
+            fft.powers(&mut self.queues[trace]),
+            &mut self.snapshot.traces[trace],
             &self.a_weighting_db,
             dt_seconds,
             floor,

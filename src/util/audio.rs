@@ -10,9 +10,7 @@ mod window;
 pub use self::{
     frequency::{DISPLAY_MIN_HZ, FrequencyScale},
     level::{DB_FLOOR, LN_TO_DB, db_to_power, power_to_db},
-    window::{
-        DcHistory, HopQueue, WindowKind, compute_fft_bin_normalization, copy_dc_removed_windowed,
-    },
+    window::{DcHistory, HopQueue, WindowKind, WindowedFft, dc_power_scale},
 };
 pub(crate) use self::{
     level::{flush_denormal_f32, flush_denormal_f64},
@@ -84,5 +82,15 @@ pub fn fmt_duration(seconds: f32) -> String {
 pub fn sine_wave(frequency: f32, sample_rate: f32, count: usize, amplitude: f32) -> Vec<f32> {
     (0..count)
         .map(|i| (core::f32::consts::TAU * frequency * i as f32 / sample_rate).sin() * amplitude)
+        .collect()
+}
+
+#[cfg(test)]
+pub fn white_noise(count: usize) -> Vec<f32> {
+    (0..count)
+        .scan(1_u32, |seed, _| {
+            *seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            Some((*seed as f32 / u32::MAX as f32) * 2.0 - 1.0)
+        })
         .collect()
 }

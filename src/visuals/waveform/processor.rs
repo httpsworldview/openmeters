@@ -146,7 +146,7 @@ impl WaveformProcessor {
         self.config
     }
 
-    pub(in crate::visuals) fn prepare(&mut self) {
+    fn prepare(&mut self) {
         if self.band_analysis.is_none() {
             self.band_analysis = Self::band_analysis(self.config);
         }

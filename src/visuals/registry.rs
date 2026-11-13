@@ -21,7 +21,6 @@ macro_rules! visuals {
     ($($variant:ident($default_width_basis:expr, $min_w:expr) =>
        $module:ident :: $processor:ident, $state:ident;
        $(palette_ramp($positions:ident, $spreads:ident);)?
-       $(prepare($prepare:ident);)?
        $(discard($discard:ident);)?
        $(ignores_audio($ignores:ident);)?
        $(buffered_signal($buffered_signal:ident);)?
@@ -106,10 +105,6 @@ macro_rules! visuals {
                 (!self.pending_audio $(|| state.$ignores())?) && state.is_quiescent()
             }
 
-            fn prepare(&mut self) {
-                $(self.processor.$prepare();)?
-            }
-
             fn apply(&mut self, config: &VisualConfig) {
                 let VisualConfig::$variant($aset) = config else {
                     unreachable!("config routed to the wrong visual");
@@ -142,7 +137,6 @@ visuals! {
     Spectrogram(320.0, 300.0) =>
         spectrogram::SpectrogramProcessor, SpectrogramState;
         palette_ramp(stop_positions, stop_spreads);
-        prepare(prepare);
         buffered_signal(has_buffered_signal);
         pre_ingest(p, s) {
             let (mut cfg, width) = (p.config(), s.borrow().view_width as usize);
@@ -156,7 +150,6 @@ visuals! {
     Spectrum(400.0, 100.0) =>
         spectrum::SpectrumProcessor, SpectrumState;
         palette_ramp(stop_positions, stop_spreads);
-        prepare(prepare);
         ignores_audio(ignores_audio);
         buffered_signal(has_buffered_signal);
         config(cfg);
@@ -166,7 +159,6 @@ visuals! {
 
     Waveform(220.0, 220.0) =>
         waveform::WaveformProcessor, WaveformState;
-        prepare(prepare);
         pre_ingest(p, s) {
             let mut cfg = p.config();
             if set_if_changed(&mut cfg.max_columns, s.borrow().view_columns()) {
@@ -214,7 +206,6 @@ trait VisualModule {
     fn reset_audio(&mut self);
     fn discard_audio(&mut self);
     fn is_quiescent(&self) -> bool;
-    fn prepare(&mut self);
     fn apply(&mut self, config: &VisualConfig);
     fn apply_palette(&mut self, palette: Option<&PaletteSettings>);
 }
@@ -224,20 +215,10 @@ struct Entry {
     module: Box<dyn VisualModule>,
 }
 impl Entry {
-    fn apply_config(&mut self, config: VisualConfig) {
-        self.module.apply(&config);
-        if self.slot.enabled {
-            self.module.prepare();
-        }
-    }
-
     // Disabled visuals hold no audio, nor the GPU history tied to it.
     fn set_enabled(&mut self, enabled: bool) {
-        if std::mem::replace(&mut self.slot.enabled, enabled) != enabled {
+        if set_if_changed(&mut self.slot.enabled, enabled) {
             self.module.discard_audio();
-            if enabled {
-                self.module.prepare();
-            }
         }
     }
 }
@@ -282,7 +263,7 @@ impl VisualManager {
     #[cfg(test)]
     pub fn apply_config(&mut self, config: VisualConfig) {
         let index = self.position(config.kind());
-        self.entries[index].apply_config(config);
+        self.entries[index].module.apply(&config);
     }
     #[cfg(test)]
     pub fn set_enabled(&mut self, kind: VisualKind, enabled: bool) {
@@ -317,7 +298,7 @@ impl VisualManager {
             let kind = entry.slot.kind();
             let config = settings.config(kind);
             if previous.is_none_or(|previous| previous.config(kind) != config) {
-                entry.apply_config(config);
+                entry.module.apply(&config);
             }
             entry.set_enabled(settings.is_enabled(kind));
             entry.slot.width_basis = (settings.width_basis.get(&kind).copied())

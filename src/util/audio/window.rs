@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use std::collections::VecDeque;
+use realfft::{RealFftPlanner, RealToComplex, num_complex::Complex32};
+use std::{collections::VecDeque, sync::Arc};
 
 crate::macros::choice_enum!(pub enum WindowKind {
     Rectangular => "Rectangular",
@@ -86,7 +87,7 @@ pub(crate) fn mean_f32(samples: &[f32]) -> f32 {
 
 // A window's own weighted mean zeroes its DC bin but also takes tones in its main lobe, so
 // callers with a longer view of the stream pass their own estimate.
-pub fn copy_dc_removed_windowed(dst: &mut [f32], src: &[f32], window: &[f32], dc: Option<f32>) {
+fn copy_dc_removed_windowed(dst: &mut [f32], src: &[f32], window: &[f32], dc: Option<f32>) {
     for ((sample, &source), &weight) in dst.iter_mut().zip(src).zip(window) {
         *sample = source * weight;
     }
@@ -114,12 +115,12 @@ pub(crate) fn weighted_mean(weights: &[f32], samples: &[f32]) -> f32 {
 }
 
 pub(crate) fn normalized_blackman_harris(len: usize) -> Vec<f32> {
-    let weights = WindowKind::BlackmanHarris.coefficients(len);
+    let mut weights = WindowKind::BlackmanHarris.coefficients(len);
     let sum: f64 = weights.iter().map(|&weight| f64::from(weight)).sum();
+    for weight in &mut weights {
+        *weight = (f64::from(*weight) / sum) as f32;
+    }
     weights
-        .iter()
-        .map(|&weight| (f64::from(weight) / sum) as f32)
-        .collect()
 }
 
 // Up to three windows of samples a spectrum has moved past. A Blackman-Harris mean over four
@@ -253,16 +254,79 @@ impl HopQueue {
     }
 }
 
-pub fn compute_fft_bin_normalization(window: &[f32], fft_size: usize) -> Vec<f32> {
-    let bins = fft_size / 2 + 1;
+// Scales a windowed transform's |X|^2 so that a constant of one reads one at DC.
+pub fn dc_power_scale(window: &[f32]) -> f32 {
     let sum: f64 = window.iter().map(|&weight| f64::from(weight)).sum();
-    let dc_scale = sum.recip().powi(2) as f32;
+    sum.recip().powi(2) as f32
+}
+
+fn fft_bin_normalization(window: &[f32], fft_size: usize) -> Vec<f32> {
+    let bins = fft_size / 2 + 1;
+    let dc_scale = dc_power_scale(window);
     let mut norms = vec![4.0 * dc_scale; bins];
     norms[0] = dc_scale;
     if fft_size.is_multiple_of(2) {
         norms[bins - 1] = dc_scale;
     }
     norms
+}
+
+// Normalized bin powers of DC-removed, windowed audio. A transform longer than the window
+// zero-pads it.
+pub struct WindowedFft {
+    fft: Arc<dyn RealToComplex<f32>>,
+    window: Vec<f32>,
+    // The transform's input, and then its powers.
+    buffer: Vec<f32>,
+    spectrum: Vec<Complex32>,
+    scratch: Vec<Complex32>,
+    normalization: Vec<f32>,
+}
+
+impl WindowedFft {
+    pub fn new(kind: WindowKind, window_len: usize, fft_len: usize) -> Self {
+        let fft = RealFftPlanner::new().plan_fft_forward(fft_len);
+        let window = kind.coefficients(window_len);
+        Self {
+            normalization: fft_bin_normalization(&window, fft_len),
+            window,
+            buffer: fft.make_input_vec(),
+            spectrum: fft.make_output_vec(),
+            scratch: fft.make_scratch_vec(),
+            fft,
+        }
+    }
+
+    pub fn fft_len(&self) -> usize {
+        self.buffer.len()
+    }
+
+    pub fn bins(&self) -> usize {
+        self.spectrum.len()
+    }
+
+    // One power per bin for the oldest window in `queue`.
+    pub fn powers(&mut self, queue: &mut HopQueue) -> &mut [f32] {
+        let (samples, dc) = queue.window(self.window.len());
+        let (windowed, padding) = self.buffer.split_at_mut(self.window.len());
+        copy_dc_removed_windowed(windowed, samples, &self.window, dc);
+        padding.fill(0.0);
+        self.fft
+            .process_with_scratch(&mut self.buffer, &mut self.spectrum, &mut self.scratch)
+            .expect("internally sized FFT buffers");
+
+        let powers = &mut self.buffer[..self.spectrum.len()];
+        for ((power, bin), norm) in powers
+            .iter_mut()
+            .zip(&self.spectrum)
+            .zip(&self.normalization)
+        {
+            let (re, im) = (f64::from(bin.re), f64::from(bin.im));
+            // Saturate overflow and invalid bins before they can poison what consumes them.
+            *power = ((re * re + im * im) * f64::from(*norm)).min(f64::from(f32::MAX)) as f32;
+        }
+        powers
+    }
 }
 
 #[cfg(test)]
