@@ -18,8 +18,8 @@ const FLOOR_RANGE: SliderRange = SliderRange::new(-96.0, -12.0, 1.0);
 fn configure_palette_for_mode(palette: &mut PaletteEditor, mode: WaveformColorMode) {
     palette.set_only_first_visible(mode == WaveformColorMode::Static);
     palette.set_label_overrides(match mode {
-        WaveformColorMode::Static => &[(0, "Color")],
-        WaveformColorMode::Loudness => &[(0, "Quiet"), (1, "->"), (2, "Loud")],
+        WaveformColorMode::Static => &["Color"],
+        WaveformColorMode::Loudness => &["Quiet", "->", "Loud"],
         WaveformColorMode::Frequency => &[],
     });
 }

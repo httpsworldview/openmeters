@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Maika Namuo
 
 use crate::domain::visuals::VisualKind;
-use crate::util::color::palettes_equal;
 use iced::Color;
 
 pub const BG_BASE: Color = Color::BLACK;
@@ -16,8 +15,8 @@ const HEAT_RAMP: [Color; 5] = [
 ];
 const HEAT_POSITIONS: [f32; 5] = [0.0, 0.402_523_83, 0.679_189_3, 0.869_322_26, 1.0];
 
+#[derive(Clone, Copy)]
 pub struct Palette {
-    colors: Vec<Color>,
     pub defaults: &'static [Color],
     /// Stop positions of the ramp that the leading colors form; empty without one.
     pub default_positions: &'static [f32],
@@ -31,30 +30,10 @@ impl Palette {
         labels: &'static [&'static str],
     ) -> Self {
         Self {
-            colors: Vec::new(),
             defaults,
             default_positions,
             labels,
         }
-    }
-
-    pub fn colors(&self) -> &[Color] {
-        if self.colors.is_empty() {
-            self.defaults
-        } else {
-            &self.colors
-        }
-    }
-
-    pub fn set_colors(&mut self, colors: &[Color]) {
-        self.colors.clear();
-        if colors.len() == self.defaults.len() && !palettes_equal(colors, self.defaults) {
-            self.colors.extend_from_slice(colors);
-        }
-    }
-
-    pub fn reset(&mut self) {
-        self.colors.clear();
     }
 
     pub const fn for_kind(kind: VisualKind) -> Self {

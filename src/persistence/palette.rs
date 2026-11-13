@@ -61,7 +61,31 @@ pub struct PaletteSettings(StoredPalette);
 
 impl PaletteSettings {
     pub(super) fn decode(value: Value, palette: &Palette, scope: &str) -> Option<Self> {
-        lossy::value(value, scope).map(|stored| Self::fit(stored, palette))
+        lossy::value(value, scope).map(|stored: StoredPalette| {
+            Self::fit(
+                stored.stops,
+                stored.stop_positions.as_deref(),
+                stored.stop_spreads.as_deref(),
+                palette,
+            )
+        })
+    }
+
+    // Whether the colors, stop positions and stop spreads each differ from the defaults.
+    fn differences(
+        palette: &Palette,
+        colors: &[Color],
+        positions: &[f32],
+        spreads: &[f32],
+    ) -> [bool; 3] {
+        [
+            !palettes_equal(colors, palette.defaults),
+            positions
+                .iter()
+                .zip(palette.default_positions)
+                .any(|(a, b)| (a - b).abs() > EPSILON),
+            spreads.iter().any(|s| (*s - 1.0).abs() > EPSILON),
+        ]
     }
 
     // None while everything matches the defaults.
@@ -71,38 +95,45 @@ impl PaletteSettings {
         positions: &[f32],
         spreads: &[f32],
     ) -> Option<Self> {
-        let stops = (!palettes_equal(colors, palette.defaults))
-            .then(|| colors.iter().copied().map(Into::into).collect());
-        let positions_differ = positions
-            .iter()
-            .zip(palette.default_positions)
-            .any(|(a, b)| (a - b).abs() > EPSILON);
-        let spreads_differ = spreads.iter().any(|s| (*s - 1.0).abs() > EPSILON);
-
-        (stops.is_some() || positions_differ || spreads_differ).then(|| {
-            let stored = StoredPalette {
-                stops: stops.unwrap_or_default(),
-                stop_positions: positions_differ.then(|| positions.to_vec()),
-                stop_spreads: spreads_differ.then(|| spreads.to_vec()),
+        let [colors_differ, positions_differ, spreads_differ] =
+            Self::differences(palette, colors, positions, spreads);
+        (colors_differ || positions_differ || spreads_differ).then(|| {
+            let stops = if colors_differ {
+                colors.iter().copied().map(Into::into).collect()
+            } else {
+                Vec::new()
             };
-            Self::fit(stored, palette)
+            Self::fit(
+                stops,
+                positions_differ.then_some(positions),
+                spreads_differ.then_some(spreads),
+                palette,
+            )
         })
     }
 
-    fn fit(mut stored: StoredPalette, palette: &Palette) -> Self {
-        if let Some(&last) = stored.stops.last() {
-            stored.stops.resize(palette.defaults.len(), last);
+    fn fit(
+        mut stops: Vec<ColorSetting>,
+        positions: Option<&[f32]>,
+        spreads: Option<&[f32]>,
+        palette: &Palette,
+    ) -> Self {
+        if let Some(&last) = stops.last() {
+            stops.resize(palette.defaults.len(), last);
         }
         let (ramp, count) = (palette.default_positions, palette.default_positions.len());
-        stored.stop_positions = stored
-            .stop_positions
-            .filter(|_| count > 2)
-            .map(|raw| sanitize_stop_positions(&raw, ramp)[1..count - 1].to_vec());
-        stored.stop_spreads = stored
-            .stop_spreads
-            .filter(|_| count > 0)
-            .map(|raw| sanitize_stop_spreads(&raw, count));
-        Self(stored)
+        Self(StoredPalette {
+            stops,
+            stop_positions: positions.filter(|_| count > 2).map(|raw| {
+                let mut interior = sanitize_stop_positions(raw, ramp);
+                interior.pop();
+                interior.remove(0);
+                interior
+            }),
+            stop_spreads: spreads
+                .filter(|_| count > 0)
+                .map(|raw| sanitize_stop_spreads(raw, count)),
+        })
     }
 
     pub fn stops(&self) -> impl Iterator<Item = Color> + '_ {
@@ -118,16 +149,25 @@ impl PaletteSettings {
         }
     }
 
-    pub fn positions(palette: Option<&Self>, defaults: &[f32]) -> Vec<f32> {
+    /// Fills `out`, which is as long as `defaults`.
+    pub fn write_positions(palette: Option<&Self>, defaults: &[f32], out: &mut [f32]) {
         match palette.and_then(|Self(stored)| stored.stop_positions.as_deref()) {
-            Some(interior) => [&[0.0], interior, &[1.0]].concat(),
-            None => defaults.to_vec(),
+            Some(interior) => {
+                let end = out.len() - 1;
+                out[0] = 0.0;
+                out[1..end].copy_from_slice(interior);
+                out[end] = 1.0;
+            }
+            None => out.copy_from_slice(defaults),
         }
     }
 
-    pub fn spreads(palette: Option<&Self>, count: usize) -> Vec<f32> {
-        let spreads = palette.and_then(|Self(stored)| stored.stop_spreads.clone());
-        spreads.unwrap_or_else(|| vec![1.0; count])
+    /// Fills `out`, which holds one spread per stop.
+    pub fn write_spreads(palette: Option<&Self>, out: &mut [f32]) {
+        match palette.and_then(|Self(stored)| stored.stop_spreads.as_deref()) {
+            Some(spreads) => out.copy_from_slice(spreads),
+            None => out.fill(1.0),
+        }
     }
 }
 
@@ -166,13 +206,10 @@ mod tests {
             PaletteSettings::colors(Some(&decoded), &DEFAULTS),
             [stops[0]; 4]
         );
-        assert_eq!(
-            PaletteSettings::positions(Some(&decoded), &RAMP),
-            [0.0, 0.25, 0.5, 1.0]
-        );
-        assert_eq!(
-            PaletteSettings::spreads(Some(&decoded), 4),
-            [2.0, 1.0, 1.0, 1.0]
-        );
+        let (mut positions, mut spreads) = ([f32::NAN; 4], [f32::NAN; 4]);
+        PaletteSettings::write_positions(Some(&decoded), &RAMP, &mut positions);
+        PaletteSettings::write_spreads(Some(&decoded), &mut spreads);
+        assert_eq!(positions, [0.0, 0.25, 0.5, 1.0]);
+        assert_eq!(spreads, [2.0, 1.0, 1.0, 1.0]);
     }
 }

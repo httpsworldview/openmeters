@@ -97,14 +97,8 @@ pub fn rgba_scale_alpha(color: [f32; 4], factor: f32) -> [f32; 4] {
     ]
 }
 
-pub fn sample_rgba_gradient(palette: &[[f32; 4]], t: f32) -> [f32; 4] {
-    if palette.len() < 2 {
-        return palette.first().copied().unwrap_or([0.0; 4]);
-    }
-    let pos = t.clamp(0.0, 1.0) * (palette.len() - 1) as f32;
-    let i = (pos as usize).min(palette.len() - 2);
-    let [a, b] = [palette[i], palette[i + 1]];
-    std::array::from_fn(|ch| lerp(a[ch], b[ch], pos - i as f32))
+pub fn lerp_rgba(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
+    std::array::from_fn(|channel| lerp(a[channel], b[channel], t))
 }
 
 /// The ramp stops around `t` and the blend between them.

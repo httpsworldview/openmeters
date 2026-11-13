@@ -88,7 +88,7 @@ impl SpectrumState {
         self.apply_snapshot(snapshot);
     }
 
-    crate::visuals::palette_setter!(PALETTE_SIZE => geometry);
+    crate::visuals::palette_setter!(spectrum, ramp => geometry);
 
     fn turn(&self) -> QuarterTurn {
         QuarterTurn::new(self.style.rotation)

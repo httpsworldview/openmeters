@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::{loudness, oscilloscope, palettes, spectrogram, spectrum, stereometer, waveform};
+use super::{loudness, oscilloscope, spectrogram, spectrum, stereometer, waveform};
 pub use crate::domain::visuals::VisualKind;
 use crate::{
     dsp::{AudioBlock, AudioFormat},
@@ -20,7 +20,6 @@ macro_rules! visuals {
     (@apply $state:ident, $settings:ident, $body:block) => { $body };
     ($($variant:ident($default_width_basis:expr, $min_w:expr) =>
        $module:ident :: $processor:ident, $state:ident;
-       $(palette_ramp($positions:ident, $spreads:ident);)?
        $(discard($discard:ident);)?
        $(ignores_audio($ignores:ident);)?
        $(buffered_signal($buffered_signal:ident);)?
@@ -121,13 +120,7 @@ macro_rules! visuals {
             }
 
             fn apply_palette(&mut self, palette: Option<&PaletteSettings>) {
-                let mut state = self.state.borrow_mut();
-                state.set_palette(&PaletteSettings::colors(palette, &palettes::$module::COLORS));
-                $(
-                    let ramp = &palettes::$module::DEFAULT_POSITIONS;
-                    state.$positions.copy_from_slice(&PaletteSettings::positions(palette, ramp));
-                    state.$spreads.copy_from_slice(&PaletteSettings::spreads(palette, ramp.len()));
-                )?
+                self.state.borrow_mut().set_palette(palette);
             }
         })*
     };
@@ -136,7 +129,6 @@ macro_rules! visuals {
 visuals! {
     Spectrogram(320.0, 300.0) =>
         spectrogram::SpectrogramProcessor, SpectrogramState;
-        palette_ramp(stop_positions, stop_spreads);
         buffered_signal(has_buffered_signal);
         pre_ingest(p, s) {
             let (mut cfg, width) = (p.config(), s.borrow().view_width as usize);
@@ -149,7 +141,6 @@ visuals! {
 
     Spectrum(400.0, 100.0) =>
         spectrum::SpectrumProcessor, SpectrumState;
-        palette_ramp(stop_positions, stop_spreads);
         ignores_audio(ignores_audio);
         buffered_signal(has_buffered_signal);
         config(cfg);

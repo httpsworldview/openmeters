@@ -4,7 +4,7 @@
 use iced::Rectangle;
 use std::sync::Arc;
 
-use crate::util::color::{ramp_segment, rgba_scale_alpha};
+use crate::util::color::{lerp_rgba, ramp_segment, rgba_scale_alpha};
 use crate::util::lerp;
 use crate::visuals::options::SpectrumDisplayMode;
 use crate::visuals::palettes::spectrum::DEFAULT_POSITIONS;
@@ -190,9 +190,8 @@ impl SpectrumParams {
     }
 
     fn ramp_color(&self, amp: f32) -> [f32; 4] {
-        let (lo, hi, f) = ramp_segment(&self.stop_positions, &self.stop_spreads, amp);
-        let [a, b] = [self.ramp[lo], self.ramp[hi]];
-        std::array::from_fn(|ch| lerp(a[ch], b[ch], f))
+        let (lo, hi, blend) = ramp_segment(&self.stop_positions, &self.stop_spreads, amp);
+        lerp_rgba(self.ramp[lo], self.ramp[hi], blend)
     }
 }
 

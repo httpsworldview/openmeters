@@ -47,10 +47,26 @@ macro_rules! visualization_widget {
 
 pub(in crate::visuals) use visualization_widget;
 
+// `set_palette` from the stored palette, or the defaults in `palettes::$module`. `ramp` also
+// sets the stops of the ramp its leading colors form.
 macro_rules! palette_setter {
-    ($size:expr $(=> $($geometry:ident),+)?) => {
-        pub fn set_palette(&mut self, palette: &[iced::Color; $size]) {
-            self.palette = *palette;
+    (@ramp ramp, $state:ident, $palette:ident) => {
+        PaletteSettings::write_positions(
+            $palette,
+            &defaults::DEFAULT_POSITIONS,
+            &mut $state.stop_positions,
+        );
+        PaletteSettings::write_spreads($palette, &mut $state.stop_spreads);
+    };
+    ($module:ident $(, $ramp:ident)? $(=> $($geometry:ident),+)?) => {
+        pub(in crate::visuals) fn set_palette(
+            &mut self,
+            palette: Option<&$crate::persistence::settings::PaletteSettings>,
+        ) {
+            use $crate::persistence::settings::PaletteSettings;
+            use $crate::visuals::palettes::$module as defaults;
+            self.palette = PaletteSettings::colors(palette, &defaults::COLORS);
+            $($crate::visuals::palette_setter!(@ramp $ramp, self, palette);)?
             $($(self.$geometry.invalidate();)+)?
         }
     };

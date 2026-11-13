@@ -50,7 +50,7 @@ impl StereometerState {
         self.grid.invalidate();
     }
 
-    crate::visuals::palette_setter!(PALETTE_SIZE => geometry, grid);
+    crate::visuals::palette_setter!(stereometer => geometry, grid);
 
     pub fn reset_audio(&mut self) {
         self.points = Default::default();

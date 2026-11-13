@@ -184,7 +184,7 @@ crate::macros::default_struct! {
 }
 
 impl SpectrogramState {
-    crate::visuals::palette_setter!(SPECTROGRAM_PALETTE_SIZE);
+    crate::visuals::palette_setter!(spectrogram, ramp);
 
     pub fn update_view_settings(&mut self, settings: &SpectrogramSettings) {
         self.settings = settings.clone();

@@ -100,7 +100,7 @@ impl WaveformState {
         self.settings = settings.clone();
     }
 
-    crate::visuals::palette_setter!(BAND_COUNT);
+    crate::visuals::palette_setter!(waveform);
 
     pub fn visual_params(
         &self,

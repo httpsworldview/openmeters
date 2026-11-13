@@ -102,6 +102,7 @@ macro_rules! settings_modules {
                         }
                         if let Some(change) = change {
                             let palette = pane.palette.settings();
+                            let palette = palette.as_ref();
                             show_palette(VisualKind::$variant, palette, change, manager, settings);
                         }
                     })+
@@ -131,15 +132,15 @@ fn load_palette(kind: VisualKind, stored: Option<&PaletteSettings>) -> PaletteEd
 
 fn show_palette(
     kind: VisualKind,
-    palette: Option<PaletteSettings>,
+    palette: Option<&PaletteSettings>,
     change: PaletteChange,
     manager: &VisualManagerHandle,
     settings: &SettingsHandle,
 ) {
-    manager.borrow_mut().apply_palette(kind, palette.as_ref());
+    manager.borrow_mut().apply_palette(kind, palette);
     if change == PaletteChange::Save {
         settings.edit_theme(|theme| {
-            match &palette {
+            match palette {
                 Some(palette) => theme.palettes.insert(kind, palette.clone()),
                 None => theme.palettes.remove(&kind),
             };

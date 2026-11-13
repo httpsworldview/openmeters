@@ -157,7 +157,7 @@ impl LoudnessState {
         self.refresh();
     }
 
-    crate::visuals::palette_setter!(PALETTE_SIZE => geometry);
+    crate::visuals::palette_setter!(loudness => geometry);
 
     fn visual_params(&self, bounds: Rectangle) -> LoudnessParams {
         let meters = self.visible_meters();

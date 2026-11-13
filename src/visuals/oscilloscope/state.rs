@@ -37,7 +37,7 @@ impl OscilloscopeState {
         self.geometry.invalidate();
     }
 
-    crate::visuals::palette_setter!(TRACE_COUNT => geometry);
+    crate::visuals::palette_setter!(oscilloscope => geometry);
 
     pub fn apply_snapshot(&mut self, mut snapshot: OscilloscopeSnapshot) {
         self.geometry.invalidate();

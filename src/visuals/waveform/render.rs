@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::util::{
     audio::{DB_FLOOR, power_to_db},
-    color::{rgba_scale_alpha, sample_rgba_gradient},
+    color::{lerp_rgba, ramp_segment, rgba_scale_alpha},
 };
 use crate::visuals::options::{WaveformColorMode, WaveformHistoryMode};
 use crate::visuals::render::common::sdf_primitive;
@@ -25,6 +25,8 @@ const BAND_LINE_WIDTH: f32 = 1.5;
 const BAND_FILL_ALPHA: f32 = 0.15;
 const MIN_COLUMN_HEIGHT_PIXELS: f32 = 1.0;
 const LOUDNESS_QUIET_DB: f32 = -36.0;
+// Where the palette's colors sit between quiet and full scale.
+const LOUDNESS_STOPS: [f32; BAND_COUNT] = [0.0, 0.5, 1.0];
 
 #[derive(Debug)]
 pub struct WaveformParams {
@@ -47,7 +49,8 @@ impl WaveformParams {
                 let peak = column.min.abs().max(column.max.abs());
                 let db = power_to_db(peak * peak, DB_FLOOR);
                 let t = crate::util::finite_or((db - LOUDNESS_QUIET_DB) / -LOUDNESS_QUIET_DB, 0.0);
-                sample_rgba_gradient(&self.palette, t)
+                let (lo, hi, blend) = ramp_segment(&LOUDNESS_STOPS, &[1.0; BAND_COUNT], t);
+                lerp_rgba(self.palette[lo], self.palette[hi], blend)
             }
             WaveformColorMode::Static => self.palette[0],
         }

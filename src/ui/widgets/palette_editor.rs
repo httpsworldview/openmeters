@@ -76,18 +76,21 @@ struct Selection {
 
 pub struct PaletteEditor {
     palette: Palette,
+    colors: Vec<Color>,
     positions: Vec<f32>,
     spreads: Vec<f32>,
     active: Option<Selection>,
     saved: Option<PaletteSettings>,
     only_first_visible: bool,
-    label_overrides: &'static [(usize, &'static str)],
+    // Labels shown in place of the palette's leading ones.
+    label_overrides: &'static [&'static str],
     scroll: ScrollGlow,
 }
 
 impl PaletteEditor {
     pub fn new(palette: Palette) -> Self {
         Self {
+            colors: palette.defaults.to_vec(),
             positions: palette.default_positions.to_vec(),
             spreads: vec![1.0; palette.default_positions.len()],
             palette,
@@ -108,56 +111,120 @@ impl PaletteEditor {
         self.active.as_ref().map(|active| active.index)
     }
 
-    pub fn set_label_overrides(&mut self, overrides: &'static [(usize, &'static str)]) {
+    pub fn set_label_overrides(&mut self, overrides: &'static [&'static str]) {
         self.label_overrides = overrides;
     }
 
     fn label_for(&self, index: usize) -> &'static str {
-        self.label_overrides
-            .iter()
-            .find_map(|&(i, label)| (i == index).then_some(label))
-            .unwrap_or(self.palette.labels[index])
+        let overridden = self.label_overrides.get(index);
+        overridden.unwrap_or(&self.palette.labels[index])
     }
 
     pub fn load(&mut self, stored: &PaletteSettings) {
-        self.positions = PaletteSettings::positions(Some(stored), self.palette.default_positions);
-        self.spreads = PaletteSettings::spreads(Some(stored), self.positions.len());
-        self.set_colors(&stored.stops().collect::<Vec<_>>());
+        let ramp = self.palette.default_positions;
+        PaletteSettings::write_positions(Some(stored), ramp, &mut self.positions);
+        PaletteSettings::write_spreads(Some(stored), &mut self.spreads);
+        self.set_colors(stored.stops());
+    }
+
+    pub fn is_default(&self) -> bool {
+        self.settings().is_none()
     }
 
     /// The stored form, or `None` while everything is default.
     pub fn settings(&self) -> Option<PaletteSettings> {
-        PaletteSettings::from_state(
-            &self.palette,
-            self.palette.colors(),
-            &self.positions,
-            &self.spreads,
-        )
+        PaletteSettings::from_state(&self.palette, &self.colors, &self.positions, &self.spreads)
     }
 
-    /// Replaces the colors with saved ones.
-    pub fn set_colors(&mut self, colors: &[Color]) {
-        self.palette.set_colors(colors);
+    /// Replaces the colors with saved ones; anything but a full set gives the defaults.
+    pub fn set_colors(&mut self, colors: impl IntoIterator<Item = Color>) {
+        self.colors.clear();
+        self.colors.extend(colors);
+        if self.colors.len() != self.palette.defaults.len() {
+            self.colors.clear();
+            self.colors.extend_from_slice(self.palette.defaults);
+        }
         self.saved = self.settings();
         if let Some(active) = &mut self.active {
             active.hex_draft = None;
-            active.hsv = to_hsv(self.palette.colors()[active.index], active.hsv);
+            active.hsv = to_hsv(self.colors[active.index], active.hsv);
         }
     }
 
     pub fn update(&mut self, event: PaletteEvent) -> Option<PaletteChange> {
-        use PaletteEvent::*;
+        // An event that ends a drag saves what the drag changed.
         let ends_drag = match event {
-            Adjust(_) | AdjustPosition { .. } => {
-                self.apply(event);
+            PaletteEvent::Select(index) => {
+                self.active = index.map(|index| Selection {
+                    index,
+                    hex_draft: None,
+                    hsv: to_hsv(self.colors[index], [0.0; 3]),
+                });
+                false
+            }
+            PaletteEvent::EditHex(value) => {
+                if let Some(active) = &mut self.active {
+                    active.hex_draft = value;
+                }
+                false
+            }
+            PaletteEvent::HorizontalScroll(event) => {
+                self.scroll.update(event);
+                false
+            }
+            PaletteEvent::Commit | PaletteEvent::ApplyHex => {
+                let draft = self.draft_color();
+                if let Some(color) = draft {
+                    self.set_color(color, None);
+                }
+                // Blurring the hex input by starting a drag must not end it.
+                draft.is_some() || matches!(event, PaletteEvent::Commit)
+            }
+            PaletteEvent::Adjust(edit) => {
+                if let Some(active) = &self.active {
+                    // Controls can change before or without blurring the hex input.
+                    let (base, hsv) = match self.draft_color() {
+                        Some(draft) => (draft, to_hsv(draft, active.hsv)),
+                        None => (self.colors[active.index], active.hsv),
+                    };
+                    let [h, s, v] = hsv;
+                    let (color, hsv) = match edit {
+                        HsvEdit::SatVal(s, v) => (from_hsv([h, s, v], base.a), [h, s, v]),
+                        HsvEdit::Hue(h) => (from_hsv([h, s, v], base.a), [h, s, v]),
+                        // Opacity edits skip the lossy HSV round trip.
+                        HsvEdit::Alpha(a) => (with_alpha(base, a), hsv),
+                    };
+                    self.set_color(color, Some(hsv));
+                }
                 return Some(PaletteChange::Preview);
             }
-            Select(_) | EditHex(_) | HorizontalScroll(_) => false,
-            // Blurring the hex input by starting a drag must not end it.
-            ApplyHex => self.draft_color().is_some(),
-            Commit | ResetColor | AdjustSpread { .. } | Reset => true,
+            PaletteEvent::AdjustPosition { index, position } => {
+                let lo = (self.positions[index - 1] + MIN_STOP_GAP).max(MIN_STOP_GAP);
+                let hi = (self.positions[index + 1] - MIN_STOP_GAP).min(1.0 - MIN_STOP_GAP);
+                if lo <= hi {
+                    self.positions[index] = position.clamp(lo, hi);
+                }
+                return Some(PaletteChange::Preview);
+            }
+            PaletteEvent::ResetColor => {
+                if let Some(index) = self.active_index() {
+                    self.set_color(self.palette.defaults[index], None);
+                }
+                true
+            }
+            PaletteEvent::AdjustSpread { index, spread } => {
+                self.spreads[index] = spread;
+                true
+            }
+            PaletteEvent::Reset => {
+                self.active = None;
+                self.colors.copy_from_slice(self.palette.defaults);
+                self.positions
+                    .copy_from_slice(self.palette.default_positions);
+                self.spreads.fill(1.0);
+                true
+            }
         };
-        self.apply(event);
         ends_drag.then(|| self.save_changes()).flatten()
     }
 
@@ -170,70 +237,9 @@ impl PaletteEditor {
         })
     }
 
-    fn apply(&mut self, event: PaletteEvent) {
-        match event {
-            PaletteEvent::Select(index) => {
-                self.active = index.map(|index| Selection {
-                    index,
-                    hex_draft: None,
-                    hsv: to_hsv(self.palette.colors()[index], [0.0; 3]),
-                });
-            }
-            PaletteEvent::EditHex(value) => {
-                if let Some(active) = &mut self.active {
-                    active.hex_draft = value;
-                }
-            }
-            PaletteEvent::Commit | PaletteEvent::ApplyHex => {
-                if let Some(color) = self.draft_color() {
-                    self.set_color(color, None);
-                }
-            }
-            PaletteEvent::Adjust(edit) => {
-                let Some(active) = &self.active else {
-                    return;
-                };
-                // Controls can change before or without blurring the hex input.
-                let (base, hsv) = match self.draft_color() {
-                    Some(draft) => (draft, to_hsv(draft, active.hsv)),
-                    None => (self.palette.colors()[active.index], active.hsv),
-                };
-                let [h, s, v] = hsv;
-                let (color, hsv) = match edit {
-                    HsvEdit::SatVal(s, v) => (from_hsv([h, s, v], base.a), [h, s, v]),
-                    HsvEdit::Hue(h) => (from_hsv([h, s, v], base.a), [h, s, v]),
-                    // Opacity edits skip the lossy HSV round trip.
-                    HsvEdit::Alpha(a) => (with_alpha(base, a), hsv),
-                };
-                self.set_color(color, Some(hsv));
-            }
-            PaletteEvent::ResetColor => {
-                if let Some(index) = self.active_index() {
-                    self.set_color(self.palette.defaults[index], None);
-                }
-            }
-            PaletteEvent::AdjustPosition { index, position } => {
-                let lo = (self.positions[index - 1] + MIN_STOP_GAP).max(MIN_STOP_GAP);
-                let hi = (self.positions[index + 1] - MIN_STOP_GAP).min(1.0 - MIN_STOP_GAP);
-                if lo <= hi {
-                    self.positions[index] = position.clamp(lo, hi);
-                }
-            }
-            PaletteEvent::AdjustSpread { index, spread } => self.spreads[index] = spread,
-            PaletteEvent::HorizontalScroll(event) => self.scroll.update(event),
-            PaletteEvent::Reset => {
-                self.active = None;
-                self.palette.reset();
-                self.positions
-                    .copy_from_slice(self.palette.default_positions);
-                self.spreads.fill(1.0);
-            }
-        }
-    }
-
     fn draft_color(&self) -> Option<Color> {
         let active = self.active.as_ref()?;
-        let color = self.palette.colors()[active.index];
+        let color = self.colors[active.index];
         let parsed = parse_hex_color(active.hex_draft.as_deref()?.trim()).ok()?;
         // Preserve picker precision when the displayed RGBA8 value is unchanged.
         Some(if parsed.into_rgba8() == color.into_rgba8() {
@@ -243,31 +249,26 @@ impl PaletteEditor {
         })
     }
 
-    /// Replaces the selected color; `hsv` defaults to one derived from it.
     fn set_color(&mut self, color: Color, hsv: Option<[f32; 3]>) {
         let Some(active) = &mut self.active else {
             return;
         };
-        let colors = self.palette.colors();
-        if !colors_equal(colors[active.index], color) {
-            let mut colors = colors.to_vec();
-            colors[active.index] = color;
-            self.palette.set_colors(&colors);
+        if !colors_equal(self.colors[active.index], color) {
+            self.colors[active.index] = color;
         }
         active.hex_draft = None;
         active.hsv = hsv.unwrap_or_else(|| to_hsv(color, active.hsv));
     }
 
     pub fn colors(&self) -> &[Color] {
-        self.palette.colors()
+        &self.colors
     }
 
     fn visible_colors(&self) -> &[Color] {
-        let colors = self.palette.colors();
         if self.only_first_visible {
-            &colors[..1]
+            &self.colors[..1]
         } else {
-            colors
+            &self.colors
         }
     }
 
@@ -293,7 +294,7 @@ impl PaletteEditor {
             .extend(self.color_controls())
             .push(action_button(
                 "Reset to defaults",
-                self.settings().map(|_| PaletteEvent::Reset),
+                (!self.is_default()).then_some(PaletteEvent::Reset),
             ))
             .into()
     }
@@ -318,7 +319,7 @@ impl PaletteEditor {
     fn color_controls(&self) -> Option<Element<'_, PaletteEvent>> {
         let active = self.active.as_ref()?;
         let index = active.index;
-        let c = self.palette.colors()[index];
+        let c = self.colors[index];
         let canonical = to_hex(c);
         let valid = active.hex_draft.is_none() || self.draft_color().is_some();
         let hex = text_input("", active.hex_draft.as_deref().unwrap_or(&canonical))
@@ -750,7 +751,7 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for &PaletteEditor {
 
     crate::macros::widget_method!(draw this; _, renderer, theme, _, layout, _, _ => {
         let editor = *this;
-        let colors = editor.palette.colors();
+        let colors = &editor.colors;
         let bounds = layout.bounds();
         let bar = Rectangle::new(bounds.position(), Size::new(bounds.width, GRADIENT_BAR_HEIGHT));
         let (positions, spreads) = (&editor.positions, &editor.spreads);
@@ -805,9 +806,9 @@ mod tests {
     fn hex_and_picker_edits_preserve_precision_and_other_slots() {
         use {HsvEdit::*, PaletteChange::*, PaletteEvent::*};
         let mut editor = PaletteEditor::new(waveform::PALETTE);
-        let mut colors = waveform::COLORS.to_vec();
+        let mut colors = waveform::COLORS;
         colors[0] = Color::from_rgba(0.12345, 0.54321, 0.67891, 0.45678);
-        editor.set_colors(&colors);
+        editor.set_colors(colors);
         editor.update(Select(Some(0)));
         assert_eq!(editor.update(Commit), None);
         for input in [to_hex(colors[0]), "#".into()] {
@@ -863,7 +864,7 @@ mod tests {
         editor.update(Select(Some(0)));
         editor.update(Adjust(Alpha(0.5)));
         editor.update(EditHex(Some("#abc".into())));
-        editor.set_colors(&white);
+        editor.set_colors(white);
         assert_eq!(editor.update(Commit), None);
         assert_eq!(editor.colors(), white);
         for alpha in [0.5, 1.0] {

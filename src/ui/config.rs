@@ -288,7 +288,7 @@ impl ConfigPage {
                 self.window_themes = theme::window_themes(color);
                 if change == PaletteChange::Save {
                     // Stored only while it differs from the default.
-                    let background = self.bg_palette.settings().map(|_| color.into());
+                    let background = (!self.bg_palette.is_default()).then(|| color.into());
                     settings.edit_theme(|theme| theme.background = background);
                 }
             }
@@ -481,7 +481,7 @@ impl ConfigPage {
     pub(in crate::ui) fn show_background(&mut self) {
         let background = self.settings.borrow().theme().background;
         let background = background.map_or(theme::BG_BASE, Color::from);
-        self.bg_palette.set_colors(&[background]);
+        self.bg_palette.set_colors([background]);
         self.window_themes = theme::window_themes(background);
     }
 
