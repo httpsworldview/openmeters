@@ -3,7 +3,7 @@
 
 use crate::dsp::{AudioBlock, RunningMeans, SampleRate, ThreeBand};
 pub(super) use crate::util::audio::BAND_COUNT;
-use crate::util::audio::{BAND_SPLITS_HZ, Channel, DB_FLOOR, power_to_db};
+use crate::util::audio::{Channel, DB_FLOOR, power_to_db};
 
 pub const MAX_COLUMN_CAPACITY: usize = 8_192;
 
@@ -66,7 +66,7 @@ pub struct WaveformUpdate<'a> {
     pub preview: WaveformPreview,
 }
 
-type BandFilter = ThreeBand<2, 1, false>;
+type BandFilter = ThreeBand<1>;
 
 struct BandTracker {
     color: RunningMeans<{ BAND_COUNT * DERIVED_CHANNELS }, 1>,
@@ -165,7 +165,7 @@ impl WaveformProcessor {
     fn band_analysis(config: WaveformConfig) -> Option<(BandFilter, BandTracker)> {
         (config.bands != Bands::Off).then(|| {
             (
-                BandFilter::new(config.sample_rate, BAND_SPLITS_HZ),
+                BandFilter::new(config.sample_rate),
                 BandTracker::new(config),
             )
         })

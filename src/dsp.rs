@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::util::audio::{Channel, flush_denormal_f64};
+use crate::util::audio::{BAND_SPLITS_HZ, Channel, flush_denormal_f64};
 
 pub const MAX_AUDIO_CHANNELS: usize = 8;
 
@@ -425,13 +425,13 @@ impl<const VALUES: usize, const WINDOWS: usize> RunningMeans<VALUES, WINDOWS> {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct Biquad<const CHANNELS: usize> {
+struct Biquad {
     b: [f64; 3],
     a: [f64; 2],
-    z: [[f64; CHANNELS]; 2],
+    z: [[f64; 2]; 2],
 }
 
-impl<const CHANNELS: usize> Biquad<CHANNELS> {
+impl Biquad {
     fn low_high(sample_rate: f32, frequency: f32) -> [Self; 2] {
         let ratio = (f64::from(frequency) / f64::from(sample_rate)).clamp(1.0e-6, 0.49);
         let (half_sin, half_cos) = (core::f64::consts::PI * ratio).sin_cos();
@@ -450,21 +450,21 @@ impl<const CHANNELS: usize> Biquad<CHANNELS> {
                 gain * 0.5 * inv_a0,
             ],
             a: [-2.0 * cos * inv_a0, (1.0 - alpha) * inv_a0],
-            z: [[0.0; CHANNELS]; 2],
+            z: [[0.0; 2]; 2],
         })
     }
 
     #[inline(always)]
-    fn process(&mut self, sample: [f32; CHANNELS]) -> [f32; CHANNELS] {
+    fn process(&mut self, sample: [f32; 2]) -> [f32; 2] {
         let sample = sample.map(f64::from);
         let (b, a) = (self.b, self.a);
         let [z0, z1] = self.z;
-        let output: [f64; CHANNELS] = std::array::from_fn(|i| b[0] * sample[i] + z0[i]);
+        let output: [f64; 2] = std::array::from_fn(|i| b[0] * sample[i] + z0[i]);
         let mut state = [
             std::array::from_fn(|i| b[1] * sample[i] - a[0] * output[i] + z1[i]),
             std::array::from_fn(|i| b[2] * sample[i] - a[1] * output[i]),
         ];
-        let output: [f32; CHANNELS] = std::array::from_fn(|channel| {
+        let output = std::array::from_fn(|channel| {
             if output[channel].abs() <= f32::MAX as f64 {
                 output[channel] as f32
             } else {
@@ -482,28 +482,27 @@ impl<const CHANNELS: usize> Biquad<CHANNELS> {
     }
 
     fn clear(&mut self) {
-        self.z = [[0.0; CHANNELS]; 2];
+        self.z = [[0.0; 2]; 2];
     }
 }
 
-pub struct ThreeBand<const CHANNELS: usize, const STAGES: usize, const CASCADE_HIGH: bool> {
-    filters: [[Biquad<CHANNELS>; STAGES]; 4],
+// Stereo bands split at `BAND_SPLITS_HZ`, each slope `STAGES` Butterworth sections steep.
+pub struct ThreeBand<const STAGES: usize> {
+    filters: [[Biquad; STAGES]; 4],
 }
 
-impl<const CHANNELS: usize, const STAGES: usize, const CASCADE_HIGH: bool>
-    ThreeBand<CHANNELS, STAGES, CASCADE_HIGH>
-{
-    pub fn new(sample_rate: SampleRate, [low, high]: [f32; 2]) -> Self {
-        let [low, above_low] = Biquad::low_high(sample_rate.hz(), low);
-        let [mid, high] = Biquad::low_high(sample_rate.hz(), high);
+impl<const STAGES: usize> ThreeBand<STAGES> {
+    pub fn new(sample_rate: SampleRate) -> Self {
+        let [low, above_low] = Biquad::low_high(sample_rate.hz(), BAND_SPLITS_HZ[0]);
+        let [mid, high] = Biquad::low_high(sample_rate.hz(), BAND_SPLITS_HZ[1]);
         Self {
             filters: [low, above_low, mid, high].map(|filter| [filter; STAGES]),
         }
     }
 
     #[inline(always)]
-    pub fn process(&mut self, sample: [f32; CHANNELS]) -> [[f32; CHANNELS]; 3] {
-        let process = |stages: &mut [Biquad<CHANNELS>; STAGES], sample| {
+    pub fn process(&mut self, sample: [f32; 2]) -> [[f32; 2]; 3] {
+        let process = |stages: &mut [Biquad; STAGES], sample| {
             stages
                 .iter_mut()
                 .fold(sample, |sample, filter| filter.process(sample))
@@ -511,8 +510,7 @@ impl<const CHANNELS: usize, const STAGES: usize, const CASCADE_HIGH: bool>
         let [low, above_low, mid, high] = &mut self.filters;
         let low = process(low, sample);
         let above_low = process(above_low, sample);
-        let high_input = if CASCADE_HIGH { above_low } else { sample };
-        [low, process(mid, above_low), process(high, high_input)]
+        [low, process(mid, above_low), process(high, above_low)]
     }
 
     pub fn flush_denormals(&mut self) {
@@ -648,40 +646,17 @@ mod tests {
     }
 
     #[test]
-    fn stereo_biquad_matches_two_scalar_filters() {
-        for kind in 0..2 {
-            let mut scalar = [Biquad::<1>::low_high(48_000.0, 2_000.0)[kind]; 2];
-            let mut stereo = Biquad::<2>::low_high(48_000.0, 2_000.0)[kind];
-            for input in [
-                [0.0, -0.0],
-                [0.25, -0.5],
-                [1.0, 0.75],
-                [f32::INFINITY, f32::NAN],
-                [-0.125, 0.5],
-                [f32::INFINITY, 0.375],
-                [0.125, f32::NAN],
-                [f32::MAX, -f32::MAX],
-                [0.0, 0.25],
-            ] {
-                let expected = [0, 1].map(|i| scalar[i].process([input[i]])[0]);
-                let actual = stereo.process(input);
-                assert_eq!(actual.map(f32::to_bits), expected.map(f32::to_bits));
-            }
-        }
-    }
-
-    #[test]
     fn biquad_response_and_clear_are_precise() {
         use rustfft::num_complex::Complex64;
-        let filter = Biquad::<1>::low_high(768_000.0, 200.0)[0];
+        let filter = Biquad::low_high(768_000.0, 200.0)[0];
         let z = Complex64::from_polar(1.0, -core::f64::consts::TAU * 200.0 / 768_000.0);
         let ([b0, b1, b2], [a1, a2]) = (filter.b, filter.a);
         let magnitude = ((b0 + b1 * z + b2 * z * z) / (1.0 + a1 * z + a2 * z * z)).norm();
         assert!((magnitude - core::f64::consts::FRAC_1_SQRT_2).abs() < 1.0e-9);
-        let mut used = Biquad::<1>::low_high(48_000.0, 1_000.0)[0];
+        let mut used = Biquad::low_high(48_000.0, 1_000.0)[0];
         let mut fresh = used;
-        used.process([1.0]);
+        used.process([1.0, -1.0]);
         used.clear();
-        assert_eq!(used.process([0.25]), fresh.process([0.25]));
+        assert_eq!(used.process([0.25, 0.5]), fresh.process([0.25, 0.5]));
     }
 }

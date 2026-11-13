@@ -4,9 +4,7 @@
 use crate::dsp::{AudioBlock, SampleRate, ThreeBand};
 use crate::util::Finite;
 pub(super) use crate::util::audio::BAND_COUNT;
-use crate::util::audio::{
-    BAND_SPLITS_HZ, MAX_DSP_BUFFER_LEN, Seconds, flush_denormal_f64, smoothing_weight,
-};
+use crate::util::audio::{MAX_DSP_BUFFER_LEN, Seconds, flush_denormal_f64, smoothing_weight};
 use std::{collections::VecDeque, sync::Arc};
 
 // Split-band display only; correlation is unscaled.
@@ -45,7 +43,7 @@ pub struct StereometerSnapshot {
     pub correlations: [f32; BAND_COUNT + 1],
 }
 
-type BandSplitter = ThreeBand<2, 2, true>;
+type BandSplitter = ThreeBand<2>;
 
 #[derive(Debug, Clone, Copy, Default)]
 struct Correlator {
@@ -88,7 +86,7 @@ impl StereometerProcessor {
     pub fn new(config: StereometerConfig) -> Self {
         Self {
             histories: Default::default(),
-            band_splitter: BandSplitter::new(config.sample_rate, BAND_SPLITS_HZ),
+            band_splitter: BandSplitter::new(config.sample_rate),
             correlators: Default::default(),
             silent_frames: 0,
             config,
