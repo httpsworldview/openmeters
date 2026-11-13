@@ -6,7 +6,7 @@ use iced::advanced::text::Text as IcedText;
 use iced::{Border, Color, Point, Rectangle, Renderer, Size};
 use std::collections::HashMap;
 
-pub(in crate::visuals) const SDF_VERTICES_PER_INSTANCE: u32 = 4;
+const SDF_VERTICES_PER_INSTANCE: u32 = 4;
 
 pub(crate) fn scroll_delta_lines(delta: iced::mouse::ScrollDelta) -> f32 {
     match delta {
@@ -167,12 +167,11 @@ pub struct SdfInstance {
 }
 
 impl SdfInstance {
-    // Match shaders/sdf.wgsl primitive tags.
+    // Primitive tags, plus TURN per clockwise quarter turn.
     const BASELINE: f32 = 1.0;
     const LINE: f32 = 2.0;
     const DOT: f32 = 3.0;
     const RADIAL_DOT: f32 = 4.0;
-    // bits > primitive count = clockwise quarter turns.
     const TURN: f32 = 8.0;
 }
 
@@ -198,23 +197,6 @@ pub fn quad_instance(
     color: [f32; 4],
 ) -> SdfInstance {
     gradient_quad_instance(x0, y0, x1, y1, clip, color, color)
-}
-
-pub(in crate::visuals) fn replace_quad_instance(
-    bounds: Rectangle,
-    clip: ClipTransform,
-    color: [f32; 4],
-) -> SdfInstance {
-    let mut instance = quad_instance(
-        bounds.x,
-        bounds.y,
-        bounds.x + bounds.width,
-        bounds.y + bounds.height,
-        clip,
-        color,
-    );
-    instance.params[0] = 1.0;
-    instance
 }
 
 pub(in crate::visuals) fn gradient_quad_instance(
@@ -346,7 +328,6 @@ pub fn extend_aa_line_list(
     clip: ClipTransform,
 ) {
     let width = stroke.max(0.1);
-    out.reserve(pts.len().saturating_sub(1));
     for seg in pts.windows(2) {
         let (dx, dy) = (seg[1].0 - seg[0].0, seg[1].1 - seg[0].1);
         if (dx * dx + dy * dy) >= 1e-8 {
@@ -364,7 +345,6 @@ pub fn extend_filled_line(
     fill: [[f32; 4]; 2],
     clip: ClipTransform,
 ) {
-    out.reserve(pts.len().saturating_sub(1) * 2);
     let mut push_fill = |p0, p1| {
         out.push(baseline_segment_instance(
             p0, p1, baseline, clip, fill, true,
@@ -585,37 +565,38 @@ pub fn bounds_fingerprint(revision: u64, bounds: Rectangle) -> GeometryFingerpri
 
 struct CachedInstance {
     buffer: wgpu::Buffer,
-    vertex_count: u32,
+    instance_count: u32,
     fingerprint: Option<GeometryFingerprint>,
     last_used: u64,
 }
 
-pub struct SdfPipeline<const REPLACE: bool = false> {
-    pub(in crate::visuals) pipeline: wgpu::RenderPipeline,
+pub struct SdfPipeline {
+    pipeline: wgpu::RenderPipeline,
     instances: HashMap<u64, CachedInstance>,
     frame: u64,
-    pub(in crate::visuals) scratch: GeometryScratch,
+    scratch: GeometryScratch,
 }
 
-impl<const REPLACE: bool> SdfPipeline<REPLACE> {
-    pub fn prepare_required(&mut self, key: u64, fingerprint: Option<GeometryFingerprint>) -> bool {
-        match fingerprint.and_then(|_| self.instances.get_mut(&key)) {
-            Some(entry) if entry.fingerprint == fingerprint => {
-                entry.last_used = self.frame;
-                false
-            }
-            _ => true,
-        }
-    }
-
-    pub fn prepare_scratch(
+impl SdfPipeline {
+    // Builds and uploads the layer under `key`, unless it is cached under the same fingerprint.
+    pub(in crate::visuals) fn prepare_layer(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         label: &'static str,
         key: u64,
         fingerprint: Option<GeometryFingerprint>,
+        build: impl FnOnce(&mut GeometryScratch),
     ) {
+        if let Some(entry) = fingerprint.and_then(|_| self.instances.get_mut(&key))
+            && entry.fingerprint == fingerprint
+        {
+            entry.last_used = self.frame;
+            return;
+        }
+        self.scratch.clear();
+        build(&mut self.scratch);
+
         let instances = &self.scratch.instances;
         let required = size_of::<SdfInstance>() as wgpu::BufferAddress
             * instances.len() as wgpu::BufferAddress;
@@ -624,7 +605,7 @@ impl<const REPLACE: bool> SdfPipeline<REPLACE> {
         let allocate = || create_buffer(device, label, target, usage);
         let entry = self.instances.entry(key).or_insert_with(|| CachedInstance {
             buffer: allocate(),
-            vertex_count: 0,
+            instance_count: 0,
             fingerprint,
             last_used: self.frame,
         });
@@ -634,20 +615,25 @@ impl<const REPLACE: bool> SdfPipeline<REPLACE> {
         if target > capacity || (required > 0 && capacity > target.saturating_mul(4)) {
             entry.buffer = allocate();
         }
-        entry.vertex_count = instances.len() as u32;
+        entry.instance_count = instances.len() as u32;
         if !instances.is_empty() {
             queue.write_buffer(&entry.buffer, 0, bytemuck::cast_slice(instances));
         }
     }
 
-    pub(in crate::visuals) fn instance(&self, key: u64) -> Option<(&wgpu::Buffer, u32)> {
-        self.instances
-            .get(&key)
-            .map(|entry| (&entry.buffer, entry.vertex_count))
+    pub(in crate::visuals) fn draw_layers(&self, pass: &mut wgpu::RenderPass<'_>, keys: &[u64]) {
+        let layers = keys.iter().filter_map(|key| self.instances.get(key));
+        for (index, layer) in layers.filter(|layer| layer.instance_count > 0).enumerate() {
+            if index == 0 {
+                pass.set_pipeline(&self.pipeline);
+            }
+            pass.set_vertex_buffer(0, layer.buffer.slice(..));
+            pass.draw(0..SDF_VERTICES_PER_INSTANCE, 0..layer.instance_count);
+        }
     }
 }
 
-impl<const REPLACE: bool> iced_wgpu::primitive::Pipeline for SdfPipeline<REPLACE> {
+impl iced_wgpu::primitive::Pipeline for SdfPipeline {
     fn new(device: &wgpu::Device, _: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
         const LABEL: &str = "Visual SDF pipeline";
         const ATTRS: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![
@@ -669,11 +655,7 @@ impl<const REPLACE: bool> iced_wgpu::primitive::Pipeline for SdfPipeline<REPLACE
                     attributes: &ATTRS,
                 }],
                 bind_group_layouts: &[],
-                blend: Some(if REPLACE {
-                    wgpu::BlendState::REPLACE
-                } else {
-                    wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING
-                }),
+                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                 write_mask: wgpu::ColorWrites::ALL,
             },
         );
@@ -698,9 +680,9 @@ impl<const REPLACE: bool> iced_wgpu::primitive::Pipeline for SdfPipeline<REPLACE
 }
 
 macro_rules! sdf_primitive {
-    ($primitive:ty, $pipeline:ty, $label:expr, |$self:ident| $key:expr, $fingerprint:expr $(,)?) => {
+    ($primitive:ty, $label:expr, |$self:ident| $key:expr, $fingerprint:expr $(,)?) => {
         $crate::visuals::render::common::sdf_primitive!(
-            $primitive, $pipeline, $label,
+            $primitive, $label,
             layers |$self, scratch| {
                 ($key, $fingerprint) => {
                     $self.build_vertices(scratch);
@@ -708,13 +690,13 @@ macro_rules! sdf_primitive {
             }
         );
     };
-    ($primitive:ty, $pipeline:ty, $label:expr,
+    ($primitive:ty, $label:expr,
         layers |$self:ident, $scratch:ident| {
             $(($key:expr, $fingerprint:expr) => $build:block),+ $(,)?
         } $(,)?
     ) => {
         impl iced_wgpu::primitive::Primitive for $primitive {
-            type Pipeline = $pipeline;
+            type Pipeline = $crate::visuals::render::common::SdfPipeline;
 
             fn prepare(
                 &$self,
@@ -724,16 +706,7 @@ macro_rules! sdf_primitive {
                 _bounds: &iced::Rectangle,
                 _viewport: &iced::advanced::graphics::Viewport,
             ) {
-                $({
-                    let key: u64 = $key;
-                    let fingerprint: Option<$crate::visuals::render::common::GeometryFingerprint> = $fingerprint;
-                    if pipeline.prepare_required(key, fingerprint) {
-                        pipeline.scratch.clear();
-                        let $scratch = &mut pipeline.scratch;
-                        $build
-                        pipeline.prepare_scratch(device, queue, $label, key, fingerprint);
-                    }
-                })+
+                $(pipeline.prepare_layer(device, queue, $label, $key, $fingerprint, |$scratch| $build);)+
             }
 
             fn draw(
@@ -741,23 +714,7 @@ macro_rules! sdf_primitive {
                 pipeline: &Self::Pipeline,
                 pass: &mut wgpu::RenderPass<'_>,
             ) -> bool {
-                let mut pipeline_bound = false;
-                for key in [$($key),+] {
-                    if let Some((buffer, count)) = pipeline
-                        .instance(key)
-                        .filter(|(_, count)| *count > 0)
-                    {
-                        if !pipeline_bound {
-                            pass.set_pipeline(&pipeline.pipeline);
-                            pipeline_bound = true;
-                        }
-                        pass.set_vertex_buffer(0, buffer.slice(..));
-                        pass.draw(
-                            0..$crate::visuals::render::common::SDF_VERTICES_PER_INSTANCE,
-                            0..count,
-                        );
-                    }
-                }
+                pipeline.draw_layers(pass, &[$($key),+]);
                 true
             }
         }
@@ -767,9 +724,31 @@ macro_rules! sdf_primitive {
 pub(in crate::visuals) use sdf_primitive;
 
 #[cfg(test)]
+pub(in crate::visuals) fn shader_module(source: &str) -> wgpu::naga::Module {
+    use wgpu::naga::valid::{Capabilities, ValidationFlags, Validator};
+    let module = wgpu::naga::front::wgsl::parse_str(source).expect("shader should parse");
+    Validator::new(ValidationFlags::all(), Capabilities::all())
+        .validate(&module)
+        .expect("shader should validate");
+    module
+}
+
+#[cfg(test)]
+pub(in crate::visuals) fn shader_constant(
+    module: &wgpu::naga::Module,
+    name: &str,
+) -> wgpu::naga::Literal {
+    let named = |(_, constant): &(_, &wgpu::naga::Constant)| constant.name.as_deref() == Some(name);
+    let (_, constant) = module.constants.iter().find(named).expect(name);
+    match module.global_expressions[constant.init] {
+        wgpu::naga::Expression::Literal(value) => value,
+        ref other => panic!("{name} is not a literal: {other:?}"),
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use wgpu::naga::front::wgsl::parse_str;
 
     #[test]
     fn quarter_turns_map_frame_onto_pane() {
@@ -797,18 +776,17 @@ mod tests {
     }
 
     #[test]
-    fn shaders_are_valid() {
-        for source in [
-            include_str!("shaders/sdf.wgsl"),
-            include_str!("shaders/spectrogram.wgsl"),
+    fn sdf_shader_mirrors_the_primitive_tags() {
+        use wgpu::naga::Literal::U32;
+        let module = shader_module(include_str!("shaders/sdf.wgsl"));
+        for (name, tag) in [
+            ("BASELINE", SdfInstance::BASELINE),
+            ("LINE", SdfInstance::LINE),
+            ("DOT", SdfInstance::DOT),
+            ("RADIAL_DOT", SdfInstance::RADIAL_DOT),
+            ("TURN", SdfInstance::TURN),
         ] {
-            let module = parse_str(source).expect("shader should parse");
-            wgpu::naga::valid::Validator::new(
-                wgpu::naga::valid::ValidationFlags::all(),
-                wgpu::naga::valid::Capabilities::all(),
-            )
-            .validate(&module)
-            .expect("shader should validate");
+            assert_eq!(shader_constant(&module, name), U32(tag as u32), "{name}");
         }
     }
 

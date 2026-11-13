@@ -12,20 +12,20 @@ use crate::visuals::options::{
 };
 use crate::visuals::palettes::stereometer::SIZE as PALETTE_SIZE;
 use crate::visuals::render::common::{
-    ClipTransform, RadialDotTemplate, SdfInstance, SdfPipeline, bounds_fingerprint,
-    gradient_quad_instance, line_instance, quad_instance, sdf_primitive,
+    ClipTransform, RadialDotTemplate, SdfInstance, bounds_fingerprint, gradient_quad_instance,
+    line_instance, quad_instance, sdf_primitive,
 };
 
 // For length >= f32::EPSILON: radius = min((0.66834 * length)^0.3, 1).
-// Constants mirrored in render/shaders/sdf.wgsl.
-const SCALED_MODE_SCALE: f32 = 0.886_133_7;
+const SCALED_MODE_MIN_SQUARED: f32 = f32::EPSILON * f32::EPSILON;
 const SCALED_MODE_SATURATION_SQUARED: f32 = 2.238_747_4;
+const SCALED_MODE_SCALE: f32 = 0.886_133_7;
+const SCALED_MODE_EXPONENT: f32 = -0.35;
 const LINEAR_GUIDE_LEVELS: [f32; 3] = [1.0 / 3.0, 2.0 / 3.0, 1.0];
 // -48, -24, -12, and 0 dBFS.
 const SCALED_GUIDE_LEVELS: [f32; 4] = [0.0039810717, 0.06309573, 0.25118864, 1.0];
 const GRID_SEGMENTS: usize = 16;
 const GRID_LINE_WIDTH: f32 = 1.0;
-const RENDER_LABEL: &str = "Stereometer";
 const GRID_CORNERS: [(f32, f32); 4] = [(1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0)];
 const GRID_AXES: [((f32, f32), (f32, f32)); 2] =
     [((1.0, 1.0), (-1.0, -1.0)), ((1.0, -1.0), (-1.0, 1.0))];
@@ -49,11 +49,11 @@ static CORR_OPACITIES: LazyLock<[f32; CORR_TRAIL_LEN - 1]> =
 
 fn scaled_point(x: f32, y: f32) -> (f32, f32) {
     let squared = x * x + y * y;
-    if squared < f32::EPSILON * f32::EPSILON {
+    if squared < SCALED_MODE_MIN_SQUARED {
         return (0.0, 0.0);
     }
     let scale = if squared < SCALED_MODE_SATURATION_SQUARED {
-        SCALED_MODE_SCALE * squared.powf(-0.35)
+        SCALED_MODE_SCALE * squared.powf(SCALED_MODE_EXPONENT)
     } else if squared.is_finite() {
         squared.sqrt().recip()
     } else {
@@ -444,8 +444,8 @@ impl StereometerParams {
 }
 
 sdf_primitive!(
-    StereometerParams, SdfPipeline,
-    RENDER_LABEL,
+    StereometerParams,
+    "Stereometer",
     layers |self, scratch| {
         (self.grid.id, Some(bounds_fingerprint(self.grid.revision, self.bounds))) => {
             self.add_grid_vertices(
@@ -472,6 +472,24 @@ sdf_primitive!(
 mod tests {
     use super::*;
     use StereometerScale::{Linear, Scaled};
+
+    #[test]
+    fn sdf_shader_mirrors_the_scaled_curve() {
+        use crate::visuals::render::common::{shader_constant, shader_module};
+        let module = shader_module(include_str!("../render/shaders/sdf.wgsl"));
+        for (name, value) in [
+            ("SCALED_MODE_MIN_SQUARED", SCALED_MODE_MIN_SQUARED),
+            (
+                "SCALED_MODE_SATURATION_SQUARED",
+                SCALED_MODE_SATURATION_SQUARED,
+            ),
+            ("SCALED_MODE_SCALE", SCALED_MODE_SCALE),
+            ("SCALED_MODE_EXPONENT", SCALED_MODE_EXPONENT),
+        ] {
+            let mirrored = shader_constant(&module, name);
+            assert_eq!(mirrored, wgpu::naga::Literal::F32(value), "{name}");
+        }
+    }
 
     const EPS: f32 = 1e-4;
     const BOUNDS: Rectangle = Rectangle {

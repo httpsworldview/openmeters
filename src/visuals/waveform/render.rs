@@ -10,10 +10,10 @@ use crate::util::{
     color::{rgba_scale_alpha, sample_rgba_gradient},
 };
 use crate::visuals::options::{WaveformColorMode, WaveformHistoryMode};
+use crate::visuals::render::common::sdf_primitive;
 use crate::visuals::render::common::{
     ClipTransform, GeometryScratch, amplitude_y, extend_filled_line, quad_instance,
 };
-use crate::visuals::render::common::{SdfPipeline, sdf_primitive};
 use crate::visuals::waveform::processor::{
     BAND_COUNT, MAX_COLUMN_CAPACITY, WAVEFORM_SILENCE_AMPLITUDE, WaveColumn, WaveFrame,
     WaveformPreview,
@@ -113,7 +113,6 @@ impl WaveformParams {
         let floor = self.band_db_floor;
 
         let vertices = &mut scratch.instances;
-        vertices.reserve(columns + 1 + usize::from(history.is_some()) * BAND_COUNT * columns * 2);
 
         let scroll_offset = preview_columns.map_or(0.0, |_| self.preview.progress * col_width);
 
@@ -148,7 +147,6 @@ impl WaveformParams {
                 let fill_color = rgba_scale_alpha(color, BAND_FILL_ALPHA);
 
                 pts.clear();
-                pts.reserve(columns + 1);
                 pts.extend(
                     data.range(start..start + columns)
                         .enumerate()
@@ -175,10 +173,4 @@ impl WaveformParams {
     }
 }
 
-sdf_primitive!(
-    WaveformParams,
-    SdfPipeline,
-    "Waveform",
-    |self| self.key,
-    None
-);
+sdf_primitive!(WaveformParams, "Waveform", |self| self.key, None);

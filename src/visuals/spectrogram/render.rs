@@ -94,18 +94,18 @@ impl Primitive for SpectrogramParams {
         vp: &Viewport,
     ) {
         let scale_factor = vp.scale_factor();
-        let bgls = &pipeline.bgls;
+        let layouts = &pipeline.layouts;
         let res = pipeline
             .instances
             .entry(self.key)
-            .or_insert_with(|| Resources::new(device, bgls, self));
+            .or_insert_with(|| Resources::new(device, layouts, self));
         if res.ring.layout.kind != self.col_kind {
-            *res = Resources::new(device, bgls, self);
+            *res = Resources::new(device, layouts, self);
         }
         res.history = Arc::downgrade(&self.pending);
         let pending = std::mem::take(&mut *crate::util::unpoison(self.pending.lock()));
-        res.resize_ring(device, queue, bgls, self, &pending);
-        res.resize_accum(device, &bgls[0], self, scale_factor);
+        res.resize_ring(device, queue, layouts, self, &pending);
+        res.resize_accum(device, &layouts.resolve, self, scale_factor);
         res.upload_pending(queue, self, &pending.uploads);
         let mut uniforms = Uniforms::from_params(self, vp.logical_size().into(), scale_factor);
         uniforms.page_slot_mask = (res.ring.layout.page_columns as u32).next_power_of_two() - 1;
@@ -131,7 +131,7 @@ impl Primitive for SpectrogramParams {
         let Some(r) = pipeline.instances.get(&self.key) else {
             return;
         };
-        let (index, bg) = match &r.ring.storage {
+        let (draw, bg) = match &r.ring.storage {
             RingStorage::Reassigned { .. } => {
                 let Some(accum) = r.accum.as_ref() else {
                     return;
@@ -141,7 +141,7 @@ impl Primitive for SpectrogramParams {
                 if counts.iter().take(live).all(|&count| count == 0) {
                     return;
                 }
-                let state = &mut *accum.state.lock().unwrap();
+                let state = &mut *crate::util::unpoison(accum.state.lock());
                 match std::mem::replace(&mut state.pending, Pending::Idle) {
                     Pending::Idle => {}
                     Pending::Redraw => r.accumulate(pipeline, encoder, accum, None, counts),
@@ -151,10 +151,10 @@ impl Primitive for SpectrogramParams {
                 }
                 state.origin = r.uniform_cache.ring_origin;
                 state.phase = r.uniform_cache.scroll_phase;
-                (1, &accum.bg)
+                (&pipeline.resolve, &accum.bg)
             }
             RingStorage::Classic { .. } if self.points_per_column < 2 => return,
-            RingStorage::Classic { bg, .. } => (2, bg),
+            RingStorage::Classic { bg, .. } => (&pipeline.classic, bg),
         };
         let mut pass = begin_pass(
             encoder,
@@ -163,57 +163,58 @@ impl Primitive for SpectrogramParams {
             "Spectrogram pass",
             wgpu::LoadOp::Load,
         );
-        pass.set_pipeline(&pipeline.pipelines[index]);
+        pass.set_pipeline(draw);
         pass.set_bind_group(0, bg, &[]);
         pass.draw(0..4, 0..1);
     }
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable, PartialEq)]
-struct Uniforms {
-    freq_axis: [f32; 2], // (scaled_min, inverse scaled display span)
-    freq_scale: u32,
-    points_per_col: u32, // reassigned page-tag shift, or classic FFT bins
-    history_length: u32,
-    col_count: u32,
-    rotation: u32,
-    ring_origin: u32, // reassigned: frame x is stored at texel (x + ring_origin) % ring_width
-    bounds: [f32; 4],
-    clip_scale: [f32; 2],
-    uv_y_range: [f32; 2],
-    scale_factor: f32,
-    floor_db: f32,
-    tilt_db: f32,
-    newest_col: u32,
-    inv_uv_range: f32,
-    bin_hz: f32,
-    reassigned_power_scale: f32,
-    page_slot_mask: u32,
-    // Reassigned: splats sit this far left of their ideal x, so scrolls move whole pixels.
-    scroll_phase: f32,
-    // Reassigned: accumulation texture width, the view plus a margin.
-    ring_width: u32,
-    // Reassigned: frame x where the resolve begins showing the accumulation.
-    image_start: f32,
-    _pad: u32,
-    // (pos1, pos2, pos3, spread0), (spread1, spread2, spread3, spread4).
-    // Stops 0 and 4 are constant 0.0 / 1.0 and live in the shader.
-    stops: [[f32; 4]; 2],
-    palette: [[f32; 4]; SPECTROGRAM_PALETTE_SIZE],
+macro_rules! mirrored_struct {
+    ($(#[$attr:meta])* struct $name:ident { $($field:ident: $ty:ty),* $(,)? }) => {
+        $(#[$attr])*
+        struct $name { $($field: $ty,)* }
+
+        #[cfg(test)]
+        impl $name {
+            const FIELD_OFFSETS: &[(&str, usize)] =
+                &[$((stringify!($field), std::mem::offset_of!($name, $field))),*];
+        }
+    };
 }
 
-// Rust layout checks against expected WGSL values.
-const _: () = assert!(size_of::<Uniforms>() == 224);
-const _: () = assert!(std::mem::offset_of!(Uniforms, ring_origin) == 28);
-const _: () = assert!(std::mem::offset_of!(Uniforms, reassigned_power_scale) == 88);
-const _: () = assert!(std::mem::offset_of!(Uniforms, page_slot_mask) == 92);
-const _: () = assert!(std::mem::offset_of!(Uniforms, scroll_phase) == 96);
-const _: () = assert!(std::mem::offset_of!(Uniforms, stops) == 112);
-const _: () = assert!(std::mem::offset_of!(Uniforms, palette) == 144);
+mirrored_struct! {
+    #[repr(C)]
+    #[derive(Clone, Copy, Pod, Zeroable, PartialEq)]
+    struct Uniforms {
+        freq_axis: [f32; 2],
+        freq_scale: u32,
+        points_per_col: u32,
+        history_length: u32,
+        col_count: u32,
+        rotation: u32,
+        ring_origin: u32,
+        bounds: [f32; 4],
+        clip_scale: [f32; 2],
+        uv_y_range: [f32; 2],
+        scale_factor: f32,
+        floor_db: f32,
+        tilt_db: f32,
+        newest_col: u32,
+        inv_uv_range: f32,
+        bin_hz: f32,
+        reassigned_power_scale: f32,
+        page_slot_mask: u32,
+        scroll_phase: f32,
+        ring_width: u32,
+        image_start: f32,
+        page_shift: u32,
+        stops: [[f32; 4]; 2],
+        palette: [[f32; 4]; SPECTROGRAM_PALETTE_SIZE],
+    }
+}
 
 impl Uniforms {
-    // Unrotated frame size, as the shader's extents().
+    // Unrotated frame size.
     fn extents(&self) -> [f32; 2] {
         let size = [self.bounds[2], self.bounds[3]];
         if self.rotation.is_multiple_of(2) {
@@ -248,11 +249,7 @@ impl Uniforms {
         Self {
             freq_axis: [freq_lo, 1.0 / (freq_hi - freq_lo)],
             freq_scale: p.freq_scale as u32,
-            points_per_col: if p.col_kind == ColumnKind::Reassigned {
-                hl.next_power_of_two().trailing_zeros()
-            } else {
-                p.points_per_column
-            },
+            points_per_col: p.points_per_column,
             history_length: hl,
             col_count: p.col_count,
             rotation: u32::from(p.turn.turns()),
@@ -276,7 +273,7 @@ impl Uniforms {
             scroll_phase: 0.0,
             ring_width: 0,
             image_start: 0.0,
-            _pad: 0,
+            page_shift: hl.next_power_of_two().trailing_zeros(),
             stops: [
                 [pos1, pos2, pos3, spread0],
                 [spread1, spread2, spread3, spread4],
@@ -287,9 +284,12 @@ impl Uniforms {
 }
 
 pub struct Pipeline {
-    pipelines: [wgpu::RenderPipeline; 4],
+    accum: wgpu::RenderPipeline,
+    clear: wgpu::RenderPipeline,
+    resolve: wgpu::RenderPipeline,
+    classic: wgpu::RenderPipeline,
     quads: wgpu::Buffer,
-    bgls: Bgls,
+    layouts: Layouts,
     instances: HashMap<u64, Resources>,
 }
 
@@ -316,18 +316,18 @@ impl primitive::Pipeline for Pipeline {
             multisampled: false,
         };
         let uniform_entry = entry(0, stages, buffer(wgpu::BufferBindingType::Uniform));
-        let bgls = [
-            entry(1, stages, accum),
-            entry(2, stages, storage),
-            entry(3, wgpu::ShaderStages::VERTEX, storage),
-        ]
-        .map(|data_entry| {
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let data_layout = |binding, visibility, ty| DataLayout {
+            layout: device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("Spectrogram BGL"),
-                entries: &[uniform_entry, data_entry],
-            })
-        });
-        let [resolve_bgl, classic_bgl, points_bgl] = &bgls;
+                entries: &[uniform_entry, entry(binding, visibility, ty)],
+            }),
+            binding,
+        };
+        let layouts = Layouts {
+            resolve: data_layout(1, stages, accum),
+            classic: data_layout(2, stages, storage),
+            points: data_layout(3, wgpu::ShaderStages::VERTEX, storage),
+        };
 
         let additive = wgpu::BlendComponent {
             src_factor: wgpu::BlendFactor::One,
@@ -341,7 +341,7 @@ impl primitive::Pipeline for Pipeline {
             topology: wgpu::PrimitiveTopology::TriangleList,
             fragment_entry: "fs_accum",
             buffers: &[],
-            bind_group_layouts: &[points_bgl],
+            bind_group_layouts: &[&layouts.points.layout],
             blend: Some(wgpu::BlendState {
                 color: additive,
                 alpha: additive,
@@ -364,7 +364,7 @@ impl primitive::Pipeline for Pipeline {
             contents: bytemuck::cast_slice(&indices),
             usage: wgpu::BufferUsages::INDEX,
         });
-        let pipeline = |label, vertex_entry, fragment_entry, bgl| {
+        let pipeline = |label, vertex_entry, fragment_entry, data: &DataLayout| {
             create_render_pipeline(
                 device,
                 format,
@@ -375,31 +375,29 @@ impl primitive::Pipeline for Pipeline {
                     topology: wgpu::PrimitiveTopology::TriangleStrip,
                     fragment_entry,
                     buffers: &[],
-                    bind_group_layouts: &[bgl],
+                    bind_group_layouts: &[&data.layout],
                     blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 },
             )
         };
         Self {
-            pipelines: [
-                create_render_pipeline(device, ACCUM_FORMAT, accum_spec),
-                pipeline(
-                    "Spectrogram resolve pipeline",
-                    "vs_resolve",
-                    "fs_resolve",
-                    resolve_bgl,
-                ),
-                pipeline(
-                    "Spectrogram classic pipeline",
-                    "vs_classic",
-                    "fs_classic",
-                    classic_bgl,
-                ),
-                create_render_pipeline(device, ACCUM_FORMAT, clear_spec),
-            ],
+            resolve: pipeline(
+                "Spectrogram resolve pipeline",
+                "vs_resolve",
+                "fs_resolve",
+                &layouts.resolve,
+            ),
+            classic: pipeline(
+                "Spectrogram classic pipeline",
+                "vs_classic",
+                "fs_classic",
+                &layouts.classic,
+            ),
+            clear: create_render_pipeline(device, ACCUM_FORMAT, clear_spec),
+            accum: create_render_pipeline(device, ACCUM_FORMAT, accum_spec),
             quads,
-            bgls,
+            layouts,
             instances: HashMap::new(),
         }
     }
@@ -412,7 +410,16 @@ impl primitive::Pipeline for Pipeline {
     }
 }
 
-type Bgls = [wgpu::BindGroupLayout; 3];
+struct DataLayout {
+    layout: wgpu::BindGroupLayout,
+    binding: u32,
+}
+
+struct Layouts {
+    resolve: DataLayout,
+    classic: DataLayout,
+    points: DataLayout,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RingLayout {
@@ -423,14 +430,14 @@ struct RingLayout {
 }
 
 fn point_page_columns(
-    maxima: &[u32],
+    maxima: impl IntoIterator<Item = u32>,
     slots: usize,
     points_per_column: u32,
     was_paged: bool,
     binding: u64,
 ) -> usize {
     let (mut maximum, mut paged) = (0, 0_u64);
-    for (index, &max) in maxima.iter().enumerate() {
+    for (index, max) in maxima.into_iter().enumerate() {
         maximum = maximum.max(max);
         paged += u64::from(max) * PAGE_COLUMNS.min(slots - index * PAGE_COLUMNS) as u64;
     }
@@ -456,17 +463,16 @@ fn point_page_columns(
 }
 
 fn ring_layout(p: &SpectrogramParams, was_paged: bool, binding: u64) -> RingLayout {
-    let maxima: Vec<_> = p
+    let maxima = p
         .slot_counts
         .chunks(PAGE_COLUMNS)
-        .map(|counts| counts.iter().copied().max().unwrap_or(0))
-        .collect();
+        .map(|counts| counts.iter().copied().max().unwrap_or(0));
     RingLayout {
         kind: p.col_kind,
         stride: col_byte_stride(p.col_kind, p.points_per_column),
         slots: u64::from(p.ring_capacity),
         page_columns: point_page_columns(
-            &maxima,
+            maxima,
             p.slot_counts.len(),
             p.points_per_column,
             was_paged,
@@ -592,7 +598,7 @@ impl PointPage {
     // and copies the page.
     fn new(
         device: &wgpu::Device,
-        bgl: &wgpu::BindGroupLayout,
+        layout: &DataLayout,
         ub: &wgpu::Buffer,
         counts: &[u32],
         full: u32,
@@ -611,7 +617,7 @@ impl PointPage {
                 | wgpu::BufferUsages::COPY_SRC
                 | wgpu::BufferUsages::COPY_DST,
         );
-        let bg = make_bind_group(device, bgl, ub, 3, buf.as_entire_binding());
+        let bg = make_bind_group(device, layout, ub, buf.as_entire_binding());
         Some(Self {
             stride,
             stored: counts.to_vec(),
@@ -688,11 +694,9 @@ impl ColumnRing {
     }
 }
 
-// Accumulation work owed since the last accumulation.
 #[derive(Default)]
 enum Pending {
     Idle,
-    // Clear and splat every live column at ring origin 0.
     #[default]
     Redraw,
     // `columns` appended, and the scroll that splats them in place.
@@ -748,7 +752,7 @@ struct Resources {
 }
 
 impl Resources {
-    fn new(device: &wgpu::Device, bgls: &Bgls, p: &SpectrogramParams) -> Self {
+    fn new(device: &wgpu::Device, layouts: &Layouts, p: &SpectrogramParams) -> Self {
         let uniform_buf = create_buffer(
             device,
             "Spectrogram UB",
@@ -757,7 +761,7 @@ impl Resources {
         );
         let binding = u64::from(device.limits().max_storage_buffer_binding_size);
         let layout = ring_layout(p, false, binding);
-        let ring = create_ring(device, bgls, &uniform_buf, p, layout);
+        let ring = create_ring(device, layouts, &uniform_buf, p, layout);
 
         Self {
             history: Arc::downgrade(&p.pending),
@@ -771,14 +775,14 @@ impl Resources {
         }
     }
 
-    // Plans the next accumulation and sets the ring origin, width, phase and image start it
-    // leaves.
     fn plan(&mut self, u: &mut Uniforms, appended: Option<u32>) {
         let (spans, Some(accum)) = (&self.spans, &mut self.accum) else {
             return;
         };
-        let (s, width) = (accum.state.get_mut().unwrap(), accum.tex.width());
-        // Columns appended since the last accumulation.
+        let (s, width) = (
+            crate::util::unpoison(accum.state.get_mut()),
+            accum.tex.width(),
+        );
         let owed = match s.pending {
             Pending::Idle => Some(0),
             Pending::Redraw => None,
@@ -840,7 +844,7 @@ impl Resources {
         };
         // Clear the strip in its own pass: RADV may reorder it with later blending.
         let mut pass = begin_pass(encoder, &accum.view, None, label, wgpu::LoadOp::Load);
-        pass.set_pipeline(&pipeline.pipelines[3]);
+        pass.set_pipeline(&pipeline.clear);
         for piece in scroll.pieces.iter().filter(|piece| piece.clear) {
             scissor(&mut pass, piece);
             pass.draw(0..3, 0..1);
@@ -865,9 +869,9 @@ impl Resources {
             return;
         };
         let per_page = self.ring.layout.page_columns as u32;
-        let ppc = self.uniform_cache.points_per_col;
+        let shift = self.uniform_cache.page_shift;
         let wrap = if wrapped { WRAP_BIT } else { 0 };
-        pass.set_pipeline(&pipeline.pipelines[0]);
+        pass.set_pipeline(&pipeline.accum);
         pass.set_index_buffer(pipeline.quads.slice(..), wgpu::IndexFormat::Uint32);
         let mut bound = None;
         for run in runs {
@@ -883,7 +887,7 @@ impl Resources {
                 if bound.replace(index) != Some(index) {
                     pass.set_bind_group(0, &page.bg, &[]);
                 }
-                let tag = (page_tag(index * per_page, page.stride, ppc) + offset) | wrap;
+                let tag = (page_tag(index * per_page, page.stride, shift) + offset) | wrap;
                 for (columns, quads) in quad_draws(counts, page.stride) {
                     // base_vertex selects the column's first point of this draw.
                     let base = (quads.start * 4) as i32;
@@ -898,7 +902,7 @@ impl Resources {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        bgls: &Bgls,
+        layouts: &Layouts,
         p: &SpectrogramParams,
         pending: &PendingColumns,
     ) {
@@ -906,14 +910,16 @@ impl Resources {
         let previous = self.uniform_cache.col_count;
         match self.ring.layout.plan_update(p, pending, previous, binding) {
             RingUpdate::Unchanged => {}
-            RingUpdate::ResizePages => self.resize_point_pages(device, queue, &bgls[2], p, pending),
+            RingUpdate::ResizePages => {
+                self.resize_point_pages(device, queue, &layouts.points, p, pending);
+            }
             RingUpdate::Replace { layout, copies } => {
                 // Spans may not survive the replace, and scrolls need them to clear evicted
                 // splats.
                 if let Some(accum) = &mut self.accum {
-                    accum.state.get_mut().unwrap().pending = Pending::Redraw;
+                    crate::util::unpoison(accum.state.get_mut()).pending = Pending::Redraw;
                 }
-                let new_ring = create_ring(device, bgls, &self.uniform_buf, p, layout);
+                let new_ring = create_ring(device, layouts, &self.uniform_buf, p, layout);
                 let spans =
                     std::mem::replace(&mut self.spans, vec![NO_SPAN; p.ring_capacity as usize]);
                 if let Some(copies) = copies {
@@ -956,7 +962,7 @@ impl Resources {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        bgl: &wgpu::BindGroupLayout,
+        layout: &DataLayout,
         p: &SpectrogramParams,
         pending: &PendingColumns,
     ) {
@@ -978,8 +984,13 @@ impl Resources {
             if needed <= current && current <= needed.saturating_mul(4) {
                 continue;
             }
-            let new_page =
-                PointPage::new(device, bgl, &self.uniform_buf, counts, p.points_per_column);
+            let new_page = PointPage::new(
+                device,
+                layout,
+                &self.uniform_buf,
+                counts,
+                p.points_per_column,
+            );
             if let (Some(old), Some(new)) = (page.as_ref(), new_page.as_ref()) {
                 let encoder = encoder
                     .get_or_insert_with(|| device.create_command_encoder(&Default::default()));
@@ -1006,7 +1017,7 @@ impl Resources {
     fn resize_accum(
         &mut self,
         device: &wgpu::Device,
-        layout: &wgpu::BindGroupLayout,
+        layout: &DataLayout,
         p: &SpectrogramParams,
         scale_factor: f32,
     ) {
@@ -1040,7 +1051,7 @@ impl Resources {
         });
         let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
         let resource = wgpu::BindingResource::TextureView(&view);
-        let bg = make_bind_group(device, layout, &self.uniform_buf, 1, resource);
+        let bg = make_bind_group(device, layout, &self.uniform_buf, resource);
         self.accum = Some(AccumTarget {
             state: Mutex::default(),
             tex,
@@ -1168,7 +1179,7 @@ fn plan_scroll(
 
 fn create_ring(
     device: &wgpu::Device,
-    bgls: &Bgls,
+    layouts: &Layouts,
     uniform_buf: &wgpu::Buffer,
     p: &SpectrogramParams,
     layout: RingLayout,
@@ -1180,7 +1191,8 @@ fn create_ring(
                 .slot_counts
                 .chunks(layout.page_columns)
                 .map(|counts| {
-                    PointPage::new(device, &bgls[2], uniform_buf, counts, p.points_per_column)
+                    let layout = &layouts.points;
+                    PointPage::new(device, layout, uniform_buf, counts, p.points_per_column)
                 })
                 .collect();
             RingStorage::Reassigned { pages }
@@ -1192,7 +1204,12 @@ fn create_ring(
                 layout.stride * layout.slots,
                 copy | wgpu::BufferUsages::STORAGE,
             );
-            let bg = make_bind_group(device, &bgls[1], uniform_buf, 2, buf.as_entire_binding());
+            let bg = make_bind_group(
+                device,
+                &layouts.classic,
+                uniform_buf,
+                buf.as_entire_binding(),
+            );
             RingStorage::Classic { buf, bg }
         }
     };
@@ -1201,16 +1218,15 @@ fn create_ring(
 
 fn make_bind_group(
     device: &wgpu::Device,
-    layout: &wgpu::BindGroupLayout,
+    data: &DataLayout,
     ub: &wgpu::Buffer,
-    binding: u32,
     resource: wgpu::BindingResource<'_>,
 ) -> wgpu::BindGroup {
-    let entries = [(0, ub.as_entire_binding()), (binding, resource)]
+    let entries = [(0, ub.as_entire_binding()), (data.binding, resource)]
         .map(|(binding, resource)| wgpu::BindGroupEntry { binding, resource });
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("Spectrogram BG"),
-        layout,
+        layout: &data.layout,
         entries: &entries,
     })
 }
@@ -1218,6 +1234,42 @@ fn make_bind_group(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shader_mirrors_the_constants_and_uniform_layout() {
+        use super::super::processor::{CLASSIC_DB_STORE_HI, CLASSIC_DB_STORE_LO};
+        use crate::util::audio::{DB_FLOOR, LN_TO_DB, LOG_KNEE_HZ};
+        use crate::visuals::render::common::{shader_constant, shader_module};
+        use wgpu::naga::Literal::{F32, U32};
+
+        let module = shader_module(include_str!("../render/shaders/spectrogram.wgsl"));
+        for (name, value) in [
+            ("LOG_KNEE_HZ", F32(LOG_KNEE_HZ)),
+            ("LN_TO_DB", F32(LN_TO_DB)),
+            ("DB_STORE_LO", F32(CLASSIC_DB_STORE_LO)),
+            ("DB_STORE_HI", F32(CLASSIC_DB_STORE_HI)),
+            ("DB_ANALYSIS_FLOOR", F32(DB_FLOOR)),
+            ("WRAPPED", U32(WRAP_BIT)),
+        ] {
+            assert_eq!(shader_constant(&module, name), value, "{name}");
+        }
+
+        let uniforms = module.types.iter().find_map(|(_, ty)| match &ty.inner {
+            wgpu::naga::TypeInner::Struct { members, span }
+                if ty.name.as_deref() == Some("Uniforms") =>
+            {
+                Some((members, *span))
+            }
+            _ => None,
+        });
+        let (members, size) = uniforms.expect("the shader's Uniforms");
+        let layout: Vec<_> = members
+            .iter()
+            .map(|member| (member.name.as_deref().unwrap(), member.offset as usize))
+            .collect();
+        assert_eq!(layout, Uniforms::FIELD_OFFSETS);
+        assert_eq!(size as usize, size_of::<Uniforms>());
+    }
 
     #[test]
     fn pages_and_tags_fit_the_history_budget() {
@@ -1234,7 +1286,7 @@ mod tests {
             let mut sparse = vec![0; pages];
             sparse[0] = bins;
             for maxima in [vec![bins; pages], sparse] {
-                let columns = point_page_columns(&maxima, capacity as usize, bins, false, binding);
+                let columns = point_page_columns(maxima, capacity as usize, bins, false, binding);
                 assert!(
                     col_byte_stride(ColumnKind::Reassigned, bins) * columns as u64 <= binding
                         && (columns == capacity as usize || columns.is_power_of_two()),

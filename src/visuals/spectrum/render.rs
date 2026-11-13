@@ -9,10 +9,10 @@ use crate::util::lerp;
 use crate::visuals::options::SpectrumDisplayMode;
 use crate::visuals::palettes::spectrum::DEFAULT_POSITIONS;
 use crate::visuals::render::common::{
-    ClipTransform, GeometryFingerprint, GeometryScratch, QuarterTurn, SdfInstance, SdfPipeline,
+    ClipTransform, GeometryFingerprint, GeometryScratch, QuarterTurn, SdfInstance,
     baseline_segment_instance, decimate_line, dot_instance, extend_aa_line_list,
     gradient_quad_instance, line_instance, line_point_budget, pack_f32_pair, quad_instance,
-    replace_quad_instance, sdf_primitive, turn_instances,
+    sdf_primitive, turn_instances,
 };
 
 pub(super) const MIN_TRACE_POINTS: usize = 2;
@@ -28,37 +28,6 @@ pub struct SpectrumPeakParams {
     pub marker_color: [f32; 4],
     pub leader_anchor: Option<[f32; 2]>,
     pub leader_color: [f32; 4],
-}
-
-#[derive(Debug, Clone)]
-pub struct SpectrumCutoutParams {
-    pub bounds: Rectangle,
-    pub rectangles: Arc<Vec<Rectangle>>,
-    pub geometry: crate::visuals::GeometryKey,
-    pub background: [f32; 4],
-}
-
-impl SpectrumCutoutParams {
-    fn geometry_fingerprint(&self) -> GeometryFingerprint {
-        [
-            self.geometry.revision,
-            pack_f32_pair(self.bounds.width, self.bounds.height),
-            pack_f32_pair(self.background[0], self.background[1]),
-            pack_f32_pair(self.background[2], self.background[3]),
-            0,
-            0,
-        ]
-    }
-
-    fn build_vertices(&self, scratch: &mut GeometryScratch) {
-        let clip = ClipTransform::from_bounds(self.bounds);
-        scratch.instances.extend(
-            self.rectangles
-                .iter()
-                .filter_map(|rectangle| self.bounds.intersection(rectangle))
-                .map(|rectangle| replace_quad_instance(rectangle, clip, self.background)),
-        );
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -132,8 +101,6 @@ impl SpectrumParams {
             points2,
             ..
         } = scratch;
-        let segments = |points: &[[f32; 2]]| points.len().min(pixel_budget).saturating_sub(1);
-        vertices.reserve(segments(&self.normalized_points) * 2 + segments(&self.secondary_points));
         let baseline = bounds.y + bounds.height;
         let project = |out: &mut Vec<(f32, f32)>, normalized: &[[f32; 2]]| {
             out.extend(
@@ -188,7 +155,6 @@ impl SpectrumParams {
         let secondary = (self.secondary_points.len() >= MIN_TRACE_POINTS)
             .then_some(self.secondary_points.as_ref());
 
-        verts.reserve(bar_count * if secondary.is_some() { 2 } else { 1 });
         for i in 0..bar_count {
             let [t0, t1] = [i, i + 1].map(|edge| edge as f32 / bar_count as f32);
             let amp = sample_max(&self.normalized_points, t0, t1);
@@ -255,15 +221,7 @@ fn sample_lerp_at(pts: &[[f32; 2]], t: f32, index: usize) -> f32 {
 
 sdf_primitive!(
     SpectrumParams,
-    SdfPipeline,
     "Spectrum",
-    |self| self.geometry.id,
-    Some(self.geometry_fingerprint())
-);
-sdf_primitive!(
-    SpectrumCutoutParams,
-    SdfPipeline<true>,
-    "Spectrum label cutouts",
     |self| self.geometry.id,
     Some(self.geometry_fingerprint())
 );

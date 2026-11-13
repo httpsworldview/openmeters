@@ -9,8 +9,7 @@ crate::macros::choice_enum!(#[derive(Default)] #[repr(u32)] pub enum FrequencySc
     #[serde(alias = "mel")] Erb => "Erb",
 });
 
-// Match LOG_KNEE_HZ in visuals/render/shaders/spectrogram.wgsl.
-const LOG_KNEE_HZ: f32 = 20.0;
+pub const LOG_KNEE_HZ: f32 = 20.0;
 // Lower display bound, independent of FFT bin spacing.
 pub const DISPLAY_MIN_HZ: f32 = 1.0;
 

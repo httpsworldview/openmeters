@@ -3,10 +3,10 @@
 
 use iced::{Rectangle, Size};
 
+use crate::visuals::render::common::sdf_primitive;
 use crate::visuals::render::common::{
     ClipTransform, GeometryScratch, bounds_fingerprint, line_instance, quad_instance,
 };
-use crate::visuals::render::common::{SdfPipeline, sdf_primitive};
 
 pub(super) const DB_RANGE: (f32, f32) = (-60.0, 4.0);
 pub(super) const GUIDE_LEVELS: [f32; 6] = [0.0, -6.0, -12.0, -18.0, -24.0, -36.0];
@@ -121,7 +121,6 @@ impl LoudnessParams {
         let bars = self.bar_groups();
         let bar_count = bars.len();
         let vertices = &mut scratch.instances;
-        vertices.reserve(bar_count * 3 + self.bars.len() * 5 + GUIDE_LEVELS.len());
         // Wicks fill the middle half of the label gap, or of a tighter bar gap.
         let space = VALUE_LABEL_GAP.min(stride - bar_width);
 
@@ -194,7 +193,6 @@ impl LoudnessParams {
 
 sdf_primitive!(
     LoudnessParams,
-    SdfPipeline,
     "Loudness",
     |self| self.geometry.id,
     Some(bounds_fingerprint(self.geometry.revision, self.bounds))

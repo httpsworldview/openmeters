@@ -2,9 +2,7 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::processor::{SpectrumSnapshot, SpectrumTraceSnapshot, a_weight};
-use super::render::{
-    MIN_TRACE_POINTS, RAMP_SIZE, SpectrumCutoutParams, SpectrumParams, SpectrumPeakParams,
-};
+use super::render::{MIN_TRACE_POINTS, RAMP_SIZE, SpectrumParams, SpectrumPeakParams};
 use crate::persistence::settings::SpectrumSettings;
 use crate::util::audio::musical::NoteInfo;
 use crate::util::audio::{
@@ -46,6 +44,7 @@ type GridTick = (f32, bool, Option<Paragraph>);
 #[derive(Clone, Copy)]
 struct GridLabelLayout {
     tick_index: usize,
+    // In the unturned frame.
     bounds: Rectangle,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -74,8 +73,6 @@ crate::macros::default_struct! {
         grid_ticks: Vec<GridTick> = Vec::new(),
         grid_labels: Vec<GridLabelLayout> = Vec::new(),
         grid_layout_key: Option<GridLayoutKey> = None,
-        grid: crate::visuals::GeometryKey = crate::visuals::GeometryKey::new(),
-        grid_cutouts: Arc<Vec<Rectangle>> = Arc::new(Vec::new()),
     }
 }
 
@@ -193,12 +190,8 @@ impl SpectrumState {
     }
 
     fn clear_grid_layout(&mut self) {
-        if self.grid_layout_key.take().is_none() {
-            return;
-        }
+        self.grid_layout_key = None;
         self.grid_labels.clear();
-        self.grid_cutouts = Arc::new(Vec::new());
-        self.grid.invalidate();
     }
 
     fn layout_grid_labels(&mut self, bounds: Rectangle, range: (f32, f32)) {
@@ -213,14 +206,12 @@ impl SpectrumState {
             return;
         }
         self.grid_layout_key = Some(key);
-        self.grid.invalidate();
         self.grid_labels.clear();
         if bounds.width <= 0.0 || bounds.height <= 0.0 {
-            self.grid_cutouts = Arc::new(Vec::new());
             return;
         }
 
-        // Lay out in the unturned frame, then turn the finished labels.
+        // Labels are laid out in the unturned frame and turned when drawn.
         let turn = self.turn();
         let style = &self.style;
         let frame = turn.frame(bounds);
@@ -266,10 +257,6 @@ impl SpectrumState {
         } else {
             ticks.iter().enumerate().for_each(layout_tick);
         }
-        for label in &mut self.grid_labels {
-            label.bounds = turn.to_screen(bounds, label.bounds);
-        }
-        self.grid_cutouts = Arc::new(self.grid_labels.iter().map(|label| label.bounds).collect());
     }
 
     fn build_peak(
@@ -410,20 +397,6 @@ impl SpectrumState {
             }),
         })
     }
-
-    fn cutout_params(
-        &self,
-        bounds: Rectangle,
-        theme: &iced::Theme,
-    ) -> Option<SpectrumCutoutParams> {
-        (!self.grid_cutouts.is_empty()).then(|| SpectrumCutoutParams {
-            bounds,
-            rectangles: Arc::clone(&self.grid_cutouts),
-            geometry: self.grid,
-            // Replace instead of blending so transparent backgrounds keep their alpha.
-            background: color_to_rgba(theme.extended_palette().background.base.color),
-        })
-    }
 }
 
 crate::visuals::visualization_widget!(Spectrum, SpectrumState, |this, r, th, b| {
@@ -443,10 +416,7 @@ crate::visuals::visualization_widget!(Spectrum, SpectrumState, |this, r, th, b| 
     if let Some(range) = grid_range {
         r.with_layer(b, |r| {
             draw_grid_lines(r, th, b, range, &state);
-            if let Some(cutouts) = state.cutout_params(b, th) {
-                r.draw_primitive(b, cutouts);
-            }
-            draw_grid_labels(r, th, &state);
+            draw_grid_labels(r, th, b, &state);
         });
     }
     r.with_layer(b, |r| r.draw_primitive(b, params));
@@ -609,18 +579,28 @@ fn draw_grid_lines(
             continue;
         };
         let x = (x - 0.5).clamp(frame.x, (frame.x + frame.width - 1.0).max(frame.x));
-        fill_rect(
-            r,
-            turn.to_screen(
-                bounds,
-                Rectangle::new(Point::new(x, frame.y), Size::new(1.0, frame.height)),
-            ),
-            if *major { major_color } else { minor_color },
-        );
+        let bottom = frame.y + frame.height;
+        // A line stops at a label rather than run under it.
+        let label = (state.grid_labels.iter())
+            .map(|label| label.bounds)
+            .find(|label| label.x < x + 1.0 && x < label.x + label.width)
+            .map_or(bottom..bottom, |label| label.y..label.y + label.height);
+        for (top, end) in [(frame.y, label.start), (label.end, bottom)] {
+            if top < end {
+                let line = Rectangle::new(Point::new(x, top), Size::new(1.0, end - top));
+                let color = if *major { major_color } else { minor_color };
+                fill_rect(r, turn.to_screen(bounds, line), color);
+            }
+        }
     }
 }
 
-fn draw_grid_labels(r: &mut iced::Renderer, th: &iced::Theme, state: &SpectrumState) {
+fn draw_grid_labels(
+    r: &mut iced::Renderer,
+    th: &iced::Theme,
+    bounds: Rectangle,
+    state: &SpectrumState,
+) {
     let text_color = th.extended_palette().background.base.text;
     let major_color = with_alpha(text_color, 0.75);
     let minor_color = with_alpha(text_color, 0.20);
@@ -628,14 +608,15 @@ fn draw_grid_labels(r: &mut iced::Renderer, th: &iced::Theme, state: &SpectrumSt
         let (_, major, Some(text)) = &state.grid_ticks[layout.tick_index] else {
             continue;
         };
+        let label = state.turn().to_screen(bounds, layout.bounds);
         r.fill_paragraph(
             text,
             Point::new(
-                layout.bounds.x + GRID_LABEL_PADDING_X,
-                layout.bounds.y + GRID_LABEL_PADDING_Y,
+                label.x + GRID_LABEL_PADDING_X,
+                label.y + GRID_LABEL_PADDING_Y,
             ),
             if *major { major_color } else { minor_color },
-            layout.bounds,
+            label,
         );
     }
 }
@@ -940,18 +921,19 @@ mod tests {
                     let pane = Rectangle::new(Point::ORIGIN, Size::new(100.0, width));
                     state.style.rotation = 1;
                     state.layout_grid_labels(pane, range);
+                    let turned: Vec<_> = (state.grid_labels.iter())
+                        .map(|label| state.turn().to_screen(pane, label.bounds))
+                        .collect();
                     state.style.rotation = 0;
-                    assert!(!state.grid_labels.is_empty(), "{context}");
-                    for label in &state.grid_labels {
+                    assert!(!turned.is_empty(), "{context}");
+                    for (label, on_screen) in state.grid_labels.iter().zip(&turned) {
                         let text = state.grid_ticks[label.tick_index].2.as_ref().unwrap();
                         let text_width = text.min_bounds().width + GRID_LABEL_PADDING_X * 2.0;
-                        assert_eq!(label.bounds.width, text_width, "{context}");
-                        assert!(label.bounds.is_within(&pane), "{context}");
+                        assert_eq!(on_screen.width, text_width, "{context}");
+                        assert!(on_screen.is_within(&pane), "{context}");
                     }
                     assert!(
-                        state.grid_labels.windows(2).all(|pair| {
-                            pair[0].bounds.y + pair[0].bounds.height <= pair[1].bounds.y
-                        }),
+                        (turned.windows(2)).all(|pair| pair[0].y + pair[0].height <= pair[1].y),
                         "{context}"
                     );
                 }
@@ -960,34 +942,26 @@ mod tests {
     }
 
     #[test]
-    fn grid_layout_and_cutout_geometry_are_cached() {
+    fn grid_layout_is_kept_until_its_inputs_change() {
         let mut state = SpectrumState::default();
         state.ensure_x_cache(DISPLAY_MIN_HZ, 24_000.0, &[0.0, 24_000.0]);
         let bounds = Rectangle::new(Point::ORIGIN, Size::new(600.0, 100.0));
         let range = (DISPLAY_MIN_HZ, 24_000.0);
         state.layout_grid_labels(bounds, range);
-        let revision = state.grid.revision;
-        let cutouts = Arc::clone(&state.grid_cutouts);
+        assert!(!state.grid_labels.is_empty());
 
+        // Emptied labels show which calls lay them out again.
+        state.grid_labels.clear();
         state.layout_grid_labels(bounds, range);
-
-        assert_eq!(state.grid.revision, revision);
-        assert!(Arc::ptr_eq(&state.grid_cutouts, &cutouts));
-        assert!(
-            cutouts
-                .iter()
-                .copied()
-                .eq(state.grid_labels.iter().map(|label| label.bounds))
-        );
+        assert!(state.grid_labels.is_empty());
 
         state.layout_grid_labels(bounds.expand(1.0), range);
-        assert_ne!(state.grid.revision, revision);
-        assert!(!Arc::ptr_eq(&state.grid_cutouts, &cutouts));
+        assert!(!state.grid_labels.is_empty());
 
-        let revision = state.grid.revision;
+        state.grid_labels.clear();
         state.style.rotation = 1;
         state.layout_grid_labels(bounds.expand(1.0), range);
-        assert_ne!(state.grid.revision, revision);
+        assert!(!state.grid_labels.is_empty());
     }
 
     #[test]

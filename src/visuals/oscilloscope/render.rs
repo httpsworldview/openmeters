@@ -7,11 +7,11 @@ use std::sync::Arc;
 
 use super::processor::TRACE_COUNT;
 use crate::util::color::rgba_scale_alpha;
+use crate::visuals::render::common::sdf_primitive;
 use crate::visuals::render::common::{
     ClipTransform, GeometryScratch, amplitude_y, bounds_fingerprint, decimate_line,
     extend_filled_line, line_point_budget,
 };
-use crate::visuals::render::common::{SdfPipeline, sdf_primitive};
 
 const FILL_ALPHA: f32 = 0.3;
 
@@ -79,7 +79,6 @@ impl OscilloscopeParams {
 
 sdf_primitive!(
     OscilloscopeParams,
-    SdfPipeline,
     "Oscilloscope",
     |self| self.geometry.id,
     Some(bounds_fingerprint(self.geometry.revision, self.bounds))

@@ -8,25 +8,21 @@ const DB_TO_LOG2: f32 = 0.3321928095;
 const LOW_POWER_SCALE: f32 = 16777216.0;
 const INV_LOW_POWER_SCALE: f32 = 0.000000059604644775390625;
 const F16_MAX: f32 = 65504.0;
-// Match util/audio/frequency.rs::LOG_KNEE_HZ.
 const LOG_KNEE_HZ: f32 = 20.0;
 
-// Classic storage domain -- keep in sync with processor.rs CLASSIC_DB_STORE_*.
 const DB_STORE_LO: f32 = -144.0;
 const DB_STORE_HI: f32 = 12.0;
 const DB_STORE_RANGE: f32 = DB_STORE_HI - DB_STORE_LO;
 
-// Analysis floor -- keep in sync with util::audio::DB_FLOOR.
 const DB_ANALYSIS_FLOOR: f32 = -140.0;
 const DB_FLOOR_EPS: f32 = 0.01;
 // DB_ANALYSIS_FLOOR + DB_FLOOR_EPS in linear power.
 const ANALYSIS_POWER_EPS: f32 = 1.0023052e-14;
 
-// Must match Rust-side Uniforms layout exactly.
 struct Uniforms {
     freq_axis: vec2<f32>,           // (scaled_min, inverse scaled display span)
     freq_scale: u32,                // 0=linear, 1=log, 2=erb
-    points_per_col: u32,            // reassigned page-tag shift, or classic FFT bins
+    points_per_col: u32,
 
     history_length: u32,
     col_count: u32,
@@ -43,13 +39,13 @@ struct Uniforms {
 
     newest_col: u32,
     inv_uv_range: f32,
-    // FFT bin spacing (sample_rate / fft_size); only used by classic sampling.
     bin_hz: f32,
     reassigned_power_scale: f32,
     page_slot_mask: u32,
     scroll_phase: f32,              // reassigned: splat x offset that keeps scrolls whole-pixel
     ring_width: u32,                // reassigned: accumulation width, the view plus a margin
     image_start: f32,               // reassigned: frame x where the accumulation starts showing
+    page_shift: u32,                // reassigned: where a page tag's stride begins
 
     // (pos1, pos2, pos3, spread0), (spread1, spread2, spread3, spread4).
     // Stops 0 and 4 are constant 0.0 / 1.0
@@ -120,7 +116,6 @@ fn unpack_mag(slot: u32, bin_in_col: u32) -> f32 {
     return select(pair.y, pair.x, (idx & 1u) == 0u) * DB_STORE_RANGE + DB_STORE_LO;
 }
 
-// Instance flag: splat one texture width left (render.rs WRAP_BIT).
 const WRAPPED: u32 = 0x80000000u;
 const CULL_POS: vec4<f32> = vec4<f32>(0.0, 0.0, 2.0, 1.0);
 
@@ -133,20 +128,20 @@ fn quad_clip(local: vec2<f32>) -> vec4<f32> {
     return vec4<f32>(px.x * u.clip_scale.x - 1.0, 1.0 - px.y * u.clip_scale.y, 0.0, 1.0);
 }
 
-// Instances are page tags (stride << points_per_col | slot), maybe WRAPPED.
+// Instances are page tags (stride << page_shift | slot), maybe WRAPPED.
 @vertex
 fn vs_accum(
     @builtin(vertex_index) vertex: u32,
     @builtin(instance_index) instance: u32,
 ) -> AccumOutput {
     let tag = instance & ~WRAPPED;
-    let point = points[(tag & u.page_slot_mask) * (tag >> u.points_per_col) + vertex / 4u];
+    let point = points[(tag & u.page_slot_mask) * (tag >> u.page_shift) + vertex / 4u];
     let zoomed = (freq_to_norm(point.freq_hz) - u.uv_y_range.x) * u.inv_uv_range;
     if !(point.power > 0.0) || zoomed < -0.01 || zoomed > 1.01 {
         return AccumOutput(CULL_POS, point.power, point.freq_hz);
     }
     let ext = extents();
-    let slot = tag & ((1u << u.points_per_col) - 1u);
+    let slot = tag & ((1u << u.page_shift) - 1u);
     let hl = u.history_length;
     let age = (u.newest_col + hl - slot) % hl;
     let pos = vec2<f32>(
@@ -175,7 +170,6 @@ fn vs_resolve(@builtin(vertex_index) vertex: u32) -> ResolveOutput {
     return ResolveOutput(quad_clip(rotate(frame, ext)), frame, ring);
 }
 
-// Full-target triangle.
 @vertex
 fn vs_fill(@builtin(vertex_index) vertex: u32) -> @builtin(position) vec4<f32> {
     return vec4<f32>(vec2<f32>(f32(vertex & 1u), f32(vertex >> 1u)) * 4.0 - 1.0, 0.0, 1.0);

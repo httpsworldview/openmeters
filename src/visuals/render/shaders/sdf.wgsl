@@ -1,6 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
+// Primitive tags, plus TURN per clockwise quarter turn.
+const BASELINE: u32 = 1u;
+const LINE: u32 = 2u;
+const DOT: u32 = 3u;
+const RADIAL_DOT: u32 = 4u;
+const TURN: u32 = 8u;
+
+const SCALED_MODE_MIN_SQUARED: f32 = 1.4210855e-14;
+const SCALED_MODE_SATURATION_SQUARED: f32 = 2.2387474;
+const SCALED_MODE_SCALE: f32 = 0.8861337;
+const SCALED_MODE_EXPONENT: f32 = -0.35;
+
 struct InstanceInput {
     @location(0) p0: vec2<f32>,
     @location(1) p1: vec2<f32>,
@@ -24,14 +36,13 @@ fn vs_main(input: InstanceInput, @builtin(vertex_index) vertex: u32) -> VertexOu
     var sdf = vec4<f32>(0.0, 0.0, 1000.0, 0.0);
 
     let tag = u32(input.params.w);
-    switch tag & 7u {
+    switch tag % TURN {
         case 0u: {
             let corner = vec2<f32>(endpoint, 1.0 - parity);
             position = mix(input.p0, input.p1, corner);
             color = mix(input.color0, input.color1, corner.y);
-            sdf.w = input.params.x; // Preserve raw color for replacement blending.
         }
-        case 1u: {
+        case BASELINE: {
             let top_y = mix(max(input.p0.y, input.params.x), max(input.p1.y, input.params.x), endpoint);
             let bottom_y = mix(min(input.p0.y, input.params.x), min(input.p1.y, input.params.x), endpoint);
             position = vec2<f32>(mix(input.p0.x, input.p1.x, endpoint), mix(top_y, bottom_y, 1.0 - parity));
@@ -44,22 +55,21 @@ fn vs_main(input: InstanceInput, @builtin(vertex_index) vertex: u32) -> VertexOu
                 color = mix(input.color0, input.color1, endpoint);
             }
         }
-        case 2u: {
+        case LINE: {
             let side = 1.0 - 2.0 * parity;
             position = mix(input.p0, input.p1, endpoint) + input.params.xy * side;
             color = mix(input.color0, input.color1, endpoint);
             sdf = vec4<f32>(side * (input.params.z + 1.0), 0.0, input.params.z, 0.0);
         }
-        case 4u: {
+        case RADIAL_DOT: {
             let corner = vec2<f32>(endpoint, parity) * 2.0 - 1.0;
             var point = input.p0;
             if input.params.z < 0.0 {
-                // Constants/cutoff match stereometer/render.rs::scaled_point.
                 let squared = dot(point, point);
-                if squared < 1.4210855e-14 {
+                if squared < SCALED_MODE_MIN_SQUARED {
                     point = vec2<f32>(0.0);
-                } else if squared < 2.2387474 {
-                    point *= 0.8861337 * pow(squared, -0.35);
+                } else if squared < SCALED_MODE_SATURATION_SQUARED {
+                    point *= SCALED_MODE_SCALE * pow(squared, SCALED_MODE_EXPONENT);
                 } else {
                     point *= inverseSqrt(squared);
                 }
@@ -70,15 +80,15 @@ fn vs_main(input: InstanceInput, @builtin(vertex_index) vertex: u32) -> VertexOu
                 + input.p1 * corner * (input.params.x + 1.0);
             sdf = vec4<f32>(corner * (input.params.x + 1.0), input.params.x, input.params.y);
         }
-        default: {
+        case DOT, default: {
             let corner = vec2<f32>(endpoint, parity) * 2.0 - 1.0;
             position = input.p0 + input.p1 * corner;
             sdf = vec4<f32>(corner * (input.params.x + 1.0), input.params.x, input.params.y);
         }
     }
 
-    // High tag bits turn the expanded primitive clockwise; see render/common.rs.
-    switch tag >> 3u {
+    // Whole turn steps turn the expanded primitive clockwise.
+    switch tag / TURN {
         case 1u: { position = vec2<f32>(position.y, -position.x); }
         case 2u: { position = -position; }
         case 3u: { position = vec2<f32>(-position.y, position.x); }

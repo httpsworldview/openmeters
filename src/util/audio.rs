@@ -79,6 +79,9 @@ pub fn fmt_duration(seconds: f32) -> String {
 }
 
 #[cfg(test)]
+pub use self::frequency::LOG_KNEE_HZ;
+
+#[cfg(test)]
 pub fn sine_wave(frequency: f32, sample_rate: f32, count: usize, amplitude: f32) -> Vec<f32> {
     (0..count)
         .map(|i| (core::f32::consts::TAU * frequency * i as f32 / sample_rate).sin() * amplitude)
