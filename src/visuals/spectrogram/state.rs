@@ -10,7 +10,7 @@ use crate::util::{
     audio::musical::{MusicalNote, NoteInfo},
     audio::{DISPLAY_MIN_HZ, FrequencyScale, fmt_duration, fmt_freq},
     color::{color_to_rgba, lerp_color, rgba_scale_alpha, with_alpha},
-    unpoison,
+    lerp, unpoison,
 };
 use crate::visuals::options::PianoRollOverlay;
 use crate::visuals::palettes;
@@ -24,7 +24,7 @@ use iced::advanced::{Layout, Renderer as _, Widget, mouse};
 use iced::{Color, Element, Length, Point, Rectangle, Size, Vector, keyboard};
 use iced_wgpu::primitive::Renderer as _;
 use std::cell::RefCell;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, Mutex};
 
 const SPECTROGRAM_OPACITY: f32 = 0.95;
 const TOOLTIP_SIZE: f32 = 14.0;
@@ -41,31 +41,21 @@ const PIANO_BLACK_KEY_RATIO: f32 = 0.6;
 const PIANO_LABEL_SIZE: f32 = 9.0;
 const PIANO_MIDI_LO: i32 = 21; // A0
 const PIANO_MIDI_HI: i32 = 119; // B8
-const PIANO_KEY_COUNT: usize = (PIANO_MIDI_HI - PIANO_MIDI_LO + 1) as usize;
 
-static PIANO_KEY_SCALES: LazyLock<[[[f32; 2]; PIANO_KEY_COUNT]; 3]> = LazyLock::new(|| {
-    std::array::from_fn(|index| {
-        let scale = FrequencyScale::ALL[index];
-        let semi = (0.5_f32 / 12.0).exp2();
-        let (inv_s, whole, inv_w) = (1.0 / semi, semi * semi, 1.0 / (semi * semi));
-        std::array::from_fn(|i| {
-            let note = MusicalNote::from_midi(PIANO_MIDI_LO + i as i32);
-            let (ml, mh) = if note.is_black() {
-                (inv_s, semi)
-            } else {
-                match note.midi_number % 12 {
-                    0 | 5 => (inv_s, whole),
-                    4 | 11 => (inv_w, semi),
-                    _ => (inv_w, whole),
-                }
-            };
-            [
-                scale.scale(note.to_frequency() * mh),
-                scale.scale(note.to_frequency() * ml),
-            ]
-        })
-    })
-});
+// Frequency ratios from a key's pitch to its lower and upper edges.
+fn key_edges(note: MusicalNote) -> (f32, f32) {
+    let semi = (0.5_f32 / 12.0).exp2();
+    let (inv_s, whole, inv_w) = (1.0 / semi, semi * semi, 1.0 / (semi * semi));
+    if note.is_black() {
+        (inv_s, semi)
+    } else {
+        match note.midi_number % 12 {
+            0 | 5 => (inv_s, whole),
+            4 | 11 => (inv_w, semi),
+            _ => (inv_w, whole),
+        }
+    }
+}
 
 fn display_axis(sample_rate: f32) -> (f32, f32) {
     let nyq = (sample_rate / 2.0).max(1.0);
@@ -159,11 +149,11 @@ impl SpectrogramHistory {
 
 crate::macros::default_struct! {
     pub(crate) struct SpectrogramState {
-        pub(in crate::visuals) palette: [Color; SPECTROGRAM_PALETTE_SIZE] = palettes::spectrogram::COLORS,
-        pub(in crate::visuals) stop_positions: [f32; SPECTROGRAM_PALETTE_SIZE] = palettes::spectrogram::DEFAULT_POSITIONS,
-        pub(in crate::visuals) stop_spreads: [f32; SPECTROGRAM_PALETTE_SIZE] = [1.0; SPECTROGRAM_PALETTE_SIZE],
+        palette: [Color; SPECTROGRAM_PALETTE_SIZE] = palettes::spectrogram::COLORS,
+        stop_positions: [f32; SPECTROGRAM_PALETTE_SIZE] = palettes::spectrogram::DEFAULT_POSITIONS,
+        stop_spreads: [f32; SPECTROGRAM_PALETTE_SIZE] = [1.0; SPECTROGRAM_PALETTE_SIZE],
         key: u64 = crate::visuals::next_key(),
-        pub(in crate::visuals) settings: SpectrogramSettings = SpectrogramSettings::default(),
+        settings: SpectrogramSettings = SpectrogramSettings::default(),
         sample_rate: f32 = SpectrogramConfig::default().sample_rate.hz(),
         bin_hz: f32 = 0.0,
         hop_size: usize = SpectrogramConfig::default().hop_size.get(),
@@ -265,7 +255,7 @@ impl SpectrogramState {
         QuarterTurn::new(self.settings.rotation)
     }
 
-    // Cursor offset in the unturned frame and the frame size; matches shader unrotate.
+    // Cursor offset in the unturned frame, and the frame size.
     fn frame_cursor(&self, cursor: Point, bounds: Rectangle) -> Option<(Vector, Size)> {
         let turn = self.turn();
         bounds.contains(cursor).then(|| {
@@ -298,8 +288,20 @@ const ZOOM_STEP: f32 = 1.15;
 #[derive(Default)]
 struct InteractionState {
     modifiers: keyboard::Modifiers,
-    drag: Option<(mouse::Button, f32, f32)>,
-    left_held: bool,
+    gesture: Gesture,
+}
+
+#[derive(Clone, Copy, Default)]
+enum Gesture {
+    #[default]
+    Idle,
+    // The left button is held on the point to read out.
+    Inspect,
+    Pan {
+        button: mouse::Button,
+        origin: f32,
+        start_pan: f32,
+    },
 }
 
 impl SpectrogramState {
@@ -310,14 +312,12 @@ impl SpectrogramState {
     }
 
     fn zoom_at(&mut self, y_norm: f32, factor: f32) {
-        let old_h = 0.5 / self.zoom;
-        let old_min = (self.pan - old_h).clamp(0.0, 1.0);
-        let cursor_uv = old_min + y_norm * 2.0 * old_h;
+        let [min, max] = self.uv_y_range();
+        let cursor_uv = lerp(min, max, y_norm);
         self.zoom = (self.zoom * factor).clamp(MIN_ZOOM, MAX_ZOOM);
         self.set_pan(cursor_uv - 0.5 / self.zoom * (2.0 * y_norm - 1.0));
     }
 
-    // Keeps the zoomed view inside the full range.
     fn set_pan(&mut self, pan: f32) {
         let h = 0.5 / self.zoom;
         self.pan = pan.clamp(h, 1.0 - h);
@@ -407,7 +407,6 @@ fn piano_key_spans(
         let t = (uv - uv_range[0]) / (uv_range[1] - uv_range[0]);
         origin + extent * if ascending { t } else { 1.0 - t }
     };
-    let key_scales = &PIANO_KEY_SCALES[scale as usize];
     // White and black key spans, in paint order.
     [false, true].map(move |black| {
         (midi_lo..=midi_hi).filter_map(move |midi| {
@@ -415,7 +414,9 @@ fn piano_key_spans(
             if note.is_black() != black {
                 return None;
             }
-            let [a, b] = key_scales[(midi - PIANO_MIDI_LO) as usize].map(position);
+            let (lower, upper) = key_edges(note);
+            let [a, b] =
+                [upper, lower].map(|edge| position(scale.scale(note.to_frequency() * edge)));
             let (lo, hi) = if a < b { (a, b) } else { (b, a) };
             if hi <= origin || lo >= origin + extent {
                 return None;
@@ -445,7 +446,7 @@ impl Spectrogram<'_> {
     }
 
     fn draw_tooltip(
-        &self,
+        state: &SpectrogramState,
         renderer: &mut iced::Renderer,
         theme: &iced::Theme,
         bounds: Rectangle,
@@ -453,13 +454,11 @@ impl Spectrogram<'_> {
         cursor: Point,
         uv_range: [f32; 2],
     ) {
-        let state = self.state.borrow();
         let Some(freq) = state.frequency_at_cursor(cursor, bounds, uv_range) else {
             return;
         };
         let horizontal = state.turn().swaps_axes();
         let time_ago = state.time_ago_at_cursor(cursor, bounds);
-        drop(state);
 
         let freq_text = fmt_freq(freq);
         let note_text = NoteInfo::from_frequency(freq)
@@ -497,7 +496,7 @@ impl Spectrogram<'_> {
     }
 
     fn draw_piano_roll(
-        &self,
+        state: &SpectrogramState,
         renderer: &mut iced::Renderer,
         theme: &iced::Theme,
         bounds: Rectangle,
@@ -508,7 +507,6 @@ impl Spectrogram<'_> {
         if bounds.width <= 0.0 || bounds.height <= 0.0 || uv_range[1] <= uv_range[0] {
             return bounds;
         }
-        let state = self.state.borrow();
         let horizontal = state.turn().swaps_axes();
         let (freq_org, freq_ext, time_org, time_ext) = if horizontal {
             (bounds.x, bounds.width, bounds.y, bounds.height)
@@ -610,31 +608,29 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'_> {
         let b = layout.bounds();
         match event {
             iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
-                if st.left_held || st.drag.is_some() {
+                if !matches!(st.gesture, Gesture::Idle) {
                     shell.request_redraw();
                 }
-                if let Some((_, origin, start_pan)) = st.drag {
-                    let mut state = this.state.borrow_mut();
+                if let Gesture::Pan { origin, start_pan, .. } = st.gesture {
+                    let state = &mut *this.state.borrow_mut();
                     let turn = state.turn();
-                    let current = turn.to_frame(b, *position).y;
-                    let zoom = state.zoom;
-                    state.set_pan(start_pan + (current - origin) / turn.frame(b).height / zoom);
+                    let moved = turn.to_frame(b, *position).y - origin;
+                    state.set_pan(start_pan + moved / turn.frame(b).height / state.zoom);
                 }
             }
             iced::Event::Mouse(mouse::Event::CursorLeft) => {
-                let active = std::mem::take(&mut st.left_held) | st.drag.take().is_some();
-                if active {
+                if !matches!(std::mem::take(&mut st.gesture), Gesture::Idle) {
                     shell.request_redraw();
                 }
             }
             iced::Event::Keyboard(keyboard::Event::ModifiersChanged(m)) => st.modifiers = *m,
             iced::Event::Mouse(mouse::Event::WheelScrolled { delta }) if st.modifiers.control() => {
-                if let Some(pos) = cursor.position().filter(|p| b.contains(*p)) {
+                if let Some(pos) = cursor.position_over(b) {
                     let mut state = this.state.borrow_mut();
                     let freq_norm = state.freq_axis_norm(pos, b).unwrap_or(0.5);
                     state.zoom_at(freq_norm, ZOOM_STEP.powf(scroll_delta_lines(*delta)));
                     // Re-anchor a drag in progress, or its next move would undo the zoom.
-                    if let Some((_, origin, start_pan)) = &mut st.drag {
+                    if let Gesture::Pan { origin, start_pan, .. } = &mut st.gesture {
                         (*origin, *start_pan) = (state.turn().to_frame(b, pos).y, state.pan);
                     }
                     shell.request_redraw();
@@ -645,27 +641,32 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'_> {
                 if *button == mouse::Button::Middle
                     || (*button == mouse::Button::Left && st.modifiers.control()) => {
                 let state = this.state.borrow();
+                let panning = matches!(st.gesture, Gesture::Pan { .. });
                 if let Some(pos) = cursor
                     .position()
-                    .filter(|p| b.contains(*p) && state.zoom > MIN_ZOOM && st.drag.is_none())
+                    .filter(|p| b.contains(*p) && state.zoom > MIN_ZOOM && !panning)
                 {
-                    st.left_held = false;
-                    st.drag = Some((*button, state.turn().to_frame(b, pos).y, state.pan));
+                    st.gesture = Gesture::Pan {
+                        button: *button,
+                        origin: state.turn().to_frame(b, pos).y,
+                        start_pan: state.pan,
+                    };
                     shell.capture_event();
                 }
             }
-            iced::Event::Mouse(mouse::Event::ButtonReleased(button))
-                if st.drag.is_some_and(|(owner, ..)| owner == *button) => {
-                st.drag = None;
+            iced::Event::Mouse(mouse::Event::ButtonReleased(released))
+                if matches!(st.gesture, Gesture::Pan { button, .. } if button == *released) => {
+                st.gesture = Gesture::Idle;
             }
             iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
-                if st.drag.is_none() && cursor.position().is_some_and(|position| b.contains(position)) => {
-                    st.left_held = true;
+                if !matches!(st.gesture, Gesture::Pan { .. })
+                    && cursor.is_over(b) => {
+                    st.gesture = Gesture::Inspect;
                     shell.request_redraw();
                 }
             iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
-                if st.left_held => {
-                    st.left_held = false;
+                if matches!(st.gesture, Gesture::Inspect) => {
+                    st.gesture = Gesture::Idle;
                     shell.request_redraw();
                 }
             _ => {}
@@ -674,18 +675,16 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'_> {
 
     crate::macros::widget_method!(draw this; tree, renderer, theme, _, layout, cursor, _ => {
         let bounds = layout.bounds();
-        let (uv_y_range, piano_roll, params);
-        {
-            let mut state = this.state.borrow_mut();
-            let time_extent = state.turn().frame(bounds).width;
-            state.view_width = time_extent.round().max(1.0) as u32;
-            uv_y_range = state.uv_y_range();
-            piano_roll = state.settings.piano_roll_overlay;
-            params = state.visual_params(bounds, uv_y_range);
-        }
+        let mut state = this.state.borrow_mut();
+        let time_extent = state.turn().frame(bounds).width;
+        state.view_width = time_extent.round().max(1.0) as u32;
+        let state = &*state;
+        let uv_y_range = state.uv_y_range();
+        let piano_roll = state.settings.piano_roll_overlay;
         let interaction = tree.state.downcast_ref::<InteractionState>();
-        let inspection = cursor.position().filter(|point| interaction.left_held && bounds.contains(*point));
-        if let Some(p) = params {
+        let inspecting = matches!(interaction.gesture, Gesture::Inspect);
+        let inspection = cursor.position_over(bounds).filter(|_| inspecting);
+        if let Some(p) = state.visual_params(bounds, uv_y_range) {
             renderer.draw_primitive(bounds, p);
         }
         if let Some(c) = inspection {
@@ -694,12 +693,13 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'_> {
         let mut tooltip_bounds = bounds;
         if piano_roll != PianoRollOverlay::Off {
             renderer.with_layer(bounds, |r| {
-                tooltip_bounds = this.draw_piano_roll(r, theme, bounds, piano_roll, uv_y_range, inspection);
+                tooltip_bounds =
+                    Self::draw_piano_roll(state, r, theme, bounds, piano_roll, uv_y_range, inspection);
             });
         }
         if let Some(c) = inspection {
             renderer.with_layer(bounds, |r| {
-                this.draw_tooltip(r, theme, bounds, tooltip_bounds, c, uv_y_range);
+                Self::draw_tooltip(state, r, theme, bounds, tooltip_bounds, c, uv_y_range);
             });
         }
     });
@@ -713,7 +713,7 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'_> {
         _: &iced::Renderer,
     ) -> mouse::Interaction {
         let interaction = tree.state.downcast_ref::<InteractionState>();
-        if interaction.drag.is_some() {
+        if matches!(interaction.gesture, Gesture::Pan { .. }) {
             mouse::Interaction::Grabbing
         } else if cursor.is_over(layout.bounds()) {
             mouse::Interaction::Crosshair
@@ -781,7 +781,7 @@ mod tests {
     }
 
     // Drains the pending work, as prepare does.
-    fn visual_params(state: &mut SpectrogramState) -> (SpectrogramParams, PendingColumns) {
+    fn visual_params(state: &SpectrogramState) -> (SpectrogramParams, PendingColumns) {
         let params = state
             .visual_params(Rectangle::with_size(Size::new(10.0, 10.0)), [0.0, 1.0])
             .expect("expected spectrogram params");
@@ -796,7 +796,7 @@ mod tests {
     fn seeded_ring() -> SpectrogramState {
         let mut state = SpectrogramState::default();
         state.apply_snapshot(classic_update(4, true, &[0.0, 1.0, 2.0, 3.0]));
-        assert_eq!(upload_slots(&visual_params(&mut state)), vec![0, 1, 2, 3]);
+        assert_eq!(upload_slots(&visual_params(&state)), vec![0, 1, 2, 3]);
         state
     }
 
@@ -820,10 +820,10 @@ mod tests {
     fn resize_copy_plans_preserve_visible_columns() {
         let mut state = seeded_ring();
         state.apply_snapshot(classic_update(4, false, &[4.0, 5.0]));
-        assert_eq!(upload_slots(&visual_params(&mut state)), vec![0, 1]);
+        assert_eq!(upload_slots(&visual_params(&state)), vec![0, 1]);
 
         state.apply_snapshot(classic_update(6, false, &[6.0]));
-        let frame = visual_params(&mut state);
+        let frame = visual_params(&state);
         let (params, pending) = &frame;
         assert_eq!(
             (params.ring_capacity, params.col_count, params.write_slot),
@@ -835,7 +835,7 @@ mod tests {
 
         let mut state = seeded_ring();
         state.apply_snapshot(classic_update(2, false, &[4.0]));
-        let frame = visual_params(&mut state);
+        let frame = visual_params(&state);
         let (params, pending) = &frame;
         assert_eq!(
             (params.ring_capacity, params.col_count, params.write_slot),
@@ -850,7 +850,7 @@ mod tests {
         let mut state = SpectrogramState::default();
         state.apply_snapshot(reassigned_update(4, true, &[0, 2, 1]));
 
-        let (params, pending) = visual_params(&mut state);
+        let (params, pending) = visual_params(&state);
 
         assert_eq!(params.reassigned_power_scale, 0.25);
         assert_eq!(&params.slot_counts[..4], &[0, 2, 1, 0]);

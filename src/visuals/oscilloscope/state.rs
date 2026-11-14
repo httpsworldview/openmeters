@@ -16,8 +16,8 @@ use std::sync::Arc;
 crate::macros::default_struct! {
     pub(crate) struct OscilloscopeState {
         snapshot: OscilloscopeSnapshot = OscilloscopeSnapshot::default(),
-        pub(in crate::visuals) palette: [Color; TRACE_COUNT] = palettes::oscilloscope::COLORS,
-        pub(in crate::visuals) settings: OscilloscopeSettings = OscilloscopeSettings::default(),
+        palette: [Color; TRACE_COUNT] = palettes::oscilloscope::COLORS,
+        settings: OscilloscopeSettings = OscilloscopeSettings::default(),
         geometry: crate::visuals::GeometryKey = crate::visuals::GeometryKey::new(),
         lane_1_key: u64 = crate::visuals::next_key(),
     }

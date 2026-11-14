@@ -152,7 +152,7 @@ visuals! {
         waveform::WaveformProcessor, WaveformState;
         pre_ingest(p, s) {
             let mut cfg = p.config();
-            if set_if_changed(&mut cfg.max_columns, s.borrow().view_columns()) {
+            if set_if_changed(&mut cfg.max_columns, s.borrow().view_columns) {
                 p.update_config(cfg);
             }
         };

@@ -63,6 +63,14 @@ fn default_time_constant() -> Seconds {
     DEFAULT_SPECTRUM_TIME_CONSTANT
 }
 
+// The trace each source shows on, if any. A secondary equal to the primary shares its trace.
+pub(super) fn trace_slots(primary: Channel, secondary: Channel) -> [Option<usize>; TRACE_COUNT] {
+    [
+        (primary != Channel::None).then_some(0),
+        (secondary != Channel::None).then_some(usize::from(secondary != primary)),
+    ]
+}
+
 #[derive(Default)]
 pub struct SpectrumProcessor {
     config: SpectrumConfig,
@@ -151,10 +159,8 @@ impl SpectrumProcessor {
 
     fn active_traces(&self) -> [bool; TRACE_COUNT] {
         let [primary, secondary] = self.sources();
-        [
-            primary != Channel::None,
-            secondary != Channel::None && secondary != primary,
-        ]
+        let slots = trace_slots(primary, secondary);
+        std::array::from_fn(|trace| slots.contains(&Some(trace)))
     }
 
     fn process_ready_windows(&mut self) -> bool {

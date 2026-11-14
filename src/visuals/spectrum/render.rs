@@ -71,18 +71,24 @@ impl SpectrumParams {
         }
         let vertices = &mut scratch.instances;
         if let Some(peak) = self.peak {
+            let marker = normalized_to_cartesian(bounds, peak.marker);
             if let Some(anchor) = peak.leader_anchor {
                 vertices.push(line_instance(
                     normalized_to_cartesian(bounds, anchor),
-                    normalized_to_cartesian(bounds, peak.marker),
+                    marker,
                     peak.leader_color,
                     peak.leader_color,
                     1.0,
                     clip,
                 ));
             }
-            let (x, y) = normalized_to_cartesian(bounds, peak.marker);
-            vertices.push(dot_instance(x, y, 3.0, peak.marker_color, clip));
+            vertices.push(dot_instance(
+                marker.0,
+                marker.1,
+                3.0,
+                peak.marker_color,
+                clip,
+            ));
         }
         turn_instances(vertices, self.turn);
     }
@@ -149,7 +155,7 @@ impl SpectrumParams {
         let unit = bounds.width / bar_count as f32;
         let (bar_w, offset) = (unit * (1.0 - self.bar_gap), unit * self.bar_gap * 0.5);
         let baseline = bounds.y + bounds.height;
-        let y_at = |amp: f32| bounds.y + bounds.height * (1.0 - amp);
+        let y_at = |amp: f32| normalized_to_cartesian(bounds, [0.0, amp]).1;
         let secondary = (self.secondary_points.len() >= MIN_TRACE_POINTS)
             .then_some(self.secondary_points.as_ref());
 
@@ -193,7 +199,7 @@ impl SpectrumParams {
     }
 }
 
-fn normalized_to_cartesian(b: Rectangle, [x, y]: [f32; 2]) -> (f32, f32) {
+pub(super) fn normalized_to_cartesian(b: Rectangle, [x, y]: [f32; 2]) -> (f32, f32) {
     (b.x + b.width * x, b.y + b.height * (1.0 - y))
 }
 

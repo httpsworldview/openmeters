@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::processor::{SpectrumSnapshot, SpectrumTraceSnapshot, a_weight};
-use super::render::{MIN_TRACE_POINTS, RAMP_SIZE, SpectrumParams, SpectrumPeakParams};
+use super::processor::{SpectrumSnapshot, SpectrumTraceSnapshot, a_weight, trace_slots};
+use super::render::{
+    MIN_TRACE_POINTS, RAMP_SIZE, SpectrumParams, SpectrumPeakParams, normalized_to_cartesian,
+};
 use crate::persistence::settings::SpectrumSettings;
 use crate::util::audio::musical::NoteInfo;
-use crate::util::audio::{
-    Channel, DISPLAY_MIN_HZ, FrequencyScale, WindowKind, fmt_freq, smoothing_weight,
-};
-use crate::util::color::{color_to_rgba, with_alpha};
+use crate::util::audio::{DISPLAY_MIN_HZ, FrequencyScale, WindowKind, fmt_freq, smoothing_weight};
+use crate::util::color::{color_to_rgba, rgba_scale_alpha, with_alpha};
 use crate::util::lerp;
 use crate::visuals::options::{SpectrumDisplayMode, SpectrumWeightingMode};
 use crate::visuals::palettes::{self, spectrum::SIZE as PALETTE_SIZE};
@@ -60,15 +60,17 @@ static EMPTY_POINTS: LazyLock<SharedPoints> = LazyLock::new(|| Arc::new(Vec::new
 
 crate::macros::default_struct! {
     pub(crate) struct SpectrumState {
-        pub(in crate::visuals) style: SpectrumSettings = SpectrumSettings::default(),
-        pub(in crate::visuals) palette: [Color; PALETTE_SIZE] = palettes::spectrum::COLORS,
-        pub(in crate::visuals) stop_positions: [f32; RAMP_SIZE] = palettes::spectrum::DEFAULT_POSITIONS,
-        pub(in crate::visuals) stop_spreads: [f32; RAMP_SIZE] = [1.0; RAMP_SIZE],
+        settings: SpectrumSettings = SpectrumSettings::default(),
+        palette: [Color; PALETTE_SIZE] = palettes::spectrum::COLORS,
+        stop_positions: [f32; RAMP_SIZE] = palettes::spectrum::DEFAULT_POSITIONS,
+        stop_spreads: [f32; RAMP_SIZE] = [1.0; RAMP_SIZE],
         points: [SharedPoints; 2] = std::array::from_fn(|_| Arc::clone(&EMPTY_POINTS)),
+        // The buffers shown before `points`, free to refill once their frame is gone.
+        spare_points: [SharedPoints; 2] = std::array::from_fn(|_| Arc::clone(&EMPTY_POINTS)),
         geometry: crate::visuals::GeometryKey = crate::visuals::GeometryKey::new(),
         peak: Option<PeakLabel> = None,
         effective_range: Option<(f32, f32)> = None,
-        x_cache_key: (usize, u32, FrequencyScale) = (0, 0, FrequencyScale::default()),
+        x_cache_key: (usize, u32, FrequencyScale, bool) = (0, 0, FrequencyScale::default(), false),
         x_cache: Vec<f32> = Vec::new(),
         grid_ticks: Vec<GridTick> = Vec::new(),
         grid_labels: Vec<GridLabelLayout> = Vec::new(),
@@ -82,7 +84,7 @@ impl SpectrumState {
         settings: &SpectrumSettings,
         snapshot: &SpectrumSnapshot,
     ) {
-        self.style = *settings;
+        self.settings = *settings;
         // Do not animate from peak coordinates in the old projection.
         self.peak = None;
         self.apply_snapshot(snapshot);
@@ -91,11 +93,13 @@ impl SpectrumState {
     crate::visuals::palette_setter!(spectrum, ramp => geometry);
 
     fn turn(&self) -> QuarterTurn {
-        QuarterTurn::new(self.style.rotation)
+        QuarterTurn::new(self.settings.rotation)
     }
 
     pub fn reset_audio(&mut self) {
-        self.points.fill_with(|| Arc::clone(&EMPTY_POINTS));
+        for points in self.points.iter_mut().chain(&mut self.spare_points) {
+            *points = Arc::clone(&EMPTY_POINTS);
+        }
         self.effective_range = None;
         self.peak = None;
         self.clear_grid_layout();
@@ -109,27 +113,27 @@ impl SpectrumState {
             self.reset_audio();
             return;
         };
-        let primary_trace = (self.style.source != Channel::None).then_some(0);
-        let secondary_trace = match (self.style.source, self.style.secondary_source) {
-            (_, Channel::None) => None,
-            (primary_source, secondary_source) if primary_source == secondary_source => Some(0),
-            _ => Some(1),
-        };
+        let slots = trace_slots(self.settings.source, self.settings.secondary_source);
         let min_f = DISPLAY_MIN_HZ;
         let max_f = max_f.max(min_f * MIN_DISPLAY_RANGE_FACTOR);
         self.ensure_x_cache(min_f, max_f, bins);
-        let style = &self.style;
+        let settings = &self.settings;
 
-        for ((points, trace), weighting) in self
+        for (((points, spare), trace), weighting) in self
             .points
             .iter_mut()
-            .zip([primary_trace, secondary_trace])
-            .zip([style.weighting_mode, style.secondary_weighting_mode])
+            .zip(&mut self.spare_points)
+            .zip(slots)
+            .zip([settings.weighting_mode, settings.secondary_weighting_mode])
         {
             let Some(trace) = trace else {
                 *points = Arc::clone(&EMPTY_POINTS);
                 continue;
             };
+            // The frame last drawn still holds the points it shows.
+            if Arc::strong_count(points) != 1 {
+                std::mem::swap(points, spare);
+            }
             if Arc::strong_count(points) != 1 || points.capacity() != self.x_cache.len() {
                 *points = Arc::new(Vec::with_capacity(self.x_cache.len()));
             }
@@ -137,7 +141,7 @@ impl SpectrumState {
             points.clear();
             build_single_points_into(
                 points,
-                style,
+                settings,
                 min_f,
                 max_f,
                 snap,
@@ -145,8 +149,8 @@ impl SpectrumState {
                 &self.x_cache,
             );
         }
-        let peak = primary_trace
-            .filter(|_| style.show_peak_label)
+        let peak = slots[0]
+            .filter(|_| settings.show_peak_label)
             .and_then(|trace| self.build_peak(snap, &snap.traces[trace], min_f, max_f));
         self.effective_range = Some((min_f, max_f));
         self.fade_peak(peak, snap.elapsed);
@@ -154,21 +158,26 @@ impl SpectrumState {
     }
 
     fn ensure_x_cache(&mut self, min_f: f32, max_f: f32, bins: &[f32]) {
-        let scale = self.style.frequency_scale;
-        let key = (bins.len(), max_f.to_bits(), scale);
+        let settings = &self.settings;
+        let key = (
+            bins.len(),
+            max_f.to_bits(),
+            settings.frequency_scale,
+            settings.reverse_frequency,
+        );
         if self.x_cache_key == key {
             return;
         }
 
+        let range = (min_f, max_f);
+        let interior = bins[interior_bins(bins, range)].iter().copied();
         self.x_cache.clear();
-        self.x_cache.reserve(bins.len() + 2);
-        for f in std::iter::once(min_f)
-            .chain(bins.iter().copied().filter(|&f| f > min_f && f < max_f))
-            .chain([max_f])
-        {
-            self.x_cache
-                .push(scale.pos_of(min_f, max_f, f).clamp(0.0, 1.0));
-        }
+        self.x_cache.extend(
+            std::iter::once(min_f)
+                .chain(interior)
+                .chain([max_f])
+                .map(|f| view_x(settings, range, f)),
+        );
         self.grid_ticks.clear();
         let exponents = MIN_GRID_HZ.log10().floor() as i32..=max_f.log10().ceil() as i32;
         self.grid_ticks.extend(
@@ -198,8 +207,8 @@ impl SpectrumState {
         let key = GridLayoutKey {
             bounds: [bounds.x, bounds.y, bounds.width, bounds.height].map(f32::to_bits),
             range: [range.0.to_bits(), range.1.to_bits()],
-            scale: self.style.frequency_scale,
-            reverse: self.style.reverse_frequency,
+            scale: self.settings.frequency_scale,
+            reverse: self.settings.reverse_frequency,
             turn: self.turn(),
         };
         if self.grid_layout_key == Some(key) {
@@ -213,13 +222,13 @@ impl SpectrumState {
 
         // Labels are laid out in the unturned frame and turned when drawn.
         let turn = self.turn();
-        let style = &self.style;
+        let settings = &self.settings;
         let frame = turn.frame(bounds);
         let label_y = frame.y + GRID_LABEL_GAP;
         let min_label_x = frame.x + GRID_LABEL_GAP;
         let ticks = &self.grid_ticks;
         let labels = &mut self.grid_labels;
-        let tick_x = grid_tick_x(frame, range, style);
+        let tick_x = grid_tick_x(frame, range, settings);
         let mut layout_tick = |(tick_index, tick): (usize, &GridTick)| {
             let (frequency, major, Some(text)) = tick else {
                 return;
@@ -252,7 +261,7 @@ impl SpectrumState {
                 bounds: Rectangle::new(Point::new(label_x, label_y), label_size),
             });
         };
-        if style.reverse_frequency {
+        if settings.reverse_frequency {
             ticks.iter().enumerate().rev().for_each(&mut layout_tick);
         } else {
             ticks.iter().enumerate().for_each(layout_tick);
@@ -268,20 +277,20 @@ impl SpectrumState {
     ) -> Option<PeakUpdate> {
         const MIN_NORMALIZED_LEVEL: f32 = 0.08;
         let bins = &snap.frequency_bins;
-        let db = trace_db(trace, self.style.weighting_mode);
+        let db = trace_db(trace, self.settings.weighting_mode);
         let (bin, range) = peak_bin(bins, db, min_f, max_f)?;
         if db[bin] <= snap.floor_db {
             return None;
         }
         // Weighting would skew the window's shape, so interpolate the raw trace and weight after.
-        let (f, m) = interpolated_peak(bins, &trace[1], bin, range, self.style.window);
-        let (m, unit) = match self.style.weighting_mode {
+        let raw = trace_db(trace, SpectrumWeightingMode::Raw);
+        let (f, m) = interpolated_peak(bins, raw, bin, range, self.settings.window);
+        let (m, unit) = match self.settings.weighting_mode {
             SpectrumWeightingMode::AWeighted => (m + a_weight(f), "dBFS(A)"),
             SpectrumWeightingMode::Raw => (m, "dBFS"),
         };
-        let x = view_x(&self.style, (min_f, max_f), f);
-        let floor = self.style.floor_db.get();
-        let y = ((m - floor) / (MAX_DB - floor)).clamp(0.0, 1.0);
+        let x = view_x(&self.settings, (min_f, max_f), f);
+        let y = level(m, self.settings.floor_db.get());
         if y < MIN_NORMALIZED_LEVEL {
             return None;
         }
@@ -332,7 +341,7 @@ impl SpectrumState {
     }
 
     pub(in crate::visuals) fn ignores_audio(&self) -> bool {
-        [self.style.source, self.style.secondary_source] == [Channel::None; 2]
+        trace_slots(self.settings.source, self.settings.secondary_source) == [None; 2]
     }
 
     pub(in crate::visuals) fn is_quiescent(&self) -> bool {
@@ -350,24 +359,22 @@ impl SpectrumState {
         peak_layout: Option<PeakLayout>,
     ) -> Option<SpectrumParams> {
         const AUXILIARY_LINE_ALPHA: f32 = 0.32;
-        let style = &self.style;
-        let visible_points = |source: Channel, points: &SharedPoints| {
-            let visible = source != Channel::None && points.len() >= MIN_TRACE_POINTS;
+        let settings = &self.settings;
+        let [mut primary, mut secondary] = self.points.each_ref().map(|points| {
+            let visible = points.len() >= MIN_TRACE_POINTS;
             Arc::clone(if visible { points } else { &EMPTY_POINTS })
-        };
-        let mut primary = visible_points(style.source, &self.points[0]);
-        let mut secondary = visible_points(style.secondary_source, &self.points[1]);
+        });
         if primary.is_empty() && secondary.is_empty() {
             return None;
         }
-        if style.display_mode == SpectrumDisplayMode::Bar && primary.is_empty() {
+        if settings.display_mode == SpectrumDisplayMode::Bar && primary.is_empty() {
             std::mem::swap(&mut primary, &mut secondary);
         }
 
         let theme_palette = theme.extended_palette();
         let primary_color = theme_palette.background.base.text;
         let secondary_color = theme_palette.secondary.weak.text;
-        let peak_color = self.palette[PEAK_PALETTE_INDEX];
+        let peak_color = color_to_rgba(self.palette[PEAK_PALETTE_INDEX]);
 
         Some(SpectrumParams {
             bounds,
@@ -379,21 +386,15 @@ impl SpectrumState {
             ramp: std::array::from_fn(|i| color_to_rgba(self.palette[i])),
             stop_positions: self.stop_positions,
             stop_spreads: self.stop_spreads,
-            display_mode: style.display_mode,
+            display_mode: settings.display_mode,
             turn: self.turn(),
-            bar_count: style.bar_count,
-            bar_gap: style.bar_gap.get(),
+            bar_count: settings.bar_count,
+            bar_gap: settings.bar_gap.get(),
             peak: self.peak().map(|peak| SpectrumPeakParams {
                 marker: peak.marker_pos,
-                marker_color: color_to_rgba(with_alpha(
-                    peak_color,
-                    peak_color.a * peak.opacity * 0.95,
-                )),
+                marker_color: rgba_scale_alpha(peak_color, peak.opacity * 0.95),
                 leader_anchor: peak_layout.map(|layout| layout.leader_anchor),
-                leader_color: color_to_rgba(with_alpha(
-                    peak_color,
-                    peak_color.a * peak.opacity * AUXILIARY_LINE_ALPHA,
-                )),
+                leader_color: rgba_scale_alpha(peak_color, peak.opacity * AUXILIARY_LINE_ALPHA),
             }),
         })
     }
@@ -401,7 +402,7 @@ impl SpectrumState {
 
 crate::visuals::visualization_widget!(Spectrum, SpectrumState, |this, r, th, b| {
     let mut state = this.state.borrow_mut();
-    let grid_range = state.effective_range.filter(|_| state.style.show_grid);
+    let grid_range = state.effective_range.filter(|_| state.settings.show_grid);
     if let Some(range) = grid_range {
         state.layout_grid_labels(b, range);
     } else {
@@ -503,7 +504,7 @@ fn trace_db(trace: &SpectrumTraceSnapshot, mode: SpectrumWeightingMode) -> &[f32
 
 fn build_single_points_into(
     out: &mut Vec<[f32; 2]>,
-    style: &SpectrumSettings,
+    settings: &SpectrumSettings,
     min_f: f32,
     max_f: f32,
     snap: &SpectrumSnapshot,
@@ -511,47 +512,57 @@ fn build_single_points_into(
     x_cache: &[f32],
 ) {
     let bins = &snap.frequency_bins;
-    let floor = style.floor_db.get();
-    let inv_dr = (MAX_DB - floor).recip();
+    let floor = settings.floor_db.get();
     let mut push = |x, m: f32| {
         let y = if m <= snap.floor_db {
             0.0
         } else {
-            ((m - floor) * inv_dr).clamp(0.0, 1.0)
+            level(m, floor)
         };
         if y.is_finite() {
-            out.push([if style.reverse_frequency { 1.0 - x } else { x }, y]);
+            out.push([x, y]);
         }
     };
 
-    let interior = bins.partition_point(|&f| f <= min_f)..bins.partition_point(|&f| f < max_f);
+    let interior = interior_bins(bins, (min_f, max_f));
     push(x_cache[0], value_at(bins, db, min_f));
     for (&x, &m) in x_cache[1..x_cache.len() - 1].iter().zip(&db[interior]) {
         push(x, m);
     }
     push(x_cache[x_cache.len() - 1], value_at(bins, db, max_f));
-    if style.reverse_frequency {
+    if settings.reverse_frequency {
         out.reverse();
     }
 }
 
-// Normalized display x of a frequency, honoring scale and direction.
-fn view_x(style: &SpectrumSettings, (min_f, max_f): (f32, f32), frequency: f32) -> f32 {
-    let t = style
+// Bins strictly inside the displayed range, whose ends take interpolated levels.
+fn interior_bins(bins: &[f32], (min_f, max_f): (f32, f32)) -> Range<usize> {
+    bins.partition_point(|&f| f <= min_f)..bins.partition_point(|&f| f < max_f)
+}
+
+fn level(db: f32, floor: f32) -> f32 {
+    ((db - floor) * (MAX_DB - floor).recip()).clamp(0.0, 1.0)
+}
+
+fn view_x(settings: &SpectrumSettings, (min_f, max_f): (f32, f32), frequency: f32) -> f32 {
+    let t = settings
         .frequency_scale
         .pos_of(min_f, max_f, frequency)
         .clamp(0.0, 1.0);
-    if style.reverse_frequency { 1.0 - t } else { t }
+    if settings.reverse_frequency {
+        1.0 - t
+    } else {
+        t
+    }
 }
 
-// Screen x of ticks within `range`.
 fn grid_tick_x(
     bounds: Rectangle,
     range: (f32, f32),
-    style: &SpectrumSettings,
+    settings: &SpectrumSettings,
 ) -> impl Fn(f32) -> Option<f32> {
     move |frequency| {
-        let x = view_x(style, range, frequency);
+        let x = view_x(settings, range, frequency);
         ((range.0..=range.1).contains(&frequency) && x.is_finite())
             .then_some(bounds.x + bounds.width * x)
     }
@@ -572,7 +583,7 @@ fn draw_grid_lines(
     let minor_color = with_alpha(text_color, 0.10);
     let turn = state.turn();
     let frame = turn.frame(bounds);
-    let tick_x = grid_tick_x(frame, range, &state.style);
+    let tick_x = grid_tick_x(frame, range, &state.settings);
 
     for (frequency, major, _) in &state.grid_ticks {
         let Some(x) = tick_x(*frequency) else {
@@ -642,8 +653,7 @@ fn peak_label_layout(bounds: Rectangle, turn: QuarterTurn, peak: &PeakLabel) -> 
         return None;
     }
     let [title, detail] = peak.text.each_ref().map(|text| text.min_bounds());
-    let [px, py] = peak.label_pos;
-    let peak_pos = Point::new(b.x + b.width * px, b.y + b.height * (1.0 - py));
+    let peak_pos = Point::from(normalized_to_cartesian(b, peak.label_pos));
     let padding = Padding::new(7.0).top(6.0).bottom(5.0);
     let size = turn.frame_size(Size::new(
         title.width.max(detail.width) + padding.x(),
@@ -700,6 +710,7 @@ fn draw_peak(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::audio::Channel;
 
     fn peak_content(peak: &PeakLabel) -> [String; 2] {
         peak.text.each_ref().map(|text| text.content().to_owned())
@@ -709,10 +720,10 @@ mod tests {
     fn secondary_trace_renders_without_primary_source() {
         let trace = [vec![-20.0; 3], vec![-20.0; 3]];
         let mut state = SpectrumState::default();
-        state.style.source = Channel::None;
-        state.style.secondary_source = Channel::Left;
+        state.settings.source = Channel::None;
+        state.settings.secondary_source = Channel::Left;
         state.apply_snapshot(&SpectrumSnapshot {
-            floor_db: state.style.floor_db.get(),
+            floor_db: state.settings.floor_db.get(),
             frequency_bins: vec![0.0, 20.0, 40.0],
             traces: [SpectrumTraceSnapshot::default(), trace],
             ..Default::default()
@@ -726,7 +737,7 @@ mod tests {
         assert!(line.secondary_points.len() >= 2);
         assert!(line.peak.is_none());
 
-        state.style.display_mode = SpectrumDisplayMode::Bar;
+        state.settings.display_mode = SpectrumDisplayMode::Bar;
         let bars = state
             .visual_params(bounds, &iced::Theme::Dark, None)
             .unwrap();
@@ -752,7 +763,7 @@ mod tests {
             ..Default::default()
         };
         let mut state = SpectrumState {
-            style: baseline,
+            settings: baseline,
             ..Default::default()
         };
         state.apply_snapshot(&snapshot);
@@ -778,7 +789,7 @@ mod tests {
             let revision = state.geometry.revision;
             state.update_view_settings(&settings, &snapshot);
             let mut expected = SpectrumState {
-                style: settings,
+                settings,
                 ..Default::default()
             };
             expected.apply_snapshot(&snapshot);
@@ -895,8 +906,8 @@ mod tests {
         ] {
             for reverse in [false, true] {
                 for state in [&mut state, &mut majors_only] {
-                    state.style.frequency_scale = scale;
-                    state.style.reverse_frequency = reverse;
+                    state.settings.frequency_scale = scale;
+                    state.settings.reverse_frequency = reverse;
                     state.ensure_x_cache(range.0, range.1, &[0.0, range.1]);
                 }
                 for tick in majors_only.grid_ticks.iter_mut().filter(|tick| !tick.1) {
@@ -919,12 +930,12 @@ mod tests {
 
                     // Turned labels stay upright, inside the pane, and in order.
                     let pane = Rectangle::new(Point::ORIGIN, Size::new(100.0, width));
-                    state.style.rotation = 1;
+                    state.settings.rotation = 1;
                     state.layout_grid_labels(pane, range);
                     let turned: Vec<_> = (state.grid_labels.iter())
                         .map(|label| state.turn().to_screen(pane, label.bounds))
                         .collect();
-                    state.style.rotation = 0;
+                    state.settings.rotation = 0;
                     assert!(!turned.is_empty(), "{context}");
                     for (label, on_screen) in state.grid_labels.iter().zip(&turned) {
                         let text = state.grid_ticks[label.tick_index].2.as_ref().unwrap();
@@ -959,7 +970,7 @@ mod tests {
         assert!(!state.grid_labels.is_empty());
 
         state.grid_labels.clear();
-        state.style.rotation = 1;
+        state.settings.rotation = 1;
         state.layout_grid_labels(bounds.expand(1.0), range);
         assert!(!state.grid_labels.is_empty());
     }

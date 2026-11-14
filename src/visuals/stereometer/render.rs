@@ -3,18 +3,27 @@
 
 use iced::Rectangle;
 use std::ops::Deref;
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
 use super::processor::{BAND_COUNT, FULL_BAND};
-use crate::util::lerp;
+use crate::util::{color::rgba_scale_alpha, lerp};
 use crate::visuals::options::{
     CorrelationMeterMode, CorrelationMeterSide, StereometerMode, StereometerScale,
 };
 use crate::visuals::palettes::stereometer::SIZE as PALETTE_SIZE;
 use crate::visuals::render::common::{
-    ClipTransform, RadialDotTemplate, SdfInstance, bounds_fingerprint, gradient_quad_instance,
-    line_instance, quad_instance, sdf_primitive,
+    ClipTransform, RadialDotTemplate, SdfInstance, amplitude_y, bounds_fingerprint,
+    gradient_quad_instance, line_instance, quad_instance, sdf_primitive,
 };
+
+// Slots of `palettes::stereometer`.
+const PAL_TRACE: usize = 0;
+const PAL_CORR_BACKGROUND: usize = 1;
+const PAL_CORR_CENTER: usize = 2;
+const PAL_CORR_POSITIVE: usize = 3;
+const PAL_CORR_NEGATIVE: usize = 4;
+const PAL_BANDS: usize = 5;
+const PAL_GRID: usize = 8;
 
 // For length >= f32::EPSILON: radius = min((0.66834 * length)^0.3, 1).
 const SCALED_MODE_MIN_SQUARED: f32 = f32::EPSILON * f32::EPSILON;
@@ -43,9 +52,6 @@ const CORR_EDGE: f32 = 6.0;
 fn corr_opacity(age: usize, trail_len: usize) -> f32 {
     (1.0 - (age + 1) as f32 / trail_len as f32).powf(2.4)
 }
-
-static CORR_OPACITIES: LazyLock<[f32; CORR_TRAIL_LEN - 1]> =
-    LazyLock::new(|| std::array::from_fn(|age| corr_opacity(age, CORR_TRAIL_LEN)));
 
 fn scaled_point(x: f32, y: f32) -> (f32, f32) {
     let squared = x * x + y * y;
@@ -245,7 +251,7 @@ impl StereometerParams {
         projection: Projection,
         clip: ClipTransform,
     ) {
-        let color = self.palette[8];
+        let color = self.palette[PAL_GRID];
         if color[3] < f32::EPSILON {
             return;
         }
@@ -266,10 +272,6 @@ impl StereometerParams {
 
         let axes = 1 + usize::from(self.mode != StereometerMode::Lissajous);
         GRID_AXES[..axes].iter().for_each(|&(a, b)| add_line(a, b));
-    }
-
-    pub(super) fn correlation_y(bounds: Rectangle, value: f32) -> f32 {
-        bounds.y + (1.0 - value.clamp(-1.0, 1.0)) * bounds.height * 0.5
     }
 
     pub(super) fn meter_layout(&self) -> (Rectangle, Option<Rectangle>) {
@@ -316,7 +318,7 @@ impl StereometerParams {
         projection: Projection,
         clip: ClipTransform,
     ) {
-        let [cr, cg, cb, ca] = self.palette[0];
+        let [cr, cg, cb, ca] = self.palette[PAL_TRACE];
         let radial_scale = match projection.scale {
             StereometerScale::Linear => projection.fit,
             StereometerScale::Scaled => -1.0,
@@ -347,7 +349,8 @@ impl StereometerParams {
                 }
             }
             StereometerMode::DotCloudBands => {
-                for (points, [r, g, b, a]) in self.points[1..].iter().zip(&self.palette[5..]) {
+                let bands = &self.palette[PAL_BANDS..];
+                for (points, [r, g, b, a]) in self.points[1..].iter().zip(bands) {
                     out.extend(fading(points, *a).map(|(left, right, factor)| {
                         dot(left, right, [r * factor, g * factor, b * factor, 0.0])
                     }));
@@ -370,7 +373,7 @@ impl StereometerParams {
         let multi_band = self.correlation_meter == CorrelationMeterMode::MultiBand;
         let bars = if multi_band { BAND_COUNT } else { 1 };
         let bar_width = bounds.width / bars as f32;
-        let val_y = |value| Self::correlation_y(bounds, value);
+        let val_y = |value: f32| amplitude_y(bounds, value.clamp(-1.0, 1.0));
         let center = val_y(0.0);
         let marker_h = (self.bounds.height / 128.0).clamp(1.0, 3.0) * 0.5;
         let y_min = bounds.y as i32;
@@ -381,9 +384,13 @@ impl StereometerParams {
 
         let quad =
             |y0, y1, color| quad_instance(bounds.x, y0, bounds.x + bounds.width, y1, clip, color);
-        out.push(quad(bounds.y, bounds.y + bounds.height, palette[1]));
+        out.push(quad(
+            bounds.y,
+            bounds.y + bounds.height,
+            palette[PAL_CORR_BACKGROUND],
+        ));
         for y in [val_y(1.0), center, val_y(-1.0)] {
-            out.push(quad(y - 0.5, y + 0.5, palette[2]));
+            out.push(quad(y - 0.5, y + 0.5, palette[PAL_CORR_CENTER]));
         }
 
         let mut draw_trail =
@@ -395,11 +402,7 @@ impl StereometerParams {
                     alpha.clear();
                     alpha.resize(height, 0.0);
                     for (age, pair) in trail.windows(2).enumerate() {
-                        let opacity = if trail.len() == CORR_TRAIL_LEN {
-                            CORR_OPACITIES[age]
-                        } else {
-                            corr_opacity(age, trail.len())
-                        };
+                        let opacity = corr_opacity(age, trail.len());
                         let (y0, y1) = (val_y(pair[0]), val_y(pair[1]));
                         let (top, bottom) = (y0.min(y1) as i32, (y0.max(y1) + 2.0) as i32);
                         for y in top.max(y_min)..=bottom.min(y_max) {
@@ -411,9 +414,8 @@ impl StereometerParams {
                         if opacity[0] > 0.0 || opacity[1] > 0.0 {
                             let y0 = (y_min + index as i32) as f32;
                             let y1 = y0 + 1.0;
-                            let (mut top, mut bottom) = (color(y0 > center), color(y1 > center));
-                            top[3] *= opacity[0];
-                            bottom[3] *= opacity[1];
+                            let top = rgba_scale_alpha(color(y0 > center), opacity[0]);
+                            let bottom = rgba_scale_alpha(color(y1 > center), opacity[1]);
                             out.push(gradient_quad_instance(x0, y0, x1, y1, clip, top, bottom));
                         }
                     }
@@ -427,16 +429,17 @@ impl StereometerParams {
             };
 
         if multi_band {
-            let mut color = palette[2];
-            color[3] *= 0.25;
+            let color = rgba_scale_alpha(palette[PAL_CORR_CENTER], 0.25);
             draw_trail(bounds.x, bounds.width, &trails[FULL_BAND], color, color);
         }
         for band in 0..bars {
             let x = bounds.x + band as f32 * bar_width;
             let (trail, positive, negative) = if multi_band {
-                (&trails[band + 1][..], palette[5 + band], palette[5 + band])
+                let color = palette[PAL_BANDS + band];
+                (&trails[band + 1][..], color, color)
             } else {
-                (&trails[FULL_BAND][..], palette[3], palette[4])
+                let colors = (palette[PAL_CORR_POSITIVE], palette[PAL_CORR_NEGATIVE]);
+                (&trails[FULL_BAND][..], colors.0, colors.1)
             };
             draw_trail(x, bar_width, trail, positive, negative);
         }

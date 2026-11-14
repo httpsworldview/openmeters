@@ -10,7 +10,7 @@ use crate::util::color::color_to_rgba;
 use crate::visuals::{
     options::{CorrelationMeterMode, CorrelationMeterSide, StereometerMode},
     palettes::{self, stereometer::SIZE as PALETTE_SIZE},
-    render::common::text as raw_text,
+    render::common::{amplitude_y, text as raw_text},
 };
 use iced::advanced::text::Paragraph as _;
 use iced::advanced::{graphics::text::Paragraph, text};
@@ -24,8 +24,8 @@ crate::macros::default_struct! {
         points: [Arc<[(f32, f32)]>; BAND_COUNT + 1] = Default::default(),
         trails: [FixedTrail; BAND_COUNT + 1] = Default::default(),
         trail_clock: f32 = 0.0,
-        pub(in crate::visuals) palette: [Color; PALETTE_SIZE] = palettes::stereometer::COLORS,
-        pub(in crate::visuals) settings: StereometerSettings = StereometerSettings::default(),
+        palette: [Color; PALETTE_SIZE] = palettes::stereometer::COLORS,
+        settings: StereometerSettings = StereometerSettings::default(),
         labels: [Paragraph; 3] = ["+1", "0", "-1"].map(|label| {
             Paragraph::with_text(raw_text(label, CORR_LABEL_SIZE, Size::new(CORR_LABEL_W, CORR_LABEL_H)))
         }),
@@ -128,7 +128,7 @@ crate::visuals::visualization_widget!(
             for (label, value) in state.labels.iter().zip([1.0, 0.0, -1.0]) {
                 let size = label.min_bounds();
                 let x = if left { x } else { x - size.width };
-                let y = StereometerParams::correlation_y(meter, value) - size.height * 0.5;
+                let y = amplitude_y(meter, value) - size.height * 0.5;
                 text::Renderer::fill_paragraph(renderer, label, Point::new(x, y), color, bounds);
             }
         }

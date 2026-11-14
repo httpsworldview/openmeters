@@ -38,7 +38,7 @@ macro_rules! visualization_widget {
     };
     ($widget:ident, $state:ty) => {
         $crate::visuals::visualization_widget!($widget, $state, |this, renderer, _theme, bounds| {
-            for params in this.state.borrow().visual_params(bounds) {
+            for params in this.state.borrow_mut().visual_params(bounds) {
                 renderer.draw_primitive(params.bounds, params);
             }
         });

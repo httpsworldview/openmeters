@@ -229,7 +229,6 @@ impl LoudnessState {
         }
     }
 
-    // Brings the labels and geometry up to date with what the state now shows.
     fn refresh(&mut self) {
         let mode = self.settings.right_mode;
         let value = self.aggregate_channels(mode, MeterSide::Both);
