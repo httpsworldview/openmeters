@@ -618,10 +618,9 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'_> {
                     state.set_pan(start_pan + moved / turn.frame(b).height / state.zoom);
                 }
             }
-            iced::Event::Mouse(mouse::Event::CursorLeft) => {
-                if !matches!(std::mem::take(&mut st.gesture), Gesture::Idle) {
-                    shell.request_redraw();
-                }
+            iced::Event::Mouse(mouse::Event::CursorLeft) if !matches!(st.gesture, Gesture::Idle) => {
+                st.gesture = Gesture::Idle;
+                shell.request_redraw();
             }
             iced::Event::Keyboard(keyboard::Event::ModifiersChanged(m)) => st.modifiers = *m,
             iced::Event::Mouse(mouse::Event::WheelScrolled { delta }) if st.modifiers.control() => {
