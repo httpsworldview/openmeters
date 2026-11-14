@@ -2,9 +2,9 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::{Message, UiApp};
+use crate::domain::visuals::VisualKind;
 use crate::persistence::settings::Snapshot;
 use crate::ui::settings::ActiveSettings;
-use crate::visuals::registry::VisualKind;
 use iced::{Task, window};
 
 impl UiApp {

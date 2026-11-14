@@ -134,40 +134,36 @@ settings_view! {
             averaging;
             slider!("Noise floor", settings.floor_db.get(), DB_FLOOR_RANGE, FloorDb, "{:.0} dB");
         );
-
-        let analysis = split(
-            pick("FFT size", &FFT_OPTIONS[..], settings.fft_size.get(), FftSize),
-            pick("Hop divisor", &HOP_DIVISORS[..], hop_divisor, HopDivisor),
-        );
-        let details = form!(
-            pick("Direction", FrequencyDirection::ALL, direction, Direction);
-            quarter_turn_slider(settings.rotation, Rotation);
-            split(
-                toggle("Frequency grid", settings.show_grid, ShowGrid),
-                primary.then(|| toggle("Peak label", settings.show_peak_label, ShowPeakLabel)),
-            );
-            bars.then(|| slider!(
-                "Bar count", settings.bar_count as f32, BARS_RANGE,
-                |value| BarCount(value.round() as usize), settings.bar_count.to_string()
-            ));
-            bars.then(|| slider!(
-                "Bar gap", settings.bar_gap.get(), GAP_RANGE, BarGap,
-                format!("{:.0}%", settings.bar_gap.get() * 100.0)
-            ));
-        );
-        let details_summary = [
-            bars.then(|| format!("{} bars", settings.bar_count)),
-            settings.reverse_frequency.then(|| "Reversed".into()),
-            (settings.rotation != 0).then(|| quarter_turn_label(settings.rotation)),
-            settings.show_grid.then(|| "Grid".into()),
-            (primary && settings.show_peak_label).then(|| "Peak label".into()),
-        ];
     }
     "Sources" => sources;
     "View" => view;
     "Analysis" [[
         chip(format!("FFT {}", settings.fft_size.get())),
         chip(format!("Hop 1/{hop_divisor}")),
-    ]] => analysis;
-    "Details" [details_summary.into_iter().flatten().map(chip)] => details;
+    ]] => split(
+        pick("FFT size", &FFT_OPTIONS[..], settings.fft_size.get(), FftSize),
+        pick("Hop divisor", &HOP_DIVISORS[..], hop_divisor, HopDivisor),
+    );
+    "Details" [[
+        bars.then(|| format!("{} bars", settings.bar_count)),
+        settings.reverse_frequency.then(|| "Reversed".into()),
+        (settings.rotation != 0).then(|| quarter_turn_label(settings.rotation)),
+        settings.show_grid.then(|| "Grid".into()),
+        (primary && settings.show_peak_label).then(|| "Peak label".into()),
+    ].into_iter().flatten().map(chip)] => form!(
+        pick("Direction", FrequencyDirection::ALL, direction, Direction);
+        quarter_turn_slider(settings.rotation, Rotation);
+        split(
+            toggle("Frequency grid", settings.show_grid, ShowGrid),
+            primary.then(|| toggle("Peak label", settings.show_peak_label, ShowPeakLabel)),
+        );
+        bars.then(|| slider!(
+            "Bar count", settings.bar_count as f32, BARS_RANGE,
+            |value| BarCount(value.round() as usize), settings.bar_count.to_string()
+        ));
+        bars.then(|| slider!(
+            "Bar gap", settings.bar_gap.get(), GAP_RANGE, BarGap,
+            format!("{:.0}%", settings.bar_gap.get() * 100.0)
+        ));
+    );
 }

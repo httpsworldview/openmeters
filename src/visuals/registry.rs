@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::{loudness, oscilloscope, spectrogram, spectrum, stereometer, waveform};
-pub use crate::domain::visuals::VisualKind;
+use crate::domain::visuals::VisualKind;
 use crate::{
     dsp::{AudioBlock, AudioFormat},
     persistence::settings::{PaletteSettings, ThemeFile, VisualConfig, VisualSettings, WidthBasis},
@@ -58,7 +58,7 @@ macro_rules! visuals {
             vec![$({
                 let state = Rc::new(RefCell::new($module::state::$state::default()));
                 Entry {
-                    slot: VisualSlotSnapshot {
+                    slot: VisualSlot {
                         enabled: false,
                         width_basis: default_width_basis(VisualKind::$variant),
                         min_width: $min_w,
@@ -202,7 +202,7 @@ trait VisualModule {
 }
 
 struct Entry {
-    slot: VisualSlotSnapshot,
+    slot: VisualSlot,
     module: Box<dyn VisualModule>,
 }
 impl Entry {
@@ -215,14 +215,14 @@ impl Entry {
 }
 
 #[derive(Clone)]
-pub(crate) struct VisualSlotSnapshot {
+pub struct VisualSlot {
     pub enabled: bool,
     pub width_basis: WidthBasis,
     pub min_width: f32,
     pub content: VisualContent,
 }
 
-impl VisualSlotSnapshot {
+impl VisualSlot {
     pub fn kind(&self) -> VisualKind {
         self.content.kind()
     }
@@ -241,11 +241,8 @@ impl VisualManager {
             .position(|entry| entry.slot.kind() == kind)
             .expect("visual kind missing from registry")
     }
-    pub fn snapshot(&self) -> Vec<VisualSlotSnapshot> {
-        self.entries
-            .iter()
-            .map(|entry| entry.slot.clone())
-            .collect()
+    pub fn slots(&self) -> impl Iterator<Item = &VisualSlot> {
+        self.entries.iter().map(|entry| &entry.slot)
     }
     pub fn order(&self) -> Vec<VisualKind> {
         self.entries.iter().map(|entry| entry.slot.kind()).collect()
@@ -404,8 +401,8 @@ mod tests {
             for &other in VisualKind::ALL {
                 manager.set_enabled(other, other == kind);
             }
-            for entry in manager.snapshot() {
-                if let VisualContent::Spectrogram(state) = entry.content {
+            for slot in manager.slots() {
+                if let VisualContent::Spectrogram(state) = &slot.content {
                     state.borrow_mut().view_width = 400;
                 }
             }

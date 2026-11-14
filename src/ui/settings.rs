@@ -8,13 +8,14 @@ mod spectrum;
 mod stereometer;
 mod waveform;
 
+use crate::domain::visuals::VisualKind;
 use crate::persistence::settings::{PaletteSettings, SettingsHandle, VisualConfig};
 use crate::ui::theme::Palette;
 use crate::ui::widgets::SliderRange;
 use crate::ui::widgets::palette_editor::{PaletteChange, PaletteEditor, PaletteEvent};
 use crate::util::audio::{DB_FLOOR, FftSize, NegativeDb};
 use crate::util::set_if_changed as set;
-use crate::visuals::registry::{VisualKind, VisualManagerHandle};
+use crate::visuals::registry::VisualManagerHandle;
 use iced::Element;
 use std::num::NonZeroUsize;
 
@@ -248,6 +249,7 @@ macro_rules! settings_messages {
 
 /// Cards are `"Title" => content;`, or collapsible as
 /// `"Title" [summary] => content;`. Colors always come last, collapsible.
+/// A collapsible card evaluates only the one of its two expressions it shows.
 macro_rules! settings_view {
     (
         $pane:ident as $settings:ident { $($body:tt)* }
@@ -264,9 +266,9 @@ macro_rules! settings_view {
                     $(.push(settings_view!(@card $pane, $label $(, $summary)?, $content)))*
                     .push($pane.disclosure.card(
                         "Colors",
-                        [$pane.palette.preview()],
+                        || [$pane.palette.preview()],
                         Toggle,
-                        $pane.palette.view().map(Palette),
+                        || $pane.palette.view().map(Palette),
                     ))
                     .into()
             }
@@ -276,7 +278,7 @@ macro_rules! settings_view {
         $crate::ui::widgets::card($label, $content)
     };
     (@card $pane:ident, $label:literal, $summary:expr, $content:expr) => {
-        $pane.disclosure.card($label, $summary, Toggle, $content)
+        $pane.disclosure.card($label, || $summary, Toggle, || $content)
     };
 }
 

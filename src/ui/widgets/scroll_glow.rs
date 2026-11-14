@@ -5,53 +5,12 @@ use crate::util::color::with_alpha;
 use iced::Length::{Fill, Fixed, Shrink};
 use iced::gradient;
 use iced::widget::{
-    Space, column, container, row, scrollable, scrollable::Scrollbar, sensor, stack,
+    Column, Row, Space, container, scrollable, scrollable::Scrollbar, sensor, stack,
 };
 use iced::{Element, Size};
 use std::f32::consts::{FRAC_PI_2, PI};
 
 const GLOW_SIZE: f32 = 24.0;
-
-macro_rules! scroll_glow_axis {
-    (
-        $name:ident, $direction:ident, $extent:ident, $offset:ident, $layout:ident,
-        $spacer_height:expr, $start:expr, $end:expr, $vertical:expr $(, $height:expr)?
-    ) => {
-        pub fn $name<'a, M: 'a>(
-            &self,
-            content: impl Into<Element<'a, M>>,
-            on_scroll: impl Fn(ScrollEvent) -> M + Copy + 'a,
-        ) -> Element<'a, M> {
-            let content = sensor(content).on_resize(move |size: Size| {
-                on_scroll(ScrollEvent::ContentResized(size.$extent))
-            });
-            let body = scrollable(content)
-                .direction(scrollable::Direction::$direction(hidden_scrollbar()))
-                .width(Fill)
-                $(.height($height))?
-                .on_scroll(move |vp: scrollable::Viewport| {
-                    on_scroll(ScrollEvent::Scrolled(Self {
-                        content: vp.content_bounds().$extent,
-                        bounds: vp.bounds().$extent,
-                        offset: vp.absolute_offset().$offset,
-                    }))
-                });
-            let body = sensor(body).on_resize(move |size: Size| {
-                on_scroll(ScrollEvent::BoundsResized(size.$extent))
-            });
-            let [show_start, show_end] = self.visible();
-            stack![
-                body,
-                $layout![
-                    glow(show_start, $start, $vertical),
-                    Space::new().width(Fill).height($spacer_height),
-                    glow(show_end, $end, $vertical),
-                ]
-            ]
-            .into()
-        }
-    };
-}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ScrollEvent {
@@ -86,24 +45,65 @@ impl ScrollGlow {
         [relative > 0.01, relative < 0.99]
     }
 
-    scroll_glow_axis!(
-        vertical, Vertical, height, y, column, Fill, PI, 0.0, true, Fill
-    );
-    scroll_glow_axis!(
-        horizontal,
-        Horizontal,
-        width,
-        x,
-        row,
-        Shrink,
-        FRAC_PI_2,
-        PI + FRAC_PI_2,
-        false
-    );
-}
+    pub fn vertical<'a, M: 'a>(
+        &self,
+        content: impl Into<Element<'a, M>>,
+        on_scroll: impl Fn(ScrollEvent) -> M + Copy + 'a,
+    ) -> Element<'a, M> {
+        self.view(true, content, on_scroll)
+    }
 
-fn hidden_scrollbar() -> Scrollbar {
-    Scrollbar::new().width(0).scroller_width(0)
+    pub fn horizontal<'a, M: 'a>(
+        &self,
+        content: impl Into<Element<'a, M>>,
+        on_scroll: impl Fn(ScrollEvent) -> M + Copy + 'a,
+    ) -> Element<'a, M> {
+        self.view(false, content, on_scroll)
+    }
+
+    fn view<'a, M: 'a>(
+        &self,
+        vertical: bool,
+        content: impl Into<Element<'a, M>>,
+        on_scroll: impl Fn(ScrollEvent) -> M + Copy + 'a,
+    ) -> Element<'a, M> {
+        let extent = move |size: Size| if vertical { size.height } else { size.width };
+        let (direction, height, angles) = if vertical {
+            let direction = scrollable::Direction::Vertical(Scrollbar::hidden());
+            (direction, Fill, [PI, 0.0])
+        } else {
+            let direction = scrollable::Direction::Horizontal(Scrollbar::hidden());
+            (direction, Shrink, [FRAC_PI_2, PI + FRAC_PI_2])
+        };
+        let content = sensor(content)
+            .on_resize(move |size| on_scroll(ScrollEvent::ContentResized(extent(size))));
+        let body = scrollable(content)
+            .direction(direction)
+            .width(Fill)
+            .height(height)
+            .on_scroll(move |vp: scrollable::Viewport| {
+                let offset = vp.absolute_offset();
+                on_scroll(ScrollEvent::Scrolled(Self {
+                    content: extent(vp.content_bounds().size()),
+                    bounds: extent(vp.bounds().size()),
+                    offset: if vertical { offset.y } else { offset.x },
+                }))
+            });
+        let body =
+            sensor(body).on_resize(move |size| on_scroll(ScrollEvent::BoundsResized(extent(size))));
+        let [show_start, show_end] = self.visible();
+        let glows = [
+            glow(show_start, angles[0], vertical).into(),
+            Space::new().width(Fill).height(height).into(),
+            glow(show_end, angles[1], vertical).into(),
+        ];
+        let glows: Element<'a, M> = if vertical {
+            Column::with_children(glows).into()
+        } else {
+            Row::with_children(glows).into()
+        };
+        stack![body, glows].into()
+    }
 }
 
 fn glow<'a, M: 'a>(

@@ -2,7 +2,8 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::{TOAST_DISPLAY_DURATION, UiApp, windowing::AppWindow};
-use crate::ui::config::{BarOutputChange, BarOutputEvent, ConfigMessage};
+use crate::ui::config::ConfigMessage;
+use crate::ui::outputs::{BarOutputChange, BarOutputEvent};
 use crate::ui::settings::SettingsMessage;
 use crate::ui::visuals::{VisualsMessage, visual_area};
 use crate::ui::widgets::{fill, page, scroll_glow::ScrollEvent};
@@ -31,7 +32,6 @@ pub(super) enum Message {
     AudioWake,
     BarOutput(u32, Option<String>, BarOutputEvent),
     BarWindowOutput(window::Id, Option<u32>),
-    ShellWindowClosed(window::Id),
     // Key repeats can arrive as fresh presses (layer shell; X11 after a focus change), so a
     // shortcut acts on its key's first press and ignores more until that key is released.
     Shortcut(keyboard::key::Physical, Instant, Box<Message>),
@@ -68,7 +68,6 @@ pub(super) fn shell_event(event: ShellEvent) -> Option<Message> {
             window,
             output.map(|output| output.id),
         )),
-        ShellEvent::Closed(window) => Some(Message::ShellWindowClosed(window)),
         _ => None,
     }
 }
@@ -151,7 +150,10 @@ fn handle(app: &mut UiApp, msg: Message) -> Task<Message> {
         Message::Visuals(VisualsMessage::SettingsRequested(kind)) => {
             return app.open_settings_window(kind);
         }
-        Message::Visuals(visuals_msg) => app.visuals_page.update(visuals_msg),
+        Message::Visuals(visuals_msg) => {
+            let manager = app.visual_manager.borrow();
+            app.visuals_page.update(visuals_msg, &manager);
+        }
         Message::Shortcut(key, at, action) => {
             let previous = app.held_shortcut.replace((key, at));
             let repeat = previous.is_some_and(|(held, last)| {
@@ -185,7 +187,11 @@ fn handle(app: &mut UiApp, msg: Message) -> Task<Message> {
             app.frames.borrow_mut().watchdog(generation, Instant::now())
         }
         Message::BarOutput(id, name, event) => {
-            let change = app.config_page.sync_bar_output(id, name, event);
+            let change = {
+                let settings = app.settings_handle.borrow();
+                let selected = settings.data.bar.monitor.as_deref();
+                app.bar_outputs.sync(id, name, event, selected)
+            };
             if app.main_window.is_bar()
                 && change != BarOutputChange::Unchanged
                 && (app.main_window.id().is_none()
@@ -198,14 +204,12 @@ fn handle(app: &mut UiApp, msg: Message) -> Task<Message> {
         Message::BarWindowOutput(window, output)
             if app.main_window.is_bar()
                 && Some(window) == app.main_window.id()
-                && app.config_page.sync_current_bar_output(output) =>
+                && (app.bar_outputs).set_current(
+                    output,
+                    app.settings_handle.borrow().data.bar.monitor.as_deref(),
+                ) =>
         {
             return app.recreate_main_window();
-        }
-        Message::ShellWindowClosed(window)
-            if app.main_window.is_bar() && Some(window) == app.main_window.id() =>
-        {
-            return app.on_window_closed(window);
         }
         Message::WindowClosed(window) => return app.on_window_closed(window),
         Message::Settings(window_id, settings_msg) => {
@@ -225,7 +229,11 @@ fn handle(app: &mut UiApp, msg: Message) -> Task<Message> {
 pub(super) fn view(app: &UiApp, window_id: window::Id) -> Element<'_, Message> {
     match app.window(window_id) {
         AppWindow::Main => app.main_window_view(window_id),
-        AppWindow::Config => page(app.config_page.view().map(Message::Config)).into(),
+        AppWindow::Config => {
+            let manager = app.visual_manager.borrow();
+            let content = app.config_page.view(&manager, &app.bar_outputs);
+            page(content.map(Message::Config)).into()
+        }
         AppWindow::Settings(panel) => {
             let content = panel
                 .view()
@@ -247,11 +255,11 @@ pub(super) fn view(app: &UiApp, window_id: window::Id) -> Element<'_, Message> {
 #[cfg(test)]
 mod tests {
     use super::{Message::*, *};
+    use crate::domain::visuals::VisualKind;
     use crate::infra::pipewire::{CaptureControl, test_audio_reader};
     use crate::persistence::settings::{BarAlignment, SettingsHandle};
     use crate::ui::app::UiConfig;
     use crate::ui::app::windowing::{MainWindow, bar_anchor};
-    use crate::visuals::registry::VisualKind;
     use BarOutputEvent::{Added, Removed};
     use iced::futures::{StreamExt, executor::block_on};
     use iced::window::Action::Close;
@@ -346,7 +354,6 @@ mod tests {
                 assert_actions!(update(&mut app, BarWindowOutput(id, Some(output_id))), []);
             }
             assert_actions!(output(&mut app, output_id, None, Removed), [Window(Close(old))] if *old == id);
-            assert_actions!(update(&mut app, ShellWindowClosed(id)), []);
             assert_actions!(update(&mut app, WindowClosed(id)), []);
             assert_actions!(update(&mut app, BarWindowOutput(id, Some(output_id))), []);
             assert_actions!(update(&mut app, Tick), []);
@@ -363,7 +370,6 @@ mod tests {
         assert_actions!(output(&mut app, 2, Some("DP"), Added), []);
         assert_actions!(update(&mut app, BarWindowOutput(first, Some(1))), []);
         // A shell close is not an application quit, even before output removal arrives.
-        assert_actions!(update(&mut app, ShellWindowClosed(first)), []);
         assert_actions!(update(&mut app, WindowClosed(first)), []);
         assert_actions!(output(&mut app, 2, Some("DP"), Added), []);
         assert_actions!(update(&mut app, Tick), []);
@@ -375,7 +381,6 @@ mod tests {
             selected(),
         );
         assert_ne!(restored, fallback);
-        assert_actions!(update(&mut app, ShellWindowClosed(fallback)), []);
         assert_actions!(update(&mut app, WindowClosed(fallback)), []);
         assert_eq!(
             app.settings_handle.borrow().data.bar.monitor.as_deref(),
@@ -383,7 +388,6 @@ mod tests {
         );
         // Rejection before the first configure must not start a retry loop either.
         assert_actions!(update(&mut app, WindowClosed(restored)), []);
-        assert_actions!(update(&mut app, ShellWindowClosed(restored)), []);
         assert_actions!(update(&mut app, BarWindowOutput(restored, Some(3))), []);
         assert_actions!(update(&mut app, Tick), []);
         let key_event = |code, pressed| {
@@ -518,9 +522,9 @@ mod tests {
             written
         };
         let spectrum = |app: &UiApp| {
-            let snapshot = app.visual_manager.borrow().snapshot();
-            snapshot
-                .iter()
+            let manager = app.visual_manager.borrow();
+            manager
+                .slots()
                 .any(|slot| slot.kind() == VisualKind::Spectrum && slot.enabled)
         };
 

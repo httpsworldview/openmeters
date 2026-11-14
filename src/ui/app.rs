@@ -11,6 +11,7 @@ use crate::persistence::settings::{
     BarAlignment, SettingsHandle, clamp_bar_height, settings_changes,
 };
 use crate::ui::config::ConfigPage;
+use crate::ui::outputs::BarOutputs;
 use crate::ui::settings::ActiveSettings;
 use crate::ui::theme;
 use crate::ui::visuals::VisualsPage;
@@ -41,14 +42,13 @@ const TOAST_DISPLAY_DURATION: Duration = Duration::from_secs(2);
 const MAINTENANCE_INTERVAL: Duration = Duration::from_millis(100);
 const BAR_RESIZE_HANDLE_THICKNESS: f32 = 6.0;
 
-fn clock(period: &Duration) -> async_channel::Receiver<()> {
+fn clock() -> async_channel::Receiver<()> {
     let (sender, receiver) = async_channel::bounded(1);
-    let period = *period;
     if let Err(err) = std::thread::Builder::new()
         .name("openmeters-ui-maintenance".into())
         .spawn(move || {
             while let Ok(()) | Err(async_channel::TrySendError::Full(_)) = sender.try_send(()) {
-                std::thread::sleep(period);
+                std::thread::sleep(MAINTENANCE_INTERVAL);
             }
         })
     {
@@ -109,7 +109,7 @@ struct UiApp {
     config_page: ConfigPage,
     visuals_page: VisualsPage,
     visual_manager: VisualManagerHandle,
-    frames: Rc<RefCell<FrameCoordinator>>,
+    frames: RefCell<FrameCoordinator>,
     audio_wake: AudioWake,
     settings_handle: SettingsHandle,
     config_window: Option<window::Id>,
@@ -117,6 +117,7 @@ struct UiApp {
     rendering_paused: bool,
     toast_until: Option<Instant>,
     main_window: MainWindow,
+    bar_outputs: BarOutputs,
     use_layershell: bool,
     settings_window: Option<(window::Id, ActiveSettings)>,
     settings_scroll: ScrollGlow,
@@ -133,10 +134,11 @@ impl UiApp {
             audio,
             settings_handle,
         } = config;
-        let settings = settings_handle.borrow().data.clone();
+        let data = settings_handle.borrow().data.clone();
         let mut manager = VisualManager::default();
-        manager.apply_visual_settings(&settings.visuals, None);
+        manager.apply_visual_settings(&data.visuals, None);
         manager.apply_palettes(settings_handle.borrow().theme(), None);
+        let visuals_page = VisualsPage::new(settings_handle.clone());
         let visual_manager = Rc::new(RefCell::new(manager));
         let reader = audio
             .borrow_mut()
@@ -146,31 +148,23 @@ impl UiApp {
         let mut meter_engine = MeterEngine::new(reader, Rc::clone(&visual_manager));
         meter_engine.set_active(visual_manager.borrow().has_enabled());
 
-        let config_page = ConfigPage::new(
-            capture,
-            Rc::clone(&visual_manager),
-            settings_handle.clone(),
-            use_layershell,
-        );
-        let visuals_page = VisualsPage::new(Rc::clone(&visual_manager), settings_handle.clone());
-        let (main_window, open_task) =
-            open_main_window(&settings, use_layershell, config_page.has_bar_outputs());
-        let frames = Rc::new(RefCell::new(FrameCoordinator::new(
-            meter_engine,
-            settings.visual_frame_rate,
-        )));
+        let config_page = ConfigPage::new(capture, settings_handle.clone(), use_layershell);
+        // Outputs are announced after startup, and a bar waits for the first.
+        let (main_window, open_task) = open_main_window(&data, use_layershell, false);
+        let frames = RefCell::new(FrameCoordinator::new(meter_engine, data.visual_frame_rate));
         let mut app = Self {
             config_page,
             visuals_page,
             visual_manager,
             frames,
             audio_wake,
-            settings_handle,
+            settings_handle: settings_handle.clone(),
             config_window: None,
             bar_resize_state: None,
             rendering_paused: false,
             toast_until: None,
             main_window,
+            bar_outputs: BarOutputs::default(),
             use_layershell,
             settings_window: None,
             settings_scroll: ScrollGlow::default(),
@@ -178,7 +172,7 @@ impl UiApp {
             exit_warning_until: None,
             held_shortcut: None,
         };
-        let restore_popouts = app.sync_visual_windows(&settings, &settings);
+        let restore_popouts = app.sync_visual_windows(&data, &data);
         (app, Task::batch([open_task, restore_popouts]))
     }
 
@@ -204,7 +198,7 @@ impl UiApp {
             || self.toast_until.is_some()
             || self.exit_warning_until.is_some()
         {
-            subs.push(Subscription::run_with(MAINTENANCE_INTERVAL, clock).map(|_| Message::Tick));
+            subs.push(Subscription::run(clock).map(|_| Message::Tick));
         }
         Subscription::batch(subs)
     }
@@ -280,13 +274,12 @@ impl UiApp {
     }
 
     fn with_frame_clock<'a>(
-        &self,
+        &'a self,
         window: window::Id,
         content: Element<'a, Message>,
     ) -> Element<'a, Message> {
         let is_main = Some(window) == self.main_window.id();
-        let clock =
-            (self.rendering()).then(|| frame_clock(Rc::clone(&self.frames), window, is_main));
+        let clock = (self.rendering()).then(|| frame_clock(&self.frames, window, is_main));
         // The optional layer comes last, so pausing or a toast keeps the content's widget state.
         stack![content, clock].into()
     }
@@ -306,10 +299,10 @@ impl UiApp {
 
         let overlay = toast_msgs.iter().any(Option::is_some).then(|| {
             let toast = container(
-                row(toast_msgs
-                    .into_iter()
-                    .flatten()
-                    .map(|m| container(text(m).size(11)).padding([2, 6]).into()))
+                row(toast_msgs.into_iter().flatten().map(|m| {
+                    let toast = text(m).size(theme::SMALL_TEXT_SIZE);
+                    container(toast).padding([2, 6]).into()
+                }))
                 .spacing(12),
             )
             .padding([6, 10])
@@ -342,7 +335,7 @@ impl UiApp {
         });
         let overlay = self.bar_resize_state.as_ref().map(|state| {
             let (current, pending) = (state.start_height.get(), state.pending_height.get());
-            container(text(format!("{current}px -> {pending}px")).size(14))
+            container(text(format!("{current}px -> {pending}px")).size(theme::TITLE_TEXT_SIZE))
                 .center(Length::Fill)
                 .style(theme::resize_overlay)
         });

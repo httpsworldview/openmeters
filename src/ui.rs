@@ -19,6 +19,7 @@ macro_rules! slider {
 
 pub mod app;
 pub mod config;
+mod outputs;
 pub mod settings;
 pub mod theme;
 pub mod visuals;

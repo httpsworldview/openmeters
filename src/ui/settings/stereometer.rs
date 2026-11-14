@@ -57,33 +57,31 @@ settings_view! {
                 "Rotation", f32::from(settings.rotation.get()), ROTATION_RANGE,
                 |value| Rotation(value.round() as i8), settings.rotation.get().to_string()
             );
-            dot_mode.then(|| split(
+            split(
                 toggle("Flip", settings.flip, Flip),
-                toggle("Unipolar", settings.unipolar, Unipolar),
-            ));
-            (!dot_mode).then(|| toggle("Flip", settings.flip, Flip));
+                dot_mode.then(|| toggle("Unipolar", settings.unipolar, Unipolar)),
+            );
             dot_mode.then(|| slider!(
                 "Dot size", settings.dot_radius.get(), DOT_RANGE, DotRadius, "{:.1}px"
             ));
         );
 
         let metered = settings.correlation_meter != CorrelationMeterMode::Off;
-        let correlation = form!(
-            pick(
-                "Meter", CorrelationMeterMode::ALL, settings.correlation_meter,
-                CorrelationMeter
-            );
-            metered.then(|| pick(
-                "Side", CorrelationMeterSide::ALL, settings.correlation_meter_side,
-                CorrelationSide,
-            ));
-            metered.then(|| slider!(
-                "Window", settings.correlation_window.get(), CORRELATION_RANGE,
-                CorrelationWindow, fmt_ms(settings.correlation_window.get(), 0)
-            ));
-        );
     }
     "Meter" => meter;
     "Display" => display;
-    "Phase Correlation" [[chip(settings.correlation_meter.label())]] => correlation;
+    "Phase Correlation" [[chip(settings.correlation_meter.label())]] => form!(
+        pick(
+            "Meter", CorrelationMeterMode::ALL, settings.correlation_meter,
+            CorrelationMeter
+        );
+        metered.then(|| pick(
+            "Side", CorrelationMeterSide::ALL, settings.correlation_meter_side,
+            CorrelationSide,
+        ));
+        metered.then(|| slider!(
+            "Window", settings.correlation_window.get(), CORRELATION_RANGE,
+            CorrelationWindow, fmt_ms(settings.correlation_window.get(), 0)
+        ));
+    );
 }

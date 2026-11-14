@@ -793,10 +793,11 @@ mod tests {
 
     #[test]
     fn view_changes_reach_cached_spectrum_without_new_audio() {
+        use crate::domain::visuals::VisualKind;
         use crate::dsp::AudioFormat;
         use crate::persistence::settings::VisualConfig;
         use crate::util::audio::NegativeDb;
-        use crate::visuals::registry::{VisualContent, VisualKind, VisualManager};
+        use crate::visuals::registry::{VisualContent, VisualManager};
 
         let mut settings = SpectrumSettings {
             show_peak_label: true,
@@ -812,10 +813,9 @@ mod tests {
             format,
         );
         let state = manager
-            .snapshot()
-            .into_iter()
-            .find_map(|slot| match slot.content {
-                VisualContent::Spectrum(state) => Some(state),
+            .slots()
+            .find_map(|slot| match &slot.content {
+                VisualContent::Spectrum(state) => Some(std::rc::Rc::clone(state)),
                 _ => None,
             })
             .unwrap();

@@ -11,7 +11,9 @@ use crate::visuals::render::common::border_color;
 
 pub use crate::visuals::palettes::{BG_BASE, Palette, background};
 
+pub const SMALL_TEXT_SIZE: f32 = 11.0;
 pub const BODY_TEXT_SIZE: f32 = 12.0;
+pub const TITLE_TEXT_SIZE: f32 = 14.0;
 pub const CONTROL_GAP: f32 = 8.0;
 pub const SECTION_GAP: f32 = 12.0;
 

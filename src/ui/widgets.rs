@@ -20,6 +20,7 @@ use iced::{
 };
 use std::{borrow::Cow, collections::BTreeSet, fmt};
 
+#[derive(Clone, Copy)]
 pub(super) struct SliderRange {
     pub(super) min: f32,
     pub(super) max: f32,
@@ -53,7 +54,7 @@ pub(super) fn value_label<'a, M: 'a>(
 ) -> Row<'a, M> {
     row![
         clipped_text(label, theme::BODY_TEXT_SIZE).width(Fill),
-        clipped_text(value, 11.0),
+        clipped_text(value, theme::SMALL_TEXT_SIZE),
     ]
     .spacing(6)
     .width(Fill)
@@ -81,7 +82,7 @@ pub(super) fn card<'a, M: 'a>(
     content: impl Into<Element<'a, M>>,
 ) -> Container<'a, M> {
     container(
-        column![clipped_text(label, 14.0), content.into()]
+        column![clipped_text(label, theme::TITLE_TEXT_SIZE), content.into()]
             .spacing(10)
             .width(Fill),
     )
@@ -100,18 +101,23 @@ impl Disclosure {
         }
     }
 
-    /// `summary` shows only while collapsed.
-    pub(super) fn card<'a, M: Clone + 'a>(
+    /// Builds `summary` only while collapsed, and `body` only while expanded.
+    pub(super) fn card<'a, M, S, B>(
         &self,
         title: &'static str,
-        summary: impl IntoIterator<Item = Element<'a, M>>,
+        summary: impl FnOnce() -> S,
         on_toggle: impl Fn(&'static str) -> M,
-        body: impl Into<Element<'a, M>>,
-    ) -> Container<'a, M> {
+        body: impl FnOnce() -> B,
+    ) -> Container<'a, M>
+    where
+        M: Clone + 'a,
+        S: IntoIterator<Item = Element<'a, M>>,
+        B: Into<Element<'a, M>>,
+    {
         let expanded = self.0.contains(&title);
         let summary = (!expanded).then(|| {
             container(
-                Row::with_children(summary)
+                Row::with_children(summary())
                     .spacing(4)
                     .align_y(Vertical::Center),
             )
@@ -119,9 +125,13 @@ impl Disclosure {
             .clip(true)
         });
         let header = button(
-            row![section_mark(expanded), clipped_text(title, 14.0), summary]
-                .spacing(10)
-                .align_y(Vertical::Center),
+            row![
+                section_mark(expanded),
+                clipped_text(title, theme::TITLE_TEXT_SIZE),
+                summary
+            ]
+            .spacing(10)
+            .align_y(Vertical::Center),
         )
         .padding([10, 11])
         .width(Fill)
@@ -130,7 +140,7 @@ impl Disclosure {
         let body = expanded.then(|| {
             column![
                 container(Space::new().width(Fill).height(1)).style(theme::divider),
-                container(body).padding(11).width(Fill),
+                container(body()).padding(11).width(Fill),
             ]
         });
         // The padding keeps the header's hover fill inside the border; inner
@@ -155,10 +165,14 @@ fn section_mark<'a, M: 'a>(expanded: bool) -> Element<'a, M> {
 }
 
 pub(super) fn chip<'a, M: 'a>(label: impl IntoFragment<'a>) -> Element<'a, M> {
-    container(text(label).size(11).wrapping(Wrapping::None))
-        .padding([1, 6])
-        .style(theme::chip)
-        .into()
+    container(
+        text(label)
+            .size(theme::SMALL_TEXT_SIZE)
+            .wrapping(Wrapping::None),
+    )
+    .padding([1, 6])
+    .style(theme::chip)
+    .into()
 }
 
 pub(super) fn split<'a, M: 'a>(
@@ -207,7 +221,7 @@ pub(super) fn action_button<'a, M: Clone + 'a>(
     label: impl IntoFragment<'a>,
     message: Option<M>,
 ) -> Button<'a, M> {
-    button(clipped_text(label, 12.0))
+    button(clipped_text(label, theme::BODY_TEXT_SIZE))
         .padding([6, 10])
         .style(|theme, status| theme::button_style(theme, false, status))
         .on_press_maybe(message)
@@ -218,7 +232,7 @@ pub(super) fn selectable_button<'a, M: Clone + 'a>(
     selected: bool,
     message: M,
 ) -> Button<'a, M> {
-    button(clipped_text(label.into(), 12.0).width(Fill))
+    button(clipped_text(label.into(), theme::BODY_TEXT_SIZE).width(Fill))
         .padding(theme::CONTROL_GAP)
         .width(Fill)
         .style(move |theme, status| theme::button_style(theme, selected, status))

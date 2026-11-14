@@ -8,7 +8,6 @@ use iced::window::RedrawRequest;
 use iced::{Element, Event, Length, Size, Theme, window};
 use std::cell::RefCell;
 use std::hash::{Hash, Hasher};
-use std::rc::Rc;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -191,11 +190,11 @@ impl FrameCoordinator {
     }
 }
 
-pub(in crate::ui) fn frame_clock<Message: 'static>(
-    coordinator: Rc<RefCell<FrameCoordinator>>,
+pub(in crate::ui) fn frame_clock<'a, Message: 'a>(
+    coordinator: &'a RefCell<FrameCoordinator>,
     window: window::Id,
     is_main: bool,
-) -> Element<'static, Message> {
+) -> Element<'a, Message> {
     Element::new(FrameClock {
         coordinator,
         window,
@@ -203,13 +202,13 @@ pub(in crate::ui) fn frame_clock<Message: 'static>(
     })
 }
 
-struct FrameClock {
-    coordinator: Rc<RefCell<FrameCoordinator>>,
+struct FrameClock<'a> {
+    coordinator: &'a RefCell<FrameCoordinator>,
     window: window::Id,
     is_main: bool,
 }
 
-impl<Message> Widget<Message, Theme, iced::Renderer> for FrameClock {
+impl<Message> Widget<Message, Theme, iced::Renderer> for FrameClock<'_> {
     crate::macros::widget_method!(layout Size::new(Length::Fill, Length::Fill), |limits| limits.max());
 
     crate::macros::widget_method!(update Message; this; _, event, _, _, _, _, shell, _ => {

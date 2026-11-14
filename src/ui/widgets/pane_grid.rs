@@ -27,13 +27,34 @@ struct ResizeState {
 }
 
 #[derive(Default)]
+enum Gesture {
+    #[default]
+    Idle,
+    // A pane picked up at `origin`; `last_x` tells which way it is moving.
+    Dragging {
+        pane: Pane,
+        origin: Point,
+        last_x: f32,
+    },
+    Resizing(ResizeState),
+}
+
+#[derive(Default)]
 struct Interaction {
-    dragging: Option<(Pane, Point, f32)>,
-    resizing: Option<ResizeState>,
+    gesture: Gesture,
     cursor_over: Option<Pane>,
     modifiers: keyboard::Modifiers,
     // Panes can change under a still cursor, so the next move reports the hover again.
     panes: Vec<Pane>,
+}
+
+impl Interaction {
+    fn resizing(&self) -> Option<&ResizeState> {
+        match &self.gesture {
+            Gesture::Resizing(resizing) => Some(resizing),
+            _ => None,
+        }
+    }
 }
 
 pub type ResizeWidths = Vec<(Pane, f32)>;
@@ -151,7 +172,7 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer> for PaneGrid
         let count = self.entries.len();
         let size = limits.resolve(Length::Fill, Length::Fill, Size::ZERO);
         let available_width = size.width.max(0.0);
-        let resizing = tree.state.downcast_ref::<Interaction>().resizing.as_ref();
+        let resizing = tree.state.downcast_ref::<Interaction>().resizing();
         let widths = resizing
             .filter(|r| {
                 r.current.len() == count
@@ -239,7 +260,7 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer> for PaneGrid
         }
         if let Event::Mouse(mouse::Event::CursorMoved { position }) = event {
             let pane = this.pane_at(layout, *position);
-            this.hover(tree.state.downcast_mut::<Interaction>(), pane, shell);
+            this.hover(interaction, pane, shell);
         }
     });
 
@@ -252,11 +273,10 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer> for PaneGrid
         renderer: &iced::Renderer,
     ) -> mouse::Interaction {
         let interaction = tree.state.downcast_ref::<Interaction>();
-        if interaction.dragging.is_some() {
-            return mouse::Interaction::Grabbing;
-        }
-        if interaction.resizing.is_some() {
-            return mouse::Interaction::ResizingHorizontally;
+        match interaction.gesture {
+            Gesture::Dragging { .. } => return mouse::Interaction::Grabbing,
+            Gesture::Resizing(_) => return mouse::Interaction::ResizingHorizontally,
+            Gesture::Idle => {}
         }
         let child_interaction = self
             .entries
@@ -310,13 +330,14 @@ impl<Message: 'static> Widget<Message, iced::Theme, iced::Renderer> for PaneGrid
                     viewport,
                 );
             });
-            if interaction.dragging.is_some_and(|(p, _, _)| p == *pane) {
+            if matches!(interaction.gesture, Gesture::Dragging { pane: dragged, .. } if dragged == *pane)
+            {
                 let border = iced::border::color(with_alpha(accent(), 0.9)).width(2);
                 let fill = with_alpha(accent(), 0.4);
                 fill_bordered_rect(renderer, child_layout.bounds(), fill, border, true);
             }
         }
-        if let Some(r) = &interaction.resizing
+        if let Some(r) = interaction.resizing()
             && let Some(child) = layout.children().nth(r.divider)
         {
             let b = layout.bounds();
@@ -344,16 +365,22 @@ impl<'a, Message: 'a> PaneGrid<'a, Message> {
         shell: &mut Shell<'_, Message>,
     ) -> bool {
         if matches!(event, mouse::Event::CursorLeft) {
-            let dragging = interaction.dragging.take();
+            let dragging = matches!(interaction.gesture, Gesture::Dragging { .. });
+            interaction.gesture = Gesture::Idle;
             self.hover(interaction, None, shell);
-            if dragging.is_some() {
+            if dragging {
                 shell.request_redraw();
                 shell.capture_event();
             }
-            return dragging.is_some();
+            return dragging;
         }
 
-        if let Some((pane, origin, last_x)) = interaction.dragging {
+        if let Gesture::Dragging {
+            pane,
+            origin,
+            last_x,
+        } = interaction.gesture
+        {
             match event {
                 mouse::Event::CursorMoved { position } => {
                     if position.distance(origin) > 5.0
@@ -377,10 +404,14 @@ impl<'a, Message: 'a> PaneGrid<'a, Message> {
                             }
                         }
                     }
-                    interaction.dragging = Some((pane, origin, position.x));
+                    interaction.gesture = Gesture::Dragging {
+                        pane,
+                        origin,
+                        last_x: position.x,
+                    };
                 }
                 mouse::Event::ButtonReleased(mouse::Button::Left) => {
-                    interaction.dragging = None;
+                    interaction.gesture = Gesture::Idle;
                     shell.request_redraw();
                 }
                 _ => {}
@@ -397,7 +428,7 @@ impl<'a, Message: 'a> PaneGrid<'a, Message> {
                     .children()
                     .map(|c| c.bounds().width.max(0.0))
                     .collect();
-                interaction.resizing = Some(ResizeState {
+                interaction.gesture = Gesture::Resizing(ResizeState {
                     divider,
                     origin_x: position.x,
                     min: fit_mins(self.width_specs(), start.iter().sum()),
@@ -410,7 +441,11 @@ impl<'a, Message: 'a> PaneGrid<'a, Message> {
             }
             if let Some(pane) = self.draggable_at(layout, position, interaction.modifiers.control())
             {
-                interaction.dragging = Some((pane, position, position.x));
+                interaction.gesture = Gesture::Dragging {
+                    pane,
+                    origin: position,
+                    last_x: position.x,
+                };
                 shell.capture_event();
                 shell.request_redraw();
                 return true;
@@ -425,7 +460,7 @@ impl<'a, Message: 'a> PaneGrid<'a, Message> {
         event: &mouse::Event,
         shell: &mut Shell<'_, Message>,
     ) -> bool {
-        let Some(mut resizing) = interaction.resizing.take() else {
+        let Gesture::Resizing(resizing) = &mut interaction.gesture else {
             return false;
         };
 
@@ -442,7 +477,6 @@ impl<'a, Message: 'a> PaneGrid<'a, Message> {
                     shell.invalidate_layout();
                     shell.request_redraw();
                 }
-                interaction.resizing = Some(resizing);
             }
             mouse::Event::ButtonReleased(mouse::Button::Left) => {
                 if !widths_equal(&resizing.current, &resizing.start) {
@@ -455,16 +489,18 @@ impl<'a, Message: 'a> PaneGrid<'a, Message> {
                     shell.publish((self.on_resize)(widths));
                     shell.invalidate_layout();
                 }
+                interaction.gesture = Gesture::Idle;
                 shell.request_redraw();
             }
             mouse::Event::CursorLeft => {
                 if !widths_equal(&resizing.current, &resizing.start) {
                     shell.invalidate_layout();
                 }
+                interaction.gesture = Gesture::Idle;
                 self.hover(interaction, None, shell);
                 shell.request_redraw();
             }
-            _ => interaction.resizing = Some(resizing),
+            _ => {}
         }
         shell.capture_event();
         true
@@ -591,12 +627,9 @@ mod tests {
     fn default_window_has_room_for_loudness_labels() {
         let mut manager = crate::visuals::registry::VisualManager::default();
         manager.apply_visual_settings(&Default::default(), None);
-        let mut panes = manager.snapshot();
-        panes.retain(|slot| slot.enabled);
+        let panes: Vec<_> = manager.slots().filter(|slot| slot.enabled).collect();
         let widths = solve_widths(
-            panes
-                .iter()
-                .map(|slot| (slot.min_width, slot.width_basis.get())),
+            (panes.iter()).map(|slot| (slot.min_width, slot.width_basis.get())),
             crate::persistence::settings::MainWindowSettings::default().width as f32,
         );
         let loudness = panes

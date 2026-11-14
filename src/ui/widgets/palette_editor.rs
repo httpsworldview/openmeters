@@ -286,9 +286,10 @@ impl PaletteEditor {
 
     pub fn view(&self) -> Element<'_, PaletteEvent> {
         let pickers = self.visible_colors().iter().enumerate();
-        let row = Row::with_children(pickers.map(|(i, &c)| self.color_picker(i, c))).spacing(12);
+        let row = Row::with_children(pickers.map(|(i, &c)| self.color_picker(i, c)))
+            .spacing(ui_theme::SECTION_GAP);
         Column::new()
-            .spacing(12)
+            .spacing(ui_theme::SECTION_GAP)
             .extend((!self.positions.is_empty()).then(|| Element::new(self)))
             .push(self.scroll.horizontal(row, PaletteEvent::HorizontalScroll))
             .extend(self.color_controls())
@@ -303,9 +304,9 @@ impl PaletteEditor {
         let active = self.active_index() == Some(i);
         Button::new(
             column![
-                clipped_text(self.label_for(i), 11.0),
+                clipped_text(self.label_for(i), ui_theme::SMALL_TEXT_SIZE),
                 Element::new(Swatch { color: c, active }),
-                clipped_text(to_hex(c), 11.0),
+                clipped_text(to_hex(c), ui_theme::SMALL_TEXT_SIZE),
             ]
             .spacing(4)
             .align_x(Horizontal::Center),

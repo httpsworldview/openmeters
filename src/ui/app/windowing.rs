@@ -3,11 +3,12 @@
 
 use super::message::{self, Message};
 use super::{ActiveSettings, UiApp};
+use crate::domain::visuals::VisualKind;
 use crate::persistence::settings::{
     BarAlignment, BarHeight, MainWindowSettings, PopoutWindowSettings, UiSettings, clamp_bar_height,
 };
 use crate::ui::widgets::scroll_glow::ScrollGlow;
-use crate::visuals::registry::{VisualContent, VisualKind};
+use crate::visuals::registry::VisualContent;
 use iced::{Size, Task, exit, window};
 use iced_exwlshell::reexport::{
     Anchor, KeyboardInteractivity, Layer, LayerSize, NewLayerShellSettings, OutputOption, PixelSize,
@@ -80,7 +81,6 @@ fn open_base_window(
         let (id, task) = window::open(window::Settings {
             size,
             min_size: Some(WINDOW_MIN_SIZE),
-            resizable: true,
             decorations,
             // Keep one alpha mode across base windows; visual windows need it for background opacity.
             transparent: true,
@@ -229,7 +229,7 @@ impl UiApp {
             }
             self.main_window = MainWindow::Bar(None);
             self.bar_resize_state = None;
-            self.config_page.sync_current_bar_output(None);
+            self.bar_outputs.set_current(None, None);
             // A layer close does not carry a reason. Await output changes rather
             // than quitting or repeatedly recreating a rejected surface.
             tracing::debug!("[ui] bar surface closed; waiting for output changes");
@@ -262,8 +262,8 @@ impl UiApp {
         let has_window = |windows: &HashMap<window::Id, VisualContent>, kind| {
             windows.values().any(|popout| popout.kind() == kind)
         };
-        let snapshot = self.visual_manager.borrow().snapshot();
-        for slot in &snapshot {
+        let manager = self.visual_manager.borrow();
+        for slot in manager.slots() {
             let kind = slot.kind();
             if wanted(kind) && !has_window(&self.popout_windows, kind) {
                 let (id, open) = self.open_popout_base_window(kind);
@@ -271,8 +271,9 @@ impl UiApp {
                 tasks.push(open);
             }
         }
-        self.visuals_page
-            .apply_snapshot_excluding(&snapshot, |kind| has_window(&self.popout_windows, kind));
+        self.visuals_page.show_slots(manager.slots(), |kind| {
+            has_window(&self.popout_windows, kind)
+        });
         Task::batch(tasks)
     }
 
@@ -295,7 +296,7 @@ impl UiApp {
         .clone()
     }
 
-    pub(super) fn pop_out_or_dock(&mut self, source_window: window::Id) {
+    pub(super) fn pop_out_or_dock(&self, source_window: window::Id) {
         let (kind, popped_out) = match self.popout_windows.get(&source_window) {
             Some(popout) => (popout.kind(), false),
             None => match self.visuals_page.hovered_visual() {
@@ -327,7 +328,7 @@ impl UiApp {
     }
 
     pub(super) fn handle_window_resize(
-        &mut self,
+        &self,
         window_id: window::Id,
         new_size: Size,
     ) -> Task<Message> {
@@ -361,13 +362,12 @@ impl UiApp {
 
     pub(super) fn recreate_main_window(&mut self) -> Task<Message> {
         let old_main_id = self.main_window.id();
-        self.config_page.sync_current_bar_output(None);
+        self.bar_outputs.set_current(None, None);
         self.bar_resize_state = None;
-        let has_bar_outputs = self.config_page.has_bar_outputs();
         let (main_window, open_main) = open_main_window(
             &self.settings_handle.borrow().data,
             self.use_layershell,
-            has_bar_outputs,
+            !self.bar_outputs.is_empty(),
         );
         self.main_window = main_window;
         Task::batch(std::iter::once(open_main).chain(old_main_id.map(window::close)))

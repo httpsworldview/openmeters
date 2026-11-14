@@ -155,19 +155,19 @@ impl MeterEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::visuals::VisualKind;
     use crate::dsp::AudioBlock;
     use crate::util::audio::sine_wave;
     use crate::visuals::loudness::processor::{LoudnessProcessor, LoudnessSnapshot, Programme};
-    use crate::visuals::registry::{VisualContent, VisualKind};
+    use crate::visuals::registry::VisualContent;
 
     fn loudness() -> (VisualManager, impl Fn() -> (LoudnessSnapshot, Programme)) {
         let mut manager = VisualManager::default();
         manager.set_enabled(VisualKind::Loudness, true);
         let state = manager
-            .snapshot()
-            .into_iter()
-            .find_map(|entry| match entry.content {
-                VisualContent::Loudness(state) => Some(state),
+            .slots()
+            .find_map(|slot| match &slot.content {
+                VisualContent::Loudness(state) => Some(std::rc::Rc::clone(state)),
                 _ => None,
             })
             .unwrap();

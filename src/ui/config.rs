@@ -2,23 +2,24 @@
 // Copyright (C) 2026 Maika Namuo
 
 use crate::domain::routing::{CaptureMode, StreamIdentity};
+use crate::domain::visuals::VisualKind;
 use crate::infra::pipewire::{CaptureControl, CaptureView};
 use crate::persistence::settings::{
     BUILTIN_THEME, BarAlignment, BarHeight, SettingsHandle, ThemeChoice, ThemeName,
     VisualFrameRate, clamp_bar_height,
 };
+use crate::ui::outputs::{BarMonitorOption, BarOutputs};
 use crate::ui::theme;
 use crate::ui::widgets::palette_editor::{PaletteChange, PaletteEditor, PaletteEvent};
 use crate::ui::widgets::scroll_glow::{ScrollEvent, ScrollGlow};
 use crate::ui::widgets::{
     Disclosure, SliderRange, action_button, card, chip, pick, selectable_button, split, toggle,
 };
-use crate::visuals::registry::{VisualKind, VisualManagerHandle, VisualSlotSnapshot};
+use crate::visuals::registry::VisualManager;
 use iced::alignment::Vertical;
 use iced::widget::text::IntoFragment;
-use iced::widget::{Column, Text, column, container, pick_list, row, text, text_input};
+use iced::widget::{Column, Grid, Text, column, container, pick_list, row, text, text_input};
 use iced::{Color, Element, Length};
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 const GRID_COLUMNS: usize = 2;
@@ -38,134 +39,6 @@ impl std::fmt::Display for DeviceOption {
         } else {
             f.write_str(&self.label)
         }
-    }
-}
-
-#[derive(Clone, PartialEq, Eq)]
-struct BarMonitorOption {
-    monitor: Option<String>,
-    disconnected: bool,
-}
-
-impl std::fmt::Display for BarMonitorOption {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.monitor {
-            None => f.write_str("Automatic"),
-            Some(name) if !self.disconnected => f.write_str(name),
-            Some(name) => write!(f, "{name} (disconnected)"),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::ui) enum BarOutputEvent {
-    Added,
-    Updated,
-    Removed,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::ui) enum BarOutputChange {
-    Unchanged,
-    Changed,
-    Retarget,
-}
-
-#[derive(Default)]
-struct BarOutputs {
-    names: BTreeMap<u32, Option<String>>,
-    current: Option<u32>,
-}
-
-impl BarOutputs {
-    fn name(&self, id: u32) -> Option<&str> {
-        self.names.get(&id)?.as_deref()
-    }
-
-    fn has_output(&self, name: &str) -> bool {
-        self.names
-            .values()
-            .any(|output| output.as_deref() == Some(name))
-    }
-
-    fn selected_is_elsewhere(&self, selected: &str) -> bool {
-        self.current.is_some_and(|current| {
-            self.name(current) != Some(selected) && self.has_output(selected)
-        })
-    }
-
-    fn sync(
-        &mut self,
-        id: u32,
-        name: Option<String>,
-        event: BarOutputEvent,
-        selected: Option<&str>,
-    ) -> BarOutputChange {
-        use BarOutputEvent::{Added, Removed, Updated};
-
-        if event == Removed && self.current == Some(id) {
-            self.current = None;
-        }
-        let name = name.filter(|name| !name.is_empty());
-        let previous = if event == Removed {
-            self.names.remove(&id)
-        } else {
-            self.names.insert(id, name.clone())
-        };
-
-        let topology_changed = event != Updated;
-        let changed = match event {
-            Removed => previous.is_some(),
-            Added | Updated => previous.as_ref() != Some(&name),
-        };
-        let route_changed = changed
-            && match selected {
-                None => match event {
-                    Added => self.current != Some(id),
-                    Removed => self.current.is_none(),
-                    Updated => false,
-                },
-                Some(selected) => {
-                    self.current == Some(id)
-                        || previous.as_ref().and_then(|name| name.as_deref()) == Some(selected)
-                        || name.as_deref() == Some(selected)
-                        || topology_changed && self.current.is_none()
-                }
-            };
-        let retarget = route_changed
-            && match selected {
-                None => event == Added && self.current.is_some_and(|current| current != id),
-                Some(selected) => self.selected_is_elsewhere(selected),
-            };
-        if retarget {
-            BarOutputChange::Retarget
-        } else if route_changed {
-            BarOutputChange::Changed
-        } else {
-            BarOutputChange::Unchanged
-        }
-    }
-
-    fn set_current(&mut self, output: Option<u32>, selected: Option<&str>) -> bool {
-        self.current = output.filter(|id| self.names.contains_key(id));
-        selected.is_some_and(|selected| self.selected_is_elsewhere(selected))
-    }
-
-    fn choices(&self, selected: Option<&str>) -> (Vec<BarMonitorOption>, BarMonitorOption) {
-        let disconnected = selected.is_some_and(|name| !self.has_output(name));
-        let selected = BarMonitorOption {
-            monitor: selected.map(str::to_owned),
-            disconnected,
-        };
-        let options = std::iter::once(None)
-            .chain(self.names.values().flatten().cloned().map(Some))
-            .map(|monitor| BarMonitorOption {
-                monitor,
-                disconnected: false,
-            })
-            .chain(disconnected.then(|| selected.clone()))
-            .collect();
-        (options, selected)
     }
 }
 
@@ -199,10 +72,8 @@ pub struct ConfigPage {
     capture: CaptureControl,
     // None while PipeWire is unreachable. Refreshed before the page is shown.
     capture_view: Option<Arc<CaptureView>>,
-    visual_manager: VisualManagerHandle,
     settings: SettingsHandle,
     bar_supported: bool,
-    bar_outputs: BarOutputs,
     disclosure: Disclosure,
     bg_palette: PaletteEditor,
     scroll: ScrollGlow,
@@ -212,20 +83,13 @@ pub struct ConfigPage {
 }
 
 impl ConfigPage {
-    pub fn new(
-        capture: CaptureControl,
-        visual_manager: VisualManagerHandle,
-        settings: SettingsHandle,
-        bar_supported: bool,
-    ) -> Self {
+    pub fn new(capture: CaptureControl, settings: SettingsHandle, bar_supported: bool) -> Self {
         let theme_choices = settings.borrow().themes();
         let mut page = Self {
             capture,
             capture_view: None,
-            visual_manager,
             settings,
             bar_supported,
-            bar_outputs: BarOutputs::default(),
             disclosure: Disclosure::default(),
             bg_palette: PaletteEditor::new(theme::background::PALETTE),
             scroll: ScrollGlow::default(),
@@ -314,13 +178,16 @@ impl ConfigPage {
         }
     }
 
-    pub fn view(&self) -> Element<'_, ConfigMessage> {
-        let snapshot = self.visual_manager.borrow().snapshot();
+    pub(in crate::ui) fn view(
+        &self,
+        manager: &VisualManager,
+        bar_outputs: &BarOutputs,
+    ) -> Element<'_, ConfigMessage> {
         let content = column![
             self.render_capture_card(),
-            self.render_visuals_card(&snapshot),
+            self.render_visuals_card(manager),
             self.render_global_card(),
-            self.bar_supported.then(|| self.render_bar_card()),
+            (self.bar_supported).then(|| self.render_bar_card(bar_outputs)),
             self.render_appearance_card(),
         ]
         .spacing(theme::SECTION_GAP);
@@ -346,10 +213,6 @@ impl ConfigPage {
             .map_or(&[][..], |view| view.applications.as_slice());
         let settings = self.settings.borrow();
         let disabled = &settings.data.disabled_streams;
-        let disabled_count = applications
-            .iter()
-            .filter(|application| disabled.contains(&application.identity))
-            .count();
         let (empty_status, empty_message) = if self.capture_view.is_some() {
             (
                 "none detected",
@@ -358,40 +221,36 @@ impl ConfigPage {
         } else {
             ("unavailable", REGISTRY_UNAVAILABLE_MESSAGE)
         };
-        let status = if applications.is_empty() {
-            empty_status.to_owned()
-        } else {
-            format!("{} total", applications.len())
+        let summary = || {
+            let disabled_count = applications
+                .iter()
+                .filter(|application| disabled.contains(&application.identity))
+                .count();
+            let status = if applications.is_empty() {
+                empty_status.to_owned()
+            } else {
+                format!("{} total", applications.len())
+            };
+            let muted = (disabled_count > 0).then(|| format!("{disabled_count} disabled"));
+            [Some(status), muted].into_iter().flatten().map(chip)
         };
-        let summary = [
-            Some(status),
-            (disabled_count > 0).then(|| format!("{disabled_count} disabled")),
-        ];
-
-        let body: Element<'_, _> = if applications.is_empty() {
-            text(empty_message).size(theme::BODY_TEXT_SIZE).into()
-        } else {
-            render_toggle_grid(applications, |application| {
+        let body = || -> Element<'_, _> {
+            if applications.is_empty() {
+                return text(empty_message).size(theme::BODY_TEXT_SIZE).into();
+            }
+            toggle_grid(applications.iter().map(|application| {
                 let enabled = !disabled.contains(&application.identity);
-                (
-                    application.label.as_ref(),
-                    if application.active { "" } else { " (paused)" },
-                    enabled,
-                    ConfigMessage::ToggleChanged {
-                        identity: application.identity.clone(),
-                        enabled: !enabled,
-                    },
-                )
-            })
+                let paused = if application.active { "" } else { " (paused)" };
+                let message = ConfigMessage::ToggleChanged {
+                    identity: application.identity.clone(),
+                    enabled: !enabled,
+                };
+                (format!("{}{paused}", application.label), enabled, message)
+            }))
             .into()
         };
         self.disclosure
-            .card(
-                "Applications",
-                summary.into_iter().flatten().map(chip),
-                ConfigMessage::ToggleSection,
-                body,
-            )
+            .card("Applications", summary, ConfigMessage::ToggleSection, body)
             .into()
     }
 
@@ -405,15 +264,11 @@ impl ConfigPage {
             .iter()
             .find(|opt| opt.selection == selected_token)
             .cloned();
-        let available = choices.len() > 1;
-        let mut picker = pick_list(choices, selected, |opt| {
+        let picker = pick_list(choices, selected, |opt| {
             ConfigMessage::CaptureDeviceChanged(opt.selection)
         })
         .text_size(theme::BODY_TEXT_SIZE)
         .width(Length::Fill);
-        if !available {
-            picker = picker.placeholder("No devices available");
-        }
 
         column![
             container(picker).width(Length::Fill).clip(true),
@@ -424,35 +279,36 @@ impl ConfigPage {
 
     fn render_appearance_card(&self) -> container::Container<'_, ConfigMessage> {
         let active = self.settings.borrow().active_theme().cloned();
-        let name = active.as_ref().map_or(BUILTIN_THEME, ThemeName::as_str);
-        let selected = ThemeChoice(active.clone());
-        let picker = pick_list(self.theme_choices.as_slice(), Some(selected), |choice| {
-            ConfigMessage::ThemeChanged(choice.0)
-        })
-        .text_size(theme::BODY_TEXT_SIZE)
-        .width(Length::Fill);
-
-        let save = active.clone().map(ConfigMessage::SaveTheme);
-        let save_btn = action_button("Save", save).padding([4, 8]);
-
-        let save_as_input = text_input("New theme name...", &self.save_theme_name)
-            .on_input(ConfigMessage::ThemeNameInput)
-            .size(theme::BODY_TEXT_SIZE)
+        let summary = || {
+            let name = active.as_ref().map_or(BUILTIN_THEME, ThemeName::as_str);
+            [chip(name.to_owned()), self.bg_palette.preview()]
+        };
+        let body = || {
+            let selected = ThemeChoice(active.clone());
+            let picker = pick_list(self.theme_choices.as_slice(), Some(selected), |choice| {
+                ConfigMessage::ThemeChanged(choice.0)
+            })
+            .text_size(theme::BODY_TEXT_SIZE)
             .width(Length::Fill);
-        let save_as = ThemeName::new(&self.save_theme_name).map(ConfigMessage::SaveTheme);
-        let save_as_btn = action_button("Save as", save_as).padding([4, 8]);
 
-        let content = form!(
-            row![picker, save_btn].spacing(theme::CONTROL_GAP);
-            row![save_as_input, save_as_btn].spacing(theme::CONTROL_GAP);
-            self.bg_palette.view().map(ConfigMessage::BgPalette);
-        );
-        self.disclosure.card(
-            "Appearance",
-            [chip(name.to_owned()), self.bg_palette.preview()],
-            ConfigMessage::ToggleSection,
-            content,
-        )
+            let save = active.clone().map(ConfigMessage::SaveTheme);
+            let save_btn = action_button("Save", save).padding([4, 8]);
+
+            let save_as_input = text_input("New theme name...", &self.save_theme_name)
+                .on_input(ConfigMessage::ThemeNameInput)
+                .size(theme::BODY_TEXT_SIZE)
+                .width(Length::Fill);
+            let save_as = ThemeName::new(&self.save_theme_name).map(ConfigMessage::SaveTheme);
+            let save_as_btn = action_button("Save as", save_as).padding([4, 8]);
+
+            form!(
+                row![picker, save_btn].spacing(theme::CONTROL_GAP);
+                row![save_as_input, save_as_btn].spacing(theme::CONTROL_GAP);
+                self.bg_palette.view().map(ConfigMessage::BgPalette);
+            )
+        };
+        self.disclosure
+            .card("Appearance", summary, ConfigMessage::ToggleSection, body)
     }
 
     fn render_global_card(&self) -> container::Container<'_, ConfigMessage> {
@@ -480,28 +336,7 @@ impl ConfigPage {
         self.theme_choices = self.settings.borrow().themes();
     }
 
-    pub(in crate::ui) fn has_bar_outputs(&self) -> bool {
-        !self.bar_outputs.names.is_empty()
-    }
-
-    pub(in crate::ui) fn sync_bar_output(
-        &mut self,
-        id: u32,
-        name: Option<String>,
-        event: BarOutputEvent,
-    ) -> BarOutputChange {
-        let settings = self.settings.borrow();
-        self.bar_outputs
-            .sync(id, name, event, settings.data.bar.monitor.as_deref())
-    }
-
-    pub(in crate::ui) fn sync_current_bar_output(&mut self, output: Option<u32>) -> bool {
-        let settings = self.settings.borrow();
-        self.bar_outputs
-            .set_current(output, settings.data.bar.monitor.as_deref())
-    }
-
-    fn render_bar_card(&self) -> container::Container<'_, ConfigMessage> {
+    fn render_bar_card(&self, outputs: &BarOutputs) -> container::Container<'_, ConfigMessage> {
         use ConfigMessage::{
             BarAlignmentChanged as Alignment, BarHeightChanged, BarModeToggled, BarMonitorChanged,
         };
@@ -509,19 +344,15 @@ impl ConfigPage {
         let mut content = form!(toggle("Enabled", bar.enabled, BarModeToggled););
         if bar.enabled {
             let height = bar.height.get();
-            let (monitors, selected) = self.bar_outputs.choices(bar.monitor.as_deref());
-            let current = self
-                .bar_outputs
-                .current
-                .map(|id| self.bar_outputs.name(id).unwrap_or("unnamed monitor"));
-            let status = selected.disconnected.then(|| {
-                current.map_or_else(
+            let (monitors, selected) = outputs.choices(bar.monitor.as_deref());
+            let status = matches!(selected, BarMonitorOption::Disconnected(_)).then(|| {
+                outputs.current_name().map_or_else(
                     || "Finding a fallback...".into(),
                     |current| format!("Fallback: {current}"),
                 )
             });
             let monitor = pick("Monitor", monitors, selected, |choice| {
-                BarMonitorChanged(choice.monitor)
+                BarMonitorChanged(choice.monitor())
             });
             let alignment = pick("Alignment", BarAlignment::ALL, bar.alignment, Alignment);
             let height_range = SliderRange::new(BarHeight::MIN as f32, BarHeight::MAX as f32, 1.0);
@@ -542,25 +373,24 @@ impl ConfigPage {
 
     fn render_visuals_card(
         &self,
-        snapshot: &[VisualSlotSnapshot],
+        manager: &VisualManager,
     ) -> container::Container<'_, ConfigMessage> {
-        let enabled = snapshot.iter().filter(|slot| slot.enabled).count();
-        self.disclosure.card(
-            "Visuals",
-            [chip(format!("{enabled} of {} enabled", snapshot.len()))],
-            ConfigMessage::ToggleSection,
-            render_toggle_grid(snapshot, |slot| {
-                (
-                    slot.kind().label(),
-                    "",
-                    slot.enabled,
-                    ConfigMessage::VisualToggled {
-                        kind: slot.kind(),
-                        enabled: !slot.enabled,
-                    },
-                )
-            }),
-        )
+        let summary = || {
+            let enabled = manager.slots().filter(|slot| slot.enabled).count();
+            let total = manager.slots().count();
+            [chip(format!("{enabled} of {total} enabled"))]
+        };
+        let body = || {
+            toggle_grid(manager.slots().map(|slot| {
+                let message = ConfigMessage::VisualToggled {
+                    kind: slot.kind(),
+                    enabled: !slot.enabled,
+                };
+                (slot.kind().label().to_owned(), slot.enabled, message)
+            }))
+        };
+        self.disclosure
+            .card("Visuals", summary, ConfigMessage::ToggleSection, body)
     }
 
     fn device_choices(&self, view: &CaptureView) -> Vec<DeviceOption> {
@@ -604,58 +434,15 @@ fn note<'a>(content: impl IntoFragment<'a>) -> Text<'a> {
         .style(theme::weak_text_style)
 }
 
-fn render_toggle_grid<T, F>(items: &[T], mut project: F) -> Column<'static, ConfigMessage>
-where
-    for<'b> F: FnMut(&'b T) -> (&'b str, &'static str, bool, ConfigMessage),
-{
-    column(items.chunks(GRID_COLUMNS).map(|chunk| {
-        row(chunk.iter().map(|item| {
-            let (name, suffix, enabled, message) = project(item);
-            let state = if enabled { "enabled" } else { "disabled" };
-            selectable_button(format!("{name}{suffix} ({state})"), enabled, message)
-                .width(Length::FillPortion(1))
-                .into()
-        }))
+fn toggle_grid<'a>(
+    items: impl Iterator<Item = (String, bool, ConfigMessage)>,
+) -> Grid<'a, ConfigMessage> {
+    let buttons = items.map(|(name, enabled, message)| {
+        let state = if enabled { "enabled" } else { "disabled" };
+        selectable_button(format!("{name} ({state})"), enabled, message).into()
+    });
+    Grid::with_children(buttons)
+        .columns(GRID_COLUMNS)
         .spacing(6)
-        .into()
-    }))
-    .spacing(6)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{BarOutputChange::*, BarOutputEvent::*, BarOutputs};
-
-    #[test]
-    fn bar_retargeting_follows_output_routes() {
-        let mut outputs = BarOutputs {
-            current: Some(1),
-            ..Default::default()
-        };
-        outputs.names.insert(1, Some("HDMI".into()));
-
-        assert_eq!(outputs.sync(2, Some("DP".into()), Added, None), Retarget);
-        assert_eq!(outputs.sync(2, Some("DP".into()), Added, None), Unchanged);
-        assert_eq!(outputs.sync(1, Some("HDMI".into()), Removed, None), Changed);
-
-        assert_eq!(outputs.current, None);
-        assert_eq!(
-            outputs.sync(1, Some("HDMI".into()), Removed, None),
-            Unchanged
-        );
-        outputs.names.insert(1, Some("HDMI".into()));
-        assert!(outputs.set_current(Some(1), Some("DP")));
-        assert!(!outputs.set_current(Some(1), Some("missing")));
-
-        outputs.sync(3, None, Added, None);
-        assert_eq!(outputs.names.get(&3), Some(&None));
-        assert_eq!(outputs.sync(3, Some(String::new()), Added, None), Unchanged);
-        let (choices, _) = outputs.choices(None);
-        assert_eq!(
-            choices.iter().map(ToString::to_string).collect::<Vec<_>>(),
-            ["Automatic", "HDMI", "DP"]
-        );
-        assert!(!outputs.set_current(Some(99), None));
-        assert_eq!(outputs.current, None);
-    }
+        .height(Length::Shrink)
 }

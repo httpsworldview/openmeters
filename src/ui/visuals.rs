@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
+use crate::domain::visuals::VisualKind;
 use crate::persistence::settings::{SettingsHandle, WidthBasis};
 use crate::ui::widgets::pane_grid::{self, Content as PaneContent, Pane};
-use crate::visuals::registry::{
-    VisualContent, VisualKind, VisualManagerHandle, VisualSlotSnapshot,
-};
+use crate::visuals::registry::{VisualContent, VisualManager, VisualSlot};
 use iced::widget::{MouseArea, container, mouse_area, text};
 use iced::{Element, Length};
 
@@ -22,52 +21,44 @@ pub(in crate::ui) fn visual_area(content: &VisualContent) -> MouseArea<'_, Visua
 }
 
 pub struct VisualsPage {
-    visual_manager: VisualManagerHandle,
     settings: SettingsHandle,
-    panes: Vec<VisualSlotSnapshot>,
+    panes: Vec<VisualSlot>,
     hovered_pane: Option<Pane>,
 }
 
 impl VisualsPage {
-    pub fn new(visual_manager: VisualManagerHandle, settings: SettingsHandle) -> Self {
-        let mut page = Self {
-            visual_manager,
+    pub fn new(settings: SettingsHandle) -> Self {
+        Self {
             settings,
             panes: Vec::new(),
             hovered_pane: None,
-        };
-        let snapshot = page.visual_manager.borrow().snapshot();
-        page.apply_snapshot_excluding(&snapshot, |_| false);
-        page
+        }
     }
 
-    pub fn update(&mut self, message: VisualsMessage) {
+    pub fn update(&mut self, message: VisualsMessage, manager: &VisualManager) {
         match message {
             VisualsMessage::PaneResized(widths) => {
                 let bases = widths.into_iter().filter_map(|(pane, basis)| {
                     let shown = self.panes.iter().any(|visual| visual.kind() == pane);
                     shown.then_some((pane, WidthBasis::new(basis)?))
                 });
-                let bases: Vec<_> = bases.collect();
                 self.settings.edit(|s| s.visuals.width_basis.extend(bases));
             }
             VisualsMessage::PaneMoved(pane, to) => {
-                let mut shown: Vec<_> = self.panes.iter().map(VisualSlotSnapshot::kind).collect();
+                let mut shown: Vec<_> = self.panes.iter().map(VisualSlot::kind).collect();
                 let Some(from) = shown.iter().position(|&kind| kind == pane) else {
                     return;
                 };
                 if from == to || to >= shown.len() {
                     return;
                 }
-                let mut order = self.visual_manager.borrow().order();
-                let slots: Vec<_> = (0..order.len())
-                    .filter(|&slot| shown.contains(&order[slot]))
-                    .collect();
                 let moved = shown.remove(from);
                 shown.insert(to, moved);
+                let mut order = manager.order();
                 // Shown visuals trade slots; hidden ones keep theirs.
-                for (slot, kind) in slots.into_iter().zip(shown) {
-                    order[slot] = kind;
+                let slots = order.iter_mut().filter(|kind| shown.contains(kind));
+                for (slot, &kind) in slots.zip(&shown) {
+                    *slot = kind;
                 }
                 self.settings.edit(|s| s.visuals.order = order);
             }
@@ -106,13 +97,13 @@ impl VisualsPage {
         ))
     }
 
-    pub(in crate::ui) fn apply_snapshot_excluding(
+    pub(in crate::ui) fn show_slots<'a>(
         &mut self,
-        snapshot: &[VisualSlotSnapshot],
+        slots: impl IntoIterator<Item = &'a VisualSlot>,
         exclude: impl Fn(VisualKind) -> bool,
     ) {
-        let shown = snapshot
-            .iter()
+        let shown = slots
+            .into_iter()
             .filter(|slot| slot.enabled && !exclude(slot.kind()));
         self.panes = shown.cloned().collect();
     }
