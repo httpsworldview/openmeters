@@ -7,6 +7,7 @@ use super::{lossy, visuals::visual_map};
 use crate::domain::visuals::VisualKind;
 use crate::visuals::palettes::Palette;
 use serde::Serialize;
+use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -15,28 +16,39 @@ const THEMES_DIR: &str = "themes";
 const AUTO_THEME_BASE: &str = "default-custom";
 pub const BUILTIN_THEME: &str = "default";
 
-/// The theme file a name refers to, or `None` for the built-in theme.
-pub fn theme_name(name: &str) -> Option<String> {
-    let name = name.replace(['/', '\\', '\0'], "");
-    let name = name.trim();
-    (!name.is_empty() && name != BUILTIN_THEME).then(|| name.to_owned())
+/// The stem of a theme file: never empty, the built-in theme's name, or a path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct ThemeName(String);
+
+impl ThemeName {
+    /// The theme file `name` refers to, or `None` for the built-in theme.
+    pub fn new(name: &str) -> Option<Self> {
+        let name = name.replace(['/', '\\', '\0'], "");
+        let name = name.trim();
+        (!name.is_empty() && name != BUILTIN_THEME).then(|| Self(name.to_owned()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
-fn is_theme_name(name: &str) -> bool {
-    theme_name(name).as_deref() == Some(name)
+impl std::fmt::Display for ThemeName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
 }
 
+/// A theme to pick; `None` is the built-in one.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ThemeChoice {
-    pub name: String,
-}
+pub struct ThemeChoice(pub Option<ThemeName>);
 
 impl std::fmt::Display for ThemeChoice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.name == BUILTIN_THEME {
-            write!(f, "{} (built-in)", self.name)
-        } else {
-            f.write_str(&self.name)
+        match &self.0 {
+            Some(name) => name.fmt(f),
+            None => write!(f, "{BUILTIN_THEME} (built-in)"),
         }
     }
 }
@@ -54,63 +66,56 @@ pub struct ThemeFile {
 }
 
 impl Stored for ThemeFile {
-    fn from_json_lossy(raw: &[u8]) -> serde_json::Result<Self> {
-        serde_json::from_slice(raw).map(|object| {
-            let value = serde_json::Value::Object(object);
-            lossy::settings(value, "theme", |map, out: &mut Self, scope| {
-                lossy::fields!(map, out, scope; name, author, background);
-                let palettes = &mut out.palettes;
-                visual_map(map, scope, "palettes", palettes, |kind, value, scope| {
-                    PaletteSettings::decode(value, &Palette::for_kind(kind), scope)
-                });
-            })
-        })
+    const SCOPE: &'static str = "theme";
+
+    fn read_fields(map: &mut Map<String, Value>, out: &mut Self, scope: &str) {
+        lossy::fields!(map, out, scope; name, author, background);
+        let palettes = &mut out.palettes;
+        visual_map(map, scope, "palettes", palettes, |kind, value, scope| {
+            PaletteSettings::decode(value, &Palette::for_kind(kind), scope)
+        });
     }
 }
 
-pub struct ThemeStore {
+pub(super) struct ThemeStore {
     dir: PathBuf,
 }
 
 impl ThemeStore {
-    pub fn new(config_dir: &Path) -> Self {
+    pub(super) fn new(config_dir: &Path) -> Self {
         Self {
             dir: config_dir.join(THEMES_DIR),
         }
     }
 
-    pub fn dir(&self) -> &Path {
+    pub(super) fn dir(&self) -> &Path {
         &self.dir
     }
 
-    pub fn list(&self) -> Vec<ThemeChoice> {
-        let mut choices = vec![ThemeChoice {
-            name: BUILTIN_THEME.to_owned(),
-        }];
+    pub(super) fn list(&self) -> Vec<ThemeChoice> {
+        let mut choices = vec![ThemeChoice(None)];
         if let Ok(entries) = fs::read_dir(&self.dir) {
             choices.extend(entries.flatten().filter_map(|entry| {
                 let path = entry.path();
                 let stem = path.file_stem()?.to_str()?;
                 let json = path.extension().is_some_and(|e| e == "json");
-                (json && is_theme_name(stem)).then(|| ThemeChoice {
-                    name: stem.to_owned(),
-                })
+                // A file whose stem is not already a theme name could not be opened by it.
+                let name = ThemeName::new(stem).filter(|name| json && name.0 == stem)?;
+                Some(ThemeChoice(Some(name)))
             }));
         }
-        choices.sort_by_cached_key(|choice| {
-            (choice.name != BUILTIN_THEME, choice.name.to_lowercase())
-        });
+        choices.sort_by_cached_key(|ThemeChoice(name)| name.as_ref().map(|n| n.0.to_lowercase()));
         choices
     }
 
-    pub(super) fn path(&self, name: &str) -> PathBuf {
-        debug_assert!(is_theme_name(name), "unchecked theme name: {name:?}");
+    pub(super) fn path(&self, name: &ThemeName) -> PathBuf {
         self.dir.join(format!("{name}.json"))
     }
 
-    pub(super) fn next_auto_name(&self) -> String {
+    pub(super) fn next_auto_name(&self) -> ThemeName {
         std::iter::once(AUTO_THEME_BASE.to_owned())
             .chain((2_u64..).map(|i| format!("{AUTO_THEME_BASE}-{i}")))
+            .map(ThemeName)
             .find(|name| fs::symlink_metadata(self.path(name)).is_err())
             .expect("auto theme names are unbounded")
     }
@@ -156,18 +161,19 @@ mod tests {
             fs::write(store.dir.join(file), "{}").unwrap();
         }
 
-        let names = store.list().into_iter().map(|choice| choice.name);
-        assert_eq!(names.collect::<Vec<_>>(), ["default", "alpha", "zebra"]);
+        let names = store.list().into_iter().map(|choice| choice.to_string());
+        assert_eq!(
+            names.collect::<Vec<_>>(),
+            ["default (built-in)", "alpha", "zebra"]
+        );
     }
 
     #[test]
     fn names_are_stripped_then_trimmed_and_never_built_in() {
-        assert_eq!(
-            theme_name(" custom/theme\\name\0 ").as_deref(),
-            Some("customthemename")
-        );
+        let name = ThemeName::new(" custom/theme\\name\0 ").unwrap();
+        assert_eq!(name.as_str(), "customthemename");
         for built_in in ["", " ", "/", "default", "default/", " default "] {
-            assert_eq!(theme_name(built_in), None, "{built_in:?}");
+            assert_eq!(ThemeName::new(built_in), None, "{built_in:?}");
         }
     }
 }

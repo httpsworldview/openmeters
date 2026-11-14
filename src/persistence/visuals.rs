@@ -50,25 +50,23 @@ crate::macros::default_struct! {
 }
 
 impl VisualSettings {
-    pub(super) fn from_value_lossy(value: Value) -> Self {
-        lossy::settings(value, "visuals", |map, out: &mut Self, scope| {
-            let modules = ModuleSettings::from_value_lossy;
-            visual_map(map, scope, "modules", &mut out.modules, modules);
-            if let Some(value) = map.remove("order") {
-                out.order = visual_order(value);
-            }
-            visual_map(map, scope, "width_basis", &mut out.width_basis, width_basis);
-            visual_map(
-                map,
-                scope,
-                "popouts",
-                &mut out.popouts,
-                |_, value, scope| {
-                    let popout = PopoutWindowSettings::default();
-                    lossy::read(value, scope, popout, PopoutWindowSettings::read_fields)
-                },
-            );
-        })
+    pub(super) fn read_fields(map: &mut Map<String, Value>, out: &mut Self, scope: &str) {
+        let modules = ModuleSettings::from_value_lossy;
+        visual_map(map, scope, "modules", &mut out.modules, modules);
+        if let Some(value) = map.remove("order") {
+            out.order = visual_order(value, &format!("{scope}.order"));
+        }
+        visual_map(map, scope, "width_basis", &mut out.width_basis, width_basis);
+        visual_map(
+            map,
+            scope,
+            "popouts",
+            &mut out.popouts,
+            |_, value, scope| {
+                let popout = PopoutWindowSettings::default();
+                lossy::read(value, scope, popout, PopoutWindowSettings::read_fields)
+            },
+        );
     }
 
     pub(crate) fn config(&self, kind: VisualKind) -> VisualConfig {
@@ -130,14 +128,15 @@ pub(super) fn visual_map<T>(
         .collect();
 }
 
-fn visual_order(value: Value) -> Vec<VisualKind> {
+fn visual_order(value: Value, scope: &str) -> Vec<VisualKind> {
     let Value::Array(items) = value else {
-        warn!("[settings] visuals.order must be an array");
+        warn!("[settings] {scope} must be an array");
         return Vec::new();
     };
+    let item = format!("{scope} item");
     items
         .into_iter()
-        .filter_map(|value| lossy::value(value, "visuals.order item"))
+        .filter_map(|value| lossy::value(value, &item))
         .collect()
 }
 
@@ -323,9 +322,13 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn load(value: Value) -> VisualSettings {
+        lossy::settings(value, "visuals", VisualSettings::read_fields)
+    }
+
     #[test]
     fn saving_writes_canonical_typed_settings() {
-        let mut settings = VisualSettings::from_value_lossy(json!({"modules": {
+        let mut settings = load(json!({"modules": {
             "spectrum": {"enabled": true, "config": {
                 "fft_size": 2048, "floor_db": "quiet", "future_option": 42
             }},
@@ -358,11 +361,11 @@ mod tests {
         assert_eq!(modules["loudness"]["enabled"], true);
         assert_eq!(modules["loudness"]["config"]["left_mode"], "true_peak");
         assert_eq!(modules["spectrum"]["config"]["rotation"], 0);
-        let loaded = VisualSettings::from_value_lossy(saved.clone());
+        let loaded = load(saved.clone());
         assert_eq!(serde_json::to_value(loaded).unwrap(), saved);
 
         for (rotation, expected) in [(json!(-2), -2), (json!(1.5), 0), (json!(300), 0)] {
-            let settings = VisualSettings::from_value_lossy(json!({"modules": {
+            let settings = load(json!({"modules": {
                 "spectrum": {"enabled": true, "config": {"rotation": rotation, "fft_size": 2048}}
             }}));
             let VisualConfig::Spectrum(config) = settings.config(VisualKind::Spectrum) else {

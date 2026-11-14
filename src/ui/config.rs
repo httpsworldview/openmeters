@@ -4,8 +4,8 @@
 use crate::domain::routing::{CaptureMode, StreamIdentity};
 use crate::infra::pipewire::{CaptureControl, CaptureView};
 use crate::persistence::settings::{
-    BUILTIN_THEME, BarAlignment, BarHeight, SettingsHandle, ThemeChoice, VisualFrameRate,
-    clamp_bar_height, theme_name,
+    BUILTIN_THEME, BarAlignment, BarHeight, SettingsHandle, ThemeChoice, ThemeName,
+    VisualFrameRate, clamp_bar_height,
 };
 use crate::ui::theme;
 use crate::ui::widgets::palette_editor::{PaletteChange, PaletteEditor, PaletteEvent};
@@ -189,8 +189,8 @@ pub enum ConfigMessage {
     BarAlignmentChanged(BarAlignment),
     BarHeightChanged(u32),
     BarMonitorChanged(Option<String>),
-    ThemeChanged(String),
-    SaveTheme(String),
+    ThemeChanged(Option<ThemeName>),
+    SaveTheme(ThemeName),
     ThemeNameInput(String),
     Scrolled(ScrollEvent),
 }
@@ -304,9 +304,9 @@ impl ConfigPage {
                 settings.edit(|s| s.bar.height = clamp_bar_height(value));
             }
             ConfigMessage::BarMonitorChanged(value) => settings.edit(|s| s.bar.monitor = value),
-            ConfigMessage::ThemeChanged(name) => settings.edit(|s| s.theme = theme_name(&name)),
+            ConfigMessage::ThemeChanged(name) => settings.edit(|s| s.theme = name),
             ConfigMessage::SaveTheme(name) => {
-                settings.save_theme_as(&name);
+                settings.save_theme_as(name);
                 self.save_theme_name.clear();
             }
             ConfigMessage::ThemeNameInput(val) => self.save_theme_name = val,
@@ -400,7 +400,7 @@ impl ConfigPage {
             return column![note(REGISTRY_UNAVAILABLE_MESSAGE)];
         };
         let choices = self.device_choices(view);
-        let selected_token = self.settings.borrow().data.capture_device().cloned();
+        let selected_token = self.settings.borrow().data.last_device_name.clone();
         let selected = choices
             .iter()
             .find(|opt| opt.selection == selected_token)
@@ -423,33 +423,24 @@ impl ConfigPage {
     }
 
     fn render_appearance_card(&self) -> container::Container<'_, ConfigMessage> {
-        let active = self.settings.borrow().active_theme().to_owned();
-        let is_builtin = active == BUILTIN_THEME;
-        let selected = ThemeChoice {
-            name: active.clone(),
-        };
-
+        let active = self.settings.borrow().active_theme().cloned();
+        let name = active.as_ref().map_or(BUILTIN_THEME, ThemeName::as_str);
+        let selected = ThemeChoice(active.clone());
         let picker = pick_list(self.theme_choices.as_slice(), Some(selected), |choice| {
-            ConfigMessage::ThemeChanged(choice.name)
+            ConfigMessage::ThemeChanged(choice.0)
         })
         .text_size(theme::BODY_TEXT_SIZE)
         .width(Length::Fill);
 
-        let save_btn = action_button(
-            "Save",
-            (!is_builtin).then(|| ConfigMessage::SaveTheme(active.clone())),
-        )
-        .padding([4, 8]);
+        let save = active.clone().map(ConfigMessage::SaveTheme);
+        let save_btn = action_button("Save", save).padding([4, 8]);
 
         let save_as_input = text_input("New theme name...", &self.save_theme_name)
             .on_input(ConfigMessage::ThemeNameInput)
             .size(theme::BODY_TEXT_SIZE)
             .width(Length::Fill);
-        let save_as_btn = action_button(
-            "Save as",
-            theme_name(&self.save_theme_name).map(ConfigMessage::SaveTheme),
-        )
-        .padding([4, 8]);
+        let save_as = ThemeName::new(&self.save_theme_name).map(ConfigMessage::SaveTheme);
+        let save_as_btn = action_button("Save as", save_as).padding([4, 8]);
 
         let content = form!(
             row![picker, save_btn].spacing(theme::CONTROL_GAP);
@@ -458,7 +449,7 @@ impl ConfigPage {
         );
         self.disclosure.card(
             "Appearance",
-            [chip(active), self.bg_palette.preview()],
+            [chip(name.to_owned()), self.bg_palette.preview()],
             ConfigMessage::ToggleSection,
             content,
         )
@@ -584,7 +575,7 @@ impl ConfigPage {
             label: Arc::clone(token),
             selection: Some(Arc::clone(token)),
         }));
-        if let Some(token) = self.settings.borrow().data.capture_device()
+        if let Some(token) = &self.settings.borrow().data.last_device_name
             && !choices
                 .iter()
                 .any(|choice| choice.selection.as_ref() == Some(token))

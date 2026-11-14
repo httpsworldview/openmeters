@@ -60,7 +60,7 @@ pub mod settings {
         BarAlignment, BarHeight, MainWindowSettings, UiSettings, VisualFrameRate, clamp_bar_height,
     };
     pub use super::store::{SettingsHandle, Snapshot};
-    pub use super::theme::{BUILTIN_THEME, ThemeChoice, ThemeFile, theme_name};
+    pub use super::theme::{BUILTIN_THEME, ThemeChoice, ThemeFile, ThemeName};
     pub use super::visuals::{
         LoudnessSettings, OscilloscopeSettings, PopoutWindowSettings, SpectrogramSettings,
         SpectrumSettings, StereometerSettings, VisualConfig, VisualSettings, WaveformSettings,

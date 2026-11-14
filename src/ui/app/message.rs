@@ -464,7 +464,8 @@ mod tests {
         };
         let bg = |app: &mut UiApp, event| update(app, Config(ConfigMessage::BgPalette(event)));
         let edit_theme = |app: &UiApp, edit: &dyn Fn(&mut serde_json::Value)| {
-            let name = app.settings_handle.borrow().active_theme().to_owned();
+            let settings = app.settings_handle.borrow();
+            let name = settings.active_theme().unwrap();
             let path = dir.path().join(format!("themes/{name}.json"));
             let mut theme = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
             edit(&mut theme);

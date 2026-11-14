@@ -4,7 +4,7 @@
 use super::{
     document::Document,
     schema::UiSettings,
-    theme::{BUILTIN_THEME, ThemeChoice, ThemeFile, ThemeStore, theme_name},
+    theme::{ThemeChoice, ThemeFile, ThemeName, ThemeStore},
     watch::SettingsWatcher,
 };
 use crate::util::set_if_changed;
@@ -25,7 +25,6 @@ fn config_dir() -> PathBuf {
         .join("openmeters")
 }
 
-/// Settings and the active theme, as a whole.
 #[derive(Clone)]
 pub struct Snapshot {
     pub settings: UiSettings,
@@ -39,7 +38,6 @@ pub struct SettingsManager {
     applied: Snapshot,
     changed: bool,
     document: Document<UiSettings>,
-    // None while the theme is built in.
     theme_document: Option<Document<ThemeFile>>,
     theme_store: ThemeStore,
     watcher: SettingsWatcher,
@@ -48,14 +46,17 @@ pub struct SettingsManager {
 fn open_theme(
     store: &ThemeStore,
     watcher: &SettingsWatcher,
-    name: Option<&str>,
+    name: Option<&ThemeName>,
 ) -> (Option<Document<ThemeFile>>, ThemeFile) {
     let Some(name) = name else {
         return (None, ThemeFile::default());
     };
     let (document, theme) = Document::open(store.path(name), watcher);
     if theme.is_none() {
-        warn!("[settings] showing built-in colors for theme {name:?}");
+        warn!(
+            "[settings] showing built-in colors for theme {:?}",
+            name.as_str()
+        );
     }
     (Some(document), theme.unwrap_or_default())
 }
@@ -66,7 +67,7 @@ impl SettingsManager {
         let watcher = SettingsWatcher::new([dir.to_owned(), theme_store.dir().to_owned()]);
         let (document, data) = Document::open(dir.join("settings.json"), &watcher);
         let data: UiSettings = data.unwrap_or_default();
-        let (theme_document, theme) = open_theme(&theme_store, &watcher, data.theme.as_deref());
+        let (theme_document, theme) = open_theme(&theme_store, &watcher, data.theme.as_ref());
         Self {
             applied: Snapshot {
                 settings: data.clone(),
@@ -85,8 +86,9 @@ impl SettingsManager {
     pub fn themes(&self) -> Vec<ThemeChoice> {
         self.theme_store.list()
     }
-    pub fn active_theme(&self) -> &str {
-        self.data.theme.as_deref().unwrap_or(BUILTIN_THEME)
+    /// `None` while the theme is built in.
+    pub fn active_theme(&self) -> Option<&ThemeName> {
+        self.data.theme.as_ref()
     }
     pub fn theme(&self) -> &ThemeFile {
         &self.theme
@@ -127,7 +129,7 @@ impl SettingsManager {
         // Edits to the built-in theme start a new one once it is saved.
         let name = self.theme_store.next_auto_name();
         let (mut document, _) = Document::open(self.theme_store.path(&name), &self.watcher);
-        theme.name = Some(name.clone());
+        theme.name = Some(name.to_string());
         if !document.write(&theme, false) {
             theme.name = None;
             self.theme = theme;
@@ -139,26 +141,22 @@ impl SettingsManager {
         self.edit(|data| data.theme = Some(name));
     }
 
-    fn save_theme_as(&mut self, name: &str) {
-        let Some(name) = theme_name(name) else {
-            return warn!("[settings] invalid theme name {name:?}");
-        };
+    fn save_theme_as(&mut self, name: ThemeName) {
         let path = self.theme_store.path(&name);
         let mut opened = None;
         // The active file may hold outside edits not reloaded yet; they must not become the base.
-        let (document, stored) = match &mut self.theme_document {
-            Some(active) if active.path() == path => (active, Some(self.theme.clone())),
+        let (document, replaced) = match &mut self.theme_document {
+            Some(active) if active.path() == path => (active, None),
             _ => {
                 let (document, stored) = Document::open(path, &self.watcher);
-                (opened.insert(document), stored)
+                (opened.insert(document), Some(stored.unwrap_or_default()))
             }
         };
-        let stored = stored.unwrap_or_default();
-        let theme = ThemeFile {
-            name: stored.name.or_else(|| Some(name.clone())),
-            author: stored.author,
-            ..self.theme.clone()
-        };
+        let mut theme = self.theme.clone();
+        if let Some(replaced) = replaced {
+            (theme.name, theme.author) = (replaced.name, replaced.author);
+        }
+        theme.name.get_or_insert_with(|| name.to_string());
         // Naming the file is consent to replace contents that failed to load.
         if !document.write(&theme, true) {
             return;
@@ -171,7 +169,7 @@ impl SettingsManager {
     }
 
     fn follow_theme(&mut self) {
-        let name = self.data.theme.as_deref();
+        let name = self.data.theme.as_ref();
         let path = name.map(|name| self.theme_store.path(name));
         if self.theme_document.as_ref().map(Document::path) == path.as_deref() {
             return;
@@ -222,7 +220,6 @@ impl SettingsHandle {
         self.0.borrow()
     }
 
-    /// Changes settings for the app to apply.
     pub fn edit(&self, edit: impl FnOnce(&mut UiSettings)) {
         self.0.borrow_mut().edit(edit);
     }
@@ -240,7 +237,7 @@ impl SettingsHandle {
 
     /// Saves the active theme's colors as theme `name`, keeping that file's name and author,
     /// and makes it active.
-    pub fn save_theme_as(&self, name: &str) {
+    pub fn save_theme_as(&self, name: ThemeName) {
         self.0.borrow_mut().save_theme_as(name);
     }
 
@@ -263,7 +260,6 @@ impl SettingsHandle {
         self.0.borrow().watcher.clone()
     }
 
-    /// Writes a pending save now.
     pub fn flush(&self) {
         self.0.borrow_mut().document.flush();
     }
@@ -283,6 +279,10 @@ mod tests {
         ThemeFile::from_json_lossy(&fs::read(path).unwrap()).unwrap()
     }
 
+    fn active(manager: &SettingsManager) -> Option<&str> {
+        manager.active_theme().map(ThemeName::as_str)
+    }
+
     fn theme_changed(manager: &mut SettingsManager) -> bool {
         manager.reload();
         let change = manager.take_change();
@@ -299,16 +299,16 @@ mod tests {
         // A theme that cannot be saved does not become active.
         fs::write(&themes, "").unwrap();
         manager.edit_theme(|theme| theme.author = Some("Unsaved".into()));
-        assert_eq!(manager.active_theme(), BUILTIN_THEME);
+        assert_eq!(active(&manager), None);
         fs::remove_file(&themes).unwrap();
         fs::create_dir(&themes).unwrap();
         fs::write(themes.join("default-custom.json"), "{}").unwrap();
 
         // An edit that changes nothing starts no theme.
         manager.edit_theme(|theme| theme.background = None);
-        assert_eq!(manager.active_theme(), BUILTIN_THEME);
+        assert_eq!(active(&manager), None);
         manager.edit_theme(|theme| theme.author = Some("OpenMeters".into()));
-        assert_eq!(manager.active_theme(), "default-custom-2");
+        assert_eq!(active(&manager), Some("default-custom-2"));
         assert_eq!(&theme_file(&path), manager.theme());
         assert!(!theme_changed(&mut manager));
 
@@ -350,16 +350,14 @@ mod tests {
         fs::write(&kept, r#"{"name":"Kept","author":"Someone"}"#).unwrap();
         let mut manager = SettingsManager::load_from_dir(dir.path());
 
-        manager.edit(|s| s.theme = Some("broken".into()));
+        manager.edit(|s| s.theme = ThemeName::new("broken"));
         assert_eq!(manager.theme(), &ThemeFile::default());
         manager.edit_theme(|theme| theme.background = Some(iced::Color::WHITE.into()));
         assert_eq!(fs::read(themes.join("broken.json")).unwrap(), b"{");
-        for unsaved in ["default/", " ", "unwritable"] {
-            manager.save_theme_as(unsaved);
-            assert_eq!(manager.active_theme(), "broken");
-        }
-        manager.save_theme_as(" kept ");
-        assert_eq!(manager.active_theme(), "kept");
+        manager.save_theme_as(ThemeName::new("unwritable").unwrap());
+        assert_eq!(active(&manager), Some("broken"));
+        manager.save_theme_as(ThemeName::new(" kept ").unwrap());
+        assert_eq!(active(&manager), Some("kept"));
         let saved = theme_file(&kept);
         assert_eq!(saved.name.as_deref(), Some("Kept"));
         assert_eq!(saved.author.as_deref(), Some("Someone"));

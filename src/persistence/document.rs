@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::{PendingWrite, watch::SettingsWatcher};
+use super::{PendingWrite, lossy, watch::SettingsWatcher};
 use crate::util::unpoison;
 use serde::Serialize;
+use serde_json::{Map, Value};
 use std::{
     fs, io,
     marker::PhantomData,
@@ -16,8 +17,16 @@ use tracing::{debug, warn};
 
 const SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
 
-pub(super) trait Stored: Serialize + Sized {
-    fn from_json_lossy(raw: &[u8]) -> serde_json::Result<Self>;
+pub(super) trait Stored: Serialize + Default {
+    const SCOPE: &'static str;
+
+    fn read_fields(map: &mut Map<String, Value>, out: &mut Self, scope: &str);
+
+    // Fails unless `raw` is a JSON object; its invalid fields keep their defaults.
+    fn from_json_lossy(raw: &[u8]) -> serde_json::Result<Self> {
+        let value = Value::Object(serde_json::from_slice(raw)?);
+        Ok(lossy::settings(value, Self::SCOPE, Self::read_fields))
+    }
 }
 
 pub(super) fn read_file(path: &Path) -> io::Result<Option<Vec<u8>>> {
@@ -150,7 +159,6 @@ impl<T> Document<T> {
         &self.file.path
     }
 
-    /// Writes a pending save now.
     pub(super) fn flush(&mut self) {
         let Some((sender, join)) = self.saver.take() else {
             return;
@@ -178,52 +186,40 @@ fn save_loop(file: &File, requests: &mpsc::Receiver<SaveRequest>) {
 }
 
 impl File {
-    /// Returns whether the file holds `json`.
-    fn commit(&self, (json, generation): SaveRequest) -> bool {
+    /// Returns whether the file holds the request's JSON.
+    fn commit(&self, request: SaveRequest) -> bool {
+        self.try_commit(request).unwrap_or_else(|err| {
+            warn!("[settings] cannot save {:?}: {err}", self.path);
+            false
+        })
+    }
+
+    fn try_commit(&self, (json, generation): SaveRequest) -> io::Result<bool> {
         let path = &self.path;
         let superseded = |disk: &Disk| disk.generation != generation;
         {
             let disk = unpoison(self.disk.lock());
             if superseded(&disk) {
-                return false;
+                return Ok(false);
             }
             if disk.bytes.as_deref() == Some(json.as_bytes()) {
-                return true;
+                return Ok(true);
             }
         }
-        let write = match PendingWrite::new(path, &json) {
-            Ok(write) => write,
-            Err(err) => {
-                warn!("[settings] cannot write {path:?}: {err}");
-                return false;
-            }
-        };
+        let write = PendingWrite::new(path, &json)?;
         let mut disk = unpoison(self.disk.lock());
         if superseded(&disk) {
-            return false;
+            return Ok(false);
         }
         // outside edits take priority
-        match read_file(path) {
-            Ok(found) if found.is_none() || found == disk.bytes => {}
-            Ok(_) => {
-                debug!("[settings] {path:?} changed on disk; reloading instead of saving");
-                self.watcher.wake();
-                return false;
-            }
-            Err(err) => {
-                warn!("[settings] cannot read {path:?}: {err}");
-                return false;
-            }
+        let found = read_file(path)?;
+        if found.is_some() && found != disk.bytes {
+            debug!("[settings] {path:?} changed on disk; reloading instead of saving");
+            self.watcher.wake();
+            return Ok(false);
         }
-        match write.commit() {
-            Ok(()) => {
-                disk.bytes = Some(json.into_bytes());
-                true
-            }
-            Err(err) => {
-                warn!("[settings] cannot write {path:?}: {err}");
-                false
-            }
-        }
+        write.commit()?;
+        disk.bytes = Some(json.into_bytes());
+        Ok(true)
     }
 }

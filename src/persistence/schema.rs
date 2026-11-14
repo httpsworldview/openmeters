@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
-use super::{document::Stored, lossy, theme::theme_name, visuals::VisualSettings};
+use super::{document::Stored, lossy, theme::ThemeName, visuals::VisualSettings};
 use crate::domain::routing::{CaptureConfig, CaptureMode, StreamIdentity};
 use serde::Serialize;
+use serde_json::{Map, Value};
 use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
 const MAIN_WINDOW_DEFAULT_WIDTH: u32 = 1200;
 const MAIN_WINDOW_DEFAULT_HEIGHT: u32 = 520;
 
-pub const BAR_DEFAULT_HEIGHT: u32 = 100;
+pub(super) const BAR_DEFAULT_HEIGHT: u32 = 100;
 
 crate::macros::bounded! {
     pub struct BarHeight(u32) in 24..=800;
@@ -69,50 +70,48 @@ pub struct UiSettings {
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     pub disabled_streams: BTreeSet<StreamIdentity>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub theme: Option<String>,
+    pub theme: Option<ThemeName>,
 }
 
 impl UiSettings {
-    // The device to capture; an empty name selects none.
-    pub(crate) fn capture_device(&self) -> Option<&Arc<str>> {
-        (self.last_device_name.as_ref()).filter(|token| !token.is_empty())
-    }
-
     pub(crate) fn capture_config(&self) -> CaptureConfig {
         CaptureConfig {
             mode: self.capture_mode,
-            device: self.capture_device().cloned(),
+            device: self.last_device_name.clone(),
             disabled_streams: self.disabled_streams.clone(),
         }
-    }
-
-    fn from_value_lossy(value: serde_json::Value) -> Self {
-        lossy::settings(value, "settings", |map, out: &mut Self, scope| {
-            if let Some(value) = map.remove("visuals") {
-                out.visuals = VisualSettings::from_value_lossy(value);
-            }
-            if let Some(value) = map.remove("main_window") {
-                out.main_window =
-                    lossy::settings(value, "main_window", MainWindowSettings::read_fields);
-            }
-            if let Some(value) = map.remove("bar") {
-                out.bar = lossy::settings(value, "bar", BarSettings::read_fields);
-                out.bar.monitor = out.bar.monitor.take().filter(|name| !name.is_empty());
-            }
-            lossy::fields!(map, out, scope;
-                visual_frame_rate, decorations, capture_mode, last_device_name,
-                disabled_streams, theme
-            );
-            out.theme = out.theme.as_deref().and_then(theme_name);
-        })
     }
 }
 
 impl Stored for UiSettings {
-    fn from_json_lossy(raw: &[u8]) -> serde_json::Result<Self> {
-        serde_json::from_slice(raw)
-            .map(serde_json::Value::Object)
-            .map(Self::from_value_lossy)
+    const SCOPE: &'static str = "settings";
+
+    fn read_fields(map: &mut Map<String, Value>, out: &mut Self, scope: &str) {
+        let (window, bar) = (&mut out.main_window, &mut out.bar);
+        lossy::nested(
+            map,
+            "visuals",
+            &mut out.visuals,
+            scope,
+            VisualSettings::read_fields,
+        );
+        lossy::nested(
+            map,
+            "main_window",
+            window,
+            scope,
+            MainWindowSettings::read_fields,
+        );
+        lossy::nested(map, "bar", bar, scope, BarSettings::read_fields);
+        out.bar.monitor.take_if(|name| name.is_empty());
+        lossy::fields!(map, out, scope;
+            visual_frame_rate, decorations, capture_mode, last_device_name,
+            disabled_streams
+        );
+        out.last_device_name.take_if(|name| name.is_empty());
+        let mut theme: Option<String> = None;
+        lossy::field(map, "theme", &mut theme, scope);
+        out.theme = theme.as_deref().and_then(ThemeName::new);
     }
 }
 
@@ -121,6 +120,10 @@ mod tests {
     use super::super::visuals::{PopoutWindowSettings, SpectrumSettings, VisualConfig};
     use super::*;
     use crate::{domain::visuals::VisualKind, visuals::spectrum::processor::AveragingMode};
+
+    fn load(value: Value) -> UiSettings {
+        lossy::settings(value, UiSettings::SCOPE, UiSettings::read_fields)
+    }
 
     #[test]
     fn visual_frame_rate_defaults_to_display_and_preserves_fixed_rates() {
@@ -134,7 +137,7 @@ mod tests {
             ("fps60", VisualFrameRate::Fps60, 16_666_667),
             ("fps120", VisualFrameRate::Fps120, 8_333_334),
         ] {
-            let settings = UiSettings::from_value_lossy(serde_json::json!({
+            let settings = load(serde_json::json!({
                 "visual_frame_rate": saved,
             }));
             assert_eq!(settings.visual_frame_rate, expected);
@@ -177,8 +180,8 @@ mod tests {
             settings.capture_config().device.as_deref(),
             Some("device.name")
         );
-        settings.last_device_name = Some(Arc::from(""));
-        assert!(settings.capture_config().device.is_none());
+        let unnamed = load(serde_json::json!({ "last_device_name": "" }));
+        assert!(unnamed.capture_config().device.is_none());
     }
 
     #[test]
@@ -188,7 +191,7 @@ mod tests {
             serde_json::to_value(UiSettings::default()).unwrap()
         );
 
-        let settings = UiSettings::from_value_lossy(serde_json::json!({
+        let settings = load(serde_json::json!({
             "decorations": true,
             "background_color": "#a\u{00e9}",
             "visual_frame_rate": "not_a_rate",

@@ -34,6 +34,19 @@ pub(super) fn settings<T: Default>(
     read(value, scope, T::default(), fields).unwrap_or_default()
 }
 
+// The object under `key`, read over defaults in a scope that extends this one.
+pub(super) fn nested<T: Default>(
+    map: &mut Map<String, Value>,
+    key: &str,
+    out: &mut T,
+    scope: &str,
+    fields: impl FnOnce(&mut Map<String, Value>, &mut T, &str),
+) {
+    if let Some(value) = map.remove(key) {
+        *out = settings(value, &format!("{scope}.{key}"), fields);
+    }
+}
+
 pub(super) fn field<T: DeserializeOwned>(
     map: &mut Map<String, Value>,
     key: &str,

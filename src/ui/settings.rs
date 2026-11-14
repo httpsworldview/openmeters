@@ -285,7 +285,6 @@ use {settings_messages, settings_pane, settings_view};
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persistence::settings::BUILTIN_THEME;
     use crate::ui::widgets::palette_editor::{HsvEdit::Alpha, PaletteEvent::*};
     use waveform::Message::{Palette, ScrollSpeed};
 
@@ -307,7 +306,7 @@ mod tests {
             send(Palette(Adjust(Alpha(alpha))));
         }
         send(Palette(Commit));
-        assert_eq!(settings.borrow().active_theme(), BUILTIN_THEME);
+        assert_eq!(settings.borrow().active_theme(), None);
         send(Palette(Adjust(Alpha(0.5))));
         send(Palette(EditHex(Some("#123".into()))));
         assert!(theme().is_none());

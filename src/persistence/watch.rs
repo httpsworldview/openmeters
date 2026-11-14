@@ -58,7 +58,6 @@ impl Hash for SettingsWatcher {
     }
 }
 
-/// the stream for `Subscription::run_with`.
 pub fn changes(watcher: &SettingsWatcher) -> async_channel::Receiver<()> {
     watcher.receiver.clone()
 }
@@ -121,7 +120,7 @@ fn concerns(watched: &[(i32, Option<OsString>)], event: &inotify::Event<'_>) -> 
     })
 }
 
-fn link_entries(dir: &Path) -> Vec<PathBuf> {
+fn link_entries(dir: &Path) -> impl Iterator<Item = PathBuf> {
     let entries = fs::read_dir(dir).into_iter().flatten().flatten();
     iter::once(dir.to_owned())
         .chain(entries.map(|entry| entry.path()))
@@ -130,5 +129,4 @@ fn link_entries(dir: &Path) -> Vec<PathBuf> {
             let linked = !links.is_empty();
             links.into_iter().chain(linked.then_some(target))
         })
-        .collect()
 }
