@@ -14,14 +14,14 @@ use iced::{Element, Size, Task, mouse, touch, window};
 use iced_exwlshell::actions::IcedXdgWindowSettings;
 use iced_exwlshell::reexport::NewLayerShellSettings;
 use iced_exwlshell::shell::ShellEvent;
-use iced_exwlshell::to_layer_message;
+use iced_exwlshell::to_exwlshell_message;
 use std::time::{Duration, Instant};
 
 // A held key repeats well within this, so a later press is fresh even if focus took the
 // release before it.
 const KEY_REPEAT_GAP: Duration = Duration::from_secs(1);
 
-#[to_layer_message(multi)]
+#[to_exwlshell_message]
 #[derive(Debug, Clone)]
 pub(super) enum Message {
     Config(ConfigMessage),
@@ -61,9 +61,13 @@ pub(super) fn shell_event(event: ShellEvent) -> Option<Message> {
     use BarOutputEvent as Change;
 
     match event {
-        ShellEvent::OutputAdded(o) => Some(Message::BarOutput(o.id, o.name, Change::Added)),
-        ShellEvent::OutputUpdated(o) => Some(Message::BarOutput(o.id, o.name, Change::Updated)),
-        ShellEvent::OutputRemoved(o) => Some(Message::BarOutput(o.id, o.name, Change::Removed)),
+        ShellEvent::OutputAdded(o) => Some(Message::BarOutput(o.id, o.info.name, Change::Added)),
+        ShellEvent::OutputUpdated(o) => {
+            Some(Message::BarOutput(o.id, o.info.name, Change::Updated))
+        }
+        ShellEvent::OutputRemoved(o) => {
+            Some(Message::BarOutput(o.id, o.info.name, Change::Removed))
+        }
         ShellEvent::WindowOutputChanged { window, output } => Some(Message::BarWindowOutput(
             window,
             output.map(|output| output.id),

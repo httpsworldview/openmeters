@@ -45,7 +45,7 @@ pub(super) fn layershell_available() -> bool {
     };
     globals.contents().with_list(|list| {
         list.iter()
-            .any(|global| global.interface == "zwlr_layer_shell_v1")
+            .any(|global| global.interface == "zwlr_layer_shell_v1" && global.version >= 3)
     })
 }
 
@@ -75,6 +75,8 @@ fn open_base_window(
         let settings = iced_exwlshell::actions::IcedXdgWindowSettings {
             size: Some(PixelSize::px(width, height)),
             client_side_decorations: !decorations,
+            app_id: Some(APP_ID.into()),
+            ..Default::default()
         };
         message::base_window_open(settings)
     } else {

@@ -27,7 +27,7 @@ use iced::widget::{Space, container, mouse_area, row, stack, text};
 use iced::{
     Element, Length, Settings as IcedSettings, Subscription, Task, daemon as iced_daemon, window,
 };
-use iced_exwlshell::settings::{LayerShellSettings, Settings as LayerSettings, StartMode};
+use iced_exwlshell::settings::{ExWlSettings, LayerShellSettings, StartMode};
 use message::{Message, app_event, shell_event, update, view};
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -73,8 +73,7 @@ pub(crate) fn run(config: UiConfig) -> Result<(), Box<dyn std::error::Error + Se
             update,
             view,
         )
-        .settings(LayerSettings {
-            id: Some(APP_ID.into()),
+        .wl_settings(ExWlSettings {
             layer_settings: LayerShellSettings {
                 start_mode: StartMode::Background,
                 ..Default::default()
