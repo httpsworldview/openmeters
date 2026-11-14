@@ -82,7 +82,7 @@ impl SpectrumState {
         settings: &SpectrumSettings,
         snapshot: &SpectrumSnapshot,
     ) {
-        self.style = settings.clone();
+        self.style = *settings;
         // Do not animate from peak coordinates in the old projection.
         self.peak = None;
         self.apply_snapshot(snapshot);
@@ -752,7 +752,7 @@ mod tests {
             ..Default::default()
         };
         let mut state = SpectrumState {
-            style: baseline.clone(),
+            style: baseline,
             ..Default::default()
         };
         state.apply_snapshot(&snapshot);
@@ -773,7 +773,7 @@ mod tests {
             |s| s.show_peak_label = false,
         ];
         for change in changes {
-            let mut settings = baseline.clone();
+            let mut settings = baseline;
             change(&mut settings);
             let revision = state.geometry.revision;
             state.update_view_settings(&settings, &snapshot);
@@ -804,7 +804,7 @@ mod tests {
         };
         let original_floor = settings.floor_db.get();
         let mut manager = VisualManager::default();
-        manager.apply_config(VisualConfig::Spectrum(settings.clone()));
+        manager.apply_config(VisualConfig::Spectrum(settings));
         manager.set_enabled(VisualKind::Spectrum, true);
         let format = AudioFormat::fallback(1, crate::dsp::SampleRate::DEFAULT);
         manager.ingest_samples(
@@ -829,7 +829,7 @@ mod tests {
                 settings.floor_db = NegativeDb::must(floor);
                 settings.reverse_frequency = reverse;
                 settings.rotation = rotation;
-                manager.apply_config(VisualConfig::Spectrum(settings.clone()));
+                manager.apply_config(VisualConfig::Spectrum(settings));
                 let state = state.borrow();
                 for (before, after) in original.iter().zip(&state.points) {
                     let mut expected: Vec<_> = before

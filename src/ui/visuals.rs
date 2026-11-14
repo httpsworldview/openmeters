@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use crate::persistence::settings::SettingsHandle;
+use crate::persistence::settings::{SettingsHandle, WidthBasis};
 use crate::ui::widgets::pane_grid::{self, Content as PaneContent, Pane};
 use crate::visuals::registry::{
     VisualContent, VisualKind, VisualManagerHandle, VisualSlotSnapshot,
@@ -46,7 +46,7 @@ impl VisualsPage {
             VisualsMessage::PaneResized(widths) => {
                 let bases = widths.into_iter().filter_map(|(pane, basis)| {
                     let shown = self.panes.iter().any(|visual| visual.kind() == pane);
-                    shown.then_some((pane, crate::util::finite_positive(basis)?))
+                    shown.then_some((pane, WidthBasis::new(basis)?))
                 });
                 let bases: Vec<_> = bases.collect();
                 self.settings.edit(|s| s.visuals.width_basis.extend(bases));
@@ -96,7 +96,7 @@ impl VisualsPage {
                     PaneContent::new(
                         visual_area(&visual.content),
                         visual.min_width,
-                        visual.width_basis,
+                        visual.width_basis.get(),
                     ),
                 )
             },

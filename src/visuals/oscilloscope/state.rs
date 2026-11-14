@@ -30,7 +30,7 @@ impl OscilloscopeState {
     }
 
     pub fn update_view_settings(&mut self, settings: &OscilloscopeSettings) {
-        self.settings = settings.clone();
+        self.settings = *settings;
         if self.ignores_audio() {
             self.snapshot = OscilloscopeSnapshot::default();
         }

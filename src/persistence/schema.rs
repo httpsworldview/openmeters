@@ -251,7 +251,10 @@ mod tests {
 
         assert_eq!(settings.visuals.order, vec![VisualKind::Spectrum]);
         assert_eq!(settings.visuals.width_basis.len(), 1);
-        assert_eq!(settings.visuals.width_basis[&VisualKind::Spectrum], 320.0);
+        assert_eq!(
+            settings.visuals.width_basis[&VisualKind::Spectrum].get(),
+            320.0
+        );
         let popouts = &settings.visuals.popouts;
         assert_eq!(popouts.len(), 2);
         assert_eq!(popouts[&VisualKind::Spectrum].width, 640);

@@ -10,16 +10,15 @@ use crate::persistence::settings::SpectrumSettings;
 use crate::ui::widgets::{SliderRange, chip, pick, split, toggle};
 use crate::util::Finite;
 use crate::util::audio::{Channel, FrequencyScale, Seconds};
-use crate::visuals::options::{SpectrumDisplayMode, SpectrumWeightingMode as WeightingMode};
+use crate::visuals::options::{self, SpectrumDisplayMode, SpectrumWeightingMode as WeightingMode};
 use crate::visuals::spectrum::processor::{
     AveragingMode, DEFAULT_SPECTRUM_PEAK_DECAY, DEFAULT_SPECTRUM_TIME_CONSTANT,
 };
-use crate::visuals::spectrum::render::MAX_BAR_GAP;
 
-const TIME_CONSTANT_R: SliderRange = SliderRange::new(0.0, 1.0, 0.005);
-const DECAY_R: SliderRange = SliderRange::new(0.0, 120.0, 0.5);
-const BARS_R: SliderRange = SliderRange::new(8.0, 128.0, 1.0);
-const GAP_R: SliderRange = SliderRange::new(0.0, MAX_BAR_GAP, 0.05);
+const TIME_CONSTANT_RANGE: SliderRange = SliderRange::new(0.0, 1.0, 0.005);
+const DECAY_RANGE: SliderRange = SliderRange::new(0.0, 120.0, 0.5);
+const BARS_RANGE: SliderRange = SliderRange::new(8.0, 128.0, 1.0);
+const GAP_RANGE: SliderRange = SliderRange::new(options::BarGap::MIN, options::BarGap::MAX, 0.05);
 
 crate::macros::choice_enum!(pub(in crate::ui) enum AvgMode {
     None => "None",
@@ -119,11 +118,11 @@ settings_view! {
         let (avg_mode, averaging) = match settings.averaging {
             AveragingMode::None => (AvgMode::None, None),
             AveragingMode::Exponential { time_constant } => (AvgMode::Exponential, Some(slider!(
-                "Time constant", time_constant.get(), TIME_CONSTANT_R, AvgTimeConstant,
+                "Time constant", time_constant.get(), TIME_CONSTANT_RANGE, AvgTimeConstant,
                 fmt_ms(time_constant.get(), 0)
             ))),
             AveragingMode::PeakHold { decay_per_second } => (AvgMode::PeakHold, Some(slider!(
-                "Peak decay", decay_per_second.get(), DECAY_R, PeakDecay, "{:.1} dB/s"
+                "Peak decay", decay_per_second.get(), DECAY_RANGE, PeakDecay, "{:.1} dB/s"
             ))),
         };
         let view = form!(
@@ -148,11 +147,11 @@ settings_view! {
                 primary.then(|| toggle("Peak label", settings.show_peak_label, ShowPeakLabel)),
             );
             bars.then(|| slider!(
-                "Bar count", settings.bar_count as f32, BARS_R,
+                "Bar count", settings.bar_count as f32, BARS_RANGE,
                 |value| BarCount(value.round() as usize), settings.bar_count.to_string()
             ));
             bars.then(|| slider!(
-                "Bar gap", settings.bar_gap.get(), GAP_R, BarGap,
+                "Bar gap", settings.bar_gap.get(), GAP_RANGE, BarGap,
                 format!("{:.0}%", settings.bar_gap.get() * 100.0)
             ));
         );

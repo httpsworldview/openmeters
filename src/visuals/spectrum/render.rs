@@ -18,7 +18,6 @@ use crate::visuals::render::common::{
 pub(super) const MIN_TRACE_POINTS: usize = 2;
 pub(super) const RAMP_SIZE: usize = DEFAULT_POSITIONS.len();
 const MIN_BAR_COUNT: usize = 4;
-pub const MAX_BAR_GAP: f32 = 0.8;
 const LINE_THICKNESS: f32 = 1.0;
 const SECONDARY_LINE_THICKNESS: f32 = 0.75;
 
@@ -147,9 +146,8 @@ impl SpectrumParams {
         let bar_count = self
             .bar_count
             .clamp(MIN_BAR_COUNT, pixel_budget.max(MIN_BAR_COUNT));
-        let gap = self.bar_gap.clamp(0.0, MAX_BAR_GAP);
         let unit = bounds.width / bar_count as f32;
-        let (bar_w, offset) = (unit * (1.0 - gap), unit * gap * 0.5);
+        let (bar_w, offset) = (unit * (1.0 - self.bar_gap), unit * self.bar_gap * 0.5);
         let baseline = bounds.y + bounds.height;
         let y_at = |amp: f32| bounds.y + bounds.height * (1.0 - amp);
         let secondary = (self.secondary_points.len() >= MIN_TRACE_POINTS)

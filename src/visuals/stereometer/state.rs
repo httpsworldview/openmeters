@@ -18,9 +18,6 @@ use iced::{Color, Point, Size};
 use std::sync::Arc;
 
 const CORR_LABEL_SIZE: f32 = 10.0;
-// Limits applied when drawing; the settings sliders span the same ranges.
-pub const MAX_ROTATION: i8 = 4;
-pub const DOT_RADIUS_RANGE: (f32, f32) = (0.5, 8.0);
 
 crate::macros::default_struct! {
     pub(crate) struct StereometerState {
@@ -42,10 +39,7 @@ impl StereometerState {
         if self.settings.bands().analyzed() != s.bands().analyzed() {
             self.trails[1..].fill(FixedTrail::default());
         }
-        self.settings = StereometerSettings {
-            rotation: s.rotation.clamp(-MAX_ROTATION, MAX_ROTATION),
-            ..s.clone()
-        };
+        self.settings = *s;
         self.geometry.invalidate();
         self.grid.invalidate();
     }
@@ -100,8 +94,8 @@ impl StereometerState {
             palette: self.palette.map(color_to_rgba),
             mode: s.mode,
             scale: s.scale,
-            dot_radius: (s.dot_radius.get()).clamp(DOT_RADIUS_RANGE.0, DOT_RADIUS_RANGE.1),
-            rotation: s.rotation,
+            dot_radius: s.dot_radius.get(),
+            rotation: s.rotation.get(),
             flip: s.flip,
             unipolar: s.unipolar && s.mode != StereometerMode::Lissajous,
             correlation_meter: s.correlation_meter,

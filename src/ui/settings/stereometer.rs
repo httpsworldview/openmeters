@@ -5,16 +5,19 @@ use super::{fmt_ms, set, settings_messages, settings_pane, settings_view};
 use crate::persistence::settings::StereometerSettings;
 use crate::ui::widgets::{SliderRange, chip, pick, split, toggle};
 use crate::visuals::options::{
-    CorrelationMeterMode, CorrelationMeterSide, StereometerMode, StereometerScale,
+    self, CorrelationMeterMode, CorrelationMeterSide, StereometerMode, StereometerScale,
 };
-use crate::visuals::stereometer::state::{DOT_RADIUS_RANGE, MAX_ROTATION};
 
-const ROTATION_RANGE: SliderRange =
-    SliderRange::new(-(MAX_ROTATION as f32), MAX_ROTATION as f32, 1.0);
+const ROTATION_RANGE: SliderRange = SliderRange::new(
+    options::EighthTurns::MIN as f32,
+    options::EighthTurns::MAX as f32,
+    1.0,
+);
 const DURATION_RANGE: SliderRange = SliderRange::new(0.005, 0.2, 0.001);
 const SAMPLE_COUNT_RANGE: SliderRange = SliderRange::new(100.0, 2000.0, 50.0);
 const CORRELATION_RANGE: SliderRange = SliderRange::new(0.05, 1.0, 0.01);
-const DOT_RANGE: SliderRange = SliderRange::new(DOT_RADIUS_RANGE.0, DOT_RADIUS_RANGE.1, 0.1);
+const DOT_RANGE: SliderRange =
+    SliderRange::new(options::DotRadius::MIN, options::DotRadius::MAX, 0.1);
 
 settings_pane!(StereometerSettings);
 
@@ -23,7 +26,7 @@ settings_messages!(pane, settings, value {
     SampleCount(usize) => set(&mut settings.target_sample_count, value);
     CorrelationWindow(f32) => settings.correlation_window.set(value);
     DotRadius(f32) => settings.dot_radius.set(value);
-    Rotation(i8) => set(&mut settings.rotation, value);
+    Rotation(i8) => settings.rotation.set(value);
     Flip(bool) => set(&mut settings.flip, value);
     Unipolar(bool) => set(&mut settings.unipolar, value);
     Mode(StereometerMode) => set(&mut settings.mode, value);
@@ -51,8 +54,8 @@ settings_view! {
 
         let display = form!(
             slider!(
-                "Rotation", settings.rotation as f32, ROTATION_RANGE,
-                |value| Rotation(value.round() as i8), settings.rotation.to_string()
+                "Rotation", f32::from(settings.rotation.get()), ROTATION_RANGE,
+                |value| Rotation(value.round() as i8), settings.rotation.get().to_string()
             );
             dot_mode.then(|| split(
                 toggle("Flip", settings.flip, Flip),

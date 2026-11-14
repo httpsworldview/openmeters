@@ -64,6 +64,7 @@ pub mod settings {
     pub use super::visuals::{
         LoudnessSettings, OscilloscopeSettings, PopoutWindowSettings, SpectrogramSettings,
         SpectrumSettings, StereometerSettings, VisualConfig, VisualSettings, WaveformSettings,
+        WidthBasis,
     };
     pub use super::watch::changes as settings_changes;
 }

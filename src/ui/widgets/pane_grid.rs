@@ -594,7 +594,9 @@ mod tests {
         let mut panes = manager.snapshot();
         panes.retain(|slot| slot.enabled);
         let widths = solve_widths(
-            panes.iter().map(|slot| (slot.min_width, slot.width_basis)),
+            panes
+                .iter()
+                .map(|slot| (slot.min_width, slot.width_basis.get())),
             crate::persistence::settings::MainWindowSettings::default().width as f32,
         );
         let loudness = panes

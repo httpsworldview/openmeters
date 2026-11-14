@@ -5,7 +5,7 @@ use super::{loudness, oscilloscope, spectrogram, spectrum, stereometer, waveform
 pub use crate::domain::visuals::VisualKind;
 use crate::{
     dsp::{AudioBlock, AudioFormat},
-    persistence::settings::{PaletteSettings, ThemeFile, VisualConfig, VisualSettings},
+    persistence::settings::{PaletteSettings, ThemeFile, VisualConfig, VisualSettings, WidthBasis},
     util::set_if_changed,
 };
 use iced::Element;
@@ -48,9 +48,9 @@ macro_rules! visuals {
 
         const DEFAULT_ORDER: &[VisualKind] = &[$(VisualKind::$variant),*];
 
-        fn default_width_basis(kind: VisualKind) -> f32 {
+        fn default_width_basis(kind: VisualKind) -> WidthBasis {
             match kind {
-                $(VisualKind::$variant => $default_width_basis,)*
+                $(VisualKind::$variant => WidthBasis::must($default_width_basis),)*
             }
         }
 
@@ -60,7 +60,7 @@ macro_rules! visuals {
                 Entry {
                     slot: VisualSlotSnapshot {
                         enabled: false,
-                        width_basis: $default_width_basis,
+                        width_basis: default_width_basis(VisualKind::$variant),
                         min_width: $min_w,
                         content: VisualContent::$variant(Rc::clone(&state)),
                     },
@@ -217,7 +217,7 @@ impl Entry {
 #[derive(Clone)]
 pub(crate) struct VisualSlotSnapshot {
     pub enabled: bool,
-    pub width_basis: f32,
+    pub width_basis: WidthBasis,
     pub min_width: f32,
     pub content: VisualContent,
 }

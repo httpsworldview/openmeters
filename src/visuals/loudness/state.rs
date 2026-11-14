@@ -153,7 +153,7 @@ impl LoudnessState {
         if self.settings != *settings {
             self.peaks.fill(PeakHold::FLOOR);
         }
-        self.settings = settings.clone();
+        self.settings = *settings;
         self.refresh();
     }
 

@@ -134,6 +134,14 @@ pub mod options {
     crate::macros::choice_enum!(#[derive(Default)] pub enum SpectrumWeightingMode { #[default] AWeighted => "A-Weighted", Raw => "Raw" });
     crate::macros::choice_enum!(#[derive(Default)] pub enum WaveformColorMode { #[default] Frequency => "Frequency Bands", Loudness => "Loudness", Static => "Static" });
     crate::macros::choice_enum!(#[derive(Default)] pub enum WaveformHistoryMode { Off => "Off", #[default] RmsFast => "RMS Fast", RmsSlow => "RMS Slow" });
+
+    crate::macros::bounded! {
+        // The share of each spectrum bar's slot left empty.
+        pub struct BarGap(f32) in 0.0..=0.8;
+        // Stereometer dots, in pixels.
+        pub struct DotRadius(f32) in 0.5..=8.0;
+        pub struct EighthTurns(i8) in -4..=4;
+    }
 }
 
 pub mod palettes;

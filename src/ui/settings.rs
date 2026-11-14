@@ -65,7 +65,7 @@ macro_rules! settings_modules {
             }
 
             pub(in crate::ui) fn config(&self) -> VisualConfig {
-                match self { $(Self::$variant(pane) => VisualConfig::$variant(pane.settings.clone()),)+ }
+                match self { $(Self::$variant(pane) => VisualConfig::$variant(pane.settings),)+ }
             }
 
             pub(in crate::ui) fn view(&self) -> Element<'_, SettingsMessage> {
@@ -97,7 +97,7 @@ macro_rules! settings_modules {
                     $((Self::$variant(pane), SettingsMessage::$variant(message)) => {
                         let (changed, change) = pane.handle(message);
                         if changed {
-                            let config = VisualConfig::$variant(pane.settings.clone());
+                            let config = VisualConfig::$variant(pane.settings);
                             settings.edit(|s| s.visuals.set_config(config));
                         }
                         if let Some(change) = change {

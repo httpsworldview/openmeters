@@ -6,9 +6,9 @@ use crate::domain::visuals::VisualKind;
 use crate::util::Finite;
 use crate::util::audio::{Channel, FftSize, FrequencyScale, NegativeDb, Seconds, WindowKind};
 use crate::visuals::options::{
-    CorrelationMeterMode, CorrelationMeterSide, MeterMode, PianoRollOverlay, SpectrumDisplayMode,
-    SpectrumWeightingMode, StereometerMode, StereometerScale, WaveformColorMode,
-    WaveformHistoryMode,
+    BarGap, CorrelationMeterMode, CorrelationMeterSide, DotRadius, EighthTurns, MeterMode,
+    PianoRollOverlay, SpectrumDisplayMode, SpectrumWeightingMode, StereometerMode,
+    StereometerScale, WaveformColorMode, WaveformHistoryMode,
 };
 use crate::visuals::{
     oscilloscope::processor::{OscilloscopeConfig, TriggerMode},
@@ -24,6 +24,11 @@ use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 use tracing::warn;
+
+crate::macros::bounded! {
+    // A pane's share of the row when it resizes.
+    pub struct WidthBasis(f32) in f32::MIN_POSITIVE..=f32::MAX;
+}
 
 lossy::settings_struct! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -43,7 +48,7 @@ crate::macros::default_struct! {
         }).collect(),
         pub order: Vec<VisualKind> = Vec::new(),
         #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-        pub width_basis: BTreeMap<VisualKind, f32> = BTreeMap::new(),
+        pub width_basis: BTreeMap<VisualKind, WidthBasis> = BTreeMap::new(),
         #[serde(skip_serializing_if = "BTreeMap::is_empty")]
         pub popouts: BTreeMap<VisualKind, PopoutWindowSettings> = BTreeMap::new(),
     }
@@ -56,7 +61,8 @@ impl VisualSettings {
         if let Some(value) = map.remove("order") {
             out.order = visual_order(value, &format!("{scope}.order"));
         }
-        visual_map(map, scope, "width_basis", &mut out.width_basis, width_basis);
+        let basis = |_, value, scope: &str| lossy::value(value, scope);
+        visual_map(map, scope, "width_basis", &mut out.width_basis, basis);
         visual_map(
             map,
             scope,
@@ -70,10 +76,9 @@ impl VisualSettings {
     }
 
     pub(crate) fn config(&self, kind: VisualKind) -> VisualConfig {
-        self.modules.get(&kind).map_or_else(
-            || VisualConfig::default_for(kind),
-            |module| module.config.clone(),
-        )
+        self.modules
+            .get(&kind)
+            .map_or_else(|| VisualConfig::default_for(kind), |module| module.config)
     }
 
     pub(crate) fn is_enabled(&self, kind: VisualKind) -> bool {
@@ -140,15 +145,7 @@ fn visual_order(value: Value, scope: &str) -> Vec<VisualKind> {
         .collect()
 }
 
-fn width_basis(_: VisualKind, value: Value, scope: &str) -> Option<f32> {
-    let basis: f32 = lossy::value(value, scope)?;
-    crate::util::finite_positive(basis).or_else(|| {
-        warn!("[settings] invalid {scope}: must be finite and greater than zero");
-        None
-    })
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 struct ModuleSettings {
     enabled: bool,
     config: VisualConfig,
@@ -175,7 +172,7 @@ impl ModuleSettings {
 
 macro_rules! visual_configs {
     ($($variant:ident($settings:ident)),* $(,)?) => {
-        #[derive(Debug, Clone, PartialEq, Serialize)]
+        #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
         #[serde(untagged)]
         pub enum VisualConfig {
             $($variant($settings)),*
@@ -227,7 +224,7 @@ macro_rules! visual_settings {
     };
     ($name:ident { $($field:ident: $ty:ty = $default:expr),* $(,)? }) => {
         lossy::settings_struct! {
-            #[derive(Debug, Clone, PartialEq, Serialize)]
+            #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
             pub struct $name {
                 $(pub $field: $ty = $default,)*
             }
@@ -276,7 +273,7 @@ visual_settings!(SpectrumSettings from SpectrumConfig {
     weighting_mode: SpectrumWeightingMode = SpectrumWeightingMode::default(),
     secondary_weighting_mode: SpectrumWeightingMode = SpectrumWeightingMode::default(),
     bar_count: usize = 64,
-    bar_gap: Finite = Finite::must(0.16),
+    bar_gap: BarGap = BarGap::must(0.16),
 });
 
 visual_settings!(SpectrogramSettings from SpectrogramConfig {
@@ -293,9 +290,10 @@ visual_settings!(SpectrogramSettings from SpectrogramConfig {
 visual_settings!(StereometerSettings from StereometerConfig {
     segment_duration: Finite, target_sample_count: usize, correlation_window: Seconds,
 } extra {
-    dot_radius: Finite = Finite::must(1.0), mode: StereometerMode = StereometerMode::default(),
-    scale: StereometerScale = StereometerScale::default(), rotation: i8 = -1, flip: bool = true,
-    unipolar: bool = true,
+    dot_radius: DotRadius = DotRadius::must(1.0),
+    mode: StereometerMode = StereometerMode::default(),
+    scale: StereometerScale = StereometerScale::default(),
+    rotation: EighthTurns = EighthTurns::must(-1), flip: bool = true, unipolar: bool = true,
     correlation_meter: CorrelationMeterMode = CorrelationMeterMode::default(),
     correlation_meter_side: CorrelationMeterSide = CorrelationMeterSide::default(),
 });

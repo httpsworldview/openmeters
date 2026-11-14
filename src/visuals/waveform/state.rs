@@ -97,7 +97,7 @@ impl WaveformState {
     }
 
     pub fn update_view_settings(&mut self, settings: &WaveformSettings) {
-        self.settings = settings.clone();
+        self.settings = *settings;
     }
 
     crate::visuals::palette_setter!(waveform);
