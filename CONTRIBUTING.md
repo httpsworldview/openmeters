@@ -97,12 +97,12 @@ code, I will not do so either.
 ## Development environment
 
 OpenMeters is a Rust 2024 project. Use the Rust version declared in
-`Cargo.toml` (`rust-version`) or newer. CI currently uses Rust 1.95
+`Cargo.toml` (`rust-version`) or newer. CI currently uses Rust 1.100
 with `rustfmt` and `clippy` installed.
 
 ```bash
-rustup toolchain install 1.95
-rustup component add rustfmt clippy --toolchain 1.95
+rustup toolchain install 1.100
+rustup component add rustfmt clippy --toolchain 1.100
 ```
 
 You also need native development packages for PipeWire/SPA 0.3.77 or
