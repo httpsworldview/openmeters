@@ -4,22 +4,6 @@
 
 Fast and professional audio metering for Linux.
 
-## Quick links
-
-- [Features](#features)
-- [Installation](#installation)
-  - [Arch Linux](#arch-linux)
-  - [Debian](#debian)
-  - [Fedora](#fedora)
-  - [NixOS](#nixos)
-  - [Build from source](#building-from-source)
-- [Usage and key bindings](#usage-and-key-bindings)
-- [Configuration and theming](#configuration)
-- [Frequently Asked Questions](#frequently-asked-questions)
-- [Contributing](#contributing)
-- [Credits](#credits)
-- [License](#license)
-
 ## Features
 
 Everything below describes behavior implemented thus far. If you have
@@ -50,10 +34,8 @@ open an issue or pull request.
 ### Visuals
 
 - **Loudness**
-  - BS.1770-5 K-weighted short-term and momentary LUFS meter modes.
-  - BS.1770-5 integrated LUFS meter mode with EBU Tech 3342 loudness
-    range (LRA), dimmed for its first 60 s per EBU Tech 3341.
-  - True Peak meter modes.
+  - BS.1770-5 K-weighted short-term, momentary, and integrated modes.
+  - True Peak meter mode.
   - Fast and slow K-weighted RMS dB meter modes.
 - **Oscilloscope**
   - Selectable left, right, mid/mono, side, or `none` channel traces.
@@ -130,14 +112,9 @@ yay -S openmeters-git  # development
 > [Zorbatron](https://aur.archlinux.org/account/Zorbatron) with my
 > permission. Massive thanks!
 
-### Debian
+### Debian and Fedora
 
-Download the latest `.deb` package from [GitHub
-Releases](https://github.com/httpsworldview/openmeters/releases).
-
-### Fedora
-
-Download the latest `.rpm` package from [GitHub
+Download the latest `.deb` or `.rpm` package from [GitHub
 Releases](https://github.com/httpsworldview/openmeters/releases).
 
 ### NixOS
@@ -223,61 +200,32 @@ reach out via E-Mail.
 
 ## Configuration
 
-On first launch, all six visuals are enabled. Application settings are
-saved to `$XDG_CONFIG_HOME/openmeters/settings.json`, or to:
+Settings are stored in `$XDG_CONFIG_HOME/openmeters/` (default
+`~/.config/openmeters/`) as `settings.json` and `themes/*.json`. Both
+can be edited by hand and reload while OpenMeters runs.
 
-```text
-~/.config/openmeters/settings.json
-```
-
-when `XDG_CONFIG_HOME` is unset.
-
-`settings.json` is intentionally editable. GUI ranges are not hard
-limits, but visuals limit some values when drawn. Unsupported keys,
-structurally invalid values, and values outside a setting's supported
-range are logged and replaced with their defaults.
-
-Invalid JSON syntax is ignored: default settings are used on startup,
-and current settings are kept while running. Your configuration file
-will not be overwritten unless you explicitly change settings in the
-GUI. Window sizes edited while OpenMeters runs apply the next time
-that window opens, except bar height, which applies immediately.
-
-If a bug causes OpenMeters to misbehave, you can reset application
-settings by deleting `settings.json` while OpenMeters is closed.
-Please consider reporting the bug if you run into this.
+- Values outside the GUI's ranges are accepted. Unknown keys are
+  logged and dropped; invalid or out-of-range values are logged and
+  replaced with defaults.
+- Files with invalid JSON syntax are ignored. Changing a setting in
+  the GUI overwrites an invalid `settings.json`; an invalid theme is
+  only overwritten by saving a theme under its name.
+- Edited window sizes apply when that window next opens; bar height
+  applies immediately.
+- To reset, delete `settings.json` while OpenMeters is closed.
 
 ### Theming
 
-Themes are saved as separate JSON files in
-`$XDG_CONFIG_HOME/openmeters/themes/`, or in the same alternate
-location as above.
-
-You can create and switch between themes in the **Appearance** section
-of the configuration page. Feel free to share custom themes by sharing
-the corresponding JSON files.
-
-Changes to themes are immediately reflected in the running
-application. Theme files follow the same rules as `settings.json`,
-except that editing colors never overwrites a theme file with invalid
-JSON syntax; only saving a theme under its name does.
+Create and switch themes in the **Appearance** section of the
+configuration page. To share a theme, share its JSON file.
 
 ## Frequently Asked Questions
 
-Q: **Can I build upon OpenMeters or use it in a commercial
-application?**
-
-A: Yes, as long as you abide by the terms of the GPL. My primary focus
-is keeping OpenMeters free and open source, not profiting from it.
-
 Q: **Will you support Windows or macOS?**
 
-A: _Maybe_, but _probably not_. I'm a Linux user and have been for
-most of my life. I am not currently confident in my ability to
-maintain reliable support for either platform. That said, I aim to
-keep things modular and platform-agnostic where possible. The DSP code
-at the core of this project will run anywhere; the GUI, persistence,
-and audio backend code will not.
+A: No, probably not. I'm a Linux user and have been for most of my
+life, I can't maintain reliable support for either platform, nor do I
+want to (especially not for MacOS).
 
 Q: **How do I force OpenGL, Vulkan, or software rendering?**
 
@@ -311,18 +259,6 @@ displayed band count (for example, 2048 in MiniMeters corresponds to
 Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to
 contribute and how to get started. No matter what you have to offer, I
 greatly appreciate your interest in the project. Every bit helps.
-
-### Reuse and license
-
-OpenMeters is GPL-3.0-or-later software. You may reuse code under the
-GPL's terms. If you want to discuss other arrangements or have
-licensing questions, feel free to email me at
-<httpworldview@gmail.com>. You are also free to draw inspiration from
-the ideas and methods used here, provided you respect the GPL.
-
-It would be unfair to ask for attribution over ideas alone when this
-project exists thanks to the countless researchers and open-source
-contributors who came before me.
 
 ## Credits
 
@@ -405,4 +341,10 @@ out.
 ## License
 
 OpenMeters is licensed under the GNU General Public License v3.0 or
-later. See [LICENSE](LICENSE) for more details.
+later; see [LICENSE](LICENSE). You may reuse its code, including in
+commercial software, under the GPL's terms. For other arrangements or
+licensing questions, email me at <httpworldview@gmail.com>.
+
+The ideas and methods behind OpenMeters are free to borrow without
+attribution, just as OpenMeters builds on the researchers and
+open-source contributors who came before it.
