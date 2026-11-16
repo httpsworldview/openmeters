@@ -22,6 +22,7 @@ jobs:
     container:
       image: ubuntu:24.04@sha256:023f8a753c22258c9fe2d0005a7d28258038da7d620e9f93e9ad78aa266f9f11 # ubuntu:24.04 linux/amd64
     env:
+      CARGO_BUILD_WARNINGS: deny
       NFPM_VERSION: v2.46.3
       GO_VERSION: 1.25.0 # nFPM v2.46.3 go directive
       GOTOOLCHAIN: local
@@ -215,7 +216,7 @@ jobs:
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Lint
-        run: cargo clippy --workspace --locked --all-targets -- -D warnings
+        run: cargo clippy --workspace --locked --all-targets
 
       - name: Test
         run: cargo test --workspace --locked --all-targets

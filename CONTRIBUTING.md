@@ -138,16 +138,16 @@ The CI workflow currently runs these checks:
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --workspace --locked --all-targets -- -D warnings
-cargo test --workspace --locked --all-targets
+CARGO_BUILD_WARNINGS=deny cargo clippy --workspace --locked --all-targets
+CARGO_BUILD_WARNINGS=deny cargo test --workspace --locked --all-targets
 ```
 
-CI also runs the PipeWire back-end's live integration tests.They
+CI also runs the PipeWire back-end's live integration tests. They
 remain ignored by default; run them explicitly and serially with:
 
 ```bash
-cargo test --workspace --locked infra::pipewire::live_tests -- \
-    --ignored --nocapture --test-threads=1
+CARGO_BUILD_WARNINGS=deny cargo test --workspace --locked \
+    infra::pipewire::live_tests -- --ignored --nocapture --test-threads=1
 ```
 
 Please run the same checks before committing. For documentation

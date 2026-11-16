@@ -21,6 +21,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_BUILD_WARNINGS: deny
 
 jobs:
   verify:
@@ -72,7 +73,7 @@ jobs:
         uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
 
       - name: Lint
-        run: cargo clippy --workspace --locked --all-targets -- -D warnings
+        run: cargo clippy --workspace --locked --all-targets
 
       - name: Test
         run: cargo test --workspace --locked --all-targets
