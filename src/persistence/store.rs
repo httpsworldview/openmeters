@@ -20,7 +20,7 @@ fn config_dir() -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .filter(|dir| dir.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+        .or_else(|| std::env::home_dir().map(|home| home.join(".config")))
         .unwrap_or_else(|| PathBuf::from("."))
         .join("openmeters")
 }
