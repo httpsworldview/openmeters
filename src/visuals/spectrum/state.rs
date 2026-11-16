@@ -64,9 +64,9 @@ crate::macros::default_struct! {
         palette: [Color; PALETTE_SIZE] = palettes::spectrum::COLORS,
         stop_positions: [f32; RAMP_SIZE] = palettes::spectrum::DEFAULT_POSITIONS,
         stop_spreads: [f32; RAMP_SIZE] = [1.0; RAMP_SIZE],
-        points: [SharedPoints; 2] = std::array::from_fn(|_| Arc::clone(&EMPTY_POINTS)),
+        points: [SharedPoints; 2] = std::array::repeat(Arc::clone(&EMPTY_POINTS)),
         // The buffers shown before `points`, free to refill once their frame is gone.
-        spare_points: [SharedPoints; 2] = std::array::from_fn(|_| Arc::clone(&EMPTY_POINTS)),
+        spare_points: [SharedPoints; 2] = std::array::repeat(Arc::clone(&EMPTY_POINTS)),
         geometry: crate::visuals::GeometryKey = crate::visuals::GeometryKey::new(),
         peak: Option<PeakLabel> = None,
         effective_range: Option<(f32, f32)> = None,
@@ -442,7 +442,8 @@ fn value_at(bins: &[f32], mags: &[f32], f: f32) -> f32 {
 fn peak_bin(bins: &[f32], db: &[f32], min_f: f32, max_f: f32) -> Option<(usize, Range<usize>)> {
     let range = bins.partition_point(|&f| f < min_f).max(1)
         ..bins.partition_point(|&f| f <= max_f).min(bins.len() - 1);
-    let bin = (range.clone())
+    let bin = range
+        .clone()
         .filter(|&i| db[i].is_finite())
         .max_by(|&a, &b| db[a].total_cmp(&db[b]))?;
     Some((bin, range))
@@ -477,14 +478,14 @@ fn interpolated_peak(
     let ratio = 10.0_f64.powf(f64::from(left.max(right) - center) / 20.0);
     let (mut lo, mut hi) = (0.0, 0.5);
     for _ in 0..32 {
-        let mid = 0.5 * (lo + hi);
+        let mid = f64::midpoint(lo, hi);
         if window.response(mid - 1.0) < ratio * window.response(mid) {
             lo = mid;
         } else {
             hi = mid;
         }
     }
-    let offset = 0.5 * (lo + hi);
+    let offset = f64::midpoint(lo, hi);
     let level = f64::from(center) - 20.0 * window.response(offset).log10();
     let side = if right > left { 1.0 } else { -1.0 };
     let frequency = bins[bin] + side * offset as f32 * (bins[1] - bins[0]);
@@ -592,7 +593,9 @@ fn draw_grid_lines(
         let x = (x - 0.5).clamp(frame.x, (frame.x + frame.width - 1.0).max(frame.x));
         let bottom = frame.y + frame.height;
         // A line stops at a label rather than run under it.
-        let label = (state.grid_labels.iter())
+        let label = state
+            .grid_labels
+            .iter()
             .map(|label| label.bounds)
             .find(|label| label.x < x + 1.0 && x < label.x + label.width)
             .map_or(bottom..bottom, |label| label.y..label.y + label.height);
@@ -750,12 +753,10 @@ mod tests {
         let snapshot = SpectrumSnapshot {
             floor_db: -120.0,
             frequency_bins: vec![0.0, 6_000.0, 12_000.0, 18_000.0, 24_000.0],
-            traces: std::array::from_fn(|_| {
-                [
-                    vec![-120.0, -60.0, -30.0, -90.0, -120.0],
-                    vec![-120.0, -30.0, -12.0, -60.0, -120.0],
-                ]
-            }),
+            traces: std::array::repeat([
+                vec![-120.0, -60.0, -30.0, -90.0, -120.0],
+                vec![-120.0, -30.0, -12.0, -60.0, -120.0],
+            ]),
             ..Default::default()
         };
         let baseline = SpectrumSettings {
@@ -833,7 +834,7 @@ mod tests {
         let original = state.borrow().points.clone();
         let content = peak_content(state.borrow().peak.as_ref().unwrap());
         assert!(original[0].len() > 2 && original[0].iter().any(|point| point[1] > 0.5));
-        assert!(original[0].windows(2).all(|pair| pair[0][0] < pair[1][0]));
+        assert!(original[0].array_windows().all(|[a, b]| a[0] < b[0]));
         for (floor, peak_visible) in [(-60.0, true), (-3.0, false), (-140.0, true), (-120.0, true)]
         {
             for (reverse, rotation) in [(false, 0), (true, 1), (false, 2), (true, -1)] {
@@ -921,9 +922,10 @@ mod tests {
                     let context = format!("scale={scale:?}, reverse={reverse}, width={width}");
                     assert!(state.grid_labels.len() >= if width > 300.0 { 3 } else { 1 });
                     assert!(
-                        state.grid_labels.windows(2).all(|pair| {
-                            pair[0].bounds.x + pair[0].bounds.width <= pair[1].bounds.x
-                        }),
+                        state
+                            .grid_labels
+                            .array_windows()
+                            .all(|[a, b]| a.bounds.x + a.bounds.width <= b.bounds.x),
                         "{context}"
                     );
                     assert_eq!(majors(&state), majors(&majors_only), "{context}");
@@ -932,7 +934,9 @@ mod tests {
                     let pane = Rectangle::new(Point::ORIGIN, Size::new(100.0, width));
                     state.settings.rotation = 1;
                     state.layout_grid_labels(pane, range);
-                    let turned: Vec<_> = (state.grid_labels.iter())
+                    let turned: Vec<_> = state
+                        .grid_labels
+                        .iter()
                         .map(|label| state.turn().to_screen(pane, label.bounds))
                         .collect();
                     state.settings.rotation = 0;
@@ -944,7 +948,7 @@ mod tests {
                         assert!(on_screen.is_within(&pane), "{context}");
                     }
                     assert!(
-                        (turned.windows(2)).all(|pair| pair[0].y + pair[0].height <= pair[1].y),
+                        turned.array_windows().all(|[a, b]| a.y + a.height <= b.y),
                         "{context}"
                     );
                 }

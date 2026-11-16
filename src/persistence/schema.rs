@@ -120,6 +120,7 @@ mod tests {
     use super::super::visuals::{PopoutWindowSettings, SpectrumSettings, VisualConfig};
     use super::*;
     use crate::{domain::visuals::VisualKind, visuals::spectrum::processor::AveragingMode};
+    use std::assert_matches;
 
     fn load(value: Value) -> UiSettings {
         lossy::settings(value, UiSettings::SCOPE, UiSettings::read_fields)
@@ -279,6 +280,6 @@ mod tests {
         );
         assert_eq!(spectrum.hop_size, SpectrumSettings::default().hop_size);
         assert_eq!(spectrum.bar_gap, SpectrumSettings::default().bar_gap);
-        assert!(matches!(spectrum.averaging, AveragingMode::None));
+        assert_matches!(spectrum.averaging, AveragingMode::None);
     }
 }

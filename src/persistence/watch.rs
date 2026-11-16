@@ -3,7 +3,6 @@
 
 use rustix::fs::inotify::{self, CreateFlags, WatchFlags as W};
 use rustix::io::Errno;
-use std::convert::Infallible;
 use std::ffi::{OsStr, OsString};
 use std::hash::{Hash, Hasher};
 use std::iter;
@@ -63,7 +62,7 @@ pub fn changes(watcher: &SettingsWatcher) -> async_channel::Receiver<()> {
 }
 
 // Runs for the life of the app, since the settings keep the channel open.
-fn watch_loop(dirs: &[PathBuf], sender: &async_channel::Sender<()>) -> io::Result<Infallible> {
+fn watch_loop(dirs: &[PathBuf], sender: &async_channel::Sender<()>) -> io::Result<!> {
     // Reads shouldn't wake the watcher
     let mask = W::CLOSE_WRITE | W::MOVED_TO | W::MOVED_FROM | W::CREATE | W::DELETE | W::ONLYDIR;
     let mut buf = [MaybeUninit::uninit(); 4096];
@@ -115,7 +114,9 @@ fn concerns(watched: &[(i32, Option<OsString>)], event: &inotify::Event<'_>) -> 
     event.file_name().is_none_or(|name| {
         watched.iter().any(|(wd, entry)| {
             *wd == event.wd()
-                && (entry.as_deref()).is_none_or(|entry| entry.as_bytes() == name.to_bytes())
+                && entry
+                    .as_deref()
+                    .is_none_or(|entry| entry.as_bytes() == name.to_bytes())
         })
     })
 }

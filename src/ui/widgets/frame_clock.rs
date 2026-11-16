@@ -44,8 +44,11 @@ impl FrameHeartbeat {
     }
 
     fn set_suspended(&self, suspended: bool) {
-        let toggle = (self.generation() ^ u64::from(suspended)) & 1;
-        self.0.fetch_xor(toggle, Ordering::Relaxed);
+        if suspended {
+            self.0.fetch_or(1, Ordering::Relaxed);
+        } else {
+            self.0.fetch_and(!1, Ordering::Relaxed);
+        }
     }
 
     fn generation(&self) -> u64 {

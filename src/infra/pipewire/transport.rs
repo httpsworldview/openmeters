@@ -49,6 +49,7 @@ fn idle_watchdog_ns(rate: u64, burst_ns: u64) -> u64 {
     )
 }
 
+#[cfg_attr(test, derive(Debug))]
 pub enum CapturedSpan<'a> {
     Pcm {
         samples: &'a [f32],
@@ -160,7 +161,7 @@ impl Shared {
 
     fn wake_ingestion(&self) -> bool {
         let (dormant, active) = (IngestState::Dormant as u8, IngestState::Active as u8);
-        (self.ingest)
+        self.ingest
             .compare_exchange(dormant, active, Ordering::SeqCst, Ordering::Relaxed)
             .is_ok()
     }
@@ -261,9 +262,7 @@ impl SamplePool {
         self.clear();
         self.samples = format.channels() * packet_frame_limit(format.rate());
         self.limit = packet_pool_limit(format.rate(), queue_capacity);
-        self.free.reserve(self.limit);
-        self.free
-            .extend((0..self.limit).map(|_| vec![0.0; self.samples].into_boxed_slice()));
+        self.free = Vec::from_fn(self.limit, |_| vec![0.0; self.samples].into_boxed_slice());
     }
 
     fn clear(&mut self) {
@@ -704,7 +703,7 @@ impl AudioReader {
 
     pub fn sleep_until_signal(&mut self) -> bool {
         let (active, dormant) = (IngestState::Active as u8, IngestState::Dormant as u8);
-        if let Err(state) = (self.shared.ingest).compare_exchange(
+        if let Err(state) = self.shared.ingest.compare_exchange(
             active,
             dormant,
             Ordering::SeqCst,
@@ -889,6 +888,7 @@ fn channel_with_capacity(capacity: usize) -> (CaptureWriter, AudioReader) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::assert_matches;
 
     fn mono(capacity: usize, rate: u32) -> (CaptureWriter, AudioReader, AudioFormat) {
         let (mut writer, mut reader) = channel_with_capacity(capacity);
@@ -981,7 +981,7 @@ mod tests {
             let now = writer.shared.epoch + Duration::from_nanos(end + 1) + MAX_BACKLOG;
             let mut resets = 0;
             reader.drain(now, |span| {
-                assert!(matches!(span, CapturedSpan::Reset));
+                assert_matches!(span, CapturedSpan::Reset);
                 resets += 1;
             });
             assert_eq!(resets, 1);

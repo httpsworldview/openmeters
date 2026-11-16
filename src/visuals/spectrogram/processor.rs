@@ -332,7 +332,8 @@ impl Analysis {
             Self::Classic(_) => (ColumnKind::Classic, window_size, 0),
         };
 
-        let ready = (audio.len())
+        let ready = audio
+            .len()
             .checked_sub(read_len)
             .map_or(0, |extra| extra / hop_size + 1);
         let retained = history_columns(kind, points as u32, config.history_length);
@@ -380,7 +381,8 @@ impl Analysis {
                     SpectrogramColumn::Reassigned(r.points(config))
                 }
                 Self::Classic(fft) => SpectrogramColumn::Classic(
-                    (fft.powers(audio).iter())
+                    fft.powers(audio)
+                        .iter()
                         .map(|&power| pack_classic_db(power_to_db(power, DB_FLOOR)))
                         .collect(),
                 ),
@@ -564,6 +566,7 @@ fn compute_time_weighted(weights: &[f32]) -> (Vec<f32>, [f32; 2]) {
 mod tests {
     use super::*;
     use crate::util::audio::{sine_wave, white_noise};
+    use std::assert_matches;
 
     fn process_samples(cfg: SpectrogramConfig, samples: &[f32]) -> SpectrogramUpdate {
         let mut processor = SpectrogramProcessor::new(cfg);
@@ -640,10 +643,7 @@ mod tests {
         let classic = processor
             .process_block(&AudioBlock::fallback(&[0.25; 64], 1, config.sample_rate))
             .expect("expected classic snapshot");
-        assert!(matches!(
-            classic.new_columns[0],
-            SpectrogramColumn::Classic(_)
-        ));
+        assert_matches!(classic.new_columns[0], SpectrogramColumn::Classic(_));
 
         config.use_reassignment = true;
         processor.update_config(config);
@@ -652,10 +652,7 @@ mod tests {
         let reassigned = processor
             .process_block(&AudioBlock::fallback(&samples, 1, config.sample_rate))
             .expect("expected reassigned snapshot");
-        assert!(matches!(
-            reassigned.new_columns[0],
-            SpectrogramColumn::Reassigned(_)
-        ));
+        assert_matches!(reassigned.new_columns[0], SpectrogramColumn::Reassigned(_));
     }
 
     #[test]
@@ -764,9 +761,7 @@ mod tests {
         full_cfg.history_length = 32;
         let mut capped_cfg = full_cfg;
         capped_cfg.history_length = 3;
-        let samples: Vec<_> = (0..192)
-            .map(|i| ((i * i + 3 * i) as f32 * 0.017).sin())
-            .collect();
+        let samples = Vec::from_fn(192, |i| ((i * i + 3 * i) as f32 * 0.017).sin());
 
         let full = process_samples(full_cfg, &samples);
         let capped = process_samples(capped_cfg, &samples);
@@ -788,7 +783,7 @@ mod tests {
             use_reassignment: false,
             ..Default::default()
         };
-        let samples: Vec<_> = (0..29).map(|i| (i as f32 * 0.73).sin()).collect();
+        let samples = Vec::from_fn(29, |i| (i as f32 * 0.73).sin());
 
         let whole = process_samples(cfg, &samples).new_columns;
         let mut processor = SpectrogramProcessor::new(cfg);
@@ -819,7 +814,7 @@ mod tests {
     fn fft_rebuild_keeps_newest_pending_audio() {
         let mut p = SpectrogramProcessor::new(cfg(64, 16, false));
         p.rebuild_fft();
-        let samples: Vec<_> = (0..200).map(|i| i as f32).collect();
+        let samples = Vec::from_fn(200, |i| i as f32);
         p.audio.push(samples.iter().copied());
         let mut next = p.config();
         next.fft_size = FftSize::must(16);

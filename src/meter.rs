@@ -34,10 +34,13 @@ impl DspBatcher {
     }
 
     fn push(&mut self, manager: &mut VisualManager, mut samples: &[f32], format: AudioFormat) {
-        if self.format.is_some_and(|current| current != format) {
+        if self
+            .format
+            .replace(format)
+            .is_some_and(|previous| previous != format)
+        {
             self.samples.clear();
         }
-        self.format = Some(format);
         let batch = format.sample_rate().frames(DSP_BATCH_SECONDS) * format.channels();
         if !self.samples.is_empty() {
             let take = (batch - self.samples.len()).min(samples.len());

@@ -58,7 +58,7 @@ impl WaveformState {
             data.clear();
             self.quiescent_columns = 0;
         }
-        data.drain(..data.len().saturating_sub(max_columns));
+        data.retain_back(max_columns);
         if data.capacity() < max_columns {
             data.reserve(max_columns.saturating_sub(data.len()));
         } else if data.capacity() > max_columns.saturating_mul(2) {

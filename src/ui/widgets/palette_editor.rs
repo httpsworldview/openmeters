@@ -104,7 +104,7 @@ impl PaletteEditor {
 
     pub fn set_only_first_visible(&mut self, only: bool) {
         self.only_first_visible = only;
-        let _ = self.active.take_if(|active| only && active.index != 0);
+        self.active.take_if(|active| only && active.index != 0);
     }
 
     fn active_index(&self) -> Option<usize> {
@@ -762,8 +762,7 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for &PaletteEditor {
         };
         // Meshes interpolate premultiplied colors, unlike the visuals, so spans
         // are only drawn linearly when neither spread nor alpha varies.
-        let samples: Vec<_> = positions.windows(2).enumerate().flat_map(|(i, span)| {
-            let (start, end) = (span[0], span[1]);
+        let samples: Vec<_> = positions.array_windows().enumerate().flat_map(|(i, &[start, end])| {
             let varies = (spreads[i] - spreads[i + 1]).abs() >= EPSILON
                 || (colors[i].a - colors[i + 1].a).abs() >= EPSILON;
             let count = if varies {
@@ -773,7 +772,9 @@ impl Widget<PaletteEvent, iced::Theme, iced::Renderer> for &PaletteEditor {
             };
             (0..count).map(move |k| sample(start + (end - start) * k as f32 / count as f32))
         }).chain([sample(1.0)]).collect();
-        let ramp = samples.windows(2).map(|w| horizontal(span(bar, w[0].0, w[1].0), w[0].1, w[1].1));
+        let ramp = samples
+            .array_windows()
+            .map(|&[(start, from), (end, to)]| horizontal(span(bar, start, end), from, to));
         let handle_y = bar.y + bar.height + (MARKER_HEIGHT + 1.0) * 0.5;
         let handles = positions.iter().zip(colors).enumerate().flat_map(|(i, (&pos, &c))| {
             let x = bar.x + pos * bar.width;

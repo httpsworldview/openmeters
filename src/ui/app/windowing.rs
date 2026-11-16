@@ -132,11 +132,7 @@ pub(super) fn open_main_window(
             anchor: bar_anchor(bar.alignment),
             exclusive_zone: Some(height as i32),
             keyboard_interactivity: KeyboardInteractivity::OnDemand,
-            output_option: bar
-                .monitor
-                .clone()
-                .map(OutputOption::OutputName)
-                .unwrap_or_default(),
+            output_option: bar.monitor.clone().map_or_default(OutputOption::OutputName),
             ..Default::default()
         });
         return (MainWindow::Bar(Some(id)), task);

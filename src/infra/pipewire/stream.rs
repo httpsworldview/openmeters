@@ -209,7 +209,7 @@ fn process(stream: &pw::stream::Stream, writer: &mut CaptureWriter) {
     let channels = format.channels();
     let frame_bytes = channels * size_of::<f32>();
     if stride != 0 && usize::try_from(stride).ok() != Some(frame_bytes) {
-        writer.push_fault(size as u64 / frame_bytes as u64);
+        writer.push_fault(u64::from(size) / frame_bytes as u64);
         return;
     }
     let Some(chunk) = pcm_chunk(data.as_raw().maxsize as usize, offset, size, frame_bytes) else {

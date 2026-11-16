@@ -699,7 +699,7 @@ fn live_capture_preserves_graph_invariants() {
         );
         server.wait_audio("surround application mix", &mut audio, |graph| {
             let source = graph.node_id(&surround_playback)?;
-            stable_mix(graph).filter(|_| graph.link_count(source, tap_id) == channels)
+            stable_mix(graph).filter(|()| graph.link_count(source, tap_id) == channels)
         });
         wait_for_mapped_signal(
             "captured surround application mix",
@@ -709,7 +709,7 @@ fn live_capture_preserves_graph_invariants() {
         );
         drop(surround);
         server.wait_audio("stable application mix", &mut audio, |graph| {
-            stable_mix(graph).filter(|_| graph.node(&surround_playback).is_none())
+            stable_mix(graph).filter(|()| graph.node(&surround_playback).is_none())
         });
     }
 

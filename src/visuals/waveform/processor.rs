@@ -75,7 +75,9 @@ struct BandTracker {
 
 // Spans at least one column so slow scrolling does not skip audio.
 fn color_window(config: WaveformConfig) -> usize {
-    (config.sample_rate.frames(BAND_COLOR_WINDOW))
+    config
+        .sample_rate
+        .frames(BAND_COLOR_WINDOW)
         .max((config.sample_rate.hz() / config.scroll_speed.get()).ceil() as usize)
 }
 
@@ -174,7 +176,9 @@ impl WaveformProcessor {
     fn columns(&self) -> WaveFrame {
         let mut columns = self.channels.map(|channel| {
             let (min, max) = channel.extrema.map_or((0.0, 0.0), |(min, max)| {
-                (channel.carried).map_or((min, max), |last| (min.min(last), max.max(last)))
+                channel
+                    .carried
+                    .map_or((min, max), |last| (min.min(last), max.max(last)))
             });
             WaveColumn {
                 min,
@@ -519,7 +523,7 @@ mod tests {
 
         assert_eq!(update.columns.len(), 4);
         assert_eq!(
-            (0..4).map(|i| extrema(&update, 0, i).1).collect::<Vec<_>>(),
+            Vec::from_fn(4, |i| extrema(&update, 0, i).1),
             [0.2, 0.3, 0.4, 0.5]
         );
     }

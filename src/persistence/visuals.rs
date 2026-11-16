@@ -96,7 +96,9 @@ impl VisualSettings {
     }
 
     fn module_mut(&mut self, kind: VisualKind) -> &mut ModuleSettings {
-        (self.modules.entry(kind)).or_insert_with(|| ModuleSettings::new(kind))
+        self.modules
+            .entry(kind)
+            .or_insert_with(|| ModuleSettings::new(kind))
     }
 
     pub(crate) fn set_enabled(&mut self, kind: VisualKind, enabled: bool) {

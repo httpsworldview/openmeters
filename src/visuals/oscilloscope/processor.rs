@@ -318,7 +318,7 @@ impl StableTrigger {
         cycles: usize,
         elapsed: f32,
     ) -> Capture {
-        let probe = &trace[trace.len() - probe_frames.min(trace.len())..];
+        let probe = &trace[trace.len().saturating_sub(probe_frames)..];
         let factor = (sample_rate / PeriodEstimator::MAX_ANALYSIS_RATE).ceil() as usize;
         let probe = if factor > 1 {
             self.work.clear();
@@ -613,7 +613,9 @@ impl OscilloscopeProcessor {
             return None;
         }
 
-        let base_frames = (self.config.sample_rate)
+        let base_frames = self
+            .config
+            .sample_rate
             .frames(self.config.segment_duration.get())
             .clamp(2, MAX_DSP_BUFFER_LEN);
         let sample_rate = self.config.sample_rate.hz();
@@ -651,11 +653,13 @@ impl OscilloscopeProcessor {
         let separate_source = matching_trace.map_or(trigger_source, |_| Channel::None);
         let [channel_1, channel_2] = trace_channels;
         for (buffer, channel) in
-            (self.buffers.iter_mut()).zip([channel_1, channel_2, separate_source])
+            self.buffers
+                .iter_mut()
+                .zip([channel_1, channel_2, separate_source])
         {
             if channel != Channel::None {
                 buffer.extend(block.projected_frames(channel));
-                buffer.drain(..buffer.len().saturating_sub(history_frames));
+                buffer.retain_back(history_frames);
             }
         }
 
@@ -795,7 +799,7 @@ mod tests {
     }
 
     fn periodic_samples(freq: f32, rate: f32, frames: usize, f: impl Fn(f32) -> f32) -> Vec<f32> {
-        (0..frames).map(|n| f(freq * n as f32 / rate)).collect()
+        Vec::from_fn(frames, |n| f(freq * n as f32 / rate))
     }
 
     fn saw(cycles: f32) -> f32 {
@@ -845,18 +849,16 @@ mod tests {
 
     fn cycle_rate_switch_signal(from: f32, to: f32, warmup: usize, after: usize) -> Vec<f32> {
         let switch = warmup * BLOCK;
-        (0..BLOCK * (warmup + after))
-            .map(|n| {
-                let t = n as f32 / RATE;
-                if n < switch {
-                    (TAU * from * t).sin()
-                } else {
-                    let t0 = switch as f32 / RATE;
-                    let phase0 = TAU * from * t0;
-                    (phase0 + TAU * to * (t - t0)).sin()
-                }
-            })
-            .collect()
+        Vec::from_fn(BLOCK * (warmup + after), |n| {
+            let t = n as f32 / RATE;
+            if n < switch {
+                (TAU * from * t).sin()
+            } else {
+                let t0 = switch as f32 / RATE;
+                let phase0 = TAU * from * t0;
+                (phase0 + TAU * to * (t - t0)).sin()
+            }
+        })
     }
 
     fn two_channel_correlation(snap: &OscilloscopeSnapshot) -> f32 {
@@ -1015,7 +1017,7 @@ mod tests {
         };
         trigger.prepare_template(period);
         let edge_template = trigger.candidate.clone();
-        trigger.candidate = (0..17).map(|i| (i as f32 * 0.7).sin()).collect();
+        trigger.candidate = Vec::from_fn(17, |i| (i as f32 * 0.7).sin());
         trigger.write_candidate(period);
         assert_ne!(trigger.candidate, edge_template);
 
@@ -1055,12 +1057,10 @@ mod tests {
 
     #[test]
     fn sliding_correlation_statistics_match_direct_windows() {
-        let data: Vec<_> = (0..97)
-            .map(|index| {
-                let phase = index as f32;
-                (phase * 0.37).sin() + (phase * 0.11).cos() * 0.25
-            })
-            .collect();
+        let data = Vec::from_fn(97, |index| {
+            let phase = index as f32;
+            (phase * 0.37).sin() + (phase * 0.11).cos() * 0.25
+        });
         let len = 31;
         let count = data.len() - len + 1;
         let mut stats = Vec::new();

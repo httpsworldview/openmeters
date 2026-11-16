@@ -52,7 +52,7 @@ struct Correlator {
 
 impl Correlator {
     fn update(&mut self, left: f32, right: f32, alpha: f64) {
-        let (left, right) = (left as f64, right as f64);
+        let (left, right) = (f64::from(left), f64::from(right));
         let [cross, left_power, right_power] = &mut self.moments;
         *cross += alpha * (left * right - *cross);
         *left_power += alpha * (left * left - *left_power);
@@ -153,7 +153,7 @@ impl StereometerProcessor {
             .min(MAX_DSP_BUFFER_LEN);
         let history_count = 1 + BAND_COUNT * usize::from(mode == Bands::Points);
         for history in &mut self.histories[..history_count] {
-            history.drain(..history.len().saturating_sub(frames));
+            history.retain_back(frames);
         }
 
         if self.histories[FULL_BAND].len() < frames {
@@ -305,7 +305,7 @@ mod tests {
             ..Default::default()
         };
         let tone = |frequency: f64, frame| {
-            (std::f64::consts::TAU * frequency * frame as f64 / 48_000.0).sin() as f32
+            (std::f64::consts::TAU * frequency * f64::from(frame) / 48_000.0).sin() as f32
         };
         for frequency in [80.0, 200.0, 500.0, 2_000.0, 5_000.0] {
             let samples: Vec<_> = (0..24_000)

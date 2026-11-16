@@ -289,7 +289,10 @@ impl VisualManager {
                 entry.module.apply(&config);
             }
             entry.set_enabled(settings.is_enabled(kind));
-            entry.slot.width_basis = (settings.width_basis.get(&kind).copied())
+            entry.slot.width_basis = settings
+                .width_basis
+                .get(&kind)
+                .copied()
                 .unwrap_or_else(|| default_width_basis(kind));
         }
         self.reorder(&settings.order);

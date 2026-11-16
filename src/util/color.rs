@@ -10,7 +10,7 @@ pub const STOP_SPREAD_MAX: f32 = 5.0;
 
 pub fn parse_hex_color(value: &str) -> Result<Color, &'static str> {
     const ERROR: &str = "expected 3, 4, 6 or 8 hex digits with optional #";
-    let hex = value.strip_prefix('#').unwrap_or(value);
+    let hex = value.trim_prefix('#');
     // Iced slices at byte offsets and accepts signs, so only pass it hex digits.
     if !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(ERROR);
@@ -88,13 +88,8 @@ pub fn with_alpha(color: Color, alpha: f32) -> Color {
     }
 }
 
-pub fn rgba_scale_alpha(color: [f32; 4], factor: f32) -> [f32; 4] {
-    [
-        color[0],
-        color[1],
-        color[2],
-        (color[3] * factor).clamp(0.0, 1.0),
-    ]
+pub fn rgba_scale_alpha([r, g, b, a]: [f32; 4], factor: f32) -> [f32; 4] {
+    [r, g, b, (a * factor).clamp(0.0, 1.0)]
 }
 
 pub fn lerp_rgba(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {

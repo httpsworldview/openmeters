@@ -47,7 +47,7 @@ fn clock() -> async_channel::Receiver<()> {
     if let Err(err) = std::thread::Builder::new()
         .name("openmeters-ui-maintenance".into())
         .spawn(move || {
-            while let Ok(()) | Err(async_channel::TrySendError::Full(_)) = sender.try_send(()) {
+            while let Ok(()) | Err(async_channel::TrySendError::Full(())) = sender.try_send(()) {
                 std::thread::sleep(MAINTENANCE_INTERVAL);
             }
         })
@@ -157,7 +157,7 @@ impl UiApp {
             visual_manager,
             frames,
             audio_wake,
-            settings_handle: settings_handle.clone(),
+            settings_handle,
             config_window: None,
             bar_resize_state: None,
             rendering_paused: false,
@@ -189,7 +189,7 @@ impl UiApp {
             let heartbeat = self.frames.borrow().heartbeat_handle();
             subs.extend([
                 Subscription::run_with(self.audio_wake.clone(), audio_wake)
-                    .map(|_| Message::AudioWake),
+                    .map(|()| Message::AudioWake),
                 Subscription::run_with(heartbeat, frame_watchdog).map(Message::Watchdog),
             ]);
         }
@@ -197,7 +197,7 @@ impl UiApp {
             || self.toast_until.is_some()
             || self.exit_warning_until.is_some()
         {
-            subs.push(Subscription::run(clock).map(|_| Message::Tick));
+            subs.push(Subscription::run(clock).map(|()| Message::Tick));
         }
         Subscription::batch(subs)
     }
@@ -278,7 +278,9 @@ impl UiApp {
         content: Element<'a, Message>,
     ) -> Element<'a, Message> {
         let is_main = Some(window) == self.main_window.id();
-        let clock = (self.rendering()).then(|| frame_clock(&self.frames, window, is_main));
+        let clock = self
+            .rendering()
+            .then(|| frame_clock(&self.frames, window, is_main));
         // The optional layer comes last, so pausing or a toast keeps the content's widget state.
         stack![content, clock].into()
     }

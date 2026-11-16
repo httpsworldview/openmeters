@@ -465,7 +465,7 @@ impl Biquad {
             std::array::from_fn(|i| b[2] * sample[i] - a[1] * output[i]),
         ];
         let output = std::array::from_fn(|channel| {
-            if output[channel].abs() <= f32::MAX as f64 {
+            if output[channel].abs() <= f64::from(f32::MAX) {
                 output[channel] as f32
             } else {
                 state[0][channel] = 0.0;

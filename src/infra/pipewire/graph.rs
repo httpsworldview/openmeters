@@ -222,9 +222,7 @@ fn stream_identity(
     node_name: Option<&str>,
 ) -> Option<StreamIdentity> {
     let media_class = clean_property(media_class)?;
-    let media_class = clean_property(Some(
-        media_class.strip_prefix("Stream/").unwrap_or(media_class),
-    ))?;
+    let media_class = clean_property(Some(media_class.trim_prefix("Stream/")))?;
     let (property, value) = match clean_property(application_name) {
         Some(name) => ("application.name", name),
         None => ("node.name", clean_property(node_name)?),
@@ -306,7 +304,7 @@ impl Graph {
     }
 
     pub(super) fn remove_global(&mut self, id: u32) {
-        let _ = self.default_sink.take_if(|target| target.metadata_id == id);
+        self.default_sink.take_if(|target| target.metadata_id == id);
         if self.ports.remove(&id).is_some() {
             return;
         }
@@ -340,7 +338,7 @@ impl Graph {
         let same_entry =
             |target: &mut Target| target.metadata_id == metadata_id && target.subject == subject;
         let Some(key) = key else {
-            let _ = self.default_sink.take_if(same_entry);
+            self.default_sink.take_if(same_entry);
             return;
         };
         if key != "default.audio.sink" {
@@ -443,8 +441,10 @@ impl Graph {
         let Some(target) = &mut self.default_sink else {
             return;
         };
-        let _ = target.node_id.take_if(|id| !self.nodes.contains_key(id));
-        if target.node_id.is_none() {
+        if target
+            .node_id
+            .is_none_or(|id| !self.nodes.contains_key(&id))
+        {
             target.node_id = target.name.as_deref().and_then(|name| {
                 self.nodes
                     .iter()

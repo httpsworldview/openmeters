@@ -221,7 +221,10 @@ fn clip_segment_to_visible_unipolar_half(
 // Each point with its opacity; the newest is the most opaque.
 fn fading(points: &[(f32, f32)], alpha: f32) -> impl Iterator<Item = (f32, f32, f32)> + '_ {
     let count = points.len() as f32;
-    (points.iter().zip(1..)).map(move |(&(l, r), age)| (l, r, alpha * age as f32 / count))
+    points
+        .iter()
+        .zip(1..)
+        .map(move |(&(l, r), age)| (l, r, alpha * age as f32 / count))
 }
 
 fn projected_line(
@@ -341,11 +344,13 @@ impl StereometerParams {
                 if points.len() >= 2 {
                     let last = (points.len() - 1) as f32;
                     let color_at = |i: usize| [cr, cg, cb, ca * (i as f32 / last)];
-                    out.extend(points.windows(2).enumerate().map(|(i, w)| {
-                        let p0 = projection.project(w[0].0, w[0].1);
-                        let p1 = projection.project(w[1].0, w[1].1);
-                        line_instance(p0, p1, color_at(i), color_at(i + 1), 1.5, clip)
-                    }));
+                    out.extend(points.array_windows().enumerate().map(
+                        |(i, &[(l0, r0), (l1, r1)])| {
+                            let p0 = projection.project(l0, r0);
+                            let p1 = projection.project(l1, r1);
+                            line_instance(p0, p1, color_at(i), color_at(i + 1), 1.5, clip)
+                        },
+                    ));
                 }
             }
             StereometerMode::DotCloudBands => {
@@ -401,21 +406,21 @@ impl StereometerParams {
                 if trail.len() > 1 {
                     alpha.clear();
                     alpha.resize(height, 0.0);
-                    for (age, pair) in trail.windows(2).enumerate() {
+                    for (age, &[newer, older]) in trail.array_windows().enumerate() {
                         let opacity = corr_opacity(age, trail.len());
-                        let (y0, y1) = (val_y(pair[0]), val_y(pair[1]));
+                        let (y0, y1) = (val_y(newer), val_y(older));
                         let (top, bottom) = (y0.min(y1) as i32, (y0.max(y1) + 2.0) as i32);
                         for y in top.max(y_min)..=bottom.min(y_max) {
                             let index = (y - y_min) as usize;
                             alpha[index] = alpha[index].max(opacity);
                         }
                     }
-                    for (index, opacity) in alpha.windows(2).enumerate() {
-                        if opacity[0] > 0.0 || opacity[1] > 0.0 {
+                    for (index, &[top_alpha, bottom_alpha]) in alpha.array_windows().enumerate() {
+                        if top_alpha > 0.0 || bottom_alpha > 0.0 {
                             let y0 = (y_min + index as i32) as f32;
                             let y1 = y0 + 1.0;
-                            let top = rgba_scale_alpha(color(y0 > center), opacity[0]);
-                            let bottom = rgba_scale_alpha(color(y1 > center), opacity[1]);
+                            let top = rgba_scale_alpha(color(y0 > center), top_alpha);
+                            let bottom = rgba_scale_alpha(color(y1 > center), bottom_alpha);
                             out.push(gradient_quad_instance(x0, y0, x1, y1, clip, top, bottom));
                         }
                     }

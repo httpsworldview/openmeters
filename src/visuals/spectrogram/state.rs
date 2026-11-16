@@ -106,8 +106,7 @@ impl SpectrogramHistory {
                 if self.col_kind == ColumnKind::Reassigned {
                     Arc::make_mut(&mut self.slot_counts).rotate_left(start as usize);
                 }
-                let discard = pending.uploads.len().saturating_sub(keep as usize);
-                pending.uploads.drain(..discard);
+                pending.uploads.retain_back(keep as usize);
                 for dst in pending.copy_plan.iter_mut().flatten() {
                     if *dst < old_cap {
                         *dst = (*dst + old_cap - start) % old_cap;
@@ -871,7 +870,7 @@ mod tests {
             state.apply_snapshot(reassigned_update(capacity, false, &[incoming]));
             retained.push_back(incoming as u32);
             let kept = history_columns(ColumnKind::Reassigned, 8, capacity);
-            retained.drain(..retained.len().saturating_sub(kept));
+            retained.retain_back(kept);
             let history = &state.history;
             let first = (history.write_slot + history.ring_capacity - history.col_count)
                 % history.ring_capacity;

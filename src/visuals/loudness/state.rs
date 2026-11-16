@@ -161,7 +161,9 @@ impl LoudnessState {
 
     fn visual_params(&self, bounds: Rectangle) -> LoudnessParams {
         let meters = self.visible_meters();
-        let range = (self.programme.range)
+        let range = self
+            .programme
+            .range
             .map(|range| (range, color_to_rgba(self.dim(self.palette[PAL_GUIDE]))));
         let wick = |mode| range.filter(|_| mode == MeterMode::LufsIntegrated);
         LoudnessParams {
@@ -188,7 +190,7 @@ impl LoudnessState {
             MeterMode::LufsShortTerm => return self.snapshot.short_term_loudness,
             MeterMode::LufsMomentary => return self.snapshot.momentary_loudness,
             MeterMode::LufsIntegrated => {
-                return (self.programme.integrated).unwrap_or(DEFAULT_FLOOR_DB);
+                return self.programme.integrated.unwrap_or(DEFAULT_FLOOR_DB);
             }
             MeterMode::RmsFast => &self.snapshot.rms_fast_db,
             MeterMode::RmsSlow => &self.snapshot.rms_slow_db,
@@ -240,7 +242,8 @@ impl LoudnessState {
             Some([low, high]) => format!("{:.1} LU", high - low),
             None => "--".to_owned(),
         };
-        (self.range_label).update(raw_text(&range, 10.0, Size::INFINITE));
+        self.range_label
+            .update(raw_text(&range, 10.0, Size::INFINITE));
         self.geometry.invalidate();
     }
 

@@ -71,9 +71,7 @@ fn wait_for_retry(
 }
 
 fn take_retry_delay(delay: &mut Duration, maximum: Duration) -> Duration {
-    let current = *delay;
-    *delay = delay.saturating_mul(2).min(maximum);
-    current
+    std::mem::replace(delay, delay.saturating_mul(2).min(maximum))
 }
 
 #[derive(Clone, Copy)]
@@ -225,8 +223,8 @@ fn run_session(
                 // harmlessly; any other core error, such as a lost connection, ends the session.
                 let race = std::io::Error::from_raw_os_error(result.wrapping_neg()).kind()
                     == std::io::ErrorKind::NotFound;
-                if id == pw::core::PW_ID_CORE && !race && fatal.borrow().is_none() {
-                    *fatal.borrow_mut() = Some(detail);
+                if id == pw::core::PW_ID_CORE && !race {
+                    fatal.borrow_mut().get_or_insert(detail);
                 }
             })
             .register()
@@ -367,7 +365,7 @@ impl CaptureState {
             .tap
             .node_id()
             .and_then(|id| graph.node(id))
-            .map_or_else(Vec::new, |tap| policy::desired_links(&graph, &plan, tap));
+            .map_or_default(|tap| policy::desired_links(&graph, &plan, tap));
         self.owned_links.apply(desired, now);
         let view = graph.view(self.tap.node_id(), config.device.as_deref());
         if let Some(selected) = &view.selected_device
@@ -475,7 +473,9 @@ impl OwnedLinks {
             *pw::keys::MEDIA_CATEGORY => "Capture",
             *pw::keys::MEDIA_ROLE => "Production",
         };
-        let link = (self.core).create_object::<pw::link::Link>(LINK_FACTORY, &props)?;
+        let link = self
+            .core
+            .create_object::<pw::link::Link>(LINK_FACTORY, &props)?;
         let state = Rc::new(Cell::new(OwnedLinkState::Pending));
         let fail = {
             let (state, dirty) = (Rc::clone(&state), Rc::clone(&self.dirty));
@@ -696,7 +696,7 @@ mod tests {
         // A replacement stream does not inherit the accepted time of the one it replaces, even
         // when it is accepted before reconcile sees it start.
         let mut stale = capture.tap.config().copied().expect("configured tap");
-        stale.passive = !stale.passive;
+        stale.passive.toggle();
         capture.tap.configure(stale).expect("stale tap");
         writer.borrow_mut().set_status(StreamStatus::Paused);
         capture.dirty.set(true);

@@ -83,17 +83,16 @@ pub use self::frequency::LOG_KNEE_HZ;
 
 #[cfg(test)]
 pub fn sine_wave(frequency: f32, sample_rate: f32, count: usize, amplitude: f32) -> Vec<f32> {
-    (0..count)
-        .map(|i| (core::f32::consts::TAU * frequency * i as f32 / sample_rate).sin() * amplitude)
-        .collect()
+    Vec::from_fn(count, |i| {
+        (core::f32::consts::TAU * frequency * i as f32 / sample_rate).sin() * amplitude
+    })
 }
 
 #[cfg(test)]
 pub fn white_noise(count: usize) -> Vec<f32> {
-    (0..count)
-        .scan(1_u32, |seed, _| {
-            *seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            Some((*seed as f32 / u32::MAX as f32) * 2.0 - 1.0)
-        })
-        .collect()
+    let mut seed = 1_u32;
+    Vec::from_fn(count, |_| {
+        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (seed as f32 / u32::MAX as f32) * 2.0 - 1.0
+    })
 }

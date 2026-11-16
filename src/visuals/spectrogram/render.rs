@@ -458,7 +458,7 @@ fn point_page_columns(
         columns
     } else {
         // page_slot_mask addresses slots within power-of-two pages.
-        1 << fit.max(1).ilog2()
+        fit.max(1).isolate_highest_one() as usize
     }
 }
 

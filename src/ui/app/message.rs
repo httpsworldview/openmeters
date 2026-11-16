@@ -168,7 +168,7 @@ fn handle(app: &mut UiApp, msg: Message) -> Task<Message> {
             }
         }
         Message::ShortcutReleased(key) => {
-            app.held_shortcut = app.held_shortcut.filter(|&(held, _)| held != key);
+            app.held_shortcut.take_if(|(held, _)| *held == key);
         }
         Message::ToggleConfig => return app.toggle_config_window(),
         Message::TogglePause => app.set_rendering_paused(!app.rendering_paused),
@@ -208,7 +208,7 @@ fn handle(app: &mut UiApp, msg: Message) -> Task<Message> {
         Message::BarWindowOutput(window, output)
             if app.main_window.is_bar()
                 && Some(window) == app.main_window.id()
-                && (app.bar_outputs).set_current(
+                && app.bar_outputs.set_current(
                     output,
                     app.settings_handle.borrow().data.bar.monitor.as_deref(),
                 ) =>
@@ -272,7 +272,7 @@ mod tests {
     };
     use iced_runtime::Action::{Exit, Output, Window};
     use iced_runtime::{Action, task};
-    use std::{cell::RefCell, rc::Rc};
+    use std::{assert_matches, cell::RefCell, rc::Rc};
 
     fn app(settings: &str) -> (tempfile::TempDir, UiApp, Task<Message>) {
         let dir = tempfile::tempdir().unwrap();
@@ -289,13 +289,13 @@ mod tests {
     }
 
     fn actions(task: Task<Message>) -> Vec<Action<Message>> {
-        task::into_stream(task).map_or_else(Vec::new, |stream| block_on(stream.collect()))
+        task::into_stream(task).map_or_default(|stream| block_on(stream.collect()))
     }
 
     macro_rules! assert_actions {
         ($task:expr, $pattern:pat $(if $guard:expr)?) => {{
             let actions = actions($task);
-            assert!(matches!(actions.as_slice(), $pattern $(if $guard)?), "{actions:?}");
+            assert_matches!(actions.as_slice(), $pattern $(if $guard)?);
         }};
     }
 

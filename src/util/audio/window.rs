@@ -145,11 +145,7 @@ impl DcHistory {
 
     pub fn extend(&mut self, samples: impl IntoIterator<Item = f32>) {
         self.samples.extend(samples);
-        let excess = self
-            .samples
-            .len()
-            .saturating_sub(self.weights.len() / 4 * 3);
-        self.samples.drain(..excess);
+        self.samples.retain_back(self.weights.len() / 4 * 3);
     }
 
     // None leaves the window's own mean: until the history is full, and in a silent window, so

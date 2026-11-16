@@ -328,10 +328,10 @@ pub fn extend_aa_line_list(
     clip: ClipTransform,
 ) {
     let width = stroke.max(0.1);
-    for seg in pts.windows(2) {
-        let (dx, dy) = (seg[1].0 - seg[0].0, seg[1].1 - seg[0].1);
+    for &[p0, p1] in pts.array_windows() {
+        let (dx, dy) = (p1.0 - p0.0, p1.1 - p0.1);
         if (dx * dx + dy * dy) >= 1e-8 {
-            out.push(line_instance(seg[0], seg[1], color, color, width, clip));
+            out.push(line_instance(p0, p1, color, color, width, clip));
         }
     }
 }
@@ -350,14 +350,14 @@ pub fn extend_filled_line(
             p0, p1, baseline, clip, fill, true,
         ))
     };
-    for seg in pts.windows(2) {
-        let (d0, d1) = (seg[0].1 - baseline, seg[1].1 - baseline);
+    for &[p0, p1] in pts.array_windows() {
+        let (d0, d1) = (p0.1 - baseline, p1.1 - baseline);
         if d0 * d1 < 0.0 {
-            let crossing = (seg[0].0 + (seg[1].0 - seg[0].0) * d0 / (d0 - d1), baseline);
-            push_fill(seg[0], crossing);
-            push_fill(crossing, seg[1]);
+            let crossing = (p0.0 + (p1.0 - p0.0) * d0 / (d0 - d1), baseline);
+            push_fill(p0, crossing);
+            push_fill(crossing, p1);
         } else {
-            push_fill(seg[0], seg[1]);
+            push_fill(p0, p1);
         }
     }
     extend_aa_line_list(out, pts, stroke, line, clip);
@@ -390,7 +390,7 @@ pub fn decimate_line(pts: &mut Vec<(f32, f32)>, max_points: usize) {
         pts.iter()
             .all(|point| point.0.is_finite() && point.1.is_finite())
     );
-    debug_assert!(pts.windows(2).all(|window| window[0].0 <= window[1].0));
+    debug_assert!(pts.array_windows().all(|[a, b]| a.0 <= b.0));
     let len = pts.len();
     if max_points < 2 || len <= 2 {
         pts.truncate(max_points);
@@ -438,7 +438,7 @@ fn decimate_finite_ordered_line_in_place(pts: &mut [(f32, f32)], max_points: usi
             read += 1;
         }
         let pair = if pts[read - 1].0 - pts[start].0 <= 1.0 {
-            let x = (pts[start].0 + pts[read - 1].0) * 0.5;
+            let x = pts[start].0.midpoint(pts[read - 1].0);
             [(x, pts[mn].1), (x, pts[mx].1)]
         } else {
             [pts[mn.min(mx)], pts[mn.max(mx)]]
@@ -799,9 +799,7 @@ mod tests {
 
     #[test]
     fn ordered_decimation_preserves_extrema_within_budget() {
-        let mut points: Vec<_> = (0..16_385)
-            .map(|i| (i as f32 * 0.125, (i as f32 * 0.017).sin()))
-            .collect();
+        let mut points = Vec::from_fn(16_385, |i| (i as f32 * 0.125, (i as f32 * 0.017).sin()));
         let min = points.iter().map(|point| point.1).reduce(f32::min).unwrap();
         let max = points.iter().map(|point| point.1).reduce(f32::max).unwrap();
 
@@ -809,7 +807,7 @@ mod tests {
         let points = &points[..kept];
 
         assert!(points.len() <= 2_000);
-        assert!(points.windows(2).all(|window| window[0].0 <= window[1].0));
+        assert!(points.array_windows().all(|[a, b]| a.0 <= b.0));
         assert!(points.iter().any(|point| point.1 == min));
         assert!(points.iter().any(|point| point.1 == max));
 

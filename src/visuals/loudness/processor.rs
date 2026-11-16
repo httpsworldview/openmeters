@@ -167,11 +167,10 @@ impl TruePeakMeter {
         let mut peaks = [self.peak; TRUE_PEAK_PHASES];
         for points in self
             .points
-            .windows(TRUE_PEAK_PHASES + 2)
+            .array_windows::<{ TRUE_PEAK_PHASES + 2 }>()
             .step_by(TRUE_PEAK_PHASES)
         {
-            for (i, peak) in peaks.iter_mut().enumerate() {
-                let [a, b, c] = [points[i], points[i + 1], points[i + 2]];
+            for (peak, &[a, b, c]) in peaks.iter_mut().zip(points.array_windows()) {
                 let curve = (b - a) + (b - c);
                 let delta = c - a;
                 // A flat triple has no vertex; never extrapolate beyond half a phase.
@@ -404,7 +403,7 @@ impl LoudnessProcessor {
             self.channels.clear();
         }
         if self.channels.len() != block.channels {
-            self.channels = (0..block.channels).map(|_| None).collect();
+            self.channels = Vec::from_fn(block.channels, |_| None);
         }
 
         let weighting = &self.weighting;
@@ -435,16 +434,13 @@ impl LoudnessProcessor {
                 measurement.hop(&self.channels, &block.positions);
             }
         }
-        for (_, state, true_peak) in self.channels.iter_mut().flatten() {
-            true_peak.refine();
-            state.iter_mut().for_each(flush_denormal_f64);
-        }
-
         let mut snapshot = LoudnessSnapshot::with_floor(DEFAULT_FLOOR_DB, self.channels.len());
         for (channel_index, channel_state) in self.channels.iter_mut().enumerate() {
-            let Some((windows, _, true_peak)) = channel_state else {
+            let Some((windows, filter, true_peak)) = channel_state else {
                 continue;
             };
+            true_peak.refine();
+            filter.iter_mut().for_each(flush_denormal_f64);
             let [rms_fast, rms_slow] = [RMS_FAST, RMS_SLOW].map(|window| windows.mean(window)[0]);
             snapshot.rms_fast_db[channel_index] = mean_square_to_db(rms_fast, 0.0);
             snapshot.rms_slow_db[channel_index] = mean_square_to_db(rms_slow, 0.0);
@@ -582,7 +578,9 @@ mod tests {
 
     // EBU Tech 3342's MATLAB reference implementation
     fn tech_3342_range(short_term_loudness: &[f64]) -> Option<[f64; 2]> {
-        let abs_gated: Vec<_> = (short_term_loudness.iter().copied())
+        let abs_gated: Vec<_> = short_term_loudness
+            .iter()
+            .copied()
             .filter(|&loudness| loudness >= -70.0)
             .collect();
         let power = abs_gated
@@ -609,7 +607,8 @@ mod tests {
             (&[-40.0, -20.0], 20.0),
             (&[-50.0, -35.0, -20.0, -35.0, -50.0], 15.0),
         ] {
-            let samples: Vec<_> = (levels.iter())
+            let samples: Vec<_> = levels
+                .iter()
                 .flat_map(|dbfs: &f32| {
                     let amplitude = 10.0_f32.powf(dbfs / 20.0) * std::f32::consts::SQRT_2;
                     sine_wave(1_000.0, RATE.hz(), 20 * RATE.get() as usize, amplitude)
@@ -713,9 +712,9 @@ mod tests {
         let peak_db = 20.0 * amplitude.log10();
         let weights = [1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.41, 1.41]; // Annex 3 Tables 4/5.
         // Final 3 s window after 1 s warm-up.
-        let tone: Vec<_> = (0..4 * 48_000)
-            .map(|frame| (phase_step * frame as f64).sin() as f32 * amplitude as f32)
-            .collect();
+        let tone = Vec::from_fn(4 * 48_000, |frame| {
+            (phase_step * frame as f64).sin() as f32 * amplitude as f32
+        });
         let cases = [
             vec![4.0],
             vec![2.0],
@@ -818,24 +817,22 @@ mod tests {
         let rate = RATE.get() as usize;
         let gains = [0.0625, 0.03125, 0.015625, 0.5, 0.125, -0.0625, 0.25, -0.125];
         let frequencies = [83.0, 137.0, 701.0, 37.0, 997.0, 1_523.0, 503.0, 7_901.0];
-        let signal: Vec<[f32; 8]> = (0..rate * 6 + rate * 2 / 5)
-            .map(|frame| {
-                std::array::from_fn(|channel| {
-                    let active = match frame / rate {
-                        0 => frame >= rate / 4 && matches!(channel, 4 | 5),
-                        1 => matches!(channel, 6 | 7),
-                        2 => true,
-                        3..=5 => channel == 3,
-                        _ => matches!(channel, 4 | 5),
-                    };
-                    if !active {
-                        return 0.0;
-                    }
-                    let phase = 2.0 * PI * frequencies[channel] * frame as f64 / rate as f64;
-                    phase.sin() as f32 * gains[channel]
-                })
+        let signal: Vec<[f32; 8]> = Vec::from_fn(rate * 6 + rate * 2 / 5, |frame| {
+            std::array::from_fn(|channel| {
+                let active = match frame / rate {
+                    0 => frame >= rate / 4 && matches!(channel, 4 | 5),
+                    1 => matches!(channel, 6 | 7),
+                    2 => true,
+                    3..=5 => channel == 3,
+                    _ => matches!(channel, 4 | 5),
+                };
+                if !active {
+                    return 0.0;
+                }
+                let phase = 2.0 * PI * frequencies[channel] * frame as f64 / rate as f64;
+                phase.sin() as f32 * gains[channel]
             })
-            .collect();
+        });
         for order in [[0, 1, 2, 3, 4, 5, 6, 7], [7, 4, 2, 0, 6, 5, 1, 3]] {
             let samples: Vec<_> = signal
                 .iter()
@@ -907,18 +904,16 @@ mod tests {
     #[test]
     fn true_peak_batches_agree_through_wraps_silence_and_extreme_levels() {
         let mut seed = 17_u32;
-        let mut samples: Vec<f32> = (0..4096)
-            .map(|i| {
-                seed ^= seed << 13;
-                seed ^= seed >> 17;
-                seed ^= seed << 5;
-                if i % 131 < 65 {
-                    0.0
-                } else {
-                    (seed as i32 as f32) / i32::MAX as f32
-                }
-            })
-            .collect();
+        let mut samples = Vec::from_fn(4096, |i| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            if i % 131 < 65 {
+                0.0
+            } else {
+                (seed as i32 as f32) / i32::MAX as f32
+            }
+        });
         for value in [
             0.0,
             -0.0,
@@ -998,27 +993,23 @@ mod tests {
         for rate in [44_100.0_f64, 48_000.0, 96_000.0, 192_000.0] {
             for case in 0..16 {
                 let max_bin = (20_000.0 / rate * PERIOD as f64).floor() as usize;
-                let tones: Vec<_> = (0..12)
-                    .map(|_| {
-                        (
-                            1 + (random() * (max_bin - 1) as f64) as usize,
-                            0.2 + random() * 0.8,
-                            random() * 2.0 * PI,
-                        )
-                    })
-                    .collect();
-                let samples: Vec<_> = (0..PERIOD * 2)
-                    .map(|frame| {
-                        tones
-                            .iter()
-                            .map(|&(bin, amplitude, phase)| {
-                                amplitude
-                                    * (2.0 * PI * bin as f64 * frame as f64 / PERIOD as f64 + phase)
-                                        .sin()
-                            })
-                            .sum::<f64>() as f32
-                    })
-                    .collect();
+                let tones = Vec::from_fn(12, |_| {
+                    (
+                        1 + (random() * (max_bin - 1) as f64) as usize,
+                        0.2 + random() * 0.8,
+                        random() * 2.0 * PI,
+                    )
+                });
+                let samples = Vec::from_fn(PERIOD * 2, |frame| {
+                    tones
+                        .iter()
+                        .map(|&(bin, amplitude, phase)| {
+                            amplitude
+                                * (2.0 * PI * bin as f64 * frame as f64 / PERIOD as f64 + phase)
+                                    .sin()
+                        })
+                        .sum::<f64>() as f32
+                });
                 let mut spectrum = vec![Complex64::default(); PERIOD * OVERSAMPLE];
                 for &(bin, amplitude, phase) in &tones {
                     let coefficient = Complex64::from_polar(amplitude * 0.5, phase - PI * 0.5);

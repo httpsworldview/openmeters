@@ -123,7 +123,7 @@ impl<'a, Message: 'a> PaneGrid<'a, Message> {
 
     /// The pane a press at `position` drags, unless Ctrl makes it a spectrogram pan.
     fn draggable_at(&self, layout: Layout<'_>, position: Point, control: bool) -> Option<Pane> {
-        self.on_drag.as_ref()?;
+        self.on_drag?;
         let pane = self.pane_at(layout, position)?;
         (pane != Pane::Spectrogram || !control).then_some(pane)
     }
@@ -387,20 +387,20 @@ impl<'a, Message: 'a> PaneGrid<'a, Message> {
                         && let Some(idx) = self.entries.iter().position(|(p, _)| *p == pane)
                     {
                         let neighbor = if position.x > last_x {
-                            (idx + 1 < self.entries.len()).then_some(idx + 1)
+                            Some(idx + 1)
                         } else if position.x < last_x {
                             idx.checked_sub(1)
                         } else {
                             None
                         };
-                        if let Some(n) =
-                            neighbor.and_then(|n| layout.children().nth(n).map(|l| (n, l)))
+                        if let Some(n) = neighbor
+                            && let Some(child) = layout.children().nth(n)
                         {
-                            let b = n.1.bounds();
-                            let crossed = (n.0 > idx && position.x > b.x + b.width / 2.0)
-                                || (n.0 < idx && position.x < b.x + b.width / 2.0);
-                            if crossed && let Some(on_drag) = &self.on_drag {
-                                shell.publish(on_drag(pane, n.0));
+                            let middle = child.bounds().center_x();
+                            let crossed = (n > idx && position.x > middle)
+                                || (n < idx && position.x < middle);
+                            if crossed && let Some(on_drag) = self.on_drag {
+                                shell.publish(on_drag(pane, n));
                             }
                         }
                     }
@@ -629,7 +629,9 @@ mod tests {
         manager.apply_visual_settings(&Default::default(), None);
         let panes: Vec<_> = manager.slots().filter(|slot| slot.enabled).collect();
         let widths = solve_widths(
-            (panes.iter()).map(|slot| (slot.min_width, slot.width_basis.get())),
+            panes
+                .iter()
+                .map(|slot| (slot.min_width, slot.width_basis.get())),
             crate::persistence::settings::MainWindowSettings::default().width as f32,
         );
         let loudness = panes

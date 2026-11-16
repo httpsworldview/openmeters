@@ -187,7 +187,8 @@ impl ConfigPage {
             self.render_capture_card(),
             self.render_visuals_card(manager),
             self.render_global_card(),
-            (self.bar_supported).then(|| self.render_bar_card(bar_outputs)),
+            self.bar_supported
+                .then(|| self.render_bar_card(bar_outputs)),
             self.render_appearance_card(),
         ]
         .spacing(theme::SECTION_GAP);
@@ -210,7 +211,7 @@ impl ConfigPage {
         let applications = self
             .capture_view
             .as_ref()
-            .map_or(&[][..], |view| view.applications.as_slice());
+            .map_or_default(|view| view.applications.as_slice());
         let settings = self.settings.borrow();
         let disabled = &settings.data.disabled_streams;
         let (empty_status, empty_message) = if self.capture_view.is_some() {
