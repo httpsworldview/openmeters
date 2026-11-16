@@ -170,25 +170,31 @@ impl SpectrumProcessor {
         let floor = self.config.floor_db.get();
         let dt_seconds = hop as f32 / self.config.sample_rate.hz();
         let active = self.active_traces();
-        let mut hops = 0;
-
         debug_assert_eq!(self.a_weighting_db.len(), bins);
-        if !active.iter().any(|&active| active) {
-            return false;
-        }
 
         let traces = || (0..TRACE_COUNT).filter(|&trace| active[trace]);
+        let mut windows = traces()
+            .map(|trace| {
+                self.queues[trace]
+                    .len()
+                    .checked_sub(fft_size)
+                    .map_or(0, |extra| extra / hop + 1)
+            })
+            .min()
+            .unwrap_or(0);
+        let mut hops = 0;
         // Without averaging only the newest window shows.
         if self.config.averaging == AveragingMode::None && hop <= fft_size {
-            let ready = traces().map(|trace| self.queues[trace].len().saturating_sub(fft_size));
-            let skip = ready.min().unwrap_or(0) / hop * hop;
-            traces().for_each(|trace| self.queues[trace].advance(skip));
-            hops += skip / hop;
+            hops = windows.saturating_sub(1);
+            traces().for_each(|trace| self.queues[trace].advance(hops * hop));
+            windows -= hops;
         }
-        while traces().all(|trace| self.queues[trace].len() >= fft_size) {
-            traces().for_each(|trace| self.process_trace_window(trace, dt_seconds, floor));
-            hops += 1;
+        for remaining in (0..windows).rev() {
+            traces().for_each(|trace| {
+                self.process_trace_window(trace, dt_seconds, floor, remaining == 0);
+            });
         }
+        hops += windows;
 
         if hops > 0 {
             self.snapshot.floor_db = floor;
@@ -197,12 +203,12 @@ impl SpectrumProcessor {
         hops > 0
     }
 
-    fn process_trace_window(&mut self, trace: usize, dt_seconds: f32, floor: f32) {
+    fn process_trace_window(&mut self, trace: usize, dt_seconds: f32, floor: f32, publish: bool) {
         let fft = self.fft.as_mut().expect("spectrum FFT prepared");
         self.levels[trace].update_outputs(
             self.config.averaging,
             fft.powers(&mut self.queues[trace]),
-            &mut self.snapshot.traces[trace],
+            publish.then_some(&mut self.snapshot.traces[trace]),
             &self.a_weighting_db,
             dt_seconds,
             floor,
@@ -275,12 +281,11 @@ impl SpectrumLevelBuffers {
         &mut self,
         mode: AveragingMode,
         powers: &mut [f32],
-        outputs: &mut [Vec<f32>; WEIGHTING_COUNT],
+        outputs: Option<&mut [Vec<f32>; WEIGHTING_COUNT]>,
         weighting_db: &[f32],
         dt_seconds: f32,
         floor: f32,
     ) {
-        debug_assert!(outputs.iter().all(|output| output.len() == powers.len()));
         debug_assert_eq!(weighting_db.len(), powers.len());
         // The first hop after a reset seeds the state.
         if self.smoothed_power.is_empty() && mode != AveragingMode::None {
@@ -312,7 +317,10 @@ impl SpectrumLevelBuffers {
                 }
             }
         }
-        let [weighted_out, raw_out] = outputs;
+        let Some([weighted_out, raw_out]) = outputs else {
+            return;
+        };
+        debug_assert!(weighted_out.len() == powers.len() && raw_out.len() == powers.len());
         let bins = powers
             .iter()
             .zip(weighting_db)
@@ -660,7 +668,7 @@ mod tests {
                 buffers.update_outputs(
                     mode,
                     &mut [0.0, db_to_power(-100.5)],
-                    &mut outputs,
+                    Some(&mut outputs),
                     &[0.0, 1.2],
                     1.0,
                     -100.0,
