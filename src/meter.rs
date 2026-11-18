@@ -27,13 +27,13 @@ impl DspBatcher {
     fn new() -> Self {
         Self {
             samples: Vec::with_capacity(
-                SampleRate::DEFAULT.frames(DSP_BATCH_SECONDS) * MAX_AUDIO_CHANNELS,
+                SILENCE.len() + SampleRate::DEFAULT.frames(DSP_BATCH_SECONDS) * MAX_AUDIO_CHANNELS,
             ),
             format: None,
         }
     }
 
-    fn push(&mut self, manager: &mut VisualManager, mut samples: &[f32], format: AudioFormat) {
+    fn push(&mut self, manager: &mut VisualManager, samples: &[f32], format: AudioFormat) {
         if self
             .format
             .replace(format)
@@ -42,20 +42,12 @@ impl DspBatcher {
             self.samples.clear();
         }
         let batch = format.sample_rate().frames(DSP_BATCH_SECONDS) * format.channels();
-        if !self.samples.is_empty() {
-            let take = (batch - self.samples.len()).min(samples.len());
-            self.samples.extend_from_slice(&samples[..take]);
-            samples = &samples[take..];
-            if self.samples.len() == batch {
-                manager.ingest_samples(&self.samples, format);
-                self.samples.clear();
-            }
-        }
-        let ready = samples.len() / batch * batch;
-        for chunk in samples[..ready].chunks(batch * 4) {
+        self.samples.extend_from_slice(samples);
+        let ready = self.samples.len() / batch * batch;
+        for chunk in self.samples[..ready].chunks(batch * 4) {
             manager.ingest_samples(chunk, format);
         }
-        self.samples.extend_from_slice(&samples[ready..]);
+        self.samples.drain(..ready);
     }
 
     fn push_silence(&mut self, manager: &mut VisualManager, frames: u64, format: AudioFormat) {
