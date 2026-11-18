@@ -152,7 +152,7 @@ pub(super) fn run(
             outage = true;
         }
         writer.borrow_mut().disconnect();
-        public.alive.store(false, Ordering::Release);
+        public.set_alive(false);
 
         let wait = take_retry_delay(&mut retry_delay, SESSION_RETRY_MAX);
         match wait_for_retry(&commands, &mut config, wait) {
@@ -162,7 +162,7 @@ pub(super) fn run(
         }
     }
     writer.borrow_mut().set_status(StreamStatus::Stopped);
-    public.alive.store(false, Ordering::Release);
+    public.set_alive(false);
     info!("[pipewire] backend loop exited");
 }
 
@@ -266,7 +266,7 @@ fn run_session(
         if !synced.get() {
             continue;
         }
-        public.alive.store(true, Ordering::Release);
+        public.set_alive(true);
 
         capture.reconcile(&graph, config, public, Instant::now());
     }

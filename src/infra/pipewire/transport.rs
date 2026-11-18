@@ -2,9 +2,8 @@
 // Copyright (C) 2026 Maika Namuo
 
 use crate::dsp::{AudioFormat, ChannelLayout, MAX_AUDIO_CHANNELS, SampleRate};
-use crate::util::{audio::flush_denormal_f32, unpoison};
+use crate::util::{Notifier, audio::flush_denormal_f32, unpoison};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
-use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering, fence};
@@ -71,19 +70,6 @@ pub(super) enum StreamStatus {
     Stopped,
 }
 
-#[derive(Clone)]
-pub(crate) struct AudioWake(Arc<Shared>);
-
-impl Hash for AudioWake {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        Arc::as_ptr(&self.0).hash(state);
-    }
-}
-
-pub(crate) fn audio_wake(wake: &AudioWake) -> async_channel::Receiver<()> {
-    wake.0.wake_receiver.clone()
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 enum IngestState {
@@ -100,15 +86,13 @@ struct Shared {
     activity_epoch: AtomicU64,
     ingest: AtomicU8,
     pending_signal: AtomicBool,
-    wake_sender: async_channel::Sender<()>,
-    wake_receiver: async_channel::Receiver<()>,
+    waker: Notifier,
     reconnects: AtomicU64,
     callback_ns: AtomicU64,
 }
 
 impl Shared {
     fn new() -> Self {
-        let (wake_sender, wake_receiver) = async_channel::bounded(1);
         Self {
             epoch: Instant::now(),
             streaming: AtomicBool::new(false),
@@ -117,8 +101,7 @@ impl Shared {
             activity_epoch: AtomicU64::new(0),
             ingest: AtomicU8::new(IngestState::Active as u8),
             pending_signal: AtomicBool::new(false),
-            wake_sender,
-            wake_receiver,
+            waker: Notifier::default(),
             reconnects: AtomicU64::new(0),
             callback_ns: AtomicU64::new(0),
         }
@@ -143,12 +126,8 @@ impl Shared {
 
     fn wake(&self) {
         if self.wake_ingestion() {
-            self.notify();
+            self.waker.notify();
         }
-    }
-
-    fn notify(&self) {
-        let _ = self.wake_sender.try_send(());
     }
 
     fn ingest(&self) -> IngestState {
@@ -405,7 +384,7 @@ impl CaptureWriter {
                 wake |= signal && self.shared.wake_ingestion();
                 if wake {
                     self.flush_pending();
-                    self.shared.notify();
+                    self.shared.waker.notify();
                 }
                 return;
             }
@@ -489,7 +468,7 @@ impl CaptureWriter {
                     && self.shared.wake_ingestion() =>
             {
                 self.flush_pending();
-                self.shared.notify();
+                self.shared.waker.notify();
                 true
             }
             _ => {
@@ -725,8 +704,8 @@ impl AudioReader {
         self.dormant
     }
 
-    pub(crate) fn wake_handle(&self) -> AudioWake {
-        AudioWake(Arc::clone(&self.shared))
+    pub(crate) fn wake_handle(&self) -> Notifier {
+        self.shared.waker.clone()
     }
 
     pub(super) fn discard(&mut self) {
@@ -1001,7 +980,7 @@ mod tests {
             let chunk = pcm_chunk(quiet.len(), 0, quiet.len() as u32, quiet.len()).unwrap();
             writer.push_pcm(&quiet, &chunk);
             assert!(!reader.is_active());
-            assert!(audio_wake(&wake).try_recv().is_err());
+            assert!(wake.receiver().try_recv().is_err());
         }
 
         let mut signal = 0.25_f32.to_ne_bytes();
@@ -1009,7 +988,7 @@ mod tests {
         let chunk = pcm_chunk(signal.len(), 1, signal.len() as u32, signal.len()).unwrap();
         writer.push_pcm(&signal, &chunk);
         assert!(reader.is_active());
-        assert_eq!(audio_wake(&wake).try_recv(), Ok(()));
+        assert_eq!(wake.receiver().try_recv(), Ok(()));
         let mut captured = false;
         reader.drain(Instant::now(), |span| {
             if let CapturedSpan::Pcm { samples, .. } = span {

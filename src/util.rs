@@ -3,6 +3,36 @@
 pub mod audio;
 pub mod color;
 
+use std::hash::{Hash, Hasher};
+use std::sync::Arc;
+
+/// Coalesces wakes: at most one is pending, and receivers compete for it.
+#[derive(Clone)]
+pub struct Notifier(Arc<(async_channel::Sender<()>, async_channel::Receiver<()>)>);
+
+impl Default for Notifier {
+    fn default() -> Self {
+        Self(Arc::new(async_channel::bounded(1)))
+    }
+}
+
+// By identity, so clones key the same subscription.
+impl Hash for Notifier {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        Arc::as_ptr(&self.0).hash(state);
+    }
+}
+
+impl Notifier {
+    pub fn notify(&self) {
+        let _ = self.0.0.try_send(());
+    }
+
+    pub fn receiver(&self) -> async_channel::Receiver<()> {
+        self.0.1.clone()
+    }
+}
+
 crate::macros::bounded! {
     pub struct Finite(f32) in f32::MIN..=f32::MAX;
 }

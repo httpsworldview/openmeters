@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::{PendingWrite, lossy, watch::SettingsWatcher};
-use crate::util::unpoison;
+use super::{PendingWrite, lossy};
+use crate::util::{Notifier, unpoison};
 use serde::Serialize;
 use serde_json::{Map, Value};
 use std::{
@@ -47,7 +47,7 @@ struct Disk {
 struct File {
     path: PathBuf,
     disk: Mutex<Disk>,
-    watcher: SettingsWatcher,
+    changes: Notifier,
 }
 
 type SaveRequest = (String, u64);
@@ -62,14 +62,14 @@ pub(super) struct Document<T> {
 }
 
 impl<T: Stored> Document<T> {
-    pub(super) fn open(path: PathBuf, watcher: &SettingsWatcher) -> (Self, Option<T>) {
+    pub(super) fn open(path: PathBuf, changes: &Notifier) -> (Self, Option<T>) {
         let file = Arc::new(File {
             path,
             disk: Mutex::new(Disk {
                 bytes: None,
                 generation: 0,
             }),
-            watcher: watcher.clone(),
+            changes: changes.clone(),
         });
         let mut document = Self {
             file,
@@ -215,7 +215,7 @@ impl File {
         let found = read_file(path)?;
         if found.is_some() && found != disk.bytes {
             debug!("[settings] {path:?} changed on disk; reloading instead of saving");
-            self.watcher.wake();
+            self.changes.notify();
             return Ok(false);
         }
         write.commit()?;

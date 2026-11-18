@@ -1,68 +1,33 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
+use crate::util::Notifier;
 use rustix::fs::inotify::{self, CreateFlags, WatchFlags as W};
 use rustix::io::Errno;
 use std::ffi::{OsStr, OsString};
-use std::hash::{Hash, Hasher};
 use std::iter;
 use std::mem::MaybeUninit;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::Duration;
 use std::{fs, io, thread};
 
 // so that several steps can finish before a reload
 const SETTLE: Duration = Duration::from_millis(100);
 
-#[derive(Clone)]
-pub struct SettingsWatcher {
-    dirs: Arc<[PathBuf]>,
-    sender: async_channel::Sender<()>,
-    receiver: async_channel::Receiver<()>,
-}
-
-impl SettingsWatcher {
-    pub(super) fn new(dirs: [PathBuf; 2]) -> Self {
-        let (sender, receiver) = async_channel::bounded(1);
-        Self {
-            dirs: Arc::new(dirs),
-            sender,
-            receiver,
-        }
-    }
-
-    pub(super) fn wake(&self) {
-        let _ = self.sender.try_send(());
-    }
-
-    pub(super) fn start(&self) {
-        let (dirs, sender) = (Arc::clone(&self.dirs), self.sender.clone());
-        if let Err(err) = thread::Builder::new()
-            .name("openmeters-settings-watch".into())
-            .spawn(move || {
-                let Err(err) = watch_loop(&dirs, &sender);
-                tracing::warn!("[settings] live reload unavailable: {err}");
-            })
-        {
-            tracing::warn!("[settings] failed to start watcher: {err}");
-        }
+pub(super) fn start(dirs: [PathBuf; 2], changes: Notifier) {
+    if let Err(err) = thread::Builder::new()
+        .name("openmeters-settings-watch".into())
+        .spawn(move || {
+            let Err(err) = watch_loop(&dirs, &changes);
+            tracing::warn!("[settings] live reload unavailable: {err}");
+        })
+    {
+        tracing::warn!("[settings] failed to start watcher: {err}");
     }
 }
 
-impl Hash for SettingsWatcher {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.dirs.hash(state);
-    }
-}
-
-pub fn changes(watcher: &SettingsWatcher) -> async_channel::Receiver<()> {
-    watcher.receiver.clone()
-}
-
-// Runs for the life of the app, since the settings keep the channel open.
-fn watch_loop(dirs: &[PathBuf], sender: &async_channel::Sender<()>) -> io::Result<!> {
+fn watch_loop(dirs: &[PathBuf], changes: &Notifier) -> io::Result<!> {
     // Reads shouldn't wake the watcher
     let mask = W::CLOSE_WRITE | W::MOVED_TO | W::MOVED_FROM | W::CREATE | W::DELETE | W::ONLYDIR;
     let mut buf = [MaybeUninit::uninit(); 4096];
@@ -96,8 +61,7 @@ fn watch_loop(dirs: &[PathBuf], sender: &async_channel::Sender<()>) -> io::Resul
                 }
             }
         }
-        // A full channel already holds a wake.
-        let _ = sender.try_send(());
+        changes.notify();
         let mut events = inotify::Reader::new(&inotify, &mut buf);
         loop {
             match events.next() {

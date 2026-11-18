@@ -13,7 +13,7 @@ mod transport;
 mod live_tests;
 
 use crate::domain::routing::{CaptureConfig, StreamIdentity};
-use crate::util::unpoison;
+use crate::util::{Notifier, unpoison};
 use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -22,7 +22,6 @@ use std::thread;
 use tracing::{error, info};
 
 pub use transport::{AudioReader, CapturedSpan};
-pub(crate) use transport::{AudioWake, audio_wake};
 
 type DynError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -55,13 +54,21 @@ enum Command {
 struct PublicState {
     alive: AtomicBool,
     view: RwLock<Arc<CaptureView>>,
+    changes: Notifier,
 }
 
 impl PublicState {
+    fn set_alive(&self, alive: bool) {
+        if self.alive.swap(alive, Ordering::AcqRel) != alive {
+            self.changes.notify();
+        }
+    }
+
     fn publish(&self, view: CaptureView) {
         let mut current = unpoison(self.view.write());
         if **current != view {
             *current = Arc::new(view);
+            self.changes.notify();
         }
     }
 
@@ -95,6 +102,10 @@ impl CaptureControl {
 
     pub fn is_alive(&self) -> bool {
         self.public.alive.load(Ordering::Acquire)
+    }
+
+    pub fn changes(&self) -> Notifier {
+        self.public.changes.clone()
     }
 }
 
@@ -180,18 +191,25 @@ mod tests {
     }
 
     #[test]
-    fn view_publication_changes_only_with_visible_content() {
+    fn publication_and_liveness_notify_only_on_change() {
         let state = PublicState::default();
+        let notified = || state.changes.receiver().try_recv().is_ok();
         let initial = state.view();
         state.publish(CaptureView::default());
         assert!(Arc::ptr_eq(&initial, &state.view()));
+        assert!(!notified());
         state.publish(CaptureView {
             default_sink: Some("sink".into()),
             ..Default::default()
         });
         let changed = state.view();
         assert!(!Arc::ptr_eq(&initial, &changed));
+        assert!(notified());
         state.publish((*changed).clone());
         assert!(Arc::ptr_eq(&changed, &state.view()));
+        for (alive, change) in [(true, true), (true, false), (false, true)] {
+            state.set_alive(alive);
+            assert_eq!(notified(), change);
+        }
     }
 }

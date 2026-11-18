@@ -26,7 +26,7 @@ const KEY_REPEAT_GAP: Duration = Duration::from_secs(1);
 pub(super) enum Message {
     Config(ConfigMessage),
     Visuals(VisualsMessage),
-    Tick,
+    Refresh,
     SettingsFilesChanged,
     Watchdog(u64),
     AudioWake,
@@ -136,7 +136,10 @@ pub(super) fn update(app: &mut UiApp, msg: Message) -> Task<Message> {
     // A shortcut wakes through the action it runs.
     let quiet = matches!(
         &msg,
-        Message::Tick | Message::Watchdog(_) | Message::Shortcut(..) | Message::ShortcutReleased(_)
+        Message::Refresh
+            | Message::Watchdog(_)
+            | Message::Shortcut(..)
+            | Message::ShortcutReleased(_)
     );
     if !quiet {
         app.frames.borrow_mut().wake();
@@ -182,7 +185,7 @@ fn handle(app: &mut UiApp, msg: Message) -> Task<Message> {
             }
             app.exit_warning_until = Some(Instant::now() + TOAST_DISPLAY_DURATION);
         }
-        Message::Tick => app.tick(),
+        Message::Refresh => app.refresh(),
         Message::SettingsFilesChanged => {
             app.settings_handle.reload();
             app.config_page.refresh_theme_choices();
@@ -360,7 +363,7 @@ mod tests {
             assert_actions!(output(&mut app, output_id, None, Removed), [Window(Close(old))] if *old == id);
             assert_actions!(update(&mut app, WindowClosed(id)), []);
             assert_actions!(update(&mut app, BarWindowOutput(id, Some(output_id))), []);
-            assert_actions!(update(&mut app, Tick), []);
+            assert_actions!(update(&mut app, Refresh), []);
             assert_actions!(output(&mut app, output_id, None, Removed), []);
         }
     }
@@ -376,7 +379,7 @@ mod tests {
         // A shell close is not an application quit, even before output removal arrives.
         assert_actions!(update(&mut app, WindowClosed(first)), []);
         assert_actions!(output(&mut app, 2, Some("DP"), Added), []);
-        assert_actions!(update(&mut app, Tick), []);
+        assert_actions!(update(&mut app, Refresh), []);
         let fallback = layer(output(&mut app, 1, Some("HDMI"), Removed), None, selected());
         assert_actions!(update(&mut app, BarWindowOutput(fallback, Some(2))), []);
         let restored = layer(
@@ -393,7 +396,7 @@ mod tests {
         // Rejection before the first configure must not start a retry loop either.
         assert_actions!(update(&mut app, WindowClosed(restored)), []);
         assert_actions!(update(&mut app, BarWindowOutput(restored, Some(3))), []);
-        assert_actions!(update(&mut app, Tick), []);
+        assert_actions!(update(&mut app, Refresh), []);
         let key_event = |code, pressed| {
             let event = Event::Keyboard(if pressed {
                 keyboard::Event::KeyPressed {
@@ -472,6 +475,7 @@ mod tests {
         };
         let bg = |app: &mut UiApp, event| update(app, Config(ConfigMessage::BgPalette(event)));
         let edit_theme = |app: &UiApp, edit: &dyn Fn(&mut serde_json::Value)| {
+            app.settings_handle.flush();
             let settings = app.settings_handle.borrow();
             let name = settings.active_theme().unwrap();
             let path = dir.path().join(format!("themes/{name}.json"));

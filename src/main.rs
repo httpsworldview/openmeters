@@ -31,8 +31,7 @@ fn main() -> ExitCode {
     }
     info!("OpenMeters starting up");
 
-    let settings_handle = SettingsHandle::load_or_default();
-    settings_handle.watch_files();
+    let settings_handle = SettingsHandle::load_and_watch();
     let capture_config = settings_handle.borrow().data.capture_config();
     let (mut backend, capture, audio) = match AudioBackend::start(capture_config) {
         Ok(backend) => backend,

@@ -5,9 +5,9 @@ use super::{
     document::Document,
     schema::UiSettings,
     theme::{ThemeChoice, ThemeFile, ThemeName, ThemeStore},
-    watch::SettingsWatcher,
+    watch,
 };
-use crate::util::set_if_changed;
+use crate::util::{Notifier, set_if_changed};
 use std::{
     cell::{Ref, RefCell},
     path::{Path, PathBuf},
@@ -40,18 +40,18 @@ pub struct SettingsManager {
     document: Document<UiSettings>,
     theme_document: Option<Document<ThemeFile>>,
     theme_store: ThemeStore,
-    watcher: SettingsWatcher,
+    file_changes: Notifier,
 }
 
 fn open_theme(
     store: &ThemeStore,
-    watcher: &SettingsWatcher,
+    changes: &Notifier,
     name: Option<&ThemeName>,
 ) -> (Option<Document<ThemeFile>>, ThemeFile) {
     let Some(name) = name else {
         return (None, ThemeFile::default());
     };
-    let (document, theme) = Document::open(store.path(name), watcher);
+    let (document, theme) = Document::open(store.path(name), changes);
     if theme.is_none() {
         warn!(
             "[settings] showing built-in colors for theme {:?}",
@@ -64,10 +64,10 @@ fn open_theme(
 impl SettingsManager {
     fn load_from_dir(dir: &Path) -> Self {
         let theme_store = ThemeStore::new(dir);
-        let watcher = SettingsWatcher::new([dir.to_owned(), theme_store.dir().to_owned()]);
-        let (document, data) = Document::open(dir.join("settings.json"), &watcher);
+        let file_changes = Notifier::default();
+        let (document, data) = Document::open(dir.join("settings.json"), &file_changes);
         let data: UiSettings = data.unwrap_or_default();
-        let (theme_document, theme) = open_theme(&theme_store, &watcher, data.theme.as_ref());
+        let (theme_document, theme) = open_theme(&theme_store, &file_changes, data.theme.as_ref());
         Self {
             applied: Snapshot {
                 settings: data.clone(),
@@ -79,7 +79,7 @@ impl SettingsManager {
             document,
             theme_document,
             theme_store,
-            watcher,
+            file_changes,
         }
     }
 
@@ -122,13 +122,13 @@ impl SettingsManager {
         edit(&mut self.applied.theme);
         if let Some(document) = &mut self.theme_document {
             // An edit is not consent to replace a theme file that failed to load.
-            document.write(&theme, false);
+            document.save(&theme, false);
             self.theme = theme;
             return;
         }
         // Edits to the built-in theme start a new one once it is saved.
         let name = self.theme_store.next_auto_name();
-        let (mut document, _) = Document::open(self.theme_store.path(&name), &self.watcher);
+        let (mut document, _) = Document::open(self.theme_store.path(&name), &self.file_changes);
         theme.name = Some(name.to_string());
         if !document.write(&theme, false) {
             theme.name = None;
@@ -148,7 +148,7 @@ impl SettingsManager {
         let (document, replaced) = match &mut self.theme_document {
             Some(active) if active.path() == path => (active, None),
             _ => {
-                let (document, stored) = Document::open(path, &self.watcher);
+                let (document, stored) = Document::open(path, &self.file_changes);
                 (opened.insert(document), Some(stored.unwrap_or_default()))
             }
         };
@@ -174,7 +174,7 @@ impl SettingsManager {
         if self.theme_document.as_ref().map(Document::path) == path.as_deref() {
             return;
         }
-        let (document, theme) = open_theme(&self.theme_store, &self.watcher, name);
+        let (document, theme) = open_theme(&self.theme_store, &self.file_changes, name);
         self.theme_document = document;
         self.changed |= set_if_changed(&mut self.theme, theme);
     }
@@ -208,8 +208,12 @@ impl SettingsManager {
 pub struct SettingsHandle(Rc<RefCell<SettingsManager>>);
 
 impl SettingsHandle {
-    pub fn load_or_default() -> Self {
-        Self::load_from(&config_dir())
+    pub fn load_and_watch() -> Self {
+        let dir = config_dir();
+        let handle = Self::load_from(&dir);
+        let themes = handle.0.borrow().theme_store.dir().to_owned();
+        watch::start([dir, themes], handle.file_changes());
+        handle
     }
 
     pub(crate) fn load_from(dir: &Path) -> Self {
@@ -251,24 +255,21 @@ impl SettingsHandle {
         self.0.borrow_mut().take_change()
     }
 
-    /// Watches the settings and theme files for outside edits, for the rest of the run.
-    pub fn watch_files(&self) {
-        self.0.borrow().watcher.start();
-    }
-
-    pub fn watcher(&self) -> SettingsWatcher {
-        self.0.borrow().watcher.clone()
+    pub fn file_changes(&self) -> Notifier {
+        self.0.borrow().file_changes.clone()
     }
 
     pub fn flush(&self) {
-        self.0.borrow_mut().document.flush();
+        let mut manager = self.0.borrow_mut();
+        manager.document.flush();
+        manager.theme_document.iter_mut().for_each(Document::flush);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persistence::{document::Stored, schema::VisualFrameRate, watch::changes};
+    use crate::persistence::{document::Stored, schema::VisualFrameRate};
     use std::fs;
 
     fn json(path: &Path) -> serde_json::Value {
@@ -317,9 +318,10 @@ mod tests {
         outside["name"] = "External".into();
         fs::write(&path, outside.to_string()).unwrap();
         manager.edit_theme(|theme| theme.author = Some("Edited".into()));
+        manager.theme_document.as_mut().unwrap().flush();
         assert_eq!(json(&path), outside);
         // The refused save asks for a reload, even without a file watcher.
-        assert!(changes(&manager.watcher).try_recv().is_ok());
+        assert!(manager.file_changes.receiver().try_recv().is_ok());
         assert!(theme_changed(&mut manager));
         assert_eq!(manager.theme().name.as_deref(), Some("External"));
         assert_eq!(manager.theme().author.as_deref(), Some("OpenMeters"));
@@ -335,6 +337,7 @@ mod tests {
         fs::remove_file(&path).unwrap();
         assert!(!theme_changed(&mut manager));
         manager.edit_theme(|theme| theme.author = Some("Recreated".into()));
+        manager.theme_document.as_mut().unwrap().flush();
         assert_eq!(&theme_file(&path), manager.theme());
         assert_eq!(manager.theme().name.as_deref(), Some("External"));
     }

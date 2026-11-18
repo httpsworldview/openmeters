@@ -5,11 +5,9 @@ mod message;
 mod sync;
 mod windowing;
 
-use crate::infra::pipewire::{AudioReader, AudioWake, CaptureControl, audio_wake};
+use crate::infra::pipewire::{AudioReader, CaptureControl};
 use crate::meter::MeterEngine;
-use crate::persistence::settings::{
-    BarAlignment, SettingsHandle, clamp_bar_height, settings_changes,
-};
+use crate::persistence::settings::{BarAlignment, SettingsHandle, clamp_bar_height};
 use crate::ui::config::ConfigPage;
 use crate::ui::outputs::BarOutputs;
 use crate::ui::settings::ActiveSettings;
@@ -20,6 +18,7 @@ use crate::ui::widgets::{
     frame_clock::{FrameCoordinator, frame_clock, frame_watchdog},
     scroll_glow::ScrollGlow,
 };
+use crate::util::Notifier;
 use crate::visuals::registry::{VisualContent, VisualManager, VisualManagerHandle};
 use iced::alignment::{Horizontal, Vertical};
 use iced::event;
@@ -39,20 +38,23 @@ use windowing::{
 };
 
 const TOAST_DISPLAY_DURATION: Duration = Duration::from_secs(2);
-const MAINTENANCE_INTERVAL: Duration = Duration::from_millis(100);
 const BAR_RESIZE_HANDLE_THICKNESS: f32 = 6.0;
 
-fn clock() -> async_channel::Receiver<()> {
+fn notifications(notifier: Notifier) -> Subscription<()> {
+    Subscription::run_with(notifier, Notifier::receiver)
+}
+
+fn toast_timer(deadline: &Instant) -> async_channel::Receiver<()> {
     let (sender, receiver) = async_channel::bounded(1);
+    let deadline = *deadline;
     if let Err(err) = std::thread::Builder::new()
-        .name("openmeters-ui-maintenance".into())
+        .name("openmeters-ui-toast".into())
         .spawn(move || {
-            while let Ok(()) | Err(async_channel::TrySendError::Full(())) = sender.try_send(()) {
-                std::thread::sleep(MAINTENANCE_INTERVAL);
-            }
+            std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
+            let _ = sender.try_send(());
         })
     {
-        tracing::error!("[ui] failed to start maintenance clock: {err}");
+        tracing::error!("[ui] failed to start toast timer: {err}");
     }
     receiver
 }
@@ -109,7 +111,8 @@ struct UiApp {
     visuals_page: VisualsPage,
     visual_manager: VisualManagerHandle,
     frames: RefCell<FrameCoordinator>,
-    audio_wake: AudioWake,
+    audio_wake: Notifier,
+    capture_changes: Notifier,
     settings_handle: SettingsHandle,
     config_window: Option<window::Id>,
     bar_resize_state: Option<BarResizeState>,
@@ -147,6 +150,7 @@ impl UiApp {
         let mut meter_engine = MeterEngine::new(reader, Rc::clone(&visual_manager));
         meter_engine.set_active(visual_manager.borrow().has_enabled());
 
+        let capture_changes = capture.changes();
         let config_page = ConfigPage::new(capture, settings_handle.clone(), use_layershell);
         // Outputs are announced after startup, and a bar waits for the first.
         let (main_window, open_task) = open_main_window(&data, use_layershell, false);
@@ -157,6 +161,7 @@ impl UiApp {
             visual_manager,
             frames,
             audio_wake,
+            capture_changes,
             settings_handle,
             config_window: None,
             bar_resize_state: None,
@@ -176,10 +181,9 @@ impl UiApp {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        let watcher = self.settings_handle.watcher();
         let mut subs = vec![
             event::listen_with(app_event),
-            Subscription::run_with(watcher, settings_changes)
+            notifications(self.settings_handle.file_changes())
                 .map(|()| Message::SettingsFilesChanged),
         ];
         if self.bar_resize_state.is_some() {
@@ -188,16 +192,16 @@ impl UiApp {
         if self.rendering() {
             let heartbeat = self.frames.borrow().heartbeat_handle();
             subs.extend([
-                Subscription::run_with(self.audio_wake.clone(), audio_wake)
-                    .map(|()| Message::AudioWake),
+                notifications(self.audio_wake.clone()).map(|()| Message::AudioWake),
                 Subscription::run_with(heartbeat, frame_watchdog).map(Message::Watchdog),
             ]);
         }
-        if self.config_window.is_some()
-            || self.toast_until.is_some()
-            || self.exit_warning_until.is_some()
-        {
-            subs.push(Subscription::run(clock).map(|()| Message::Tick));
+        if self.config_window.is_some() {
+            subs.push(notifications(self.capture_changes.clone()).map(|()| Message::Refresh));
+        }
+        let toasts = [self.toast_until, self.exit_warning_until];
+        if let Some(deadline) = toasts.into_iter().flatten().min() {
+            subs.push(Subscription::run_with(deadline, toast_timer).map(|()| Message::Refresh));
         }
         Subscription::batch(subs)
     }
@@ -210,7 +214,7 @@ impl UiApp {
         self.visuals_active() && !self.rendering_paused
     }
 
-    fn tick(&mut self) {
+    fn refresh(&mut self) {
         let now = Instant::now();
         if self.config_window.is_some() {
             self.config_page.refresh_registry();

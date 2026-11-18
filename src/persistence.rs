@@ -66,7 +66,6 @@ pub mod settings {
         SpectrumSettings, StereometerSettings, VisualConfig, VisualSettings, WaveformSettings,
         WidthBasis,
     };
-    pub use super::watch::changes as settings_changes;
 }
 
 #[cfg(test)]
