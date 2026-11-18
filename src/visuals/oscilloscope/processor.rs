@@ -189,10 +189,19 @@ fn trigger_kernel_len(period: f32, rate: f32) -> usize {
         .round() as usize
 }
 
-fn gaussian(len: usize, index: usize, std: f32) -> f32 {
-    let center = (len - 1) as f32 * 0.5;
-    let x = index as f32 - center;
-    (-0.5 * (x / std).powi(2)).exp()
+fn half_gaussian(len: usize, std: f32) -> impl Iterator<Item = (usize, f32)> {
+    let half = len.div_ceil(2);
+    let inv_var = f64::from(std).powi(-2);
+    let x = half.saturating_sub(1) as f64 - len.saturating_sub(1) as f64 * 0.5;
+    let mut weight = (-0.5 * x * x * inv_var).exp();
+    let mut ratio = ((x - 0.5) * inv_var).exp();
+    let step = (-inv_var).exp();
+    (0..half).rev().map(move |index| {
+        let current = weight as f32;
+        weight *= ratio;
+        ratio *= step;
+        (index, current)
+    })
 }
 
 fn correlation_stats(y: &[f32]) -> [f64; 2] {
@@ -262,15 +271,15 @@ fn normalized_correlation(
 }
 
 fn sample_linear_zero(data: &[f32], pos: f32) -> f32 {
-    if pos < 0.0 || pos > (data.len() - 1) as f32 {
+    if pos < 0.0 {
         return 0.0;
     }
-    let idx = pos as usize;
-    let frac = pos - idx as f32;
-    if frac > f32::EPSILON && idx + 1 < data.len() {
-        lerp(data[idx], data[idx + 1], frac)
-    } else {
-        data[idx]
+    let index = pos as usize;
+    let frac = pos - index as f32;
+    match data.get(index..) {
+        Some(&[a, b, ..]) => lerp(a, b, frac),
+        Some(&[a]) if frac == 0.0 => a,
+        _ => 0.0,
     }
 }
 
@@ -396,9 +405,15 @@ impl StableTrigger {
         if fresh {
             // Learn at the fractional alignment, or the template creeps by rounding.
             let start = offset as f32 + frac_offset;
+            let (index, frac) = (start as usize, start.fract());
             self.candidate.clear();
-            self.candidate
-                .extend((0..len).map(|i| sample_linear_zero(window, start + i as f32)));
+            if frac == 0.0 {
+                self.candidate
+                    .extend_from_slice(&window[index..index + len]);
+            } else {
+                let pairs = window[index..=index + len].array_windows();
+                self.candidate.extend(pairs.map(|&[a, b]| lerp(a, b, frac)));
+            }
             self.write_candidate(period);
             self.update_reference(period, elapsed);
         }
@@ -419,9 +434,9 @@ impl StableTrigger {
         let len = self.reference.len();
         self.candidate.resize(len, 0.0);
         let width = Self::SLOPE_WIDTH_PERIODS * period;
-        for i in 0..len.div_ceil(2) {
+        for (i, weight) in half_gaussian(len, width) {
             let mirror = len - 1 - i;
-            let weight = gaussian(len, i, width);
+            let weight = if i == mirror { 0.0 } else { weight };
             self.candidate[i] = self.reference[i] - weight;
             self.candidate[mirror] = self.reference[mirror] + weight;
         }
@@ -533,9 +548,8 @@ impl StableTrigger {
         let scale = 1.0 / peak.max(f32::EPSILON);
         let std = period * Self::BUFFER_FALLOFF_PERIODS;
         let len = self.candidate.len();
-        for i in 0..len.div_ceil(2) {
+        for (i, weight) in half_gaussian(len, std) {
             let mirror = len - 1 - i;
-            let weight = gaussian(len, i, std);
             self.candidate[i] = self.candidate[i] * scale * weight;
             if mirror != i {
                 self.candidate[mirror] = self.candidate[mirror] * scale * weight;
@@ -774,8 +788,11 @@ fn downsample_trace(output: &mut Vec<f32>, data: &[f32], capture: Capture, targe
     let data = &data[capture.start..];
     let last = (data.len() - 1) as f32;
     let start_offset = capture.frac_offset.clamp(0.0, last);
-    let step = capture.span.min(last - start_offset) / (target - 1) as f32;
-    output.extend((0..target).map(|i| sample_linear_zero(data, start_offset + i as f32 * step)));
+    let span = capture.span.min(last - start_offset);
+    let step = span / (target - 1) as f32;
+    output
+        .extend((0..target - 1).map(|i| sample_linear_zero(data, start_offset + i as f32 * step)));
+    output.push(sample_linear_zero(data, (start_offset + span).min(last)));
 }
 
 #[cfg(test)]
@@ -1017,6 +1034,8 @@ mod tests {
         };
         trigger.prepare_template(period);
         let edge_template = trigger.candidate.clone();
+        let mirrored: Vec<f32> = edge_template.iter().rev().map(|weight| -weight).collect();
+        assert_eq!(edge_template, mirrored);
         trigger.candidate = Vec::from_fn(17, |i| (i as f32 * 0.7).sin());
         trigger.write_candidate(period);
         assert_ne!(trigger.candidate, edge_template);
