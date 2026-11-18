@@ -118,9 +118,10 @@ impl SpectrumParams {
         project(points, &self.normalized_points);
         project(points2, &self.secondary_points);
 
+        let ramp = |point: (f32, f32)| self.ramp_color((baseline - point.1) / bounds.height);
+        let mut c0 = points.first().copied().map_or([0.0; 4], ramp);
         for &[p0, p1] in points.array_windows() {
-            let c0 = self.ramp_color((baseline - p0.1) / bounds.height);
-            let c1 = self.ramp_color((baseline - p1.1) / bounds.height);
+            let c1 = ramp(p1);
             if c0[3] > 0.0 || c1[3] > 0.0 {
                 vertices.push(baseline_segment_instance(
                     p0,
@@ -131,6 +132,7 @@ impl SpectrumParams {
                     false,
                 ));
             }
+            c0 = c1;
         }
         extend_aa_line_list(
             vertices,

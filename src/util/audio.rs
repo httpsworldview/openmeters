@@ -7,9 +7,11 @@ mod frequency;
 mod level;
 mod window;
 
+#[cfg(test)]
+pub(crate) use self::level::LN_TO_DB;
 pub use self::{
     frequency::{DISPLAY_MIN_HZ, FrequencyScale},
-    level::{DB_FLOOR, LN_TO_DB, db_to_power, power_to_db},
+    level::{DB_FLOOR, db_to_power, power_to_db},
     window::{DcHistory, HopQueue, WindowKind, WindowedFft, dc_power_scale},
 };
 pub(crate) use self::{

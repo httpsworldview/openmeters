@@ -15,8 +15,8 @@ use crate::visuals::render::common::{
     ClipTransform, GeometryScratch, amplitude_y, extend_filled_line, quad_instance,
 };
 use crate::visuals::waveform::processor::{
-    BAND_COUNT, MAX_COLUMN_CAPACITY, WAVEFORM_SILENCE_AMPLITUDE, WaveColumn, WaveFrame,
-    WaveformPreview,
+    BAND_COUNT, DERIVED_CHANNELS, MAX_COLUMN_CAPACITY, WAVEFORM_SILENCE_AMPLITUDE, WaveColumn,
+    WaveFrame, WaveformPreview,
 };
 
 const COLUMN_WIDTH_PIXELS: f32 = 1.0;
@@ -32,13 +32,21 @@ const LOUDNESS_STOPS: [f32; BAND_COUNT] = [0.0, 0.5, 1.0];
 pub struct WaveformParams {
     pub bounds: Rectangle,
     pub lane: usize,
-    pub data: Arc<Mutex<VecDeque<WaveFrame>>>,
+    pub data: Arc<Mutex<WaveHistory>>,
     pub preview: WaveformPreview,
     pub color_mode: WaveformColorMode,
     pub history_mode: WaveformHistoryMode,
     pub band_db_floor: f32,
     pub palette: [[f32; 4]; BAND_COUNT],
     pub key: u64,
+}
+
+// Frames, oldest first, each with its lanes' column colors once drawn. A column's color depends
+// only on it, the palette and the color mode, so it is kept until they change.
+#[derive(Debug, Default)]
+pub struct WaveHistory {
+    pub(super) frames: VecDeque<(WaveFrame, Option<[[f32; 4]; DERIVED_CHANNELS]>)>,
+    colored_with: Option<(WaveformColorMode, [[f32; 4]; BAND_COUNT])>,
 }
 
 impl WaveformParams {
@@ -98,7 +106,14 @@ fn sample_y_span(lane: Rectangle, min: f32, max: f32) -> Option<(f32, f32)> {
 
 impl WaveformParams {
     fn build_vertices(&self, scratch: &mut GeometryScratch) {
-        let data = crate::util::unpoison(self.data.lock());
+        let mut stored = crate::util::unpoison(self.data.lock());
+        let colored_with = Some((self.color_mode, self.palette));
+        if std::mem::replace(&mut stored.colored_with, colored_with) != colored_with {
+            for (_, colors) in &mut stored.frames {
+                *colors = None;
+            }
+        }
+        let data = &mut stored.frames;
         let columns = column_count(self.bounds.width).min(data.len());
         let start = data.len().saturating_sub(columns);
         let preview_columns = self.preview.columns.filter(|_| self.preview.progress > 0.0);
@@ -123,22 +138,25 @@ impl WaveformParams {
             let dist_steps = (columns - 1 - i) as f32;
             right_edge - dist_steps * col_width - scroll_offset - col_width
         };
-        let push_column = |vertices: &mut Vec<_>, x0, x1, column: WaveColumn| {
+        let push_column = |vertices: &mut Vec<_>, x0, x1, column: WaveColumn, color| {
             if let Some((y0, y1)) = sample_y_span(self.bounds, column.min, column.max) {
-                let color = self.column_color(column);
                 vertices.push(quad_instance(x0, y0, x1, y1, clip, color));
             }
         };
 
-        for (i, frame) in data.range(start..start + columns).enumerate() {
+        for (i, (frame, colors)) in data.range_mut(start..start + columns).enumerate() {
+            let colors =
+                colors.get_or_insert_with(|| frame.map(|column| self.column_color(column)));
             let column = frame[self.lane];
             let x = column_x(i);
-            push_column(vertices, x, x + col_width, column);
+            push_column(vertices, x, x + col_width, column, colors[self.lane]);
         }
 
         if let Some(preview_columns) = preview_columns {
             let start_x = right_edge - scroll_offset;
-            push_column(vertices, start_x, right_edge, preview_columns[self.lane]);
+            let column = preview_columns[self.lane];
+            let color = self.column_color(column);
+            push_column(vertices, start_x, right_edge, column, color);
         }
 
         if let Some(history) = history {
@@ -150,16 +168,14 @@ impl WaveformParams {
                 let fill_color = rgba_scale_alpha(color, BAND_FILL_ALPHA);
 
                 pts.clear();
-                pts.extend(
-                    data.range(start..start + columns)
-                        .enumerate()
-                        .map(|(i, frame)| {
-                            let column = frame[self.lane];
-                            let db = column.rms_db[history][band];
-                            let level = ((db - floor) / -floor).clamp(0.0, 1.0);
-                            (column_x(i), baseline - level * band_height)
-                        }),
-                );
+                pts.extend(data.range(start..start + columns).enumerate().map(
+                    |(i, (frame, _))| {
+                        let column = frame[self.lane];
+                        let db = column.rms_db[history][band];
+                        let level = ((db - floor) / -floor).clamp(0.0, 1.0);
+                        (column_x(i), baseline - level * band_height)
+                    },
+                ));
                 let last_y = pts.last().expect("nonempty waveform history").1;
                 pts.push((right_edge, last_y));
                 extend_filled_line(

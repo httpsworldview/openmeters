@@ -100,9 +100,8 @@ pub fn lerp_rgba(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
 pub fn ramp_segment(positions: &[f32], spreads: &[f32], t: f32) -> (usize, usize, f32) {
     let count = positions.len();
     let t = t.clamp(0.0, 1.0);
-    let hi = positions
-        .partition_point(|&pos| pos < t)
-        .clamp(1, count - 1);
+    let below = positions.iter().filter(|&&pos| pos < t).count();
+    let hi = below.clamp(1, count - 1);
     let lo = hi - 1;
     let linear =
         ((t - positions[lo]) / (positions[hi] - positions[lo]).max(f32::EPSILON)).clamp(0.0, 1.0);

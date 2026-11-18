@@ -4,8 +4,8 @@
 use crate::dsp::{AudioBlock, SampleRate};
 use crate::util::Finite;
 use crate::util::audio::{
-    Channel, DcHistory, FftSize, HopQueue, LN_TO_DB, NegativeDb, Seconds, WindowKind, WindowedFft,
-    db_to_power, smoothing_weight,
+    Channel, DcHistory, FftSize, HopQueue, NegativeDb, Seconds, WindowKind, WindowedFft,
+    db_to_power, power_to_db, smoothing_weight,
 };
 use serde::{Deserialize, Serialize};
 use std::num::NonZeroUsize;
@@ -327,13 +327,8 @@ impl SpectrumLevelBuffers {
             .zip(raw_out)
             .zip(weighted_out);
         for (((&power, &weight), raw), weighted) in bins {
-            if power < self.state_floor {
-                (*raw, *weighted) = (floor, floor);
-                continue;
-            }
-            let db = power.ln() * LN_TO_DB;
-            *raw = db.max(floor);
-            *weighted = (db + weight).max(floor);
+            let db = power_to_db(power, f32::NEG_INFINITY);
+            (*raw, *weighted) = (db.max(floor), (db + weight).max(floor));
         }
     }
 }

@@ -182,6 +182,9 @@ const _: () = assert!(SdfInstance::RADIAL_DOT < SdfInstance::TURN);
 // primitive after expanding it, so fills and gradients keep their
 // frame axes.
 pub(in crate::visuals) fn turn_instances(instances: &mut [SdfInstance], turn: QuarterTurn) {
+    if turn.0 == 0 {
+        return;
+    }
     let tag = SdfInstance::TURN * f32::from(turn.0);
     for instance in instances {
         instance.params[3] = instance.params[3] % SdfInstance::TURN + tag;

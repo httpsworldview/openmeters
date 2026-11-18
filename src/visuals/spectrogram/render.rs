@@ -15,8 +15,10 @@ use crate::visuals::render::common::{
     QuarterTurn, RenderPipelineSpec, begin_pass, create_buffer, create_render_pipeline,
 };
 
-use super::processor::{ColumnKind, SpectrogramColumn, SpectrogramPoint, col_byte_stride};
-use crate::util::audio::FrequencyScale;
+use super::processor::{
+    ColumnKind, SpectrogramColumn, SpectrogramPoint, col_byte_stride, pack_classic_db,
+};
+use crate::util::audio::{DB_FLOOR, FrequencyScale};
 
 pub const SPECTROGRAM_PALETTE_SIZE: usize = crate::visuals::palettes::spectrogram::SIZE;
 
@@ -1072,8 +1074,7 @@ impl Resources {
         }
         for (slot, column) in p.newest_slots(uploads.len()).zip(uploads) {
             if let SpectrogramColumn::Reassigned(points) = column {
-                let times = points.iter().map(|point| point.time_offset);
-                let [lo, hi] = times.fold(NO_SPAN, |[lo, hi], t| [lo.min(t), hi.max(t)]);
+                let [lo, hi] = time_span(points);
                 self.spans[slot] = [lo - 0.5, hi + 0.5];
                 self.reach = self.reach.max(hi + 0.5);
             }
@@ -1087,13 +1088,11 @@ impl Resources {
                         page.write(queue, slot % columns, points);
                     }
                 }
-                (RingStorage::Classic { buf, .. }, SpectrogramColumn::Classic(mags))
-                    if !mags.is_empty() =>
-                {
+                (RingStorage::Classic { buf, .. }, SpectrogramColumn::Classic(mags)) => {
                     let packed = &mut self.classic_upload_scratch;
                     let written = mags.len().min(packed.len());
                     packed[..written].copy_from_slice(&mags[..written]);
-                    packed[written..].fill(0);
+                    packed[written..].fill(pack_classic_db(DB_FLOOR));
                     let offset = slot as u64 * self.ring.layout.stride;
                     queue.write_buffer(buf, offset, bytemuck::cast_slice(packed));
                 }
@@ -1101,6 +1100,18 @@ impl Resources {
             }
         }
     }
+}
+
+// Lanes keep the comparisons off one long dependency chain.
+fn time_span(points: &[SpectrogramPoint]) -> [f32; 2] {
+    let merge = |[lo, hi]: [f32; 2], [a, b]: [f32; 2]| [lo.min(a), hi.max(b)];
+    let (chunks, rest) = points.as_chunks::<8>();
+    let mut lanes = [NO_SPAN; 8];
+    for chunk in chunks {
+        lanes = std::array::from_fn(|lane| merge(lanes[lane], [chunk[lane].time_offset; 2]));
+    }
+    let times = rest.iter().map(|point| [point.time_offset; 2]);
+    lanes.into_iter().chain(times).fold(NO_SPAN, merge)
 }
 
 // First frame column of the image, where the resolve starts showing it: evicted columns splat

@@ -7,9 +7,11 @@ use crate::util::audio::{
     dc_power_scale, kaiser, normalized_blackman_harris, power_to_db, weighted_mean,
 };
 use bytemuck::{Pod, Zeroable};
+use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex32;
 use rustfft::{Fft, FftPlanner};
 use std::num::NonZeroUsize;
+use std::ops::Range;
 use std::sync::Arc;
 
 #[repr(C)]
@@ -48,17 +50,17 @@ const ANALYSIS_FLOOR_POWER: f32 = 1e-14;
 
 enum Analysis {
     Classic(WindowedFft),
-    Reassigned(Reassignment),
+    Reassigned(Box<Reassignment>),
 }
 
 struct Reassignment {
-    // Analysis, Hilbert forward and Hilbert inverse.
-    transforms: [Arc<dyn Fft<f32>>; 3],
+    analysis: Arc<dyn Fft<f32>>,
     fft_size: usize,
-    // The analytic block's length, and how far its kernel reaches past each side of a window.
+    // Samples a column reads, and how far the Hilbert kernel reaches past each side of a window.
     read_len: usize,
     lookahead: usize,
-    hilbert_gains: Vec<f32>,
+    // Avoids low-bin pollution from the real signal's negative-frequency mirror.
+    quadrature: Quadrature,
     // Blackman-Harris weights summing to one; tones leak into this mean far less than a plain one.
     dc_weights: Vec<f32>,
     // Bins past DC and Nyquist that the main lobes of tones near them reach; no bin is read twice.
@@ -71,7 +73,6 @@ struct Reassignment {
     time_weighted_window: Vec<f32>,
     // Reassigned times the window can hold, in samples from its weighted center.
     time_support: [f32; 2],
-    analytic: Vec<Complex32>,
     spectra: Vec<Complex32>,
     scratch: Vec<Complex32>,
     // Tones appear once, at twice their amplitude, so the DC scale fits every bin.
@@ -186,10 +187,10 @@ impl SpectrogramProcessor {
         self.audio.has_signal()
     }
 
-    // (block length, kernel reach). The Hilbert kernel reaches half a window past each side of
+    // (read length, kernel reach). The Hilbert kernel reaches half a window past each side of
     // it, and that reach is the lookahead. Small windows reach further, up to two windows, toward
     // the time the default size and rate reach, so low tones keep their accuracy without the
-    // lookahead outgrowing the window. Older samples pad the block to twice the kernel span, so
+    // lookahead outgrowing the window. Older samples pad the read to twice the kernel span, so
     // the DC estimate keeps every tone the kernel passes.
     fn hilbert_layout(window_size: usize, sample_rate: SampleRate) -> (usize, usize) {
         let default_reach =
@@ -197,7 +198,7 @@ impl SpectrogramProcessor {
         let reach = window_size
             .div_ceil(2)
             .max((default_reach as usize).min(2 * window_size));
-        ((4 * reach).next_power_of_two(), reach)
+        (4 * reach, reach)
     }
 
     // Splats end at the live edge for every window, whose smoothed taps reach one sample past
@@ -241,10 +242,12 @@ impl SpectrogramProcessor {
         self.config = cfg;
 
         let rate_changed = prev.sample_rate != cfg.sample_rate;
+        let hop_changed = prev.hop_size != cfg.hop_size;
         let rebuild = prev.fft_size != cfg.fft_size
             || prev.zero_padding_factor != cfg.zero_padding_factor
             || prev.window != cfg.window
             || prev.use_reassignment != cfg.use_reassignment
+            || (hop_changed && cfg.use_reassignment)
             || rate_changed;
 
         if rebuild && self.analysis.is_some() {
@@ -253,7 +256,6 @@ impl SpectrogramProcessor {
         if rate_changed || prev.source != cfg.source {
             self.reset_audio();
         }
-        let hop_changed = prev.hop_size != cfg.hop_size;
         if hop_changed {
             self.audio.clear_debt();
         }
@@ -271,12 +273,12 @@ impl Analysis {
         let fft_size = window_size * padding;
         if config.use_reassignment {
             let reassignment = Reassignment::new(config, fft_size, padding);
-            // Reassignment estimates DC over its own analytic block.
+            // Reassignment estimates DC over the samples each column reads.
             audio.retune(
                 DcHistory::default(),
                 reassignment.read_len.saturating_mul(2),
             );
-            Self::Reassigned(reassignment)
+            Self::Reassigned(Box::new(reassignment))
         } else {
             audio.retune(DcHistory::new(window_size), fft_size.saturating_mul(2));
             Self::Classic(WindowedFft::new(config.window, window_size, fft_size))
@@ -323,13 +325,9 @@ impl Analysis {
         let window_size = config.fft_size.get();
         let hop_size = config.hop_size.get();
         let points = self.points_per_column();
-        let (kind, read_len, lookahead) = match self {
-            Self::Reassigned(reassignment) => (
-                ColumnKind::Reassigned,
-                reassignment.read_len,
-                reassignment.lookahead,
-            ),
-            Self::Classic(_) => (ColumnKind::Classic, window_size, 0),
+        let (kind, read_len) = match self {
+            Self::Reassigned(reassignment) => (ColumnKind::Reassigned, reassignment.read_len),
+            Self::Classic(_) => (ColumnKind::Classic, window_size),
         };
 
         let ready = audio
@@ -340,44 +338,33 @@ impl Analysis {
         let skip = ready.saturating_sub(retained);
         let mut output = Vec::with_capacity(ready.min(retained));
         audio.advance(skip.saturating_mul(hop_size));
-        // Columns share one analytic block while their windows and the kernel's reach fit in it.
-        let per_block = (read_len - window_size - 2 * lookahead) / hop_size + 1;
-        let mut block_offset = None;
 
         for column in skip..ready {
             let silent = !audio.has_signal();
             let col = match self {
                 Self::Reassigned(_) if silent => SpectrogramColumn::Reassigned(Vec::new()),
-                Self::Classic(_) if silent => {
-                    SpectrogramColumn::Classic(vec![pack_classic_db(DB_FLOOR); points])
-                }
+                Self::Classic(_) if silent => SpectrogramColumn::Classic(Vec::new()),
                 Self::Reassigned(r) => {
-                    let [analysis, hilbert_forward, hilbert_inverse] = &r.transforms;
+                    let position = audio.position();
                     let audio = audio.samples();
-                    let offset = *block_offset.get_or_insert_with(|| {
-                        let offset = (per_block.min(ready - column) - 1) * hop_size;
-                        let block = &audio[offset..offset + read_len];
-                        for (dst, &sample) in r.analytic.iter_mut().zip(block) {
-                            *dst = Complex32::new(sample, 0.0);
-                        }
-                        // Avoid low-bin pollution from the real signal's negative-frequency mirror.
-                        hilbert_forward.process_with_scratch(&mut r.analytic, &mut r.scratch);
-                        for (bin, gain) in r.analytic.iter_mut().zip(&r.hilbert_gains) {
-                            *bin *= gain;
-                        }
-                        hilbert_inverse.process_with_scratch(&mut r.analytic, &mut r.scratch);
-                        offset
-                    });
-                    block_offset = offset.checked_sub(hop_size);
+                    let taps = r.taps();
+                    // Later columns of the batch share blocks while no taps lie between.
+                    let ahead = if hop_size <= taps.len() {
+                        ready - 1 - column
+                    } else {
+                        0
+                    };
+                    let last = taps.end - 1 + ahead * hop_size;
+                    let imag = r.quadrature.window(audio, position, taps.clone(), last);
+                    let analytic = [&audio[taps], imag];
                     let dc = weighted_mean(&r.dc_weights, &audio[..read_len]);
-                    let start = read_len - lookahead - window_size - offset;
-                    let analytic = &r.analytic[start - 1..=start + window_size];
                     let (base, auxiliary) = r.spectra.split_at_mut(r.fft_size);
                     let (derivative, time_weighted) = auxiliary.split_at_mut(r.fft_size);
                     apply_complex_window(analytic, dc, &r.base_window, base);
                     apply_complex_window(analytic, dc, &r.derivative_window, derivative);
                     apply_complex_window(analytic, dc, &r.time_weighted_window, time_weighted);
-                    analysis.process_with_scratch(&mut r.spectra, &mut r.scratch);
+                    r.analysis
+                        .process_with_scratch(&mut r.spectra, &mut r.scratch);
                     SpectrogramColumn::Reassigned(r.points(config))
                 }
                 Self::Classic(fft) => SpectrogramColumn::Classic(
@@ -401,12 +388,7 @@ impl Reassignment {
         let window = config.window.coefficients(window_size);
         let (read_len, lookahead) =
             SpectrogramProcessor::hilbert_layout(window_size, config.sample_rate);
-        let mut planner = FftPlanner::new();
-        let transforms = [
-            planner.plan_fft_forward(fft_size),
-            planner.plan_fft_forward(read_len),
-            planner.plan_fft_inverse(read_len),
-        ];
+        let analysis = FftPlanner::new().plan_fft_forward(fft_size);
         let h = |tap: usize| window.get(tap.wrapping_sub(2)).copied().unwrap_or(0.0);
         let (base_window, derivative_window): (Vec<_>, Vec<_>) = (0..window_size + 2)
             .map(|n| {
@@ -415,29 +397,29 @@ impl Reassignment {
             })
             .unzip();
         let (time_weighted_window, time_support) = compute_time_weighted(&base_window);
-        let scratch_len = transforms
-            .iter()
-            .map(|fft| fft.get_inplace_scratch_len())
-            .max();
         Self {
             fft_size,
             read_len,
             lookahead,
-            hilbert_gains: hilbert_gains(&*transforms[1], lookahead),
+            quadrature: Quadrature::new(lookahead, config.hop_size.get().min(base_window.len())),
             dc_weights: normalized_blackman_harris(read_len),
             edge_bins: (config.window.cosine_terms().len() * padding)
                 .min(fft_size.saturating_sub(2) / 4),
             power_scale: reassigned_power_scale(&base_window, fft_size),
             bin_scale: dc_power_scale(&window),
-            analytic: vec![Complex32::ZERO; read_len],
             spectra: vec![Complex32::ZERO; fft_size * 3],
-            scratch: vec![Complex32::ZERO; scratch_len.unwrap_or(0)],
-            transforms,
+            scratch: vec![Complex32::ZERO; analysis.get_inplace_scratch_len()],
+            analysis,
             base_window,
             derivative_window,
             time_weighted_window,
             time_support,
         }
+    }
+
+    fn taps(&self) -> Range<usize> {
+        let end = self.read_len - self.lookahead + 1;
+        end - self.base_window.len()..end
     }
 
     fn points_per_column(&self) -> usize {
@@ -510,36 +492,113 @@ impl Reassignment {
     }
 }
 
-// Spectral gains of a Kaiser-tapered Hilbert kernel short enough that the window sees a
-// linear, not circular, transform: ~2 for positive bins, ~0 for negative, with the inverse
-// transform's scale folded in.
-// Beta 8 keeps the images of tones over two bins from DC or Nyquist about 85 dB down, and
-// impulse times within a sample.
-fn hilbert_gains(fft: &dyn Fft<f32>, half: usize) -> Vec<f32> {
-    let len = fft.len();
-    let mut kernel = vec![Complex32::ZERO; len];
-    for tap in (1..half).step_by(2) {
-        let taper = kaiser(8.0, tap as f64 / half as f64);
-        let value = (taper / (core::f64::consts::PI * tap as f64)) as f32;
-        kernel[tap].re = value;
-        kernel[len - tap].re = -value;
+// The analytic signal's imaginary part: the queue's samples through a Kaiser-tapered Hilbert
+// kernel. Beta 8 keeps the images of tones over two bins from DC or Nyquist about 85 dB down, and
+// impulse times within a sample. Successive windows overlap, so values are kept while windows
+// read them, and overlap-save blocks compute only those each hop reveals.
+struct Quadrature {
+    forward: Arc<dyn RealToComplex<f32>>,
+    inverse: Arc<dyn ComplexToReal<f32>>,
+    reach: usize,
+    // The kernel's spectrum, odd and so imaginary, with the inverse's scale folded in.
+    gains: Vec<f32>,
+    block: Vec<f32>,
+    spectrum: Vec<Complex32>,
+    scratch: Vec<Complex32>,
+    // Values from the queue's stream position `start` on.
+    values: Vec<f32>,
+    start: u64,
+}
+
+impl Quadrature {
+    // Blocks fit `outputs` values at the shortest even length of 2^k, 3 * 2^k or 9 * 2^k, which
+    // the FFT handles fast.
+    fn new(half: usize, outputs: usize) -> Self {
+        let reach = half.saturating_sub(1);
+        let needed = outputs + 2 * reach;
+        let lengths = [2, 6, 18].map(|unit| needed.div_ceil(unit).next_power_of_two() * unit);
+        let len = lengths.into_iter().fold(usize::MAX, usize::min);
+        let mut planner = RealFftPlanner::new();
+        let (forward, inverse) = (planner.plan_fft_forward(len), planner.plan_fft_inverse(len));
+        let mut kernel = forward.make_input_vec();
+        for tap in (1..half).step_by(2) {
+            let taper = kaiser(8.0, tap as f64 / half as f64);
+            let value = (taper / (core::f64::consts::PI * tap as f64)) as f32;
+            kernel[tap] = value;
+            kernel[len - tap] = -value;
+        }
+        let mut spectrum = forward.make_output_vec();
+        forward
+            .process(&mut kernel, &mut spectrum)
+            .expect("internally sized Hilbert kernel");
+        let scratch_len = forward.get_scratch_len().max(inverse.get_scratch_len());
+        Self {
+            gains: spectrum
+                .iter()
+                .map(|bin| 2.0 * bin.im / len as f32)
+                .collect(),
+            block: kernel,
+            spectrum,
+            scratch: vec![Complex32::ZERO; scratch_len],
+            forward,
+            inverse,
+            reach,
+            values: Vec::new(),
+            start: 0,
+        }
     }
-    fft.process(&mut kernel);
-    kernel
-        .iter()
-        .map(|bin| (1.0 - 2.0 * bin.im) / len as f32)
-        .collect()
+
+    // Values for the queue's samples `taps`, also computing those after them through `last`.
+    // `audio` holds the kernel's reach either side, and its head is at stream position `head`.
+    fn window(&mut self, audio: &[f32], head: u64, taps: Range<usize>, last: usize) -> &[f32] {
+        // Positions only grow, so values no window reads again lead. They go only before more
+        // are computed, so a batch's columns don't each shift the rest.
+        let first = head + taps.start as u64;
+        let mut stale = (first - self.start).min(self.values.len() as u64) as usize;
+        let mut next = taps.start + self.values.len() - stale;
+        if next <= last {
+            self.values.drain(..stale);
+            (self.start, stale) = (first, 0);
+        }
+        while next <= last {
+            let count = (last + 1 - next).min(self.block.len() - 2 * self.reach);
+            let input = &audio[next - self.reach..next + count + self.reach];
+            let (block, padding) = self.block.split_at_mut(input.len());
+            block.copy_from_slice(input);
+            padding.fill(0.0);
+            self.forward
+                .process_with_scratch(&mut self.block, &mut self.spectrum, &mut self.scratch)
+                .expect("internally sized Hilbert blocks");
+            for (bin, &gain) in self.spectrum.iter_mut().zip(&self.gains) {
+                *bin = Complex32::new(-bin.im * gain, bin.re * gain);
+            }
+            // An odd kernel passes neither DC nor Nyquist, even where a bin overflowed.
+            let nyquist = self.spectrum.len() - 1;
+            (self.spectrum[0], self.spectrum[nyquist]) = (Complex32::ZERO, Complex32::ZERO);
+            self.inverse
+                .process_with_scratch(&mut self.spectrum, &mut self.block, &mut self.scratch)
+                .expect("internally sized Hilbert blocks");
+            self.values
+                .extend_from_slice(&self.block[self.reach..][..count]);
+            next += count;
+        }
+        &self.values[stale..][..taps.len()]
+    }
 }
 
 // Taps past the output wrap around, as the FFT is circular.
-fn apply_complex_window(analytic: &[Complex32], dc: f32, window: &[f32], output: &mut [Complex32]) {
-    let (head, tail) = window.split_at(window.len().min(output.len()));
-    for (out, (&sample, &weight)) in output.iter_mut().zip(analytic.iter().zip(head)) {
-        *out = (sample - dc) * weight;
+fn apply_complex_window([re, im]: [&[f32]; 2], dc: f32, window: &[f32], output: &mut [Complex32]) {
+    let analytic = std::iter::zip(re, im).map(|(&re, &im)| Complex32::new(re - dc, im));
+    let mut windowed = analytic
+        .zip(window)
+        .map(|(sample, &weight)| sample * weight);
+    let head = window.len().min(output.len());
+    for (out, value) in output[..head].iter_mut().zip(windowed.by_ref()) {
+        *out = value;
     }
-    output[head.len()..].fill(Complex32::ZERO);
-    for ((out, &sample), &weight) in output.iter_mut().zip(&analytic[head.len()..]).zip(tail) {
-        *out += (sample - dc) * weight;
+    output[head..].fill(Complex32::ZERO);
+    for (out, value) in output.iter_mut().zip(windowed) {
+        *out += value;
     }
 }
 
@@ -826,7 +885,6 @@ mod tests {
     #[test]
     fn silent_input_advances_transparent_columns() {
         let samples = vec![0.0; block_len(64) + 256];
-        let floor = pack_classic_db(DB_FLOOR);
 
         let classic = process_samples(cfg(64, 16, false), &samples);
         assert_eq!(classic.new_columns.len(), 4);
@@ -834,7 +892,7 @@ mod tests {
             classic
                 .new_columns
                 .iter()
-                .all(|col| classic_mags(col).iter().all(|&mag| mag == floor))
+                .all(|col| classic_mags(col).is_empty())
         );
 
         let reassigned = process_samples(cfg(64, 16, true), &samples);
@@ -931,7 +989,7 @@ mod tests {
         let (read_len, lookahead) =
             SpectrogramProcessor::hilbert_layout(config.fft_size.get(), config.sample_rate);
         let position = config.fft_size.get() / 2;
-        // Later columns from the same block leave the first one reading the block's middle.
+        // Later columns have the first one compute their quadrature ahead.
         let mut samples = vec![0.0; read_len + 3 * config.hop_size.get()];
         samples[read_len - lookahead - config.fft_size.get() + position] = 1.0;
         let update = process_samples(config, &samples);

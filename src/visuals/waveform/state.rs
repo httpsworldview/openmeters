@@ -2,13 +2,12 @@
 // Copyright (C) 2026 Maika Namuo
 
 use super::processor::{BAND_COUNT, WAVEFORM_CHANNELS, WaveFrame, WaveformPreview, WaveformUpdate};
-use super::render::{WaveformParams, column_count};
+use super::render::{WaveHistory, WaveformParams, column_count};
 use crate::persistence::settings::WaveformSettings;
 use crate::util::{color::color_to_rgba, unpoison};
 use crate::visuals::palettes;
 use crate::visuals::render::common::lane_bounds;
 use iced::Color;
-use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -17,8 +16,7 @@ const SCROLL_CLOCK_TIMEOUT: Duration = Duration::from_millis(100);
 
 crate::macros::default_struct! {
     pub(crate) struct WaveformState {
-        data: Arc<Mutex<VecDeque<WaveFrame>>> =
-            Arc::new(Mutex::new(VecDeque::with_capacity(INITIAL_VIEW_COLUMNS))),
+        data: Arc<Mutex<WaveHistory>> = Arc::default(),
         preview: WaveformPreview = WaveformPreview::default(),
         scroll: (Instant, f32) = (Instant::now(), 0.0),
         snapshot_at: Instant = Instant::now(),
@@ -32,7 +30,7 @@ crate::macros::default_struct! {
 
 impl WaveformState {
     pub fn reset_audio(&mut self) {
-        unpoison(self.data.lock()).clear();
+        unpoison(self.data.lock()).frames.clear();
         self.preview = WaveformPreview::default();
         let now = Instant::now();
         self.scroll = (now, 0.0);
@@ -53,7 +51,7 @@ impl WaveformState {
             return;
         }
         let max_columns = self.view_columns;
-        let data = &mut *unpoison(self.data.lock());
+        let data = &mut unpoison(self.data.lock()).frames;
         if update.reset {
             data.clear();
             self.quiescent_columns = 0;
@@ -73,7 +71,7 @@ impl WaveformState {
             if data.len() == max_columns {
                 data.pop_front();
             }
-            data.push_back(columns);
+            data.push_back((columns, None));
         }
     }
 
@@ -85,7 +83,7 @@ impl WaveformState {
     pub(in crate::visuals) fn is_quiescent(&self) -> bool {
         let needed = self.view_columns;
         self.quiescent_columns >= needed
-            && unpoison(self.data.lock()).len() >= needed
+            && unpoison(self.data.lock()).frames.len() >= needed
             && self.preview.columns.unwrap_or_default() == WaveFrame::default()
     }
 

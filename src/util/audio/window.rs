@@ -172,6 +172,7 @@ pub struct HopQueue {
     dc: DcHistory,
     debt: usize,
     last_nonzero: Option<usize>,
+    position: u64,
 }
 
 impl HopQueue {
@@ -183,6 +184,7 @@ impl HopQueue {
     }
 
     pub fn clear(&mut self) {
+        self.position += self.samples.len() as u64;
         self.samples.clear();
         self.dc.clear();
         self.debt = 0;
@@ -237,6 +239,11 @@ impl HopQueue {
             .last_nonzero
             .and_then(|index| index.checked_sub(drained));
         self.debt = self.debt.saturating_add(count - drained);
+        self.position += count as u64;
+    }
+
+    pub fn position(&self) -> u64 {
+        self.position
     }
 
     pub fn samples(&mut self) -> &[f32] {
