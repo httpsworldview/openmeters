@@ -29,7 +29,7 @@ pub(super) trait Stored: Serialize + Default {
     }
 }
 
-pub(super) fn read_file(path: &Path) -> io::Result<Option<Vec<u8>>> {
+fn read_file(path: &Path) -> io::Result<Option<Vec<u8>>> {
     match fs::read(path) {
         Ok(bytes) => Ok(Some(bytes)),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),

@@ -56,7 +56,7 @@ impl WaveformParams {
             WaveformColorMode::Loudness => {
                 let peak = column.min.abs().max(column.max.abs());
                 let db = power_to_db(peak * peak, DB_FLOOR);
-                let t = crate::util::finite_or((db - LOUDNESS_QUIET_DB) / -LOUDNESS_QUIET_DB, 0.0);
+                let t = (db - LOUDNESS_QUIET_DB) / -LOUDNESS_QUIET_DB;
                 let (lo, hi, blend) = ramp_segment(&LOUDNESS_STOPS, &[1.0; BAND_COUNT], t);
                 lerp_rgba(self.palette[lo], self.palette[hi], blend)
             }

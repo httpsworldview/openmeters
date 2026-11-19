@@ -225,9 +225,7 @@ impl UiApp {
             if !self.main_window.is_bar() {
                 return self.quit();
             }
-            self.main_window = MainWindow::Bar(None);
-            self.bar_resize_state = None;
-            self.bar_outputs.set_current(None, None);
+            self.replace_main_window(MainWindow::Bar(None));
             // A layer close does not carry a reason. Await output changes rather
             // than quitting or repeatedly recreating a rejected surface.
             tracing::debug!("[ui] bar surface closed; waiting for output changes");
@@ -358,16 +356,19 @@ impl UiApp {
         Task::none()
     }
 
-    pub(super) fn recreate_main_window(&mut self) -> Task<Message> {
-        let old_main_id = self.main_window.id();
-        self.bar_outputs.set_current(None, None);
+    fn replace_main_window(&mut self, main_window: MainWindow) -> Option<window::Id> {
         self.bar_resize_state = None;
+        self.bar_outputs.set_current(None, None);
+        std::mem::replace(&mut self.main_window, main_window).id()
+    }
+
+    pub(super) fn recreate_main_window(&mut self) -> Task<Message> {
         let (main_window, open_main) = open_main_window(
             &self.settings_handle.borrow().data,
             self.use_layershell,
             !self.bar_outputs.is_empty(),
         );
-        self.main_window = main_window;
+        let old_main_id = self.replace_main_window(main_window);
         Task::batch(std::iter::once(open_main).chain(old_main_id.map(window::close)))
     }
 

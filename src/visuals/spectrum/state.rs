@@ -102,7 +102,6 @@ impl SpectrumState {
         }
         self.effective_range = None;
         self.peak = None;
-        self.clear_grid_layout();
         self.geometry.invalidate();
     }
 
@@ -176,7 +175,7 @@ impl SpectrumState {
             std::iter::once(min_f)
                 .chain(interior)
                 .chain([max_f])
-                .map(|f| view_x(settings, range, f)),
+                .map(view_x(settings, range)),
         );
         self.grid_ticks.clear();
         let exponents = MIN_GRID_HZ.log10().floor() as i32..=max_f.log10().ceil() as i32;
@@ -196,11 +195,6 @@ impl SpectrumState {
                 }),
         );
         self.x_cache_key = key;
-    }
-
-    fn clear_grid_layout(&mut self) {
-        self.grid_layout_key = None;
-        self.grid_labels.clear();
     }
 
     fn layout_grid_labels(&mut self, bounds: Rectangle, range: (f32, f32)) {
@@ -289,7 +283,7 @@ impl SpectrumState {
             SpectrumWeightingMode::AWeighted => (m + a_weight(f), "dBFS(A)"),
             SpectrumWeightingMode::Raw => (m, "dBFS"),
         };
-        let x = view_x(&self.settings, (min_f, max_f), f);
+        let x = view_x(&self.settings, (min_f, max_f))(f);
         let y = level(m, self.settings.floor_db.get());
         if y < MIN_NORMALIZED_LEVEL {
             return None;
@@ -405,8 +399,6 @@ crate::visuals::visualization_widget!(Spectrum, SpectrumState, |this, r, th, b| 
     let grid_range = state.effective_range.filter(|_| state.settings.show_grid);
     if let Some(range) = grid_range {
         state.layout_grid_labels(b, range);
-    } else {
-        state.clear_grid_layout();
     }
 
     let peak = state.peak();
@@ -545,15 +537,15 @@ fn level(db: f32, floor: f32) -> f32 {
     ((db - floor) * (MAX_DB - floor).recip()).clamp(0.0, 1.0)
 }
 
-fn view_x(settings: &SpectrumSettings, (min_f, max_f): (f32, f32), frequency: f32) -> f32 {
-    let t = settings
-        .frequency_scale
-        .pos_of(min_f, max_f, frequency)
-        .clamp(0.0, 1.0);
-    if settings.reverse_frequency {
-        1.0 - t
-    } else {
-        t
+fn view_x(settings: &SpectrumSettings, (min_f, max_f): (f32, f32)) -> impl Fn(f32) -> f32 {
+    let pos_of = settings.frequency_scale.positioner(min_f, max_f);
+    move |frequency| {
+        let t = pos_of(frequency).clamp(0.0, 1.0);
+        if settings.reverse_frequency {
+            1.0 - t
+        } else {
+            t
+        }
     }
 }
 
@@ -562,8 +554,9 @@ fn grid_tick_x(
     range: (f32, f32),
     settings: &SpectrumSettings,
 ) -> impl Fn(f32) -> Option<f32> {
+    let x_of = view_x(settings, range);
     move |frequency| {
-        let x = view_x(settings, range, frequency);
+        let x = x_of(frequency);
         ((range.0..=range.1).contains(&frequency) && x.is_finite())
             .then_some(bounds.x + bounds.width * x)
     }

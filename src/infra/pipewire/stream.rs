@@ -248,11 +248,9 @@ fn format_pod(layout: &[ChannelPosition]) -> Result<Vec<u8>, DynError> {
     let mut info = spa::param::audio::AudioInfoRaw::new();
     info.set_format(NATIVE_F32);
     info.set_channels(layout.len() as u32);
-    let mut positions = [0; spa::sys::SPA_AUDIO_MAX_CHANNELS as usize];
-    for (position, channel) in positions.iter_mut().zip(layout) {
-        *position = channel.spa_id();
-    }
-    info.set_position(positions);
+    info.set_position(std::array::from_fn(|index| {
+        layout.get(index).map_or(0, |channel| channel.spa_id())
+    }));
     let object = spa::pod::Object {
         type_: spa::utils::SpaTypes::ObjectParamFormat.as_raw(),
         id: spa::param::ParamType::EnumFormat.as_raw(),

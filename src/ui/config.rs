@@ -73,7 +73,6 @@ pub struct ConfigPage {
     // None while PipeWire is unreachable. Refreshed before the page is shown.
     capture_view: Option<Arc<CaptureView>>,
     settings: SettingsHandle,
-    bar_supported: bool,
     disclosure: Disclosure,
     bg_palette: PaletteEditor,
     scroll: ScrollGlow,
@@ -83,13 +82,12 @@ pub struct ConfigPage {
 }
 
 impl ConfigPage {
-    pub fn new(capture: CaptureControl, settings: SettingsHandle, bar_supported: bool) -> Self {
+    pub fn new(capture: CaptureControl, settings: SettingsHandle) -> Self {
         let theme_choices = settings.borrow().themes();
         let mut page = Self {
             capture,
             capture_view: None,
             settings,
-            bar_supported,
             disclosure: Disclosure::default(),
             bg_palette: PaletteEditor::new(theme::background::PALETTE),
             scroll: ScrollGlow::default(),
@@ -181,14 +179,13 @@ impl ConfigPage {
     pub(in crate::ui) fn view(
         &self,
         manager: &VisualManager,
-        bar_outputs: &BarOutputs,
+        bar_outputs: Option<&BarOutputs>,
     ) -> Element<'_, ConfigMessage> {
         let content = column![
             self.render_capture_card(),
             self.render_visuals_card(manager),
             self.render_global_card(),
-            self.bar_supported
-                .then(|| self.render_bar_card(bar_outputs)),
+            bar_outputs.map(|outputs| self.render_bar_card(outputs)),
             self.render_appearance_card(),
         ]
         .spacing(theme::SECTION_GAP);

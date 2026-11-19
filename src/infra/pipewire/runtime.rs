@@ -16,7 +16,7 @@ use pw::spa::utils::dict::DictRef;
 use pw::types::ObjectType;
 use std::any::Any;
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -302,6 +302,7 @@ impl CaptureState {
     }
 
     fn defer_stream_retry(&mut self, now: Instant) {
+        self.owned_links.clear();
         self.tap.clear_failed();
         self.dirty.set(true);
         self.stream_backoff.defer(now);
@@ -326,10 +327,7 @@ impl CaptureState {
                 self.stream_backoff.up_since.get_or_insert(now);
                 self.stream_backoff.settle(now);
             }
-            Some(StreamStatus::Failed | StreamStatus::Stopped) => {
-                self.owned_links.clear();
-                self.defer_stream_retry(now);
-            }
+            Some(StreamStatus::Failed | StreamStatus::Stopped) => self.defer_stream_retry(now),
             _ => {}
         }
 
@@ -380,7 +378,7 @@ impl CaptureState {
 struct OwnedLinks {
     core: pw::core::CoreRc,
     links: HashMap<LinkSpec, OwnedLink>,
-    desired: Vec<LinkSpec>,
+    desired: BTreeSet<LinkSpec>,
     dirty: Rc<Cell<bool>>,
     backoff: Rc<Cell<Backoff>>,
 }
@@ -404,7 +402,7 @@ impl OwnedLinks {
         Self {
             core,
             links: HashMap::new(),
-            desired: Vec::new(),
+            desired: BTreeSet::new(),
             dirty,
             backoff: Rc::new(Cell::new(Backoff::IDLE)),
         }
@@ -416,7 +414,7 @@ impl OwnedLinks {
         self.backoff.set(Backoff::IDLE);
     }
 
-    fn apply(&mut self, desired: Vec<LinkSpec>, now: Instant) {
+    fn apply(&mut self, desired: BTreeSet<LinkSpec>, now: Instant) {
         if self.desired != desired {
             self.desired = desired;
             let mut retry = self.backoff.get();
@@ -424,7 +422,7 @@ impl OwnedLinks {
             self.backoff.set(retry);
         }
         self.links.retain(|spec, link| {
-            self.desired.binary_search(spec).is_ok() && link.state.get() != OwnedLinkState::Failed
+            self.desired.contains(spec) && link.state.get() != OwnedLinkState::Failed
         });
         let mut retry = self.backoff.get();
         if self.links.len() == self.desired.len()

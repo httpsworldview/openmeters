@@ -84,13 +84,7 @@ impl SpectrogramHistory {
         if snap.reset {
             *self = Self {
                 col_kind: new_kind,
-                ring_capacity: capacity,
                 points_per_column: points,
-                slot_counts: if new_kind == ColumnKind::Reassigned {
-                    vec![0; capacity as usize].into()
-                } else {
-                    Arc::from([])
-                },
                 ..Default::default()
             };
         }
@@ -99,31 +93,27 @@ impl SpectrogramHistory {
             if pending.copy_plan.is_none() && self.col_count as usize > pending.uploads.len() {
                 pending.copy_plan = Some((0..self.col_count).collect());
             }
-            let keep = self.col_count.min(capacity);
-            if self.col_count >= self.ring_capacity.min(capacity) {
-                let old_cap = self.ring_capacity;
-                let start = (self.write_slot + old_cap - keep) % old_cap.max(1);
-                if self.col_kind == ColumnKind::Reassigned {
-                    Arc::make_mut(&mut self.slot_counts).rotate_left(start as usize);
+            let (old_cap, keep) = (self.ring_capacity, self.col_count.min(capacity));
+            // The oldest kept column; slot 0 until the ring wraps or drops columns.
+            let start = (self.write_slot + old_cap - keep) % old_cap.max(1);
+            pending.uploads.retain_back(keep as usize);
+            for dst in pending.copy_plan.iter_mut().flatten() {
+                if *dst < old_cap {
+                    *dst = (*dst + old_cap - start) % old_cap;
                 }
-                pending.uploads.retain_back(keep as usize);
-                for dst in pending.copy_plan.iter_mut().flatten() {
-                    if *dst < old_cap {
-                        *dst = (*dst + old_cap - start) % old_cap;
-                    }
-                    if *dst >= keep {
-                        *dst = u32::MAX;
-                    }
+                if *dst >= keep {
+                    *dst = u32::MAX;
                 }
-                self.write_slot = keep % capacity;
             }
-            self.col_count = keep;
-            self.ring_capacity = capacity;
             if self.col_kind == ColumnKind::Reassigned {
                 let mut counts = self.slot_counts.to_vec();
+                counts.rotate_left(start as usize);
                 counts.resize(capacity as usize, 0);
                 self.slot_counts = counts.into();
             }
+            self.write_slot = keep % capacity;
+            self.col_count = keep;
+            self.ring_capacity = capacity;
         }
 
         for column in snap.new_columns {
@@ -399,11 +389,9 @@ fn piano_key_spans(
         .map_or(PIANO_MIDI_LO, |n| (n.midi_number - 1).max(PIANO_MIDI_LO));
     let midi_hi = MusicalNote::from_frequency(scale.freq_at(min_f, nyq, uv_range[1]))
         .map_or(PIANO_MIDI_HI, |n| (n.midi_number + 1).min(PIANO_MIDI_HI));
-    let scaled_min = scale.scale(min_f);
-    let scaled_span = scale.scale(nyq) - scaled_min;
-    let position = move |scaled| {
-        let uv = (scaled - scaled_min) / scaled_span;
-        let t = (uv - uv_range[0]) / (uv_range[1] - uv_range[0]);
+    let pos_of = scale.positioner(min_f, nyq);
+    let position = move |freq| {
+        let t = (pos_of(freq) - uv_range[0]) / (uv_range[1] - uv_range[0]);
         origin + extent * if ascending { t } else { 1.0 - t }
     };
     // White and black key spans, in paint order.
@@ -414,8 +402,7 @@ fn piano_key_spans(
                 return None;
             }
             let (lower, upper) = key_edges(note);
-            let [a, b] =
-                [upper, lower].map(|edge| position(scale.scale(note.to_frequency() * edge)));
+            let [a, b] = [upper, lower].map(|edge| position(note.to_frequency() * edge));
             let (lo, hi) = if a < b { (a, b) } else { (b, a) };
             if hi <= origin || lo >= origin + extent {
                 return None;

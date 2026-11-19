@@ -184,7 +184,7 @@ impl SpectrumProcessor {
             .unwrap_or(0);
         let mut hops = 0;
         // Without averaging only the newest window shows.
-        if self.config.averaging == AveragingMode::None && hop <= fft_size {
+        if self.config.averaging == AveragingMode::None {
             hops = windows.saturating_sub(1);
             traces().for_each(|trace| self.queues[trace].advance(hops * hop));
             windows -= hops;

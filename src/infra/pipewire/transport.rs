@@ -710,7 +710,7 @@ impl AudioReader {
 
     pub(super) fn discard(&mut self) {
         self.shared.activity_epoch.fetch_add(1, Ordering::AcqRel);
-        self.reset_timeline(self.shared.now_ns());
+        self.reset_timeline();
     }
 
     #[cfg(test)]
@@ -723,7 +723,7 @@ impl AudioReader {
         if fault == self.fault_epoch {
             return false;
         }
-        self.reset_timeline(self.shared.now_ns());
+        self.reset_timeline();
         self.fault_epoch = fault;
         self.format = self.shared.format();
         consume(CapturedSpan::Reset);
@@ -800,12 +800,12 @@ impl AudioReader {
         let _ = samples.map(|samples| self.recycler.push(samples));
     }
 
-    fn reset_timeline(&mut self, cursor: u64) {
+    fn reset_timeline(&mut self) {
         while let Ok(packet) = self.consumer.pop() {
             self.recycle(packet.samples);
         }
         self.scratch.clear();
-        self.cursor = cursor;
+        self.cursor = self.shared.now_ns();
         self.align_next_packet = true;
         self.fault_epoch = self.shared.fault_epoch.load(Ordering::Acquire);
         self.dormant = false;

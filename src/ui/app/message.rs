@@ -3,7 +3,7 @@
 
 use super::{TOAST_DISPLAY_DURATION, UiApp, windowing::AppWindow};
 use crate::ui::config::ConfigMessage;
-use crate::ui::outputs::{BarOutputChange, BarOutputEvent};
+use crate::ui::outputs::BarOutputEvent;
 use crate::ui::settings::SettingsMessage;
 use crate::ui::visuals::{VisualsMessage, visual_area};
 use crate::ui::widgets::{fill, page, scroll_glow::ScrollEvent};
@@ -194,17 +194,13 @@ fn handle(app: &mut UiApp, msg: Message) -> Task<Message> {
             app.frames.borrow_mut().watchdog(generation, Instant::now())
         }
         Message::BarOutput(id, name, event) => {
-            let change = {
+            let has_surface = app.main_window.id().is_some();
+            let recreate = {
                 let settings = app.settings_handle.borrow();
                 let selected = settings.data.bar.monitor.as_deref();
-                app.bar_outputs.sync(id, name, event, selected)
+                app.bar_outputs.sync(id, name, event, selected, has_surface)
             };
-            if app.main_window.is_bar()
-                && change != BarOutputChange::Unchanged
-                && (app.main_window.id().is_none()
-                    || change == BarOutputChange::Retarget
-                    || event == BarOutputEvent::Removed)
-            {
+            if recreate && app.main_window.is_bar() {
                 return app.recreate_main_window();
             }
         }
@@ -238,7 +234,8 @@ pub(super) fn view(app: &UiApp, window_id: window::Id) -> Element<'_, Message> {
         AppWindow::Main => app.main_window_view(window_id),
         AppWindow::Config => {
             let manager = app.visual_manager.borrow();
-            let content = app.config_page.view(&manager, &app.bar_outputs);
+            let bar_outputs = app.use_layershell.then_some(&app.bar_outputs);
+            let content = app.config_page.view(&manager, bar_outputs);
             page(content.map(Message::Config)).into()
         }
         AppWindow::Settings(panel) => {

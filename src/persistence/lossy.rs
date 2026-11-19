@@ -102,7 +102,7 @@ macro_rules! settings_struct {
 }
 pub(super) use settings_struct;
 
-pub(super) fn unknown(scope: &str, map: &Map<String, Value>) {
+fn unknown(scope: &str, map: &Map<String, Value>) {
     for key in map.keys() {
         warn!("[settings] unsupported {scope}.{key}");
     }

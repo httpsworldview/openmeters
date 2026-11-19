@@ -335,26 +335,24 @@ impl Graph {
         type_hint: Option<&str>,
         value: Option<&str>,
     ) {
-        let same_entry =
-            |target: &mut Target| target.metadata_id == metadata_id && target.subject == subject;
-        let Some(key) = key else {
-            self.default_sink.take_if(same_entry);
-            return;
-        };
-        if key != "default.audio.sink" {
-            return;
+        const DEFAULT_SINK: &str = "default.audio.sink";
+        match (key, value) {
+            (Some(DEFAULT_SINK), Some(value)) => {
+                self.default_sink = Some(Target {
+                    metadata_id,
+                    subject,
+                    node_id: (subject != 0).then_some(subject),
+                    name: metadata_name(type_hint, value),
+                });
+                self.reconcile_targets();
+            }
+            (None, _) | (Some(DEFAULT_SINK), None) => {
+                self.default_sink.take_if(|target| {
+                    target.metadata_id == metadata_id && target.subject == subject
+                });
+            }
+            _ => {}
         }
-        if let Some(value) = value {
-            self.default_sink = Some(Target {
-                metadata_id,
-                subject,
-                node_id: (subject != 0).then_some(subject),
-                name: metadata_name(type_hint, value),
-            });
-        } else if self.default_sink.take_if(same_entry).is_none() {
-            return;
-        }
-        self.reconcile_targets();
     }
 
     pub(super) fn default_sink(&self) -> Option<&Node> {

@@ -151,7 +151,7 @@ impl UiApp {
         meter_engine.set_active(visual_manager.borrow().has_enabled());
 
         let capture_changes = capture.changes();
-        let config_page = ConfigPage::new(capture, settings_handle.clone(), use_layershell);
+        let config_page = ConfigPage::new(capture, settings_handle.clone());
         // Outputs are announced after startup, and a bar waits for the first.
         let (main_window, open_task) = open_main_window(&data, use_layershell, false);
         let frames = RefCell::new(FrameCoordinator::new(meter_engine, data.visual_frame_rate));

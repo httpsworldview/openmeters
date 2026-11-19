@@ -36,13 +36,6 @@ pub(super) enum BarOutputEvent {
     Removed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum BarOutputChange {
-    Unchanged,
-    Changed,
-    Retarget,
-}
-
 #[derive(Default)]
 pub(super) struct BarOutputs {
     names: BTreeMap<u32, Option<String>>,
@@ -75,13 +68,15 @@ impl BarOutputs {
         })
     }
 
+    // Whether the bar needs a new surface.
     pub(super) fn sync(
         &mut self,
         id: u32,
         name: Option<String>,
         event: BarOutputEvent,
         selected: Option<&str>,
-    ) -> BarOutputChange {
+        has_surface: bool,
+    ) -> bool {
         use BarOutputEvent::{Added, Removed, Updated};
 
         if event == Removed && self.current == Some(id) {
@@ -118,13 +113,7 @@ impl BarOutputs {
                 None => event == Added && self.current.is_some_and(|current| current != id),
                 Some(selected) => self.selected_is_elsewhere(selected),
             };
-        if retarget {
-            BarOutputChange::Retarget
-        } else if route_changed {
-            BarOutputChange::Changed
-        } else {
-            BarOutputChange::Unchanged
-        }
+        route_changed && (!has_surface || event == Removed || retarget)
     }
 
     // Whether the bar should move to `selected`, which is connected elsewhere.
@@ -154,7 +143,7 @@ impl BarOutputs {
 
 #[cfg(test)]
 mod tests {
-    use super::{BarOutputChange::*, BarOutputEvent::*, BarOutputs};
+    use super::{BarOutputEvent::*, BarOutputs};
 
     #[test]
     fn bar_retargeting_follows_output_routes() {
@@ -164,22 +153,19 @@ mod tests {
         };
         outputs.names.insert(1, Some("HDMI".into()));
 
-        assert_eq!(outputs.sync(2, Some("DP".into()), Added, None), Retarget);
-        assert_eq!(outputs.sync(2, Some("DP".into()), Added, None), Unchanged);
-        assert_eq!(outputs.sync(1, Some("HDMI".into()), Removed, None), Changed);
+        assert!(outputs.sync(2, Some("DP".into()), Added, None, true));
+        assert!(!outputs.sync(2, Some("DP".into()), Added, None, true));
+        assert!(outputs.sync(1, Some("HDMI".into()), Removed, None, true));
 
         assert_eq!(outputs.current, None);
-        assert_eq!(
-            outputs.sync(1, Some("HDMI".into()), Removed, None),
-            Unchanged
-        );
+        assert!(!outputs.sync(1, Some("HDMI".into()), Removed, None, true));
         outputs.names.insert(1, Some("HDMI".into()));
         assert!(outputs.set_current(Some(1), Some("DP")));
         assert!(!outputs.set_current(Some(1), Some("missing")));
 
-        outputs.sync(3, None, Added, None);
+        outputs.sync(3, None, Added, None, true);
         assert_eq!(outputs.names.get(&3), Some(&None));
-        assert_eq!(outputs.sync(3, Some(String::new()), Added, None), Unchanged);
+        assert!(!outputs.sync(3, Some(String::new()), Added, None, true));
         let (choices, _) = outputs.choices(None);
         assert_eq!(
             choices.iter().map(ToString::to_string).collect::<Vec<_>>(),

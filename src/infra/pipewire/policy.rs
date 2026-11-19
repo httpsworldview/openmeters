@@ -5,7 +5,7 @@ use super::graph::{Graph, Node, NodeKind, Port};
 use super::stream::StreamConfig;
 use crate::domain::routing::{CaptureConfig, CaptureMode};
 use crate::dsp::{ChannelLayout, ChannelPosition, MAX_AUDIO_CHANNELS};
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(super) struct LinkSpec {
@@ -24,7 +24,7 @@ pub(super) struct Plan {
 pub(super) fn plan(graph: &Graph, config: &CaptureConfig, tap_id: Option<u32>) -> Plan {
     let (layout, target, passive, sources, truncated) = match config.mode {
         CaptureMode::Applications => {
-            let mut sources: Vec<_> = graph
+            let sources: Vec<_> = graph
                 .nodes()
                 .filter(|node| node.kind == NodeKind::Playback)
                 .filter(|node| graph.external_routes(node.id, tap_id).next().is_some())
@@ -34,7 +34,6 @@ pub(super) fn plan(graph: &Graph, config: &CaptureConfig, tap_id: Option<u32>) -
                         .is_some_and(|identity| !config.disabled_streams.contains(identity))
                 })
                 .collect();
-            sources.sort_by_key(|node| node.id);
             let truncated = sources
                 .iter()
                 .map(|source| graph.output_ports(source).len())
@@ -83,16 +82,17 @@ pub(super) fn plan(graph: &Graph, config: &CaptureConfig, tap_id: Option<u32>) -
 }
 
 fn port_layout(ports: &[&Port]) -> Option<ChannelLayout> {
-    let mut positions = [ChannelPosition::Unknown; MAX_AUDIO_CHANNELS];
-    for (position, port) in positions.iter_mut().zip(ports) {
-        *position = port.channel;
-    }
+    let positions = std::array::from_fn(|index| {
+        ports
+            .get(index)
+            .map_or(ChannelPosition::Unknown, |port| port.channel)
+    });
     ChannelLayout::new(ports.len().min(MAX_AUDIO_CHANNELS), positions)
 }
 
-pub(super) fn desired_links(graph: &Graph, plan: &Plan, tap: &Node) -> Vec<LinkSpec> {
+pub(super) fn desired_links(graph: &Graph, plan: &Plan, tap: &Node) -> BTreeSet<LinkSpec> {
     if plan.sources.is_empty() {
-        return Vec::new();
+        return BTreeSet::new();
     }
     let tap_ports = graph.input_ports(tap);
     let mut claimed = HashSet::new();
@@ -120,7 +120,7 @@ pub(super) fn desired_links(graph: &Graph, plan: &Plan, tap: &Node) -> Vec<LinkS
         })
         .collect::<Option<Vec<_>>>()
     else {
-        return Vec::new();
+        return BTreeSet::new();
     };
 
     let target_for = |channel: ChannelPosition| {
@@ -130,7 +130,7 @@ pub(super) fn desired_links(graph: &Graph, plan: &Plan, tap: &Node) -> Vec<LinkS
             .map(|index| targets[index])
     };
 
-    let mut links = Vec::new();
+    let mut links = BTreeSet::new();
     for source in plan.sources.iter().filter_map(|id| graph.node(*id)) {
         let ports = graph.output_ports(source);
         let Some(layout) = port_layout(&ports) else {
@@ -146,9 +146,7 @@ pub(super) fn desired_links(graph: &Graph, plan: &Plan, tap: &Node) -> Vec<LinkS
             );
             continue;
         }
-        let mut positions = [ChannelPosition::Unknown; MAX_AUDIO_CHANNELS];
-        let positions = &mut positions[..layout.positions().len()];
-        positions.copy_from_slice(layout.positions());
+        let mut positions = layout.positions().to_vec();
         let aux_channels = positions
             .iter()
             .filter_map(|channel| match channel {
@@ -158,7 +156,7 @@ pub(super) fn desired_links(graph: &Graph, plan: &Plan, tap: &Node) -> Vec<LinkS
             .max()
             .unwrap_or(0);
         let aux_layout = ChannelPosition::fallback(aux_channels);
-        for channel in &mut *positions {
+        for channel in &mut positions {
             if let ChannelPosition::Aux(index) = *channel {
                 *channel = match aux_layout.get(index as usize).copied() {
                     Some(ChannelPosition::Mono) => ChannelPosition::FrontLeft,
@@ -166,8 +164,8 @@ pub(super) fn desired_links(graph: &Graph, plan: &Plan, tap: &Node) -> Vec<LinkS
                 };
             }
         }
-        ChannelPosition::resolve_surrounds(positions);
-        for (output, &channel) in ports.into_iter().zip(&*positions) {
+        ChannelPosition::resolve_surrounds(&mut positions);
+        for (output, &channel) in ports.into_iter().zip(&positions) {
             // The tap's 7.1 layout lacks these, so fold them into its nearest speakers.
             let remixed = match channel {
                 ChannelPosition::Mono => [
@@ -183,12 +181,10 @@ pub(super) fn desired_links(graph: &Graph, plan: &Plan, tap: &Node) -> Vec<LinkS
                 channel => [Some(channel), None],
             };
             for target in remixed.into_iter().flatten().filter_map(target_for) {
-                links.push(link(source, output, tap, target));
+                links.insert(link(source, output, tap, target));
             }
         }
     }
-    links.sort_unstable();
-    links.dedup();
     links
 }
 
@@ -293,7 +289,7 @@ mod tests {
         }
     }
 
-    fn expected_links(source: u32, inputs: impl Iterator<Item = u32>) -> Vec<LinkSpec> {
+    fn expected_links(source: u32, inputs: impl Iterator<Item = u32>) -> BTreeSet<LinkSpec> {
         inputs
             .enumerate()
             .map(|(output, input)| LinkSpec {
@@ -311,7 +307,7 @@ mod tests {
         let mut tap_layout = ChannelPosition::SURROUND;
         tap_layout.reverse();
         add_node(&mut graph, TAP, Direction::Input, &tap_layout);
-        let mut expected = Vec::new();
+        let mut expected = BTreeSet::new();
         for (index, &(layout, destinations)) in LAYOUTS.iter().enumerate() {
             let id = index as u32 + 1;
             add_node(&mut graph, id, Direction::Output, layout);
@@ -319,7 +315,6 @@ mod tests {
         }
         let plan = plan(&graph, &CaptureConfig::default(), Some(TAP));
         assert_eq!(plan.stream.layout, ChannelLayout::SURROUND);
-        expected.sort_unstable();
         assert_eq!(
             desired_links(&graph, &plan, graph.node(TAP).unwrap()),
             expected

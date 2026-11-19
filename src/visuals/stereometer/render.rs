@@ -375,9 +375,6 @@ impl StereometerParams {
             return;
         }
 
-        let multi_band = self.correlation_meter == CorrelationMeterMode::MultiBand;
-        let bars = if multi_band { BAND_COUNT } else { 1 };
-        let bar_width = bounds.width / bars as f32;
         let val_y = |value: f32| amplitude_y(bounds, value.clamp(-1.0, 1.0));
         let center = val_y(0.0);
         let marker_h = (self.bounds.height / 128.0).clamp(1.0, 3.0) * 0.5;
@@ -433,20 +430,18 @@ impl StereometerParams {
                 }
             };
 
-        if multi_band {
+        let full = &trails[FULL_BAND];
+        if self.correlation_meter == CorrelationMeterMode::MultiBand {
             let color = rgba_scale_alpha(palette[PAL_CORR_CENTER], 0.25);
-            draw_trail(bounds.x, bounds.width, &trails[FULL_BAND], color, color);
-        }
-        for band in 0..bars {
-            let x = bounds.x + band as f32 * bar_width;
-            let (trail, positive, negative) = if multi_band {
-                let color = palette[PAL_BANDS + band];
-                (&trails[band + 1][..], color, color)
-            } else {
-                let colors = (palette[PAL_CORR_POSITIVE], palette[PAL_CORR_NEGATIVE]);
-                (&trails[FULL_BAND][..], colors.0, colors.1)
-            };
-            draw_trail(x, bar_width, trail, positive, negative);
+            draw_trail(bounds.x, bounds.width, full, color, color);
+            let width = bounds.width / BAND_COUNT as f32;
+            for band in 0..BAND_COUNT {
+                let (x, color) = (bounds.x + band as f32 * width, palette[PAL_BANDS + band]);
+                draw_trail(x, width, &trails[band + 1], color, color);
+            }
+        } else {
+            let (positive, negative) = (palette[PAL_CORR_POSITIVE], palette[PAL_CORR_NEGATIVE]);
+            draw_trail(bounds.x, bounds.width, full, positive, negative);
         }
     }
 }

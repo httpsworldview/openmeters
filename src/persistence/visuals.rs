@@ -213,12 +213,12 @@ visual_configs! {
 macro_rules! visual_settings {
     ($name:ident from $config_ty:ty {
         $($field:ident: $ty:ty),* $(,)?
-    } $(extra {
+    } extra {
         $($extra:ident: $extra_ty:ty = $default:expr),* $(,)?
-    })?) => {
+    }) => {
         visual_settings!($name {
             $($field: $ty = <$config_ty>::default().$field,)*
-            $($($extra: $extra_ty = $default,)*)?
+            $($extra: $extra_ty = $default,)*
         });
         impl $name {
             pub fn apply_to(&self, cfg: &mut $config_ty) { $(cfg.$field = self.$field;)* }

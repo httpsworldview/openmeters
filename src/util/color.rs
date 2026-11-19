@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Maika Namuo
 
-use super::{finite_or, lerp};
+use super::lerp;
 use iced::Color;
 
 pub const EPSILON: f32 = 1e-4;
@@ -112,42 +112,6 @@ pub fn ramp_segment(positions: &[f32], spreads: &[f32], t: f32) -> (usize, usize
         linear.powf(sl / sr).clamp(0.0, 1.0)
     };
     (lo, hi, f)
-}
-
-pub fn sanitize_stop_positions(raw: &[f32], defaults: &[f32]) -> Vec<f32> {
-    let count = defaults.len();
-    if count < 2 {
-        return vec![0.0; count];
-    }
-    let mut out = defaults.to_vec();
-    let end = count - 1;
-    let internals = count - 2;
-
-    if raw.len() == count || raw.len() == internals {
-        let start = usize::from(raw.len() == count);
-        out[1..end].copy_from_slice(&raw[start..start + internals]);
-    }
-
-    out[0] = 0.0;
-    out[end] = 1.0;
-
-    for i in 1..end {
-        let value = finite_or(out[i], defaults[i]);
-        let min = (out[i - 1] + EPSILON).min(1.0);
-        let max = (1.0 - EPSILON * (end - i) as f32).max(min);
-        out[i] = value.clamp(min, max);
-    }
-
-    out
-}
-
-pub fn sanitize_stop_spreads(raw: &[f32], count: usize) -> Vec<f32> {
-    if raw.len() != count {
-        return vec![1.0; count];
-    }
-    raw.iter()
-        .map(|&value| finite_or(value, 1.0).clamp(STOP_SPREAD_MIN, STOP_SPREAD_MAX))
-        .collect()
 }
 
 #[cfg(test)]

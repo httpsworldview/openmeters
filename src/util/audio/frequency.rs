@@ -18,9 +18,10 @@ impl FrequencyScale {
         self.unscale(lerp(self.scale(min), self.scale(max), t))
     }
 
-    pub fn pos_of(self, min: f32, max: f32, freq: f32) -> f32 {
+    pub fn positioner(self, min: f32, max: f32) -> impl Fn(f32) -> f32 + Copy {
         let (lo, hi) = (self.scale(min), self.scale(max));
-        (self.scale(freq) - lo) / (hi - lo).max(1e-6)
+        let span = (hi - lo).max(1e-6);
+        move |freq| (self.scale(freq) - lo) / span
     }
 
     pub(crate) fn scale(self, hz: f32) -> f32 {

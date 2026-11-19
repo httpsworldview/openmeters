@@ -3,9 +3,9 @@
 
 use super::lossy;
 use crate::util::color::{
-    EPSILON, palettes_equal, parse_hex_color, sanitize_stop_positions, sanitize_stop_spreads,
-    to_hex,
+    EPSILON, STOP_SPREAD_MAX, STOP_SPREAD_MIN, palettes_equal, parse_hex_color, to_hex,
 };
+use crate::util::finite_or;
 use crate::visuals::palettes::Palette;
 use iced::Color;
 use serde::{Deserialize, Serialize};
@@ -124,12 +124,9 @@ impl PaletteSettings {
         let (ramp, count) = (palette.default_positions, palette.default_positions.len());
         Self(StoredPalette {
             stops,
-            stop_positions: positions.filter(|_| count > 2).map(|raw| {
-                let mut interior = sanitize_stop_positions(raw, ramp);
-                interior.pop();
-                interior.remove(0);
-                interior
-            }),
+            stop_positions: positions
+                .filter(|_| count > 2)
+                .map(|raw| sanitize_interior_positions(raw, ramp)),
             stop_spreads: spreads
                 .filter(|_| count > 0)
                 .map(|raw| sanitize_stop_spreads(raw, count)),
@@ -169,6 +166,33 @@ impl PaletteSettings {
             None => out.fill(1.0),
         }
     }
+}
+
+fn sanitize_interior_positions(raw: &[f32], ramp: &[f32]) -> Vec<f32> {
+    let end = ramp.len() - 1;
+    let defaults = &ramp[1..end];
+    let mut out = match raw.len() {
+        len if len == ramp.len() => raw[1..end].to_vec(),
+        len if len == defaults.len() => raw.to_vec(),
+        _ => defaults.to_vec(),
+    };
+    let mut previous = 0.0;
+    for (i, value) in out.iter_mut().enumerate() {
+        let min = (previous + EPSILON).min(1.0);
+        let max = (1.0 - EPSILON * (end - 1 - i) as f32).max(min);
+        *value = finite_or(*value, defaults[i]).clamp(min, max);
+        previous = *value;
+    }
+    out
+}
+
+fn sanitize_stop_spreads(raw: &[f32], count: usize) -> Vec<f32> {
+    if raw.len() != count {
+        return vec![1.0; count];
+    }
+    raw.iter()
+        .map(|&value| finite_or(value, 1.0).clamp(STOP_SPREAD_MIN, STOP_SPREAD_MAX))
+        .collect()
 }
 
 #[cfg(test)]

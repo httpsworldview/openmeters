@@ -9,7 +9,7 @@ use std::{collections::BTreeSet, sync::Arc, time::Duration};
 const MAIN_WINDOW_DEFAULT_WIDTH: u32 = 1200;
 const MAIN_WINDOW_DEFAULT_HEIGHT: u32 = 520;
 
-pub(super) const BAR_DEFAULT_HEIGHT: u32 = 100;
+const BAR_DEFAULT_HEIGHT: u32 = 100;
 
 crate::macros::bounded! {
     pub struct BarHeight(u32) in 24..=800;

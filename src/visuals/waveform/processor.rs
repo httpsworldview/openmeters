@@ -149,8 +149,9 @@ impl WaveformProcessor {
     }
 
     fn prepare(&mut self) {
-        if self.band_analysis.is_none() {
-            self.band_analysis = Self::band_analysis(self.config);
+        if self.band_analysis.is_none() && self.config.bands != Bands::Off {
+            let filter = BandFilter::new(self.config.sample_rate);
+            self.band_analysis = Some((filter, BandTracker::new(self.config)));
         }
     }
 
@@ -158,19 +159,8 @@ impl WaveformProcessor {
         self.column_phase = 0.0;
         self.channels = [ChannelColumn::default(); DERIVED_CHANNELS];
         self.pending_columns.clear();
-        if self.band_analysis.is_some() {
-            self.band_analysis = Self::band_analysis(self.config);
-        }
+        self.band_analysis = None;
         self.reset_pending = true;
-    }
-
-    fn band_analysis(config: WaveformConfig) -> Option<(BandFilter, BandTracker)> {
-        (config.bands != Bands::Off).then(|| {
-            (
-                BandFilter::new(config.sample_rate),
-                BandTracker::new(config),
-            )
-        })
     }
 
     fn columns(&self) -> WaveFrame {
@@ -295,8 +285,8 @@ impl WaveformProcessor {
         self.config = config;
         if rebuild {
             self.reset_audio();
-        } else if reset_analysis && self.band_analysis.is_some() {
-            self.band_analysis = Self::band_analysis(self.config);
+        } else if reset_analysis {
+            self.band_analysis = None;
         } else if resize && let Some((_, tracker)) = &mut self.band_analysis {
             tracker.resize(self.config);
         }
