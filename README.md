@@ -223,9 +223,14 @@ configuration page. To share a theme, share its JSON file.
 
 Q: **Will you support Windows or macOS?**
 
-A: No, probably not. I'm a Linux user and have been for most of my
-life, I can't maintain reliable support for either platform, nor do I
-want to (especially not for MacOS).
+A: My answer has flip-flopped between yes, no, and maybe over time,
+and right now it remains a strong *maybe*. I've used Linux for most of
+my life; thus I am not confident in my ability to maintain reliable
+support for either platform. I do not own a Windows or Mac machine;
+therefore, my capacity for support is limited to virtual
+environments. The DSP code will run anywhere; the audio back-end and
+some of the UI are Linux-specific. Demand for either platform would
+sway my focus in that direction.
 
 Q: **How do I force OpenGL, Vulkan, or software rendering?**
 
