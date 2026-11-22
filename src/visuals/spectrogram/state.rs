@@ -158,6 +158,7 @@ crate::macros::default_struct! {
             label.resize(label.min_bounds());
             label
         }),
+        piano_keys: PianoKeys = PianoKeys::default(),
         history: SpectrogramHistory = SpectrogramHistory::default(),
     }
 }
@@ -376,13 +377,44 @@ fn layout_tooltip(
     (rect, positions)
 }
 
-fn piano_key_spans(
+#[derive(Clone, Copy, PartialEq)]
+struct PianoAxis {
     sample_rate: f32,
     scale: FrequencyScale,
     uv_range: [f32; 2],
     origin: f32,
     extent: f32,
     ascending: bool,
+}
+
+#[derive(Default)]
+struct PianoKeys {
+    axis: Option<PianoAxis>,
+    spans: [Vec<(MusicalNote, [f32; 2])>; 2],
+}
+
+impl PianoKeys {
+    fn layout(&mut self, axis: PianoAxis) -> &[Vec<(MusicalNote, [f32; 2])>; 2] {
+        if self.axis != Some(axis) {
+            for (spans, keys) in self.spans.iter_mut().zip(piano_key_spans(axis)) {
+                spans.clear();
+                spans.extend(keys);
+            }
+            self.axis = Some(axis);
+        }
+        &self.spans
+    }
+}
+
+fn piano_key_spans(
+    PianoAxis {
+        sample_rate,
+        scale,
+        uv_range,
+        origin,
+        extent,
+        ascending,
+    }: PianoAxis,
 ) -> [impl Iterator<Item = (MusicalNote, [f32; 2])>; 2] {
     let (min_f, nyq) = display_axis(sample_rate);
     let midi_lo = MusicalNote::from_frequency(scale.freq_at(min_f, nyq, uv_range[0]))
@@ -482,7 +514,7 @@ impl Spectrogram<'_> {
     }
 
     fn draw_piano_roll(
-        state: &SpectrogramState,
+        state: &mut SpectrogramState,
         renderer: &mut iced::Renderer,
         theme: &iced::Theme,
         bounds: Rectangle,
@@ -530,14 +562,14 @@ impl Spectrogram<'_> {
             with_alpha(pal.background.base.color, PIANO_STRIP_ALPHA),
         );
 
-        let [white_keys, black_keys] = piano_key_spans(
-            state.sample_rate,
-            state.settings.frequency_scale,
+        let [white_keys, black_keys] = state.piano_keys.layout(PianoAxis {
+            sample_rate: state.sample_rate,
+            scale: state.settings.frequency_scale,
             uv_range,
-            freq_org,
-            freq_ext,
-            state.turn().flips_y(),
-        );
+            origin: freq_org,
+            extent: freq_ext,
+            ascending: state.turn().flips_y(),
+        });
         let black_anchor = if right {
             strip + roll_width - black_width
         } else {
@@ -548,7 +580,7 @@ impl Spectrogram<'_> {
             (white_keys, white, roll_width, strip, white_border),
             (black_keys, black, black_width, black_anchor, borderless),
         ] {
-            for (note, [lo, hi]) in keys {
+            for &(note, [lo, hi]) in keys {
                 let is_selected = selected == Some(note);
                 let key_len = hi - lo;
                 let fill = if is_selected {
@@ -663,7 +695,6 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'_> {
         let mut state = this.state.borrow_mut();
         let time_extent = state.turn().frame(bounds).width;
         state.view_width = time_extent.round().max(1.0) as u32;
-        let state = &*state;
         let uv_y_range = state.uv_y_range();
         let piano_roll = state.settings.piano_roll_overlay;
         let interaction = tree.state.downcast_ref::<InteractionState>();
@@ -678,13 +709,14 @@ impl<Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'_> {
         let mut tooltip_bounds = bounds;
         if piano_roll != PianoRollOverlay::Off {
             renderer.with_layer(bounds, |r| {
-                tooltip_bounds =
-                    Self::draw_piano_roll(state, r, theme, bounds, piano_roll, uv_y_range, inspection);
+                tooltip_bounds = Self::draw_piano_roll(
+                    &mut state, r, theme, bounds, piano_roll, uv_y_range, inspection,
+                );
             });
         }
         if let Some(c) = inspection {
             renderer.with_layer(bounds, |r| {
-                Self::draw_tooltip(state, r, theme, bounds, tooltip_bounds, c, uv_y_range);
+                Self::draw_tooltip(&state, r, theme, bounds, tooltip_bounds, c, uv_y_range);
             });
         }
     });

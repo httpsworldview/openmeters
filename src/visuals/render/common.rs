@@ -427,26 +427,11 @@ fn decimate_finite_ordered_line_in_place(pts: &mut [(f32, f32)], max_points: usi
         } else {
             f32::INFINITY
         };
-        let (mut mn, mut mx) = (start, start);
-        let (mut min_y, mut max_y) = (pts[start].1, pts[start].1);
         read = start + 1;
         while read < pts.len() && pts[read].0 <= end_x {
-            let y = pts[read].1;
-            if y < min_y {
-                (mn, min_y) = (read, y);
-            }
-            if y > max_y {
-                (mx, max_y) = (read, y);
-            }
             read += 1;
         }
-        let pair = if pts[read - 1].0 - pts[start].0 <= 1.0 {
-            let x = pts[start].0.midpoint(pts[read - 1].0);
-            [(x, pts[mn].1), (x, pts[mx].1)]
-        } else {
-            [pts[mn.min(mx)], pts[mn.max(mx)]]
-        };
-        for point in pair {
+        for point in column_extrema(&pts[start..read]) {
             if out == 0 || pts[out - 1] != point {
                 pts[out] = point;
                 out += 1;
@@ -454,6 +439,33 @@ fn decimate_finite_ordered_line_in_place(pts: &mut [(f32, f32)], max_points: usi
         }
     }
     out
+}
+
+fn column_extrema(column: &[(f32, f32)]) -> [(f32, f32); 2] {
+    let (first, last) = (column[0], column[column.len() - 1]);
+    if last.0 - first.0 <= 1.0 {
+        let (mut min_y, mut max_y) = (first.1, first.1);
+        for &(_, y) in &column[1..] {
+            if y < min_y {
+                min_y = y;
+            }
+            if y > max_y {
+                max_y = y;
+            }
+        }
+        let x = first.0.midpoint(last.0);
+        return [(x, min_y), (x, max_y)];
+    }
+    let (mut mn, mut mx) = (0, 0);
+    for (index, &(_, y)) in column.iter().enumerate().skip(1) {
+        if y < column[mn].1 {
+            mn = index;
+        }
+        if y > column[mx].1 {
+            mx = index;
+        }
+    }
+    [column[mn.min(mx)], column[mn.max(mx)]]
 }
 
 pub(in crate::visuals) fn create_buffer(
